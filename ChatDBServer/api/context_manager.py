@@ -586,6 +586,7 @@ class ChatContextManager:
             "## Workspace Memory Context",
             "## Workspace Custom Instructions",
             "## Workspace Knowledge Index",
+            "## Workspace Resource Index",
             "## Current Turn Memory Check",
             "## Sandbox Files",
             "[可按需读取的 Longdoc Skill]",

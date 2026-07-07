@@ -5160,6 +5160,11 @@ class Model:
             if workspace_knowledge_hint:
                 current_turn_system_injections.append(workspace_knowledge_hint)
 
+            workspace_resource_hint = prompts.build_workspace_resource_index_prompt(workspace_context)
+
+            if workspace_resource_hint:
+                current_turn_system_injections.append(workspace_resource_hint)
+
             if effective_enable_tools:
                 memory_update_hint = prompts.build_memory_update_check_prompt(workspace_context)
 

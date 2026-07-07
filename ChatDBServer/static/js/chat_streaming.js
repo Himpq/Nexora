@@ -1794,7 +1794,9 @@
                         // 本地无 stream_id 时，通过 conversation_id 从服务端状态中找回 stream_id。
                         const discovered = metaByCid.get(cid) || null;
 
-                        if (discovered && String(discovered.status || '').trim().toLowerCase() === 'running') {
+                        const discoveredStatus = String(discovered && discovered.status || '').trim().toLowerCase();
+
+                        if (discovered && (discoveredStatus === 'running' || discoveredStatus === 'cancelling')) {
                             const discoveredSid = String(discovered.stream_id || '').trim();
 
                             if (discoveredSid) {
@@ -1811,7 +1813,7 @@
 
                     const status = String(meta.status || '').trim().toLowerCase();
 
-                    if (status !== 'running') {
+                    if (status !== 'running' && status !== 'cancelling') {
                         markConversationStreamFinished(cid, { error: String(meta.error || '') });
 
                         if (isCurrentConversation(cid)) {
@@ -1829,7 +1831,8 @@
 
                     setConversationStreamState(metaCid, {
                         conversation_id: metaCid,
-                        status: 'running'
+                        status: 'running',
+                        stopping: status === 'cancelling' || !!meta.cancel_requested
                     });
                 });
                 applyStreamSessionMetaRows(rows);
@@ -2421,7 +2424,7 @@
                 const existing = getConversationStreamState(cid) || {};
                 const sameStream = String(existing.stream_id || '').trim() === sid;
 
-                if (status === 'running') {
+                if (status === 'running' || status === 'cancelling') {
                     const metaIsRegenerate = readStreamRegenerateFlag(meta, sameStream ? !!existing.is_regenerate : false);
                     const metaAssistantIndex = readStreamAssistantIndexFromMeta(
                         meta,
@@ -2440,7 +2443,7 @@
                         assistant_index: metaAssistantIndex,
                         regenerate_index: metaRegenerateIndex,
                         last_seq: Number.isFinite(Number(meta.last_seq)) ? Number(meta.last_seq) : Number(existing.last_seq || 0),
-                        stopping: !!existing.stopping,
+                        stopping: status === 'cancelling' || !!meta.cancel_requested || !!existing.stopping,
                         error: String(meta.error || existing.error || '').trim()
                     });
                     return;

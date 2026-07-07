@@ -3251,6 +3251,7 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "getBookDetailXml",
     "getBookQuestionsXml",
     "vectorSearch",
+    "learning_card",
     "read_learning_memory",
     "append_learning_memory",
     "update_learning_memory",
@@ -3319,6 +3320,9 @@ def _runtime_tool_specs() -> List[Dict[str, Any]]:
             continue
         rows.append(json.loads(json.dumps(tool, ensure_ascii=False)))
         names.add(name)
+    if "learning_card" not in names:
+        rows.append(_runtime_learning_card_tool_spec())
+        names.add("learning_card")
     if "read_learning_memory" not in names:
         rows.append(
             _runtime_memory_tool_spec(
@@ -3425,65 +3429,32 @@ def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, An
     if name == "learning_card":
         card_type = str(safe_args.get("type") or "").strip()
         lecture_id = str(safe_args.get("lecture_id") or "").strip()
+
         if not lecture_id:
             raise ValueError("lecture_id is required.")
-        lecture = get_learning_lecture(_cfg, lecture_id)
-        if not isinstance(lecture, dict):
-            raise ValueError("Lecture not found.")
-        books = list_lecture_books(_cfg, lecture_id) or []
+
         if card_type == "lecture_display":
-            progress = max(0, min(100, _safe_int(lecture.get("progress"), 0)))
-            html = (
-                f'<article class="nxl-chat-card nxl-chat-card-lecture" data-lecture-id="{lecture_id}">'
-                f'<div class="nxl-chat-card-kicker">Learning Lecture</div>'
-                f'<h3>{str(lecture.get("title") or lecture_id)}</h3>'
-                f'<div class="nxl-chat-card-meta">{len(books)} books | {progress}% progress</div>'
-                f'<div class="nxl-chat-card-progress"><span style="width:{progress}%"></span></div>'
-                f'<p>{str(lecture.get("description") or "")}</p>'
-                f"</article>"
-            )
             return {
                 "success": True,
-                "card": {
-                    "type": "lecture_display",
-                    "lecture_id": lecture_id,
-                    "lecture": lecture,
-                    "books_count": len(books),
-                    "html": html,
-                },
+                "card": _build_lecture_display_card_payload(lecture_id),
             }
+
         if card_type == "chapter_range":
             book_id = str(safe_args.get("book_id") or "").strip()
+
             if not book_id:
                 raise ValueError("book_id is required for chapter_range.")
-            book = get_lecture_book(_cfg, lecture_id, book_id)
-            if not isinstance(book, dict):
-                raise ValueError("Book not found.")
+
             content_range = safe_args.get("content_range") if isinstance(safe_args.get("content_range"), list) else []
+
             if len(content_range) != 2:
                 raise ValueError("content_range must be [start, end].")
-            start = max(0, _safe_int(content_range[0], 0))
-            end = max(start, _safe_int(content_range[1], start))
-            text = str(load_book_text(_cfg, lecture_id, book_id) or "")
-            snippet = text[start:end]
-            html = (
-                f'<article class="nxl-chat-card nxl-chat-card-range" data-lecture-id="{lecture_id}" data-book-id="{book_id}">'
-                f'<div class="nxl-chat-card-kicker">Chapter Range</div>'
-                f'<h3>{str(book.get("title") or book_id)}</h3>'
-                f'<div class="nxl-chat-card-meta">[{start}, {end}]</div>'
-                f'<pre class="nxl-chat-card-snippet">{snippet[:1600]}</pre>'
-                f"</article>"
-            )
+
             return {
                 "success": True,
-                "card": {
-                    "type": "chapter_range",
-                    "lecture_id": lecture_id,
-                    "book_id": book_id,
-                    "range": [start, end],
-                    "html": html,
-                },
+                "card": _build_chapter_range_card_payload(lecture_id, book_id, content_range),
             }
+
         raise ValueError(f"unsupported card type: {card_type}")
 
     if name == "read_learning_memory":
@@ -3555,6 +3526,7 @@ def _runtime_active_tool_skills() -> List[Dict[str, Any]]:
         "getBookDetailXml",
         "getBookQuestionsXml",
         "vectorSearch",
+        "learning_card",
         "question",
     ]
     required_tools = _filter_vector_tool_names(required_tools, vector_tools_available)
@@ -3575,6 +3547,7 @@ def _runtime_active_tool_skills() -> List[Dict[str, Any]]:
                 "This conversation is in NexoraLearning mode. Use listLectures/getLecture/listBooks/getBook to inspect course and textbook metadata. "
                 "Use getBookInfoXml for textbook coarse-reading content, getBookDetailXml for intensive-reading content, "
                 "getBookQuestionsXml for generated questions, readBookTextRange/getBookText for original text reading, "
+                "Use learning_card when a lecture overview or chapter-range card should be rendered in the chat UI. "
                 f"{search_instruction}"
                 "Do not answer from guesses when course or textbook information can be read with these tools."
             ),

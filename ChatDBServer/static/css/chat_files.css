@@ -1,14 +1,56 @@
 .file-center-upload-dialog-close {
+    width: 32px;
+    height: 32px;
+    padding: 0;
     flex: 0 0 auto;
     color: #64748b;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.file-center-upload-dialog-close i {
-    font-size: 13px;
-    line-height: 1;
+.file-center-upload-dialog-close-icon {
+    width: 16px;
+    height: 16px;
+    display: block;
     pointer-events: none;
 }
 
 .file-center-upload-dialog-close:hover {
     color: #111827;
+}
+
+.file-center-live-transfer-progress[hidden] {
+    display: none;
+}
+
+.file-center-live-transfer-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.file-center-live-transfer-progress-bar {
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #e2e8f0;
+}
+
+.file-center-live-transfer-progress-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: #0f172a;
+    transition: width 120ms ease;
+}
+
+.file-center-live-transfer-progress-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #475569;
+    font-size: 11px;
+    line-height: 1.35;
 }

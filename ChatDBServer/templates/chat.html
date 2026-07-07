@@ -28,7 +28,7 @@
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
     <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260616_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
-    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_files_split_01">
+    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_live_transfer_stream_01">
 </head>
 <body>
     <div class="app-container">
@@ -708,18 +708,31 @@
     </div>
     
     <!-- Scripts -->
+    <script>
+        window.NEXORA_MAIL_ENABLED = {{ nexora_mail_enabled | tojson }};
+    </script>
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
     <script src="/static/js/chat_shared.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_admin_users.js?v=20260707_admin_users_split_01"></script>
+    {% if nexora_mail_enabled %}
+    <script src="/static/js/chat_mails.js?v=20260707_admin_mail_users_03"></script>
+    {% endif %}
     <script src="/static/js/chat_message_window.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_message_versions.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_knowledge.js?v=20260707_knowledge_vector_settings_split_04"></script>
+<script src="/static/js/chat_tools.js?v=20260707_tools_result_canvas_hook_01"></script>
+<script src="/static/js/chat_tool_canvas.js?v=20260707_tool_canvas_split_02"></script>
+<script src="/static/js/chat_messages.js?v=20260707_tool_result_canvas_hook_01"></script>
     <script src="/static/js/chat_latex.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_streaming.js?v=20260706_feature_split_11_stream_status_sync_01"></script>
     <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
+    <script src="/static/js/chat_stream_reconnect.js?v=20260707_stream_reconnect_split_01"></script>
     <script src="/static/js/chat_conversations.js?v=20260706_feature_split_18_conversation_detail_stream_01"></script>
-    <script src="/static/js/chat_admin.js?v=20260706_feature_split_13_admin_conversations_01"></script>
+    <script src="/static/js/chat_admin_system.js?v=20260707_admin_system_split_01"></script>
+    <script src="/static/js/chat_admin.js?v=20260707_admin_tabs_split_02"></script>
     <script src="/static/js/chat_markdown.js?v=20260706_feature_split_09"></script>
-    <script src="/static/js/chat_files.js?v=20260707_files_split_01"></script>
-    <script src="/static/js/chat.js?v=20260707_files_split_01"></script>
+    <script src="/static/js/chat_files.js?v=20260707_file_upload_error_feedback_01"></script>
+<script src="/static/js/chat.js?v=20260707_knowledge_vector_settings_split_04"></script>
     <script src="/static/js/workspace.js?v=20260705_workspace_model_select_01"></script>
     <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
     <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>
@@ -791,7 +804,7 @@
                     <h3>模型可见性配置</h3>
                     <span id="permTargetUser" style="margin-left: 12px; font-size: 13px; color: #666; background: #f1f5f9; padding: 4px 10px; border-radius: 4px; font-weight: 500;"></span>
                 </div>
-                    <button onclick="closeModelPermModal()" class="btn-modal-close" type="button">×</button>
+                    <button class="btn-modal-close" type="button" data-admin-user-action="close-model-perm">×</button>
             </div>
             <div class="modal-body" style="padding: 0; flex: 1; overflow: hidden; display: flex; flex-direction: column;">
                 <div style="background: linear-gradient(135deg, #f8fafc 0%, #f0f4f8 100%); padding: 14px 20px; border-bottom: 2px solid #e2e8f0; font-size: 13px; color: #475569;">
@@ -802,8 +815,8 @@
                 </div>
             </div>
             <div class="modal-footer" style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px; flex-shrink: 0;">
-                <button class="btn-cancel" onclick="closeModelPermModal()" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #cbd5e1; background: white; color: #334155; cursor: pointer; font-size: 13px; font-weight: 500;">取消</button>
-                <button class="btn-confirm" onclick="saveUserModelPermissions()" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: white; padding: 8px 20px; border-radius: 4px; border: none; cursor: pointer; font-size: 13px; font-weight: 600;">保存更改</button>
+                <button class="btn-cancel" type="button" data-admin-user-action="close-model-perm" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #cbd5e1; background: white; color: #334155; cursor: pointer; font-size: 13px; font-weight: 500;">取消</button>
+                <button class="btn-confirm" type="button" data-admin-user-action="save-model-perm" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: white; padding: 8px 20px; border-radius: 4px; border: none; cursor: pointer; font-size: 13px; font-weight: 600;">保存更改</button>
             </div>
         </div>
     </div>

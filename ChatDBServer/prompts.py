@@ -415,6 +415,12 @@ workspace_knowledge_block_template = """<WORKSPACE_KNOWLEDGE_INDEX workspace_id=
 {{knowledge_rows}}
 </WORKSPACE_KNOWLEDGE_INDEX>"""
 
+workspace_resource_injection_header = "## Workspace Resource Index"
+
+workspace_resource_block_template = """<WORKSPACE_RESOURCE_INDEX>
+{{resource_rows}}
+</WORKSPACE_RESOURCE_INDEX>"""
+
 memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。项目级稳定事实、约束、决策、术语、待办和反复问题写入 workspace_mem_add；修正、合并或删除已有条目使用 workspace_mem_edit；只有已有可靠行上下文时才使用 workspace_mem_apply_diff。不要把用户个人画像写入 Workspace 记忆。"""
 
 memory_update_check_prompt_template = """## Current Turn Memory Check
@@ -780,6 +786,114 @@ def build_workspace_knowledge_injection_prompt(
     block = block.replace("{{knowledge_rows}}", "\n".join(rows))
 
     return f"{workspace_knowledge_injection_header}\n{block}\n"
+
+
+def _workspace_resource_items(context: Any, key: str) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_items = context.get(key, [])
+
+    if not isinstance(raw_items, list):
+        return []
+
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _build_workspace_file_resource_rows(files: List[Dict[str, Any]], limit: int) -> List[str]:
+    rows: List[str] = []
+
+    for item in files[:limit]:
+        file_ref = _workspace_knowledge_field(item.get("file_ref") or item.get("sandbox_path"), 260)
+
+        if not file_ref:
+            continue
+
+        try:
+            size = int(item.get("size") or 0)
+        except Exception:
+            size = 0
+
+        rows.append(f"- file: {file_ref}; size={size}")
+
+    return rows
+
+
+def _build_workspace_task_resource_rows(tasks: List[Dict[str, Any]], limit: int) -> List[str]:
+    rows: List[str] = []
+
+    for item in tasks[:limit]:
+        title = _workspace_knowledge_field(item.get("title"), 160)
+
+        if not title:
+            continue
+
+        meta_parts: List[str] = []
+        status = _workspace_knowledge_field(item.get("status"), 32)
+        start_date = _workspace_knowledge_field(item.get("start_date"), 32)
+        due_date = _workspace_knowledge_field(item.get("due_date"), 32)
+
+        if status:
+            meta_parts.append(f"status={status}")
+
+        if start_date:
+            meta_parts.append(f"from={start_date}")
+
+        if due_date:
+            meta_parts.append(f"to={due_date}")
+
+        if meta_parts:
+            rows.append(f"- task: {title}; {'; '.join(meta_parts)}")
+        else:
+            rows.append(f"- task: {title}")
+
+    return rows
+
+
+def build_workspace_resource_index_prompt(
+    workspace_context: Dict[str, Any],
+    max_files: int = 40,
+    max_tasks: int = 40,
+) -> str:
+    """构建当前 Workspace 的文件与任务轻量索引，不注入正文。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    files = _workspace_resource_items(workspace_context, "workspace_files")
+    tasks = _workspace_resource_items(workspace_context, "workspace_tasks")
+
+    if not workspace_id or (not files and not tasks):
+        return ""
+
+    file_limit = max(1, min(100, int(max_files or 40)))
+    task_limit = max(1, min(100, int(max_tasks or 40)))
+    rows: List[str] = []
+    file_rows = _build_workspace_file_resource_rows(files, file_limit)
+    task_rows = _build_workspace_task_resource_rows(tasks, task_limit)
+
+    if file_rows:
+        rows.append("Files:")
+        rows.extend(file_rows)
+        remaining_files = max(0, len(files) - file_limit)
+
+        if remaining_files > 0:
+            rows.append(f"- ... 还有 {remaining_files} 个 Workspace 文件索引未列出。")
+
+    if task_rows:
+        if rows:
+            rows.append("")
+
+        rows.append("Tasks:")
+        rows.extend(task_rows)
+        remaining_tasks = max(0, len(tasks) - task_limit)
+
+        if remaining_tasks > 0:
+            rows.append(f"- ... 还有 {remaining_tasks} 个 Workspace 任务索引未列出。")
+
+    if not rows:
+        return ""
+
+    block = workspace_resource_block_template.replace("{{resource_rows}}", "\n".join(rows))
+
+    return f"{workspace_resource_injection_header}\n{block}\n"
 
 
 def build_memory_update_check_prompt(workspace_context: Dict[str, Any] = None) -> str:

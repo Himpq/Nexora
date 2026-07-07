@@ -1,3 +1,48 @@
+const INVISIBLE_TEXT_CHARS = [
+    String.fromCharCode(0x200B),
+    String.fromCharCode(0x200C),
+    String.fromCharCode(0x200D),
+    String.fromCharCode(0x200E),
+    String.fromCharCode(0x200F),
+    String.fromCharCode(0x2060),
+    String.fromCharCode(0xFEFF),
+    String.fromCharCode(0x00AD),
+].join('');
+const INVISIBLE_TEXT_PATTERN = new RegExp(`[${INVISIBLE_TEXT_CHARS}]`, 'g');
+const PRIVATE_USE_AREA_PATTERN = new RegExp(`[${String.fromCharCode(0xE000)}-${String.fromCharCode(0xF8FF)}]`, 'g');
+const DIRTY_NOT_EQUAL_PLACEHOLDER = String.fromCharCode(0xE020);
+const NOTE_SELECTION_PARAGRAPH_MARKER = String.fromCharCode(0xE001);
+
+function removeInvisibleTextChars(text) {
+    return String(text || '').replace(INVISIBLE_TEXT_PATTERN, '');
+}
+
+function isBasicChineseChar(char) {
+    const code = String(char || '').charCodeAt(0);
+
+    return code >= 0x4E00 && code <= 0x9FA5;
+}
+
+function normalizeProviderIconFallbackSource(text) {
+    let cleaned = '';
+    let separatorPending = false;
+
+    for (const char of String(text || '')) {
+        if (/[0-9a-zA-Z]/.test(char) || isBasicChineseChar(char)) {
+            cleaned += char;
+            separatorPending = false;
+            continue;
+        }
+
+        if (!separatorPending) {
+            cleaned += ' ';
+            separatorPending = true;
+        }
+    }
+
+    return cleaned.trim();
+}
+
 // --- Helper: Create Thinking Block ---
 function toggleThinkingBlockCollapsed(thinkingBlock) {
     if (!thinkingBlock) return;
@@ -54,714 +99,92 @@ function createThinkingBlock(isCollapsed = false) {
     return block;
 }
 
-function clipExecutionFlowText(text, limit = 96) {
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-
-    if (value.length <= limit) {
-        return value;
-    }
-
-    return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`;
+function clipExecutionFlowText(...args) {
+    return getNexoraChatTools().clipExecutionFlowText(...args);
 }
 
-function parseExecutionFlowJson(raw) {
-    const text = String(raw || '').trim();
-
-    if (!text) {
-        return null;
-    }
-
-    try {
-        const value = JSON.parse(text);
-        return value && typeof value === 'object' ? value : null;
-    } catch (_) {
-        return null;
-    }
+function parseExecutionFlowJson(...args) {
+    return getNexoraChatTools().parseExecutionFlowJson(...args);
 }
 
-function unescapeExecutionFlowJsonFragment(value) {
-    const text = String(value || '');
-
-    try {
-        return JSON.parse(`"${text.replace(/"/g, '\\"')}"`);
-    } catch (_) {
-        return text
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\')
-            .replace(/\\n/g, '\n')
-            .replace(/\\r/g, '\r')
-            .replace(/\\t/g, '\t');
-    }
+function unescapeExecutionFlowJsonFragment(...args) {
+    return getNexoraChatTools().unescapeExecutionFlowJsonFragment(...args);
 }
 
-function readExecutionFlowJsonStringToken(text, start) {
-    let i = Number(start || 0);
-    let value = '';
-    let escaped = false;
-
-    if (text[i] !== '"') {
-        return { ok: false, closed: false, value: '', next: i };
-    }
-
-    i += 1;
-
-    while (i < text.length) {
-        const ch = text[i];
-
-        if (escaped) {
-            value += `\\${ch}`;
-            escaped = false;
-            i += 1;
-            continue;
-        }
-
-        if (ch === '\\') {
-            escaped = true;
-            i += 1;
-            continue;
-        }
-
-        if (ch === '"') {
-            return {
-                ok: true,
-                closed: true,
-                value: unescapeExecutionFlowJsonFragment(value),
-                next: i + 1
-            };
-        }
-
-        value += ch;
-        i += 1;
-    }
-
-    return {
-        ok: true,
-        closed: false,
-        value: unescapeExecutionFlowJsonFragment(value),
-        next: i
-    };
+function readExecutionFlowJsonStringToken(...args) {
+    return getNexoraChatTools().readExecutionFlowJsonStringToken(...args);
 }
 
-function parseExecutionFlowPartialJson(raw) {
-    const text = String(raw || '').trim();
-
-    if (!text.startsWith('{')) {
-        return {};
-    }
-
-    const out = {};
-    let i = 1;
-
-    while (i < text.length) {
-        while (i < text.length && /[\s,]/.test(text[i])) i += 1;
-        if (i >= text.length || text[i] === '}') break;
-        if (text[i] !== '"') break;
-
-        const keyToken = readExecutionFlowJsonStringToken(text, i);
-        if (!keyToken.ok || !keyToken.closed) break;
-        const key = String(keyToken.value || '').trim();
-        i = keyToken.next;
-
-        while (i < text.length && /\s/.test(text[i])) i += 1;
-        if (text[i] !== ':') break;
-        i += 1;
-        while (i < text.length && /\s/.test(text[i])) i += 1;
-        if (!key || i >= text.length) break;
-
-        if (text[i] === '"') {
-            const valueToken = readExecutionFlowJsonStringToken(text, i);
-            if (valueToken.ok && String(valueToken.value || '').trim()) {
-                out[key] = String(valueToken.value || '');
-            }
-            i = valueToken.next;
-            continue;
-        }
-
-        let valueStart = i;
-        let depth = 0;
-        let inString = false;
-        let escaped = false;
-
-        while (i < text.length) {
-            const ch = text[i];
-
-            if (inString) {
-                if (escaped) {
-                    escaped = false;
-                } else if (ch === '\\') {
-                    escaped = true;
-                } else if (ch === '"') {
-                    inString = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            if (ch === '"') {
-                inString = true;
-                i += 1;
-                continue;
-            }
-
-            if (ch === '{' || ch === '[') {
-                depth += 1;
-                i += 1;
-                continue;
-            }
-
-            if (ch === '}' || ch === ']') {
-                if (depth <= 0) break;
-                depth -= 1;
-                i += 1;
-                continue;
-            }
-
-            if (ch === ',' && depth === 0) break;
-            i += 1;
-        }
-
-        const rawValue = text.slice(valueStart, i).trim();
-        if (rawValue && !/^[{\[]/.test(rawValue)) {
-            out[key] = rawValue.replace(/,$/, '').trim();
-        }
-    }
-
-    return out;
+function parseExecutionFlowPartialJson(...args) {
+    return getNexoraChatTools().parseExecutionFlowPartialJson(...args);
 }
 
-function basenameForExecutionFlow(value) {
-    const text = String(value || '').trim();
-
-    if (!text) {
-        return '';
-    }
-
-    const cleaned = text.replace(/^file:\/\//i, '');
-    const parts = cleaned.split(/[\\/]+/).filter(Boolean);
-    return parts.length > 0 ? parts[parts.length - 1] : cleaned;
+function basenameForExecutionFlow(...args) {
+    return getNexoraChatTools().basenameForExecutionFlow(...args);
 }
 
-function hostForExecutionFlow(value) {
-    const text = String(value || '').trim();
-
-    if (!text) {
-        return '';
-    }
-
-    try {
-        const url = new URL(text);
-        return url.hostname || text;
-    } catch (_) {
-        return text.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || text;
-    }
+function hostForExecutionFlow(...args) {
+    return getNexoraChatTools().hostForExecutionFlow(...args);
 }
 
-function readExecutionFlowArg(args, names) {
-    const source = args && typeof args === 'object' ? args : {};
-
-    for (const name of names) {
-        const value = source[name];
-
-        if (value !== undefined && value !== null && String(value).trim()) {
-            return String(value).trim();
-        }
-    }
-
-    return '';
+function readExecutionFlowArg(...args) {
+    return getNexoraChatTools().readExecutionFlowArg(...args);
 }
 
-function buildFileToolRunningDisplay(toolName, args = {}) {
-    const name = String(toolName || '').trim();
-    const compact = name.replace(/[\s_-]+/g, '').toLowerCase();
-
-    if (!compact.includes('file')) {
-        return null;
-    }
-
-    const path = readExecutionFlowArg(args, ['path', 'file_path', 'file', 'sandbox_path', 'target_path']);
-    const content = args && args.content !== undefined && args.content !== null ? String(args.content) : '';
-    const replacement = args && args.replacement !== undefined && args.replacement !== null ? String(args.replacement) : '';
-    const oldText = args && args.old_text !== undefined && args.old_text !== null ? String(args.old_text) : '';
-    const newText = args && args.new_text !== undefined && args.new_text !== null ? String(args.new_text) : '';
-    const patchText = args && args.patch !== undefined && args.patch !== null ? String(args.patch) : '';
-    const edits = Array.isArray(args && args.edits) ? args.edits : [];
-
-    if (compact.includes('filewrite') || compact.includes('filecreate')) {
-        const writeMode = content
-            ? 'overwrite'
-            : replacement
-            ? 'line_replace'
-            : (oldText || newText)
-            ? 'text_replace'
-            : 'prepare';
-        const statusText = compact.includes('filecreate') ? '准备创建文件' : '准备写入文件';
-        const lines = [
-            statusText,
-            `path: ${path || '(未提供)'}`,
-            `mode: ${writeMode}`
-        ];
-
-        if (content) {
-            lines.push(`content_chars: ${content.length}`);
-        }
-
-        if (replacement) {
-            lines.push(`replacement_chars: ${replacement.length}`);
-        }
-
-        if (oldText || newText) {
-            lines.push(`old_text_chars: ${oldText.length}`);
-            lines.push(`new_text_chars: ${newText.length}`);
-        }
-
-        return {
-            statusText,
-            progressText: lines.join('\n')
-        };
-    }
-
-    if (compact.includes('filepatch')) {
-        const confirmPreviewId = readExecutionFlowArg(args, ['confirm_preview_id']);
-        const dryRun = !!(args && args.dry_run);
-        const mode = confirmPreviewId ? 'confirm' : dryRun ? 'dry_run' : 'prepare';
-        const statusText = confirmPreviewId ? '准备确认写入 patch' : '准备生成 patch 预览';
-        const lines = [
-            statusText,
-            `path: ${path || '(未提供)'}`,
-            `mode: ${mode}`
-        ];
-
-        if (edits.length > 0) {
-            lines.push(`edit_count: ${edits.length}`);
-        }
-
-        if (patchText) {
-            lines.push(`patch_chars: ${patchText.length}`);
-        }
-
-        if (confirmPreviewId) {
-            lines.push(`confirm_preview_id: ${confirmPreviewId}`);
-        }
-
-        return {
-            statusText,
-            progressText: lines.join('\n')
-        };
-    }
-
-    return null;
+function buildFileToolRunningDisplay(...args) {
+    return getNexoraChatTools().buildFileToolRunningDisplay(...args);
 }
 
-function getExecutionFlowArgs(row) {
-    if (!row) {
-        return {};
-    }
-
-    const parsed = parseExecutionFlowJson(row.dataset.argsRaw || '');
-    return parsed || parseExecutionFlowPartialJson(row.dataset.argsRaw || '') || {};
+function getExecutionFlowArgs(...args) {
+    return getNexoraChatTools().getExecutionFlowArgs(...args);
 }
 
-function getExecutionFlowPhaseText(rawStatus) {
-    const text = String(rawStatus || '').trim();
-
-    if (!text) {
-        return '';
-    }
-
-    if (/参数|构建|准备/.test(text)) {
-        return '准备中';
-    }
-
-    if (/执行中|运行中|搜索中|打开中/.test(text)) {
-        return '执行中';
-    }
-
-    if (/完成|成功|done|completed/i.test(text)) {
-        return '完成';
-    }
-
-    return clipExecutionFlowText(text.replace(/^[\w.-]+\s*/, '').replace(/:$/, ''), 28);
+function getExecutionFlowPhaseText(...args) {
+    return getNexoraChatTools().getExecutionFlowPhaseText(...args);
 }
 
-function parseExecutionFlowPayload(raw) {
-    if (raw && typeof raw === 'object') {
-        return raw;
-    }
-
-    const text = String(raw || '').trim();
-
-    if (!text) {
-        return null;
-    }
-
-    try {
-        return JSON.parse(text);
-    } catch (_) {
-        return null;
-    }
+function parseExecutionFlowPayload(...args) {
+    return getNexoraChatTools().parseExecutionFlowPayload(...args);
 }
 
-function unwrapExecutionFlowPayload(payload) {
-    let current = payload;
-    const wrapperKeys = new Set([
-        'success',
-        'result',
-        'error',
-        'message',
-        'traceback',
-        'elapsed_ms',
-        'duration_ms',
-        'request_id'
-    ]);
-
-    for (let i = 0; i < 2; i += 1) {
-        if (!current || typeof current !== 'object' || Array.isArray(current) || !Object.prototype.hasOwnProperty.call(current, 'result')) {
-            break;
-        }
-
-        const keys = Object.keys(current);
-        const looksWrapped = keys.length > 0 && keys.every((key) => wrapperKeys.has(key));
-
-        if (!looksWrapped) {
-            break;
-        }
-
-        const inner = current.result;
-        const parsedInner = parseExecutionFlowPayload(inner);
-        current = parsedInner !== null ? parsedInner : inner;
-    }
-
-    return current;
+function unwrapExecutionFlowPayload(...args) {
+    return getNexoraChatTools().unwrapExecutionFlowPayload(...args);
 }
 
-function normalizeExecutionFlowCount(value) {
-    if (value === undefined || value === null || value === '') {
-        return null;
-    }
-
-    const match = String(value).replace(/,/g, '').match(/\d+/);
-    const count = match ? Number.parseInt(match[0], 10) : Number.NaN;
-
-    return Number.isFinite(count) && count >= 0 ? count : null;
+function normalizeExecutionFlowCount(...args) {
+    return getNexoraChatTools().normalizeExecutionFlowCount(...args);
 }
 
-function readExecutionFlowMarkdownCount(markdownText, fieldNames) {
-    const fields = Array.isArray(fieldNames) ? fieldNames : [];
-
-    for (const field of fields) {
-        const raw = extractMarkdownField(markdownText, field);
-        const count = normalizeExecutionFlowCount(raw);
-
-        if (count !== null) {
-            return count;
-        }
-    }
-
-    return null;
+function readExecutionFlowMarkdownCount(...args) {
+    return getNexoraChatTools().readExecutionFlowMarkdownCount(...args);
 }
 
-function readExecutionFlowPayloadPath(payload, path) {
-    const parts = String(path || '').split('.').filter(Boolean);
-    let current = payload;
-
-    for (const part of parts) {
-        if (!current || typeof current !== 'object') {
-            return undefined;
-        }
-
-        current = current[part];
-    }
-
-    return current;
+function readExecutionFlowPayloadPath(...args) {
+    return getNexoraChatTools().readExecutionFlowPayloadPath(...args);
 }
 
-function readExecutionFlowPayloadCount(payload, numberKeys = [], arrayKeys = []) {
-    const data = unwrapExecutionFlowPayload(payload);
-
-    if (Array.isArray(data)) {
-        return data.length;
-    }
-
-    if (!data || typeof data !== 'object') {
-        return null;
-    }
-
-    for (const key of numberKeys) {
-        const count = normalizeExecutionFlowCount(readExecutionFlowPayloadPath(data, key));
-
-        if (count !== null) {
-            return count;
-        }
-    }
-
-    for (const key of arrayKeys) {
-        const value = readExecutionFlowPayloadPath(data, key);
-
-        if (Array.isArray(value)) {
-            return value.length;
-        }
-    }
-
-    return null;
+function readExecutionFlowPayloadCount(...args) {
+    return getNexoraChatTools().readExecutionFlowPayloadCount(...args);
 }
 
-function readExecutionFlowResultCount(markdownText, resultText, markdownFields, numberKeys, arrayKeys) {
-    const fromMarkdown = readExecutionFlowMarkdownCount(markdownText, markdownFields);
-
-    if (fromMarkdown !== null) {
-        return fromMarkdown;
-    }
-
-    return readExecutionFlowPayloadCount(parseExecutionFlowPayload(resultText), numberKeys, arrayKeys);
+function readExecutionFlowResultCount(...args) {
+    return getNexoraChatTools().readExecutionFlowResultCount(...args);
 }
 
-function readExecutionFlowResultText(markdownText, resultText, markdownFields, payloadPaths) {
-    const fields = Array.isArray(markdownFields) ? markdownFields : [];
-
-    for (const field of fields) {
-        const value = extractMarkdownField(markdownText, field);
-
-        if (value) {
-            return value;
-        }
-    }
-
-    const data = unwrapExecutionFlowPayload(parseExecutionFlowPayload(resultText));
-    const paths = Array.isArray(payloadPaths) ? payloadPaths : [];
-
-    for (const path of paths) {
-        const value = readExecutionFlowPayloadPath(data, path);
-
-        if (value !== undefined && value !== null && String(value).trim()) {
-            return String(value).trim();
-        }
-    }
-
-    return '';
+function readExecutionFlowResultText(...args) {
+    return getNexoraChatTools().readExecutionFlowResultText(...args);
 }
 
-function appendExecutionFlowCount(text, count, unit) {
-    return count !== null ? `${text} 获取到${count}${unit}` : text;
+function appendExecutionFlowCount(...args) {
+    return getNexoraChatTools().appendExecutionFlowCount(...args);
 }
 
-function buildChineseToolAction(toolName, args = {}, markdownText = '', resultText = '', row = null) {
-    const name = String(toolName || '').trim();
-    const compact = name.replace(/[\s_-]+/g, '').toLowerCase();
-    const markdown = String(markdownText || '');
-    const result = String(resultText || '');
-    const fileFromMarkdown = extractMarkdownField(markdown, 'File');
-    const commandFromMarkdown = extractMarkdownField(markdown, 'Command');
-    const title = extractMarkdownTitle(markdown);
-    const path = readExecutionFlowArg(args, ['path', 'file', 'file_path', 'filepath', 'sandbox_path', 'target_path']);
-    const url = readExecutionFlowArg(args, ['url', 'href', 'page_url']);
-    const query = readExecutionFlowArg(args, ['query', 'keyword', 'q']) || String((row && row.dataset.query) || '').trim();
-    const command = readExecutionFlowArg(args, ['command', 'cmd']) || commandFromMarkdown;
-    const objectTitle = readExecutionFlowArg(args, ['title', 'name', 'key']);
-    const fileName = basenameForExecutionFlow(fileFromMarkdown || path);
-    const urlHost = hostForExecutionFlow(url);
-
-    if (compact === 'memoryprofileread' || compact === 'getuserprofilememory' || compact === 'memoryread') {
-        return '读取用户画像';
-    }
-
-    if (compact.includes('memory') && (compact.includes('update') || compact.includes('write') || compact.includes('append'))) {
-        return '写入用户画像';
-    }
-
-    if (compact.includes('localfileprobe') || /local file probe/i.test(title)) {
-        return fileName ? `探测文件 ${fileName}` : '探测文件';
-    }
-
-    if (compact.includes('filecreate')) {
-        return fileName ? `创建文件 ${fileName}` : '创建文件';
-    }
-
-    if (compact.includes('fileread') || /file read/i.test(title)) {
-        return fileName ? `读取文件 ${fileName}` : '读取文件';
-    }
-
-    if (compact.includes('filewrite') || /file written/i.test(title)) {
-        return fileName ? `写入文件 ${fileName}` : '写入文件';
-    }
-
-    if (compact.includes('filepatch') || /file patch preview|file modified/i.test(title)) {
-        if (/preview/i.test(title) || /preview_id/i.test(result)) {
-            return fileName ? `预览文件修改 ${fileName}` : '预览文件修改';
-        }
-
-        return fileName ? `写入文件 ${fileName}` : '写入文件';
-    }
-
-    if (compact.includes('filelist')) {
-        return fileName ? `读取目录 ${fileName}` : '读取目录';
-    }
-
-    if (compact.includes('filefind') || compact.includes('filesearch')) {
-        return fileName ? `查找文件 ${fileName}` : '查找文件';
-    }
-
-    if (compact.includes('fileremove') || compact.includes('filedelete')) {
-        return fileName ? `删除文件 ${fileName}` : '删除文件';
-    }
-
-    if (compact.includes('browserpageopen') || compact.includes('webrender') || compact.includes('openpage')) {
-        return urlHost ? `打开网页 ${urlHost}` : '打开网页';
-    }
-
-    if (compact.includes('browserpageread') || compact.includes('webgetcontent') || compact.includes('readpage')) {
-        return urlHost ? `读取网页 ${urlHost}` : '读取网页';
-    }
-
-    if (compact.includes('browserpageclick') || compact.includes('webclick')) {
-        return '点击网页元素';
-    }
-
-    if (compact.includes('browserpageinput') || compact.includes('webinput')) {
-        return '输入网页内容';
-    }
-
-    if (compact.includes('browserpageeval') || compact.includes('webexecjs')) {
-        return '执行网页脚本';
-    }
-
-    if (compact.includes('browserpagescroll')) {
-        return '滚动网页';
-    }
-
-    if (compact.includes('browserpagelist')) {
-        return '读取浏览器页面';
-    }
-
-    if (compact.includes('shell') || compact.includes('terminal')) {
-        return command ? `执行命令 ${clipExecutionFlowText(command, 34)}` : '执行命令';
-    }
-
-    if (compact.includes('websearch') || compact.includes('searchkeyword') || compact === 'websearchmeta') {
-        return query ? `搜索网页 ${clipExecutionFlowText(query, 34)}` : '搜索网页';
-    }
-
-    if (compact.includes('imagesearch')) {
-        return query ? `搜索图片 ${clipExecutionFlowText(query, 34)}` : '搜索图片';
-    }
-
-    if (compact.includes('generateimage')) {
-        return '生成图片';
-    }
-
-    if (compact.includes('contextcompression')) {
-        return '压缩上下文';
-    }
-
-    if (compact.includes('contextread') || compact === 'getcontext') {
-        return '读取长上下文';
-    }
-
-    if (compact.includes('contextclear') || compact === 'clearcontext') {
-        return '清理上下文';
-    }
-
-    if (compact === 'knowledgelist') {
-        const count = readExecutionFlowResultCount(
-            markdown,
-            result,
-            ['Total', 'Results', 'Items'],
-            ['total', 'count', 'results'],
-            ['items', 'results']
-        );
-        return appendExecutionFlowCount('读取知识库信息', count, '条信息');
-    }
-
-    if (compact.includes('knowledgegraphread')) {
-        return '读取知识图谱';
-    }
-
-    if (compact.includes('knowledgesearch') || compact.includes('searchknowledge')) {
-        const count = readExecutionFlowResultCount(
-            markdown,
-            result,
-            ['Results', 'Matched', 'Total', 'Articles', 'Returned'],
-            ['results', 'matched', 'total', 'returned', 'count'],
-            ['items', 'matches', 'articles', 'results']
-        );
-        const base = query ? `搜索知识库 ${clipExecutionFlowText(query, 34)}` : '搜索知识库';
-        return appendExecutionFlowCount(base, count, '条信息');
-    }
-
-    if (compact.includes('knowledgebasisread')) {
-        const count = readExecutionFlowResultCount(
-            markdown,
-            result,
-            ['Matched', 'Results', 'Total'],
-            ['matched', 'total', 'count'],
-            ['matches', 'items', 'results']
-        );
-        if (count !== null && (/knowledge content matches/i.test(title) || /Matched:/i.test(markdown))) {
-            return appendExecutionFlowCount('读取知识库信息', count, '条信息');
-        }
-
-        return objectTitle ? `读取知识库信息 ${clipExecutionFlowText(objectTitle, 34)}` : '读取知识库信息';
-    }
-
-    if (compact.includes('knowledge') && (compact.includes('create') || compact.includes('update') || compact.includes('delete') || compact.includes('link'))) {
-        return objectTitle ? `写入知识库 ${clipExecutionFlowText(objectTitle, 34)}` : '写入知识库';
-    }
-
-    const isMailTool = compact.includes('email') || compact.includes('mail');
-
-    if (isMailTool && compact.includes('send')) {
-        const subject = readExecutionFlowArg(args, ['subject', 'title'])
-            || readExecutionFlowResultText(markdown, result, ['Subject', 'Title'], ['subject', 'title']);
-        return subject ? `发送邮件 ${clipExecutionFlowText(subject, 34)}` : '发送邮件';
-    }
-
-    if (isMailTool && compact.includes('list')) {
-        const count = readExecutionFlowResultCount(
-            markdown,
-            result,
-            ['Total', 'Results', 'Mails', 'Emails'],
-            ['total', 'count', 'results'],
-            ['mails', 'emails', 'items']
-        );
-        return appendExecutionFlowCount('读取邮件', count, '封邮件');
-    }
-
-    if (isMailTool && (compact.includes('get') || compact.includes('read'))) {
-        const mailTitle = readExecutionFlowResultText(
-            markdown,
-            result,
-            ['Subject', 'Title'],
-            ['mail.subject', 'mail.title', 'subject', 'title']
-        );
-        const mailId = readExecutionFlowArg(args, ['mail_id', 'id']);
-        const label = mailTitle || mailId;
-        return label ? `读取邮件内容 打开邮件 ${clipExecutionFlowText(label, 42)}` : '读取邮件内容';
-    }
-
-    if (compact.includes('read') || compact.includes('get') || compact.includes('list')) {
-        return '读取信息';
-    }
-
-    if (compact.includes('write') || compact.includes('update') || compact.includes('create') || compact.includes('delete') || compact.includes('save')) {
-        return '写入信息';
-    }
-
-    if (compact.includes('search') || compact.includes('find')) {
-        return '搜索信息';
-    }
-
-    return '执行工具';
+function buildChineseToolAction(...args) {
+    return getNexoraChatTools().buildChineseToolAction(...args);
 }
 
-function setToolUsagePrimaryText(row, text) {
-    if (!row) return;
-
-    const titleEl = row.querySelector('.tool-name');
-
-    if (titleEl) {
-        const value = text || '执行工具';
-        titleEl.textContent = clipExecutionFlowText(value, 96);
-        titleEl.title = value;
-    }
+function setToolUsagePrimaryText(...args) {
+    return getNexoraChatTools().setToolUsagePrimaryText(...args);
 }
 
 function updateThinkingBlockSummary(thinkingBlock, sourceText = '') {
@@ -875,120 +298,32 @@ function appendReasoningThinkingBlock(container, sourceText, options = {}) {
     return thinkingBlock;
 }
 
-function getToolExecutionFlowKind(toolName) {
-    const compact = String(toolName || '').trim().replace(/[\s_-]+/g, '').toLowerCase();
-
-    if (!compact) return 'tool';
-    if (compact.includes('error')) return 'error';
-    if (compact.includes('file') || compact.includes('patch')) return 'file';
-    if (compact.includes('shell') || compact.includes('terminal') || compact.includes('exec')) return 'shell';
-    if (compact.includes('search') || compact.includes('web')) return 'web';
-    if (compact.includes('browser') || compact.includes('page')) return 'browser';
-    if (compact.includes('context') || compact.includes('compression')) return 'context';
-    if (compact.includes('image')) return 'image';
-    if (compact.includes('knowledge') || compact.includes('memory')) return 'knowledge';
-
-    return 'tool';
+function getToolExecutionFlowKind(...args) {
+    return getNexoraChatTools().getToolExecutionFlowKind(...args);
 }
 
-function applyToolExecutionFlowKind(row, toolName) {
-    if (!row) return;
-
-    const kind = getToolExecutionFlowKind(toolName);
-    row.classList.add('execution-flow-item');
-    row.dataset.flowKind = kind;
+function applyToolExecutionFlowKind(...args) {
+    return getNexoraChatTools().applyToolExecutionFlowKind(...args);
 }
 
-function cleanExecutionFlowMarkdownValue(value) {
-    return String(value || '')
-        .replace(/`/g, '')
-        .replace(/\*\*/g, '')
-        .trim();
+function cleanExecutionFlowMarkdownValue(...args) {
+    return getNexoraChatTools().cleanExecutionFlowMarkdownValue(...args);
 }
 
-function extractMarkdownField(markdownText, fieldName) {
-    const name = String(fieldName || '').trim().toLowerCase();
-    const lines = String(markdownText || '').split(/\r?\n/);
-
-    for (const line of lines) {
-        const idx = line.indexOf(':');
-
-        if (idx <= 0) {
-            continue;
-        }
-
-        const key = line.slice(0, idx).replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim().toLowerCase();
-
-        if (key === name) {
-            return cleanExecutionFlowMarkdownValue(line.slice(idx + 1));
-        }
-    }
-
-    return '';
+function extractMarkdownField(...args) {
+    return getNexoraChatTools().extractMarkdownField(...args);
 }
 
-function extractMarkdownTitle(markdownText) {
-    const lines = String(markdownText || '').split(/\r?\n/);
-
-    for (const line of lines) {
-        const value = line.trim();
-
-        if (value.startsWith('## ')) {
-            return cleanExecutionFlowMarkdownValue(value.replace(/^#+\s*/, ''));
-        }
-    }
-
-    return '';
+function extractMarkdownTitle(...args) {
+    return getNexoraChatTools().extractMarkdownTitle(...args);
 }
 
-function buildToolResultSummaryFromMarkdown(toolName, markdownText) {
-    const title = extractMarkdownTitle(markdownText);
-    const file = extractMarkdownField(markdownText, 'File');
-    const changed = extractMarkdownField(markdownText, 'Changed');
-    const mode = extractMarkdownField(markdownText, 'Mode');
-    const size = extractMarkdownField(markdownText, 'Size');
-    const lines = extractMarkdownField(markdownText, 'Lines');
-    const previewId = extractMarkdownField(markdownText, 'Preview ID');
-    const encodingHint = extractMarkdownField(markdownText, 'Encoding Hint');
-    const exitCode = extractMarkdownField(markdownText, 'Exit Code');
-    const command = extractMarkdownField(markdownText, 'Command');
-
-    if (/file patch preview/i.test(title)) {
-        return clipExecutionFlowText(['Patch 预览', file, lines, previewId].filter(Boolean).join(' · '));
-    }
-
-    if (/file modified/i.test(title)) {
-        return clipExecutionFlowText(['写入完成', file, changed ? `changed=${changed}` : '', lines].filter(Boolean).join(' · '));
-    }
-
-    if (/local file probe/i.test(title)) {
-        return clipExecutionFlowText(['探测文件', file, encodingHint, size].filter(Boolean).join(' · '));
-    }
-
-    if (/file read/i.test(title)) {
-        return clipExecutionFlowText(['读取文件', file, mode, size].filter(Boolean).join(' · '));
-    }
-
-    if (/shell command/i.test(title)) {
-        return clipExecutionFlowText(['Shell', exitCode ? `exit=${exitCode}` : '', command].filter(Boolean).join(' · '));
-    }
-
-    return clipExecutionFlowText(title || toolName || '工具完成');
+function buildToolResultSummaryFromMarkdown(...args) {
+    return getNexoraChatTools().buildToolResultSummaryFromMarkdown(...args);
 }
 
-function updateToolUsageResultSummary(row, toolName, result, markdownText, resultText = '') {
-    if (!row) return;
-
-    const args = getExecutionFlowArgs(row);
-    const primaryText = buildChineseToolAction(toolName, args, markdownText, resultText, row);
-    setToolUsagePrimaryText(row, primaryText);
-
-    const statusEl = row.querySelector('.tool-status');
-    if (!statusEl) return;
-
-    const summary = '完成';
-    statusEl.textContent = summary;
-    statusEl.title = summary;
+function updateToolUsageResultSummary(...args) {
+    return getNexoraChatTools().updateToolUsageResultSummary(...args);
 }
 
 function getLatestReasoningThinkingBlock(messageDiv) {
@@ -1138,9 +473,6 @@ const CONVERSATION_PREVIOUS_MESSAGE_LIMIT = chatMessageWindowApi.CONVERSATION_PR
 const CONVERSATION_HISTORY_LOAD_TOP_PX = 80;
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
-let currentUploadXhr = null;
-let currentUploadTaskId = null;
-let uploadCancelledByUser = false;
 let currentUsername = null;
 let currentUserRole = 'member';
 let currentUserAvatarUrl = '';
@@ -1156,9 +488,6 @@ let learningModeAssetsPromise = null;
 let learningEmbedLayoutMode = 'default';
 let pendingLearningModeValue = false;
 let pendingAvatarDataUrl = '';
-let adminUsersCache = [];
-let adminSelectedUserId = null;
-let adminUserFilterKeyword = '';
 let adminUserTokenSelectorState = {
     users: [],
     filteredUsers: [],
@@ -1172,38 +501,11 @@ let adminGenImageApisCache = [];
 let adminSelectedGenImageApiId = '';
 let adminGenImageApiFilterKeyword = '';
 let adminGenImageApiEditorState = { originalApiId: '' };
-let adminMailUsersCache = [];
-let adminSelectedMailUser = null;
-let adminMailUserFilterKeyword = '';
-let adminMailGroup = 'default';
 let adminPublicApiAuthState = null;
 let adminPublicApiActionMode = 'generate';
 let adminSelectedPublicApiKeyId = '';
 let adminPublicApiModalCompleted = false;
 let adminPublicApiDeleteTargetKey = null;
-let mailViewState = {
-    status: null,
-    mails: [],
-    selectedId: '',
-    query: '',
-    sidebarCollapsed: false,
-    restorePositionOnce: false,
-    mode: 'inbox',
-    currentMail: null,
-    folder: 'all',
-    isSending: false,
-    inboxTotal: 0,
-    unreadTotal: 0,
-    sentTotal: 0,
-    inboxRequestId: 0,
-    detailRequestId: 0
-};
-let mailEntryAvailable = false;
-let mailEntryVisibilityPromise = null;
-const MAIL_SIDEBAR_COLLAPSED_KEY = 'nexora_mail_sidebar_collapsed';
-const MAIL_SELECTED_ID_KEY = 'nexora_mail_selected_id';
-const MAIL_LIST_SCROLL_KEY = 'nexora_mail_list_scroll';
-const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
 const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
@@ -1217,8 +519,6 @@ const BROWSER_MODEL_CONFIG_SYNC_MS = 25000;
 const MODAL_STACK_BASE_Z = 12000;
 const MODAL_STACK_STEP_Z = 20;
 let modalStackCounter = 0;
-let mailRefreshInFlight = false;
-let mailDeferredEventState = null;
 let browserSyncSocket = null;
 let browserSyncReconnectTimer = null;
 let browserSyncPingTimer = null;
@@ -1229,11 +529,6 @@ let chatModelConfigSyncState = {
     version: '',
     inFlight: false,
     pending: false
-};
-let mailNotifyState = {
-    lastOpenTs: 0,
-    newCount: 0,
-    initialized: false
 };
 let tokenMiniState = {
     conversationId: null,
@@ -1273,40 +568,16 @@ let tokenBudgetTooltipState = {
     target: null,
     lastText: ''
 };
-let clientToolPollTimer = null;
-let clientToolPollInFlight = false;
-let clientToolWssDraining = false;
-const clientToolWssQueue = [];
-const clientToolHandledRequestIds = new Set();
-const clientJsCanvasRequestMap = new Map();
-const CLIENT_TOOL_POLL_MIN_MS = 700;
-const CLIENT_TOOL_POLL_MAX_MS = 6000;
-const CLIENT_TOOL_POLL_NO_CONV_MS = 5000;
-const CLIENT_TOOL_POLL_ERROR_MS = 3500;
-const CLIENT_TOOL_POLL_HIT_MS = 220;
-const CLIENT_TOOL_PULL_WAIT_MS = 12000;
 const MODEL_CONTEXT_REFRESH_DELAY_MS = 1200;
 const MODEL_CONTEXT_RELOAD_DELAY_MS = 12000;
-let clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
 let modelOptionsDockState = null;
 let modelSelectListenersBound = false;
 let modelContextRefreshScheduled = false;
 let isBatchRenderingMessages = false;
 let renderLastUserMessageIndexHint = -1;
-let userPromptEditState = {
-    index: null,
-    messageDiv: null,
-    bubbleEl: null,
-    editorEl: null,
-    hintEl: null,
-    editBtn: null,
-    originalText: '',
-    saving: false
-};
 const STREAM_STATUS_SYNC_INTERVAL_MS = 2500;
 const STREAM_ATTACH_RETRY_DELAY_MS = 350;
 const STREAM_ATTACH_RETRY_MAX = 12;
-let streamResumeRestoredOnce = false;
 let hoverProxyMessageEl = null;
 
 const streamStateController = getNexoraChatStreaming().createStreamStateController({
@@ -1343,6 +614,406 @@ const streamStatusSyncController = getNexoraChatStreaming().createStreamStatusSy
     getStoredRunningStreamStates,
     attachStreamSessionMonitor,
     getCurrentConversationId: () => currentConversationId
+});
+const userPromptEditController = getNexoraChatMessages().createUserPromptEditController({
+    getMessagesContainer: () => els.messagesContainer,
+    getCurrentConversationId: () => currentConversationId,
+    getChatInputDraftMaxLen: () => CHAT_INPUT_DRAFT_MAX_LEN,
+    showToast,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    renderMathSafe,
+    highlightCode,
+    ensureConversationPanelReadyForMutation,
+    fetchConversationMessagesSnapshot,
+    getLastUserMessageIndexFromMessages,
+    renderMessages,
+    renderConversationSnapshotFromServer,
+    findAssistantIndexAfterUserMessageInMessages,
+    sendMessage,
+    startRegenerate,
+    isChatMobileLayout,
+});
+const knowledgeController = getNexoraChatKnowledge().createKnowledgeController({
+    escapeHtml,
+    showToast,
+    buildNoteAnchorSnippet,
+    contentContainsSnippetLoose,
+    openKnowledgeAtChunk,
+    viewKnowledge,
+});
+const knowledgeSidebarController = getNexoraChatKnowledge().createKnowledgeSidebarController({
+    getElements: () => els,
+    getCurrentConversationId: () => currentConversationId,
+    getUploadedFileIds: () => uploadedFileIds,
+    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getKnowledgeMetaCache: () => knowledgeMetaCache,
+    setKnowledgeMetaCache: (value) => {
+        knowledgeMetaCache = (value && typeof value === 'object') ? value : {};
+    },
+    getBasisKnowledgeListCache: () => basisKnowledgeListCache,
+    setBasisKnowledgeListCache: (items) => {
+        basisKnowledgeListCache = Array.isArray(items) ? items : [];
+    },
+    isKnowledgeVectorizationEnabled: () => knowledgeVectorizationEnabled,
+    setKnowledgeVectorizationEnabled: (enabled) => {
+        knowledgeVectorizationEnabled = !!enabled;
+    },
+    isBulkVectorizeRunning: () => bulkVectorizeRunning,
+    showToast,
+    viewKnowledge,
+    closeKnowledgeView,
+    updateFilePreview,
+    showPinContextMenu,
+    vectorizeKnowledgeTitle,
+    getVectorizeTasks: () => knowledgeVectorController.getVectorizeTasks(),
+    registerModalBackdropStacking,
+    bindBackdropSafeClose,
+    handleBackdropStackingChange,
+    showConfirm: (...args) => window.showConfirm(...args),
+});
+const knowledgeVectorController = getNexoraChatKnowledge().createKnowledgeVectorController({
+    getElements: () => els,
+    getCurrentConversationId: () => currentConversationId,
+    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getKnowledgeMetaCache: () => knowledgeMetaCache,
+    isKnowledgeVectorizationEnabled: () => knowledgeVectorizationEnabled,
+    setKnowledgeVectorizationEnabled: (enabled) => {
+        knowledgeVectorizationEnabled = !!enabled;
+    },
+    setBulkVectorizeRunning: (running) => {
+        bulkVectorizeRunning = !!running;
+    },
+    showToast,
+    confirmModalAsync,
+    syncBulkVectorizeButtonVisibility,
+    loadKnowledge,
+    escapeCssSelector,
+    createKnowledgeVectorizeTask,
+    pollKnowledgeVectorTask,
+});
+const knowledgeWorkspaceController = getNexoraChatKnowledge().createKnowledgeWorkspaceController({
+    getKnowledgeWorkspaceReturnContext: () => knowledgeEditorControllerState.workspaceReturnContext,
+    getCurrentUsername: () => currentUsername,
+});
+const knowledgeSettingsController = getNexoraChatKnowledge().createKnowledgeSettingsController({
+    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getCurrentUsername: () => currentUsername,
+    ensureCurrentUser: checkUserRole,
+    getActiveWorkspaceKnowledgeContext,
+    getWorkspaceKnowledgeRequestFields,
+    appendWorkspaceKnowledgeQuery,
+    getKnowledgeMetaCache: () => knowledgeMetaCache,
+    getCurrentConversationId: () => currentConversationId,
+    showToast,
+    viewKnowledge,
+    loadKnowledge,
+    loadVectorChunks,
+    resetVectorProgressUI,
+    setVectorStatus,
+    getVectorizeTitle: () => knowledgeVectorController.getVectorizeTitle(),
+    setVectorizeTitle: (title) => knowledgeVectorController.setVectorizeTitle(title),
+});
+const clientToolController = getNexoraChatToolCanvas().createClientToolController({
+    getCurrentConversationId: () => currentConversationId,
+});
+const fileUploadController = getNexoraChatFiles().createFileUploadController({
+    getElements: () => els,
+    showToast,
+    normalizeUploadFile,
+    isImageLikeFile,
+    readImageAsDataUrl,
+    updateFilePreview,
+    updateSendButtonState,
+    loadCloudFiles,
+    getUploadedFileIds: () => uploadedFileIds,
+    setIsUploadingFiles: (value) => {
+        isUploadingFiles = !!value;
+    },
+});
+const fileCenterUploadController = getNexoraChatFiles().createFileCenterUploadController({
+    escapeHtml,
+    showToast,
+    copyTextToClipboardSafe,
+    handleFileUploadFiles: (...args) => fileUploadController.handleFileUploadFiles(...args),
+    loadFileCenterFiles,
+    normalizeFileCenterPath,
+    getFileCenterCurrentPath: () => fileCenterState.currentPath,
+});
+const toolEventController = getNexoraChatTools().createToolEventController({
+    escapeHtml,
+    placeCanvasCardsBelowToolChain,
+    syncInteractiveCardsBelowToolChain,
+});
+const toolResultController = getNexoraChatTools().createToolResultController({
+    getCurrentConversationId: () => currentConversationId,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    renderMathSafe,
+    highlightCode,
+    syncGeneratedImageViewportLimit,
+    appendToolEvent: (...args) => toolEventController.appendToolEvent(...args),
+    renameToolUsageRow: (...args) => toolEventController.renameToolUsageRow(...args),
+    setToolUsageStatus: (...args) => toolEventController.setToolUsageStatus(...args),
+    scrollToolOutputToBottom: (...args) => toolEventController.scrollToolOutputToBottom(...args),
+    scheduleToolAutoCollapse: (...args) => toolEventController.scheduleToolAutoCollapse(...args),
+    maybeRenderCanvasFromJsExecuteResult,
+});
+const messagesController = getNexoraChatMessages().createMessagesController({
+    getMessagesContainer: () => els.messagesContainer,
+    getCurrentConversationId: () => currentConversationId,
+    getConversationStreamState,
+    normalizeStreamMessageIndex,
+    readMessageRenderIndex,
+    buildIndexedMessageRows,
+    getNextVisibleMessageIndex,
+    getRenderLastUserMessageIndexHint: () => renderLastUserMessageIndexHint,
+    getIsBatchRenderingMessages: () => isBatchRenderingMessages,
+    getLastUserMessageIndexFromMessages,
+    setRenderLastUserMessageIndexHint: (index) => {
+        renderLastUserMessageIndexHint = index;
+    },
+    setIsBatchRenderingMessages: (value) => {
+        isBatchRenderingMessages = !!value;
+    },
+    refreshConversationImageHistoryFlag,
+    clearHoverProxyMessage,
+    renderWelcomeScreen,
+    syncLearningHeaderMode,
+    clearLearningWelcomeState,
+    captureMessagesScrollAnchor,
+    restoreMessagesScrollAnchor,
+    refreshLastUserPromptEditButtons,
+    getShouldAutoScroll: () => shouldAutoScroll,
+    scrollMessagesToBottomNow,
+    setMessagesLastObservedScrollTop: (value) => {
+        __messagesLastObservedScrollTop = Number(value || 0);
+    },
+    pinMessagesToBottomFor,
+    getMessagesBottomPinUntilTs: () => __messagesBottomPinUntilTs,
+    setMessagesBottomPinPendingRestoreBehavior: (value) => {
+        __messagesBottomPinPendingRestoreBehavior = value;
+    },
+    notifyLearningSidebarBridge,
+    renderTurnIndicator,
+    updateMessageModelBadge,
+    isCurrentConversation,
+    hideTurnListPopup,
+    markTurnIndicatorLayoutDirty,
+    getMessageElementByIndex,
+    openImageViewer,
+    formatFileSize,
+    escapeHtml,
+    collectContentMarkdownBeforeNode,
+    resetUserPromptInlineEditor,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    renderMathSafe,
+    renderLongtermHookBlock,
+    appendReasoningThinkingBlock,
+    updateWebSearchStatus,
+    appendSearchMeta,
+    resolveToolNameFromEvent,
+    appendAddBasisView,
+    allocateToolCallId,
+    rememberJsExecuteCanvasCall,
+    finalizeToolCallBadge,
+    extractLearningCardPayload,
+    appendLearningCardStep,
+    updateLastToolResult,
+    applyLongtermPlanFromText,
+    updateMessageDivTools,
+    appendErrorEvent,
+    extractStandaloneSystemErrorMessage,
+    highlightCode,
+    appendLearningCardsToContent,
+    appendQuestionStep,
+    appendPuzzleStep,
+    readMessageIoTokens,
+    safeTokenInt,
+    buildVersionNavigation,
+    rememberVisibleMessageInWindow,
+    appendTurnIndicatorLine,
+});
+const messageActionsController = getNexoraChatMessages().createMessageActionsController({
+    getCurrentConversationId: () => currentConversationId,
+    getSelectedModelId: () => selectedModelId,
+    getModelCatalog: () => modelCatalog,
+    getLearningModeEnabled: () => learningModeEnabled,
+    getCurrentConversationMode: () => currentConversationMode,
+    getCurrentConversationLongtermState: () => currentConversationLongtermState,
+    getLearningReaderContextSnapshot: () => learningReaderContextSnapshot,
+    getTokenBudgetState: () => tokenBudgetState,
+    getElements: () => els,
+    getShouldAutoScroll: () => shouldAutoScroll,
+    setIsGenerating: (value) => {
+        isGenerating = !!value;
+    },
+    setCurrentAbortController: (controller) => {
+        currentAbortController = controller;
+    },
+    setPendingRegenerateFilter: (value) => {
+        pendingRegenerateFilter = value;
+    },
+    showToast,
+    showConfirm: (...args) => {
+        if (typeof window.showConfirm !== 'function') {
+            throw new Error('showConfirm 未初始化');
+        }
+
+        return window.showConfirm(...args);
+    },
+    copyTextToClipboardSafe,
+    ensureConversationPanelReadyForMutation,
+    syncConversationMessagesFromServer,
+    loadConversations,
+    loadKnowledge,
+    loadModels,
+    syncGenerationStateForCurrentConversation,
+    isConversationStreamRunning,
+    fetchConversationMessagesSnapshot,
+    renderMessages,
+    buildLearningReaderContextBlocks,
+    getToolsMode,
+    isDebugConsoleEnabled,
+    appendDebugConsoleEntry,
+    consumeForceContextCompressionOnce,
+    maybeConfirmContextCompressionBeforeSend,
+    getMessageElementByIndex,
+    buildAttachmentsPayloadFromMessage,
+    updateSendButtonState,
+    clearActiveStreamResumeState,
+    setConversationStreamState,
+    isCurrentConversation,
+    beginTokenMiniStreaming,
+    applyRegenerateStreamDomWindow,
+    resetAssistantMessageForLiveStream,
+    readErrorMessageFromResponse,
+    saveActiveStreamResumeState,
+    markStreamControllerDetachOnly,
+    isSseResponse,
+    isTerminalStreamSessionChunk,
+    markConversationStreamFinished,
+    patchActiveStreamResumeState,
+    jsonParseSafe,
+    applyPromptTokenProfileChunk,
+    appendDebugTraceChunk,
+    stripHistoryTimeMarkerEchoForStream,
+    createContentSpan,
+    renderStreamingContentSegment,
+    pinMessagesToBottomFor,
+    updateMessageDivContent,
+    updateMessageDivThinking,
+    updateMessageDivTools,
+    yieldToolStreamPaintForChunk,
+    onTokenStreamUsageChunk,
+    applyUsageChunkToBadgeState,
+    updateMessageModelBadge,
+    appendErrorEvent,
+    scheduleLearningSidebarBridgeNotify,
+    isLikelyRetryableNetworkErrorText,
+    finalizeMessageRenderForIndex,
+    resolveAssistantStreamMessageDiv,
+    renderAssistantTerminalErrorMessage,
+    removeConversationStreamState,
+    getConversationStreamState,
+    shouldAutoAttachDetachedStream,
+    attachDetachedStreamConsumer,
+    finishTokenMiniStreaming,
+    refreshConversationImageHistoryFlag,
+    applyTokenBudgetFromConversationMessages,
+    refreshTokenMiniForConversation,
+});
+const streamReconnectController = getNexoraChatStreamReconnect().createStreamReconnectController({
+    getMessagesContainer: () => els.messagesContainer,
+    getConversationTitleElement: () => els.conversationTitle,
+    getCurrentConversationId: () => currentConversationId,
+    setCurrentConversationId: (conversationId) => {
+        currentConversationId = conversationId;
+    },
+    getIsGenerating: () => isGenerating,
+    getCurrentAbortController: () => currentAbortController,
+    setCurrentAbortController: (controller) => {
+        currentAbortController = controller;
+    },
+    getCurrentConversationMode: () => currentConversationMode,
+    getCurrentConversationLongtermState: () => currentConversationLongtermState,
+    setCurrentConversationLongtermState: (state) => {
+        currentConversationLongtermState = state;
+    },
+    getShouldAutoScroll: () => shouldAutoScroll,
+    getTokenMiniStreamOutput: () => tokenMiniState.streamOutput,
+    getTokenMiniEstimatedStreamOutput: () => tokenMiniState.estimatedStreamOutput,
+    loadActiveStreamResumeState,
+    patchActiveStreamResumeState,
+    clearActiveStreamResumeState,
+    normalizeStreamMessageIndex,
+    readStreamRegenerateFlag,
+    readStreamAssistantIndexFromMeta,
+    readStreamRegenerateIndexFromMeta,
+    stripHistoryTimeMarkerEchoForStream,
+    getConversationStreamState,
+    setConversationStreamState,
+    moveConversationStreamState,
+    markConversationStreamFinished,
+    isTerminalStreamSessionChunk,
+    shouldAutoAttachDetachedStream,
+    attachDetachedStreamConsumer,
+    loadConversation,
+    loadConversations,
+    loadKnowledge,
+    syncNotesForConversation,
+    noteTokenMiniConversationId,
+    syncGenerationStateForCurrentConversation,
+    syncLocalConversationModeFlags,
+    beginTokenMiniStreaming,
+    finishTokenMiniStreaming,
+    applyRegenerateStreamDomWindow,
+    appendMessage,
+    resetAssistantMessageForLiveStream,
+    createContentSpan,
+    createThinkingBlock,
+    resolveReasoningThinkingBlockForAppend,
+    markReasoningThinkingBlockLive,
+    readReasoningContentRaw,
+    buildReasoningAppendText,
+    updateThinkingBlockSummary,
+    renderStreamingMarkdownWithNewTabLinks,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    highlightCode,
+    replayStreamPrefillChunks,
+    updateMessageDivTools,
+    appendLearningCardStep,
+    appendQuestionStep,
+    appendPuzzleStep,
+    rememberToolArgsDeltaSeen,
+    hasToolArgsDeltaSeen,
+    yieldToolStreamPaintForChunk,
+    appendDebugTraceChunk,
+    appendErrorEvent,
+    renderAssistantTerminalErrorMessage,
+    renderConversationSnapshotFromServer,
+    getStreamingModelBadgeName,
+    updateMessageModelBadge,
+    syncStreamingModelBadgeEstimate,
+    finalizeMessageRenderForIndex,
+    collapseReasoningBlocksForMessage,
+    collapseModelBadgeForMessage,
+    applyLongtermPlanFromText,
+    normalizeLongtermState,
+    renderLongtermPlanPanel,
+    applyPromptTokenProfileChunk,
+    onTokenStreamTextChunk,
+    onTokenStreamReasoningChunk,
+    onTokenStreamToolArgsChunk,
+    onTokenStreamUsageChunk,
+    safeTokenInt,
+    pinMessagesToBottomFor,
+    scheduleLearningSidebarBridgeNotify,
+    showToast,
+    isLikelyRetryableNetworkErrorText,
+    waitForStreamServerFinalized,
 });
 const streamLifecycleController = getNexoraChatStreamLifecycle().createStreamLifecycleController({
     attachRetryDelayMs: STREAM_ATTACH_RETRY_DELAY_MS,
@@ -1383,7 +1054,7 @@ const conversationListController = getNexoraChatConversations().createConversati
     showToast,
     isChatMobileLayout,
     showPinContextMenu,
-    getCurrentViewingKnowledge: () => currentViewingKnowledge,
+    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
     closeKnowledgeView,
     markConversationStreamRead,
     loadConversation,
@@ -1443,11 +1114,120 @@ const conversationNavigationController = getNexoraChatConversations().createConv
     attachRunningStreamToCurrentConversation,
     getCurrentConversationId: () => currentConversationId
 });
-const adminSystemControlsController = getNexoraChatAdmin().createAdminSystemControlsController({
+const adminSystemControlsController = getNexoraChatAdminSystem().createAdminSystemControlsController({
     normalizeModelProviderKey,
     compareModelProviderKeys,
     getModelProviderLabel,
     renderProviderIconHtml
+});
+const adminUsersController = getNexoraChatAdminUsers().createAdminUsersController({
+    escapeHtml,
+    showToast,
+    getCurrentUsername: () => currentUsername,
+    getDefaultAvatarDataUrl,
+    isNexoraMailEnabled,
+    confirmModalAsync,
+    loadAdminStats,
+    readAdminJsonResponse,
+    closeAddUserModal,
+});
+const adminSettingsTabsController = getNexoraChatAdmin().createAdminSettingsTabsController({
+    closeQuotaAdjustPopover: () => _closeQuotaAdjustPopover(),
+    getSettingsModal: () => document.getElementById('settingsModal'),
+    resetAdminUserFilter: () => {
+        resetAdminUserFilterKeyword();
+        const filterInput = document.getElementById('adminUserFilterInput');
+
+        if (filterInput) filterInput.value = '';
+    },
+    loadAdminUsersList,
+    loadAdminStats,
+    loadAdminSystemSettings,
+    resetAdminMailFilter: () => {
+        resetAdminMailUserFilterKeyword();
+        const filterInput = document.getElementById('adminMailUserFilterInput');
+
+        if (filterInput) filterInput.value = '';
+    },
+    loadAdminMailUsersList,
+    loadServerQuotaSettings,
+    loadAdminModelConfig,
+    resetAdminGenImageApiFilter: () => {
+        adminGenImageApiFilterKeyword = '';
+        const filterInput = document.getElementById('adminGenImageApiSearchInput');
+
+        if (filterInput) filterInput.value = '';
+    },
+    loadAdminGenImageApis,
+    loadAdminPublicApiAuth,
+    loadAdminChromaStats,
+    loadSkillSettings,
+});
+const adminSettingsEventsController = getNexoraChatAdmin().createAdminSettingsEventsController({
+    setAdminUserFilterKeyword(value) {
+        setAdminUserFilterKeyword(value);
+    },
+    renderAdminUsersList,
+    renderAdminMailCreateForm,
+    setAdminMailUserFilterKeyword,
+    renderAdminMailUsersList,
+    setAdminMailGroup,
+    loadAdminMailUsersList,
+    openProviderEditor,
+    openModelEditor,
+    setAdminModelSearchKeyword(value) {
+        adminModelSearchKeyword = String(value || '').trim();
+    },
+    renderAdminModelConfig,
+    openAdminGenImageApiEditor,
+    setAdminGenImageApiFilterKeyword(value) {
+        adminGenImageApiFilterKeyword = String(value || '').trim().toLowerCase();
+    },
+    renderAdminGenImageApis,
+    loadAdminQuotaDisplayUnitPreference,
+    setAdminQuotaDisplayUnit(value) {
+        adminQuotaDisplayUnit = value;
+    },
+    normalizeAdminQuotaDisplayUnit,
+    saveAdminQuotaDisplayUnitPreference,
+    hasAdminServerQuotaProviders() {
+        return Array.isArray(adminServerQuotaProvidersCache) && adminServerQuotaProvidersCache.length > 0;
+    },
+    isCurrentUserAdmin() {
+        return currentUserRole === 'admin';
+    },
+    loadServerQuotaSettings,
+    openAdminPublicApiKeyModal(mode) {
+        return window.openAdminPublicApiKeyModal(mode);
+    },
+    revokeAdminPublicApiKey,
+    saveAdminPublicApiSettings,
+    saveAdminPublicApiGlobalSettings,
+    initAdminUserTokenStatsControls,
+    bindBackdropSafeClose,
+    closeAdminPublicApiKeyModal() {
+        return window.closeAdminPublicApiKeyModal();
+    },
+    submitAdminPublicApiKeyAction,
+    closeAdminTextConfirmModal() {
+        return window.closeAdminTextConfirmModal();
+    },
+    closeAdminConfigModal() {
+        return window.closeAdminConfigModal();
+    },
+    syncAdminProviderApiTypeFields,
+    saveAdminConfigModal,
+    closeAdminOllamaModelStatusModal,
+    refreshAdminOllamaModelStatus() {
+        const state = adminOllamaStatusModalState || {};
+
+        if (state.provider && state.model) {
+            return loadAdminOllamaModelStatus(state.provider, state.model);
+        }
+
+        return undefined;
+    },
+    toggleAdminOllamaModelStatus,
 });
 let isMessageInputComposing = false;
 let selectedModelId = null;
@@ -2680,6 +2460,10 @@ function getNexoraChatStreaming() {
     return getNexoraChatSharedModule('streaming');
 }
 
+function getNexoraChatStreamReconnect() {
+    return getNexoraChatSharedModule('streamReconnect');
+}
+
 function getNexoraChatStreamLifecycle() {
     return getNexoraChatSharedModule('streamLifecycle');
 }
@@ -2692,12 +2476,36 @@ function getNexoraChatAdmin() {
     return getNexoraChatSharedModule('admin');
 }
 
+function getNexoraChatAdminUsers() {
+    return getNexoraChatSharedModule('adminUsers');
+}
+
+function getNexoraChatAdminSystem() {
+    return getNexoraChatSharedModule('adminSystem');
+}
+
 function getNexoraChatMessageWindow() {
     return getNexoraChatSharedModule('messageWindow');
 }
 
 function getNexoraChatMessageVersions() {
     return getNexoraChatSharedModule('messageVersions');
+}
+
+function getNexoraChatMessages() {
+    return getNexoraChatSharedModule('messages');
+}
+
+function getNexoraChatTools() {
+    return getNexoraChatSharedModule('tools');
+}
+
+function getNexoraChatToolCanvas() {
+    return getNexoraChatSharedModule('toolCanvas');
+}
+
+function getNexoraChatKnowledge() {
+    return getNexoraChatSharedModule('knowledge');
 }
 
 function getNexoraChatFiles() {
@@ -2889,9 +2697,7 @@ function normalizeLatexSyntax(text) {
     src = normalizeBrokenDisplayDelimiters(src);
 
     // 清理零宽字符、软换行等不可见符，避免污染数学解析。
-    src = src
-        .replace(/[\u200B-\u200F\u2060\uFEFF\u00AD]/g, '')
-        .replace(/[\uE000-\uF8FF]/g, ''); // Private Use Area（常见于复制后的脏符号）
+    src = removeInvisibleTextChars(src).replace(PRIVATE_USE_AREA_PATTERN, ''); // Private Use Area（常见于复制后的脏符号）
 
     // 先处理金额符号，防止 `$1,000` 触发 LaTeX 分隔符并吞掉后续 Markdown。
     src = escapeLikelyCurrencyDollars(src);
@@ -2911,7 +2717,7 @@ function normalizeLatexSyntax(text) {
     }
 
     // 常见脏字符（PUA）里出现的“不等于”占位，替换为正常字符。
-    src = src.replace(/\uE020/g, '≠');
+    src = src.replaceAll(DIRTY_NOT_EQUAL_PLACEHOLDER, '≠');
 
     // OCR/复制常见矩阵换行误写：\0、\1 通常应为 \\（行分隔）。
     src = src.replace(/(^|[^\\])\\0/g, '$1\\\\');
@@ -3018,56 +2824,16 @@ function wrapBareLatexFragmentsOutsideMath(text) {
     }).join('');
 }
 
-function splitKnowledgeReferencePayload(payload) {
-    const raw = String(payload || '').trim();
-    const commaIndex = raw.indexOf(',');
-
-    if (commaIndex < 0) {
-        return {
-            source: raw,
-            snippet: ''
-        };
-    }
-
-    return {
-        source: raw.slice(0, commaIndex).trim(),
-        snippet: raw.slice(commaIndex + 1).trim()
-    };
+function splitKnowledgeReferencePayload(...args) {
+    return knowledgeController.splitKnowledgeReferencePayload(...args);
 }
 
-function clipKnowledgeReferenceLabel(text, limit = 18) {
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-
-    if (value.length <= limit) {
-        return value;
-    }
-
-    return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`;
+function clipKnowledgeReferenceLabel(...args) {
+    return knowledgeController.clipKnowledgeReferenceLabel(...args);
 }
 
-function renderKnowledgeReferenceTag(payload) {
-    const parsed = splitKnowledgeReferencePayload(payload);
-    const source = String(parsed.source || '').trim();
-    const snippet = String(parsed.snippet || '').trim();
-
-    if (!source) {
-        return escapeHtml(`[kb]${String(payload || '')}[/kb]`);
-    }
-
-    const label = clipKnowledgeReferenceLabel(source);
-    const title = snippet ? `知识来源：${source}\n${snippet}` : `知识来源：${source}`;
-
-    return [
-        '<button type="button" class="kb-reference" data-kb-source="',
-        escapeHtml(source),
-        '" data-kb-snippet="',
-        escapeHtml(snippet),
-        '" title="',
-        escapeHtml(title),
-        '"><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>',
-        escapeHtml(label),
-        '</span></button>'
-    ].join('');
+function renderKnowledgeReferenceTag(...args) {
+    return knowledgeController.renderKnowledgeReferenceTag(...args);
 }
 
 function normalizeFileReferencePath(fileRef) {
@@ -3148,18 +2914,8 @@ function renderFileReferenceTag(payload) {
     ].join('');
 }
 
-function protectKnowledgeReferencesInMarkdown(text) {
-    const refs = [];
-    const protectedText = String(text || '').replace(/\[kb\]([\s\S]*?)\[\/kb\]/g, (_match, payload) => {
-        const index = refs.length;
-        refs.push(renderKnowledgeReferenceTag(payload));
-        return `@@NEXORA_KB_REF_${index}@@`;
-    });
-
-    return {
-        text: protectedText,
-        refs
-    };
+function protectKnowledgeReferencesInMarkdown(...args) {
+    return knowledgeController.protectKnowledgeReferencesInMarkdown(...args);
 }
 
 function protectFileReferencesInMarkdown(text) {
@@ -3176,14 +2932,8 @@ function protectFileReferencesInMarkdown(text) {
     };
 }
 
-function restoreKnowledgeReferencesInHtml(html, refs = []) {
-    let output = String(html || '');
-
-    refs.forEach((refHtml, index) => {
-        output = output.split(`@@NEXORA_KB_REF_${index}@@`).join(refHtml);
-    });
-
-    return output;
+function restoreKnowledgeReferencesInHtml(...args) {
+    return knowledgeController.restoreKnowledgeReferencesInHtml(...args);
 }
 
 function restoreFileReferencesInHtml(html, refs = []) {
@@ -3234,1247 +2984,188 @@ function rewriteCitationRefsMarkdown(text, citationMap) {
     });
 }
 
-function normalizeClientJsTimeoutMs(v, fallback = 8000) {
-    const raw = Number(v);
-    const n = Number.isFinite(raw) ? Math.floor(raw) : Math.floor(fallback);
-    return Math.max(500, Math.min(30000, n));
+function normalizeClientJsTimeoutMs(...args) {
+    return getNexoraChatToolCanvas().normalizeClientJsTimeoutMs(...args);
 }
 
-function normalizeClientJsCode(rawCode) {
-    let code = String(rawCode || '');
-    if (!code) return '';
-    code = code.replace(/^\uFEFF/, '').replace(/\u2028|\u2029/g, '\n');
-    const trimmed = code.trim();
-
-    try {
-        const parsed = JSON.parse(trimmed);
-        if (typeof parsed === 'string') {
-            code = parsed;
-        } else if (parsed && typeof parsed === 'object' && typeof parsed.code === 'string') {
-            code = parsed.code;
-        }
-    } catch (_) {
-        // keep raw string as-is
-    }
-
-    code = String(code || '').replace(/^\uFEFF/, '').replace(/\u2028|\u2029/g, '\n');
-    const fenced = code.trim().match(/^```(?:javascript|js|jsx|typescript|ts)?\s*([\s\S]*?)\s*```$/i);
-    if (fenced) {
-        code = fenced[1];
-    }
-
-    // normalize common LLM typography that breaks JS parser
-    code = code
-        .replace(/[“”]/g, '"')
-        .replace(/[‘’]/g, "'")
-        .replace(/\u3000/g, ' ')
-        .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
-
-    return code.trim();
+function normalizeClientJsCode(...args) {
+    return getNexoraChatToolCanvas().normalizeClientJsCode(...args);
 }
 
-function parseJsonObjectMaybe(raw) {
-    if (raw && typeof raw === 'object') return raw;
-    const text = String(raw || '').trim();
-    if (!text) return null;
-    try {
-        const parsed = JSON.parse(text);
-        return (parsed && typeof parsed === 'object') ? parsed : null;
-    } catch (_) {
-        return null;
-    }
+function parseJsonObjectMaybe(...args) {
+    return getNexoraChatToolCanvas().parseJsonObjectMaybe(...args);
 }
 
-const CLIENT_JS_THREE_CDN_URLS = [
-    'https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js',
-    'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js',
-    'https://unpkg.com/three@0.152.2/build/three.min.js'
-];
-let clientJsThreeLoadPromise = null;
-
-function detectThreeUsageInJsCode(code) {
-    const src = String(code || '');
-    if (!src.trim()) return false;
-    if (/\bTHREE\b/.test(src)) return true;
-    if (/\benableThreeOrbit\b|\battachOrbitControl\b/.test(src)) return true;
-    if (/\bWebGLRenderer\b/.test(src)) return true;
-    if (/\bPerspectiveCamera\b|\bOrthographicCamera\b/.test(src)) return true;
-    if (/\bScene\b|\bBufferGeometry\b|\bMesh\b/.test(src)) return true;
-    return false;
+function detectThreeUsageInJsCode(...args) {
+    return getNexoraChatToolCanvas().detectThreeUsageInJsCode(...args);
 }
 
-function detectPlot3DUsageInJsCode(code) {
-    const src = String(code || '');
-    if (!src.trim()) return false;
-    if (/\bPlot3D\b/.test(src)) return true;
-    if (/\bsurface3d\b/i.test(src)) return true;
-    if (/\bline3d\b/i.test(src)) return true;
-    return false;
+function detectPlot3DUsageInJsCode(...args) {
+    return getNexoraChatToolCanvas().detectPlot3DUsageInJsCode(...args);
 }
 
-function extractRequestedJsLibs(context) {
-    const ctx = (context && typeof context === 'object') ? context : {};
-    const raw = (ctx.libs != null) ? ctx.libs : (ctx.libraries != null ? ctx.libraries : ctx.lib);
-    const out = new Set();
-    if (Array.isArray(raw)) {
-        raw.forEach((item) => {
-            const v = String(item || '').trim().toLowerCase();
-            if (v) out.add(v);
-        });
-        return out;
-    }
-    if (typeof raw === 'string') {
-        raw.split(/[,\s|]+/g).forEach((item) => {
-            const v = String(item || '').trim().toLowerCase();
-            if (v) out.add(v);
-        });
-        return out;
-    }
-    if (raw && typeof raw === 'object') {
-        Object.keys(raw).forEach((k) => {
-            if (!raw[k]) return;
-            const v = String(k || '').trim().toLowerCase();
-            if (v) out.add(v);
-        });
-    }
-    return out;
+function extractRequestedJsLibs(...args) {
+    return getNexoraChatToolCanvas().extractRequestedJsLibs(...args);
 }
 
-function needsThreeJsForCanvas(code, context = {}) {
-    const libs = extractRequestedJsLibs(context);
-    if (libs.has('three') || libs.has('threejs') || libs.has('three.js')) return true;
-    return detectThreeUsageInJsCode(code);
+function needsThreeJsForCanvas(...args) {
+    return getNexoraChatToolCanvas().needsThreeJsForCanvas(...args);
 }
 
-function needsPlot3DHelper(code, context = {}) {
-    const libs = extractRequestedJsLibs(context);
-    if (libs.has('plot3d') || libs.has('matplot3d') || libs.has('matplotlib3d') || libs.has('mini3d')) return true;
-    return detectPlot3DUsageInJsCode(code);
+function needsPlot3DHelper(...args) {
+    return getNexoraChatToolCanvas().needsPlot3DHelper(...args);
 }
 
-function loadScriptByUrl(url) {
-    return new Promise((resolve, reject) => {
-        const u = String(url || '').trim();
-        if (!u) {
-            reject(new Error('empty script url'));
-            return;
-        }
-        const existing = Array.from(document.querySelectorAll('script[src]'))
-            .find((node) => String(node.getAttribute('src') || '').includes(u));
-        if (existing) {
-            if (window.THREE) {
-                resolve(window.THREE);
-                return;
-            }
-            existing.addEventListener('load', () => resolve(window.THREE), { once: true });
-            existing.addEventListener('error', () => reject(new Error(`script load failed: ${u}`)), { once: true });
-            return;
-        }
-
-        const script = document.createElement('script');
-        script.src = u;
-        script.async = true;
-        script.onload = () => resolve(window.THREE);
-        script.onerror = () => reject(new Error(`script load failed: ${u}`));
-        document.head.appendChild(script);
-    });
+function loadScriptByUrl(...args) {
+    return getNexoraChatToolCanvas().loadScriptByUrl(...args);
 }
 
-async function ensureClientJsThreeLoaded() {
-    if (window.THREE) return window.THREE;
-    if (clientJsThreeLoadPromise) return clientJsThreeLoadPromise;
-    clientJsThreeLoadPromise = (async () => {
-        let lastErr = null;
-        for (const url of CLIENT_JS_THREE_CDN_URLS) {
-            try {
-                await loadScriptByUrl(url);
-                if (window.THREE) return window.THREE;
-            } catch (e) {
-                lastErr = e;
-            }
-        }
-        throw (lastErr || new Error('Three.js load failed'));
-    })();
-    try {
-        return await clientJsThreeLoadPromise;
-    } finally {
-        if (!window.THREE) clientJsThreeLoadPromise = null;
-    }
+async function ensureClientJsThreeLoaded(...args) {
+    return getNexoraChatToolCanvas().ensureClientJsThreeLoaded(...args);
 }
 
-function createPlot3DHelper(canvas, ctx) {
-    const width = Number((canvas && canvas.width) || 640);
-    const height = Number((canvas && canvas.height) || 360);
-    const project = (x, y, z, opts = {}) => {
-        const yaw = Number(opts.yaw != null ? opts.yaw : -0.78);
-        const pitch = Number(opts.pitch != null ? opts.pitch : 0.62);
-        const scale = Number(opts.scale != null ? opts.scale : Math.min(width, height) * 0.22);
-        const ox = Number(opts.ox != null ? opts.ox : width * 0.5);
-        const oy = Number(opts.oy != null ? opts.oy : height * 0.56);
-        const cy = Math.cos(yaw);
-        const sy = Math.sin(yaw);
-        const cp = Math.cos(pitch);
-        const sp = Math.sin(pitch);
-        const xr = x * cy - z * sy;
-        const zr = x * sy + z * cy;
-        const yr = y * cp - zr * sp;
-        return {
-            x: ox + xr * scale,
-            y: oy - yr * scale
-        };
-    };
-    const clear = (bg = '#ffffff') => {
-        ctx.save();
-        ctx.fillStyle = String(bg || '#ffffff');
-        ctx.fillRect(0, 0, width, height);
-        ctx.restore();
-    };
-    const line3d = (points = [], opts = {}) => {
-        const arr = Array.isArray(points) ? points : [];
-        if (arr.length < 2) return;
-        ctx.save();
-        ctx.strokeStyle = String(opts.color || '#0f172a');
-        ctx.lineWidth = Number(opts.width || 1.15);
-        ctx.beginPath();
-        arr.forEach((p, i) => {
-            const item = Array.isArray(p) ? p : [0, 0, 0];
-            const pt = project(Number(item[0] || 0), Number(item[1] || 0), Number(item[2] || 0), opts);
-            if (i === 0) ctx.moveTo(pt.x, pt.y);
-            else ctx.lineTo(pt.x, pt.y);
-        });
-        ctx.stroke();
-        ctx.restore();
-    };
-    const axes = (opts = {}) => {
-        const size = Number(opts.size || 1.6);
-        line3d([[-size, 0, 0], [size, 0, 0]], { ...opts, color: opts.xColor || '#e11d48' });
-        line3d([[0, -size, 0], [0, size, 0]], { ...opts, color: opts.yColor || '#2563eb' });
-        line3d([[0, 0, -size], [0, 0, size]], { ...opts, color: opts.zColor || '#16a34a' });
-    };
-    const surface = (fn, opts = {}) => {
-        if (typeof fn !== 'function') return;
-        const xMin = Number(opts.xMin != null ? opts.xMin : -2);
-        const xMax = Number(opts.xMax != null ? opts.xMax : 2);
-        const zMin = Number(opts.zMin != null ? opts.zMin : -2);
-        const zMax = Number(opts.zMax != null ? opts.zMax : 2);
-        const xSteps = Math.max(2, Math.min(120, Math.floor(Number(opts.xSteps != null ? opts.xSteps : 30))));
-        const zSteps = Math.max(2, Math.min(120, Math.floor(Number(opts.zSteps != null ? opts.zSteps : 30))));
-        const color = String(opts.color || '#334155');
-        const widthPx = Number(opts.width || 0.9);
-
-        const grid = [];
-        for (let i = 0; i <= xSteps; i += 1) {
-            const x = xMin + ((xMax - xMin) * (i / xSteps));
-            const row = [];
-            for (let j = 0; j <= zSteps; j += 1) {
-                const z = zMin + ((zMax - zMin) * (j / zSteps));
-                let y = 0;
-                try { y = Number(fn(x, z)); } catch (_) { y = 0; }
-                if (!Number.isFinite(y)) y = 0;
-                row.push([x, y, z]);
-            }
-            grid.push(row);
-        }
-
-        for (let i = 0; i <= xSteps; i += 1) {
-            line3d(grid[i], { ...opts, color, width: widthPx });
-        }
-        for (let j = 0; j <= zSteps; j += 1) {
-            const col = [];
-            for (let i = 0; i <= xSteps; i += 1) col.push(grid[i][j]);
-            line3d(col, { ...opts, color, width: widthPx });
-        }
-    };
-    return {
-        clear,
-        project,
-        line3d,
-        axes,
-        surface
-    };
+function createPlot3DHelper(...args) {
+    return getNexoraChatToolCanvas().createPlot3DHelper(...args);
 }
 
-function enforceCanvasDisplayAspect(canvas) {
-    if (!canvas) return;
-    const w = Math.max(1, Number(canvas.width || 0) || 1);
-    const h = Math.max(1, Number(canvas.height || 0) || 1);
-    canvas.style.width = '100%';
-    canvas.style.maxWidth = '100%';
-    canvas.style.height = 'auto';
-    canvas.style.aspectRatio = `${w} / ${h}`;
+function enforceCanvasDisplayAspect(...args) {
+    return getNexoraChatToolCanvas().enforceCanvasDisplayAspect(...args);
 }
 
-function clampNumber(v, min, max) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return min;
-    return Math.max(Number(min), Math.min(Number(max), n));
+function clampNumber(...args) {
+    return getNexoraChatToolCanvas().clampNumber(...args);
 }
 
-function normalizeThreeTargetVector(threeRef, rawTarget) {
-    const fallback = new threeRef.Vector3(0, 0, 0);
-    if (!rawTarget) return fallback;
-    if (rawTarget instanceof threeRef.Vector3) return rawTarget.clone();
-    if (Array.isArray(rawTarget) && rawTarget.length >= 3) {
-        const x = Number(rawTarget[0] || 0);
-        const y = Number(rawTarget[1] || 0);
-        const z = Number(rawTarget[2] || 0);
-        return new threeRef.Vector3(x, y, z);
-    }
-    if (typeof rawTarget === 'object') {
-        const x = Number(rawTarget.x || 0);
-        const y = Number(rawTarget.y || 0);
-        const z = Number(rawTarget.z || 0);
-        return new threeRef.Vector3(x, y, z);
-    }
-    return fallback;
+function normalizeThreeTargetVector(...args) {
+    return getNexoraChatToolCanvas().normalizeThreeTargetVector(...args);
 }
 
-function createThreeOrbitController(canvas, threeRef, options = {}) {
-    if (!canvas || !threeRef) {
-        throw new Error('enableThreeOrbit requires canvas and THREE');
-    }
-    const opts = (options && typeof options === 'object') ? options : {};
-    const camera = opts.camera;
-    if (!camera || !camera.position || typeof camera.lookAt !== 'function') {
-        throw new Error('enableThreeOrbit requires a valid THREE camera');
-    }
-    const scene = opts.scene || null;
-    const renderer = opts.renderer || null;
-    const target = normalizeThreeTargetVector(threeRef, opts.target);
-    const rotateSpeed = clampNumber(opts.rotateSpeed != null ? opts.rotateSpeed : 1.25, 0.2, 6);
-    const minPhi = clampNumber(opts.minPhi != null ? opts.minPhi : 0.08, 0.02, Math.PI * 0.48);
-    const maxPhi = clampNumber(opts.maxPhi != null ? opts.maxPhi : (Math.PI - 0.08), Math.PI * 0.52, Math.PI - 0.02);
-    const minRadius = clampNumber(opts.minRadius != null ? opts.minRadius : 0.2, 0.001, 1e7);
-    const maxRadius = clampNumber(opts.maxRadius != null ? opts.maxRadius : 5000, minRadius, 1e9);
-
-    const toSphericalFromCamera = () => {
-        const offset = new threeRef.Vector3().copy(camera.position).sub(target);
-        const radiusRaw = Number(offset.length());
-        const radius = clampNumber(Number.isFinite(radiusRaw) && radiusRaw > 0 ? radiusRaw : 3, minRadius, maxRadius);
-        const theta = Math.atan2(offset.x, offset.z);
-        const phiRaw = Math.acos(clampNumber(offset.y / radius, -1, 1));
-        const phi = clampNumber(phiRaw, minPhi, maxPhi);
-        return { radius, theta, phi };
-    };
-
-    let spherical = toSphericalFromCamera();
-    if (Number.isFinite(Number(opts.radius))) {
-        spherical.radius = clampNumber(Number(opts.radius), minRadius, maxRadius);
-    }
-    if (Number.isFinite(Number(opts.theta))) {
-        spherical.theta = Number(opts.theta);
-    }
-    if (Number.isFinite(Number(opts.phi))) {
-        spherical.phi = clampNumber(Number(opts.phi), minPhi, maxPhi);
-    }
-
-    const renderFn = (typeof opts.render === 'function')
-        ? opts.render
-        : (() => {
-            if (renderer && scene && typeof renderer.render === 'function') {
-                renderer.render(scene, camera);
-            }
-        });
-
-    const applyPose = () => {
-        const sinPhi = Math.sin(spherical.phi);
-        const x = target.x + spherical.radius * sinPhi * Math.sin(spherical.theta);
-        const y = target.y + spherical.radius * Math.cos(spherical.phi);
-        const z = target.z + spherical.radius * sinPhi * Math.cos(spherical.theta);
-        camera.position.set(x, y, z);
-        camera.lookAt(target);
-        try {
-            renderFn();
-        } catch (_) {
-            // ignore render callback errors
-        }
-    };
-
-    const state = {
-        pointerId: null,
-        dragging: false,
-        startX: 0,
-        startY: 0,
-        startTheta: spherical.theta,
-        startPhi: spherical.phi
-    };
-    const prevTouchAction = String(canvas.style.touchAction || '');
-    canvas.style.touchAction = 'none';
-
-    const onPointerDown = (ev) => {
-        if (!ev) return;
-        if (ev.pointerType === 'mouse' && Number(ev.button) !== 0) return;
-        state.dragging = true;
-        state.pointerId = ev.pointerId;
-        state.startX = Number(ev.clientX || 0);
-        state.startY = Number(ev.clientY || 0);
-        state.startTheta = spherical.theta;
-        state.startPhi = spherical.phi;
-        try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
-        ev.preventDefault();
-    };
-
-    const onPointerMove = (ev) => {
-        if (!state.dragging || !ev) return;
-        if (state.pointerId != null && ev.pointerId !== state.pointerId) return;
-        const dx = Number(ev.clientX || 0) - state.startX;
-        const dy = Number(ev.clientY || 0) - state.startY;
-        const refWidth = Math.max(180, Number(canvas.clientWidth || canvas.width || 360));
-        const refHeight = Math.max(180, Number(canvas.clientHeight || canvas.height || 220));
-        const thetaDelta = (dx / refWidth) * Math.PI * rotateSpeed;
-        const phiDelta = (dy / refHeight) * Math.PI * rotateSpeed;
-        spherical.theta = state.startTheta + thetaDelta;
-        spherical.phi = clampNumber(state.startPhi + phiDelta, minPhi, maxPhi);
-        applyPose();
-        ev.preventDefault();
-    };
-
-    const stopPointer = (ev) => {
-        if (!state.dragging) return;
-        if (ev && state.pointerId != null && ev.pointerId !== state.pointerId) return;
-        state.dragging = false;
-        if (ev && state.pointerId != null) {
-            try { canvas.releasePointerCapture(state.pointerId); } catch (_) {}
-        }
-        state.pointerId = null;
-    };
-
-    canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
-    window.addEventListener('pointermove', onPointerMove, { passive: false });
-    window.addEventListener('pointerup', stopPointer, { passive: true });
-    window.addEventListener('pointercancel', stopPointer, { passive: true });
-
-    applyPose();
-
-    return {
-        dispose() {
-            canvas.removeEventListener('pointerdown', onPointerDown);
-            window.removeEventListener('pointermove', onPointerMove);
-            window.removeEventListener('pointerup', stopPointer);
-            window.removeEventListener('pointercancel', stopPointer);
-            canvas.style.touchAction = prevTouchAction;
-        },
-        render: applyPose,
-        setRadius(nextRadius) {
-            spherical.radius = clampNumber(nextRadius, minRadius, maxRadius);
-            applyPose();
-        },
-        setTarget(nextTarget) {
-            const v = normalizeThreeTargetVector(threeRef, nextTarget);
-            target.set(v.x, v.y, v.z);
-            applyPose();
-        }
-    };
+function createThreeOrbitController(...args) {
+    return getNexoraChatToolCanvas().createThreeOrbitController(...args);
 }
 
-function detectCanvasUsageInJsCode(code) {
-    const src = String(code || '');
-    if (!src.trim()) return false;
-    if (detectThreeUsageInJsCode(src)) return true;
-    if (detectPlot3DUsageInJsCode(src)) return true;
-    if (/getContext\s*\(\s*['"`]2d['"`]\s*\)/i.test(src)) return true;
-    if (/createElement\s*\(\s*['"`]canvas['"`]\s*\)/i.test(src)) return true;
-    if (/querySelector\s*\(\s*['"`][^'"`]*canvas/i.test(src)) return true;
-    if (/getElementById\s*\(\s*['"`][^'"`]*canvas/i.test(src)) return true;
-    if (/\bcanvas\s*\./i.test(src)) return true;
-    if (/\bctx\s*\./i.test(src)) return true;
-    return false;
+function detectCanvasUsageInJsCode(...args) {
+    return getNexoraChatToolCanvas().detectCanvasUsageInJsCode(...args);
 }
 
-function detect2DContextUsageInJsCode(code) {
-    const src = String(code || '');
-    if (!src.trim()) return false;
-    if (detectPlot3DUsageInJsCode(src)) return true;
-    if (/getContext\s*\(\s*['"`]2d['"`]\s*\)/i.test(src)) return true;
-    if (/\bcontext\.ctx\b/.test(src)) return true;
-    if (/\bctx\.(?:fillRect|strokeRect|clearRect|beginPath|moveTo|lineTo|arc|fillText|strokeText|drawImage|save|restore|translate|rotate|scale|setTransform)\b/.test(src)) return true;
-    return false;
+function detect2DContextUsageInJsCode(...args) {
+    return getNexoraChatToolCanvas().detect2DContextUsageInJsCode(...args);
 }
 
-function normalizeCanvasDimension(value, fallback, min = 120, max = 2400) {
-    const raw = Number(value);
-    const n = Number.isFinite(raw) ? Math.floor(raw) : Math.floor(fallback);
-    return Math.max(min, Math.min(max, n));
+function normalizeCanvasDimension(...args) {
+    return getNexoraChatToolCanvas().normalizeCanvasDimension(...args);
 }
 
-function extractCanvasMetaFromJsPayload(payload) {
-    const p = (payload && typeof payload === 'object') ? payload : {};
-    const rawCode = String(p.code || '');
-    const code = normalizeClientJsCode(rawCode);
-    const context = (p.context && typeof p.context === 'object') ? p.context : {};
-    const timeoutMs = normalizeClientJsTimeoutMs(p.timeout_ms, 8000);
-    const width = normalizeCanvasDimension(
-        context.canvas_width != null ? context.canvas_width : context.width,
-        640
-    );
-    const height = normalizeCanvasDimension(
-        context.canvas_height != null ? context.canvas_height : context.height,
-        360
-    );
-    return {
-        usedCanvas: detectCanvasUsageInJsCode(code),
-        code,
-        rawCode,
-        codeNormalized: code !== rawCode,
-        context,
-        timeoutMs,
-        width,
-        height
-    };
+function extractCanvasMetaFromJsPayload(...args) {
+    return getNexoraChatToolCanvas().extractCanvasMetaFromJsPayload(...args);
 }
 
-function rememberClientJsCanvasMeta(requestId, meta) {
-    const rid = String(requestId || '').trim();
-    if (!rid || !meta || typeof meta !== 'object') return;
-    clientJsCanvasRequestMap.set(rid, { ...meta, ts: Date.now() });
-    if (clientJsCanvasRequestMap.size <= 400) return;
-    const keys = Array.from(clientJsCanvasRequestMap.keys());
-    for (let i = 0; i < 120; i += 1) {
-        const k = keys[i];
-        if (!k) break;
-        clientJsCanvasRequestMap.delete(k);
-    }
+function rememberClientJsCanvasMeta(...args) {
+    return getNexoraChatToolCanvas().rememberClientJsCanvasMeta(...args);
 }
 
-function findClientJsCanvasMetaFromResultPayload(resultPayload) {
-    const payload = (resultPayload && typeof resultPayload === 'object') ? resultPayload : null;
-    if (!payload) return null;
-    const rid = String(payload.request_id || '').trim();
-    if (!rid) return null;
-    return clientJsCanvasRequestMap.get(rid) || null;
+function findClientJsCanvasMetaFromResultPayload(...args) {
+    return getNexoraChatToolCanvas().findClientJsCanvasMetaFromResultPayload(...args);
 }
 
-function parseJsExecuteArgumentsMeta(argumentsText) {
-    const parsed = parseJsonObjectMaybe(argumentsText);
-    if (!parsed) return null;
-    const rawCode = String(parsed.code || '');
-    const code = normalizeClientJsCode(rawCode);
-    if (!code) return null;
-    const context = (parsed.context && typeof parsed.context === 'object') ? parsed.context : {};
-    const timeoutMs = normalizeClientJsTimeoutMs(parsed.timeout_ms, 8000);
-    return {
-        code,
-        rawCode,
-        codeNormalized: code !== rawCode,
-        usedCanvas: detectCanvasUsageInJsCode(code),
-        context,
-        timeoutMs,
-        width: normalizeCanvasDimension(context.canvas_width != null ? context.canvas_width : context.width, 640),
-        height: normalizeCanvasDimension(context.canvas_height != null ? context.canvas_height : context.height, 360)
-    };
+function parseJsExecuteArgumentsMeta(...args) {
+    return getNexoraChatToolCanvas().parseJsExecuteArgumentsMeta(...args);
 }
 
-function ensureMessageCanvasState(messageDiv) {
-    if (!messageDiv) return null;
-    if (!messageDiv.__canvasRenderState || typeof messageDiv.__canvasRenderState !== 'object') {
-        messageDiv.__canvasRenderState = {
-            callInfoByKey: {},
-            renderedByKey: {},
-            nextSeq: 1
-        };
-    }
-    return messageDiv.__canvasRenderState;
+function ensureMessageCanvasState(...args) {
+    return getNexoraChatToolCanvas().ensureMessageCanvasState(...args);
 }
 
-function placeCanvasCardsBelowToolChain(messageDiv) {
-    const parent = (messageDiv && (messageDiv.querySelector('.message-content') || messageDiv)) || null;
-    if (!parent) return;
-    const cards = Array.from(parent.querySelectorAll('.tool-canvas-card'));
-    if (!cards.length) return;
-
-    let lastToolNode = null;
-    Array.from(parent.children || []).forEach((node) => {
-        if (!node || !node.classList) return;
-        if (node.classList.contains('tool-usage') || node.classList.contains('add-basis-view')) {
-            lastToolNode = node;
-        }
-    });
-
-    cards.forEach((card) => {
-        if (card && card.parentNode === parent) {
-            card.remove();
-        }
-    });
-
-    if (lastToolNode && lastToolNode.parentNode === parent) {
-        const ref = lastToolNode.nextSibling;
-        cards.forEach((card) => {
-            if (ref) parent.insertBefore(card, ref);
-            else parent.appendChild(card);
-        });
-        return;
-    }
-
-    cards.forEach((card) => parent.appendChild(card));
+function placeCanvasCardsBelowToolChain(...args) {
+    return getNexoraChatToolCanvas().placeCanvasCardsBelowToolChain(...args);
 }
 
-function buildCanvasLookupKeys(callId, toolIndex) {
-    const keys = [];
-    const cid = String(callId || '').trim();
-    if (cid) keys.push(`call:${cid}`);
-    if (toolIndex !== undefined && toolIndex !== null && Number.isFinite(Number(toolIndex))) {
-        keys.push(`idx:${Math.floor(Number(toolIndex))}`);
-    }
-    return keys;
+function buildCanvasLookupKeys(...args) {
+    return getNexoraChatToolCanvas().buildCanvasLookupKeys(...args);
 }
 
-function isClientJsExecToolName(toolName) {
-    const name = String(toolName || '').trim();
-    return name === 'js_execute' || name === 'client_js_exec';
+function isClientJsExecToolName(...args) {
+    return getNexoraChatToolCanvas().isClientJsExecToolName(...args);
 }
 
-function rememberJsExecuteCanvasCall(messageDiv, toolName, callId, toolIndex, argumentsText) {
-    if (!messageDiv) return;
-    if (!isClientJsExecToolName(toolName)) return;
-    const meta = parseJsExecuteArgumentsMeta(argumentsText);
-    if (!meta || !meta.usedCanvas) return;
-    const state = ensureMessageCanvasState(messageDiv);
-    if (!state) return;
-    const keys = buildCanvasLookupKeys(callId, toolIndex);
-    if (!keys.length) {
-        keys.push(`anon:${state.nextSeq++}`);
-    }
-    keys.forEach((k) => {
-        state.callInfoByKey[k] = meta;
-    });
+function rememberJsExecuteCanvasCall(...args) {
+    return getNexoraChatToolCanvas().rememberJsExecuteCanvasCall(...args);
 }
 
-function createToolCanvasCard(messageDiv, renderKey, width, height) {
-    const parent = (messageDiv && (messageDiv.querySelector('.message-content') || messageDiv)) || null;
-    if (!parent) return null;
-    let card = null;
-    const key = String(renderKey || '');
-    parent.querySelectorAll('.tool-canvas-card').forEach((node) => {
-        if (card) return;
-        if (String(node.dataset.canvasKey || '') === key) {
-            card = node;
-        }
-    });
-    if (card) return card;
-
-    card = document.createElement('div');
-    card.className = 'tool-canvas-card';
-    card.dataset.canvasKey = key;
-    card.innerHTML = `
-        <div class="tool-canvas-head">Canvas 绘图</div>
-        <div class="tool-canvas-wrap">
-            <canvas class="tool-canvas"></canvas>
-        </div>
-        <div class="tool-canvas-status">准备绘制...</div>
-    `;
-
-    parent.appendChild(card);
-
-    const canvas = card.querySelector('.tool-canvas');
-    if (canvas) {
-        canvas.width = normalizeCanvasDimension(width, 640);
-        canvas.height = normalizeCanvasDimension(height, 360);
-    }
-    placeCanvasCardsBelowToolChain(messageDiv);
-    return card;
+function createToolCanvasCard(...args) {
+    return getNexoraChatToolCanvas().createToolCanvasCard(...args);
 }
 
-async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
-    if (!card) return;
-    const canvas = card.querySelector('.tool-canvas');
-    const statusEl = card.querySelector('.tool-canvas-status');
-    if (!canvas || typeof canvas.getContext !== 'function') {
-        if (statusEl) statusEl.textContent = 'Canvas 不可用';
-        card.classList.add('error');
-        return;
-    }
-    enforceCanvasDisplayAspect(canvas);
-    const runtimeCode = normalizeClientJsCode(code);
-    if (!runtimeCode) {
-        if (statusEl) statusEl.textContent = '空绘图代码';
-        card.classList.add('error');
-        return;
-    }
-    const ctxObj = (context && typeof context === 'object') ? context : {};
-    const useThree = needsThreeJsForCanvas(runtimeCode, ctxObj);
-    const usePlot3D = needsPlot3DHelper(runtimeCode, ctxObj);
-    const need2dContext = !useThree && (usePlot3D || detect2DContextUsageInJsCode(runtimeCode));
-    let ctx = null;
-    if (need2dContext) {
-        ctx = canvas.getContext('2d');
-        if (!ctx) {
-            if (statusEl) statusEl.textContent = '无法获取 2D 上下文';
-            card.classList.add('error');
-            return;
-        }
-    }
-    let threeRef = null;
-    let threeLoadErr = '';
-    if (useThree) {
-        try {
-            if (statusEl) statusEl.textContent = '加载 Three.js...';
-            threeRef = await ensureClientJsThreeLoaded();
-        } catch (e) {
-            threeLoadErr = `Three.js 加载失败: ${String((e && e.message) || e || '')}`;
-        }
-    }
-
-    const logs = [];
-    const pushLog = (level, args) => {
-        const line = `[${level}] ${Array.from(args || []).map((x) => String(x)).join(' ')}`.slice(0, 420);
-        logs.push(line);
-        if (logs.length > 80) logs.splice(0, logs.length - 80);
-    };
-    const consoleProxy = {
-        log: (...args) => pushLog('log', args),
-        info: (...args) => pushLog('info', args),
-        warn: (...args) => pushLog('warn', args),
-        error: (...args) => pushLog('error', args)
-    };
-
-    const localContext = (ctxObj && typeof ctxObj === 'object') ? { ...ctxObj } : {};
-    localContext.canvas = canvas;
-    localContext.ctx = ctx;
-    localContext.width = canvas.width;
-    localContext.height = canvas.height;
-    const ensure2DContext = () => {
-        if (ctx) return ctx;
-        try {
-            const next = canvas.getContext('2d');
-            if (next) {
-                ctx = next;
-                localContext.ctx = next;
-            }
-            return next || null;
-        } catch (_) {
-            return null;
-        }
-    };
-    localContext.ensure2DContext = ensure2DContext;
-    localContext.getContext = (kind = '2d', opts = undefined) => {
-        const type = String(kind || '2d').toLowerCase();
-        if (type === '2d') {
-            return ensure2DContext();
-        }
-        try {
-            return canvas.getContext(type, opts);
-        } catch (_) {
-            return null;
-        }
-    };
-    const plot3d = (!useThree && usePlot3D && ctx) ? createPlot3DHelper(canvas, ctx) : null;
-    const importScriptsProxy = (...urls) => {
-        const list = Array.isArray(urls) ? urls : [];
-        if (!list.length) return true;
-        let handled = 0;
-        for (const rawUrl of list) {
-            const u = String(rawUrl || '').trim().toLowerCase();
-            if (!u) continue;
-            if (u.includes('three') && threeRef) {
-                handled += 1;
-                continue;
-            }
-            throw new Error('importScripts 在当前运行环境不可用；请直接使用 THREE / Plot3D');
-        }
-        return handled === list.length;
-    };
-    if (threeRef) localContext.THREE = threeRef;
-    if (plot3d) localContext.Plot3D = plot3d;
-    if (threeRef) {
-        localContext.enableThreeOrbit = (opts = {}) => createThreeOrbitController(canvas, threeRef, opts);
-    }
-    localContext.importScripts = importScriptsProxy;
-
-    const safeDocument = {
-        getElementById: () => canvas,
-        querySelector: () => canvas,
-        querySelectorAll: () => [canvas],
-        createElement: (tag) => {
-            if (String(tag || '').toLowerCase() === 'canvas') return document.createElement('canvas');
-            return document.createElement(String(tag || 'div'));
-        }
-    };
-    const safeWindow = {
-        devicePixelRatio: Number(window.devicePixelRatio || 1) || 1,
-        innerWidth: canvas.width,
-        innerHeight: canvas.height
-    };
-    if (threeRef) safeWindow.THREE = threeRef;
-    if (plot3d) safeWindow.Plot3D = plot3d;
-    if (threeRef) safeWindow.enableThreeOrbit = (opts = {}) => createThreeOrbitController(canvas, threeRef, opts);
-    safeWindow.importScripts = importScriptsProxy;
-    safeWindow.getContext = localContext.getContext;
-    safeWindow.ensure2DContext = ensure2DContext;
-    const raf = (fn) => setTimeout(() => fn(Date.now()), 16);
-    const caf = (id) => clearTimeout(id);
-    localContext.document = safeDocument;
-    localContext.window = safeWindow;
-    localContext.requestAnimationFrame = raf;
-    localContext.cancelAnimationFrame = caf;
-
-    card.classList.remove('error');
-    if (statusEl) {
-        statusEl.textContent = threeLoadErr ? 'Three.js加载失败，尝试继续绘制...' : '绘制中...';
-    }
-    if (threeLoadErr) {
-        pushLog('warn', [threeLoadErr]);
-    }
-
-    try {
-        const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-        const prelude = [
-            '"use strict";',
-            'const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined;',
-            'const alert = undefined, prompt = undefined, confirm = undefined;'
-        ].join('\n');
-
-        const executePromise = (async () => {
-            let handledByExpr = false;
-            const maybeExpr = String(runtimeCode || '').trim();
-            if (maybeExpr && !/\breturn\b/.test(maybeExpr) && !/[;\n]/.test(maybeExpr)) {
-                try {
-                    const exprFn = new AsyncFunction(
-                        'context', 'console', 'THREE', 'Plot3D', 'importScripts',
-                        `${prelude}\nreturn (${maybeExpr});`
-                    );
-                    await exprFn(localContext, consoleProxy, threeRef, plot3d, importScriptsProxy);
-                    handledByExpr = true;
-                } catch (_) {
-                    handledByExpr = false;
-                }
-            }
-            if (!handledByExpr) {
-                const fn = new AsyncFunction(
-                    'context', 'console', 'THREE', 'Plot3D', 'importScripts',
-                    `${prelude}\n${runtimeCode}`
-                );
-                await fn(localContext, consoleProxy, threeRef, plot3d, importScriptsProxy);
-            }
-        })();
-
-        const timeout = normalizeClientJsTimeoutMs(timeoutMs, 5000);
-        await Promise.race([
-            executePromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error(`canvas execution timeout after ${timeout}ms`)), timeout))
-        ]);
-
-        enforceCanvasDisplayAspect(canvas);
-        if (statusEl) statusEl.textContent = logs.length ? `绘制完成 · ${logs.length} 条日志` : '绘制完成';
-    } catch (err) {
-        const msg = String((err && err.message) || err || 'canvas execute failed');
-        enforceCanvasDisplayAspect(canvas);
-        if (statusEl) statusEl.textContent = msg;
-        card.classList.add('error');
-    }
+async function runCanvasCodeInCard(...args) {
+    return getNexoraChatToolCanvas().runCanvasCodeInCard(...args);
 }
 
-function maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, result, callId, toolIndex) {
-    if (!messageDiv) return;
-    if (!isClientJsExecToolName(toolName)) return;
-    const state = ensureMessageCanvasState(messageDiv);
-    if (!state) return;
-
-    const parsedResult = parseJsonObjectMaybe(result);
-    if (parsedResult && parsedResult.success === false) {
-        return;
-    }
-    if (!parsedResult) {
-        const resultText = String(result || '');
-        if (/(^|\b)(error|failed|timeout|错误|失败)(\b|$)/i.test(resultText)) {
-            return;
-        }
-    }
-
-    let canvasMeta = null;
-    const keys = buildCanvasLookupKeys(callId, toolIndex);
-    for (const k of keys) {
-        if (state.callInfoByKey[k]) {
-            canvasMeta = state.callInfoByKey[k];
-            break;
-        }
-    }
-    if (!canvasMeta && parsedResult) {
-        canvasMeta = findClientJsCanvasMetaFromResultPayload(parsedResult);
-    }
-    if (!canvasMeta || !canvasMeta.usedCanvas || !canvasMeta.code) {
-        return;
-    }
-
-    let renderKey = keys[0] || '';
-    if (!renderKey) {
-        const reqId = parsedResult ? String(parsedResult.request_id || '').trim() : '';
-        renderKey = reqId ? `req:${reqId}` : `anon_render:${state.nextSeq++}`;
-    }
-    if (state.renderedByKey[renderKey]) {
-        return;
-    }
-    state.renderedByKey[renderKey] = true;
-
-    const card = createToolCanvasCard(
-        messageDiv,
-        renderKey,
-        canvasMeta.width,
-        canvasMeta.height
-    );
-    if (!card) return;
-    runCanvasCodeInCard(
-        card,
-        canvasMeta.code,
-        canvasMeta.context || {},
-        canvasMeta.timeoutMs
-    );
-    placeCanvasCardsBelowToolChain(messageDiv);
+function maybeRenderCanvasFromJsExecuteResult(...args) {
+    return getNexoraChatToolCanvas().maybeRenderCanvasFromJsExecuteResult(...args);
 }
 
 function rememberClientToolRequestId(requestId) {
-    const rid = String(requestId || '').trim();
-    if (!rid) return;
-    clientToolHandledRequestIds.add(rid);
-    if (clientToolHandledRequestIds.size <= 600) return;
-    const it = clientToolHandledRequestIds.values();
-    for (let i = 0; i < 200; i += 1) {
-        const next = it.next();
-        if (next.done) break;
-        clientToolHandledRequestIds.delete(next.value);
-    }
+    return clientToolController.rememberClientToolRequestId(requestId);
 }
 
-function buildClientJsWorkerSource() {
-    return `
-const MAX_LOG_LINES = 120;
-const MAX_LOG_LEN = 480;
-
-function toText(v) {
-  if (v === null || v === undefined) return String(v);
-  if (typeof v === 'string') return v;
-  try { return JSON.stringify(v); } catch (_) { return String(v); }
+function buildClientJsWorkerSource(...args) {
+    return getNexoraChatToolCanvas().buildClientJsWorkerSource(...args);
 }
 
-function clip(s) {
-  const t = String(s || '');
-  if (t.length <= MAX_LOG_LEN) return t;
-  return t.slice(0, MAX_LOG_LEN) + '...';
-}
-
-function toJsonSafe(value) {
-  try { JSON.stringify(value); return value; } catch (_) { return toText(value); }
-}
-
-self.addEventListener('message', async (ev) => {
-  const data = (ev && ev.data && typeof ev.data === 'object') ? ev.data : {};
-  const code = String(data.code || '');
-  const context = (data.context && typeof data.context === 'object') ? data.context : {};
-  const logs = [];
-
-  const pushLog = (level, args) => {
-    const line = '[' + level + '] ' + clip(Array.from(args || []).map((x) => toText(x)).join(' '));
-    logs.push(line);
-    if (logs.length > MAX_LOG_LINES) logs.splice(0, logs.length - MAX_LOG_LINES);
-  };
-
-  const consoleProxy = {
-    log: (...args) => pushLog('log', args),
-    info: (...args) => pushLog('info', args),
-    warn: (...args) => pushLog('warn', args),
-    error: (...args) => pushLog('error', args),
-  };
-
-  try {
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const prelude = [
-      '"use strict";',
-      'const window = undefined, document = undefined, selfRef = undefined;',
-      'const fetch = undefined, XMLHttpRequest = undefined, WebSocket = undefined, EventSource = undefined, importScripts = undefined;'
-    ].join('\\n');
-
-    let ret;
-    let handledByExpr = false;
-    const maybeExpr = String(code || '').trim();
-    if (maybeExpr && !/\\breturn\\b/.test(maybeExpr) && !/[;\\n]/.test(maybeExpr)) {
-      try {
-        const exprFn = new AsyncFunction('context', 'console', prelude + '\\nreturn (' + maybeExpr + ');');
-        ret = await exprFn(context, consoleProxy);
-        handledByExpr = true;
-      } catch (_) {
-        handledByExpr = false;
-      }
-    }
-
-    if (!handledByExpr) {
-      const wrappedCode = [prelude, code].join('\\n');
-      const fn = new AsyncFunction('context', 'console', wrappedCode);
-      ret = await fn(context, consoleProxy);
-    }
-
-    self.postMessage({ success: true, result: toJsonSafe(ret), logs });
-  } catch (err) {
-    const msg = (err && err.stack) ? String(err.stack) : String(err || 'unknown error');
-    if (/syntaxerror/i.test(msg)) {
-      const preview = clip(String(code || '').replace(/\\s+/g, ' ').slice(0, 220));
-      logs.push('[code_preview] ' + preview);
-    }
-    self.postMessage({ success: false, error: clip(msg), logs });
-  }
-});
-`.trim();
-}
-
-async function executeClientJsInWorker(payload) {
-    const p = (payload && typeof payload === 'object') ? payload : {};
-    const rawCode = String(p.code || '');
-    const code = normalizeClientJsCode(rawCode);
-    const codeNormalized = code !== rawCode;
-    const context = (p.context && typeof p.context === 'object') ? p.context : {};
-    const timeoutMs = normalizeClientJsTimeoutMs(p.timeout_ms, 8000);
-    if (!code.trim()) {
-        return { success: false, error: 'missing code', logs: [], meta: { timeout_ms: timeoutMs } };
-    }
-
-    let worker = null;
-    let objectUrl = '';
-    const startedAt = Date.now();
-    try {
-        const blob = new Blob([buildClientJsWorkerSource()], { type: 'text/javascript' });
-        objectUrl = URL.createObjectURL(blob);
-        worker = new Worker(objectUrl);
-    } catch (e) {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        return {
-            success: false,
-            error: `worker init failed: ${String((e && e.message) || e || '')}`,
-            logs: [],
-            meta: { timeout_ms: timeoutMs, code_normalized: codeNormalized }
-        };
-    }
-
-    return await new Promise((resolve) => {
-        let finished = false;
-        const finish = (res) => {
-            if (finished) return;
-            finished = true;
-            try { worker.terminate(); } catch (_) { /* ignore */ }
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
-            const elapsed = Date.now() - startedAt;
-            const out = (res && typeof res === 'object') ? res : {};
-            out.meta = {
-                ...(out.meta || {}),
-                timeout_ms: timeoutMs,
-                duration_ms: elapsed,
-                code_normalized: codeNormalized
-            };
-            resolve(out);
-        };
-
-        const timer = setTimeout(() => {
-            finish({
-                success: false,
-                error: `execution timeout after ${timeoutMs}ms`,
-                logs: []
-            });
-        }, timeoutMs);
-
-        worker.addEventListener('message', (ev) => {
-            clearTimeout(timer);
-            const msg = (ev && ev.data && typeof ev.data === 'object') ? ev.data : {};
-            finish({
-                success: !!msg.success,
-                result: msg.result,
-                error: String(msg.error || ''),
-                logs: Array.isArray(msg.logs) ? msg.logs : []
-            });
-        });
-        worker.addEventListener('error', (ev) => {
-            clearTimeout(timer);
-            finish({
-                success: false,
-                error: String((ev && ev.message) || 'worker runtime error'),
-                logs: []
-            });
-        });
-
-        try {
-            worker.postMessage({ code, context });
-        } catch (e) {
-            clearTimeout(timer);
-            finish({
-                success: false,
-                error: `worker postMessage failed: ${String((e && e.message) || e || '')}`,
-                logs: []
-            });
-        }
-    });
+async function executeClientJsInWorker(...args) {
+    return getNexoraChatToolCanvas().executeClientJsInWorker(...args);
 }
 
 async function submitClientToolResult(conversationId, requestId, execRes) {
-    const payload = {
-        conversation_id: String(conversationId || '').trim(),
-        request_id: String(requestId || '').trim(),
-        exec_success: !!(execRes && execRes.success),
-        result: execRes ? execRes.result : null,
-        error: execRes ? String(execRes.error || '') : '',
-        logs: (execRes && Array.isArray(execRes.logs)) ? execRes.logs : [],
-        meta: (execRes && execRes.meta && typeof execRes.meta === 'object') ? execRes.meta : {}
-    };
-    const res = await fetch('/api/client-tools/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    return !!(data && data.success);
+    return clientToolController.submitClientToolResult(conversationId, requestId, execRes);
 }
 
 async function handleClientToolRequest(req, expectedConversationId = '') {
-    if (!req || typeof req !== 'object') return 'idle';
-    if (String(req.type || '').trim() !== 'js_execute') return 'idle';
-
-    const conversationId = String(req.conversation_id || expectedConversationId || currentConversationId || '').trim();
-    if (!conversationId) return 'no_conversation';
-    if (expectedConversationId && conversationId !== String(expectedConversationId || '').trim()) return 'idle';
-    if (currentConversationId && conversationId !== String(currentConversationId || '').trim()) return 'idle';
-
-    const requestId = String(req.request_id || '').trim();
-    if (!requestId) return 'idle';
-    if (clientToolHandledRequestIds.has(requestId)) return 'idle';
-
-    const reqPayload = (req.payload && typeof req.payload === 'object') ? req.payload : {};
-    const canvasMeta = extractCanvasMetaFromJsPayload(reqPayload);
-    let execRes = null;
-
-    if (canvasMeta.usedCanvas) {
-        rememberClientJsCanvasMeta(requestId, canvasMeta);
-        execRes = {
-            success: true,
-            result: {
-                accepted: true,
-                mode: 'canvas',
-                message: 'canvas draw code received'
-            },
-            error: '',
-            logs: [],
-            meta: {
-                execution_mode: 'canvas',
-                canvas_used: true,
-                canvas_width: canvasMeta.width,
-                canvas_height: canvasMeta.height,
-                code_normalized: !!canvasMeta.codeNormalized
-            }
-        };
-    } else {
-        execRes = await executeClientJsInWorker(reqPayload);
-    }
-
-    const submitted = await submitClientToolResult(conversationId, requestId, execRes);
-
-    if (submitted) {
-        rememberClientToolRequestId(requestId);
-        return 'handled';
-    }
-
-    return 'idle';
+    return clientToolController.handleClientToolRequest(req, expectedConversationId);
 }
 
 async function drainClientToolWssQueue() {
-    if (clientToolWssDraining) return;
-    clientToolWssDraining = true;
-
-    try {
-        while (clientToolWssQueue.length > 0) {
-            const item = clientToolWssQueue.shift();
-            await handleClientToolRequest(item.req, item.conversationId);
-        }
-    } finally {
-        clientToolWssDraining = false;
-    }
+    return clientToolController.drainClientToolWssQueue();
 }
 
 function enqueueClientToolWssRequest(req, conversationId) {
-    clientToolWssQueue.push({
-        req,
-        conversationId: String(conversationId || '').trim()
-    });
-    void drainClientToolWssQueue();
+    return clientToolController.enqueueClientToolWssRequest(req, conversationId);
 }
 
 async function pollClientToolRequests() {
-    if (clientToolPollInFlight) return 'in_flight';
-    const conversationId = String(currentConversationId || '').trim();
-    if (!conversationId) return 'no_conversation';
-    clientToolPollInFlight = true;
-    try {
-        const res = await fetch('/api/client-tools/pull', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversation_id: conversationId,
-                wait_ms: CLIENT_TOOL_PULL_WAIT_MS
-            })
-        });
-        const data = await res.json();
-        if (!data || !data.success || !data.request) return 'idle';
-        return await handleClientToolRequest(data.request, conversationId);
-    } catch (e) {
-        // keep silent to avoid noisy console in long-running polling
-        return 'error';
-    } finally {
-        clientToolPollInFlight = false;
-    }
+    return clientToolController.pollClientToolRequests();
 }
 
 function calcNextClientToolPollDelay(outcome) {
-    const state = String(outcome || '').trim();
-    if (state === 'handled') return CLIENT_TOOL_POLL_HIT_MS;
-    if (state === 'no_conversation') return CLIENT_TOOL_POLL_NO_CONV_MS;
-    if (state === 'error') return CLIENT_TOOL_POLL_ERROR_MS;
-    if (state === 'in_flight') return Math.min(CLIENT_TOOL_POLL_MAX_MS, Math.max(CLIENT_TOOL_POLL_MIN_MS, clientToolPollDelayMs));
-    if (state === 'idle') {
-        const grown = Math.floor((Number(clientToolPollDelayMs || CLIENT_TOOL_POLL_MIN_MS) * 1.45));
-        return Math.min(CLIENT_TOOL_POLL_MAX_MS, Math.max(CLIENT_TOOL_POLL_MIN_MS, grown));
-    }
-    return CLIENT_TOOL_POLL_MIN_MS;
+    return clientToolController.calcNextClientToolPollDelay(outcome);
 }
 
 function scheduleNextClientToolPoll(immediate = false) {
-    if (clientToolPollTimer) {
-        clearTimeout(clientToolPollTimer);
-        clientToolPollTimer = null;
-    }
-    const waitMs = immediate ? 0 : Math.max(0, Number(clientToolPollDelayMs || CLIENT_TOOL_POLL_MIN_MS));
-    clientToolPollTimer = setTimeout(async () => {
-        const outcome = await pollClientToolRequests();
-        clientToolPollDelayMs = calcNextClientToolPollDelay(outcome);
-        scheduleNextClientToolPoll(false);
-    }, waitMs);
+    return clientToolController.scheduleNextClientToolPoll(immediate);
 }
 
 function stopClientToolPolling() {
-    if (clientToolPollTimer) {
-        clearTimeout(clientToolPollTimer);
-        clientToolPollTimer = null;
-    }
-    clientToolPollInFlight = false;
-    clientToolWssQueue.length = 0;
-    clientToolWssDraining = false;
-    clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
+    return clientToolController.stopClientToolPolling();
 }
 
 function startClientToolPolling() {
-    stopClientToolPolling();
-    clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
+    return clientToolController.startClientToolPolling();
 }
 
-function loadMailSidebarCollapsedState() {
-    try {
-        const v = localStorage.getItem(MAIL_SIDEBAR_COLLAPSED_KEY);
-        if (v === '1' || v === 'true') return true;
-        if (v === '0' || v === 'false') return false;
-    } catch (e) {
-        // ignore
-    }
-    return false;
+function isNexoraMailEnabled() {
+    return window.NEXORA_MAIL_ENABLED === true;
 }
 
-function saveMailSidebarCollapsedState(collapsed) {
-    try {
-        localStorage.setItem(MAIL_SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
-    } catch (e) {
-        // ignore
+function getNexoraChatMails() {
+    return getNexoraChatSharedModule('mails');
+}
+
+function getNexoraChatMailsIfEnabled() {
+    if (!isNexoraMailEnabled()) {
+        return null;
     }
+
+    return getNexoraChatMails();
 }
 
 function getCurrentUrlParams() {
@@ -4484,26 +3175,6 @@ function getCurrentUrlParams() {
 function isMailViewUrl() {
     const p = getCurrentUrlParams();
     return p.get('view') === 'mail';
-}
-
-function getMailIdFromUrl() {
-    const p = getCurrentUrlParams();
-    return (p.get('mail_id') || '').trim();
-}
-
-function setMailViewUrl(mailId) {
-    try {
-        const p = getCurrentUrlParams();
-        p.set('view', 'mail');
-        if (mailId) p.set('mail_id', String(mailId));
-        else p.delete('mail_id');
-        const q = p.toString();
-        if (window.history && window.history.replaceState) {
-            window.history.replaceState({}, '', `/chat${q ? `?${q}` : ''}`);
-        }
-    } catch (e) {
-        // ignore
-    }
 }
 
 function clearMailViewUrl() {
@@ -4520,20 +3191,77 @@ function clearMailViewUrl() {
     }
 }
 
-function isMailViewActiveInDom() {
-    const viewer = document.getElementById('knowledgeViewer');
-    if (!viewer) return false;
-    const display = (viewer.style.display || '').toLowerCase();
-    if (display === 'none') return false;
-    return !!viewer.querySelector('.mail-workspace');
+async function refreshMailEntryVisibility(options = {}) {
+    const api = getNexoraChatMailsIfEnabled();
+    return api ? await api.refreshMailEntryVisibility(options) : false;
+}
+
+function initMailUiState() {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.initMailUiState();
+}
+
+function renderMailNotifyBadge() {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.renderMailNotifyBadge();
+}
+
+function startMailRealtimeSync() {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.startMailRealtimeSync();
+}
+
+function stopMailRealtimeSync() {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.stopMailRealtimeSync();
+}
+
+function flushDeferredMailEvents() {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.flushDeferredMailEvents();
+}
+
+function handleBrowserMailChangedEvent(payload) {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) void api.handleBrowserMailChangedEvent(payload);
 }
 
 function isMailMobileLayout() {
-    try {
-        return window.matchMedia('(max-width: 980px)').matches;
-    } catch (e) {
-        return window.innerWidth <= 980;
-    }
+    const api = getNexoraChatMailsIfEnabled();
+    return api ? api.isMailMobileLayout() : false;
+}
+
+function setMailMobileDetailMode(showDetail) {
+    const api = getNexoraChatMailsIfEnabled();
+    if (api) api.setMailMobileDetailMode(showDetail);
+}
+
+async function openMailPlaceholderView() {
+    return await getNexoraChatMails().openMailPlaceholderView();
+}
+
+function renderAdminMailCreateForm() {
+    return getNexoraChatMails().renderAdminMailCreateForm();
+}
+
+function renderAdminMailUsersList() {
+    return getNexoraChatMails().renderAdminMailUsersList();
+}
+
+async function loadAdminMailUsersList() {
+    return await getNexoraChatMails().loadAdminMailUsersList();
+}
+
+function setAdminMailUserFilterKeyword(value) {
+    return getNexoraChatMails().setAdminMailUserFilterKeyword(value);
+}
+
+function resetAdminMailUserFilterKeyword() {
+    return getNexoraChatMails().resetAdminMailUserFilterKeyword();
+}
+
+function setAdminMailGroup(value) {
+    return getNexoraChatMails().setAdminMailGroup(value);
 }
 
 function isChatMobileLayout() {
@@ -5636,183 +4364,6 @@ function focusMessageInputFromGesture(options = {}) {
     }
 }
 
-function setMailMobileDetailMode(showDetail) {
-    const workspace = document.getElementById('mailWorkspace');
-    if (!workspace) return;
-    if (isMailMobileLayout() && !!showDetail) workspace.classList.add('mail-mobile-detail');
-    else workspace.classList.remove('mail-mobile-detail');
-}
-
-function loadMailLastOpenTs() {
-    try {
-        const raw = Number(localStorage.getItem(MAIL_LAST_OPEN_TS_KEY) || 0);
-        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
-    } catch (e) {
-        return 0;
-    }
-}
-
-function saveMailLastOpenTs(ts) {
-    try {
-        const v = Number(ts || 0);
-        localStorage.setItem(MAIL_LAST_OPEN_TS_KEY, String(Number.isFinite(v) && v > 0 ? Math.floor(v) : 0));
-    } catch (e) {
-        // ignore
-    }
-}
-
-function getMailToggleButton() {
-    return document.getElementById('toggleMailView');
-}
-
-function setMailEntryVisible(visible) {
-    const shouldShow = !!visible;
-    mailEntryAvailable = shouldShow;
-
-    const btn = getMailToggleButton();
-    if (!btn) return;
-
-    btn.hidden = !shouldShow;
-    btn.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
-
-    if (!shouldShow) {
-        mailNotifyState.newCount = 0;
-        const badge = btn.querySelector('.mail-notify-badge');
-        if (badge) badge.classList.remove('visible');
-        stopMailRealtimeSync();
-        return;
-    }
-
-    renderMailNotifyBadge();
-}
-
-async function refreshMailEntryVisibility(options = {}) {
-    const force = !!(options && options.force);
-    const btn = getMailToggleButton();
-    if (!btn) {
-        mailEntryAvailable = false;
-        return false;
-    }
-
-    if (mailEntryVisibilityPromise && !force) {
-        return mailEntryVisibilityPromise;
-    }
-
-    mailEntryVisibilityPromise = (async () => {
-        try {
-            const res = await fetch('/api/mail/me/status', {
-                method: 'GET',
-                credentials: 'include',
-                cache: 'no-store'
-            });
-            const data = await res.json().catch(() => ({}));
-            mailViewState.status = data;
-
-            const visible = !!(res.ok && data && data.success && data.enabled && data.linked);
-            setMailEntryVisible(visible);
-            return visible;
-        } catch (_) {
-            mailViewState.status = {
-                success: false,
-                enabled: false,
-                linked: false,
-                message: '无法获取邮件状态'
-            };
-            setMailEntryVisible(false);
-            return false;
-        } finally {
-            mailEntryVisibilityPromise = null;
-        }
-    })();
-
-    return mailEntryVisibilityPromise;
-}
-
-function ensureMailNotifyBadge() {
-    const btn = getMailToggleButton();
-    if (!btn || btn.hidden || !mailEntryAvailable) return null;
-    btn.classList.add('mail-toggle-with-notify');
-    let badge = btn.querySelector('.mail-notify-badge');
-    if (!badge) {
-        badge = document.createElement('span');
-        badge.className = 'mail-notify-badge';
-        badge.textContent = '0';
-        btn.appendChild(badge);
-    }
-    return badge;
-}
-
-function renderMailNotifyBadge() {
-    const badge = ensureMailNotifyBadge();
-    if (!badge) return;
-    const count = Math.max(0, Number(mailNotifyState.newCount || 0));
-    if (count > 0) {
-        badge.textContent = count > 99 ? '99+' : String(count);
-        badge.classList.add('visible');
-    } else {
-        badge.textContent = '0';
-        badge.classList.remove('visible');
-    }
-}
-
-function getMailMaxTimestamp(mails) {
-    const arr = Array.isArray(mails) ? mails : [];
-    let maxTs = 0;
-    for (const m of arr) {
-        const ts = Number(m && m.timestamp ? m.timestamp : 0);
-        if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
-    }
-    return maxTs;
-}
-
-function updateMailNotifyFromMails(mails, options = {}) {
-    const markChecked = !!(options && options.markChecked);
-    const arr = Array.isArray(mails) ? mails : [];
-    const maxTs = getMailMaxTimestamp(arr);
-
-    if (markChecked) {
-        const markTs = maxTs > 0 ? maxTs : Math.floor(Date.now() / 1000);
-        mailNotifyState.lastOpenTs = markTs;
-        mailNotifyState.initialized = true;
-        mailNotifyState.newCount = 0;
-        saveMailLastOpenTs(mailNotifyState.lastOpenTs);
-        renderMailNotifyBadge();
-        return;
-    }
-
-    if (!mailNotifyState.initialized || mailNotifyState.lastOpenTs <= 0) {
-        const initTs = maxTs > 0 ? maxTs : Math.floor(Date.now() / 1000);
-        mailNotifyState.lastOpenTs = initTs;
-        mailNotifyState.initialized = true;
-        mailNotifyState.newCount = 0;
-        saveMailLastOpenTs(mailNotifyState.lastOpenTs);
-        renderMailNotifyBadge();
-        return;
-    }
-
-    const baseline = Number(mailNotifyState.lastOpenTs || 0);
-    const newCount = arr.filter((m) => {
-        const ts = Number(m && m.timestamp ? m.timestamp : 0);
-        return Number.isFinite(ts) && ts > baseline;
-    }).length;
-    mailNotifyState.newCount = newCount;
-    renderMailNotifyBadge();
-}
-
-async function refreshMailNotifyBadgeFromServer() {
-    if (!mailEntryAvailable) return;
-
-    try {
-        const res = await fetch('/api/mail/me/inbox?cache_mode=refresh&limit=20');
-        const data = await res.json();
-        if (!data || !data.success) return;
-        const mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
-        updateMailNotifyFromMails(mails, { markChecked: false });
-    } catch (e) {
-        // ignore refresh errors
-    }
-}
-
 function setDesktopAgentIndicatorState(online, titleSuffix = '') {
     lastAgentOnline = !!online;
     const indicator = document.getElementById('desktopAgentIndicator');
@@ -6005,137 +4556,6 @@ async function syncChatModelsFromBrowserEvent(payload = {}) {
     }
 }
 
-function createMailEventState(payload = null) {
-    const state = {
-        pending: false,
-        inboxChanged: false,
-        sentChanged: false,
-        count: 0,
-        latestPayload: null
-    };
-
-    if (payload) {
-        appendMailEventToState(state, payload);
-    }
-
-    return state;
-}
-
-function normalizeBrowserMailEventFolder(payload) {
-    const folder = String(payload && payload.folder ? payload.folder : '').trim().toLowerCase();
-
-    if (folder === 'sent') return 'sent';
-    if (folder === 'inbox') return 'inbox';
-
-    return '';
-}
-
-function appendMailEventToState(state, payload) {
-    if (!state) return;
-
-    const eventPayload = (payload && typeof payload === 'object') ? payload : {};
-    const folder = normalizeBrowserMailEventFolder(eventPayload);
-
-    state.pending = true;
-    state.count += 1;
-    state.latestPayload = eventPayload;
-
-    if (folder === 'sent') {
-        state.sentChanged = true;
-        return;
-    }
-
-    if (folder === 'inbox') {
-        state.inboxChanged = true;
-        return;
-    }
-
-    state.inboxChanged = true;
-    state.sentChanged = true;
-}
-
-function mergeMailEventState(targetState, sourceState) {
-    if (!targetState || !sourceState || !sourceState.pending) return;
-
-    if (sourceState.inboxChanged) targetState.inboxChanged = true;
-    if (sourceState.sentChanged) targetState.sentChanged = true;
-
-    targetState.pending = true;
-    targetState.count += Math.max(1, Number(sourceState.count || 1));
-    targetState.latestPayload = sourceState.latestPayload;
-}
-
-function takeDeferredMailEventState() {
-    const state = mailDeferredEventState;
-    mailDeferredEventState = null;
-    return state;
-}
-
-function getMailCurrentFolderKey() {
-    return String(mailViewState.folder || '').trim().toLowerCase() === 'sent' ? 'sent' : 'inbox';
-}
-
-async function refreshMailByBrowserEventState(eventState) {
-    const state = eventState && eventState.pending ? eventState : createMailEventState({});
-    const mailViewActive = isMailViewActiveInDom();
-    const currentFolder = getMailCurrentFolderKey();
-    const shouldRefreshCurrentFolder = mailViewActive && (
-        (currentFolder === 'inbox' && state.inboxChanged)
-        || (currentFolder === 'sent' && state.sentChanged)
-        || (!state.inboxChanged && !state.sentChanged)
-    );
-
-    if (shouldRefreshCurrentFolder) {
-        await loadMailCurrentFolder(mailViewState.query || '', {
-            silent: true,
-            refreshDetail: false,
-            forceNetwork: true
-        });
-    }
-
-    if (state.inboxChanged && !(shouldRefreshCurrentFolder && currentFolder === 'inbox')) {
-        await refreshMailNotifyBadgeFromServer();
-    }
-}
-
-function flushDeferredMailEvents() {
-    if (!mailDeferredEventState || document.hidden) return;
-
-    const state = takeDeferredMailEventState();
-    void handleBrowserMailChangedEvent(state);
-}
-
-async function handleBrowserMailChangedEvent(eventPayload) {
-    const eventState = eventPayload && eventPayload.pending
-        ? eventPayload
-        : createMailEventState(eventPayload);
-
-    if (document.hidden) {
-        mergeMailEventState(
-            mailDeferredEventState || (mailDeferredEventState = createMailEventState()),
-            eventState
-        );
-        return;
-    }
-
-    if (mailRefreshInFlight) {
-        mergeMailEventState(
-            mailDeferredEventState || (mailDeferredEventState = createMailEventState()),
-            eventState
-        );
-        return;
-    }
-
-    mailRefreshInFlight = true;
-
-    try {
-        await refreshMailByBrowserEventState(eventState);
-    } finally {
-        mailRefreshInFlight = false;
-        flushDeferredMailEvents();
-    }
-}
-
 function handleBrowserSyncMessage(payload) {
     const msgType = String(payload && payload.type ? payload.type : '').trim();
 
@@ -6274,49 +4694,6 @@ function stopBrowserSyncSocket() {
     if (browserSyncSocket) {
         browserSyncSocket.close();
         browserSyncSocket = null;
-    }
-}
-
-function stopMailRealtimeSync() {
-    mailRefreshInFlight = false;
-}
-
-function startMailRealtimeSync() {
-    if (!getMailToggleButton() || !mailEntryAvailable) return;
-    stopMailRealtimeSync();
-    void handleBrowserMailChangedEvent({ action: 'initial_sync' });
-}
-
-function loadMailSelectedId() {
-    try {
-        return (localStorage.getItem(MAIL_SELECTED_ID_KEY) || '').trim();
-    } catch (e) {
-        return '';
-    }
-}
-
-function saveMailSelectedId(id) {
-    try {
-        localStorage.setItem(MAIL_SELECTED_ID_KEY, String(id || ''));
-    } catch (e) {
-        // ignore
-    }
-}
-
-function loadMailListScroll() {
-    try {
-        const v = Number(localStorage.getItem(MAIL_LIST_SCROLL_KEY) || 0);
-        return Number.isFinite(v) && v >= 0 ? v : 0;
-    } catch (e) {
-        return 0;
-    }
-}
-
-function saveMailListScroll(scrollTop) {
-    try {
-        localStorage.setItem(MAIL_LIST_SCROLL_KEY, String(Math.max(0, Number(scrollTop || 0))));
-    } catch (e) {
-        // ignore
     }
 }
 
@@ -6586,15 +4963,9 @@ let fileCenterState = {
     listScrollTop: 0
 };
 
-let fileCenterUploadDialogState = {
-    files: [],
-    activeCode: '',
-    downloadUrl: '',
-    heartbeatTimer: 0,
-    eventTimer: 0,
-    lastEventId: 0,
-    busy: false
-};
+function createFileCenterUploadDialogState(...args) {
+    return getNexoraChatFiles().createFileCenterUploadDialogState(...args);
+}
 
 function getCloudFileAlias(file) {
     const src = (file && typeof file === 'object') ? file : {};
@@ -6889,17 +5260,12 @@ function findFileCenterItem(fileRef) {
     return null;
 }
 
-function formatFileSize(bytes) {
-    const n = Number(bytes || 0);
-    if (!Number.isFinite(n) || n <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let val = n;
-    let idx = 0;
-    while (val >= 1024 && idx < units.length - 1) {
-        val /= 1024;
-        idx += 1;
-    }
-    return `${val >= 10 || idx === 0 ? Math.round(val) : val.toFixed(1)} ${units[idx]}`;
+function formatFileSize(...args) {
+    return getNexoraChatFiles().formatFileSize(...args);
+}
+
+function formatByteRate(...args) {
+    return getNexoraChatFiles().formatByteRate(...args);
 }
 
 function formatFileUpdatedAt(ts) {
@@ -7363,10 +5729,13 @@ async function handleFileCenterFileAction(action, fileRef) {
     }
 
     if (action === 'delete') {
+        captureFileCenterListScrollPosition();
+
         const removed = await removeCloudFile(ref);
 
         if (removed) {
-            await loadFileCenterFiles({ keepSelection: false });
+            await loadFileCenterFiles({ keepSelection: true });
+            restoreFileCenterListScrollPosition();
         }
     }
 }
@@ -7738,7 +6107,7 @@ function ensureFileCenterContextMenu() {
     return menu;
 }
 
-function closeFileCenterOrReturn(event) {
+async function closeFileCenterOrReturn(event) {
     if (event && typeof event.preventDefault === 'function') {
         event.preventDefault();
     }
@@ -7765,6 +6134,7 @@ function closeFileCenterOrReturn(event) {
         return;
     }
 
+    await closeFileCenterUploadDialog({ notifyTransferClosed: true });
     closeKnowledgeView();
 }
 
@@ -7933,7 +6303,7 @@ function renderFileCenterHomeView(options = {}) {
                     <i class="fa-solid fa-upload" aria-hidden="true"></i>
                     <span>上传</span>
                 </button>
-                <input id="fileCenterUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp" multiple hidden>
+                <input id="fileCenterUploadInput" type="file" multiple hidden>
             </div>
         </div>
 
@@ -8168,472 +6538,88 @@ async function handleFileCenterUploadChange(input) {
     setFileCenterUploadDialogFiles(files);
 }
 
-async function uploadFileCenterFiles(files, clearInput) {
-    const selectedFiles = Array.from(files || []);
-
-    if (!selectedFiles.length) {
-        showToast('请先选择文件');
-        return false;
-    }
-
-    await handleFileUploadFiles(selectedFiles, {
-        source: 'file-center',
-        attachToInput: false,
-        uploadImagesAsFiles: true,
-        targetPath: normalizeFileCenterPath(fileCenterState.currentPath),
-        clearInput: () => {
-            if (typeof clearInput === 'function') {
-                clearInput();
-            }
-        }
-    });
-    await loadFileCenterFiles({ keepSelection: true });
-
-    return true;
+async function uploadFileCenterFiles(...args) {
+    return fileCenterUploadController.uploadFileCenterFiles(...args);
 }
 
-function ensureFileCenterUploadDialog() {
-    let modal = document.getElementById('fileCenterUploadDialog');
-
-    if (modal) {
-        return modal;
-    }
-
-    modal = document.createElement('div');
-    modal.id = 'fileCenterUploadDialog';
-    modal.className = 'modal-backdrop file-center-upload-dialog-backdrop';
-    modal.setAttribute('aria-hidden', 'true');
-    modal.innerHTML = `
-        <div class="file-center-upload-dialog" role="dialog" aria-modal="true" aria-labelledby="fileCenterUploadDialogTitle">
-            <div class="file-center-upload-dialog-head">
-                <div>
-                    <h3 id="fileCenterUploadDialogTitle">上传文件</h3>
-                    <p>选择文件后可直接上传到 Files，也可以开启临时在线传输。</p>
-                </div>
-                ${getNexoraChatFiles().renderUploadDialogCloseButton()}
-            </div>
-            <div class="file-center-upload-dialog-body">
-                <section class="file-center-upload-dropzone" id="fileCenterUploadDropzone" tabindex="0" role="button" aria-label="选择或拖拽文件">
-                    <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
-                    <strong>拖拽文件到这里</strong>
-                    <span>或点击打开文件选择窗口</span>
-                    <div class="file-center-upload-selected" id="fileCenterUploadSelected">未选择文件</div>
-                </section>
-                <aside class="file-center-upload-actions">
-                    <button class="file-center-upload-action primary" id="fileCenterUploadDirectBtn" type="button">
-                        <i class="fa-solid fa-upload" aria-hidden="true"></i>
-                        <span>直接上传</span>
-                    </button>
-                    <button class="file-center-upload-action" id="fileCenterUploadTransferBtn" type="button">
-                        <i class="fa-solid fa-link" aria-hidden="true"></i>
-                        <span>在线传输</span>
-                    </button>
-                    <div class="file-center-live-transfer-panel" id="fileCenterLiveTransferPanel" hidden>
-                        <div class="file-center-live-transfer-status" id="fileCenterLiveTransferStatus">等待创建传输链接</div>
-                        <div class="file-center-live-transfer-link-row" id="fileCenterLiveTransferLinkRow" hidden>
-                            <input id="fileCenterLiveTransferLinkInput" type="text" readonly value="">
-                            <button class="file-center-tool-btn" id="fileCenterLiveTransferCopyBtn" type="button" title="复制下载地址" aria-label="复制下载地址">
-                                <i class="fa-regular fa-copy" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                        <div class="file-center-live-transfer-code" id="fileCenterLiveTransferCode"></div>
-                        <div class="file-center-live-transfer-events" id="fileCenterLiveTransferEvents"></div>
-                    </div>
-                </aside>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(modal);
-    bindFileCenterUploadDialog(modal);
-
-    return modal;
+function ensureFileCenterUploadDialog(...args) {
+    return fileCenterUploadController.ensureFileCenterUploadDialog(...args);
 }
 
-function bindFileCenterUploadDialog(modal) {
-    const closeBtn = modal.querySelector('#fileCenterUploadDialogClose');
-    const dropzone = modal.querySelector('#fileCenterUploadDropzone');
-    const directBtn = modal.querySelector('#fileCenterUploadDirectBtn');
-    const transferBtn = modal.querySelector('#fileCenterUploadTransferBtn');
-    const copyBtn = modal.querySelector('#fileCenterLiveTransferCopyBtn');
-
-    if (closeBtn) {
-        closeBtn.addEventListener('click', () => {
-            closeFileCenterUploadDialog();
-        });
-    }
-
-    if (dropzone) {
-        const openPicker = () => {
-            const input = document.getElementById('fileCenterUploadInput');
-
-            if (input) {
-                input.click();
-            }
-        };
-
-        dropzone.addEventListener('click', openPicker);
-        dropzone.addEventListener('keydown', (event) => {
-            if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
-
-            event.preventDefault();
-            openPicker();
-        });
-        dropzone.addEventListener('dragover', (event) => {
-            event.preventDefault();
-            dropzone.classList.add('drag-over');
-        });
-        dropzone.addEventListener('dragleave', () => {
-            dropzone.classList.remove('drag-over');
-        });
-        dropzone.addEventListener('drop', (event) => {
-            event.preventDefault();
-            dropzone.classList.remove('drag-over');
-            setFileCenterUploadDialogFiles(event.dataTransfer ? event.dataTransfer.files : []);
-        });
-    }
-
-    if (directBtn) {
-        directBtn.addEventListener('click', () => {
-            void directUploadFromFileCenterDialog();
-        });
-    }
-
-    if (transferBtn) {
-        transferBtn.addEventListener('click', () => {
-            void createLiveTransferFromFileCenterDialog();
-        });
-    }
-
-    if (copyBtn) {
-        copyBtn.addEventListener('click', async () => {
-            const text = String(fileCenterUploadDialogState.downloadUrl || '').trim();
-
-            if (!text) {
-                showToast('暂无可复制的下载地址');
-                return;
-            }
-
-            try {
-                await copyTextToClipboardSafe(text);
-                showToast('下载地址已复制');
-            } catch (error) {
-                showToast('复制失败');
-            }
-        });
-    }
-
-    if (window.__fileCenterUploadBeforeUnloadBound !== true) {
-        window.__fileCenterUploadBeforeUnloadBound = true;
-        window.addEventListener('beforeunload', () => {
-            revokeActiveFileCenterLiveTransfer({ beacon: true });
-        });
-    }
+function bindFileCenterUploadDialog(...args) {
+    return fileCenterUploadController.bindFileCenterUploadDialog(...args);
 }
 
-function openFileCenterUploadDialog() {
-    const modal = ensureFileCenterUploadDialog();
-
-    modal.classList.add('active');
-    modal.setAttribute('aria-hidden', 'false');
-    renderFileCenterUploadDialog();
+function openFileCenterUploadDialog(...args) {
+    return fileCenterUploadController.openFileCenterUploadDialog(...args);
 }
 
-function closeFileCenterUploadDialog() {
-    const modal = document.getElementById('fileCenterUploadDialog');
-
-    revokeActiveFileCenterLiveTransfer();
-    stopFileCenterLiveTransferTimers();
-    fileCenterUploadDialogState = {
-        files: [],
-        activeCode: '',
-        downloadUrl: '',
-        heartbeatTimer: 0,
-        eventTimer: 0,
-        lastEventId: 0,
-        busy: false
-    };
-
-    const input = document.getElementById('fileCenterUploadInput');
-
-    if (input) {
-        input.value = '';
-    }
-
-    if (modal) {
-        modal.classList.remove('active');
-        modal.setAttribute('aria-hidden', 'true');
-    }
+async function closeFileCenterUploadDialog(...args) {
+    return fileCenterUploadController.closeFileCenterUploadDialog(...args);
 }
 
-function setFileCenterUploadDialogFiles(fileList) {
-    fileCenterUploadDialogState.files = Array.from(fileList || []).filter(Boolean);
-    renderFileCenterUploadDialog();
+function setFileCenterUploadDialogFiles(...args) {
+    return fileCenterUploadController.setFileCenterUploadDialogFiles(...args);
 }
 
-function renderFileCenterUploadDialog() {
-    const selected = document.getElementById('fileCenterUploadSelected');
-    const panel = document.getElementById('fileCenterLiveTransferPanel');
-    const status = document.getElementById('fileCenterLiveTransferStatus');
-    const linkRow = document.getElementById('fileCenterLiveTransferLinkRow');
-    const linkInput = document.getElementById('fileCenterLiveTransferLinkInput');
-    const codeEl = document.getElementById('fileCenterLiveTransferCode');
-
-    if (selected) {
-        const files = fileCenterUploadDialogState.files;
-
-        if (!files.length) {
-            selected.textContent = '未选择文件';
-        } else {
-            selected.innerHTML = files.map((file) => {
-                const name = escapeHtml(String(file.name || '未命名文件'));
-                const size = escapeHtml(formatFileSize(Number(file.size || 0)));
-
-                return `<span>${name}<small>${size}</small></span>`;
-            }).join('');
-        }
-    }
-
-    if (panel) {
-        panel.hidden = !fileCenterUploadDialogState.activeCode && !fileCenterUploadDialogState.busy;
-    }
-
-    if (status && !fileCenterUploadDialogState.activeCode && !fileCenterUploadDialogState.busy) {
-        status.textContent = '等待创建传输链接';
-    }
-
-    if (linkRow) {
-        linkRow.hidden = !fileCenterUploadDialogState.downloadUrl;
-    }
-
-    if (linkInput) {
-        linkInput.value = fileCenterUploadDialogState.downloadUrl || '';
-    }
-
-    if (codeEl) {
-        codeEl.textContent = fileCenterUploadDialogState.activeCode
-            ? `读取码：${fileCenterUploadDialogState.activeCode}`
-            : '';
-    }
+function renderFileCenterUploadDialog(...args) {
+    return fileCenterUploadController.renderFileCenterUploadDialog(...args);
 }
 
-async function directUploadFromFileCenterDialog() {
-    if (fileCenterUploadDialogState.busy) return;
-
-    const files = Array.from(fileCenterUploadDialogState.files || []);
-
-    if (!files.length) {
-        showToast('请先选择文件');
-        return;
-    }
-
-    fileCenterUploadDialogState.busy = true;
-    renderFileCenterUploadDialog();
-
-    try {
-        const uploaded = await uploadFileCenterFiles(files, () => {
-            const input = document.getElementById('fileCenterUploadInput');
-
-            if (input) {
-                input.value = '';
-            }
-        });
-
-        if (uploaded) {
-            fileCenterUploadDialogState.files = [];
-            showToast('文件已上传');
-            closeFileCenterUploadDialog();
-        }
-    } finally {
-        fileCenterUploadDialogState.busy = false;
-        renderFileCenterUploadDialog();
-    }
+function renderFileCenterLiveTransferProgress(...args) {
+    return fileCenterUploadController.renderFileCenterLiveTransferProgress(...args);
 }
 
-async function createLiveTransferFromFileCenterDialog() {
-    if (fileCenterUploadDialogState.busy) return;
-
-    const files = Array.from(fileCenterUploadDialogState.files || []);
-
-    if (!files.length) {
-        showToast('请先选择文件');
-        return;
-    }
-
-    if (files.length !== 1) {
-        showToast('在线传输一次只能选择一个文件');
-        return;
-    }
-
-    await revokeActiveFileCenterLiveTransfer();
-    stopFileCenterLiveTransferTimers();
-    fileCenterUploadDialogState.busy = true;
-    updateFileCenterLiveTransferStatus('正在创建在线传输...');
-    renderFileCenterUploadDialog();
-
-    try {
-        const form = new FormData();
-        form.append('file', files[0], files[0].name || 'transfer.bin');
-        form.append('expires_in_minutes', '30');
-        form.append('max_downloads', '1');
-
-        const res = await fetch('/api/files/live-transfer/create', {
-            method: 'POST',
-            body: form
-        });
-        const data = await res.json();
-
-        if (!data || !data.success) {
-            throw new Error(String((data && data.message) || '创建在线传输失败'));
-        }
-
-        const transfer = data.transfer || {};
-        const code = String(transfer.code || '').trim();
-
-        if (!code) {
-            throw new Error('后端未返回读取码');
-        }
-
-        fileCenterUploadDialogState.activeCode = code;
-        fileCenterUploadDialogState.downloadUrl = new URL(`/api/files/transfer/${encodeURIComponent(code)}/download`, window.location.origin).toString();
-        fileCenterUploadDialogState.lastEventId = 0;
-        updateFileCenterLiveTransferStatus('在线传输已开启。保持此窗口打开，接收端才能下载。');
-        startFileCenterLiveTransferTimers(code);
-        renderFileCenterUploadDialog();
-    } catch (error) {
-        updateFileCenterLiveTransferStatus(String((error && error.message) || '创建在线传输失败'));
-        showToast(String((error && error.message) || '创建在线传输失败'));
-    } finally {
-        fileCenterUploadDialogState.busy = false;
-        renderFileCenterUploadDialog();
-    }
+async function directUploadFromFileCenterDialog(...args) {
+    return fileCenterUploadController.directUploadFromFileCenterDialog(...args);
 }
 
-function updateFileCenterLiveTransferStatus(text) {
-    const panel = document.getElementById('fileCenterLiveTransferPanel');
-    const status = document.getElementById('fileCenterLiveTransferStatus');
-
-    if (panel) {
-        panel.hidden = false;
-    }
-
-    if (status) {
-        status.textContent = String(text || '');
-    }
+async function createLiveTransferFromFileCenterDialog(...args) {
+    return fileCenterUploadController.createLiveTransferFromFileCenterDialog(...args);
 }
 
-function startFileCenterLiveTransferTimers(code) {
-    stopFileCenterLiveTransferTimers();
-
-    const sendHeartbeat = async () => {
-        const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
-
-        if (!activeCode || activeCode !== code) return;
-
-        try {
-            const res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/heartbeat`, {
-                method: 'POST',
-                cache: 'no-store'
-            });
-            const data = await res.json();
-
-            if (!data || !data.success) {
-                throw new Error(String((data && data.message) || '在线传输已失效'));
-            }
-        } catch (error) {
-            updateFileCenterLiveTransferStatus(String((error && error.message) || '在线传输已失效'));
-            stopFileCenterLiveTransferTimers();
-        }
-    };
-    const pollEvents = async () => {
-        const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
-
-        if (!activeCode || activeCode !== code) return;
-
-        try {
-            const res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/events?since=${encodeURIComponent(fileCenterUploadDialogState.lastEventId || 0)}`, {
-                cache: 'no-store'
-            });
-            const data = await res.json();
-
-            if (!data || !data.success) return;
-
-            renderFileCenterLiveTransferEvents(data.events || []);
-        } catch (error) {
-            console.warn('poll live transfer events failed', error);
-        }
-    };
-
-    void sendHeartbeat();
-    void pollEvents();
-    fileCenterUploadDialogState.heartbeatTimer = window.setInterval(sendHeartbeat, 5000);
-    fileCenterUploadDialogState.eventTimer = window.setInterval(pollEvents, 2000);
+function updateFileCenterLiveTransferStatus(...args) {
+    return fileCenterUploadController.updateFileCenterLiveTransferStatus(...args);
 }
 
-function renderFileCenterLiveTransferEvents(events) {
-    const list = document.getElementById('fileCenterLiveTransferEvents');
-    const items = Array.isArray(events) ? events : [];
-
-    if (!list || !items.length) return;
-
-    const html = items.map((event) => {
-        const eventId = Number(event.id || 0);
-        const at = Number(event.at || 0) * 1000;
-        const timeText = at ? new Date(at).toLocaleString() : '';
-        const ip = escapeHtml(String(event.ip || '未知 IP'));
-        const ua = escapeHtml(String(event.user_agent || '未知 UA'));
-
-        fileCenterUploadDialogState.lastEventId = Math.max(fileCenterUploadDialogState.lastEventId || 0, eventId);
-
-        return `
-            <div class="file-center-live-transfer-event">
-                <strong>已下载</strong>
-                <span>${escapeHtml(timeText)}</span>
-                <code>${ip}</code>
-                <small>${ua}</small>
-            </div>
-        `;
-    }).join('');
-
-    list.insertAdjacentHTML('afterbegin', html);
-    updateFileCenterLiveTransferStatus('接收端已下载文件，IP 与 UA 已记录。');
+function assertFileCenterLiveTransferActive(...args) {
+    return fileCenterUploadController.assertFileCenterLiveTransferActive(...args);
 }
 
-function stopFileCenterLiveTransferTimers() {
-    if (fileCenterUploadDialogState.heartbeatTimer) {
-        window.clearInterval(fileCenterUploadDialogState.heartbeatTimer);
-        fileCenterUploadDialogState.heartbeatTimer = 0;
-    }
-
-    if (fileCenterUploadDialogState.eventTimer) {
-        window.clearInterval(fileCenterUploadDialogState.eventTimer);
-        fileCenterUploadDialogState.eventTimer = 0;
-    }
+async function readFileCenterLiveTransferJson(...args) {
+    return fileCenterUploadController.readFileCenterLiveTransferJson(...args);
 }
 
-async function revokeActiveFileCenterLiveTransfer(options = {}) {
-    const code = String(fileCenterUploadDialogState.activeCode || '').trim();
+function updateFileCenterLiveTransferUploadProgress(...args) {
+    return fileCenterUploadController.updateFileCenterLiveTransferUploadProgress(...args);
+}
 
-    if (!code) return;
+async function sendFileCenterLiveTransferChunk(...args) {
+    return fileCenterUploadController.sendFileCenterLiveTransferChunk(...args);
+}
 
-    fileCenterUploadDialogState.activeCode = '';
-    fileCenterUploadDialogState.downloadUrl = '';
+async function finishFileCenterLiveTransferUpload(...args) {
+    return fileCenterUploadController.finishFileCenterLiveTransferUpload(...args);
+}
 
-    const url = `/api/files/live-transfer/${encodeURIComponent(code)}/revoke`;
+async function startFileCenterLiveTransferUpload(...args) {
+    return fileCenterUploadController.startFileCenterLiveTransferUpload(...args);
+}
 
-    if (options && options.beacon === true && navigator.sendBeacon) {
-        navigator.sendBeacon(url, new Blob([], { type: 'application/octet-stream' }));
-        return;
-    }
+function startFileCenterLiveTransferTimers(...args) {
+    return fileCenterUploadController.startFileCenterLiveTransferTimers(...args);
+}
 
-    try {
-        await fetch(url, {
-            method: 'POST',
-            cache: 'no-store',
-            keepalive: !!(options && options.beacon === true)
-        });
-    } catch (error) {
-        console.warn('revoke live transfer failed', error);
-    }
+function renderFileCenterLiveTransferEvents(...args) {
+    return fileCenterUploadController.renderFileCenterLiveTransferEvents(...args);
+}
+
+function stopFileCenterLiveTransferTimers(...args) {
+    return fileCenterUploadController.stopFileCenterLiveTransferTimers(...args);
+}
+
+async function revokeActiveFileCenterLiveTransfer(...args) {
+    return fileCenterUploadController.revokeActiveFileCenterLiveTransfer(...args);
 }
 
 async function handleCloudFilePanelUploadChange(input) {
@@ -8773,8 +6759,8 @@ window.openFilesFrameView = function(options = {}) {
         };
     }
 
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
+    knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearPendingHighlightData();
     navigationStack = [];
 
     msgs.style.display = 'none';
@@ -9032,8 +7018,8 @@ const els = {
 };
 
 function resetKnowledgeViewRuntimeState() {
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
+    knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearPendingHighlightData();
     navigationStack = [];
 }
 
@@ -9791,11 +7777,11 @@ async function ensureCurrentUsernameForLearning() {
 }
 
 async function renderLearningMainPanel() {
-    if (!els.learningMainPanel) return;
+    if (!els.learningMainPanel) return false;
     try {
         const username = await ensureCurrentUsernameForLearning();
         const api = await ensureLearningModeAssets();
-        if (learningMainMounted) return;
+        if (learningMainMounted) return true;
         els.learningMainPanel.innerHTML = '<div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>';
         if (api && typeof api.renderMainPanel === 'function') {
             api.renderMainPanel(els.learningMainPanel, {
@@ -9803,22 +7789,23 @@ async function renderLearningMainPanel() {
                 username,
             });
             learningMainMounted = true;
+            return true;
         } else if (api && typeof api.renderWelcome === 'function') {
             api.renderWelcome(els.learningMainPanel, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
                 username,
             });
             learningMainMounted = true;
+            return true;
         }
     } catch (err) {
         console.error('加载学习主面板失败:', err);
-        els.learningMainPanel.innerHTML = `
-            <div class="welcome-screen">
-                <h1>Learning</h1>
-                <p>无法载入学习面板。</p>
-            </div>
-        `;
+        learningMainMounted = false;
+        els.learningMainPanel.innerHTML = '';
+        els.learningMainPanel.style.display = 'none';
     }
+
+    return false;
 }
 
 async function syncLearningHeaderMode() {
@@ -9837,7 +7824,7 @@ async function syncLearningHeaderMode() {
             || learningReaderOpened
         )
     );
-    const showChatMain = !showLearningMain && !viewerOpen;
+    let showChatMain = !showLearningMain && !viewerOpen;
 
     if (!showLearningMain) {
         setLearningEmbedLayoutMode('default');
@@ -9858,16 +7845,33 @@ async function syncLearningHeaderMode() {
         els.messagesContainer.style.display = showChatMain ? '' : 'none';
     }
     if (els.learningMainPanel) {
-        els.learningMainPanel.style.display = showLearningMain ? '' : 'none';
         if (showLearningMain) {
-            await renderLearningMainPanel();
+            els.learningMainPanel.style.display = 'none';
+            const rendered = await renderLearningMainPanel();
+
+            if (rendered) {
+                els.learningMainPanel.style.display = '';
+            } else {
+                showChatMain = !viewerOpen;
+
+                if (els.messagesContainer) {
+                    els.messagesContainer.style.display = showChatMain ? '' : 'none';
+                }
+
+                if (showChatMain && !hasConversation) {
+                    await renderWelcomeScreen();
+                }
+            }
+        } else {
+            els.learningMainPanel.style.display = 'none';
         }
     }
     if (showChatMain && !hasConversation && !showLearning) {
         await renderWelcomeScreen();
     }
     if (els.conversationTitle) {
-        els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (showLearning ? 'Learning' : 'Nexora');
+        const effectiveShowLearning = isLearningConversationView();
+        els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (effectiveShowLearning ? 'Learning' : 'Nexora');
     }
     if (!showLearningMain && els.messageInput && els.messageInput.value) {
         requestAnimationFrame(() => {
@@ -9924,13 +7928,16 @@ async function renderWelcomeScreen() {
         }
     } catch (err) {
         console.error('加载学习模式资源失败:', err);
-        const host = els.messagesContainer.querySelector('.welcome-screen');
-        if (host) {
-            host.innerHTML = `
-                <h1>Learning Mode</h1>
-                <p>无法载入 NexoraLearning 前端。</p>
-            `;
-        }
+        learningWelcomeMounted = false;
+        currentConversationMode = 'chat';
+        learningHeaderMode = 'chat';
+        applyLearningSidebarMode('nexora');
+        els.messagesContainer.innerHTML = `
+            <div class="welcome-screen">
+                <h1>Hello.</h1>
+                <p>Start a new conversation.</p>
+            </div>
+        `;
     }
 }
 
@@ -10065,7 +8072,9 @@ async function saveLearningModePreference() {
         currentUserPreferences = data.preferences || currentUserPreferences || {};
         setLearningModeToggleUi(!!currentUserPreferences.learning_mode);
         await applyLearningMode(!!currentUserPreferences.learning_mode);
-        showToast(enabled ? '学习模式已开启' : '学习模式已关闭');
+        if (!(enabled && !learningModeEnabled)) {
+            showToast(enabled ? '学习模式已开启' : '学习模式已关闭');
+        }
     } catch (err) {
         console.error('保存学习模式失败:', err);
         showToast('保存学习模式失败');
@@ -10739,118 +8748,20 @@ function contentContainsSnippetLoose(content, snippet) {
     return hay.includes(needle);
 }
 
-function normalizeKnowledgeTitleKey(raw) {
-    return String(raw || '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ');
+function normalizeKnowledgeTitleKey(...args) {
+    return knowledgeController.normalizeKnowledgeTitleKey(...args);
 }
 
-async function fetchKnowledgeByTitle(title) {
-    const safeTitle = String(title || '').trim();
-    if (!safeTitle) return { ok: false, title: '', data: null };
-    try {
-        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(safeTitle)}`);
-        const data = await res.json();
-        if (data && data.success && data.knowledge) {
-            return { ok: true, title: safeTitle, data };
-        }
-    } catch (_) {
-        // ignore
-    }
-    return { ok: false, title: safeTitle, data: null };
+async function fetchKnowledgeByTitle(...args) {
+    return knowledgeController.fetchKnowledgeByTitle(...args);
 }
 
-async function resolveKnowledgeSourceForJump(anchor, fallbackTitle = '') {
-    const anchorTitle = String((anchor && anchor.title) || '').trim();
-    const anchorBasisId = String((anchor && anchor.basis_id) || (anchor && anchor.basisId) || '').trim();
-    const altTitle = String(fallbackTitle || '').trim();
-    const directCandidates = [anchorTitle, anchorBasisId, altTitle].filter(Boolean);
-
-    for (const candidate of directCandidates) {
-        const result = await fetchKnowledgeByTitle(candidate);
-        if (result.ok) return result;
-    }
-
-    let metaData = null;
-    try {
-        const res = await fetch('/api/knowledge/list');
-        metaData = await res.json();
-    } catch (_) {
-        metaData = null;
-    }
-    const basis = (metaData && metaData.basis_knowledge && typeof metaData.basis_knowledge === 'object')
-        ? metaData.basis_knowledge
-        : {};
-    const allTitles = Object.keys(basis);
-    if (!allTitles.length) return { ok: false, title: '', data: null };
-
-    for (const candidate of directCandidates) {
-        const matchedTitle = allTitles.find((title) => {
-            const meta = basis[title] && typeof basis[title] === 'object' ? basis[title] : {};
-            return String(meta.basis_id || '').trim() === candidate;
-        });
-
-        if (matchedTitle) {
-            const result = await fetchKnowledgeByTitle(matchedTitle);
-            if (result.ok) return result;
-        }
-    }
-
-    const byNorm = new Map();
-    allTitles.forEach((t) => {
-        const k = normalizeKnowledgeTitleKey(t);
-        if (k && !byNorm.has(k)) byNorm.set(k, t);
-    });
-
-    const needles = directCandidates
-        .map((t) => normalizeKnowledgeTitleKey(t))
-        .filter(Boolean);
-    for (const needle of needles) {
-        const exact = byNorm.get(needle);
-        if (exact) {
-            const result = await fetchKnowledgeByTitle(exact);
-            if (result.ok) return result;
-        }
-    }
-
-    for (const needle of needles) {
-        const fuzzy = allTitles.find((t) => {
-            const key = normalizeKnowledgeTitleKey(t);
-            return key.includes(needle) || needle.includes(key);
-        });
-        if (fuzzy) {
-            const result = await fetchKnowledgeByTitle(fuzzy);
-            if (result.ok) return result;
-        }
-    }
-
-    return { ok: false, title: '', data: null };
+async function resolveKnowledgeSourceForJump(...args) {
+    return knowledgeController.resolveKnowledgeSourceForJump(...args);
 }
 
-async function jumpToKnowledgeSource(anchor, fallbackTitle = '') {
-    const resolved = await resolveKnowledgeSourceForJump(anchor, fallbackTitle);
-    if (!resolved.ok || !resolved.data) {
-        showToast('来源知识不存在或已删除');
-        return false;
-    }
-    const data = resolved.data;
-    const resolvedTitle = String(resolved.title || '').trim();
-
-    const snippetForLocate = buildNoteAnchorSnippet((anchor && (anchor.plainSnippet || anchor.snippet)) || '', 260);
-    if (snippetForLocate) {
-        const srcContent = String((data.knowledge && data.knowledge.content) || '');
-        if (contentContainsSnippetLoose(srcContent, snippetForLocate)) {
-            await openKnowledgeAtChunk(resolvedTitle, snippetForLocate, { from: 'note' }, false);
-            return true;
-        }
-        await viewKnowledge(resolvedTitle, { forceEditMode: false, fromSearch: false });
-        showToast('定位片段未命中，已打开来源知识');
-        return true;
-    }
-
-    await viewKnowledge(resolvedTitle, { forceEditMode: false, fromSearch: false });
-    return true;
+async function jumpToKnowledgeSource(...args) {
+    return knowledgeController.jumpToKnowledgeSource(...args);
 }
 
 async function jumpToNoteAnchorPayload(anchor, fallbackTitle = '') {
@@ -11976,7 +9887,7 @@ function buildSelectionAnchorFromChatTarget(target, markdownText = '', plainText
 function buildSelectionAnchorFromKnowledgeTarget(markdownText = '', plainText = '') {
     return {
         type: 'knowledge',
-        title: String(currentViewingKnowledge || '').trim(),
+        title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
         snippet: buildNoteAnchorSnippet(markdownText, 280),
         plainSnippet: buildNoteAnchorSnippet(plainText || markdownText, 280)
     };
@@ -11986,7 +9897,7 @@ function resolveSelectionSource(target, selectionText = '', plainText = '') {
     const t = target && target.nodeType === Node.TEXT_NODE ? target.parentElement : target;
     const viewer = document.getElementById('knowledgeViewer');
     if (viewer && viewer.style.display !== 'none' && t && viewer.contains(t)) {
-        const knowledgeTitle = String(currentViewingKnowledge || '').trim();
+        const knowledgeTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
         const sourceTitle = knowledgeTitle || (els.conversationTitle ? String(els.conversationTitle.textContent || '').trim() : '');
         return {
             source: '知识库',
@@ -12501,33 +10412,7 @@ function bindTrashModal() {
 }
 
 function setBasisPinLocal(title, pin) {
-    const safeTitle = String(title || '').trim();
-    if (!safeTitle) return false;
-    let found = false;
-    const source = Array.isArray(basisKnowledgeListCache) ? basisKnowledgeListCache : [];
-    basisKnowledgeListCache = source.map((item) => {
-        const src = (item && typeof item === 'object') ? item : {};
-        const itemTitle = String((src && src.title) || (typeof item === 'string' ? item : '')).trim();
-        if (itemTitle !== safeTitle) return item;
-        found = true;
-        const nextObj = {
-            ...(src || {}),
-            title: itemTitle,
-            content: String((src && src.content) || itemTitle),
-            pin: !!pin
-        };
-        return nextObj;
-    });
-    if (!found) return false;
-    if (!knowledgeMetaCache || typeof knowledgeMetaCache !== 'object') {
-        knowledgeMetaCache = {};
-    }
-    if (!knowledgeMetaCache[safeTitle] || typeof knowledgeMetaCache[safeTitle] !== 'object') {
-        knowledgeMetaCache[safeTitle] = {};
-    }
-    knowledgeMetaCache[safeTitle].pin = !!pin;
-    renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
-    return true;
+    return knowledgeSidebarController.setBasisPinLocal(title, pin);
 }
 
 async function applyPinContextMenuAction() {
@@ -12703,8 +10588,8 @@ function normalizeSelectionTextForNotes(raw) {
     if (!text) return '';
     text = text
         .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .replace(/[\u200B-\u200F\u2060\uFEFF\u00AD]/g, '');
+        .replace(/\r/g, '\n');
+    text = removeInvisibleTextChars(text);
 
     const lines = text.split('\n');
     const tableLineCount = lines.filter((l) => /\|/.test(String(l || ''))).length;
@@ -12715,11 +10600,10 @@ function normalizeSelectionTextForNotes(raw) {
 
     // 处理“每个字一行”的选区污染（常见于 KaTeX/复杂 DOM 文本复制）
     if (!looksLikeMarkdownTable && nonEmptyLines.length >= 8 && shortRatio >= 0.62) {
-        const marker = '\uE001';
         text = text
-            .replace(/\n{2,}/g, marker)
+            .replace(/\n{2,}/g, NOTE_SELECTION_PARAGRAPH_MARKER)
             .replace(/\n/g, ' ')
-            .replace(new RegExp(marker, 'g'), '\n\n')
+            .replaceAll(NOTE_SELECTION_PARAGRAPH_MARKER, '\n\n')
             .replace(/[ \t]{2,}/g, ' ');
     }
 
@@ -13922,10 +11806,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 deferStreamAttach: !!(resumeCid && cid === resumeCid)
             });
         } else {
+            await learningPromise;
+
             if (learningModeEnabled && !hasConversationTargetInUrl) {
                 await createNewConversation(false, 'learning');
                 await renderWelcomeScreen();
-                await learningPromise;
                 startStoredStreamSessionMonitors({
                     skipConversationId: String(currentConversationId || '').trim()
                 });
@@ -13970,11 +11855,7 @@ function initUI() {
         return;
     }
     bindPinContextMenu();
-    mailViewState.sidebarCollapsed = loadMailSidebarCollapsedState();
-    mailNotifyState.lastOpenTs = loadMailLastOpenTs();
-    mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
-    mailNotifyState.newCount = 0;
-    renderMailNotifyBadge();
+    initMailUiState();
     void refreshMailEntryVisibility();
     
     setTimeout(async () => {
@@ -14673,35 +12554,6 @@ function initUI() {
         });
     }
 
-    const adminUserFilterInput = document.getElementById('adminUserFilterInput');
-    if (adminUserFilterInput) {
-        adminUserFilterInput.addEventListener('input', (e) => {
-            adminUserFilterKeyword = (e.target.value || '').trim().toLowerCase();
-            renderAdminUsersList();
-        });
-    }
-    const openAddMailUserBtn = document.getElementById('openAddMailUserForm');
-    if (openAddMailUserBtn) {
-        openAddMailUserBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            renderAdminMailCreateForm();
-        });
-    }
-    const adminMailUserFilterInput = document.getElementById('adminMailUserFilterInput');
-    if (adminMailUserFilterInput) {
-        adminMailUserFilterInput.addEventListener('input', (e) => {
-            adminMailUserFilterKeyword = (e.target.value || '').trim().toLowerCase();
-            renderAdminMailUsersList();
-        });
-    }
-    const adminMailGroupSelect = document.getElementById('adminMailGroupSelect');
-    if (adminMailGroupSelect) {
-        adminMailGroupSelect.addEventListener('change', async (e) => {
-            adminMailGroup = (e.target.value || 'default').trim() || 'default';
-            await loadAdminMailUsersList();
-        });
-    }
-
     const saveProfileBtn = document.getElementById('saveProfileBtn');
     if (saveProfileBtn) {
         saveProfileBtn.addEventListener('click', () => saveUserProfile());
@@ -14739,142 +12591,7 @@ function initUI() {
         bindBackdropSafeClose(avatarCropModal, closeAvatarCropModal);
     }
 
-    const addProviderBtn = document.getElementById('btnAddProvider');
-    if (addProviderBtn) {
-        addProviderBtn.addEventListener('click', () => openProviderEditor());
-    }
-
-    const addModelBtn = document.getElementById('btnAddModel');
-    if (addModelBtn) {
-        addModelBtn.addEventListener('click', () => openModelEditor());
-    }
-
-    const adminModelSearchInput = document.getElementById('adminModelSearchInput');
-    if (adminModelSearchInput) {
-        adminModelSearchInput.addEventListener('input', (e) => {
-            adminModelSearchKeyword = (e.target.value || '').trim();
-            renderAdminModelConfig({ resetModelsScroll: true });
-        });
-    }
-
-    const addGenImageApiBtn = document.getElementById('btnAddGenImageApi');
-    if (addGenImageApiBtn) {
-        addGenImageApiBtn.addEventListener('click', () => openAdminGenImageApiEditor());
-    }
-
-    const adminGenImageApiSearchInput = document.getElementById('adminGenImageApiSearchInput');
-    if (adminGenImageApiSearchInput) {
-        adminGenImageApiSearchInput.addEventListener('input', (e) => {
-            adminGenImageApiFilterKeyword = (e.target.value || '').trim().toLowerCase();
-            renderAdminGenImageApis();
-        });
-    }
-
-    const adminQuotaUnitSelect = document.getElementById('adminQuotaUnitSelect');
-    if (adminQuotaUnitSelect) {
-        adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
-        adminQuotaUnitSelect.value = adminQuotaDisplayUnit;
-        adminQuotaUnitSelect.addEventListener('change', async (e) => {
-            const nextValue = e && e.target ? e.target.value : '';
-            adminQuotaDisplayUnit = normalizeAdminQuotaDisplayUnit(nextValue);
-            saveAdminQuotaDisplayUnitPreference(adminQuotaDisplayUnit);
-            if (e && e.target) e.target.value = adminQuotaDisplayUnit;
-            if (Array.isArray(adminServerQuotaProvidersCache) && adminServerQuotaProvidersCache.length) {
-                renderAdminModelConfig({ preserveProviderList: true });
-            } else if (currentUserRole === 'admin') {
-                await loadServerQuotaSettings();
-            }
-        });
-    }
-
-    const adminPublicApiGenerateBtn = document.getElementById('adminPublicApiGenerateBtn');
-    if (adminPublicApiGenerateBtn) {
-        adminPublicApiGenerateBtn.addEventListener('click', () => openAdminPublicApiKeyModal('generate'));
-    }
-    const adminPublicApiRegenerateBtn = document.getElementById('adminPublicApiRegenerateBtn');
-    if (adminPublicApiRegenerateBtn) {
-        adminPublicApiRegenerateBtn.addEventListener('click', () => openAdminPublicApiKeyModal('regenerate'));
-    }
-    const adminPublicApiRevokeBtn = document.getElementById('adminPublicApiRevokeBtn');
-    if (adminPublicApiRevokeBtn) {
-        adminPublicApiRevokeBtn.addEventListener('click', async () => {
-            await revokeAdminPublicApiKey();
-        });
-    }
-    const adminPublicApiSaveSettingsBtn = document.getElementById('adminPublicApiSaveSettingsBtn');
-    if (adminPublicApiSaveSettingsBtn) {
-        adminPublicApiSaveSettingsBtn.addEventListener('click', async () => {
-            await saveAdminPublicApiSettings();
-        });
-    }
-    const adminPublicApiSaveGlobalBtn = document.getElementById('adminPublicApiSaveGlobalBtn');
-    if (adminPublicApiSaveGlobalBtn) {
-        adminPublicApiSaveGlobalBtn.addEventListener('click', async () => {
-            await saveAdminPublicApiGlobalSettings();
-        });
-    }
-
-    initAdminUserTokenStatsControls();
-
-    const publicApiModal = document.getElementById('adminPublicApiKeyModal');
-    if (publicApiModal) {
-        bindBackdropSafeClose(publicApiModal, closeAdminPublicApiKeyModal);
-    }
-    const publicApiModalConfirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
-    if (publicApiModalConfirmBtn) {
-        publicApiModalConfirmBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await submitAdminPublicApiKeyAction();
-        });
-    }
-
-    const textConfirmModal = document.getElementById('adminTextConfirmModal');
-    if (textConfirmModal) {
-        bindBackdropSafeClose(textConfirmModal, closeAdminTextConfirmModal);
-    }
-
-    const configModal = document.getElementById('adminConfigModal');
-    if (configModal) {
-        bindBackdropSafeClose(configModal, closeAdminConfigModal);
-    }
-    const adminProviderApiTypeInput = document.getElementById('adminProviderApiTypeInput');
-    if (adminProviderApiTypeInput) {
-        adminProviderApiTypeInput.addEventListener('input', syncAdminProviderApiTypeFields);
-        adminProviderApiTypeInput.addEventListener('change', syncAdminProviderApiTypeFields);
-    }
-    const configSaveBtn = document.getElementById('adminConfigSaveBtn');
-    if (configSaveBtn) {
-        configSaveBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await saveAdminConfigModal();
-        });
-    }
-
-    const ollamaStatusModal = document.getElementById('ollamaModelStatusModal');
-    if (ollamaStatusModal) {
-        bindBackdropSafeClose(ollamaStatusModal, closeAdminOllamaModelStatusModal);
-    }
-    const ollamaStatusCloseBtn = document.getElementById('ollamaModelStatusCloseBtn');
-    if (ollamaStatusCloseBtn) {
-        ollamaStatusCloseBtn.addEventListener('click', closeAdminOllamaModelStatusModal);
-    }
-    const ollamaStatusRefreshBtn = document.getElementById('ollamaModelStatusRefreshBtn');
-    if (ollamaStatusRefreshBtn) {
-        ollamaStatusRefreshBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            const state = adminOllamaStatusModalState || {};
-            if (state.provider && state.model) {
-                await loadAdminOllamaModelStatus(state.provider, state.model);
-            }
-        });
-    }
-    const ollamaStatusActionBtn = document.getElementById('ollamaModelStatusActionBtn');
-    if (ollamaStatusActionBtn) {
-        ollamaStatusActionBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await toggleAdminOllamaModelStatus();
-        });
-    }
+    adminSettingsEventsController.bindAdminSettingsEvents();
 
     if (els.closeSkillEditorBtn) {
         els.closeSkillEditorBtn.addEventListener('click', closeSkillEditorModal);
@@ -16392,7 +14109,7 @@ function clearWorkspaceHierarchySlotForConversationLoad() {
 function resetKnowledgeNavigationForConversationLoad() {
     navigationStack = [];
     currentSearchQuery = '';
-    currentViewingKnowledge = null;
+    knowledgeEditorController.clearCurrentTitle();
     originalHeaderState = null;
     cachedPuzzleStates = {};
 }
@@ -17338,58 +15055,19 @@ async function ensureConversationPanelReadyForMutation(conversationId, operation
 }
 
 function getMessageRowByIndex(index) {
-    const idx = Number(index);
-    if (!Number.isFinite(idx)) return null;
-    return document.querySelector(`.message[data-index="${idx}"]`);
+    return messageActionsController.getMessageRowByIndex(index);
 }
 
 function getDeleteRoundRangeFromDom(index) {
-    const idx = Number(index);
-    if (!Number.isFinite(idx)) return { start: -1, end: -1, role: '' };
-    const row = getMessageRowByIndex(idx);
-    if (!row) return { start: idx, end: idx, role: '' };
-    const isUser = row.classList.contains('user');
-    const isAssistant = row.classList.contains('assistant');
-    let start = idx;
-    let end = idx;
-    if (isUser) {
-        const next = getMessageRowByIndex(idx + 1);
-        if (next && next.classList.contains('assistant')) end = idx + 1;
-        return { start, end, role: 'user' };
-    }
-    if (isAssistant) {
-        const prev = getMessageRowByIndex(idx - 1);
-        if (prev && prev.classList.contains('user')) start = idx - 1;
-        return { start, end, role: 'assistant' };
-    }
-    return { start, end, role: '' };
+    return messageActionsController.getDeleteRoundRangeFromDom(index);
 }
 
 function optimisticHideDeleteRound(index) {
-    const range = getDeleteRoundRangeFromDom(index);
-    const hiddenRows = [];
-    if (range.start < 0 || range.end < range.start) {
-        return { ...range, hiddenRows };
-    }
-    for (let i = range.start; i <= range.end; i += 1) {
-        const row = getMessageRowByIndex(i);
-        if (!row) continue;
-        row.dataset.optimisticHidden = '1';
-        row.style.display = 'none';
-        hiddenRows.push(row);
-    }
-    return { ...range, hiddenRows };
+    return messageActionsController.optimisticHideDeleteRound(index);
 }
 
 function rollbackOptimisticHide(state) {
-    const rows = (state && Array.isArray(state.hiddenRows)) ? state.hiddenRows : [];
-    rows.forEach((row) => {
-        if (!row || !row.isConnected) return;
-        if (row.dataset && row.dataset.optimisticHidden === '1') {
-            delete row.dataset.optimisticHidden;
-        }
-        row.style.display = '';
-    });
+    return messageActionsController.rollbackOptimisticHide(state);
 }
 
 async function requestServerCancelForActiveStream() {
@@ -17456,7 +15134,7 @@ async function waitForStreamServerFinalized(streamId, conversationId, options = 
                 if (!sessionRow) return true;
 
                 const status = String(sessionRow.status || '').trim().toLowerCase();
-                if (status && status !== 'running') return true;
+                if (status && status !== 'running' && status !== 'cancelling') return true;
             } else {
                 console.error('[StreamCancel] stream status sync failed', {
                     status: res.status,
@@ -17621,32 +15299,6 @@ function readStreamRegenerateIndexFromMeta(source, defaultIndex = null) {
 
 function stripHistoryTimeMarkerEchoForStream(text) {
     return streamStateController.stripHistoryTimeMarkerEchoForStream(text);
-}
-
-function resolveAssistantIndexForStreamResume(state, fallbackIndex = null) {
-    const src = (state && typeof state === 'object') ? state : {};
-    const directIndex = normalizeStreamMessageIndex(src.assistant_index)
-        ?? (src.is_regenerate ? normalizeStreamMessageIndex(src.regenerate_index) : null);
-
-    if (directIndex !== null) {
-        return directIndex;
-    }
-
-    const streamId = String(src.stream_id || '').trim();
-
-    if (streamId && els.messagesContainer) {
-        const byStreamId = Array.from(els.messagesContainer.querySelectorAll('.message.assistant'))
-            .find((row) => String(row && row.dataset ? row.dataset.streamId || '' : '').trim() === streamId) || null;
-        const streamIndex = byStreamId && byStreamId.dataset
-            ? normalizeStreamMessageIndex(byStreamId.dataset.index)
-            : null;
-
-        if (streamIndex !== null) {
-            return streamIndex;
-        }
-    }
-
-    return normalizeStreamMessageIndex(fallbackIndex);
 }
 
 function isAbortControllerAborted(controller) {
@@ -18279,6 +15931,7 @@ async function sendMessage(options = {}) {
         currentConversationMode = 'learning';
         learningHeaderMode = 'learning';
     }
+
     if (nextConversationMode === 'learning') {
         currentConversationMode = 'learning';
         learningHeaderMode = 'learning';
@@ -19173,7 +16826,6 @@ async function sendMessage(options = {}) {
                             if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
                                 applyLongtermPlanFromText(chunk.result, { source: 'function_result', messageDiv: aiMsgDiv });
                             }
-                            maybeRenderCanvasFromJsExecuteResult(aiMsgDiv, toolName, chunk.result, callId, toolIndex);
                         }
                         else if (chunk.type === 'learning_card') {
                             appendLearningCardStep(aiMsgDiv, chunk);
@@ -19573,1535 +17225,211 @@ function appendAddBasisView(aiMsgDiv, args) {
 }
 
 function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = {}) {
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const toolName = String(name || '').trim() || 'tool';
-    const opts = (options && typeof options === 'object') ? options : {};
-    const callId = String(opts.callId || opts.call_id || '').trim();
-    const reuseIfExists = !!opts.reuseIfExists;
-    const pending = !!opts.pending;
-
-    let div = null;
-    if (reuseIfExists) {
-        div = findToolUsage(parent, toolName, callId, true);
-    }
-    if (!div) {
-        div = document.createElement('div');
-        div.className = 'tool-usage execution-flow-item';
-        parent.appendChild(div);
-        div.dataset.resolved = 'false';
-    }
-    div.dataset.toolName = toolName;
-    applyToolExecutionFlowKind(div, toolName);
-    if (callId) div.dataset.callId = callId;
-    div.dataset.pending = pending ? 'true' : 'false';
-    if (pending) div.dataset.resolved = 'false';
-    div.dataset.userToggled = 'false';
-    div.dataset.autoLock = '0';
-    if (pending) {
-        div.classList.add('is-running');
-    }
-
-    // Icon selection
-    let iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'; // default toolbox
-    if(toolName === 'Web Search' || toolName === 'knowledge_search_keyword' || toolName === 'search_keyword' || toolName === 'searchKeyword' || toolName === 'web_search') {
-        iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
-    }
-
-    const rawDetailText = typeof details === 'object' ? JSON.stringify(details) : details;
-    let detailText = String(rawDetailText || '');
-    if (isFunction && detailText) {
-        detailText = `参数: ${clipExecutionFlowText(detailText, 72)}`;
-    }
-    const primaryText = buildChineseToolAction(toolName, parseExecutionFlowJson(rawDetailText) || {}, '', '', div);
-    const phaseText = pending ? '准备中' : getExecutionFlowPhaseText(detailText);
-
-    div.innerHTML = `
-        <div class="tool-badge execution-flow-header">
-            <span class="execution-flow-node" aria-hidden="true">${iconSvg}</span>
-            <span class="execution-flow-main">
-                <span class="tool-name execution-flow-title" title="${escapeHtml(toolName)}">${escapeHtml(primaryText)}</span>
-            </span>
-            <span class="tool-status execution-flow-summary">${escapeHtml(phaseText || '准备中')}</span>
-            <span class="tool-toggle" aria-hidden="true">▸</span>
-        </div>
-        <div class="tool-output"></div>
-    `;
-    bindToolUsageToggle(div);
-    placeCanvasCardsBelowToolChain(aiMsgDiv);
-    syncInteractiveCardsBelowToolChain(aiMsgDiv);
-    return div;
+    return toolEventController.appendToolEvent(aiMsgDiv, name, details, isFunction, options);
 }
 
 function bindToolUsageToggle(toolEl) {
-    if (!toolEl || toolEl.dataset.toggleBound === '1') return;
-    const badge = toolEl.querySelector('.tool-badge');
-    if (!badge) return;
-    badge.addEventListener('click', () => {
-        if (toolEl.dataset.autoLock === '1') return;
-        if (!toolEl.classList.contains('has-output')) return;
-        if (toolEl.__autoCollapseTimer) {
-            clearTimeout(toolEl.__autoCollapseTimer);
-            toolEl.__autoCollapseTimer = null;
-        }
-        toolEl.dataset.userToggled = 'true';
-        toolEl.classList.toggle('expanded');
-    });
-    toolEl.dataset.toggleBound = '1';
+    return toolEventController.bindToolUsageToggle(toolEl);
 }
 
 function scheduleToolAutoCollapse(toolEl, delay = 260) {
-    if (!toolEl) return;
-    if (toolEl.__autoCollapseTimer) {
-        clearTimeout(toolEl.__autoCollapseTimer);
-    }
-    toolEl.__autoCollapseTimer = setTimeout(() => {
-        toolEl.__autoCollapseTimer = null;
-        toolEl.dataset.autoLock = '0';
-        if (!toolEl.isConnected) return;
-        if (toolEl.dataset.userToggled === 'true') return;
-        toolEl.classList.remove('expanded');
-    }, Math.max(0, Number(delay) || 0));
+    return toolEventController.scheduleToolAutoCollapse(toolEl, delay);
 }
 
-function findToolUsage(parent, name, callId, pendingOnly = false) {
-    const targetName = String(name || '').trim();
-    const targetCallId = String(callId || '').trim();
-    const rows = parent.querySelectorAll('.tool-usage');
-    for (let i = rows.length - 1; i >= 0; i--) {
-        const row = rows[i];
-        if (pendingOnly && row.dataset.pending !== 'true') continue;
-        if (targetCallId && row.dataset.callId === targetCallId) return row;
-        if (!targetCallId && targetName && row.dataset.toolName === targetName) return row;
-    }
-    return null;
+function findToolUsage(...args) {
+    return getNexoraChatTools().findToolUsage(...args);
 }
 
-function findToolUsageByPhase(parent, name, callId, phase, pendingOnly = false) {
-    if (!parent) return null;
-    const targetName = String(name || '').trim();
-    const targetCallId = String(callId || '').trim();
-    const targetPhase = String(phase || '').trim();
-    const rows = parent.querySelectorAll('.tool-usage');
-    for (let i = rows.length - 1; i >= 0; i--) {
-        const row = rows[i];
-        if (pendingOnly && row.dataset.pending !== 'true') continue;
-        if (targetPhase && String(row.dataset.phase || '').trim() !== targetPhase) continue;
-        if (targetCallId && row.dataset.callId === targetCallId) return row;
-        if (!targetCallId && targetName && row.dataset.toolName === targetName) return row;
-    }
-    return null;
+function findToolUsageByPhase(...args) {
+    return getNexoraChatTools().findToolUsageByPhase(...args);
 }
 
-function getToolCallState(aiMsgDiv) {
-    if (!aiMsgDiv.__toolCallState || typeof aiMsgDiv.__toolCallState !== 'object') {
-        aiMsgDiv.__toolCallState = {
-            seq: 0,
-            pendingByName: {},
-            callIdByIndex: {},
-            pendingQueue: [],
-            explicitIdByLocalId: {},
-            activeAnonCallId: '',
-            argsDeltaSeenByCallId: {}
-        };
-    }
-    if (!aiMsgDiv.__toolCallState.callIdByIndex || typeof aiMsgDiv.__toolCallState.callIdByIndex !== 'object') {
-        aiMsgDiv.__toolCallState.callIdByIndex = {};
-    }
-    if (!Array.isArray(aiMsgDiv.__toolCallState.pendingQueue)) {
-        aiMsgDiv.__toolCallState.pendingQueue = [];
-    }
-    if (!aiMsgDiv.__toolCallState.explicitIdByLocalId || typeof aiMsgDiv.__toolCallState.explicitIdByLocalId !== 'object') {
-        aiMsgDiv.__toolCallState.explicitIdByLocalId = {};
-    }
-    if (typeof aiMsgDiv.__toolCallState.activeAnonCallId !== 'string') {
-        aiMsgDiv.__toolCallState.activeAnonCallId = '';
-    }
-    if (!aiMsgDiv.__toolCallState.argsDeltaSeenByCallId || typeof aiMsgDiv.__toolCallState.argsDeltaSeenByCallId !== 'object') {
-        aiMsgDiv.__toolCallState.argsDeltaSeenByCallId = {};
-    }
-    return aiMsgDiv.__toolCallState;
+function getToolCallState(...args) {
+    return getNexoraChatTools().getToolCallState(...args);
 }
 
-function rememberToolArgsDeltaSeen(aiMsgDiv, callId) {
-    const id = String(callId || '').trim();
-
-    if (!aiMsgDiv || !id) {
-        return;
-    }
-
-    const state = getToolCallState(aiMsgDiv);
-    state.argsDeltaSeenByCallId[id] = true;
+function rememberToolArgsDeltaSeen(...args) {
+    return getNexoraChatTools().rememberToolArgsDeltaSeen(...args);
 }
 
-function hasToolArgsDeltaSeen(aiMsgDiv, callId) {
-    const id = String(callId || '').trim();
-
-    if (!aiMsgDiv || !id) {
-        return false;
-    }
-
-    const state = getToolCallState(aiMsgDiv);
-    return !!state.argsDeltaSeenByCallId[id];
+function hasToolArgsDeltaSeen(...args) {
+    return getNexoraChatTools().hasToolArgsDeltaSeen(...args);
 }
 
-function removePendingToolCallId(state, callId) {
-    const id = String(callId || '').trim();
-    if (!state || !id) return;
-
-    const pendingQueue = Array.isArray(state.pendingQueue) ? state.pendingQueue : [];
-    for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
-        if (pendingQueue[i] === id) pendingQueue.splice(i, 1);
-    }
-
-    const pendingByName = state.pendingByName && typeof state.pendingByName === 'object'
-        ? state.pendingByName
-        : {};
-    Object.keys(pendingByName).forEach((name) => {
-        const queue = Array.isArray(pendingByName[name]) ? pendingByName[name] : [];
-        for (let i = queue.length - 1; i >= 0; i -= 1) {
-            if (queue[i] === id) queue.splice(i, 1);
-        }
-    });
+function removePendingToolCallId(...args) {
+    return getNexoraChatTools().removePendingToolCallId(...args);
 }
 
-function rememberPendingToolCallId(aiMsgDiv, callId, toolName) {
-    const id = String(callId || '').trim();
-    const name = normalizeToolDisplayName(toolName);
-    if (!aiMsgDiv || !id || !name) return;
-
-    const state = getToolCallState(aiMsgDiv);
-    if (!state.pendingByName || typeof state.pendingByName !== 'object') {
-        state.pendingByName = {};
-    }
-
-    if (!Array.isArray(state.pendingByName[name])) {
-        state.pendingByName[name] = [];
-    }
-
-    if (!state.pendingByName[name].includes(id)) {
-        state.pendingByName[name].push(id);
-    }
-
-    if (!Array.isArray(state.pendingQueue)) {
-        state.pendingQueue = [];
-    }
-
-    if (!state.pendingQueue.includes(id)) {
-        state.pendingQueue.push(id);
-    }
+function rememberPendingToolCallId(...args) {
+    return getNexoraChatTools().rememberPendingToolCallId(...args);
 }
 
-function migratePendingToolCallId(aiMsgDiv, oldCallId, newCallId, toolName) {
-    const oldId = String(oldCallId || '').trim();
-    const newId = String(newCallId || '').trim();
-    const name = normalizeToolDisplayName(toolName);
-    if (!aiMsgDiv || !newId) return;
-
-    const state = getToolCallState(aiMsgDiv);
-    if (oldId && oldId !== newId) {
-        removePendingToolCallId(state, oldId);
-        state.explicitIdByLocalId[oldId] = newId;
-
-        if (state.activeAnonCallId === oldId) {
-            state.activeAnonCallId = newId;
-        }
-    }
-
-    rememberPendingToolCallId(aiMsgDiv, newId, name);
+function migratePendingToolCallId(...args) {
+    return getNexoraChatTools().migratePendingToolCallId(...args);
 }
 
-function allocateToolCallId(aiMsgDiv, toolName, phase, explicitCallId = '', toolIndex = null) {
-    const state = getToolCallState(aiMsgDiv);
-    const name = String(toolName || '').trim() || 'tool';
-    const explicit = String(explicitCallId || '').trim();
-    const idxKey = (toolIndex === null || toolIndex === undefined || Number.isNaN(Number(toolIndex)))
-        ? ''
-        : String(Number(toolIndex));
-    const pendingByName = state.pendingByName;
-    const pendingQueue = state.pendingQueue;
-    if (!Array.isArray(pendingByName[name])) pendingByName[name] = [];
-    const queue = pendingByName[name];
-    const enqueueOnce = (id) => {
-        if (!id) return;
-        if (!pendingQueue.includes(id)) pendingQueue.push(id);
-    };
-    const dequeueById = (id) => {
-        if (!id) return;
-        const qIdx = pendingQueue.indexOf(id);
-        if (qIdx >= 0) pendingQueue.splice(qIdx, 1);
-    };
-
-    if (explicit) {
-        if (idxKey) state.callIdByIndex[idxKey] = explicit;
-        if (phase === 'result') {
-            const idx = queue.indexOf(explicit);
-            if (idx >= 0) queue.splice(idx, 1);
-            dequeueById(explicit);
-            if (state.activeAnonCallId === explicit) state.activeAnonCallId = '';
-        } else if (!queue.includes(explicit)) {
-            queue.push(explicit);
-            enqueueOnce(explicit);
-        }
-        return explicit;
-    }
-
-    const createLocalId = () => `local-${++state.seq}`;
-    if (idxKey) {
-        if (!state.callIdByIndex[idxKey]) {
-            state.callIdByIndex[idxKey] = createLocalId();
-        }
-        const byIndexId = state.callIdByIndex[idxKey];
-        if (phase === 'result') {
-            const idx = queue.indexOf(byIndexId);
-            if (idx >= 0) queue.splice(idx, 1);
-            dequeueById(byIndexId);
-            if (state.activeAnonCallId === byIndexId) state.activeAnonCallId = '';
-        } else if (!queue.includes(byIndexId)) {
-            queue.push(byIndexId);
-            enqueueOnce(byIndexId);
-        }
-        return byIndexId;
-    }
-
-    // No explicit call_id and no index: treat as anonymous stream.
-    if (phase === 'delta') {
-        if (!state.activeAnonCallId) {
-            state.activeAnonCallId = createLocalId();
-            if (!queue.includes(state.activeAnonCallId)) queue.push(state.activeAnonCallId);
-            enqueueOnce(state.activeAnonCallId);
-        }
-        return state.activeAnonCallId;
-    }
-    if (phase === 'call') {
-        // Close current anonymous delta stream at function-call boundary.
-        if (state.activeAnonCallId) {
-            const anonId = state.activeAnonCallId;
-            state.activeAnonCallId = '';
-            if (!queue.includes(anonId)) queue.push(anonId);
-            enqueueOnce(anonId);
-            return anonId;
-        }
-        const id = createLocalId();
-        if (!queue.includes(id)) queue.push(id);
-        enqueueOnce(id);
-        return id;
-    }
-    if (phase === 'result') {
-        let id = '';
-        if (queue.length > 0) {
-            id = queue.shift();
-            dequeueById(id);
-            if (state.activeAnonCallId === id) state.activeAnonCallId = '';
-            return id;
-        }
-        if (pendingQueue.length > 0) {
-            id = pendingQueue.shift();
-            const byNameIdx = queue.indexOf(id);
-            if (byNameIdx >= 0) queue.splice(byNameIdx, 1);
-            if (state.activeAnonCallId === id) state.activeAnonCallId = '';
-            return id;
-        }
-        if (state.activeAnonCallId) {
-            id = state.activeAnonCallId;
-            state.activeAnonCallId = '';
-            dequeueById(id);
-            return id;
-        }
-        return createLocalId();
-    }
-    if (phase === 'delta' || phase === 'call') {
-        if (queue.length === 0) queue.push(createLocalId());
-        enqueueOnce(queue[queue.length - 1]);
-        return queue[queue.length - 1];
-    }
-    return createLocalId();
+function allocateToolCallId(...args) {
+    return getNexoraChatTools().allocateToolCallId(...args);
 }
 
 function formatToolArgsForOutput(argsRaw) {
-    const raw = String(argsRaw || '').trim();
-    if (!raw) return '';
-    try {
-        return JSON.stringify(JSON.parse(raw), null, 2);
-    } catch (_) {
-        return raw;
-    }
+    return toolEventController.formatToolArgsForOutput(argsRaw);
 }
 
 function isCompleteJsonText(raw) {
-    const s = String(raw || '').trim();
-    if (!s) return false;
-    try {
-        JSON.parse(s);
-        return true;
-    } catch (_) {
-        return false;
-    }
+    return toolEventController.isCompleteJsonText(raw);
 }
 
 function shouldSplitToolArgsStream(existingRaw, incomingDelta) {
-    const prev = String(existingRaw || '').trim();
-    if (!prev) return false;
-    if (!isCompleteJsonText(prev)) return false;
-    const nextLead = String(incomingDelta || '').trimStart();
-    return nextLead.startsWith('{') || nextLead.startsWith('[');
+    return toolEventController.shouldSplitToolArgsStream(existingRaw, incomingDelta);
 }
 
 function beginNewAnonymousToolCall(aiMsgDiv, name) {
-    const state = getToolCallState(aiMsgDiv);
-    state.activeAnonCallId = '';
-    return allocateToolCallId(aiMsgDiv, name, 'delta', '', null);
+    return toolEventController.beginNewAnonymousToolCall(aiMsgDiv, name);
 }
 
 function formatToolDeltaStatus(argsRaw) {
-    const _ = argsRaw; // keep signature stable for existing calls
-    return '参数构建中';
+    return toolEventController.formatToolDeltaStatus(argsRaw);
 }
 
-function normalizeToolDisplayName(name) {
-    return String(name || '').trim() || 'tool';
+function normalizeToolDisplayName(...args) {
+    return getNexoraChatTools().normalizeToolDisplayName(...args);
 }
 
-function resolveToolNameFromEvent(data, fallback = '') {
-    const src = (data && typeof data === 'object') ? data : {};
-    const direct = String(src.name || src.function_name || src.tool_name || '').trim();
-    if (direct) return direct;
-
-    const funcObj = (src.function && typeof src.function === 'object') ? src.function : null;
-    if (funcObj) {
-        const n = String(funcObj.name || '').trim();
-        if (n) return n;
-    }
-
-    const toolCallObj = (src.tool_call && typeof src.tool_call === 'object') ? src.tool_call : null;
-    const toolCallFunction = toolCallObj && typeof toolCallObj.function === 'object' ? toolCallObj.function : null;
-    if (toolCallFunction) {
-        const n = String(toolCallFunction.name || '').trim();
-        if (n) return n;
-    }
-
-    const deltaObj = (src.delta && typeof src.delta === 'object') ? src.delta : null;
-    const deltaFunction = deltaObj && typeof deltaObj.function === 'object' ? deltaObj.function : null;
-    if (deltaFunction) {
-        const n = String(deltaFunction.name || '').trim();
-        if (n) return n;
-    }
-
-    const toolCalls = Array.isArray(src.tool_calls) ? src.tool_calls : [];
-    for (const call of toolCalls) {
-        if (!call || typeof call !== 'object') continue;
-        const fn = call.function && typeof call.function === 'object' ? call.function : null;
-        const n = String((fn && fn.name) || call.name || '').trim();
-        if (n) return n;
-    }
-
-    const deltaToolCalls = deltaObj && Array.isArray(deltaObj.tool_calls) ? deltaObj.tool_calls : [];
-    for (const call of deltaToolCalls) {
-        if (!call || typeof call !== 'object') continue;
-        const fn = call.function && typeof call.function === 'object' ? call.function : null;
-        const n = String((fn && fn.name) || call.name || '').trim();
-        if (n) return n;
-    }
-
-    return String(fallback || '').trim();
+function resolveToolNameFromEvent(...args) {
+    return getNexoraChatTools().resolveToolNameFromEvent(...args);
 }
 
 function renameToolUsageRow(row, name) {
-    if (!row) return;
-    const safeName = normalizeToolDisplayName(name);
-    row.dataset.toolName = safeName;
-    applyToolExecutionFlowKind(row, safeName);
-    const nameEl = row.querySelector('.tool-name');
-    if (nameEl) {
-        nameEl.textContent = buildChineseToolAction(safeName, getExecutionFlowArgs(row), '', '', row);
-        nameEl.title = safeName;
-    }
+    return toolEventController.renameToolUsageRow(row, name);
 }
 
 function setToolUsageStatus(row, statusText) {
-    if (!row) return;
-    const safeName = normalizeToolDisplayName(row.dataset.toolName || '');
-    setToolUsagePrimaryText(row, buildChineseToolAction(safeName, getExecutionFlowArgs(row), '', '', row));
-    const statusEl = row.querySelector('.tool-status');
-    if (statusEl) {
-        const raw = String(statusText || '');
-        const compact = getExecutionFlowPhaseText(raw);
-        statusEl.textContent = compact;
-        statusEl.title = compact;
-    }
+    return toolEventController.setToolUsageStatus(row, statusText);
 }
 
 function yieldToolStreamPaint() {
-    // 本地文件写入常在同一批 SSE 中完成；让执行中状态先进入浏览器绘制队列。
-    return new Promise((resolve) => {
-        requestAnimationFrame(() => resolve());
-    });
+    return toolEventController.yieldToolStreamPaint();
 }
 
-const TOOL_STREAM_PAINT_MIN_INTERVAL_MS = 80;
-const TOOL_STREAM_PAINT_DEBT_LIMIT = 3;
-const TOOL_STREAM_PAINT_DEBT_CHARS = 384;
-const toolStreamPaintAtByMessage = new WeakMap();
-const toolStreamPaintDebtByMessage = new WeakMap();
-
 function getToolStreamPaintDebt(data) {
-    const type = String(data && data.type || '').trim();
-
-    if (type !== 'function_call_delta') {
-        return 1;
-    }
-
-    const delta = String(
-        (data && (data.arguments_delta || data.delta || data.name_delta))
-        || ''
-    );
-
-    return Math.max(1, Math.ceil(delta.length / TOOL_STREAM_PAINT_DEBT_CHARS));
+    return toolEventController.getToolStreamPaintDebt(data);
 }
 
 function shouldYieldToolStreamPaintForChunk(data) {
-    const type = String(data && data.type || '').trim();
-
-    if (type === 'function_call' || type === 'function_call_running') {
-        return true;
-    }
-
-    if (type !== 'function_call_delta') {
-        return false;
-    }
-
-    const delta = String(
-        (data && (data.arguments_delta || data.delta || data.name_delta))
-        || ''
-    );
-
-    if (!delta) {
-        return false;
-    }
-
-    const toolName = resolveToolNameFromEvent(data, data && data.name);
-    const compact = String(toolName || '').replace(/[\s_-]+/g, '').toLowerCase();
-
-    return compact.includes('file') || delta.length >= 64;
+    return toolEventController.shouldYieldToolStreamPaintForChunk(data);
 }
 
 async function yieldToolStreamPaintForChunk(messageDiv, data, force = false) {
-    if (!messageDiv) {
-        return;
-    }
-
-    if (!force && !shouldYieldToolStreamPaintForChunk(data)) {
-        return;
-    }
-
-    const now = (window.performance && typeof window.performance.now === 'function')
-        ? window.performance.now()
-        : Date.now();
-    const lastPaintAt = Number(toolStreamPaintAtByMessage.get(messageDiv) || 0);
-
-    if (!force && now - lastPaintAt < TOOL_STREAM_PAINT_MIN_INTERVAL_MS) {
-        const nextDebt = Number(toolStreamPaintDebtByMessage.get(messageDiv) || 0) + getToolStreamPaintDebt(data);
-
-        if (nextDebt < TOOL_STREAM_PAINT_DEBT_LIMIT) {
-            toolStreamPaintDebtByMessage.set(messageDiv, nextDebt);
-            return;
-        }
-    }
-
-    toolStreamPaintDebtByMessage.set(messageDiv, 0);
-    toolStreamPaintAtByMessage.set(messageDiv, now);
-    await yieldToolStreamPaint();
+    return await toolEventController.yieldToolStreamPaintForChunk(messageDiv, data, force);
 }
 
 function scrollToolOutputToBottom(outputEl) {
-    if (!outputEl) return;
-    const doScroll = () => {
-        outputEl.scrollTop = outputEl.scrollHeight;
-    };
-    doScroll();
-    requestAnimationFrame(doScroll);
+    return toolEventController.scrollToolOutputToBottom(outputEl);
 }
 
-function findPendingToolUsageFallback(parent, name, callId = '', toolIndex = null) {
-    if (!parent) return null;
-    const safeName = normalizeToolDisplayName(name);
-    const safeCallId = String(callId || '').trim();
-    const idxKey = (toolIndex === null || toolIndex === undefined || Number.isNaN(Number(toolIndex)))
-        ? ''
-        : String(Number(toolIndex));
-
-    if (safeCallId) {
-        const byCall = findToolUsage(parent, safeName, safeCallId, true) || findToolUsage(parent, 'tool', safeCallId, true);
-        if (byCall) return byCall;
-    }
-
-    const rows = parent.querySelectorAll('.tool-usage');
-    if (idxKey) {
-        for (let i = rows.length - 1; i >= 0; i--) {
-            const row = rows[i];
-            if (row.dataset.pending !== 'true') continue;
-            if (String(row.dataset.toolIndex || '') === idxKey) return row;
-        }
-    }
-
-    for (let i = rows.length - 1; i >= 0; i--) {
-        const row = rows[i];
-        if (row.dataset.pending !== 'true') continue;
-        if (row.dataset.toolName === safeName) return row;
-    }
-    for (let i = rows.length - 1; i >= 0; i--) {
-        const row = rows[i];
-        if (row.dataset.pending !== 'true') continue;
-        const n = String(row.dataset.toolName || '').trim();
-        if (!n || n === 'tool') return row;
-    }
-    return null;
+function findPendingToolUsageFallback(...args) {
+    return getNexoraChatTools().findPendingToolUsageFallback(...args);
 }
 
 function ensureToolUsageForDelta(aiMsgDiv, name, callId, toolIndex = null) {
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const safeName = String(name || '').trim() || 'tool';
-    const safeCallId = String(callId || '').trim();
-    const idxKey = (toolIndex === null || toolIndex === undefined || Number.isNaN(Number(toolIndex)))
-        ? ''
-        : String(Number(toolIndex));
-    let row = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex);
-    if (!row) {
-        row = appendToolEvent(aiMsgDiv, safeName, '参数构建中...', true, {
-            callId: safeCallId,
-            reuseIfExists: true,
-            pending: true
-        });
-    }
-    const previousCallId = String((row && row.dataset && row.dataset.callId) || '').trim();
-    row.dataset.pending = 'true';
-    row.dataset.phase = 'build';
-    if (safeCallId) row.dataset.callId = safeCallId;
-    if (idxKey) row.dataset.toolIndex = idxKey;
-    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || safeCallId, safeName);
-    return row;
+    return toolEventController.ensureToolUsageForDelta(aiMsgDiv, name, callId, toolIndex);
 }
 
 function appendToolCallDelta(aiMsgDiv, data) {
-    const providedName = resolveToolNameFromEvent(data);
-    const nameDeltaPiece = String((data && data.name_delta) || '').trim();
-    const name = providedName || 'tool';
-    const callId = String(data.call_id || data.callId || '').trim();
-    const rawCallId = String(data.__raw_call_id || '').trim();
-    const rawIndex = (data.__tool_index === undefined || data.__tool_index === null) ? null : Number(data.__tool_index);
-    const delta = String(data.arguments_delta || data.delta || '');
-    let row = ensureToolUsageForDelta(aiMsgDiv, name, callId, rawIndex);
-    if (providedName) {
-        row.dataset.nameAcc = providedName;
-        renameToolUsageRow(row, providedName);
-        rememberPendingToolCallId(aiMsgDiv, row.dataset.callId || callId, providedName);
-    } else if (nameDeltaPiece) {
-        const acc = `${row.dataset.nameAcc || ''}${nameDeltaPiece}`;
-        row.dataset.nameAcc = acc;
-        if (String(acc || '').trim()) {
-            renameToolUsageRow(row, acc);
-            rememberPendingToolCallId(aiMsgDiv, row.dataset.callId || callId, acc);
-        }
-    }
-    if (!delta) return;
-
-    // provider 未提供稳定 call_id/index 时，若上一段参数已是完整 JSON，且新增量又从对象起始开始，
-    // 视为新一轮工具调用，强制切分为新行，避免参数复用拼接。
-    const missingStableIdentity = !rawCallId && (rawIndex === null || Number.isNaN(rawIndex));
-    if (missingStableIdentity && shouldSplitToolArgsStream(row.dataset.argsRaw || '', delta)) {
-        const freshCallId = beginNewAnonymousToolCall(aiMsgDiv, name);
-        row = ensureToolUsageForDelta(aiMsgDiv, name, freshCallId, rawIndex);
-    }
-
-    const nextRaw = `${row.dataset.argsRaw || ''}${delta}`;
-    row.dataset.argsRaw = nextRaw;
-    const displayName = normalizeToolDisplayName(row.dataset.toolName || providedName || name);
-    const partialArgs = parseExecutionFlowPartialJson(nextRaw) || {};
-    const fileRunningDisplay = buildFileToolRunningDisplay(displayName, partialArgs);
-    setToolUsageStatus(row, `${displayName} ${formatToolDeltaStatus(nextRaw)}:`);
-    const outDiv = row.querySelector('.tool-output');
-    if (outDiv) {
-        outDiv.textContent = fileRunningDisplay
-            ? fileRunningDisplay.progressText
-            : formatToolArgsForOutput(nextRaw);
-        if (outDiv.textContent) {
-            row.classList.add('has-output');
-            row.classList.add('expanded');
-            row.dataset.autoLock = '0';
-            row.dataset.userToggled = 'false';
-            scrollToolOutputToBottom(outDiv);
-        }
-    }
+    return toolEventController.appendToolCallDelta(aiMsgDiv, data);
 }
 
 function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', options = {}) {
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    let safeName = String(name || '').trim() || 'tool';
-    const safeCallId = String(callId || '').trim();
-    const toolIndex = (options && options.toolIndex !== undefined && options.toolIndex !== null)
-        ? Number(options.toolIndex)
-        : null;
-    const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
-    const autoExpand = !(options && options.autoExpand === false);
-
-    let row = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
-        || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false)
-        || findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false);
-    if ((safeName === 'tool') && row) {
-        const inherited = normalizeToolDisplayName(row.dataset.toolName || '');
-        if (inherited && inherited !== 'tool') safeName = inherited;
-    }
-    const finalArgs = String(argumentsText || (row && row.dataset ? row.dataset.argsRaw : '') || '');
-    if (!row) {
-        row = appendToolEvent(aiMsgDiv, safeName, '', true, {
-            callId: safeCallId,
-            reuseIfExists: false,
-            pending: false
-        });
-    }
-    if (!row) return;
-
-    const previousCallId = String(row.dataset.callId || '').trim();
-    if (finalArgs) row.dataset.argsRaw = finalArgs;
-    renameToolUsageRow(row, safeName);
-    row.dataset.phase = 'exec';
-    if (safeCallId) row.dataset.callId = safeCallId;
-    if (idxKey) row.dataset.toolIndex = idxKey;
-    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || safeCallId, safeName);
-    row.dataset.pending = 'false';
-    row.dataset.resolved = 'false';
-    const finalArgsObj = parseExecutionFlowJson(finalArgs) || parseExecutionFlowPartialJson(finalArgs) || {};
-    const fileRunningDisplay = buildFileToolRunningDisplay(safeName, finalArgsObj);
-    setToolUsageStatus(row, fileRunningDisplay ? fileRunningDisplay.statusText : `${safeName} 执行中`);
-    const outDiv = row.querySelector('.tool-output');
-    if (outDiv) {
-        outDiv.textContent = fileRunningDisplay
-            ? fileRunningDisplay.progressText
-            : row.dataset.argsRaw
-            ? formatToolArgsForOutput(row.dataset.argsRaw)
-            : '';
-        row.classList.toggle('has-output', !!outDiv.textContent.trim());
-        if (autoExpand) {
-            row.classList.add('is-running');
-            row.classList.toggle('expanded', !!outDiv.textContent.trim());
-            row.dataset.autoLock = '0';
-            row.dataset.userToggled = 'false';
-        } else {
-            row.dataset.autoLock = '0';
-        }
-        if (outDiv.textContent.trim()) {
-            scrollToolOutputToBottom(outDiv);
-
-            if (!fileRunningDisplay) {
-                scheduleToolAutoCollapse(row, 260);
-            }
-        }
-    }
+    return toolEventController.finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText, options);
 }
 
-function findToolUsageForRunning(parent, name, callId, toolIndex = null) {
-    const safeName = normalizeToolDisplayName(name);
-    const safeCallId = String(callId || '').trim();
-
-    return findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
-        || findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false)
-        || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false)
-        || findToolUsage(parent, safeName, safeCallId, false);
+function findToolUsageForRunning(...args) {
+    return getNexoraChatTools().findToolUsageForRunning(...args);
 }
 
-function resolveToolCallIdForRunning(aiMsgDiv, name, rawCallId, toolIndex = null) {
-    const safeName = normalizeToolDisplayName(name);
-    const safeRawCallId = String(rawCallId || '').trim();
-
-    if (safeRawCallId || (toolIndex !== null && toolIndex !== undefined && !Number.isNaN(Number(toolIndex)))) {
-        return allocateToolCallId(aiMsgDiv, safeName, 'call', safeRawCallId, toolIndex);
-    }
-
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const row = findToolUsageForRunning(parent, safeName, '', toolIndex);
-    const existingCallId = String((row && row.dataset && row.dataset.callId) || '').trim();
-
-    if (existingCallId) {
-        return existingCallId;
-    }
-
-    return allocateToolCallId(aiMsgDiv, safeName, 'call', '', toolIndex);
+function resolveToolCallIdForRunning(...args) {
+    return getNexoraChatTools().resolveToolCallIdForRunning(...args);
 }
 
 function updateToolCallRunning(aiMsgDiv, data) {
-    if (!aiMsgDiv || !data || typeof data !== 'object') {
-        return;
-    }
-
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const toolName = resolveToolNameFromEvent(data, data.name) || 'tool';
-
-    if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
-        return;
-    }
-
-    const rawCallId = String(data.call_id || data.callId || '').trim();
-    const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
-    const callId = resolveToolCallIdForRunning(aiMsgDiv, toolName, rawCallId, toolIndex);
-    const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
-    let row = findToolUsageForRunning(parent, toolName, callId, toolIndex);
-
-    if (!row) {
-        row = appendToolEvent(aiMsgDiv, toolName, '执行中', true, {
-            callId,
-            reuseIfExists: false,
-            pending: false
-        });
-    }
-
-    if (!row) {
-        return;
-    }
-
-    const argsRaw = String(data.arguments || '').trim();
-
-    const previousCallId = String(row.dataset.callId || '').trim();
-
-    if (argsRaw) {
-        row.dataset.argsRaw = argsRaw;
-    }
-
-    renameToolUsageRow(row, toolName);
-    row.dataset.phase = 'exec';
-    row.dataset.pending = 'false';
-    row.dataset.resolved = 'false';
-
-    if (callId) {
-        row.dataset.callId = callId;
-    }
-
-    if (idxKey) {
-        row.dataset.toolIndex = idxKey;
-    }
-
-    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || callId, toolName);
-    row.classList.add('is-running');
-    row.classList.remove('done');
-
-    const statusText = String(data.status_text || data.statusText || '').trim();
-    const progressText = String(data.progress_text || data.progressText || '').trim();
-    setToolUsageStatus(row, statusText || '执行中');
-
-    const outDiv = row.querySelector('.tool-output');
-
-    if (outDiv && progressText) {
-        outDiv.textContent = progressText;
-        row.classList.toggle('has-output', !!outDiv.textContent.trim());
-
-        if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
-            row.classList.add('expanded');
-            row.dataset.autoLock = '0';
-            scrollToolOutputToBottom(outDiv);
-        }
-    } else if (outDiv && row.dataset.argsRaw) {
-        outDiv.textContent = formatToolArgsForOutput(row.dataset.argsRaw);
-        row.classList.toggle('has-output', !!outDiv.textContent.trim());
-
-        if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
-            row.classList.add('expanded');
-            row.dataset.autoLock = '0';
-            scrollToolOutputToBottom(outDiv);
-        }
-    }
+    return toolEventController.updateToolCallRunning(aiMsgDiv, data);
 }
 
 function isGenerateImageToolName(name) {
-    const compact = String(name || '').trim().replace(/[_\-\s]/g, '').toLowerCase();
-    return compact === 'generateimage';
+    return toolResultController.isGenerateImageToolName(name);
 }
 
 function parseToolResultPayload(result) {
-    if (result && typeof result === 'object') {
-        return result;
-    }
-
-    const text = String(result || '').trim();
-
-    if (!text) {
-        return null;
-    }
-
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
+    return toolResultController.parseToolResultPayload(result);
 }
 
 function isMapToolName(name) {
-    const compact = String(name || '').trim().replace(/[\s-]/g, '_').toLowerCase();
-    const mapToolNames = new Set([
-        'map_render',
-        'maprenderscene',
-        'maprender',
-        'map_render_scene',
-        'map_calc_distance',
-        'mapcalcdistance',
-        'map_calc_straight_distance',
-        'map_calc_route',
-        'mapcalcroute',
-        'map_route_plan',
-        'map_geocode',
-        'mapgeocode',
-        'map_poi_search',
-        'mappoisearch',
-        'map_search_place'
-    ]);
-
-    return mapToolNames.has(compact);
+    return toolResultController.isMapToolName(name);
 }
 
 function readMapResultId(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return '';
-    }
-
-    return String(
-        payload.map_id
-        || payload.mapId
-        || payload.render_id
-        || payload.renderId
-        || payload.record_id
-        || payload.recordId
-        || ''
-    ).trim();
+    return toolResultController.readMapResultId(payload);
 }
 
 function readMapResultConversationId(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return String(currentConversationId || '').trim();
-    }
-
-    return String(
-        payload.conversation_id
-        || payload.conversationId
-        || currentConversationId
-        || ''
-    ).trim();
+    return toolResultController.readMapResultConversationId(payload);
 }
 
 function buildMapResultMarkdown(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return '';
-    }
-
-    const markdown = String(payload.markdown || '').trim();
-
-    if (markdown) {
-        return markdown;
-    }
-
-    if (payload.scene && typeof payload.scene === 'object' && !Array.isArray(payload.scene)) {
-        return `\`\`\`nexora-map\n${JSON.stringify(payload.scene, null, 4)}\n\`\`\``;
-    }
-
-    const mapId = readMapResultId(payload);
-    const conversationId = readMapResultConversationId(payload);
-
-    if (!mapId || !conversationId) {
-        return '';
-    }
-
-    const title = String(payload.title || '地图').trim() || '地图';
-    const mapRef = {
-        type: 'nexora-map-ref',
-        mapId,
-        map_id: mapId,
-        renderId: mapId,
-        conversationId,
-        conversation_id: conversationId,
-        title
-    };
-
-    return `\`\`\`nexora-map-ref\n${JSON.stringify(mapRef, null, 4)}\n\`\`\``;
+    return toolResultController.buildMapResultMarkdown(payload);
 }
 
 function stripMapSceneSection(markdownText) {
-    const source = String(markdownText || '').trim();
-
-    if (!source) {
-        return '';
-    }
-
-    const match = source.match(/(?:^|\n)### Scene(?:\n|$)/);
-
-    if (!match) {
-        return source;
-    }
-
-    return source.slice(0, match.index).trim();
+    return toolResultController.stripMapSceneSection(markdownText);
 }
 
 function readContentBodySourceText(node) {
-    if (!node) {
-        return '';
-    }
-
-    if (typeof node.__sourceMarkdown === 'string') {
-        return node.__sourceMarkdown;
-    }
-
-    return String(node.dataset.streamRaw || node.dataset.rawText || node.textContent || '');
+    return toolResultController.readContentBodySourceText(node);
 }
 
 function collectContentMarkdownBeforeNode(parent, stopNode) {
-    if (!parent || !stopNode) {
-        return '';
-    }
-
-    const parts = [];
-    const nodes = Array.from(parent.children || []);
-
-    for (const node of nodes) {
-        if (node === stopNode) {
-            break;
-        }
-
-        if (!node.classList || !node.classList.contains('content-body')) {
-            continue;
-        }
-
-        if (
-            node.classList.contains('generated-image-result')
-            || node.classList.contains('generated-map-result')
-        ) {
-            continue;
-        }
-
-        parts.push(readContentBodySourceText(node));
-    }
-
-    return parts.join('');
+    return toolResultController.collectContentMarkdownBeforeNode(parent, stopNode);
 }
 
 function normalizeGenerateImageProgress(payload) {
-    const source = payload && Array.isArray(payload.progress) ? payload.progress : [];
-    const logs = [];
-
-    source.forEach((entry) => {
-        let text = '';
-
-        if (typeof entry === 'string') {
-            text = entry.trim();
-        } else if (entry && typeof entry === 'object') {
-            text = String(entry.log || entry.message || entry.text || '').trim();
-        } else {
-            text = String(entry || '').trim();
-        }
-
-        if (text) {
-            logs.push(text);
-        }
-    });
-
-    return logs;
+    return toolResultController.normalizeGenerateImageProgress(payload);
 }
 
 function appendGenerateImageProgress(root, progressLogs) {
-    if (!root || !Array.isArray(progressLogs) || progressLogs.length === 0) {
-        return;
-    }
-
-    const wrap = document.createElement('div');
-    wrap.className = 'generate-image-progress';
-
-    const title = document.createElement('div');
-    title.className = 'generate-image-progress-title';
-    title.textContent = '生成进度';
-    wrap.appendChild(title);
-
-    const list = document.createElement('div');
-    list.className = 'generate-image-progress-list';
-
-    progressLogs.forEach((text, index) => {
-        const item = document.createElement('div');
-        item.className = index === progressLogs.length - 1
-            ? 'generate-image-progress-item current'
-            : 'generate-image-progress-item';
-        item.textContent = text;
-        list.appendChild(item);
-    });
-
-    wrap.appendChild(list);
-    root.appendChild(wrap);
+    return toolResultController.appendGenerateImageProgress(root, progressLogs);
 }
 
 function renderGenerateImageToolOutput(outDiv, toolName, result) {
-    if (!outDiv || !isGenerateImageToolName(toolName)) {
-        return false;
-    }
-
-    const payload = parseToolResultPayload(result);
-    const progressLogs = normalizeGenerateImageProgress(payload);
-    const statusMessage = String((payload && payload.message) || '图片生成完成').trim();
-
-    if (!payload || payload.success !== true) {
-        return false;
-    }
-
-    const outputLogs = progressLogs.length > 0 ? progressLogs : [statusMessage];
-    outDiv.classList.remove('tool-output-markdown');
-    outDiv.classList.add('generate-image-tool-output');
-    outDiv.innerHTML = '';
-    appendGenerateImageProgress(outDiv, outputLogs);
-    bindSourceMarkdown(outDiv, outputLogs.join('\n'));
-
-    return true;
+    return toolResultController.renderGenerateImageToolOutput(outDiv, toolName, result);
 }
 
 function renderGenerateImageResultInMessage(aiMsgDiv, result, callId, anchorEl) {
-    if (!aiMsgDiv) {
-        return false;
-    }
-
-    const payload = parseToolResultPayload(result);
-
-    if (!payload || payload.success !== true) {
-        return false;
-    }
-
-    const markdown = String(payload.markdown || '').trim();
-
-    if (!markdown) {
-        return false;
-    }
-
-    const safeCallId = String(callId || '').trim();
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const existing = Array.from(parent.querySelectorAll('.content-body.generated-image-result')).find((node) => {
-        if (safeCallId && String(node.dataset.callId || '') === safeCallId) {
-            return true;
-        }
-
-        return !safeCallId && typeof node.__sourceMarkdown === 'string' && node.__sourceMarkdown === markdown;
-    });
-
-    if (existing) {
-        const hasFollowup = !!parent.querySelector('.content-body.generated-image-followup');
-        aiMsgDiv.__generatedImageResultAnchor = existing;
-        aiMsgDiv.__generatedImageTextPrefix = collectContentMarkdownBeforeNode(parent, existing);
-        aiMsgDiv.__contentAfterGeneratedImage = !hasFollowup;
-        return true;
-    }
-
-    const body = document.createElement('div');
-    body.className = 'content-body generated-image-result fade-in';
-    body.dataset.toolName = 'generate_image';
-
-    if (safeCallId) {
-        body.dataset.callId = safeCallId;
-    }
-
-    body.innerHTML = renderMarkdownWithNewTabLinks(markdown, { breaks: false });
-    bindSourceMarkdown(body, markdown);
-
-    if (anchorEl && anchorEl.parentElement === parent) {
-        anchorEl.insertAdjacentElement('afterend', body);
-    } else {
-        parent.appendChild(body);
-    }
-
-    aiMsgDiv.__contentAfterGeneratedImage = true;
-    aiMsgDiv.__generatedImageResultAnchor = body;
-    aiMsgDiv.__generatedImageTextPrefix = collectContentMarkdownBeforeNode(parent, body);
-    aiMsgDiv.__generatedImageFollowupSpan = null;
-    syncGeneratedImageViewportLimit();
-    return true;
+    return toolResultController.renderGenerateImageResultInMessage(aiMsgDiv, result, callId, anchorEl);
 }
 
 function renderMapResultInMessage(aiMsgDiv, toolName, result, callId, anchorEl) {
-    if (!aiMsgDiv || !isMapToolName(toolName)) {
-        return false;
-    }
-
-    const payload = parseToolResultPayload(result);
-
-    if (!payload || payload.success !== true) {
-        return false;
-    }
-
-    const markdown = buildMapResultMarkdown(payload);
-
-    if (!markdown) {
-        return false;
-    }
-
-    const safeCallId = String(callId || '').trim();
-    const mapId = readMapResultId(payload);
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const existing = Array.from(parent.querySelectorAll('.content-body.generated-map-result')).find((node) => {
-        if (safeCallId && String(node.dataset.callId || '') === safeCallId) {
-            return true;
-        }
-
-        if (mapId && String(node.dataset.mapId || '') === mapId) {
-            return true;
-        }
-
-        return !safeCallId && !mapId && typeof node.__sourceMarkdown === 'string' && node.__sourceMarkdown === markdown;
-    });
-
-    if (existing) {
-        return true;
-    }
-
-    const body = document.createElement('div');
-    body.className = 'content-body generated-map-result fade-in';
-    body.dataset.toolName = String(toolName || 'map_tool').trim() || 'map_tool';
-
-    if (safeCallId) {
-        body.dataset.callId = safeCallId;
-    }
-
-    if (mapId) {
-        body.dataset.mapId = mapId;
-    }
-
-    body.innerHTML = renderMarkdownWithNewTabLinks(markdown, { breaks: false });
-    bindSourceMarkdown(body, markdown);
-
-    if (anchorEl && anchorEl.parentElement === parent) {
-        anchorEl.insertAdjacentElement('afterend', body);
-    } else {
-        parent.appendChild(body);
-    }
-
-    if (window.NexoraMapRenderer && typeof window.NexoraMapRenderer.renderAll === 'function') {
-        window.NexoraMapRenderer.renderAll(body);
-    }
-
-    return true;
+    return toolResultController.renderMapResultInMessage(aiMsgDiv, toolName, result, callId, anchorEl);
 }
 
 function resolveToolResultDisplayMarkdown(result, options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const candidates = [
-        opts.modelVisibleResult,
-        opts.model_visible_result,
-        opts.markdownResult,
-        opts.markdown_result
-    ];
-
-    for (const value of candidates) {
-        if (value === undefined || value === null) continue;
-        const text = (typeof value === 'object') ? JSON.stringify(value, null, 2) : String(value || '');
-        if (text.trim()) return text;
-    }
-
-    return '';
+    return toolResultController.resolveToolResultDisplayMarkdown(result, options);
 }
 
 function setToolResultMarkdownSource(outDiv, markdownText) {
-    if (!outDiv) return false;
-
-    const source = String(markdownText || '').trim();
-    if (!source) return false;
-
-    outDiv.classList.remove('generate-image-tool-output');
-    outDiv.classList.add('tool-output-markdown');
-    outDiv.innerHTML = renderMarkdownWithNewTabLinks(source, { breaks: false });
-    bindSourceMarkdown(outDiv, source);
-    renderMathSafe(outDiv);
-    highlightCode(outDiv);
-    return true;
+    return toolResultController.setToolResultMarkdownSource(outDiv, markdownText);
 }
 
 function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {}) {
-    // Find the last tool usage of this name that doesn't have a result yet
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    let safeName = String(name || '').trim() || 'tool';
-    const safeCallId = String(callId || '').trim();
-    const toolIndex = (options && options.toolIndex !== undefined && options.toolIndex !== null)
-        ? Number(options.toolIndex)
-        : null;
-    const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
-    let target = findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false);
-    if (!target) {
-        target = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex);
-    }
-    if (!target && safeCallId) {
-        target = findToolUsage(parent, safeName, safeCallId, false) || findToolUsage(parent, 'tool', safeCallId, false);
-    }
-    if (!target) {
-        // 当 provider 不返回 call_id 时，按“最早未完成”匹配，避免覆盖最近一条
-        const rows = parent.querySelectorAll('.tool-usage');
-        for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
-            if (row.dataset.resolved === 'true') continue;
-            if (row.dataset.toolName === safeName || row.dataset.toolName === 'tool') {
-                target = row;
-                break;
-            }
-        }
-    }
-    if (!target) {
-        target = appendToolEvent(aiMsgDiv, safeName, '', true, {
-            callId: safeCallId,
-            reuseIfExists: false,
-            pending: false
-        });
-    }
-
-    // Results update the same row that streamed the tool call args.
-    const targetNameHint = target ? normalizeToolDisplayName(target.dataset.toolName || '') : '';
-    if (safeName === 'tool' && targetNameHint && targetNameHint !== 'tool') {
-        safeName = targetNameHint;
-    }
-
-    if (target) {
-        const previousCallId = String(target.dataset.callId || '').trim();
-        if (safeName === 'tool') {
-            const inherited = normalizeToolDisplayName(target.dataset.toolName || '');
-            if (inherited && inherited !== 'tool') safeName = inherited;
-        }
-        renameToolUsageRow(target, safeName);
-        target.dataset.phase = 'exec';
-        if (safeCallId) target.dataset.callId = safeCallId;
-        if (idxKey) target.dataset.toolIndex = idxKey;
-        const state = getToolCallState(aiMsgDiv);
-        removePendingToolCallId(state, previousCallId);
-        removePendingToolCallId(state, target.dataset.callId || safeCallId);
-        target.dataset.pending = 'false';
-        target.dataset.resolved = 'true';
-        target.classList.remove('is-running');
-        setToolUsageStatus(target, `${safeName} 完成:`);
-        const outDiv = target.querySelector('.tool-output');
-        const displayMarkdown = resolveToolResultDisplayMarkdown(result, options);
-        const renderedMap = renderMapResultInMessage(aiMsgDiv, safeName, result, safeCallId, target);
-        const outputMarkdown = renderedMap ? stripMapSceneSection(displayMarkdown) : displayMarkdown;
-        const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
-
-        const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
-
-        if (renderedGenerateImage) {
-            renderGenerateImageResultInMessage(aiMsgDiv, result, safeCallId, target);
-        }
-
-        if (!renderedGenerateImage) {
-            const displayedMarkdownSource = setToolResultMarkdownSource(outDiv, outputMarkdown);
-            if (!displayedMarkdownSource) {
-                outDiv.classList.remove('tool-output-markdown');
-                outDiv.classList.remove('generate-image-tool-output');
-                outDiv.textContent = resultText;
-            }
-        }
-
-        if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
-            target.classList.add('has-output');
-            target.dataset.autoLock = renderedGenerateImage ? '0' : '1';
-            target.dataset.userToggled = renderedGenerateImage ? 'true' : 'false';
-            if (renderedGenerateImage) {
-                target.classList.add('expanded');
-            }
-            scrollToolOutputToBottom(outDiv);
-        }
-
-        if (!renderedGenerateImage) {
-            updateToolUsageResultSummary(target, safeName, result, outputMarkdown, resultText);
-        }
-
-        if (!renderedGenerateImage) {
-            scheduleToolAutoCollapse(target, 320);
-        }
-    }
+    return toolResultController.updateLastToolResult(aiMsgDiv, name, result, callId, options);
 }
 
 function createContentSpan(parentMsgDiv, options = {}) {
-    const parent = parentMsgDiv.querySelector('.message-content') || parentMsgDiv;
-    const span = document.createElement('div');
-    span.className = 'content-body fade-in';
-
-    if (options && options.afterGeneratedImage === true) {
-        span.classList.add('generated-image-followup');
-        const generatedImages = parent.querySelectorAll('.content-body.generated-image-result');
-        const anchor = generatedImages.length > 0 ? generatedImages[generatedImages.length - 1] : null;
-        parentMsgDiv.__generatedImageFollowupSpan = span;
-
-        if (anchor && anchor.parentElement === parent) {
-            anchor.insertAdjacentElement('afterend', span);
-            return span;
-        }
-    }
-
-    parent.appendChild(span);
-    return span;
-}
-
-function findLatestAppendableStreamContentBody(messageDiv) {
-    if (!messageDiv) return null;
-
-    const bodies = Array.from(messageDiv.querySelectorAll('.content-body')).filter((node) => {
-        return node
-            && !node.classList.contains('generated-image-result')
-            && !node.classList.contains('generated-map-result');
-    });
-    if (!bodies.length) return null;
-
-    return bodies[bodies.length - 1];
-}
-
-function prepareLatestContentBodyForStreamResume(messageDiv) {
-    const body = findLatestAppendableStreamContentBody(messageDiv);
-    if (!body) return null;
-
-    const raw = String(
-        body.dataset.streamRaw
-        || body.__sourceMarkdown
-        || ''
-    );
-    if (!raw) {
-        console.warn('[StreamResume] existing content body has no markdown source', {
-            conversation_id: String(currentConversationId || ''),
-            message_index: messageDiv && messageDiv.dataset ? String(messageDiv.dataset.index || '') : ''
-        });
-        return null;
-    }
-
-    body.dataset.streamLive = '1';
-    body.dataset.streamRaw = raw;
-    bindSourceMarkdown(body, raw);
-    return body;
-}
-
-function getLatestLiveStreamResumeNode(messageDiv) {
-    if (!messageDiv) {
-        return { type: '', node: null };
-    }
-
-    const root = messageDiv.querySelector('.message-content') || messageDiv;
-    const candidates = [];
-
-    root.querySelectorAll('.content-body, .thinking-block.reasoning-thinking-block').forEach((node) => {
-        if (!node) return;
-
-        if (node.classList.contains('content-body')) {
-            if (String(node.dataset.streamLive || '') === '1') {
-                candidates.push({ type: 'content', node });
-            }
-
-            return;
-        }
-
-        const content = node.querySelector('.thinking-content');
-        const live = String(node.dataset.streamLive || '') === '1'
-            || !!(content && String(content.dataset.streamLive || '') === '1');
-
-        if (live) {
-            candidates.push({ type: 'reasoning', node });
-        }
-    });
-
-    return candidates.length > 0
-        ? candidates[candidates.length - 1]
-        : { type: '', node: null };
-}
-
-function prepareLatestThinkingBlockForStreamResume(messageDiv, preferredBlock = null) {
-    if (!messageDiv) return null;
-
-    let thinkingBlock = preferredBlock
-        && preferredBlock.isConnected
-        && preferredBlock.classList.contains('reasoning-thinking-block')
-        ? preferredBlock
-        : null;
-
-    if (!thinkingBlock) {
-        const latest = getLatestLiveStreamResumeNode(messageDiv);
-        thinkingBlock = latest.type === 'reasoning' ? latest.node : null;
-    }
-
-    if (!thinkingBlock) return null;
-
-    const contentDiv = thinkingBlock.querySelector('.thinking-content');
-    if (!contentDiv) return null;
-
-    const raw = String(
-        contentDiv.dataset.streamRaw
-        || contentDiv.dataset.rawText
-        || (typeof contentDiv.__sourceMarkdown === 'string' ? contentDiv.__sourceMarkdown : '')
-        || contentDiv.textContent
-        || ''
-    );
-
-    contentDiv.dataset.streamRaw = raw;
-    markReasoningThinkingBlockLive(thinkingBlock);
-    messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
-    messageDiv.__reasoningSegmentOpen = true;
-    updateThinkingBlockSummary(thinkingBlock, raw);
-
-    return thinkingBlock;
+    return messagesController.createContentSpan(parentMsgDiv, options);
 }
 
 function appendUserAttachments(contentEl, msg) {
-    if (!contentEl || !msg || !msg.metadata || !Array.isArray(msg.metadata.attachments)) return;
-    const allAttachments = msg.metadata.attachments.filter((att) => att && typeof att === 'object');
-    const imageAttachments = allAttachments.filter((att) => {
-        if (!att || typeof att !== 'object') return false;
-        const type = String(att.type || '').toLowerCase();
-        const url = String(att.asset_url || att.url || '').trim();
-        if (!url) return false;
-        if (type === 'image' || type === 'image_url') return true;
-        const mime = String(att.mime || '').toLowerCase();
-        return mime.startsWith('image/');
-    });
-    const fileAttachments = allAttachments.filter((att) => !imageAttachments.includes(att));
-    if (!imageAttachments.length && !fileAttachments.length) return;
-
-    if (imageAttachments.length) {
-        const wrap = document.createElement('div');
-        wrap.className = 'message-attachments';
-        imageAttachments.forEach((att) => {
-            const rawUrl = String(att.asset_url || att.url || '').trim();
-            const displayUrl = rawUrl.startsWith('/') ? rawUrl : rawUrl;
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'message-attachment image';
-            item.title = String(att.name || 'image').trim() || 'image';
-            item.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                openImageViewer(displayUrl, item.title);
-            });
-
-            const img = document.createElement('img');
-            img.loading = 'lazy';
-            img.src = displayUrl;
-            img.alt = String(att.name || 'image').trim() || 'image';
-            item.appendChild(img);
-
-            wrap.appendChild(item);
-        });
-        contentEl.appendChild(wrap);
-    }
-
-    if (fileAttachments.length) {
-        const wrap = document.createElement('div');
-        wrap.className = 'message-attachments file-list';
-        fileAttachments.forEach((att) => {
-            const type = String(att.type || 'file').toLowerCase();
-            const name = String(att.name || 'attachment').trim() || 'attachment';
-            const sizeText = formatFileSize(att.size || 0);
-            const chip = document.createElement('div');
-            chip.className = 'message-attachment file';
-            const iconClass = type === 'sandbox_file'
-                ? 'fa-solid fa-folder-tree'
-                : (type === 'text' ? 'fa-regular fa-file-lines' : 'fa-regular fa-file');
-            chip.innerHTML = `
-                <i class="${iconClass}" aria-hidden="true"></i>
-                <span class="name">${escapeHtml(name)}</span>
-                <span class="meta">${escapeHtml(sizeText)}</span>
-            `;
-            chip.title = type === 'sandbox_file'
-                ? `沙箱文件: ${String(att.sandbox_path || '')}`
-                : name;
-            wrap.appendChild(chip);
-        });
-        contentEl.appendChild(wrap);
-    }
+    return messagesController.appendUserAttachments(contentEl, msg);
 }
 
 function readMessageRenderIndex(message, defaultIndex = 0) {
@@ -21338,14 +17666,7 @@ function getLastUserMessageIndexFromMessages(messages) {
 }
 
 function getLastUserMessageIndexFromDom() {
-    if (!els.messagesContainer) return -1;
-    let last = -1;
-    const rows = Array.from(els.messagesContainer.querySelectorAll('.message.user'));
-    rows.forEach((row) => {
-        const idx = Number(row.dataset.index);
-        if (Number.isFinite(idx) && idx > last) last = idx;
-    });
-    return last;
+    return userPromptEditController.getLastUserMessageIndexFromDom();
 }
 
 function getNextVisibleMessageIndex() {
@@ -21363,592 +17684,23 @@ function getNextVisibleMessageIndex() {
 }
 
 function resetUserPromptInlineEditor(options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const keepEditedContent = !!opts.keepEditedContent;
-    const state = userPromptEditState || {};
-    const bubble = state.bubbleEl;
-    const editor = state.editorEl;
-    const hint = state.hintEl;
-    const btn = state.editBtn;
-
-    if (editor && editor.parentNode) editor.remove();
-    if (hint && hint.parentNode) hint.remove();
-    if (bubble) {
-        bubble.style.display = '';
-        if (keepEditedContent && typeof opts.editedText === 'string') {
-            const text = String(opts.editedText || '').trim();
-            if (text) {
-                bubble.innerHTML = renderMarkdownWithNewTabLinks(text);
-                bindSourceMarkdown(bubble, text);
-                renderMathSafe(bubble);
-                highlightCode(bubble);
-            }
-        }
-    }
-    if (btn) {
-        btn.classList.remove('is-editing');
-        btn.title = '编辑提示词';
-        btn.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 20h9"></path>
-                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
-            </svg>
-        `;
-    }
-
-    userPromptEditState = {
-        index: null,
-        messageDiv: null,
-        bubbleEl: null,
-        editorEl: null,
-        hintEl: null,
-        editBtn: null,
-        originalText: '',
-        saving: false
-    };
+    return userPromptEditController.resetUserPromptInlineEditor(options);
 }
 
 function refreshLastUserPromptEditButtons() {
-    if (!els.messagesContainer) return;
-    const userRows = Array.from(els.messagesContainer.querySelectorAll('.message.user'));
-    if (!userRows.length) return;
-    let lastRow = null;
-    let lastIdx = -1;
-    userRows.forEach((row) => {
-        const idx = Number(row.dataset.index);
-        if (Number.isFinite(idx) && idx >= lastIdx) {
-            lastIdx = idx;
-            lastRow = row;
-        }
-    });
-    userRows.forEach((row) => {
-        const editBtn = row.querySelector('.btn-action[data-action="edit-user-prompt"]');
-        if (!editBtn) return;
-        const isLast = row === lastRow;
-        editBtn.style.display = isLast ? '' : 'none';
-        editBtn.disabled = !isLast;
-        if (!isLast && Number(userPromptEditState.index) === Number(row.dataset.index)) {
-            resetUserPromptInlineEditor();
-        }
-    });
+    return userPromptEditController.refreshLastUserPromptEditButtons();
 }
 
 async function saveEditedUserPrompt(index, options = {}) {
-    const idx = Number(index);
-    const opts = (options && typeof options === 'object') ? options : {};
-    const regenerateAfterSave = !!opts.regenerateAfterSave;
-    const state = userPromptEditState;
-    if (!Number.isFinite(idx) || !state || Number(state.index) !== idx || !state.editorEl) return;
-    if (state.saving) return;
-    if (idx !== getLastUserMessageIndexFromDom()) {
-        showToast('仅支持修改最后一条用户消息');
-        resetUserPromptInlineEditor();
-        return;
-    }
-
-    const nextText = String(state.editorEl.value || '').trim();
-    if (!nextText) {
-        showToast('提示词不能为空');
-        state.editorEl.focus();
-        return;
-    }
-    if (nextText.length > CHAT_INPUT_DRAFT_MAX_LEN) {
-        showToast(`提示词不能超过 ${CHAT_INPUT_DRAFT_MAX_LEN} 字符`);
-        state.editorEl.focus();
-        return;
-    }
-    if (nextText === String(state.originalText || '').trim()) {
-        resetUserPromptInlineEditor();
-        return;
-    }
-    if (!currentConversationId) {
-        showToast('当前会话无效');
-        return;
-    }
-
-    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
-    if (!operationReady) return;
-
-    state.saving = true;
-    if (state.editBtn) state.editBtn.disabled = true;
-    try {
-        const beforeSaveSnapshot = await fetchConversationMessagesSnapshot(currentConversationId);
-        const beforeSaveMessages = beforeSaveSnapshot ? beforeSaveSnapshot.messages : [];
-        const serverLastUserIndex = getLastUserMessageIndexFromMessages(beforeSaveMessages);
-        const serverTarget = (idx >= 0 && idx < beforeSaveMessages.length) ? beforeSaveMessages[idx] : null;
-        const serverTargetRole = String((serverTarget && serverTarget.role) || '').trim().toLowerCase();
-        if (!beforeSaveSnapshot || serverTargetRole !== 'user' || serverLastUserIndex !== idx) {
-            resetUserPromptInlineEditor();
-            if (beforeSaveSnapshot) {
-                renderMessages(beforeSaveMessages, true, { instant: true });
-            }
-            showToast('对话已同步，请重新编辑最后一条用户消息');
-            return;
-        }
-
-        const res = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}/messages/${idx}/content`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: nextText })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-            showToast((data && data.message) ? data.message : '保存失败');
-            return;
-        }
-        resetUserPromptInlineEditor({ keepEditedContent: true, editedText: nextText });
-        const afterSaveSnapshot = await renderConversationSnapshotFromServer(currentConversationId, { instant: true, silent: true });
-        if (!regenerateAfterSave) {
-            showToast('提示词已更新');
-            return;
-        }
-        const assistantIndex = afterSaveSnapshot
-            ? findAssistantIndexAfterUserMessageInMessages(afterSaveSnapshot.messages, idx)
-            : -1;
-        if (assistantIndex < 0) {
-            const afterSaveMessages = afterSaveSnapshot && Array.isArray(afterSaveSnapshot.messages)
-                ? afterSaveSnapshot.messages
-                : [];
-            if (idx === afterSaveMessages.length - 1) {
-                showToast('提示词已更新，正在生成回答');
-                await sendMessage({
-                    textOverride: nextText,
-                    displayContentOverride: nextText,
-                    useExistingUserMessage: true
-                });
-                return;
-            }
-            showToast('提示词已更新，但后端未找到可重答的模型回复');
-            return;
-        }
-        showToast('提示词已更新，正在重新回答');
-        await startRegenerate(assistantIndex);
-    } catch (_) {
-        showToast('保存失败');
-    } finally {
-        if (state.editBtn) state.editBtn.disabled = false;
-        if (userPromptEditState) userPromptEditState.saving = false;
-    }
+    return userPromptEditController.saveEditedUserPrompt(index, options);
 }
 
 window.toggleEditUserPrompt = async function(index) {
-    const idx = Number(index);
-    if (!Number.isFinite(idx)) return;
-
-    if (Number(userPromptEditState.index) === idx && userPromptEditState.editorEl) {
-        await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
-        return;
-    }
-
-    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
-    if (!operationReady) return;
-
-    const messageDiv = document.querySelector(`.message.user[data-index="${idx}"]`);
-    if (!messageDiv) return;
-    if (idx !== getLastUserMessageIndexFromDom()) {
-        showToast('仅支持修改最后一条用户消息');
-        return;
-    }
-
-    if (userPromptEditState.editorEl) {
-        resetUserPromptInlineEditor();
-    }
-
-    const bubble = messageDiv.querySelector('.message-bubble');
-    if (!bubble) {
-        showToast('未找到可编辑内容');
-        return;
-    }
-    const editBtn = messageDiv.querySelector('.btn-action[data-action="edit-user-prompt"]');
-    if (!editBtn) return;
-
-    const sourceText = String((typeof bubble.__sourceMarkdown === 'string') ? bubble.__sourceMarkdown : (bubble.innerText || '')).trim();
-    const editor = document.createElement('textarea');
-    editor.className = 'user-prompt-inline-editor';
-    editor.value = sourceText;
-    editor.setAttribute('aria-label', '编辑用户提示词');
-    const hint = document.createElement('div');
-    hint.className = 'user-prompt-inline-hint';
-    hint.textContent = 'Enter 保存并重答，Shift+Enter 换行，Esc 取消';
-
-    const bubbleRect = bubble.getBoundingClientRect();
-    const targetWidth = Math.max(120, Math.round(bubbleRect.width || bubble.offsetWidth || 120));
-    const targetHeight = Math.max(44, Math.round(bubbleRect.height || bubble.offsetHeight || 44));
-    editor.style.width = `${targetWidth}px`;
-    editor.style.height = `${targetHeight}px`;
-
-    bubble.style.display = 'none';
-    bubble.insertAdjacentElement('afterend', editor);
-    editor.insertAdjacentElement('afterend', hint);
-
-    editBtn.classList.add('is-editing');
-    editBtn.title = '保存修改';
-    editBtn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="20 6 9 17 4 12"></polyline>
-        </svg>
-    `;
-
-    userPromptEditState = {
-        index: idx,
-        messageDiv,
-        bubbleEl: bubble,
-        editorEl: editor,
-        hintEl: hint,
-        editBtn,
-        originalText: sourceText,
-        saving: false
-    };
-
-    editor.addEventListener('keydown', async (e) => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            e.preventDefault();
-            await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
-            return;
-        }
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            resetUserPromptInlineEditor();
-        }
-    });
-
-    const focusEditorFromGesture = () => {
-        if (!isChatMobileLayout()) return;
-        try {
-            editor.focus({ preventScroll: true });
-        } catch (_) {
-            editor.focus();
-        }
-    };
-    editor.addEventListener('touchstart', focusEditorFromGesture, { passive: true });
-    editor.addEventListener('pointerdown', (e) => {
-        if (e.pointerType && e.pointerType !== 'touch') return;
-        focusEditorFromGesture();
-    }, { passive: true });
-
-    requestAnimationFrame(() => {
-        try {
-            editor.focus({ preventScroll: true });
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-        } catch (_) {
-            editor.focus();
-        }
-    });
+    return userPromptEditController.toggleEditUserPrompt(index);
 };
 
 function appendMessage(msg, index, options = {}) {
-    const appendOptions = (options && typeof options === 'object') ? options : {};
-
-    // If index is not provided (live message), continue from the largest visible server index.
-    if (index === undefined || index === null) {
-        index = getNextVisibleMessageIndex();
-    }
-    
-    const div = document.createElement('div');
-    div.className = `message ${msg.role}`;
-    if (msg.pending) div.classList.add('pending');
-    div.dataset.index = index;
-    div.dataset.conversationId = String(currentConversationId || '');
-    if (msg.role === 'assistant') {
-        div.dataset.localOnly = msg.pending ? '1' : '0';
-    }
-    
-    // Avatar for AI --- Removed avatar for ai
-    // if (msg.role === 'assistant') {
-    //     const avatar = document.createElement('div');
-    //     avatar.className = 'avatar ai';
-    //     avatar.textContent = 'AI';
-    //     div.appendChild(avatar);
-    // }
-
-    const content = document.createElement('div');
-    content.className = 'message-content';
-    div.appendChild(content); // Append content container early so sub-renderers can find it
-    div.__messageData = (msg && typeof msg === 'object') ? msg : null;
-    div.__toolCallState = {
-        seq: 0,
-        pendingByName: {},
-        callIdByIndex: {},
-        pendingQueue: [],
-        explicitIdByLocalId: {},
-        activeAnonCallId: '',
-        argsDeltaSeenByCallId: {}
-    };
-    
-    if (msg.role === 'user') {
-        appendUserAttachments(content, msg);
-
-        // Wrap user content in bubble for alignment
-        const textContent = String(msg.content || '').trim();
-        if (textContent) {
-            const bubble = document.createElement('div');
-            bubble.className = 'message-bubble';
-            bubble.innerHTML = renderMarkdownWithNewTabLinks(textContent);
-            bindSourceMarkdown(bubble, textContent);
-            renderMathSafe(bubble);
-            content.appendChild(bubble);
-        }
-
-        const canRenderEditBtn = !msg.pending && !!textContent && (
-            (renderLastUserMessageIndexHint >= 0 && Number(index) === Number(renderLastUserMessageIndexHint))
-            || (!isBatchRenderingMessages)
-        );
-
-        // User Message Actions
-        const actions = document.createElement('div');
-        actions.className = 'msg-actions';
-        actions.innerHTML = `
-            ${canRenderEditBtn ? `
-            <button class="btn-action" data-action="edit-user-prompt" onclick="toggleEditUserPrompt(${index})" title="编辑提示词">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 20h9"></path>
-                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
-                </svg>
-            </button>
-            ` : ''}
-            <button class="btn-action" onclick="copyUserMessage(${index})" title="复制消息">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-            </button>
-            <button class="btn-action btn-del" onclick="confirmDelete(${index})" title="删除">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
-            </button>
-        `;
-        content.appendChild(actions);
-
-    } else {
-        // AI Message
-        const processSteps = (msg.metadata && Array.isArray(msg.metadata.process_steps))
-            ? msg.metadata.process_steps
-            : [];
-        const learningCards = (msg.metadata && Array.isArray(msg.metadata.learning_cards))
-            ? msg.metadata.learning_cards
-            : [];
-        const hasReasoningStep = processSteps.some((s) => s && s.type === 'reasoning_content');
-        const longtermHook = (msg.metadata && msg.metadata.longterm_hook && typeof msg.metadata.longterm_hook === 'object')
-            ? msg.metadata.longterm_hook
-            : null;
-
-        if (longtermHook) {
-            content.appendChild(renderLongtermHookBlock(longtermHook));
-        }
-
-        // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
-        let historyReasoningBlock = null;
-        if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
-            historyReasoningBlock = appendReasoningThinkingBlock(content, msg.metadata.reasoning_content);
-        }
-        
-        if (processSteps.length > 0) {
-            processSteps.forEach(step => {
-                if (step.type === 'reasoning_content') {
-                    if (historyReasoningBlock && historyReasoningBlock.isConnected) {
-                        appendReasoningThinkingBlock(content, step.content || '', {
-                            reuseBlock: historyReasoningBlock
-                        });
-                    } else {
-                        historyReasoningBlock = appendReasoningThinkingBlock(content, step.content || '');
-                    }
-                }
-                else if (step.type === 'web_search') {
-                    updateWebSearchStatus(div, step.status || step.content, step.query, step.content, true);
-                }
-                else if (step.type === 'search_meta') {
-                    appendSearchMeta(div, step, true);
-                }
-                else if (step.type === 'function_call') {
-                    const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'learning_card' || toolName === 'question' || toolName === 'puzzle') return;
-                    if (toolName === 'knowledge_basis_create' || toolName === 'add_basis' || toolName === 'addBasis') {
-                        try {
-                            const args = JSON.parse(step.arguments);
-                            appendAddBasisView(div, args);
-                        } catch(e) {}
-                    }
-                    const callId = allocateToolCallId(div, toolName, 'call', step.call_id || '', step.index);
-                    rememberJsExecuteCanvasCall(div, toolName, callId, step.index, step.arguments || '');
-                    finalizeToolCallBadge(div, toolName, callId, step.arguments || '', { autoExpand: false, toolIndex: step.index });
-                }
-                else if (step.type === 'function_result') {
-                    const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'question' || toolName === 'puzzle') return;
-                    if (toolName === 'learning_card') {
-                        const cardPayload = extractLearningCardPayload(step.result);
-                        if (cardPayload) {
-                            appendLearningCardStep(div, { type: 'learning_card', card: cardPayload });
-                        }
-                        return;
-                    }
-                    const callId = allocateToolCallId(div, toolName, 'result', step.call_id || '', step.index);
-                    updateLastToolResult(div, toolName, step.result, callId, {
-                        toolIndex: step.index,
-                        modelVisibleResult: step.model_visible_result
-                    });
-                    if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
-                        applyLongtermPlanFromText(step.result, { source: 'history-tool-result', messageDiv: div });
-                    }
-                    maybeRenderCanvasFromJsExecuteResult(div, toolName, step.result, callId, step.index);
-                }
-                else if (step.type === 'context_compression_status') {
-                    updateMessageDivTools(index, step, div);
-                }
-                else if (step.type === 'error') {
-                    appendErrorEvent(div, step.content || step.message || 'Unknown error', true);
-                }
-                else if (step.type === 'content') {
-                    // 对于历史记录补插的文本内容
-                    const planInfo = applyLongtermPlanFromText(step.content, { source: 'history-step', messageDiv: div });
-                    const cleanedStepContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : step.content || '');
-                    const body = document.createElement('div');
-                    body.className = 'content-body';
-                    body.innerHTML = renderMarkdownWithNewTabLinks(cleanedStepContent);
-                    bindSourceMarkdown(body, cleanedStepContent);
-                    renderMathSafe(body);
-                    highlightCode(body);
-                    content.appendChild(body);
-                }
-                else if (step.type === 'learning_card') {
-                    appendLearningCardStep(div, step);
-                }
-                else if (step.type === 'question') {
-                    appendQuestionStep(div, step);
-                }
-                else if (step.type === 'puzzle') {
-                    appendPuzzleStep(div, step);
-                }
-            });
-        }
-        
-        // Render main content (if not already handled by steps)
-        // Note: For newer messages, content is often duplicated in steps as 'content' type
-        const hasContentStep = processSteps.some((s) => s && s.type === 'content');
-                               
-        if(msg.content && !hasContentStep) {
-            const standaloneErr = extractStandaloneSystemErrorMessage(msg.content);
-            if (standaloneErr) {
-                appendErrorEvent(div, standaloneErr, true);
-            } else {
-            const planInfo = applyLongtermPlanFromText(msg.content, { source: 'history-main', messageDiv: div });
-            const cleanedMsgContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : msg.content || '');
-            const body = document.createElement('div');
-            body.className = 'content-body';
-            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedMsgContent);
-            bindSourceMarkdown(body, cleanedMsgContent);
-            renderMathSafe(body);
-            highlightCode(body);
-            content.appendChild(body);
-            }
-        }
-
-        if (learningCards.length > 0) {
-            appendLearningCardsToContent(content, learningCards);
-        }
-
-        const pendingQuestions = (msg.metadata && Array.isArray(msg.metadata.pending_questions))
-            ? msg.metadata.pending_questions
-            : [];
-        if (pendingQuestions.length > 0) {
-            const hasQuestionStep = processSteps.some((s) => s && s.type === 'question');
-            if (!hasQuestionStep) {
-                pendingQuestions.forEach((question) => appendQuestionStep(div, { type: 'question', question }));
-            }
-        }
-        const pendingPuzzles = (msg.metadata && Array.isArray(msg.metadata.pending_puzzles))
-            ? msg.metadata.pending_puzzles
-            : [];
-        if (pendingPuzzles.length > 0) {
-            const hasPuzzleStep = processSteps.some((s) => s && s.type === 'puzzle');
-            if (!hasPuzzleStep) {
-                pendingPuzzles.forEach((puzzle) => appendPuzzleStep(div, { type: 'puzzle', puzzle }));
-            }
-        }
-
-        // Add model badge/hint
-        const modelName = (msg.metadata && msg.metadata.model_name) || msg.model_name;
-        if (modelName) {
-            const ioMeta = readMessageIoTokens(msg.metadata || {}, false);
-            updateMessageModelBadge(div, {
-                modelName,
-                searchFlag: (msg.metadata && typeof msg.metadata.search_enabled === 'boolean')
-                    ? msg.metadata.search_enabled
-                    : 'unknown',
-                inputTokens: safeTokenInt(ioMeta.input),
-                outputTokens: safeTokenInt(ioMeta.output)
-            });
-        }
-
-        // AI Message Actions (Delete, Regenerate, Versioning)
-        const actions = document.createElement('div');
-        actions.className = 'msg-actions';
-        
-        // Branching (Versions)
-        const nav = buildVersionNavigation(msg);
-        if (nav.total > 1) {
-            const totalVersions = nav.total;
-            const currentVerNum = nav.current;
-            const prevIdx = nav.prevIndex;
-            const nextIdx = nav.nextIndex;
-
-            actions.innerHTML += `
-                <div class="version-switcher">
-                    <button class="btn-ver" onclick="switchVersion(${index}, ${prevIdx === null ? 'null' : prevIdx})" title="上一版本" ${prevIdx === null ? 'disabled' : ''}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                    </button>
-                    <span>${currentVerNum} / ${totalVersions}</span>
-                    <button class="btn-ver" onclick="switchVersion(${index}, ${nextIdx === null ? 'null' : nextIdx})" title="下一版本" ${nextIdx === null ? 'disabled' : ''}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                    </button>
-                </div>
-            `;
-        }
-
-        actions.innerHTML += `
-            <button class="btn-action" onclick="copyGeneratedInfo(${index})" title="复制生成信息">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-            </button>
-            <button class="btn-action" onclick="confirmRegenerate(${index})" title="重新回答">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"></path></svg>
-            </button>
-            <button class="btn-action btn-del" onclick="confirmDelete(${index})" title="删除">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
-            </button>
-        `;
-        content.appendChild(actions);
-    }
-
-    if (appendOptions.beforeNode && appendOptions.beforeNode.parentNode === els.messagesContainer) {
-        els.messagesContainer.insertBefore(div, appendOptions.beforeNode);
-    } else {
-        els.messagesContainer.appendChild(div);
-    }
-
-    clearLearningWelcomeState();
-    
-    // Remove welcome screen if exists
-    const welcome = els.messagesContainer.querySelector('.welcome-screen');
-    if(welcome) welcome.remove();
-
-    if (!isBatchRenderingMessages) {
-        refreshLastUserPromptEditButtons();
-        rememberVisibleMessageInWindow(msg, index);
-    }
-
-    // Update turn indicator
-    if (!isBatchRenderingMessages) {
-        appendTurnIndicatorLine(msg.role, msg);
-    }
-
-    // Scroll
-    if (shouldAutoScroll && !isBatchRenderingMessages) {
-        scrollMessagesToBottomNow();
-    }
-    notifyLearningSidebarBridge();
-    return div; // Return main message div
+    return messagesController.appendMessage(msg, index, options);
 }
 
 function normalizeVariantTimestamp(v) {
@@ -22230,238 +17982,27 @@ function renderLongtermHookBlock(hook) {
 }
 
 function getActiveRegenerateStreamRenderPlan(conversationId) {
-    const cid = String(conversationId || currentConversationId || '').trim();
-    if (!cid) return null;
-
-    const state = getConversationStreamState(cid);
-    if (!state || String(state.status || '') !== 'running') return null;
-    if (!state.is_regenerate) return null;
-
-    const assistantIndex = normalizeStreamMessageIndex(state.assistant_index) ?? normalizeStreamMessageIndex(state.regenerate_index);
-    if (assistantIndex === null) return null;
-
-    return {
-        conversation_id: cid,
-        assistant_index: assistantIndex,
-        state
-    };
+    return messagesController.getActiveRegenerateStreamRenderPlan(conversationId);
 }
 
 function buildRegeneratePendingAssistantMessage(sourceMessage, state = {}) {
-    const source = (sourceMessage && typeof sourceMessage === 'object') ? sourceMessage : {};
-    const metadataSource = (source.metadata && typeof source.metadata === 'object') ? source.metadata : {};
-    const modelName = String(
-        state.model_name
-        || source.model_name
-        || metadataSource.model_name
-        || ''
-    ).trim();
-    const metadata = {};
-
-    if (modelName) {
-        metadata.model_name = modelName;
-    }
-
-    return {
-        __message_index: source.__message_index,
-        role: 'assistant',
-        content: '',
-        pending: true,
-        model_name: modelName,
-        metadata
-    };
+    return messagesController.buildRegeneratePendingAssistantMessage(sourceMessage, state);
 }
 
 function resolveMessagesForActiveStreamRender(messages) {
-    const rows = Array.isArray(messages) ? messages : [];
-    const plan = getActiveRegenerateStreamRenderPlan(currentConversationId);
-    if (!plan) return rows;
-
-    const assistantIndex = Number(plan.assistant_index);
-    const assistantPosition = rows.findIndex((row, index) => readMessageRenderIndex(row, index) === assistantIndex);
-
-    if (assistantIndex < 0 || assistantPosition < 0) {
-        console.warn('[RegenerateBranch] running stream target is outside snapshot', {
-            conversation_id: plan.conversation_id,
-            assistant_index: assistantIndex,
-            message_count: rows.length
-        });
-        return rows;
-    }
-
-    const visibleRows = rows.slice(0, assistantPosition + 1);
-    visibleRows[assistantPosition] = buildRegeneratePendingAssistantMessage(
-        rows[assistantPosition],
-        plan.state
-    );
-
-    console.debug('[RegenerateBranch] render active branch window', {
-        conversation_id: plan.conversation_id,
-        assistant_index: assistantIndex,
-        original_count: rows.length,
-        visible_count: visibleRows.length
-    });
-
-    return visibleRows;
+    return messagesController.resolveMessagesForActiveStreamRender(messages);
 }
 
 function resetAssistantMessageForLiveStream(messageDiv, options = {}) {
-    if (!messageDiv) return null;
-
-    const opts = (options && typeof options === 'object') ? options : {};
-    const content = messageDiv.querySelector('.message-content');
-    const root = content || messageDiv;
-    root.querySelectorAll(
-        '.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card'
-    ).forEach((el) => el.remove());
-
-    messageDiv.__citationUrlMap = {};
-    messageDiv.__toolCallState = {
-        seq: 0,
-        pendingByName: {},
-        callIdByIndex: {},
-        pendingQueue: [],
-        explicitIdByLocalId: {},
-        activeAnonCallId: '',
-        argsDeltaSeenByCallId: {}
-    };
-    messageDiv.__activeReasoningThinkingBlock = null;
-    messageDiv.__reasoningSegmentOpen = false;
-    messageDiv.__contentAfterGeneratedImage = false;
-    messageDiv.__generatedImageResultAnchor = null;
-    messageDiv.__generatedImageFollowupSpan = null;
-    messageDiv.__generatedImageTextPrefix = '';
-    messageDiv.classList.add('pending');
-    messageDiv.dataset.localOnly = opts.localOnly === false ? '0' : '1';
-
-    if (opts.modelBadgeState) {
-        updateMessageModelBadge(messageDiv, opts.modelBadgeState);
-    }
-
-    return messageDiv;
+    return messagesController.resetAssistantMessageForLiveStream(messageDiv, options);
 }
 
 function applyRegenerateStreamDomWindow(conversationId, assistantIndex, preferredMessageDiv = null) {
-    const cid = String(conversationId || '').trim();
-    if (!cid || !isCurrentConversation(cid) || !els.messagesContainer) return preferredMessageDiv;
-
-    const idx = normalizeStreamMessageIndex(assistantIndex);
-    if (idx === null) return preferredMessageDiv;
-
-    Array.from(els.messagesContainer.querySelectorAll('.message')).forEach((row) => {
-        const rowIndex = normalizeStreamMessageIndex(row && row.dataset ? row.dataset.index : null);
-        if (rowIndex === null || rowIndex <= idx) return;
-        row.remove();
-    });
-
-    hideTurnListPopup();
-    markTurnIndicatorLayoutDirty();
-
-    return preferredMessageDiv && preferredMessageDiv.isConnected
-        ? preferredMessageDiv
-        : getMessageElementByIndex(idx, 'assistant');
+    return messagesController.applyRegenerateStreamDomWindow(conversationId, assistantIndex, preferredMessageDiv);
 }
 
 function renderMessages(messages, noScroll, options = {}) {
-    resetUserPromptInlineEditor();
-    const opts = (options && typeof options === 'object') ? options : {};
-    const indexedRows = buildIndexedMessageRows(messages, opts.indexOffset);
-    const renderRows = resolveMessagesForActiveStreamRender(indexedRows);
-
-    // preserve welcome if empty
-    refreshConversationImageHistoryFlag(renderRows);
-
-    if (!renderRows || renderRows.length === 0) {
-        clearHoverProxyMessage();
-        void renderWelcomeScreen();
-        void syncLearningHeaderMode();
-        return;
-    }
-
-    clearHoverProxyMessage();
-    clearLearningWelcomeState();
-    void syncLearningHeaderMode();
-
-    const instant = !!opts.instant;
-    
-    // Save current scroll position
-    const oldScrollTop = els.messagesContainer.scrollTop;
-    const oldScrollHeight = els.messagesContainer.scrollHeight;
-    const oldClientHeight = els.messagesContainer.clientHeight;
-    const wasNearBottom = (oldScrollHeight - oldScrollTop - oldClientHeight) <= 40;
-    const scrollAnchor = opts.preserveScrollAnchor
-        ? captureMessagesScrollAnchor(els.messagesContainer)
-        : null;
-    const prevInlineScrollBehavior = els.messagesContainer.style.scrollBehavior;
-    if (instant) {
-        els.messagesContainer.style.scrollBehavior = 'auto';
-    }
-
-    renderLastUserMessageIndexHint = getLastUserMessageIndexFromMessages(renderRows);
-    isBatchRenderingMessages = true;
-    try {
-        els.messagesContainer.innerHTML = '';
-        const _tRender0 = performance.now();
-        renderRows.forEach((m, i) => appendMessage(m, readMessageRenderIndex(m, i)));
-        const _tRender1 = performance.now();
-        console.log(`[renderMessages] appendMessage ×${renderRows.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
-    } finally {
-        isBatchRenderingMessages = false;
-        renderLastUserMessageIndexHint = -1;
-    }
-
-    let _tStep = performance.now();
-    refreshLastUserPromptEditButtons();
-    console.log(`[renderMessages] refreshEditBtns = ${(performance.now()-_tStep).toFixed(1)}ms`);
-    _tStep = performance.now();
-
-    // Restore or scroll
-    let shouldPinBottom = false;
-    if (noScroll) {
-        const anchorRestored = !wasNearBottom && !shouldAutoScroll && scrollAnchor
-            ? restoreMessagesScrollAnchor(scrollAnchor, els.messagesContainer)
-            : false;
-
-        if (anchorRestored) {
-            requestAnimationFrame(() => restoreMessagesScrollAnchor(scrollAnchor, els.messagesContainer));
-        } else if (wasNearBottom || shouldAutoScroll) {
-            scrollMessagesToBottomNow();
-            shouldPinBottom = true;
-        } else {
-            els.messagesContainer.scrollTop = oldScrollTop;
-            __messagesLastObservedScrollTop = Number(els.messagesContainer.scrollTop || 0);
-        }
-    } else if (shouldAutoScroll || wasNearBottom) {
-        scrollMessagesToBottomNow();
-        shouldPinBottom = true;
-    }
-    console.log(`[renderMessages] scrollToBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
-    _tStep = performance.now();
-
-    if (shouldPinBottom) {
-        pinMessagesToBottomFor(4200);
-    }
-    console.log(`[renderMessages] pinBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
-
-    if (instant) {
-        // Instant render should stay `auto` while bottom-pin is active.
-        if (shouldPinBottom && Date.now() <= __messagesBottomPinUntilTs) {
-            __messagesBottomPinPendingRestoreBehavior = String(prevInlineScrollBehavior || '');
-        } else {
-            requestAnimationFrame(() => {
-                els.messagesContainer.style.scrollBehavior = prevInlineScrollBehavior || '';
-            });
-        }
-    }
-    notifyLearningSidebarBridge();
-
-    // Render turn indicator lines (deferred so math/code renders settle first).
-    console.log(`[renderMessages] all sync work done, scheduling turnIndicator in 200ms`);
-    setTimeout(() => {
-        const _tTI = performance.now();
-        renderTurnIndicator(renderRows, { animate: false });
-        console.log(`[renderTurnIndicator] total = ${(performance.now()-_tTI).toFixed(1)}ms`);
-    }, 200);
+    return messagesController.renderMessages(messages, noScroll, options);
 }
 
 // Turn Indicator State
@@ -23180,737 +18721,27 @@ function updateTurnIndicatorActive(options = {}) {
 
 // Global modal functions
 window.confirmDelete = function(index) {
-    if (!currentConversationId) {
-// 说明
-        return;
-    }
-    showConfirm("删除确认", "确定要删除这轮消息（本次提问和回答）吗？此操作不可撤销。", "danger", async () => {
-        const cid = String(currentConversationId || '').trim();
-        const idx = Number(index);
-        if (!cid || !Number.isFinite(idx) || idx < 0) {
-            showToast("删除失败: 参数无效");
-            return;
-        }
+    return messageActionsController.confirmDelete(index);
+};
 
-        const operationReady = await ensureConversationPanelReadyForMutation(cid, 'delete');
-        if (!operationReady) return;
-
-        const clickedRow = getMessageRowByIndex(idx);
-        const isLocalOnlyAssistant = !!(
-            clickedRow
-            && clickedRow.classList.contains('assistant')
-            && String(clickedRow.dataset.localOnly || '') === '1'
-        );
-        const optimisticState = optimisticHideDeleteRound(idx);
-
-        // 本地未落库 assistant：服务端按该轮 user 索引删除，避免 assistant 越界导致 failed。
-        let requestIndex = idx;
-        if (isLocalOnlyAssistant) {
-            requestIndex = (Number.isFinite(Number(optimisticState.start)) && optimisticState.start < idx)
-                ? Number(optimisticState.start)
-                : -1;
-        }
-
-        // 本地残留且无法映射到服务端消息时，仅做本地删除。
-        if (isLocalOnlyAssistant && requestIndex < 0) {
-            showToast("已删除本地未保存消息");
-            return;
-        }
-
-        try {
-            const res = await fetch(`/api/conversations/${encodeURIComponent(String(cid))}/messages/${requestIndex}`, {
-                method: 'DELETE'
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data.success) {
-                rollbackOptimisticHide(optimisticState);
-                const msg = String((data && (data.message || data.error)) || `HTTP ${res.status}`).trim() || '未知错误';
-                showToast("删除失败: " + msg);
-                await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
-                return;
-            }
-
-            showToast("已删除");
-            await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
-            void loadConversations();
-            void loadKnowledge(cid);
-        } catch(e) {
-            rollbackOptimisticHide(optimisticState);
-            console.error(e);
-            showToast("删除失败: 网络或服务异常");
-            await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
-        }
-    });
+window.deleteMessage = function(index) {
+    return messageActionsController.deleteMessage(index);
 };
 
 window.confirmRegenerate = function(index) {
-    if (!currentConversationId) {
-        showToast("此对话尚未保存，无法重新回答");
-        return;
-    }
-    showConfirm("重新回答", "我们将保留当前回答并生成一个新版本，确定要重新生成吗？", "primary", async () => {
-        // Trigger regeneration
-        startRegenerate(index);
-    });
+    return messageActionsController.confirmRegenerate(index);
 };
 
 function resolveAssistantMessageModelName(message) {
-    const msg = (message && typeof message === 'object') ? message : {};
-    const metadata = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
-    return String(msg.model_name || metadata.model_name || '').trim();
+    return messageActionsController.resolveAssistantMessageModelName(message);
 }
 
 async function resolveRegenerateModelName(index, messageDiv = null) {
-    const idx = Number(index);
-    if (!Number.isFinite(idx) || idx < 0) {
-        return '';
-    }
-
-    const message = messageDiv && messageDiv.__messageData ? messageDiv.__messageData : null;
-    const historyModelName = resolveAssistantMessageModelName(message);
-
-    try {
-        await loadModels();
-    } catch (_) {
-        showToast('模型配置读取失败，无法重答');
-        return '';
-    }
-
-    const modelName = String(selectedModelId || '').trim();
-    if (!modelName) {
-        console.warn('[Regenerate] selected model is empty', {
-            conversation_id: String(currentConversationId || ''),
-            message_index: idx,
-            history_model_name: historyModelName
-        });
-        showToast('请先选择用于重答的模型');
-        return '';
-    }
-
-    const exists = Array.isArray(modelCatalog)
-        && modelCatalog.some((item) => String(item && item.id || '').trim() === modelName);
-    if (!exists) {
-        showToast(`当前选择模型不可用：${modelName}`);
-        return '';
-    }
-
-    if (historyModelName && historyModelName !== modelName) {
-        console.info('[Regenerate] use selected model instead of history model', {
-            conversation_id: String(currentConversationId || ''),
-            message_index: idx,
-            selected_model_name: modelName,
-            history_model_name: historyModelName
-        });
-    }
-
-    return modelName;
+    return messageActionsController.resolveRegenerateModelName(index, messageDiv);
 }
 
 async function startRegenerate(index) {
-    syncGenerationStateForCurrentConversation();
-
-    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'regenerate');
-    if (!operationReady) return;
-    const regenerateConversationId = String(currentConversationId || '').trim();
-    syncGenerationStateForCurrentConversation();
-    if (isConversationStreamRunning(regenerateConversationId)) return;
-
-    const normalizedRegenerateIndex = Number(index);
-    if (!Number.isInteger(normalizedRegenerateIndex) || normalizedRegenerateIndex < 0) {
-        showToast('重答消息索引无效');
-        return;
-    }
-
-    const targetSnapshot = await fetchConversationMessagesSnapshot(regenerateConversationId);
-    const serverMessages = targetSnapshot && Array.isArray(targetSnapshot.messages) ? targetSnapshot.messages : [];
-    const targetMessage = serverMessages[normalizedRegenerateIndex] || null;
-    const sourceUserMessage = normalizedRegenerateIndex > 0 ? serverMessages[normalizedRegenerateIndex - 1] : null;
-    const targetRole = String((targetMessage && targetMessage.role) || '').trim().toLowerCase();
-    const sourceRole = String((sourceUserMessage && sourceUserMessage.role) || '').trim().toLowerCase();
-    if (!targetSnapshot || targetRole !== 'assistant' || sourceRole !== 'user') {
-        if (targetSnapshot) {
-            renderMessages(serverMessages, true, { instant: true });
-        }
-        console.warn('[Regenerate] server target validation failed', {
-            conversation_id: regenerateConversationId,
-            regenerate_index: normalizedRegenerateIndex,
-            target_role: targetRole,
-            source_role: sourceRole,
-            server_message_count: serverMessages.length
-        });
-        showToast('对话已同步，请重新选择要重答的消息');
-        return;
-    }
-    
-    const regenLearningReaderContextBlocks = buildLearningReaderContextBlocks(
-        (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : currentConversationMode
-    );
-    const toolsMode = getToolsMode();
-    const enableTools = toolsMode !== 'off';
-    let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${normalizedRegenerateIndex}"]`);
-    if (!regenMessageDiv && regenerateConversationId) {
-        renderMessages(serverMessages, true, { instant: true });
-        regenMessageDiv = document.querySelector(`.message.assistant[data-index="${normalizedRegenerateIndex}"]`);
-    }
-    if (!regenMessageDiv) {
-        if (isDebugConsoleEnabled()) {
-            appendDebugConsoleEntry({
-                direction: 'client->local',
-                stage: 'regenerate_target_missing',
-                title: 'Regenerate Target Missing',
-                payload: {
-                    conversation_id: regenerateConversationId,
-                    regenerate_index: normalizedRegenerateIndex,
-                    reason: 'assistant_dom_not_found_after_sync'
-                }
-            });
-        }
-        showToast('未找到可重答消息，请刷新后重试');
-        return;
-    }
-    regenMessageDiv.__messageData = targetMessage;
-    const modelName = await resolveRegenerateModelName(normalizedRegenerateIndex, regenMessageDiv);
-    if (!modelName) return;
-
-    const forceContextCompressionRequested = consumeForceContextCompressionOnce();
-    const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
-        modelName,
-        forceContextCompressionRequested
-    );
-    if (!compressionDecision.ok) return;
-    const forceContextCompression = !!compressionDecision.forceCompression;
-
-    const regenUserMessageIndex = normalizedRegenerateIndex - 1;
-    const regenUserMessageDiv = getMessageElementByIndex(regenUserMessageIndex, 'user');
-    const regenAttachmentPayload = buildAttachmentsPayloadFromMessage(
-        regenUserMessageDiv && regenUserMessageDiv.__messageData ? regenUserMessageDiv.__messageData : null
-    );
-    const allowHistoryImages = true;
-    let accumulatedContent = "";
-    let currentSegmentContent = "";
-    let currentContentSpan = null;
-    let liveHistoryTimeMarkerBuffer = "";
-    let hasRenderedContentDelta = false;
-    let hasTimelineBoundary = false;
-    let needsCanonicalTimelineSync = false;
-    const modelBadgeState = {
-        modelName: String(modelName || ''),
-        searchFlag: 'unknown',
-        inputTokens: 0,
-        outputTokens: 0
-    };
-    const modelBadgeUsageState = {
-        input: 0,
-        output: 0,
-        snapshotInput: 0,
-        snapshotOutput: 0,
-        snapshotInitialized: false
-    };
-    
-    // Setup UI for generation
-    isGenerating = true;
-    updateSendButtonState();
-    currentAbortController = new AbortController();
-    const regenAbortController = currentAbortController;
-    clearActiveStreamResumeState();
-    setConversationStreamState(regenerateConversationId, {
-        status: 'running',
-        controller: regenAbortController,
-        assistant_index: normalizedRegenerateIndex,
-        is_regenerate: true,
-        regenerate_index: normalizedRegenerateIndex,
-        started_at: Date.now(),
-        last_seq: 0,
-        stopping: false
-    });
-    syncGenerationStateForCurrentConversation();
-    if (isCurrentConversation(regenerateConversationId)) {
-        beginTokenMiniStreaming(regenerateConversationId);
-    }
-    if (regenMessageDiv) {
-        regenMessageDiv = applyRegenerateStreamDomWindow(
-            regenerateConversationId,
-            normalizedRegenerateIndex,
-            regenMessageDiv
-        );
-        resetAssistantMessageForLiveStream(regenMessageDiv, {
-            modelBadgeState,
-            localOnly: true
-        });
-    }
-    let streamCompleted = false;
-    let streamAbortedByUser = false;
-    let streamDetachedByNavigation = false;
-    let streamEndedWithError = false;
-    let streamErrorRetryable = false;
-    let streamErrorCode = '';
-    let streamErrorMessage = '';
-    
-    try {
-        const response = await fetch('/api/chat/stream', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream'
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                conversation_id: regenerateConversationId,
-                model_name: modelName,
-                is_regenerate: true,
-                regenerate_index: normalizedRegenerateIndex,
-                conversation_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : (currentConversationMode === 'longterm' ? 'longterm' : 'chat'),
-                conversation_mode_payload: currentConversationMode === 'longterm' ? {
-                    task: String(currentConversationLongtermState.task || '').trim(),
-                    plan: Array.isArray(currentConversationLongtermState.plan) ? currentConversationLongtermState.plan : [],
-                    context: String(currentConversationLongtermState.context || '').trim(),
-                    step: String(currentConversationLongtermState.step || '').trim(),
-                    current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
-                    done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
-                } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
-                    learning: true,
-                    lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
-                    system_prompt: '',
-                    context_blocks: regenLearningReaderContextBlocks,
-                    active_tool_skills: [],
-                    meta: {
-                        source: 'chatdbserver_learning_mode_regenerate'
-                    },
-                } : {}),
-                enable_thinking: els.checkThinking.checked,
-                enable_web_search: els.checkSearch.checked,
-                enable_tools: enableTools,
-                tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
-                debug_mode: isDebugConsoleEnabled(),
-                show_token_usage: true,
-                file_ids: regenAttachmentPayload.file_ids,
-                sandbox_paths: regenAttachmentPayload.sandbox_paths,
-                user_attachments: regenAttachmentPayload.user_attachments,
-                allow_history_images: allowHistoryImages,
-                include_context: !!tokenBudgetState.includeContext,
-                force_context_compression: !!forceContextCompression
-            }),
-            signal: regenAbortController.signal
-        });
-
-        if (!response.ok) {
-            const errMsg = await readErrorMessageFromResponse(response, `HTTP ${response.status}`);
-            throw new Error(errMsg);
-        }
-        const headerStreamId = String(response.headers.get('X-Stream-Id') || '').trim();
-        if (headerStreamId) {
-            if (regenMessageDiv) {
-                regenMessageDiv.dataset.streamId = headerStreamId;
-            }
-            saveActiveStreamResumeState({
-                stream_id: headerStreamId,
-                conversation_id: regenerateConversationId,
-                assistant_index: normalizedRegenerateIndex,
-                is_regenerate: true,
-                regenerate_index: normalizedRegenerateIndex,
-                started_at: Date.now(),
-                last_seq: 0
-            });
-            setConversationStreamState(regenerateConversationId, {
-                stream_id: headerStreamId,
-                status: 'running',
-                unread: false,
-                assistant_index: normalizedRegenerateIndex,
-                is_regenerate: true,
-                regenerate_index: normalizedRegenerateIndex,
-                last_seq: 0,
-                stopping: false
-            });
-
-            if (!isCurrentConversation(regenerateConversationId)) {
-                markStreamControllerDetachOnly(regenAbortController, {
-                    conversation_id: regenerateConversationId,
-                    stream_id: headerStreamId,
-                    reason: 'regen_headers_after_navigation'
-                });
-            }
-        }
-        if (!isSseResponse(response)) {
-            const errMsg = await readErrorMessageFromResponse(response, '服务端未返回流式响应');
-            throw new Error(errMsg);
-        }
-        if (!response.body) throw new Error('stream body is empty');
-        
-        if (regenMessageDiv) {
-            resetAssistantMessageForLiveStream(regenMessageDiv, {
-                modelBadgeState,
-                localOnly: true
-            });
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        const debugScopeKey = `regen:${regenerateConversationId || 'new'}:${normalizedRegenerateIndex}:${Date.now()}`;
-        if (forceContextCompression && isDebugConsoleEnabled()) {
-            appendDebugConsoleEntry({
-                direction: 'client->local',
-                stage: 'force_context_compression_request',
-                title: 'Force Compression',
-                payload: {
-                    applied: true,
-                    conversation_id: regenerateConversationId,
-                    model_name: String(modelName || '')
-                }
-            });
-        }
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (value) {
-                buffer += decoder.decode(value, { stream: !done });
-            }
-            if (done) {
-                buffer += decoder.decode();
-            }
-            const lines = buffer.split('\n');
-            buffer = done ? '' : (lines.pop() || '');
-            
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                try {
-                    const dataText = line.substring(6);
-                    if (dataText === '[DONE]') {
-                        streamCompleted = true;
-                        continue;
-                    }
-                    const data = jsonParseSafe(dataText);
-                    if(!data) continue;
-                    
-                    if (data.type === 'stream_session') {
-                        const sid = String(data.stream_id || '').trim();
-                        if (isTerminalStreamSessionChunk(data)) {
-                            streamCompleted = true;
-                            clearActiveStreamResumeState();
-                            markConversationStreamFinished(regenerateConversationId, {
-                                error: String(data.error || '').trim()
-                            });
-                            continue;
-                        }
-                        if (sid) {
-                            if (regenMessageDiv) {
-                                regenMessageDiv.dataset.streamId = sid;
-                            }
-                            saveActiveStreamResumeState({
-                                stream_id: sid,
-                                conversation_id: String(data.conversation_id || regenerateConversationId || '').trim(),
-                                assistant_index: normalizedRegenerateIndex,
-                                is_regenerate: true,
-                                regenerate_index: normalizedRegenerateIndex,
-                                started_at: Date.now()
-                            });
-                            setConversationStreamState(regenerateConversationId, {
-                                stream_id: sid,
-                                status: 'running',
-                                unread: false,
-                                assistant_index: normalizedRegenerateIndex,
-                                is_regenerate: true,
-                                regenerate_index: normalizedRegenerateIndex,
-                                stopping: false
-                            });
-
-                            if (!isCurrentConversation(regenerateConversationId)) {
-                                markStreamControllerDetachOnly(regenAbortController, {
-                                    conversation_id: regenerateConversationId,
-                                    stream_id: sid,
-                                    reason: 'regen_session_after_navigation'
-                                });
-                            }
-                        }
-                    }
-                    if (Number.isFinite(Number(data._stream_seq))) {
-                        patchActiveStreamResumeState({ last_seq: Number(data._stream_seq) });
-                    }
-
-                    if (data.type === 'stream_cancel_requested') {
-                        streamAbortedByUser = true;
-                        setConversationStreamState(regenerateConversationId, {
-                            stopping: true,
-                            monitoring: false
-                        });
-                        syncGenerationStateForCurrentConversation();
-                        try {
-                            regenAbortController.abort();
-                        } catch (abortError) {
-                            console.error('[StreamCancel] regenerate abort after cancel event failed', abortError);
-                        }
-                        continue;
-                    }
-
-                    if (data.type === 'model_info') {
-                        modelBadgeState.modelName = String(data.model_name || modelBadgeState.modelName || '');
-                        modelBadgeState.searchFlag = (typeof data.search_enabled === 'boolean')
-                            ? data.search_enabled
-                            : modelBadgeState.searchFlag;
-                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
-                    } else if (data.type === 'prompt_token_profile') {
-                        applyPromptTokenProfileChunk(data);
-                    } else if (data.type === 'debug_trace') {
-                        appendDebugTraceChunk(data, debugScopeKey);
-                    } else if (data.type === 'content') {
-                        let contentDelta = String(data.content || '');
-
-                        if (!accumulatedContent && !currentSegmentContent) {
-                            const checked = stripHistoryTimeMarkerEchoForStream(`${liveHistoryTimeMarkerBuffer}${contentDelta}`);
-
-                            if (checked.pending) {
-                                liveHistoryTimeMarkerBuffer = `${liveHistoryTimeMarkerBuffer}${contentDelta}`;
-                                continue;
-                            }
-
-                            liveHistoryTimeMarkerBuffer = "";
-                            contentDelta = checked.text;
-
-                            if (checked.removed) {
-                                console.warn('[StreamSanitize] stripped echoed history time marker from regenerate stream chunk');
-                            }
-
-                            if (!contentDelta) {
-                                continue;
-                            }
-                        }
-
-                        accumulatedContent += contentDelta;
-                        if (isDebugConsoleEnabled()) {
-                            appendDebugConsoleEntry({
-                                direction: 'model->server',
-                                stage: 'model_reply',
-                                title: 'Model Reply',
-                                payload: accumulatedContent,
-                                replaceKey: `${debugScopeKey}:reply`
-                            });
-                        }
-                        if (!currentContentSpan || !currentContentSpan.isConnected) {
-                            currentContentSpan = createContentSpan(regenMessageDiv);
-                            currentSegmentContent = "";
-                        }
-                        currentSegmentContent += contentDelta;
-                        hasRenderedContentDelta = true;
-                        renderStreamingContentSegment(regenMessageDiv, currentContentSpan, currentSegmentContent, 'regen-live-segment');
-
-                        if (shouldAutoScroll) {
-                            pinMessagesToBottomFor(700);
-                        }
-                    } else if (data.type === 'done') {
-                        const doneContent = String(data.content || '');
-                        if (doneContent) {
-                            accumulatedContent = doneContent;
-                            if (!hasRenderedContentDelta && !hasTimelineBoundary) {
-                                updateMessageDivContent(normalizedRegenerateIndex, accumulatedContent, regenMessageDiv);
-                            } else if (!hasRenderedContentDelta && hasTimelineBoundary) {
-                                needsCanonicalTimelineSync = true;
-                            }
-                        }
-                    } else if (data.type === 'reasoning_content') {
-                        updateMessageDivThinking(normalizedRegenerateIndex, data.content, regenMessageDiv);
-                        hasTimelineBoundary = true;
-                        currentContentSpan = null;
-                        currentSegmentContent = "";
-                    } else if (
-                        data.type === 'web_search' ||
-                        data.type === 'search_meta' ||
-                        data.type === 'function_call_delta' ||
-                        data.type === 'function_call' ||
-                        data.type === 'function_call_running' ||
-                        data.type === 'function_result' ||
-                        data.type === 'context_compression_status' ||
-                        data.type === 'learning_card' ||
-                        data.type === 'question' ||
-                        data.type === 'puzzle'
-                    ) {
-                        hasTimelineBoundary = true;
-                        regenMessageDiv.__reasoningSegmentOpen = false;
-                        currentContentSpan = null;
-                        currentSegmentContent = "";
-                        updateMessageDivTools(normalizedRegenerateIndex, data, regenMessageDiv);
-
-                        if (
-                            data.type === 'function_call_delta' ||
-                            data.type === 'function_call' ||
-                            data.type === 'function_call_running'
-                        ) {
-                            await yieldToolStreamPaintForChunk(
-                                regenMessageDiv,
-                                data,
-                                data.type !== 'function_call_delta'
-                            );
-                        }
-                    } else if (data.type === 'token_usage') {
-                        onTokenStreamUsageChunk(data);
-                        applyUsageChunkToBadgeState(modelBadgeUsageState, data);
-                        modelBadgeState.inputTokens = modelBadgeUsageState.input;
-                        modelBadgeState.outputTokens = modelBadgeUsageState.output;
-                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
-                    } else if (data.type === 'error') {
-                        streamEndedWithError = true;
-                        streamErrorRetryable = !!data.retryable;
-                        streamErrorCode = String(data.error_code || '').trim().toLowerCase();
-                        streamErrorMessage = String(data.content || '').trim() || '重新回答失败';
-                        appendDebugConsoleEntry({
-                            direction: 'model->server',
-                            stage: 'error',
-                            title: 'Error',
-                            payload: {
-                                content: streamErrorMessage,
-                                error_code: streamErrorCode,
-                                retryable: streamErrorRetryable
-                            }
-                        });
-                        if (streamErrorRetryable || streamErrorCode === 'network_error') {
-                            appendErrorEvent(regenMessageDiv, streamErrorMessage);
-                            showToast('连接中断，可刷新页面后自动重连此条回复');
-                        } else {
-                            showToast(streamErrorMessage);
-                        }
-                    }
-                    scheduleLearningSidebarBridgeNotify();
-                } catch (e) { }
-            }
-            if (done) {
-                streamCompleted = true;
-                break;
-            }
-        }
-        
-    } catch (e) {
-        if (e.name === 'AbortError') {
-            if (regenAbortController && regenAbortController.__nexoraDetachOnly) {
-                streamDetachedByNavigation = true;
-            } else {
-                streamAbortedByUser = true;
-                console.log("Generation stopped.");
-            }
-        } else {
-            console.error(e);
-            const errText = String((e && e.message) || e || 'unknown');
-            const isRetryableNetwork = isLikelyRetryableNetworkErrorText(errText);
-            streamEndedWithError = true;
-            streamErrorRetryable = !!isRetryableNetwork;
-            streamErrorCode = isRetryableNetwork ? 'network_error' : 'client_exception';
-            streamErrorMessage = errText;
-            const displayError = streamErrorRetryable
-                ? '连接中断，可刷新页面后自动重连此条回复'
-                : `重新回答失败: ${errText}`;
-            if (streamErrorRetryable) {
-                appendErrorEvent(regenMessageDiv, displayError);
-            }
-            showToast(displayError);
-        }
-    } finally {
-        isGenerating = false;
-        updateSendButtonState();
-        const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
-        const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
-        if (streamEndedTerminally && regenMessageDiv) regenMessageDiv.classList.remove('pending');
-        if (streamCompleted) {
-            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '0';
-            finalizeMessageRenderForIndex(normalizedRegenerateIndex, regenMessageDiv);
-            const targetAfterStream = resolveAssistantStreamMessageDiv(normalizedRegenerateIndex, regenMessageDiv);
-            const hasRenderedContent = !!(targetAfterStream && (() => {
-                const body = targetAfterStream.querySelector('.content-body');
-                if (body) {
-                    const source = String(
-                        (typeof body.__sourceMarkdown === 'string')
-                            ? body.__sourceMarkdown
-                            : (body.textContent || '')
-                    ).trim();
-                    if (source) return true;
-                }
-                const tools = targetAfterStream.querySelector('.tool-usage, .add-basis-view');
-                if (tools) return true;
-                const thinking = targetAfterStream.querySelector('.thinking-content');
-                if (thinking && String(thinking.textContent || '').trim()) return true;
-                return false;
-            })());
-            const shouldSyncFromServer = (
-                !targetAfterStream
-                || !targetAfterStream.isConnected
-                || !hasRenderedContent
-                || needsCanonicalTimelineSync
-            );
-            if (shouldSyncFromServer && regenerateConversationId && isCurrentConversation(regenerateConversationId)) {
-                try {
-                    const convRes = await fetch(`/api/conversations/${encodeURIComponent(regenerateConversationId)}`);
-                    const convData = await convRes.json().catch(() => ({}));
-                    if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
-                        let syncMsgs = convData.conversation.messages;
-                        if (normalizedRegenerateIndex >= 0 && normalizedRegenerateIndex < syncMsgs.length) {
-                            syncMsgs = syncMsgs.slice(0, normalizedRegenerateIndex + 1);
-                        }
-                        renderMessages(syncMsgs, true, { instant: true });
-                    }
-                } catch (_) {
-                    // ignore canonical timeline sync errors
-                }
-            }
-        }
-        if (streamAbortedByUser && !streamCompleted) {
-            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '1';
-            showToast('已中断，等待服务端同步结果');
-        }
-        if (streamEndedWithError && !streamErroredRetryable) {
-            const terminalText = renderAssistantTerminalErrorMessage(
-                regenMessageDiv,
-                normalizedRegenerateIndex,
-                accumulatedContent,
-                streamErrorMessage || '重新回答失败'
-            );
-            accumulatedContent = terminalText;
-            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '1';
-        }
-        if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
-            if (streamCompleted && normalizedRegenerateIndex >= 0) {
-                pendingRegenerateFilter = {
-                    conversationId: regenerateConversationId,
-                    index: normalizedRegenerateIndex
-                };
-            }
-            clearActiveStreamResumeState();
-            removeConversationStreamState(regenerateConversationId);
-        } else if (streamDetachedByNavigation) {
-            const existingState = getConversationStreamState(regenerateConversationId);
-            const ownsController = !!(existingState && existingState.controller === regenAbortController);
-            const latestState = setConversationStreamState(regenerateConversationId, {
-                status: 'running',
-                ...(ownsController ? { controller: null, monitoring: false } : {})
-            });
-
-            if (shouldAutoAttachDetachedStream(regenAbortController)) {
-                attachDetachedStreamConsumer(regenerateConversationId, latestState);
-            }
-        } else if (streamErroredRetryable) {
-            setConversationStreamState(regenerateConversationId, {
-                status: 'running',
-                controller: null,
-                monitoring: false,
-                error: streamErrorMessage || ''
-            });
-        }
-        if (streamEndedTerminally && regenerateConversationId && isCurrentConversation(regenerateConversationId)) {
-            await finishTokenMiniStreaming(regenerateConversationId);
-            try {
-                const convRes = await fetch(`/api/conversations/${encodeURIComponent(regenerateConversationId)}`);
-                const convData = await convRes.json().catch(() => ({}));
-                if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
-                    let msgs = convData.conversation.messages;
-                    if (streamEndedTerminally && normalizedRegenerateIndex >= 0 && normalizedRegenerateIndex < msgs.length) {
-                        msgs = msgs.slice(0, normalizedRegenerateIndex + 1);
-                    }
-                    renderMessages(msgs, true, { instant: true });
-                    refreshConversationImageHistoryFlag(msgs);
-                    applyTokenBudgetFromConversationMessages(msgs);
-                    await refreshTokenMiniForConversation(regenerateConversationId, { keepStreamPart: false });
-                }
-            } catch (_) {}
-        }
-        loadConversations();
-        scheduleLearningSidebarBridgeNotify(0);
-    }
+    return messageActionsController.startRegenerate(index);
 }
 
 function jsonParseSafe(str) {
@@ -23929,56 +18760,7 @@ function resolveAssistantStreamMessageDiv(index, preferredMessageDiv = null) {
 }
 
 function resolveContentBodyForFullTextUpdate(messageDiv, displayText) {
-    const contentRoot = messageDiv.querySelector('.message-content') || messageDiv;
-    const generatedAnchor = (
-        messageDiv.__generatedImageResultAnchor
-        && messageDiv.__generatedImageResultAnchor.isConnected
-    )
-        ? messageDiv.__generatedImageResultAnchor
-        : Array.from(contentRoot.querySelectorAll('.content-body.generated-image-result')).pop();
-
-    if (generatedAnchor) {
-        let body = (
-            messageDiv.__generatedImageFollowupSpan
-            && messageDiv.__generatedImageFollowupSpan.isConnected
-        )
-            ? messageDiv.__generatedImageFollowupSpan
-            : contentRoot.querySelector('.content-body.generated-image-followup');
-
-        if (!body) {
-            body = createContentSpan(messageDiv, { afterGeneratedImage: true });
-        }
-
-        const prefix = String(
-            messageDiv.__generatedImageTextPrefix
-            || collectContentMarkdownBeforeNode(contentRoot, generatedAnchor)
-            || ''
-        );
-        let nextText = String(displayText || '');
-
-        if (prefix && nextText.startsWith(prefix)) {
-            nextText = nextText.slice(prefix.length);
-        }
-
-        messageDiv.__contentAfterGeneratedImage = false;
-        messageDiv.__generatedImageFollowupSpan = body;
-
-        return { body, text: nextText };
-    }
-
-    let body = Array.from(contentRoot.querySelectorAll('.content-body')).find((node) => {
-        return !node.classList.contains('generated-image-result')
-            && !node.classList.contains('generated-image-followup')
-            && !node.classList.contains('generated-map-result');
-    });
-
-    if (!body) {
-        body = document.createElement('div');
-        body.className = 'content-body';
-        contentRoot.appendChild(body);
-    }
-
-    return { body, text: String(displayText || '') };
+    return messagesController.resolveContentBodyForFullTextUpdate(messageDiv, displayText);
 }
 
 const streamMessageDomController = getNexoraChatStreaming().createStreamMessageDomController({
@@ -24179,7 +18961,6 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
             applyLongtermPlanFromText(data.result, { source: 'tool-update', messageDiv });
         }
-        maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, data.result, callId, toolIndex);
     } else if (data.type === 'context_compression_status') {
         upsertContextCompressionCard(
             messageDiv,
@@ -24238,709 +19019,8 @@ function replayStreamPrefillChunks(assistantDiv, chunks, assistantIndex) {
 }
 
 async function resumeActiveStreamAfterReload(options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const forceResume = !!opts.force;
-    if (!forceResume) {
-        if (streamResumeRestoredOnce) return;
-        streamResumeRestoredOnce = true;
-    }
-
-    const providedState = (opts.state && typeof opts.state === 'object') ? opts.state : null;
-    const state = providedState || loadActiveStreamResumeState();
-    if (!state || !state.stream_id) return;
-    if (!forceResume && isGenerating && currentAbortController) return;
-
-    const updatedAt = Number(state.updated_at || 0);
-    if (updatedAt > 0 && (Date.now() - updatedAt) > (2 * 60 * 60 * 1000)) {
-        clearActiveStreamResumeState();
-        return;
-    }
-
-    const targetConversationId = String(opts.conversationId || state.conversation_id || '').trim();
-    if (targetConversationId && String(currentConversationId || '').trim() !== targetConversationId) {
-        if (opts.allowSwitch === false) {
-            return;
-        }
-        await loadConversation(targetConversationId, { deferStreamAttach: true });
-    }
-    const reconnectBoundConversationId = String(targetConversationId || currentConversationId || '').trim();
-    let reconnectStreamConversationId = reconnectBoundConversationId;
-    setConversationStreamState(reconnectStreamConversationId, {
-        ...state,
-        status: 'running',
-        unread: false,
-        stopping: false
-    });
-
-    let assistantIndex = resolveAssistantIndexForStreamResume(state);
-    if (assistantIndex === null) {
-        const pendingAssistants = els.messagesContainer
-            ? Array.from(els.messagesContainer.querySelectorAll('.message.assistant.pending, .message.assistant[data-local-only="1"]'))
-            : [];
-        const pendingAssistant = pendingAssistants.length > 0 ? pendingAssistants[pendingAssistants.length - 1] : null;
-        const pendingIndex = pendingAssistant && pendingAssistant.dataset
-            ? normalizeStreamMessageIndex(pendingAssistant.dataset.index)
-            : null;
-
-        if (pendingIndex !== null) {
-            assistantIndex = pendingIndex;
-            setConversationStreamState(reconnectStreamConversationId, {
-                assistant_index: assistantIndex
-            });
-            patchActiveStreamResumeState({
-                assistant_index: assistantIndex
-            });
-            console.debug('[StreamResume] recovered assistant index from pending DOM', {
-                conversation_id: reconnectBoundConversationId,
-                stream_id: String(state.stream_id || ''),
-                assistant_index: assistantIndex
-            });
-        }
-    }
-    if (assistantIndex === null) {
-        const rows = els.messagesContainer
-            ? Array.from(els.messagesContainer.querySelectorAll('.message'))
-            : [];
-        const lastRow = rows.length ? rows[rows.length - 1] : null;
-        const lastAssistantIndex = lastRow && lastRow.classList.contains('assistant')
-            ? normalizeStreamMessageIndex(lastRow.dataset.index)
-            : null;
-        assistantIndex = lastAssistantIndex !== null ? lastAssistantIndex : rows.length;
-        console.warn('[StreamResume] assistant index missing; using append position', {
-            conversation_id: reconnectBoundConversationId,
-            stream_id: String(state.stream_id || ''),
-            assistant_index: assistantIndex
-        });
-    }
-
-    if (state.is_regenerate) {
-        applyRegenerateStreamDomWindow(reconnectBoundConversationId, assistantIndex);
-    }
-
-    let assistantDiv = document.querySelector(`.message.assistant[data-index="${assistantIndex}"]`);
-    const isRegenerateResume = !!state.is_regenerate;
-    const hasExistingStreamContent = assistantDiv && assistantDiv.querySelector(
-        '.content-body[data-stream-live="1"], .thinking-content[data-stream-live="1"]'
-    );
-    // 只有 live DOM 才能续写；历史快照里的旧回答必须由流缓冲重建，不能继续拼接。
-    const canReuseExistingContent = !!hasExistingStreamContent;
-    let resumeFromSeq = canReuseExistingContent
-        ? (Number.isFinite(Number(state.last_seq)) ? Number(state.last_seq) : 0)
-        : 0;
-    let prefilledFromApi = false;
-    let prefillEndedWithContent = canReuseExistingContent;
-    if (!assistantDiv) {
-        assistantDiv = appendMessage({ role: 'assistant', content: '', pending: true }, assistantIndex);
-    }
-    if (!assistantDiv) {
-        clearActiveStreamResumeState();
-        return;
-    }
-    assistantDiv.dataset.streamId = String(state.stream_id || '');
-
-    if (canReuseExistingContent) {
-        assistantDiv.classList.add('pending');
-    } else {
-        resetAssistantMessageForLiveStream(assistantDiv, {
-            modelBadgeState: {
-                modelName: getStreamingModelBadgeName(),
-                searchFlag: 'unknown',
-                inputTokens: 0,
-                outputTokens: 0
-            }
-        });
-        // 服务端快照无流式内容，尝试从流缓冲区获取累积内容
-        if (state.stream_id) {
-            try {
-                const accRes = await fetch(`/api/chat/stream/content?stream_id=${encodeURIComponent(state.stream_id)}`);
-                const accData = await accRes.json().catch(() => ({}));
-                const prefillResult = replayStreamPrefillChunks(
-                    assistantDiv,
-                    accData && Array.isArray(accData.render_chunks) ? accData.render_chunks : [],
-                    assistantIndex
-                );
-
-                if (prefillResult.rendered) {
-                    resumeFromSeq = Number.isFinite(Number(accData.last_seq))
-                        ? Number(accData.last_seq)
-                        : prefillResult.lastSeq;
-                    prefilledFromApi = true;
-                    prefillEndedWithContent = !!prefillResult.endedWithContent;
-                }
-
-                if (!prefillResult.rendered && accData && accData.success && accData.content) {
-                    const content = assistantDiv.querySelector('.message-content') || assistantDiv;
-                    const body = document.createElement('div');
-                    body.className = 'content-body';
-                    body.dataset.streamLive = '1';
-                    body.dataset.streamRaw = accData.content;
-                    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(accData.content, {
-                        streamingMathProvisional: true
-                    });
-                    bindSourceMarkdown(body, accData.content);
-                    highlightCode(body);
-                    content.appendChild(body);
-                    resumeFromSeq = Number.isFinite(Number(accData.last_seq)) ? Number(accData.last_seq) : 0;
-                    prefilledFromApi = true;
-                    prefillEndedWithContent = true;
-                }
-
-                if (!prefillResult.rendered && accData && accData.success && accData.reasoning_content) {
-                    const content = assistantDiv.querySelector('.message-content') || assistantDiv;
-                    const thinkingBlock = createThinkingBlock(false);
-                    const thinkingContent = thinkingBlock.querySelector('.thinking-content');
-                    markReasoningThinkingBlockLive(thinkingBlock);
-                    thinkingContent.dataset.streamRaw = accData.reasoning_content;
-                    thinkingContent.innerHTML = renderMarkdownWithNewTabLinks(accData.reasoning_content, { breaks: true, streamingMathProvisional: true });
-                    bindSourceMarkdown(thinkingContent, accData.reasoning_content);
-                    highlightCode(thinkingContent);
-                    updateThinkingBlockSummary(thinkingBlock, accData.reasoning_content);
-                    content.prepend(thinkingBlock);
-                    resumeFromSeq = Number.isFinite(Number(accData.last_seq)) ? Number(accData.last_seq) : resumeFromSeq;
-                    prefilledFromApi = true;
-                    prefillEndedWithContent = false;
-                }
-            } catch (_) {
-                // 缓冲读取失败时从第 0 个事件重新读取，避免旧回复内容参与续接。
-            }
-        }
-    }
-
-    if (opts.showToast !== false) {
-        showToast('检测到未完成回复，正在重连...');
-    }
-    beginTokenMiniStreaming(reconnectStreamConversationId);
-    const previousStreamState = getConversationStreamState(reconnectStreamConversationId);
-    if (previousStreamState && previousStreamState.monitoring && previousStreamState.controller) {
-        try { previousStreamState.controller.abort(); } catch (_) {}
-    }
-    const reconnectAbortController = new AbortController();
-    currentAbortController = reconnectAbortController;
-    setConversationStreamState(reconnectStreamConversationId, {
-        controller: reconnectAbortController,
-        monitoring: false
-    });
-    syncGenerationStateForCurrentConversation();
-
-    let streamCompleted = false;
-    let streamAbortedByUser = false;
-    let streamEndedWithError = false;
-    let streamErrorRetryable = false;
-    let streamErrorCode = '';
-    let streamErrorMessage = '';
-    let currentFullContent = '';
-    let currentSegmentContent = '';
-    let currentContentSpan = null;
-    let liveHistoryTimeMarkerBuffer = '';
-    let buffer = '';
-    let replayCatchupSeq = 0;
-    const decoder = new TextDecoder();
-    const latestLiveResumeNode = getLatestLiveStreamResumeNode(assistantDiv);
-    const resumeContentBody = (
-        latestLiveResumeNode.type === 'reasoning'
-        || (!canReuseExistingContent && prefilledFromApi && !prefillEndedWithContent)
-    )
-        ? null
-        : prepareLatestContentBodyForStreamResume(assistantDiv);
-    const resumeThinkingBlock = latestLiveResumeNode.type === 'reasoning'
-        ? prepareLatestThinkingBlockForStreamResume(assistantDiv, latestLiveResumeNode.node)
-        : null;
-
-    if (resumeContentBody) {
-        currentContentSpan = resumeContentBody;
-        currentSegmentContent = String(resumeContentBody.dataset.streamRaw || '');
-        currentFullContent = currentSegmentContent;
-    }
-
-    if (resumeThinkingBlock) {
-        console.debug('[StreamResume] resume live reasoning block', {
-            conversation_id: reconnectBoundConversationId,
-            stream_id: String(state.stream_id || ''),
-            assistant_index: assistantIndex,
-            reasoning_chars: String((resumeThinkingBlock.querySelector('.thinking-content') || {}).dataset?.streamRaw || '').length
-        });
-    }
-
-    try {
-        const response = await fetch('/api/chat/stream/reconnect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                stream_id: state.stream_id,
-                from_seq: Number.isFinite(Number(opts.fromSeq)) ? Number(opts.fromSeq) : resumeFromSeq
-            }),
-            signal: reconnectAbortController.signal
-        });
-        if (!response.ok || !response.body) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        while (true) {
-            const { value, done } = await reader.read();
-            if (value) buffer += decoder.decode(value, { stream: !done });
-            if (done) buffer += decoder.decode();
-            const lines = buffer.split('\n');
-            buffer = done ? '' : (lines.pop() || '');
-
-            let dirtiedContentSpans = new Set();
-            let dirtiedThinkingBlocks = new Set();
-            let freshContentSpans = new Set();
-
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const jsonStr = line.slice(6);
-                if (jsonStr === '[DONE]') {
-                    streamCompleted = true;
-                    continue;
-                }
-                let chunk = null;
-                try {
-                    chunk = JSON.parse(jsonStr);
-                } catch (_) {
-                    continue;
-                }
-                if (!chunk || typeof chunk !== 'object') continue;
-
-                if (chunk.type === 'stream_session') {
-                    const sid = String(chunk.stream_id || '').trim();
-                    replayCatchupSeq = Number.isFinite(Number(chunk.last_seq)) ? Number(chunk.last_seq) : 0;
-                    if (isTerminalStreamSessionChunk(chunk)) {
-                        const finalCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
-                        if (finalCid && finalCid !== reconnectStreamConversationId) {
-                            moveConversationStreamState(reconnectStreamConversationId, finalCid);
-                            reconnectStreamConversationId = finalCid;
-                        }
-                        streamCompleted = true;
-                        clearActiveStreamResumeState();
-                        markConversationStreamFinished(reconnectStreamConversationId, {
-                            error: String(chunk.error || '').trim()
-                        });
-                        continue;
-                    }
-                    if (sid) {
-                        assistantDiv.dataset.streamId = sid;
-                        const sessionCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
-                        if (sessionCid && sessionCid !== reconnectStreamConversationId) {
-                            moveConversationStreamState(reconnectStreamConversationId, sessionCid);
-                            reconnectStreamConversationId = sessionCid;
-                        }
-                        const previousState = getConversationStreamState(sessionCid || reconnectStreamConversationId) || {};
-                        const sameStream = String(previousState.stream_id || '').trim() === sid;
-                        const sessionIsRegenerate = readStreamRegenerateFlag(chunk, sameStream ? !!previousState.is_regenerate : !!state.is_regenerate);
-                        const sessionAssistantIndex = readStreamAssistantIndexFromMeta(
-                            chunk,
-                            sameStream ? previousState.assistant_index : assistantIndex
-                        );
-                        const sessionRegenerateIndex = sessionIsRegenerate
-                            ? readStreamRegenerateIndexFromMeta(chunk, sameStream ? previousState.regenerate_index : sessionAssistantIndex)
-                            : null;
-
-                        patchActiveStreamResumeState({
-                            stream_id: sid,
-                            conversation_id: sessionCid,
-                            is_regenerate: sessionIsRegenerate,
-                            assistant_index: sessionAssistantIndex,
-                            regenerate_index: sessionRegenerateIndex
-                        });
-                        setConversationStreamState(sessionCid || reconnectStreamConversationId, {
-                            stream_id: sid,
-                            conversation_id: sessionCid || reconnectStreamConversationId,
-                            status: 'running',
-                            unread: false,
-                            is_regenerate: sessionIsRegenerate,
-                            assistant_index: sessionAssistantIndex,
-                            regenerate_index: sessionRegenerateIndex,
-                            stopping: false
-                        });
-                    }
-                }
-                const chunkSeq = Number.isFinite(Number(chunk._stream_seq)) ? Number(chunk._stream_seq) : 0;
-                const isReplayChunk = (canReuseExistingContent || prefilledFromApi) && replayCatchupSeq > 0 && chunkSeq > 0 && chunkSeq <= replayCatchupSeq;
-                if (chunkSeq > 0) {
-                    patchActiveStreamResumeState({ last_seq: chunkSeq });
-                    setConversationStreamState(reconnectStreamConversationId, {
-                        last_seq: chunkSeq
-                    });
-                }
-
-                if (chunk.type === 'stream_cancel_requested') {
-                    streamAbortedByUser = true;
-                    setConversationStreamState(reconnectStreamConversationId, {
-                        stopping: true,
-                        monitoring: false
-                    });
-                    syncGenerationStateForCurrentConversation();
-                    try {
-                        reconnectAbortController.abort();
-                    } catch (abortError) {
-                        console.error('[StreamCancel] reconnect abort after cancel event failed', abortError);
-                    }
-                    continue;
-                }
-
-                if (chunk.conversation_id) {
-                    const incomingCid = String(chunk.conversation_id || '').trim();
-                    patchActiveStreamResumeState({ conversation_id: incomingCid });
-                    if (incomingCid && incomingCid !== reconnectStreamConversationId) {
-                        moveConversationStreamState(reconnectStreamConversationId, incomingCid);
-                        reconnectStreamConversationId = incomingCid;
-                    }
-                    if (incomingCid && incomingCid === reconnectBoundConversationId) {
-                        const activeCid = String(currentConversationId || '').trim();
-                        if (!activeCid) {
-                            currentConversationId = incomingCid;
-                            syncNotesForConversation(incomingCid);
-                        } else if (activeCid === reconnectBoundConversationId) {
-                            noteTokenMiniConversationId(incomingCid);
-                        }
-                    }
-                }
-
-                if (chunk.type === 'debug_trace') {
-                    appendDebugTraceChunk(chunk, `resume:${String(state.stream_id || '')}`);
-                } else if (chunk.type === 'model_info') {
-                    updateMessageModelBadge(assistantDiv, {
-                        modelName: String(chunk.model_name || getStreamingModelBadgeName()),
-                        searchFlag: (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : 'unknown',
-                        inputTokens: 0,
-                        outputTokens: Math.max(safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
-                    });
-                } else if (chunk.type === 'content') {
-                    assistantDiv.__reasoningSegmentOpen = false;
-                    let chunkContent = String(chunk.content || '');
-
-                    if (!currentFullContent && !currentSegmentContent) {
-                        const checked = stripHistoryTimeMarkerEchoForStream(`${liveHistoryTimeMarkerBuffer}${chunkContent}`);
-
-                        if (checked.pending) {
-                            liveHistoryTimeMarkerBuffer = `${liveHistoryTimeMarkerBuffer}${chunkContent}`;
-                            continue;
-                        }
-
-                        liveHistoryTimeMarkerBuffer = '';
-                        chunkContent = checked.text;
-
-                        if (checked.removed) {
-                            console.warn('[StreamSanitize] stripped echoed history time marker from reconnect stream chunk');
-                        }
-
-                        if (!chunkContent) {
-                            continue;
-                        }
-                    }
-
-                    currentFullContent += chunkContent;
-                    if (!isReplayChunk) {
-                        onTokenStreamTextChunk(chunkContent);
-                    }
-                    if (!isReplayChunk) {
-                        if (assistantDiv.__contentAfterGeneratedImage) {
-                            currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
-                            currentSegmentContent = '';
-                            assistantDiv.__contentAfterGeneratedImage = false;
-                        } else if (!currentContentSpan || !currentContentSpan.isConnected) {
-                            currentContentSpan = createContentSpan(assistantDiv);
-                        }
-                        currentSegmentContent += chunkContent;
-                        currentContentSpan.dataset.streamRaw = currentSegmentContent;
-                        dirtiedContentSpans.add(currentContentSpan);
-                        freshContentSpans.add(currentContentSpan);
-                    }
-                } else if (chunk.type === 'reasoning_content') {
-                    if (!isReplayChunk) {
-                        onTokenStreamReasoningChunk(chunk.content);
-                    }
-                    if (!isReplayChunk) {
-                        const msgContentContainer = assistantDiv.querySelector('.message-content');
-                        const wasReasoningSegmentOpen = !!assistantDiv.__reasoningSegmentOpen;
-                        const thinkingBlock = resolveReasoningThinkingBlockForAppend(assistantDiv, msgContentContainer);
-                        markReasoningThinkingBlockLive(thinkingBlock);
-                        const contentDiv = thinkingBlock.querySelector('.thinking-content');
-                        const currentRaw = readReasoningContentRaw(contentDiv);
-                        const appendText = buildReasoningAppendText(
-                            currentRaw,
-                            chunk.content || '',
-                            !wasReasoningSegmentOpen
-                        );
-                        const nextRaw = `${currentRaw}${appendText}`;
-                        contentDiv.dataset.streamRaw = nextRaw;
-                        dirtiedThinkingBlocks.add(contentDiv);
-                    }
-                } else if (chunk.type === 'prompt_token_profile') {
-                    applyPromptTokenProfileChunk(chunk);
-                } else if (
-                    chunk.type === 'web_search' ||
-                    chunk.type === 'search_meta' ||
-                    chunk.type === 'context_compression_status' ||
-                    chunk.type === 'function_call_delta' ||
-                    chunk.type === 'function_call' ||
-                    chunk.type === 'function_call_running' ||
-                    chunk.type === 'function_result' ||
-                    chunk.type === 'learning_card' ||
-                    chunk.type === 'question' ||
-                    chunk.type === 'puzzle'
-                ) {
-                    if (chunk.type === 'learning_card') {
-                        appendLearningCardStep(assistantDiv, chunk);
-                    } else if (chunk.type === 'question') {
-                        appendQuestionStep(assistantDiv, chunk);
-                    } else if (chunk.type === 'puzzle') {
-                        appendPuzzleStep(assistantDiv, chunk);
-                    } else if (chunk.type === 'function_call_delta') {
-                        const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
-
-                        if (rawCallId) {
-                            rememberToolArgsDeltaSeen(assistantDiv, rawCallId);
-                        }
-
-                        if (!isReplayChunk) {
-                            onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
-                        }
-                    } else if (chunk.type === 'function_call') {
-                        const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
-
-                        if (!isReplayChunk && (!rawCallId || !hasToolArgsDeltaSeen(assistantDiv, rawCallId))) {
-                            onTokenStreamToolArgsChunk(chunk.arguments || '');
-                        }
-                    }
-                    if (chunk.type !== 'learning_card' && chunk.type !== 'question' && chunk.type !== 'puzzle') {
-                        assistantDiv.__reasoningSegmentOpen = false;
-                        currentContentSpan = null; currentSegmentContent = '';
-                        updateMessageDivTools(assistantIndex, chunk, assistantDiv);
-                        syncStreamingModelBadgeEstimate(assistantDiv, {
-                            modelName: getStreamingModelBadgeName(),
-                            searchFlag: 'unknown',
-                            inputTokens: 0,
-                            outputTokens: 0
-                        });
-
-                        if (
-                            !isReplayChunk &&
-                            (
-                                chunk.type === 'function_call_delta' ||
-                                chunk.type === 'function_call' ||
-                                chunk.type === 'function_call_running'
-                            )
-                        ) {
-                            await yieldToolStreamPaintForChunk(
-                                assistantDiv,
-                                chunk,
-                                chunk.type !== 'function_call_delta'
-                            );
-                        }
-                    }
-                } else if (chunk.type === 'token_usage') {
-                    onTokenStreamUsageChunk(chunk);
-                    updateMessageModelBadge(assistantDiv, {
-                        modelName: getStreamingModelBadgeName(),
-                        searchFlag: 'unknown',
-                        inputTokens: safeTokenInt(chunk.input_tokens),
-                        outputTokens: Math.max(safeTokenInt(chunk.output_tokens), safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
-                    });
-                } else if (chunk.type === 'title') {
-                    if (els.conversationTitle) els.conversationTitle.textContent = String(chunk.title || '');
-                } else if (chunk.type === 'error') {
-                    streamEndedWithError = true;
-                    streamErrorRetryable = !!chunk.retryable;
-                    streamErrorCode = String(chunk.error_code || '').trim().toLowerCase();
-                    streamErrorMessage = String(chunk.content || '').trim() || 'Unknown error';
-                    if (streamErrorRetryable || streamErrorCode === 'network_error') {
-                        appendErrorEvent(assistantDiv, streamErrorMessage);
-                        showToast('连接中断，可刷新页面后自动重连此条回复');
-                    } else {
-                        showToast(streamErrorMessage);
-                    }
-                }
-                scheduleLearningSidebarBridgeNotify();
-            }
-
-            for (const contentDiv of freshContentSpans) {
-                const segmentRaw = contentDiv.dataset.streamRaw || '';
-                const segmentPlanInfo = applyLongtermPlanFromText(segmentRaw, { source: 'live-segment', messageDiv: assistantDiv });
-                const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : segmentRaw || '');
-                contentDiv.dataset.streamLive = '1';
-                contentDiv.innerHTML = renderStreamingMarkdownWithNewTabLinks(displaySegmentContent, {
-                    streamingMathProvisional: true
-                });
-                bindSourceMarkdown(contentDiv, displaySegmentContent);
-                highlightCode(contentDiv);
-            }
-            if (freshContentSpans.size > 0 && shouldAutoScroll) {
-                pinMessagesToBottomFor(700);
-                syncStreamingModelBadgeEstimate(assistantDiv, {
-                    modelName: getStreamingModelBadgeName(),
-                    searchFlag: 'unknown',
-                    inputTokens: 0,
-                    outputTokens: 0
-                });
-            }
-
-            for (const contentDiv of dirtiedThinkingBlocks) {
-                const nextRaw = contentDiv.dataset.streamRaw || '';
-                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, { breaks: true, streamingMathProvisional: true });
-                bindSourceMarkdown(contentDiv, nextRaw);
-                highlightCode(contentDiv);
-                const pt = contentDiv.closest('.thinking-block');
-                if (pt) {
-                    markReasoningThinkingBlockLive(pt);
-                    updateThinkingBlockSummary(pt, nextRaw);
-                }
-            }
-            if (dirtiedThinkingBlocks.size > 0) {
-                if (shouldAutoScroll) {
-                    pinMessagesToBottomFor(700);
-                }
-                syncStreamingModelBadgeEstimate(assistantDiv, {
-                    modelName: getStreamingModelBadgeName(),
-                    searchFlag: 'unknown',
-                    inputTokens: 0,
-                    outputTokens: 0
-                });
-            }
-
-            if (done) {
-                streamCompleted = true;
-                break;
-            }
-        }
-    } catch (e) {
-        if (e && e.name === 'AbortError') {
-            if (reconnectAbortController.__nexoraDetachOnly) {
-                streamDetachedByNavigation = true;
-            } else {
-                streamAbortedByUser = true;
-            }
-        } else {
-            console.error('Reconnect failed:', e);
-            if (e && e.message && e.message.includes('404')) {
-                streamEndedWithError = true;
-                streamErrorRetryable = false;
-                streamErrorCode = 'resume_expired';
-                streamErrorMessage = '重连状态已过期';
-                clearActiveStreamResumeState();
-                if (opts.showToast !== false) {
-                    showToast('重连状态已过期，将重新加载历史记录');
-                }
-                const targetCid = String(state.conversation_id || currentConversationId || '').trim();
-                if (targetCid) {
-                    loadConversation(targetCid);
-                }
-            } else {
-                const errText = String((e && e.message) || e || '重连失败');
-                const isRetryableNetwork = isLikelyRetryableNetworkErrorText(errText);
-                streamEndedWithError = true;
-                streamErrorRetryable = !!isRetryableNetwork;
-                streamErrorCode = isRetryableNetwork ? 'network_error' : 'reconnect_failed';
-                streamErrorMessage = errText;
-                if (streamErrorRetryable) {
-                    if (opts.showToast !== false) {
-                        showToast('连接中断，可刷新页面后自动重连此条回复');
-                    }
-                } else {
-                    if (opts.showToast !== false) {
-                        showToast('重连失败，请稍后刷新重试');
-                    }
-                }
-            }
-        }
-    } finally {
-        const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
-        const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
-        let streamServerFinalized = true;
-        if (streamEndedTerminally) {
-            markConversationStreamFinished(reconnectStreamConversationId, {
-                error: streamEndedWithError ? (streamErrorMessage || 'reconnect_error') : ''
-            });
-        } else if (streamDetachedByNavigation) {
-            const existingState = getConversationStreamState(reconnectStreamConversationId);
-            const ownsController = !!(existingState && existingState.controller === reconnectAbortController);
-            const latestState = setConversationStreamState(reconnectStreamConversationId, {
-                status: 'running',
-                ...(ownsController ? { controller: null, monitoring: false } : {})
-            });
-
-            if (shouldAutoAttachDetachedStream(reconnectAbortController)) {
-                attachDetachedStreamConsumer(reconnectStreamConversationId, latestState);
-            }
-        } else if (streamErroredRetryable) {
-            setConversationStreamState(reconnectStreamConversationId, {
-                status: 'running',
-                controller: null,
-                monitoring: false,
-                error: streamErrorMessage || ''
-            });
-        }
-        syncGenerationStateForCurrentConversation();
-        if (streamCompleted) {
-            finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
-            collapseReasoningBlocksForMessage(assistantDiv);
-            collapseModelBadgeForMessage(assistantDiv);
-        }
-        if (streamEndedTerminally) {
-            assistantDiv.classList.remove('pending');
-        }
-        if (streamAbortedByUser && !streamCompleted) {
-            assistantDiv.dataset.localOnly = '1';
-            const activeStreamId = String(
-                (assistantDiv && assistantDiv.dataset && assistantDiv.dataset.streamId)
-                || state.stream_id
-                || ''
-            ).trim();
-            streamServerFinalized = await waitForStreamServerFinalized(activeStreamId, reconnectStreamConversationId);
-
-            if (!streamServerFinalized && String(currentConversationId || '').trim() === reconnectBoundConversationId) {
-                showToast('已中断，服务端仍在保存已输出内容');
-            }
-        }
-        if (streamEndedWithError && !streamErroredRetryable) {
-            const terminalText = renderAssistantTerminalErrorMessage(
-                assistantDiv,
-                assistantIndex,
-                currentFullContent,
-                streamErrorMessage || '重连失败'
-            );
-            currentFullContent = terminalText;
-            assistantDiv.dataset.localOnly = '1';
-        }
-        if (currentConversationMode === 'longterm') {
-            currentConversationLongtermState = normalizeLongtermState({
-                ...currentConversationLongtermState,
-                active: streamErroredRetryable ? true : false
-            });
-            renderLongtermPlanPanel();
-            syncLocalConversationModeFlags(currentConversationId, {
-                conversation_mode: 'longterm',
-                longterm_active: streamErroredRetryable ? true : false,
-                longterm: currentConversationLongtermState
-            });
-        }
-        await finishTokenMiniStreaming(reconnectStreamConversationId);
-        if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
-            clearActiveStreamResumeState();
-        }
-        if (
-            streamEndedTerminally
-            && String(currentConversationId || '').trim() === reconnectBoundConversationId
-            && (!streamAbortedByUser || streamServerFinalized)
-        ) {
-            await renderConversationSnapshotFromServer(reconnectBoundConversationId, {
-                instant: true,
-                silent: true,
-                render: !(streamCompleted && !streamAbortedByUser && !streamEndedWithError),
-                preserveScrollAnchor: true
-            });
-        }
-        if (streamCompleted) {
-            loadConversations();
-            if (String(currentConversationId || '').trim() === reconnectBoundConversationId) {
-                loadKnowledge(currentConversationId);
-            }
-        }
-        scheduleLearningSidebarBridgeNotify(0);
-    }
+    return streamReconnectController.resumeActiveStreamAfterReload(options);
 }
-
 // Logic for Modal
 window.showConfirm = function(title, message, type, onOk, onCancel) {
     const backdrop = document.getElementById('confirmBackdrop');
@@ -24994,694 +19074,158 @@ function confirmModalAsync(title, message, type = 'danger') {
     });
 }
 
-let blankKnowledgeTitleModalResolver = null;
-
 function ensureBlankKnowledgeTitleModal() {
-    let modal = document.getElementById('blankKnowledgeTitleModal');
-
-    if (modal) {
-        return modal;
-    }
-
-    modal = document.createElement('div');
-    modal.id = 'blankKnowledgeTitleModal';
-    modal.className = 'modal-backdrop workspace-create-modal-backdrop';
-    modal.setAttribute('aria-hidden', 'true');
-    modal.innerHTML = `
-        <div class="modal workspace-create-modal" role="dialog" aria-modal="true" aria-labelledby="blankKnowledgeTitleModalTitle">
-            <div class="modal-head">
-                <h3 id="blankKnowledgeTitleModalTitle">新建知识库</h3>
-                <button id="blankKnowledgeTitleModalCloseBtn" class="btn-modal-close" type="button" title="关闭">
-                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                </button>
-            </div>
-            <div class="modal-body workspace-create-modal-body">
-                <label class="workspace-create-field" for="blankKnowledgeTitleInput">
-                    <span>标题</span>
-                    <input id="blankKnowledgeTitleInput" class="input-modern" type="text" maxlength="120" placeholder="例如：讨论记录">
-                </label>
-            </div>
-            <div class="modal-footer workspace-create-modal-footer">
-                <button id="blankKnowledgeTitleModalCancelBtn" class="btn-cancel" type="button">取消</button>
-                <button id="blankKnowledgeTitleModalConfirmBtn" class="btn-confirm" type="button">创建</button>
-            </div>
-        </div>
-    `;
-
-    document.body.appendChild(modal);
-    registerModalBackdropStacking(modal);
-    bindBackdropSafeClose(modal, closeBlankKnowledgeTitleModal);
-
-    modal.querySelector('#blankKnowledgeTitleModalCloseBtn')?.addEventListener('click', closeBlankKnowledgeTitleModal);
-    modal.querySelector('#blankKnowledgeTitleModalCancelBtn')?.addEventListener('click', closeBlankKnowledgeTitleModal);
-    modal.querySelector('#blankKnowledgeTitleModalConfirmBtn')?.addEventListener('click', submitBlankKnowledgeTitleModal);
-    modal.querySelector('#blankKnowledgeTitleInput')?.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            submitBlankKnowledgeTitleModal();
-            return;
-        }
-
-        if (event.key === 'Escape') {
-            event.preventDefault();
-            closeBlankKnowledgeTitleModal();
-        }
-    });
-
-    return modal;
+    return knowledgeSidebarController.ensureBlankKnowledgeTitleModal();
 }
 
 function closeBlankKnowledgeTitleModal() {
-    const modal = document.getElementById('blankKnowledgeTitleModal');
-
-    if (!modal) {
-        return;
-    }
-
-    modal.classList.remove('active');
-    modal.setAttribute('aria-hidden', 'true');
-    handleBackdropStackingChange(modal);
-
-    if (blankKnowledgeTitleModalResolver) {
-        blankKnowledgeTitleModalResolver(null);
-        blankKnowledgeTitleModalResolver = null;
-    }
+    return knowledgeSidebarController.closeBlankKnowledgeTitleModal();
 }
 
 function submitBlankKnowledgeTitleModal() {
-    const modal = ensureBlankKnowledgeTitleModal();
-    const input = modal.querySelector('#blankKnowledgeTitleInput');
-    const title = String((input && input.value) || '').trim();
-
-    if (!title) {
-        showToast('请输入知识库标题');
-
-        if (input) {
-            input.focus();
-        }
-
-        return;
-    }
-
-    modal.classList.remove('active');
-    modal.setAttribute('aria-hidden', 'true');
-    handleBackdropStackingChange(modal);
-
-    if (blankKnowledgeTitleModalResolver) {
-        blankKnowledgeTitleModalResolver(title);
-        blankKnowledgeTitleModalResolver = null;
-    }
+    return knowledgeSidebarController.submitBlankKnowledgeTitleModal();
 }
 
 function openBlankKnowledgeTitleModal(options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const modal = ensureBlankKnowledgeTitleModal();
-    const input = modal.querySelector('#blankKnowledgeTitleInput');
-    const confirmBtn = modal.querySelector('#blankKnowledgeTitleModalConfirmBtn');
-    const titleEl = modal.querySelector('#blankKnowledgeTitleModalTitle');
-
-    if (blankKnowledgeTitleModalResolver) {
-        blankKnowledgeTitleModalResolver(null);
-        blankKnowledgeTitleModalResolver = null;
-    }
-
-    if (titleEl) {
-        titleEl.textContent = String(opts.modalTitle || '新建知识库');
-    }
-
-    if (input) {
-        input.value = String(opts.defaultTitle || '').trim();
-    }
-
-    if (confirmBtn) {
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = '创建';
-    }
-
-    modal.classList.add('active');
-    modal.setAttribute('aria-hidden', 'false');
-    handleBackdropStackingChange(modal);
-
-    setTimeout(() => {
-        if (input) {
-            input.focus();
-            input.select();
-        }
-    }, 0);
-
-    return new Promise((resolve) => {
-        blankKnowledgeTitleModalResolver = resolve;
-    });
+    return knowledgeSidebarController.openBlankKnowledgeTitleModal(options);
 }
 
 window.openBlankKnowledgeTitleModal = openBlankKnowledgeTitleModal;
 
 window.switchVersion = async function(msgIndex, verIndex) {
-    if (verIndex === null || verIndex === undefined || Number.isNaN(Number(verIndex))) return;
-    try {
-        const res = await fetch('/api/switch_version', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                conversation_id: currentConversationId,
-                message_index: msgIndex,
-                version_index: Number(verIndex)
-            })
-        });
-        const data = await res.json();
-        if(data.success) {
-            // Switch also should be silent
-            const convRes = await fetch(`/api/conversations/${currentConversationId}`);
-            const convData = await convRes.json();
-            if (convData.success) {
-                const msgs = convData.conversation.messages || [];
-                renderMessages(msgs, true);
-                applyTokenBudgetFromConversationMessages(msgs);
-            }
-        }
-    } catch(e) { console.error(e); }
+    return messageActionsController.switchVersion(msgIndex, verIndex);
 };
 
 
 // --- Knowledge ---
 function syncBulkVectorizeButtonVisibility() {
-    const btn = els.bulkVectorizeBtn || document.getElementById('bulkVectorizeBtn');
-
-    if (!btn) {
-        return;
-    }
-
-    const visible = knowledgeVectorizationEnabled === true;
-    btn.hidden = !visible;
-    btn.disabled = !visible || bulkVectorizeRunning;
+    return knowledgeSidebarController.syncBulkVectorizeButtonVisibility();
 }
 
 async function loadKnowledge(cid) {
-    // Knowledge is likely user-global, not per conversation, but we reload on chat interactions
-    try {
-        const res = await fetch('/api/knowledge/sidebar');
-        const data = await res.json();
-
-        if (!res.ok || !data.success) {
-            throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
-        }
-
-        knowledgeMetaCache = (data && data.basis_knowledge) ? data.basis_knowledge : {};
-        knowledgeVectorizationEnabled = !!(data && data.vectorization_enabled);
-        syncBulkVectorizeButtonVisibility();
-
-        basisKnowledgeListCache = Array.isArray(data.knowledge) ? [...data.knowledge] : [];
-        renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
-        if(els.panelBasisCount) els.panelBasisCount.textContent = basisKnowledgeListCache.length;
-
-        const memories = Array.isArray(data.memories) ? data.memories : [];
-        renderKnowledgeList(els.panelShortList, memories, 'short');
-        if(els.panelShortCount) els.panelShortCount.textContent = memories.length;
-
-        bindShortTermSectionToggle();
-
-    } catch(e) {
-        knowledgeVectorizationEnabled = false;
-        syncBulkVectorizeButtonVisibility();
-        console.error("Error loading knowledge", e);
-    }
+    return knowledgeSidebarController.loadKnowledge(cid);
 }
 
 async function createBlankBasisKnowledge() {
-    if (!els.createBlankBasisBtn) {
-        return;
-    }
-
-    if (els.createBlankBasisBtn.disabled) {
-        return;
-    }
-
-    const titlePrefix = await openBlankKnowledgeTitleModal({
-        modalTitle: '新建知识库',
-    });
-
-    if (!titlePrefix) {
-        return;
-    }
-
-    els.createBlankBasisBtn.disabled = true;
-
-    try {
-        const res = await fetch('/api/knowledge/basis/blank', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                title_prefix: titlePrefix,
-            }),
-        });
-        const data = await res.json();
-
-        if (!res.ok || !data.success) {
-            throw new Error((data && data.message) || '空白知识库创建失败');
-        }
-
-        const title = String(data.title || '').trim();
-
-        if (!title) {
-            throw new Error('空白知识库标题为空');
-        }
-
-        await loadKnowledge(currentConversationId);
-        showToast('空白知识库已创建');
-        await viewKnowledge(title, {
-            forceEditMode: true,
-        });
-    } catch (error) {
-        console.error('createBlankBasisKnowledge failed', error);
-        showToast(String((error && error.message) || '空白知识库创建失败'));
-    } finally {
-        els.createBlankBasisBtn.disabled = false;
-    }
+    return knowledgeSidebarController.createBlankBasisKnowledge();
 }
 
 function bindShortTermSectionToggle() {
-    const list = els.panelShortList || document.getElementById('panelShortMemoryList');
-    if (!list) return;
-    const section = list.closest('.k-section');
-    const title = section ? section.querySelector('.k-section-title') : null;
-    if (!section || !title) return;
-    if (title.dataset.shortToggleBound === '1') return;
-    title.dataset.shortToggleBound = '1';
-    title.classList.add('short-term-toggle');
-    title.addEventListener('click', (e) => {
-        if (e.target && e.target.closest && e.target.closest('button,input,textarea,a')) return;
-        section.classList.toggle('short-collapsed');
-    });
+    return knowledgeSidebarController.bindShortTermSectionToggle();
 }
 
 async function attachKnowledgeToComposer(title, type = 'basis', shortContent = '') {
-    const safeTitle = String(title || '').trim();
-    if (!safeTitle) return;
-    let content = '';
-    if (type === 'short') {
-        content = String(shortContent || '').trim();
-    } else {
-        try {
-            const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(safeTitle)}`);
-            const data = await res.json();
-            if (data && data.success && data.knowledge) {
-                content = String(data.knowledge.content || '').trim();
-            }
-        } catch (_) {
-            content = '';
-        }
-    }
-    if (!content) {
-        showToast('附加失败：未读取到内容');
-        return;
-    }
-    const exists = uploadedFileIds.some((f) => {
-        if (!f || String(f.type || '') !== 'text') return false;
-        return String(f.name || '') === `知识库-${safeTitle}`;
-    });
-    if (exists) {
-        showToast('该知识已附加');
-        return;
-    }
-    uploadedFileIds.push({
-        type: 'text',
-        name: `知识库-${safeTitle}`,
-        content,
-        size: Number(new Blob([content]).size || 0),
-        source: 'knowledge',
-        knowledge_type: type
-    });
-    updateFilePreview();
-    if (els.messageInput) els.messageInput.focus();
-    showToast('已附加知识内容');
+    return knowledgeSidebarController.attachKnowledgeToComposer(title, type, shortContent);
 }
 
 function renderKnowledgeList(container, items, type) {
-    if(!container) return;
-    container.innerHTML = '';
-
-    const sourceItems = Array.isArray(items) ? items : [];
-    const orderedItems = sourceItems
-        .map((item, index) => ({ item, index }))
-        .sort((a, b) => {
-            if (type === 'basis') {
-                const aTitle = String(typeof a.item === 'string' ? a.item : (a.item && a.item.title) || '').trim();
-                const bTitle = String(typeof b.item === 'string' ? b.item : (b.item && b.item.title) || '').trim();
-                const aMeta = (knowledgeMetaCache && aTitle) ? (knowledgeMetaCache[aTitle] || {}) : {};
-                const bMeta = (knowledgeMetaCache && bTitle) ? (knowledgeMetaCache[bTitle] || {}) : {};
-                const aHasPin = !!(a.item && typeof a.item === 'object' && Object.prototype.hasOwnProperty.call(a.item, 'pin'));
-                const bHasPin = !!(b.item && typeof b.item === 'object' && Object.prototype.hasOwnProperty.call(b.item, 'pin'));
-                const aPinned = aHasPin ? !!a.item.pin : !!aMeta.pin;
-                const bPinned = bHasPin ? !!b.item.pin : !!bMeta.pin;
-                if (aPinned !== bPinned) return aPinned ? -1 : 1;
-            }
-            // 保持历史行为：默认按最近在前（reverse）
-            return b.index - a.index;
-        })
-        .map((x) => x.item);
-
-    orderedItems.forEach((item) => {
-        const rawTitle = String(typeof item === 'string' ? item : (item && item.title) || '').trim();
-        if (!rawTitle) return;
-        const shortContent = String((item && item.content) || rawTitle).trim();
-        const itemMeta = knowledgeMetaCache[rawTitle] || {};
-        const hasPinField = !!(item && typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, 'pin'));
-        const isPinned = type === 'basis' ? (hasPinField ? !!item.pin : !!itemMeta.pin) : false;
-
-        const div = document.createElement('div');
-        div.className = `knowledge-item ${type === 'short' ? 'knowledge-item-short' : 'knowledge-item-basis'}`;
-        div.dataset.title = type === 'short' ? shortContent : rawTitle;
-        if (type === 'basis') {
-            div.dataset.pin = isPinned ? '1' : '0';
-        }
-        if (type === 'short') {
-            div.dataset.shortOriginal = shortContent;
-        }
-
-        const row = document.createElement('div');
-        row.className = 'knowledge-item-row';
-
-        const label = document.createElement('span');
-        label.className = 'knowledge-item-label';
-        if (type === 'basis' && isPinned) {
-            const pinIcon = document.createElement('i');
-            pinIcon.className = 'fa-solid fa-thumbtack knowledge-pin-icon';
-            pinIcon.setAttribute('aria-hidden', 'true');
-            label.appendChild(pinIcon);
-        }
-        const titleText = document.createElement('span');
-        titleText.className = 'knowledge-item-title-text';
-        titleText.textContent = type === 'short' ? shortContent : rawTitle;
-        label.appendChild(titleText);
-        row.appendChild(label);
-
-        const actions = document.createElement('div');
-        actions.className = 'knowledge-item-actions';
-
-        if (type === 'basis') {
-            const progress = document.createElement('div');
-            progress.className = 'knowledge-progress';
-            div.appendChild(progress);
-
-            const meta = knowledgeMetaCache[rawTitle] || {};
-            const vectorExists = (typeof meta.vector_exists === 'boolean') ? meta.vector_exists : true;
-            const needVectorRefresh = knowledgeVectorizationEnabled && meta.needs_vector_refresh === true;
-            if (needVectorRefresh) {
-                div.classList.add('needs-vector');
-                const vectorBtn = document.createElement('button');
-                vectorBtn.type = 'button';
-                vectorBtn.className = 'knowledge-item-btn vectorize';
-                vectorBtn.dataset.role = 'vectorize';
-                vectorBtn.title = !vectorExists ? '向量缺失，点击重新向量化' : '需要重新向量化';
-                vectorBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
-                vectorBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (vectorBtn.classList.contains('is-loading')) return;
-                    vectorizeKnowledgeTitle(rawTitle);
-                });
-                actions.appendChild(vectorBtn);
-                if (vectorizeTasks[rawTitle] && vectorizeTasks[rawTitle].running) {
-                    vectorBtn.classList.add('is-loading');
-                    vectorBtn.innerHTML = '<i class="fa-solid fa-spinner"></i>';
-                    vectorBtn.title = '向量化中...';
-                    vectorBtn.disabled = true;
-                    div.classList.add('vector-uploading');
-                }
-            }
-            row.addEventListener('contextmenu', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                showPinContextMenu(ev.clientX, ev.clientY, {
-                    targetType: 'knowledge_basis',
-                    title: rawTitle,
-                    pinned: isPinned
-                });
-            });
-            row.addEventListener('click', () => viewKnowledge(rawTitle));
-        } else {
-            const editBtn = document.createElement('button');
-            editBtn.type = 'button';
-            editBtn.className = 'knowledge-item-btn edit';
-            editBtn.title = '编辑';
-            editBtn.innerHTML = '<i class="fa-regular fa-pen-to-square"></i>';
-            actions.appendChild(editBtn);
-
-            editBtn.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (div.classList.contains('editing')) return;
-                const prevContent = String(div.dataset.shortOriginal || '').trim();
-                div.classList.add('editing');
-                label.classList.add('is-editing');
-                label.innerHTML = '';
-                const input = document.createElement('input');
-                input.type = 'text';
-                input.className = 'knowledge-inline-input';
-                input.value = prevContent;
-                label.appendChild(input);
-
-                editBtn.title = '保存';
-                editBtn.innerHTML = '<i class="fa-solid fa-check"></i>';
-
-                let submitting = false;
-                const exitEditMode = (text) => {
-                    div.classList.remove('editing');
-                    label.classList.remove('is-editing');
-                    label.textContent = String(text || '').trim();
-                    editBtn.title = '编辑';
-                    editBtn.innerHTML = '<i class="fa-regular fa-pen-to-square"></i>';
-                };
-                const commit = async (save) => {
-                    if (submitting) return;
-                    const nextContent = String(input.value || '').trim();
-                    if (!save) {
-                        exitEditMode(prevContent);
-                        return;
-                    }
-                    if (!nextContent) {
-                        showToast('短期记忆内容不能为空');
-                        input.focus();
-                        return;
-                    }
-                    if (nextContent === prevContent) {
-                        exitEditMode(nextContent);
-                        return;
-                    }
-                    submitting = true;
-                    try {
-                        const res = await fetch(`/api/knowledge/short/${encodeURIComponent(prevContent)}`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ title: nextContent, content: nextContent })
-                        });
-                        const data = await res.json();
-                        if (!data || !data.success) {
-                            showToast((data && (data.error || data.message)) ? (data.error || data.message) : '保存失败');
-                            input.focus();
-                            submitting = false;
-                            return;
-                        }
-                        div.dataset.shortOriginal = nextContent;
-                        div.dataset.title = nextContent;
-                        exitEditMode(nextContent);
-                        showToast('短期记忆已保存');
-                    } catch (_) {
-                        showToast('保存失败');
-                        input.focus();
-                        submitting = false;
-                    }
-                };
-
-                editBtn.onclick = async (ev) => {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    await commit(true);
-                    if (!div.classList.contains('editing')) {
-                        editBtn.onclick = null;
-                    }
-                };
-                input.addEventListener('keydown', async (ev) => {
-                    if (ev.key === 'Enter') {
-                        ev.preventDefault();
-                        await commit(true);
-                    } else if (ev.key === 'Escape') {
-                        ev.preventDefault();
-                        await commit(false);
-                    }
-                });
-                input.addEventListener('click', (ev) => {
-                    ev.stopPropagation();
-                });
-                input.addEventListener('blur', async () => {
-                    if (!div.classList.contains('editing')) return;
-                    await commit(true);
-                    if (!div.classList.contains('editing')) {
-                        editBtn.onclick = null;
-                    }
-                });
-                requestAnimationFrame(() => {
-                    input.focus();
-                    input.select();
-                });
-            });
-
-            row.addEventListener('click', (ev) => {
-                if (div.classList.contains('editing')) return;
-                if (ev.target && ev.target.closest && ev.target.closest('.knowledge-item-actions')) return;
-                div.classList.toggle('expanded');
-            });
-        }
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.className = 'knowledge-item-btn delete';
-        deleteBtn.title = '删除';
-        deleteBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-        deleteBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const deleteTitle = type === 'short'
-                ? String(div.dataset.shortOriginal || shortContent || '').trim()
-                : rawTitle;
-            confirmDeleteKnowledge(deleteTitle, type);
-        });
-        actions.appendChild(deleteBtn);
-
-        row.appendChild(actions);
-        div.appendChild(row);
-
-        container.appendChild(div);
-    });
+    return knowledgeSidebarController.renderKnowledgeList(container, items, type);
 }
 
-// Confirm delete knowledge
 function confirmDeleteKnowledge(title, type = 'basis') {
-    window.showConfirm(
-        '删除知识点',
-        `确定要删除「${title}」吗？此操作无法撤销。`,
-        'danger',
-        async () => {
-            await deleteKnowledge(title, type);
-        }
-    );
+    return knowledgeSidebarController.confirmDeleteKnowledge(title, type);
 }
 
-// Delete knowledge
 async function deleteKnowledge(title, type = 'basis') {
-    try {
-        const endpoint = type === 'basis' ? `/api/knowledge/basis/${encodeURIComponent(title)}` : `/api/knowledge/short/${encodeURIComponent(title)}`;
-        const response = await fetch(endpoint, {
-            method: 'DELETE'
-        });
-        
-        const data = await response.json();
-        if(!data.success) {
-            console.error('删除失败:', data.message);
-            showToast((data && (data.error || data.message)) ? (data.error || data.message) : '删除失败');
-            return;
-        }
-        
-        // 如果当前正在浏览该知识点，则自动退出
-        if(currentViewingKnowledge === title) {
-            closeKnowledgeView();
-        }
-        
-        // 刷新知识库列表
-        loadKnowledge(currentConversationId);
-        showToast('删除成功');
-    } catch(e) {
-        console.error('删除知识点失败:', e);
-        showToast('删除失败');
-    }
+    return knowledgeSidebarController.deleteKnowledge(title, type);
 }
 
 // --- Knowledge View Logic ---
-let easyMDE = null;
 let originalHeaderState = null;
-let currentViewingKnowledge = null;
-let knowledgeWorkspaceReturnContext = null;
 let knowledgeMetaCache = {};
 let knowledgeVectorizationEnabled = false;
 let bulkVectorizeRunning = false;
-let pendingHighlightData = null;
-let knowledgeEditorScrollState = {
-    activeTitle: '',
-    byTitle: Object.create(null)
+const knowledgeEditorControllerState = {
+    editor: null,
+    currentTitle: null,
+    workspaceReturnContext: null,
+    pendingHighlightData: null,
+    scroll: {
+        activeTitle: '',
+        byTitle: Object.create(null),
+        syncLock: false,
+        delegatedBound: false,
+        pendingToggleSnapshot: null,
+        modeSwitchActive: false,
+        restoreTimeouts: [],
+        lastSource: null,
+        resetTimer: null
+    },
+    hooks: {
+        previewInstalled: false,
+        toolbarInstalled: false
+    },
+    align: {
+        widgets: [],
+        debounce: null,
+        retryTimers: [],
+        runToken: 0,
+        lastRunAt: 0,
+        busy: false,
+        lastInputAt: 0
+    }
 };
-let knowledgeEditorPreviewHooksInstalled = false;
-let knowledgeEditorToolbarHooksInstalled = false;
 const KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME = 'nexora-upload://';
 const KNOWLEDGE_IMAGE_PENDING_ALT = '上传中...';
 const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
 const knowledgeImageUploadRuntime = {
     pending: new Map()
 };
+const knowledgeEditorController = getNexoraChatKnowledge().createKnowledgeEditorController({
+    state: knowledgeEditorControllerState,
+    createToastUiKnowledgeEditor: (...args) => createToastUiKnowledgeEditorImpl(...args),
+    viewKnowledge: (...args) => viewKnowledgeImpl(...args),
+    closeKnowledgeView: (...args) => closeKnowledgeViewImpl(...args),
+    scheduleAlignment: (...args) => scheduleKnowledgeEditorAlignment(...args),
+    getPreviewEl: () => getKnowledgeEditorPreviewEl(),
+    getScrollerEl: () => getKnowledgeEditorScrollerEl(),
+    getProseMirrorEl: () => getToastProseMirrorEl(),
+    getViewerEl: () => document.getElementById('knowledgeViewer'),
+    logDebug: (...args) => logKnowledgeEditorDebug(...args),
+    collectLayoutSnapshot: () => collectKnowledgeEditorLayoutSnapshot(),
+    summarizeNode: (...args) => summarizeKnowledgeEditorNode(...args),
+    mirrorProgressToBothModes: (...args) => mirrorKnowledgeEditorProgressToBothModes(...args),
+    applyToggleSnapshot: (...args) => applyKnowledgeEditorToggleSnapshot(...args),
+    syncToolbarState: () => syncKnowledgeEditorToolbarState(),
+    getPendingImageUploadCount: () => knowledgeImageUploadRuntime.pending.size,
+    getWorkspaceKnowledgeRequestFields,
+    getActiveWorkspaceKnowledgeContext,
+    getKnowledgeMetaCache: () => knowledgeMetaCache,
+    getCurrentConversationId: () => currentConversationId,
+    loadKnowledge,
+    showToast,
+});
+
+function createToastUiKnowledgeEditor(...args) {
+    return knowledgeEditorController.createToastUiKnowledgeEditor(...args);
+}
+
+async function viewKnowledge(...args) {
+    return knowledgeEditorController.viewKnowledge(...args);
+}
+
+function closeKnowledgeView(...args) {
+    return knowledgeEditorController.closeKnowledgeView(...args);
+}
+
+async function saveKnowledge(...args) {
+    return knowledgeEditorController.saveKnowledge(...args);
+}
 
 function getActiveWorkspaceKnowledgeContext() {
-    if (!knowledgeWorkspaceReturnContext || typeof knowledgeWorkspaceReturnContext !== 'object') {
-        return null;
-    }
-
-    const workspaceId = String(knowledgeWorkspaceReturnContext.workspaceId || '').trim();
-    const user = String(knowledgeWorkspaceReturnContext.user || '').trim();
-
-    if (!workspaceId || !user) {
-        return null;
-    }
-
-    return {
-        workspaceId,
-        workspaceTitle: String(knowledgeWorkspaceReturnContext.workspaceTitle || '').trim(),
-        user,
-    };
+    return knowledgeWorkspaceController.getActiveWorkspaceKnowledgeContext();
 }
 
 function getWorkspaceKnowledgeRequestFields() {
-    const context = getActiveWorkspaceKnowledgeContext();
-
-    if (!context) {
-        return {};
-    }
-
-    return {
-        workspace_id: context.workspaceId,
-        workspace: context.workspaceId,
-        workspaces: context.workspaceId,
-        user: context.user,
-    };
+    return knowledgeWorkspaceController.getWorkspaceKnowledgeRequestFields();
 }
 
 function appendWorkspaceKnowledgeQuery(url, title = '') {
-    const fields = getWorkspaceKnowledgeRequestFields();
-    const keys = Object.keys(fields);
-
-    if (!keys.length) {
-        return url;
-    }
-
-    const params = new URLSearchParams();
-    keys.forEach((key) => {
-        params.set(key, fields[key]);
-    });
-
-    if (title) {
-        params.set('title', title);
-    }
-
-    return `${url}?${params.toString()}`;
+    return knowledgeWorkspaceController.appendWorkspaceKnowledgeQuery(url, title);
 }
 
 function getActiveKnowledgeShareUsername() {
-    const context = getActiveWorkspaceKnowledgeContext();
-
-    if (context && context.user) {
-        return context.user;
-    }
-
-    return String(currentUsername || '').trim();
+    return knowledgeWorkspaceController.getActiveKnowledgeShareUsername();
 }
 
 function escapeRegexPattern(value) {
@@ -25755,20 +19299,20 @@ async function uploadKnowledgeImageByFile({ imageId, file, fileName = '', basisT
 }
 
 function destroyKnowledgeMarkdownEditor() {
-    if (easyMDE && typeof easyMDE.__cleanupPreviewBridge === 'function') {
+    if (knowledgeEditorControllerState.editor && typeof knowledgeEditorControllerState.editor.__cleanupPreviewBridge === 'function') {
         try {
-            easyMDE.__cleanupPreviewBridge();
+            knowledgeEditorControllerState.editor.__cleanupPreviewBridge();
         } catch (_) {}
     }
-    if (easyMDE && easyMDE.__editorType === 'toastui' && easyMDE.__editor && typeof easyMDE.__editor.destroy === 'function') {
+    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui' && knowledgeEditorControllerState.editor.__editor && typeof knowledgeEditorControllerState.editor.__editor.destroy === 'function') {
         try {
-            easyMDE.__editor.destroy();
+            knowledgeEditorControllerState.editor.__editor.destroy();
         } catch (_) {}
     }
-    easyMDE = null;
+    knowledgeEditorController.clearEditor();
 }
 
-function createToastUiKnowledgeEditor(initialValue = '') {
+function createToastUiKnowledgeEditorImpl(initialValue = '') {
     const host = document.getElementById('knowledgeEditor');
     const ToastEditor = window.toastui && window.toastui.Editor;
     if (!host || !ToastEditor) return null;
@@ -26206,7 +19750,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
             throw new Error('图片过大，请控制在 12MB 以内');
         }
         const fileName = normalizeKnowledgeImageFileName(picked, `knowledge-image-${Date.now()}`);
-        const basisTitle = String(currentViewingKnowledge || '').trim();
+        const basisTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
         const allocated = await allocateKnowledgeImageSlot(fileName, basisTitle);
         const imageId = String(allocated.image_id || '').trim().toLowerCase();
         if (!imageId) {
@@ -26417,7 +19961,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         if (action === 'preview') {
             const editProgress = readScrollableProgress(getToastEditorScroller());
             const snapshot = {
-                title: String(currentViewingKnowledge || '').trim(),
+                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
                 sourceMode: viewMode,
                 previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
                 previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
@@ -26432,7 +19976,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         if (action === 'split') {
             const editProgress = readScrollableProgress(getToastEditorScroller());
             const snapshot = {
-                title: String(currentViewingKnowledge || '').trim(),
+                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
                 sourceMode: viewMode,
                 previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
                 previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
@@ -26660,7 +20204,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         },
         togglePreview() {
             const snapshot = {
-                title: String(currentViewingKnowledge || '').trim(),
+                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
                 sourceMode: viewMode,
                 previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
                 previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
@@ -26676,7 +20220,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         },
         toggleSideBySide() {
             const snapshot = {
-                title: String(currentViewingKnowledge || '').trim(),
+                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
                 sourceMode: viewMode,
                 previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
                 previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
@@ -26877,8 +20421,8 @@ function restoreViewerState(state) {
     }
 }
 
-async function viewKnowledge(title, options = {}) {
-    currentViewingKnowledge = title;
+async function viewKnowledgeImpl(title, options = {}) {
+    knowledgeEditorController.setCurrentTitle(title);
     const {
         forceEditMode = false,
         highlightData = null,
@@ -26892,14 +20436,13 @@ async function viewKnowledge(title, options = {}) {
         ? String(workspaceContext.user || workspaceContext.addedBy || workspaceContext.added_by || '').trim()
         : '';
 
-    knowledgeWorkspaceReturnContext = normalizedWorkspaceContext && normalizedWorkspaceContext.workspaceId
+    knowledgeEditorController.setWorkspaceReturnContext(normalizedWorkspaceContext && normalizedWorkspaceContext.workspaceId
         ? {
             ...normalizedWorkspaceContext,
             user: workspaceKnowledgeUser,
         }
-        : null;
-    pendingHighlightData = highlightData;
-    knowledgeEditorScrollState.activeTitle = String(title || '').trim();
+        : null);
+    knowledgeEditorController.setPendingHighlightData(highlightData);
     if (!fromSearch && !highlightData) {
         const state = getKnowledgeEditorState(title);
         state.previewTop = 0;
@@ -26990,7 +20533,7 @@ async function viewKnowledge(title, options = {}) {
 
     // 4. Update Header
     headerTitle.textContent = title;
-    const backHandler = knowledgeWorkspaceReturnContext
+    const backHandler = knowledgeEditorControllerState.workspaceReturnContext
         ? 'closeWorkspaceKnowledgeView()'
         : 'closeKnowledgeView()';
     
@@ -27019,38 +20562,38 @@ async function viewKnowledge(title, options = {}) {
     applyDesktopHeaderTools(headerRight);
 
     // 5. Initialize Editor (Toast UI)
-    if (!easyMDE || easyMDE.__editorType !== 'toastui' || !document.getElementById('knowledgeEditor')) {
+    if (!knowledgeEditorControllerState.editor || knowledgeEditorControllerState.editor.__editorType !== 'toastui' || !document.getElementById('knowledgeEditor')) {
         destroyKnowledgeMarkdownEditor();
-        easyMDE = createToastUiKnowledgeEditor(content || '');
+        knowledgeEditorController.setEditor(createToastUiKnowledgeEditor(content || ''));
     }
-    if (!easyMDE) {
+    if (!knowledgeEditorControllerState.editor) {
         showToast('Markdown Editor 初始化失败');
         return;
     }
     installKnowledgeEditorPreviewHooks();
 
-    if (!easyMDE.__alignedBound) {
-        easyMDE.codemirror.on("change", () => {
-            knowledgeEditorLastInputAt = Date.now();
-            clearTimeout(knowledgeEditorAlignDebounce);
-            knowledgeEditorAlignDebounce = setTimeout(() => {
+    if (!knowledgeEditorControllerState.editor.__alignedBound) {
+        knowledgeEditorControllerState.editor.codemirror.on("change", () => {
+            knowledgeEditorControllerState.align.lastInputAt = Date.now();
+            clearTimeout(knowledgeEditorControllerState.align.debounce);
+            knowledgeEditorControllerState.align.debounce = setTimeout(() => {
                 if (isKnowledgeEditorSideBySideActive()) {
                     scheduleKnowledgeEditorAlignment('typing');
                 }
             }, 700);
         });
-        easyMDE.__alignedBound = true;
+        knowledgeEditorControllerState.editor.__alignedBound = true;
     }
 
     const viewportHeight = window.innerHeight;
     const headerHeight = 60;
 
-    easyMDE.value(content || '');
+    knowledgeEditorControllerState.editor.value(content || '');
     try {
-        if (easyMDE && easyMDE.codemirror) {
-            easyMDE.codemirror.scrollTo(null, 0);
-            if (typeof easyMDE.codemirror.setCursor === 'function') {
-                easyMDE.codemirror.setCursor(0, 0);
+        if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror) {
+            knowledgeEditorControllerState.editor.codemirror.scrollTo(null, 0);
+            if (typeof knowledgeEditorControllerState.editor.codemirror.setCursor === 'function') {
+                knowledgeEditorControllerState.editor.codemirror.setCursor(0, 0);
             }
         }
     } catch (_) {}
@@ -27094,10 +20637,10 @@ async function viewKnowledge(title, options = {}) {
     });
 
     const highlightWhenReady = (retryCount = 0) => {
-        if (!pendingHighlightData || !pendingHighlightData.text) return;
+        if (!knowledgeEditorControllerState.pendingHighlightData || !knowledgeEditorControllerState.pendingHighlightData.text) return;
         if (retryCount > 30) { // 最多重试30次（约4.5秒）
             console.warn('预览内容加载超时，取消高亮');
-            pendingHighlightData = null;
+            knowledgeEditorController.clearPendingHighlightData();
             return;
         }
         
@@ -27117,12 +20660,12 @@ async function viewKnowledge(title, options = {}) {
         }
         
         // 内容已加载，执行高亮
-        highlightTextInPreview(pendingHighlightData.text, pendingHighlightData.meta);
-        pendingHighlightData = null; // 清空，避免重复高亮
+        highlightTextInPreview(knowledgeEditorControllerState.pendingHighlightData.text, knowledgeEditorControllerState.pendingHighlightData.meta);
+        knowledgeEditorController.clearPendingHighlightData(); // 清空，避免重复高亮
     };
 
     setTimeout(() => {
-        easyMDE.codemirror.refresh();
+        knowledgeEditorControllerState.editor.codemirror.refresh();
         if (!forceEditMode) {
             setTimeout(() => highlightWhenReady(0), 200);
         }
@@ -27165,7 +20708,7 @@ function downloadKnowledgeWordBlob(blob, filename) {
 }
 
 async function exportKnowledgeToWord(title) {
-    const resolvedTitle = String(title || currentViewingKnowledge || '').trim();
+    const resolvedTitle = String(title || knowledgeEditorControllerState.currentTitle || '').trim();
     if (!resolvedTitle) {
         showToast('未找到知识标题');
         return;
@@ -27315,12 +20858,12 @@ function closeWorkspaceKnowledgeView() {
     });
 }
 
-function closeKnowledgeView(options = {}) {
+function closeKnowledgeViewImpl(options = {}) {
     const closeOptions = (options && typeof options === 'object') ? options : {};
     const useNavigationStack = closeOptions.useNavigationStack !== false;
     const syncLearningHeader = closeOptions.syncLearningHeader !== false;
     const workspaceReturnContext = closeOptions.restoreWorkspaceContext === true
-        ? knowledgeWorkspaceReturnContext
+        ? knowledgeEditorControllerState.workspaceReturnContext
         : null;
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
@@ -27329,7 +20872,7 @@ function closeKnowledgeView(options = {}) {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
     const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
-    const closingTitle = String(currentViewingKnowledge || '').trim();
+    const closingTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
 
     if (typeof hideFileCenterContextMenu === 'function') {
         hideFileCenterContextMenu();
@@ -27343,13 +20886,9 @@ function closeKnowledgeView(options = {}) {
     exitLearningFeedComposeMode({ clear: false });
     exitKnowledgeEditorSpecialModes();
     storeKnowledgeEditorScrollPosition();
-    if (closingTitle && knowledgeEditorScrollState.byTitle && typeof knowledgeEditorScrollState.byTitle === 'object') {
-        delete knowledgeEditorScrollState.byTitle[closingTitle];
-    }
-    knowledgeEditorScrollState.activeTitle = '';
-
-    currentViewingKnowledge = null;
-    knowledgeWorkspaceReturnContext = null;
+    knowledgeEditorController.clearTitleState(closingTitle);
+    knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearWorkspaceReturnContext();
     
     // 检查导航栈
     if (useNavigationStack && navigationStack.length > 1) {
@@ -27445,132 +20984,6 @@ function closeKnowledgeViewBeforeLearningSwitch() {
         syncLearningHeader: false
     });
 }
-
-window.openMailPlaceholderView = async function() {
-    if (!(await refreshMailEntryVisibility())) {
-        clearMailViewUrl();
-        return;
-    }
-
-    closeKnowledgePanel();
-    closeCloudFilePanel();
-    exitLearningFeedComposeMode({ clear: false });
-    const viewer = document.getElementById('knowledgeViewer');
-    const msgs = document.getElementById('messagesContainer');
-    const inputWrapper = document.getElementById('inputWrapper');
-    const headerTitle = document.getElementById('conversationTitle');
-    const headerLeft = document.querySelector('.header-left');
-    const headerRight = document.querySelector('.header-right');
-
-    if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
-
-    restoreWorkspaceDetailInputContainer();
-
-    if (!originalHeaderState) {
-        originalHeaderState = {
-            title: headerTitle.textContent,
-            leftHTML: headerLeft.innerHTML,
-            rightHTML: headerRight.innerHTML
-        };
-    }
-
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
-    navigationStack = [];
-    if (isMailMobileLayout()) {
-        mailViewState.sidebarCollapsed = false;
-        saveMailSidebarCollapsedState(false);
-    }
-    setMailViewUrl(mailViewState.selectedId || '');
-    if (mailViewState.folder === 'sent') {
-        refreshMailNotifyBadgeFromServer();
-    } else {
-        updateMailNotifyFromMails(mailViewState.mails, { markChecked: true });
-    }
-
-    msgs.style.display = 'none';
-    if (els.learningMainPanel) els.learningMainPanel.style.display = 'none';
-    const inputDock = document.querySelector('.input-dock');
-    if (inputDock) inputDock.style.display = 'none';
-    if (inputWrapper) inputWrapper.style.display = 'none';
-    viewer.style.display = 'flex';
-    viewer.style.flexDirection = 'column';
-
-    headerTitle.textContent = '邮件';
-    headerLeft.innerHTML = `
-        <button class="btn-icon" onclick="closeKnowledgeView()" title="Back">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
-        </button>
-    `;
-    applyDesktopHeaderTools(headerRight);
-
-    viewer.innerHTML = `
-        <div class="mail-workspace ${mailViewState.sidebarCollapsed ? 'mail-sidebar-collapsed' : ''}" id="mailWorkspace">
-            <aside class="mail-sidebar">
-                <div class="mail-sidebar-head">
-                    <button class="mail-sidebar-toggle-btn" type="button" onclick="toggleMailSidebar()" title="${mailViewState.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}">
-                        <i class="fa-solid ${mailViewState.sidebarCollapsed ? 'fa-angles-right' : 'fa-angles-left'}"></i>
-                    </button>
-                </div>
-                <button class="btn-primary mail-compose-btn" type="button" title="写邮件" onclick="openMailComposeView()">
-                    <i class="fa-solid fa-pen-to-square"></i>
-                    <span>写邮件</span>
-                </button>
-                <div class="mail-folder-section">
-                    <div class="mail-folder-title">邮箱分组</div>
-                    <button class="mail-folder-item ${mailViewState.folder === 'all' ? 'active' : ''}" type="button" id="mailFolderInboxBtn" onclick="setMailFolder('all')">
-                        <i class="fa-solid fa-inbox"></i>
-                        <span>收件箱</span>
-                        <span class="mail-folder-badge" id="mailInboxCountBadge">0</span>
-                    </button>
-                    <button class="mail-folder-item ${mailViewState.folder === 'unread' ? 'active' : ''}" type="button" id="mailFolderUnreadBtn" onclick="setMailFolder('unread')">
-                        <i class="fa-regular fa-envelope"></i>
-                        <span>未读</span>
-                        <span class="mail-folder-badge alert" id="mailUnreadCountBadge">0</span>
-                    </button>
-                    <button class="mail-folder-item ${mailViewState.folder === 'sent' ? 'active' : ''}" type="button" id="mailFolderSentBtn" onclick="setMailFolder('sent')">
-                        <i class="fa-regular fa-paper-plane"></i>
-                        <span>发件箱</span>
-                        <span class="mail-folder-badge" id="mailSentCountBadge">0</span>
-                    </button>
-                </div>
-            </aside>
-            <section class="mail-list-panel">
-                <div class="mail-list-toolbar">
-                    <div class="mail-toolbar-title" id="mailToolbarTitle">收件箱</div>
-                    <div class="mail-list-search">
-                        <i class="fa-solid fa-magnifying-glass"></i>
-                        <input id="mailSearchInput" type="text" placeholder="搜索邮件主题 / 发件人">
-                    </div>
-                </div>
-                <div class="mail-list-body" id="mailListBody"></div>
-            </section>
-            <section class="mail-detail-panel">
-                <div class="mail-detail-head">
-                    <div class="mail-detail-head-row">
-                        <div class="mail-detail-head-left">
-                            <button class="mail-mobile-back-btn" type="button" title="返回邮件列表" onclick="backToMailListMobile()">
-                                <i class="fa-solid fa-arrow-left"></i>
-                            </button>
-                            <h3 id="mailDetailTitle">邮件详情</h3>
-                        </div>
-                        <div class="mail-icon-actions">
-                            <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
-                            <button class="mail-icon-btn" type="button" title="回复" onclick="openMailComposeReply()"><i class="fa-solid fa-reply"></i></button>
-                            <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
-                            <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
-                        </div>
-                    </div>
-                    <div class="mail-detail-meta" id="mailDetailMeta"></div>
-                </div>
-                <div class="mail-detail-content" id="mailDetailContent"></div>
-            </section>
-        </div>
-    `;
-    setMailMobileDetailMode(false);
-    initMailWorkspace();
-    _syncTurnIndicatorVisibility();
-};
 
 const WORKFLOW_GRAPH_BASE_WIDTH = 1520;
 const WORKFLOW_GRAPH_BASE_HEIGHT = 820;
@@ -27683,8 +21096,8 @@ window.openWorkflowPlaceholderView = function() {
         };
     }
 
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
+    knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearPendingHighlightData();
     navigationStack = [];
 
     msgs.style.display = 'none';
@@ -27974,27 +21387,8 @@ window.toggleWorkflowListGroup = function(groupId) {
     root.classList.toggle('open');
 };
 
-window.copyGeneratedInfo = async function(index) {
-    try {
-        const messageDiv = document.querySelector(`.message[data-index="${index}"]`);
-        if (!messageDiv) return;
-        const clone = messageDiv.cloneNode(true);
-        clone.querySelectorAll('.msg-actions,.version-switcher,.thinking-block,.tool-usage,.model-badge,.add-basis-view').forEach(el => el.remove());
-        const contentRoot = clone.querySelector('.message-content') || clone;
-        const bodyTexts = Array.from(contentRoot.querySelectorAll('.content-body'))
-            .map((el) => String(el.innerText || '').trim())
-            .filter(Boolean);
-        const text = String(bodyTexts.length ? bodyTexts.join('\n\n') : (contentRoot.innerText || '')).trim();
-        if (!text) {
-            showToast('没有可复制的生成信息');
-            return;
-        }
-        await copyTextToClipboardSafe(text);
-        showToast('已复制生成信息');
-    } catch (e) {
-        console.error('copyGeneratedInfo failed', e);
-        showToast('复制失败');
-    }
+window.copyGeneratedInfo = function(index) {
+    return messageActionsController.copyGeneratedInfo(index);
 };
 
 async function copyTextToClipboardSafe(text) {
@@ -28011,890 +21405,8 @@ async function copyTextToClipboardSafe(text) {
     ta.remove();
 }
 
-window.copyUserMessage = async function(index) {
-    try {
-        const messageDiv = document.querySelector(`.message.user[data-index="${index}"]`) || document.querySelector(`.message[data-index="${index}"]`);
-        if (!messageDiv) {
-            showToast('未找到消息');
-            return;
-        }
-        const bubble = messageDiv.querySelector('.message-bubble');
-        const markdown = bubble && typeof bubble.__sourceMarkdown === 'string' ? String(bubble.__sourceMarkdown || '') : '';
-        const text = String(markdown || (bubble ? bubble.innerText : messageDiv.innerText) || '').trim();
-        if (!text) {
-            showToast('没有可复制内容');
-            return;
-        }
-        await copyTextToClipboardSafe(text);
-        showToast('已复制消息');
-    } catch (e) {
-        console.error('copyUserMessage failed', e);
-        showToast('复制失败');
-    }
-};
-
-function formatMailTime(ts) {
-    const n = Number(ts || 0);
-    if (!n) return '-';
-    const d = new Date(n * 1000);
-    return d.toLocaleString();
-}
-
-function getMailDateGroupKey(ts) {
-    const n = Number(ts || 0);
-    if (!n) return 'unknown';
-    const d = new Date(n * 1000);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-}
-
-function getMailDateGroupLabel(groupKey) {
-    if (!groupKey || groupKey === 'unknown') return '未知日期';
-    const today = new Date();
-    const ty = today.getFullYear();
-    const tm = String(today.getMonth() + 1).padStart(2, '0');
-    const td = String(today.getDate()).padStart(2, '0');
-    const todayKey = `${ty}-${tm}-${td}`;
-    if (groupKey === todayKey) return '今天';
-    const yest = new Date(today);
-    yest.setDate(today.getDate() - 1);
-    const yy = yest.getFullYear();
-    const ym = String(yest.getMonth() + 1).padStart(2, '0');
-    const yd = String(yest.getDate()).padStart(2, '0');
-    const yestKey = `${yy}-${ym}-${yd}`;
-    if (groupKey === yestKey) return '昨天';
-    return groupKey;
-}
-
-function parseRawMail(raw) {
-    const src = String(raw || '');
-    const splitMatch = src.match(/\r?\n\r?\n/);
-    let headText = '';
-    let body = src;
-    if (splitMatch) {
-        const idx = splitMatch.index || 0;
-        headText = src.slice(0, idx);
-        body = src.slice(idx + splitMatch[0].length);
-    }
-
-    const headers = {};
-    if (headText) {
-        const lines = headText.split(/\r?\n/);
-        let currentKey = '';
-        for (const line of lines) {
-            if (!line) continue;
-            if ((line.startsWith(' ') || line.startsWith('\t')) && currentKey) {
-                headers[currentKey] = `${headers[currentKey] || ''} ${line.trim()}`.trim();
-                continue;
-            }
-            const p = line.indexOf(':');
-            if (p <= 0) continue;
-            const k = line.slice(0, p).trim().toLowerCase();
-            const v = line.slice(p + 1).trim();
-            headers[k] = v;
-            currentKey = k;
-        }
-    }
-
-    const ct = String(headers['content-type'] || '').toLowerCase();
-    const isHtml = ct.includes('text/html') || /<html[\s>]|<body[\s>]|<div[\s>]|<table[\s>]/i.test(body);
-    body = decodeUnicodeEscapes(body);
-    return { headers, body, isHtml };
-}
-
-function decodeUnicodeEscapes(text) {
-    const src = String(text || '');
-    if (!src || (src.indexOf('\\u') < 0 && src.indexOf('\\U') < 0 && src.indexOf('\\x') < 0)) return src;
-    return src
-        .replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => {
-            try {
-                return String.fromCodePoint(parseInt(h, 16));
-            } catch (e) {
-                return `\\U${h}`;
-            }
-        })
-        .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-        .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-}
-
-function htmlToText(html) {
-    const div = document.createElement('div');
-    div.innerHTML = String(html || '');
-    return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim();
-}
-
-function extractMailSnippet(rawLike) {
-    const parsed = parseRawMail(rawLike);
-    const plain = parsed.isHtml ? htmlToText(parsed.body) : String(parsed.body || '').replace(/\s+/g, ' ').trim();
-    if (!plain) return '';
-    return plain.length > 110 ? `${plain.slice(0, 110)}...` : plain;
-}
-
-function getMailPlainTextForQuote(mail) {
-    const m = mail || {};
-    const text = decodeUnicodeEscapes(String(m.content_text || '')).trim();
-    if (text) return text;
-
-    const html = decodeUnicodeEscapes(String(m.content_html || '')).trim();
-    if (html) return htmlToText(html);
-
-    const raw = decodeUnicodeEscapes(String(m.content || '')).trim();
-    if (raw) {
-        const parsed = parseRawMail(raw);
-        const body = String(parsed.body || '').trim();
-        if (!body) return '';
-        return parsed.isHtml ? htmlToText(body) : decodeUnicodeEscapes(body);
-    }
-
-    return decodeUnicodeEscapes(String(m.preview_text || '')).trim();
-}
-
-function getMailHtmlForForward(mail) {
-    const m = mail || {};
-    const html = decodeUnicodeEscapes(String(m.content_html || '')).trim();
-    if (html) return html;
-
-    const raw = decodeUnicodeEscapes(String(m.content || '')).trim();
-    if (!raw) return '';
-    const parsed = parseRawMail(raw);
-    if (parsed.isHtml) {
-        return String(parsed.body || '').trim();
-    }
-    return '';
-}
-
-function parseMailReadState(value) {
-    if (typeof value === 'boolean') return value;
-    if (typeof value === 'number') return value !== 0;
-    if (typeof value === 'string') {
-        return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase());
-    }
-    return false;
-}
-
-function normalizeMailItem(item) {
-    const m = (item && typeof item === 'object') ? item : {};
-    return {
-        ...m,
-        id: String(m.id || ''),
-        is_read: parseMailReadState(m.is_read)
-    };
-}
-
-function getVisibleMailsByFolder() {
-    const all = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
-    if (mailViewState.folder === 'sent') {
-        return all;
-    }
-    if (mailViewState.folder === 'unread') {
-        return all.filter((m) => !parseMailReadState(m.is_read));
-    }
-    return all;
-}
-
-function getMailFolderTitle() {
-    if (mailViewState.folder === 'unread') return '未读邮件';
-    if (mailViewState.folder === 'sent') return '发件箱';
-    return '收件箱';
-}
-
-function updateMailFolderUiState() {
-    const inboxBtn = document.getElementById('mailFolderInboxBtn');
-    const unreadBtn = document.getElementById('mailFolderUnreadBtn');
-    const sentBtn = document.getElementById('mailFolderSentBtn');
-    if (inboxBtn) inboxBtn.classList.toggle('active', mailViewState.folder === 'all');
-    if (unreadBtn) unreadBtn.classList.toggle('active', mailViewState.folder === 'unread');
-    if (sentBtn) sentBtn.classList.toggle('active', mailViewState.folder === 'sent');
-    const titleEl = document.getElementById('mailToolbarTitle');
-    if (titleEl) titleEl.textContent = getMailFolderTitle();
-}
-
-function updateMailItemInState(item) {
-    const normalized = normalizeMailItem(item);
-    const id = String(normalized.id || '');
-    if (!id) return;
-    const list = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
-    const idx = list.findIndex((m) => String(m.id || '') === id);
-    if (idx >= 0) {
-        list[idx] = { ...list[idx], ...normalized };
-    } else {
-        list.unshift(normalized);
-    }
-    mailViewState.mails = list;
-}
-
-function setMailReadStateLocal(mailId, isRead) {
-    const id = String(mailId || '');
-    if (!id) return;
-    const list = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
-    const idx = list.findIndex((m) => String(m.id || '') === id);
-    if (idx >= 0) {
-        list[idx] = { ...list[idx], is_read: !!isRead };
-        mailViewState.mails = list;
-    }
-    if (mailViewState.currentMail && String(mailViewState.currentMail.id || '') === id) {
-        mailViewState.currentMail = { ...mailViewState.currentMail, is_read: !!isRead };
-    }
-}
-
-async function markMailRead(mailId, isRead = true) {
-    const id = String(mailId || '');
-    if (!id) return false;
-    const list = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
-    const target = list.find((m) => String(m.id || '') === id);
-    const oldValue = target ? !!target.is_read : false;
-    if (oldValue === !!isRead) return true;
-
-    // optimistic update for immediate UX: unread item moves to read section on open
-    setMailReadStateLocal(id, !!isRead);
-    renderMailList();
-
-    try {
-        const res = await fetch(`/api/mail/me/inbox/${encodeURIComponent(id)}/read`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ is_read: !!isRead })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            setMailReadStateLocal(id, oldValue);
-            renderMailList();
-            return false;
-        }
-        if (data.mail && typeof data.mail === 'object') {
-            updateMailItemInState(data.mail);
-        } else {
-            setMailReadStateLocal(id, !!data.is_read);
-        }
-        renderMailList();
-        return true;
-    } catch (err) {
-        setMailReadStateLocal(id, oldValue);
-        renderMailList();
-        return false;
-    }
-}
-
-function renderMailDetailEmpty(text) {
-    mailViewState.mode = (mailViewState.folder === 'sent') ? 'sent' : 'inbox';
-    const titleEl = document.getElementById('mailDetailTitle');
-    const metaEl = document.getElementById('mailDetailMeta');
-    const contentEl = document.getElementById('mailDetailContent');
-    renderMailInboxActions();
-    if (titleEl) titleEl.textContent = '邮件详情';
-    if (metaEl) metaEl.innerHTML = '';
-    if (contentEl) {
-        contentEl.innerHTML = `<div class="mail-empty-state">${escapeHtml(text || '暂无邮件')}</div>`;
-    }
-}
-
-function renderMailInboxActions() {
-    const actionsEl = document.querySelector('.mail-icon-actions');
-    if (!actionsEl) return;
-    if (mailViewState.folder === 'sent') {
-        actionsEl.innerHTML = `
-            <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
-            <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
-            <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
-        `;
-        return;
-    }
-    actionsEl.innerHTML = `
-        <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
-        <button class="mail-icon-btn" type="button" title="回复" onclick="openMailComposeReply()"><i class="fa-solid fa-reply"></i></button>
-        <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
-        <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
-    `;
-}
-
-function renderMailComposeForm(preset = {}) {
-    mailViewState.mode = 'compose';
-    const titleEl = document.getElementById('mailDetailTitle');
-    const metaEl = document.getElementById('mailDetailMeta');
-    const contentEl = document.getElementById('mailDetailContent');
-    const actionsEl = document.querySelector('.mail-icon-actions');
-    if (!contentEl) return;
-
-    const localMail = ((mailViewState.status || {}).local_mail || {});
-    const sender = (mailViewState.status || {}).sender_address || localMail.address || localMail.username || '-';
-    const toValue = String(preset.recipient || '').trim();
-    const subjectValue = String(preset.subject || '').trim();
-    const bodyValue = String(preset.content || '');
-    const isHtml = !!preset.is_html;
-
-    if (titleEl) titleEl.textContent = '写邮件';
-    if (metaEl) {
-        metaEl.innerHTML = `<span><i class="fa-regular fa-user"></i> 发件人: ${escapeHtml(sender)}</span>`;
-    }
-    if (actionsEl) {
-        actionsEl.innerHTML = `
-            <button class="mail-icon-btn" type="button" title="返回邮件列表" onclick="returnToInboxView()"><i class="fa-solid fa-inbox"></i></button>
-            <button class="mail-icon-btn" type="button" title="发送" onclick="submitMailCompose()"><i class="fa-solid fa-paper-plane"></i></button>
-        `;
-    }
-
-    contentEl.innerHTML = `
-        <div class="mail-compose-form">
-            <div class="form-group">
-                <label>收件人</label>
-                <input id="mailComposeTo" class="input-modern" type="text" placeholder="例如: user@example.com" value="${escapeHtml(toValue)}">
-            </div>
-            <div class="form-group">
-                <label>主题</label>
-                <input id="mailComposeSubject" class="input-modern" type="text" placeholder="邮件主题" value="${escapeHtml(subjectValue)}">
-            </div>
-            <div class="form-group">
-                <label>内容</label>
-                <textarea id="mailComposeContent" class="input-modern" style="min-height: 300px; resize: vertical;" placeholder="输入邮件内容...">${escapeHtml(bodyValue)}</textarea>
-            </div>
-            <div class="mail-compose-actions">
-                <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#64748b;">
-                    <input id="mailComposeIsHtml" type="checkbox" ${isHtml ? 'checked' : ''}>
-                    以 HTML 发送
-                </label>
-                <div class="mail-compose-btn-row">
-                    <button class="btn-primary-outline btn-compact mail-compose-cancel-btn" type="button" onclick="returnToInboxView()">取消</button>
-                    <button class="btn-primary btn-compact mail-compose-send-btn" type="button" onclick="submitMailCompose()">发送</button>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-function renderMailList() {
-    const listEl = document.getElementById('mailListBody');
-    const inboxBadgeEl = document.getElementById('mailInboxCountBadge');
-    const unreadBadgeEl = document.getElementById('mailUnreadCountBadge');
-    const sentBadgeEl = document.getElementById('mailSentCountBadge');
-    if (!listEl) return;
-    const prevScrollTop = listEl.scrollTop;
-    const mails = (Array.isArray(mailViewState.mails) ? mailViewState.mails : []).map(normalizeMailItem);
-    if (mailViewState.folder === 'sent') {
-        mailViewState.sentTotal = mails.length;
-    } else {
-        mailViewState.inboxTotal = mails.length;
-        mailViewState.unreadTotal = mails.filter((m) => !m.is_read).length;
-    }
-    const inboxCount = Math.max(0, Number(mailViewState.inboxTotal || 0));
-    const unreadCount = Math.max(0, Number(mailViewState.unreadTotal || 0));
-    const sentCount = Math.max(0, Number(mailViewState.sentTotal || 0));
-    if (inboxBadgeEl) inboxBadgeEl.textContent = inboxCount > 99 ? '99+' : String(inboxCount);
-    if (unreadBadgeEl) {
-        unreadBadgeEl.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
-        unreadBadgeEl.classList.toggle('muted', unreadCount === 0);
-    }
-    if (sentBadgeEl) sentBadgeEl.textContent = sentCount > 99 ? '99+' : String(sentCount);
-
-    updateMailFolderUiState();
-
-    const visibleMails = getVisibleMailsByFolder().map(normalizeMailItem);
-    if (visibleMails.length === 0) {
-        const emptyText = mailViewState.folder === 'unread'
-            ? '暂无未读邮件'
-            : (mailViewState.folder === 'sent' ? '暂无发件记录' : '暂无邮件');
-        listEl.innerHTML = `<div class="mail-empty-state">${emptyText}</div>`;
-        saveMailListScroll(0);
-        return;
-    }
-
-    const grouped = {};
-    const groupOrder = [];
-    for (const m of visibleMails) {
-        const key = getMailDateGroupKey(m.timestamp);
-        if (!grouped[key]) {
-            grouped[key] = [];
-            groupOrder.push(key);
-        }
-        grouped[key].push(m);
-    }
-
-    const renderSection = (groupKey, sectionMails) => {
-        const title = getMailDateGroupLabel(groupKey);
-        const sectionItems = sectionMails.map((m) => {
-            const id = String(m.id || '');
-            const eid = encodeURIComponent(id);
-            const active = id === mailViewState.selectedId ? 'active' : '';
-            const sender = m.sender || '-';
-            const recipient = m.recipient || '-';
-            const roleLabel = mailViewState.folder === 'sent' ? '收件人' : '来自';
-            const roleValue = mailViewState.folder === 'sent' ? recipient : sender;
-            const subject = m.subject || '(No Subject)';
-            const snippet = extractMailSnippet(m.preview_text || m.preview || '');
-            const unreadDot = (mailViewState.folder === 'sent' || m.is_read) ? '' : '<span class="mail-unread-dot" title="未读"></span>';
-            return `
-                <div class="mail-list-item ${active}" data-mail-eid="${eid}" onclick="selectMailItemById('${eid}')">
-                    <div class="mail-list-top">
-                        <span class="mail-subject-row">${unreadDot}<span class="mail-subject">${escapeHtml(subject)}</span></span>
-                        <span class="mail-time">${escapeHtml(formatMailTime(m.timestamp))}</span>
-                    </div>
-                    <div class="mail-sender">${escapeHtml(roleLabel)}: ${escapeHtml(roleValue)}</div>
-                    <div class="mail-snippet">${escapeHtml(snippet)}</div>
-                </div>
-            `;
-        }).join('');
-        return `
-            <div class="mail-list-section">
-                <div class="mail-list-section-title">${escapeHtml(title)} <span class="mail-list-section-count">${sectionMails.length}</span></div>
-                ${sectionItems}
-            </div>
-        `;
-    };
-
-    listEl.innerHTML = groupOrder.map((k) => renderSection(k, grouped[k])).join('');
-
-    if (mailViewState.restorePositionOnce) {
-        const savedId = String(mailViewState.selectedId || '');
-        const savedEid = encodeURIComponent(savedId);
-        const activeEl = savedId ? listEl.querySelector(`.mail-list-item[data-mail-eid="${savedEid}"]`) : null;
-        if (activeEl) {
-            activeEl.scrollIntoView({ block: 'center' });
-        } else {
-            listEl.scrollTop = loadMailListScroll();
-        }
-        mailViewState.restorePositionOnce = false;
-    } else {
-        listEl.scrollTop = prevScrollTop;
-    }
-}
-
-async function loadMailCurrentFolder(query = '', options = {}) {
-    if (mailViewState.folder === 'sent') {
-        return loadMailSent(query, options);
-    }
-    return loadMailInbox(query, options);
-}
-
-async function loadMailInbox(query = '', options = {}) {
-    const silent = !!(options && options.silent);
-    const refreshDetail = !options || options.refreshDetail !== false;
-    const forceNetwork = !!(options && options.forceNetwork);
-    const requestId = ++mailViewState.inboxRequestId;
-    const listEl = document.getElementById('mailListBody');
-    if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载收件箱...</div>`;
-    try {
-        const params = new URLSearchParams();
-        if (query) params.set('q', query);
-        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
-        const q = params.toString();
-        const res = await fetch(`/api/mail/me/inbox${q ? `?${q}` : ''}`);
-        const data = await res.json();
-        if (requestId !== mailViewState.inboxRequestId) return;
-        if (!data.success) {
-            mailViewState.mails = [];
-            mailViewState.selectedId = '';
-            mailViewState.inboxTotal = 0;
-            mailViewState.unreadTotal = 0;
-            renderMailList();
-            if (mailViewState.mode !== 'compose') {
-                renderMailDetailEmpty(data.message || '收件箱加载失败');
-            }
-            return;
-        }
-        mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
-        mailViewState.inboxTotal = Number(data.total || mailViewState.mails.length || 0);
-        mailViewState.unreadTotal = Number(data.unread_total || mailViewState.mails.filter((m) => !m.is_read).length || 0);
-        updateMailNotifyFromMails(mailViewState.mails, { markChecked: isMailViewActiveInDom() });
-        const visible = getVisibleMailsByFolder();
-        if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
-            mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
-        }
-        saveMailSelectedId(mailViewState.selectedId);
-        if (isMailViewActiveInDom()) {
-            setMailViewUrl(mailViewState.selectedId || '');
-        }
-        renderMailList();
-        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
-            await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
-        } else if (refreshDetail && mailViewState.mode !== 'compose') {
-            setMailMobileDetailMode(false);
-            renderMailDetailEmpty('收件箱为空');
-        }
-    } catch (err) {
-        if (requestId !== mailViewState.inboxRequestId) return;
-        mailViewState.mails = [];
-        mailViewState.selectedId = '';
-        mailViewState.inboxTotal = 0;
-        mailViewState.unreadTotal = 0;
-        renderMailList();
-        if (mailViewState.mode !== 'compose') {
-            renderMailDetailEmpty('邮件服务连接失败');
-        }
-    }
-}
-
-async function loadMailSent(query = '', options = {}) {
-    const silent = !!(options && options.silent);
-    const refreshDetail = !options || options.refreshDetail !== false;
-    const forceNetwork = !!(options && options.forceNetwork);
-    const requestId = ++mailViewState.inboxRequestId;
-    const listEl = document.getElementById('mailListBody');
-    if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载发件箱...</div>`;
-    try {
-        const params = new URLSearchParams();
-        if (query) params.set('q', query);
-        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
-        const q = params.toString();
-        const res = await fetch(`/api/mail/me/sent${q ? `?${q}` : ''}`);
-        const data = await res.json();
-        if (requestId !== mailViewState.inboxRequestId) return;
-        if (!data.success) {
-            mailViewState.mails = [];
-            mailViewState.selectedId = '';
-            mailViewState.sentTotal = 0;
-            renderMailList();
-            if (mailViewState.mode !== 'compose') {
-                renderMailDetailEmpty(data.message || '发件箱加载失败');
-            }
-            return;
-        }
-        mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
-        mailViewState.sentTotal = Number(data.total || mailViewState.mails.length || 0);
-        const visible = getVisibleMailsByFolder();
-        if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
-            mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
-        }
-        saveMailSelectedId(mailViewState.selectedId);
-        if (isMailViewActiveInDom()) {
-            setMailViewUrl(mailViewState.selectedId || '');
-        }
-        renderMailList();
-        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
-            await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
-        } else if (refreshDetail && mailViewState.mode !== 'compose') {
-            setMailMobileDetailMode(false);
-            renderMailDetailEmpty('发件箱为空');
-        }
-    } catch (err) {
-        if (requestId !== mailViewState.inboxRequestId) return;
-        mailViewState.mails = [];
-        mailViewState.selectedId = '';
-        mailViewState.sentTotal = 0;
-        renderMailList();
-        if (mailViewState.mode !== 'compose') {
-            renderMailDetailEmpty('邮件服务连接失败');
-        }
-    }
-}
-
-async function loadMailDetail(mailId, options = {}) {
-    if (!mailId) {
-        renderMailDetailEmpty('请选择一封邮件');
-        return;
-    }
-    const requestId = ++mailViewState.detailRequestId;
-    const markAsRead = !!options.markAsRead;
-    const forceNetwork = !!options.forceNetwork;
-    const viewingSent = mailViewState.folder === 'sent';
-    const titleEl = document.getElementById('mailDetailTitle');
-    const metaEl = document.getElementById('mailDetailMeta');
-    const contentEl = document.getElementById('mailDetailContent');
-    renderMailInboxActions();
-    if (titleEl) titleEl.textContent = '正在加载...';
-    if (metaEl) metaEl.innerHTML = '';
-    if (contentEl) contentEl.innerHTML = `<div class="mail-empty-state">正在加载邮件详情...</div>`;
-    try {
-        const basePath = viewingSent ? '/api/mail/me/sent' : '/api/mail/me/inbox';
-        const params = new URLSearchParams();
-        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
-        const res = await fetch(`${basePath}/${encodeURIComponent(mailId)}?${params.toString()}`);
-        const data = await res.json();
-        if (requestId !== mailViewState.detailRequestId) return;
-        if (mailViewState.mode === 'compose') return;
-        if (!data.success || !data.mail) {
-            renderMailDetailEmpty(data.message || (viewingSent ? '读取发件失败' : '读取邮件失败'));
-            return;
-        }
-        const mail = normalizeMailItem(data.mail);
-        updateMailItemInState(mail);
-        mailViewState.currentMail = mail;
-        mailViewState.mode = viewingSent ? 'sent' : 'inbox';
-        setMailMobileDetailMode(true);
-        const parsed = parseRawMail(mail.content || '');
-        const senderLine = mail.sender || parsed.headers['from'] || '-';
-        const recipientLine = mail.recipient || parsed.headers['to'] || '-';
-        const dateLine = mail.date || parsed.headers['date'] || formatMailTime(mail.timestamp);
-        if (titleEl) titleEl.textContent = mail.subject || parsed.headers['subject'] || '(No Subject)';
-        if (metaEl) {
-            if (viewingSent) {
-                metaEl.innerHTML = `
-                    <span><i class="fa-regular fa-paper-plane"></i> 发件人: ${escapeHtml(senderLine)}</span>
-                    <span><i class="fa-regular fa-clock"></i> ${escapeHtml(dateLine)}</span>
-                    <span><i class="fa-regular fa-envelope"></i> 收件人: ${escapeHtml(recipientLine)}</span>
-                `;
-            } else {
-                metaEl.innerHTML = `
-                    <span><i class="fa-regular fa-user"></i> ${escapeHtml(senderLine)}</span>
-                    <span><i class="fa-regular fa-clock"></i> ${escapeHtml(dateLine)}</span>
-                    <span><i class="fa-regular fa-envelope"></i> ${escapeHtml(recipientLine)}</span>
-                `;
-            }
-        }
-        if (contentEl) {
-            const htmlBody = decodeUnicodeEscapes(String(mail.content_html || '').trim());
-            const textBody = decodeUnicodeEscapes(String(mail.content_text || '').trim());
-            const rawBody = String(parsed.body || '').trim();
-            if (!htmlBody && !textBody && !rawBody) {
-                contentEl.innerHTML = `<div class="mail-empty-state">邮件内容为空</div>`;
-            } else if (htmlBody) {
-                contentEl.innerHTML = `<iframe class="mail-html-frame" title="mail-html" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
-                const frame = contentEl.querySelector('.mail-html-frame');
-                if (frame) {
-                    frame.srcdoc = rewriteHtmlDocumentLinksToNewTab(htmlBody);
-                }
-            } else if (textBody) {
-                contentEl.innerHTML = `<pre class="mail-raw-content">${escapeHtml(textBody)}</pre>`;
-            } else if (parsed.isHtml) {
-                contentEl.innerHTML = `<iframe class="mail-html-frame" title="mail-html" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
-                const frame = contentEl.querySelector('.mail-html-frame');
-                if (frame) frame.srcdoc = rewriteHtmlDocumentLinksToNewTab(rawBody);
-            } else {
-                contentEl.innerHTML = `<pre class="mail-raw-content">${escapeHtml(rawBody)}</pre>`;
-            }
-        }
-        if (!viewingSent && markAsRead && !mail.is_read) {
-            await markMailRead(mailId, true);
-        }
-    } catch (err) {
-        if (requestId !== mailViewState.detailRequestId) return;
-        if (mailViewState.mode === 'compose') return;
-        renderMailDetailEmpty(viewingSent ? '读取发件失败' : '读取邮件失败');
-    }
-}
-
-async function initMailWorkspace() {
-    setMailMobileDetailMode(false);
-    mailViewState.selectedId = getMailIdFromUrl() || loadMailSelectedId() || mailViewState.selectedId || '';
-    mailViewState.restorePositionOnce = true;
-
-    const listEl = document.getElementById('mailListBody');
-    if (listEl && listEl.dataset.scrollBind !== '1') {
-        listEl.dataset.scrollBind = '1';
-        listEl.addEventListener('scroll', () => saveMailListScroll(listEl.scrollTop));
-    }
-
-    const searchEl = document.getElementById('mailSearchInput');
-    if (searchEl) {
-        searchEl.value = mailViewState.query || '';
-        searchEl.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter') {
-                mailViewState.query = (searchEl.value || '').trim();
-                await loadMailCurrentFolder(mailViewState.query);
-            }
-        });
-    }
-
-    try {
-        const statusRes = await fetch('/api/mail/me/status');
-        const statusData = await statusRes.json();
-        mailViewState.status = statusData;
-        if (!statusData.success || !statusData.enabled) {
-            renderMailList();
-            renderMailDetailEmpty(statusData.message || '邮件系统未启用');
-            return;
-        }
-        if (!statusData.linked) {
-            renderMailList();
-            renderMailDetailEmpty('当前用户未绑定邮箱账号，请联系管理员在设置中绑定');
-            return;
-        }
-    } catch (err) {
-        renderMailList();
-        renderMailDetailEmpty('无法获取邮件状态');
-        return;
-    }
-    await loadMailCurrentFolder(mailViewState.query || '');
-}
-
-window.selectMailItemById = async function(encodedMailId) {
-    const mailId = decodeURIComponent(encodedMailId || '');
-    if (!mailId) return;
-    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
-    mailViewState.selectedId = mailId;
-    saveMailSelectedId(mailId);
-    if (isMailViewActiveInDom()) {
-        setMailViewUrl(mailId);
-    }
-    renderMailList();
-    await loadMailDetail(mailId, { markAsRead: mailViewState.folder !== 'sent' });
-    setMailMobileDetailMode(true);
-};
-
-window.refreshMailInbox = async function() {
-    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
-    await loadMailCurrentFolder(mailViewState.query || '', { forceNetwork: true });
-};
-
-window.refreshMailFolder = window.refreshMailInbox;
-
-window.setMailFolder = async function(folder) {
-    const f = String(folder || '').toLowerCase();
-    if (f === 'sent') mailViewState.folder = 'sent';
-    else if (f === 'unread') mailViewState.folder = 'unread';
-    else mailViewState.folder = 'all';
-    mailViewState.selectedId = '';
-    saveMailSelectedId('');
-    setMailMobileDetailMode(false);
-    if (isMailViewActiveInDom()) {
-        setMailViewUrl('');
-    }
-    renderMailList();
-    renderMailDetailEmpty(mailViewState.folder === 'sent' ? '正在加载发件箱...' : '正在加载收件箱...');
-    await loadMailCurrentFolder(mailViewState.query || '');
-};
-
-window.deleteCurrentMail = async function() {
-    if (mailViewState.mode === 'compose') {
-        showToast('写邮件模式下无法删除');
-        return;
-    }
-    const id = String(mailViewState.selectedId || '');
-    if (!id) {
-        showToast('请选择要删除的邮件');
-        return;
-    }
-    try {
-        const basePath = mailViewState.folder === 'sent' ? '/api/mail/me/sent' : '/api/mail/me/inbox';
-        const res = await fetch(`${basePath}/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '删除失败');
-            return;
-        }
-        showToast(mailViewState.folder === 'sent' ? '发件记录已删除' : '邮件已删除');
-        mailViewState.selectedId = '';
-        saveMailSelectedId('');
-        await loadMailCurrentFolder(mailViewState.query || '');
-    } catch (err) {
-        showToast('删除失败');
-    }
-};
-
-window.returnToInboxView = async function() {
-    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
-    setMailMobileDetailMode(false);
-    renderMailDetailEmpty('请选择一封邮件');
-    if (mailViewState.selectedId) {
-        await loadMailDetail(mailViewState.selectedId);
-    }
-};
-
-window.openMailComposeView = function(preset = {}) {
-    setMailViewUrl('');
-    setMailMobileDetailMode(true);
-    renderMailComposeForm(preset);
-};
-
-window.backToMailListMobile = function() {
-    setMailMobileDetailMode(false);
-};
-
-window.openMailComposeReply = function() {
-    const m = mailViewState.currentMail || null;
-    if (!m) {
-        showToast('请先选择一封邮件');
-        return;
-    }
-    const recipient = String(m.sender || '').replace(/[<>]/g, '').trim();
-    const subject = String(m.subject || '').startsWith('Re:') ? String(m.subject || '') : `Re: ${m.subject || ''}`;
-    const bodyText = getMailPlainTextForQuote(m);
-    const quote = bodyText ? `\n\n\n----- 原邮件 -----\n${bodyText}` : '';
-    openMailComposeView({ recipient, subject, content: quote, is_html: false });
-};
-
-window.openMailComposeForward = function() {
-    const m = mailViewState.currentMail || null;
-    if (!m) {
-        showToast('请先选择一封邮件');
-        return;
-    }
-    const subject = String(m.subject || '').startsWith('Fwd:') ? String(m.subject || '') : `Fwd: ${m.subject || ''}`;
-    const htmlBody = getMailHtmlForForward(m);
-    if (htmlBody) {
-        const quoteHtml = `
-<div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid #dbe3ef; color: #475569; font-size: 12px;">
-  ----- 转发内容 -----
-</div>
-${htmlBody}
-        `.trim();
-        openMailComposeView({ recipient: '', subject, content: quoteHtml, is_html: true });
-        return;
-    }
-
-    const bodyText = getMailPlainTextForQuote(m);
-    const quote = bodyText ? `\n\n\n----- 转发内容 -----\n${bodyText}` : '';
-    openMailComposeView({ recipient: '', subject, content: quote, is_html: false });
-};
-
-window.submitMailCompose = async function() {
-    if (mailViewState.isSending) {
-        showToast('邮件正在发送，请稍候...');
-        return;
-    }
-    const toEl = document.getElementById('mailComposeTo');
-    const subjectEl = document.getElementById('mailComposeSubject');
-    const bodyEl = document.getElementById('mailComposeContent');
-    const htmlEl = document.getElementById('mailComposeIsHtml');
-    if (!toEl || !subjectEl || !bodyEl) return;
-
-    const recipient = (toEl.value || '').trim();
-    const subject = (subjectEl.value || '').trim();
-    const content = bodyEl.value || '';
-    const is_html = !!(htmlEl && htmlEl.checked);
-    if (!recipient) {
-        showToast('请输入收件人');
-        return;
-    }
-    if (!content.trim()) {
-        showToast('请输入邮件内容');
-        return;
-    }
-    const payload = { recipient, subject, content, is_html };
-
-    mailViewState.isSending = true;
-    mailViewState.mode = 'inbox';
-    renderMailDetailEmpty('邮件发送中，请稍候...');
-    showToast('已提交发送请求');
-
-    (async () => {
-        try {
-            const res = await fetch('/api/mail/me/send', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-            if (!data.success) {
-                showToast(data.message || '发送失败');
-                return;
-            }
-            showToast('邮件已发送');
-            if (mailViewState.folder !== 'sent') {
-                mailViewState.sentTotal = Math.max(0, Number(mailViewState.sentTotal || 0) + 1);
-                renderMailList();
-            }
-            await loadMailCurrentFolder(mailViewState.query || '');
-        } catch (err) {
-            showToast('发送失败');
-        } finally {
-            mailViewState.isSending = false;
-        }
-    })();
-};
-
-window.toggleMailSidebar = function() {
-    mailViewState.sidebarCollapsed = !mailViewState.sidebarCollapsed;
-    saveMailSidebarCollapsedState(mailViewState.sidebarCollapsed);
-    const workspace = document.getElementById('mailWorkspace');
-    if (workspace) workspace.classList.toggle('mail-sidebar-collapsed', mailViewState.sidebarCollapsed);
-    const btn = document.querySelector('.mail-sidebar-toggle-btn');
-    if (btn) {
-        btn.title = mailViewState.sidebarCollapsed ? '展开侧栏' : '折叠侧栏';
-        btn.innerHTML = `<i class="fa-solid ${mailViewState.sidebarCollapsed ? 'fa-angles-right' : 'fa-angles-left'}"></i>`;
-    }
+window.copyUserMessage = function(index) {
+    return messageActionsController.copyUserMessage(index);
 };
 
 // --- Knowledge Search ---
@@ -28919,7 +21431,7 @@ async function searchKnowledgeVectors(query) {
     restoreWorkspaceDetailInputContainer();
     
     // 关闭任何可能打开的知识库详情视图
-    if (currentViewingKnowledge) {
+    if (knowledgeEditorControllerState.currentTitle) {
         closeKnowledgeView();
     }
     
@@ -29163,59 +21675,24 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-function getKnowledgeEditorState(title = currentViewingKnowledge || '') {
-    const key = String(title || '').trim() || '__default__';
-    if (!knowledgeEditorScrollState.byTitle[key]) {
-        knowledgeEditorScrollState.byTitle[key] = {
-            previewTop: 0,
-            editTop: 0,
-            previewRatio: 0,
-            editRatio: 0
-        };
-    }
-    return knowledgeEditorScrollState.byTitle[key];
+function getKnowledgeEditorState(title = knowledgeEditorControllerState.currentTitle || '') {
+    return knowledgeEditorController.getTitleState(title);
 }
 
 function readScrollableProgress(el) {
-    if (!el) return { top: 0, ratio: 0 };
-    const top = Math.max(0, Number(el.scrollTop || 0));
-    const max = Math.max(0, Number((el.scrollHeight || 0) - (el.clientHeight || 0)));
-    const ratio = max > 0 ? Math.max(0, Math.min(1, top / max)) : 0;
-    return { top, ratio };
+    return knowledgeEditorController.readScrollableProgress(el);
 }
 
 function readCodeMirrorProgress() {
-    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') {
-        return { top: 0, ratio: 0 };
-    }
-    try {
-        const info = easyMDE.codemirror.getScrollInfo();
-        const top = Math.max(0, Number((info && info.top) || 0));
-        const max = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
-        const ratio = max > 0 ? Math.max(0, Math.min(1, top / max)) : 0;
-        return { top, ratio };
-    } catch (_) {
-        return { top: 0, ratio: 0 };
-    }
+    return knowledgeEditorController.readCodeMirrorProgress();
 }
 
 function applyScrollableProgress(el, preferredTop = 0, preferredRatio = 0) {
-    if (!el) return;
-    const max = Math.max(0, Number((el.scrollHeight || 0) - (el.clientHeight || 0)));
-    const ratio = Math.max(0, Math.min(1, Number(preferredRatio || 0)));
-    const top = max > 0 ? Math.max(0, Math.min(max, Math.round(max * ratio))) : Math.max(0, Number(preferredTop || 0));
-    el.scrollTop = top;
+    knowledgeEditorController.applyScrollableProgress(el, preferredTop, preferredRatio);
 }
 
 function applyCodeMirrorProgress(preferredTop = 0, preferredRatio = 0) {
-    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') return;
-    try {
-        const info = easyMDE.codemirror.getScrollInfo();
-        const max = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
-        const ratio = Math.max(0, Math.min(1, Number(preferredRatio || 0)));
-        const top = max > 0 ? Math.max(0, Math.min(max, Math.round(max * ratio))) : Math.max(0, Number(preferredTop || 0));
-        easyMDE.codemirror.scrollTo(null, top);
-    } catch (_) {}
+    knowledgeEditorController.applyCodeMirrorProgress(preferredTop, preferredRatio);
 }
 
 function isKnowledgeEditorDebugEnabled() {
@@ -29287,8 +21764,8 @@ function collectKnowledgeEditorLayoutSnapshot() {
     const scroller = getKnowledgeEditorScrollerEl ? getKnowledgeEditorScrollerEl() : null;
     const previewEl = getKnowledgeEditorPreviewEl ? getKnowledgeEditorPreviewEl() : null;
     return {
-        currentViewingKnowledge: String(currentViewingKnowledge || ''),
-        activeTitle: String((knowledgeEditorScrollState && knowledgeEditorScrollState.activeTitle) || ''),
+        currentTitle: String(knowledgeEditorControllerState.currentTitle || ''),
+        activeTitle: String((knowledgeEditorControllerState.scroll && knowledgeEditorControllerState.scroll.activeTitle) || ''),
         isPreviewActive: typeof isKnowledgeEditorPreviewActive === 'function' ? !!isKnowledgeEditorPreviewActive() : null,
         isSideBySideActive: typeof isKnowledgeEditorSideBySideActive === 'function' ? !!isKnowledgeEditorSideBySideActive() : null,
         isFullscreenActive: typeof isKnowledgeEditorFullscreenActive === 'function' ? !!isKnowledgeEditorFullscreenActive() : null,
@@ -29322,8 +21799,8 @@ function getKnowledgeEditorScrollMetrics() {
     let editProgress = { top: 0, ratio: 0 };
     let editMax = 0;
 
-    if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.getScrollInfo === 'function') {
-        const info = easyMDE.codemirror.getScrollInfo();
+    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror && typeof knowledgeEditorControllerState.editor.codemirror.getScrollInfo === 'function') {
+        const info = knowledgeEditorControllerState.editor.codemirror.getScrollInfo();
         editProgress = readCodeMirrorProgress();
         editMax = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
     }
@@ -29337,7 +21814,7 @@ function getKnowledgeEditorScrollMetrics() {
 }
 
 function captureKnowledgeEditorToggleSnapshot(forcePreviewSource = null) {
-    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+    const title = String(knowledgeEditorControllerState.currentTitle || knowledgeEditorControllerState.scroll.activeTitle || '').trim();
     if (!title) return null;
 
     const metrics = getKnowledgeEditorScrollMetrics();
@@ -29369,7 +21846,7 @@ function mirrorKnowledgeEditorProgressToBothModes(forcePreviewSource = null) {
     state.previewRatio = snapshot.previewRatio;
     state.editTop = snapshot.editTop;
     state.editRatio = snapshot.editRatio;
-    knowledgeEditorScrollState.activeTitle = snapshot.title;
+    knowledgeEditorController.setActiveScrollTitle(snapshot.title);
     logKnowledgeEditorDebug('mirrorProgress', {
         title: snapshot.title,
         mode: snapshot.sourceMode,
@@ -29380,7 +21857,7 @@ function mirrorKnowledgeEditorProgressToBothModes(forcePreviewSource = null) {
         previewMax: snapshot.previewMax,
         editMax: snapshot.editMax
     });
-    knowledgeEditorPendingToggleScrollSnapshot = snapshot;
+    knowledgeEditorControllerState.scroll.pendingToggleSnapshot = snapshot;
 }
 
 function applyKnowledgeEditorToggleSnapshot(snapshot, forcePreview = null) {
@@ -29409,40 +21886,20 @@ function applyKnowledgeEditorToggleSnapshot(snapshot, forcePreview = null) {
     });
 }
 
-let knowledgeEditorScrollSyncLock = false;
-let knowledgeEditorDelegatedScrollBound = false;
-let knowledgeEditorPendingToggleScrollSnapshot = null;
-let knowledgeEditorModeSwitchActive = false;
-
-let knowledgeEditorRestoreTimeouts = [];
-let lastScrollSource = null;
-let scrollResetTimer = null;
-
 function cancelKnowledgeEditorRestores() {
-    knowledgeEditorRestoreTimeouts.forEach(clearTimeout);
-    knowledgeEditorRestoreTimeouts = [];
+    knowledgeEditorController.cancelRestores();
 }
 
 function isKnowledgeEditorPreviewActive() {
-    return !!(easyMDE && easyMDE.isPreviewActive && easyMDE.isPreviewActive());
+    return knowledgeEditorController.isPreviewActive();
 }
 
 function isKnowledgeEditorSideBySideActive() {
-    if (easyMDE && easyMDE.__editorType === 'toastui') {
-        return !!(typeof easyMDE.isSideBySideActive === 'function' && easyMDE.isSideBySideActive());
-    }
-    return !!(
-        document.querySelector('#knowledgeViewer .CodeMirror-sided')
-        || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
-    );
+    return knowledgeEditorController.isSideBySideActive();
 }
 
 function isKnowledgeEditorFullscreenActive() {
-    if (easyMDE && easyMDE.__editorType === 'toastui') {
-        return !!easyMDE.__isFullscreen;
-    }
-    const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
-    return !!(toolbar && toolbar.classList.contains('fullscreen'));
+    return knowledgeEditorController.isFullscreenActive();
 }
 
 function syncKnowledgeEditorToolbarState() {
@@ -29460,45 +21917,37 @@ function syncKnowledgeEditorToolbarState() {
 }
 
 function toggleKnowledgeEditorPreviewMode() {
-    if (!easyMDE) return;
-    if (typeof easyMDE.togglePreview === 'function') {
-        easyMDE.togglePreview();
+    if (!knowledgeEditorControllerState.editor) return;
+    if (typeof knowledgeEditorControllerState.editor.togglePreview === 'function') {
+        knowledgeEditorControllerState.editor.togglePreview();
         return;
     }
     if (typeof EasyMDE !== 'undefined' && EasyMDE && typeof EasyMDE.togglePreview === 'function') {
-        EasyMDE.togglePreview(easyMDE);
+        EasyMDE.togglePreview(knowledgeEditorControllerState.editor);
     }
 }
 
 function exitKnowledgeEditorSpecialModes() {
-    if (!easyMDE) return;
+    if (!knowledgeEditorControllerState.editor) return;
     try {
-        if (isKnowledgeEditorFullscreenActive() && typeof easyMDE.toggleFullScreen === 'function') {
-            easyMDE.toggleFullScreen();
+        if (isKnowledgeEditorFullscreenActive() && typeof knowledgeEditorControllerState.editor.toggleFullScreen === 'function') {
+            knowledgeEditorControllerState.editor.toggleFullScreen();
         }
     } catch (_) {}
     try {
-        if (isKnowledgeEditorSideBySideActive() && typeof easyMDE.toggleSideBySide === 'function') {
-            easyMDE.toggleSideBySide();
+        if (isKnowledgeEditorSideBySideActive() && typeof knowledgeEditorControllerState.editor.toggleSideBySide === 'function') {
+            knowledgeEditorControllerState.editor.toggleSideBySide();
         }
     } catch (_) {}
 }
-
-let knowledgeEditorAlignWidgets = [];
-let knowledgeEditorAlignDebounce = null;
-let knowledgeEditorAlignRetryTimers = [];
-let knowledgeEditorAlignRunToken = 0;
-let knowledgeEditorAlignLastRunAt = 0;
-let knowledgeEditorAlignBusy = false;
-let knowledgeEditorLastInputAt = 0;
 
 function isKnowledgeEditorAlignDebugEnabled() {
     return !!window.__NEXORA_ALIGN_DEBUG;
 }
 
 function cancelKnowledgeEditorAlignRetries() {
-    knowledgeEditorAlignRetryTimers.forEach((timer) => clearTimeout(timer));
-    knowledgeEditorAlignRetryTimers = [];
+    knowledgeEditorControllerState.align.retryTimers.forEach((timer) => clearTimeout(timer));
+    knowledgeEditorControllerState.align.retryTimers = [];
 }
 
 function mapKnowledgePreviewAnchorType(node) {
@@ -29682,16 +22131,16 @@ function buildKnowledgeAnchorPairs(cmAnchors, previewAnchors) {
 }
 
 function alignKnowledgeEditorBlocks(mode = 'full') {
-    if (easyMDE && easyMDE.__editorType === 'toastui') return;
+    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui') return;
     if (!isKnowledgeEditorSideBySideActive()) return;
     const preview = getKnowledgeEditorPreviewEl();
     const scroller = getKnowledgeEditorScrollerEl();
-    if (!preview || !scroller || !easyMDE || !easyMDE.codemirror) return;
+    if (!preview || !scroller || !knowledgeEditorControllerState.editor || !knowledgeEditorControllerState.editor.codemirror) return;
 
-    const cm = easyMDE.codemirror;
+    const cm = knowledgeEditorControllerState.editor.codemirror;
     
-    knowledgeEditorAlignWidgets.forEach(w => w.clear());
-    knowledgeEditorAlignWidgets = [];
+    knowledgeEditorControllerState.align.widgets.forEach(w => w.clear());
+    knowledgeEditorControllerState.align.widgets = [];
 
     const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
     previewAnchors.forEach(({ el }) => {
@@ -29807,7 +22256,7 @@ function alignKnowledgeEditorBlocks(mode = 'full') {
                 noHScroll: true,
                 above: Number.isFinite(nextCmLine)
             });
-            knowledgeEditorAlignWidgets.push(widget);
+            knowledgeEditorControllerState.align.widgets.push(widget);
             editorAdded += editPad;
         }
     }
@@ -29825,7 +22274,7 @@ function alignKnowledgeEditorBlocks(mode = 'full') {
                     coverGutter: false,
                     noHScroll: true
                 });
-                knowledgeEditorAlignWidgets.push(widget);
+                knowledgeEditorControllerState.align.widgets.push(widget);
                 editorAdded += extraPreviewHeight;
             }
         }
@@ -29868,7 +22317,7 @@ function alignKnowledgeEditorBlocks(mode = 'full') {
                 const div = document.createElement("div");
                 div.style.height = `${Math.round(Math.abs(diff))}px`;
                 div.style.pointerEvents = "none";
-                knowledgeEditorAlignWidgets.push(cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {coverGutter: false, noHScroll: true}));
+                knowledgeEditorControllerState.align.widgets.push(cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {coverGutter: false, noHScroll: true}));
             }
         }, 40);
 
@@ -29889,10 +22338,10 @@ function alignKnowledgeEditorBlocks(mode = 'full') {
 }
 
 function scheduleKnowledgeEditorAlignment(reason = 'typing') {
-    if (easyMDE && easyMDE.__editorType === 'toastui') return;
+    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui') return;
     if (!isKnowledgeEditorSideBySideActive()) return;
     cancelKnowledgeEditorAlignRetries();
-    const runToken = ++knowledgeEditorAlignRunToken;
+    const runToken = ++knowledgeEditorControllerState.align.runToken;
     const now = Date.now();
     let delays;
     if (reason === 'toggle') {
@@ -29903,119 +22352,38 @@ function scheduleKnowledgeEditorAlignment(reason = 'typing') {
         delays = [120, 380];
     } else {
         delays = [1200];
-        if (now - knowledgeEditorAlignLastRunAt < 300) {
+        if (now - knowledgeEditorControllerState.align.lastRunAt < 300) {
             delays = [1400];
         }
     }
 
     delays.forEach((delay) => {
         const timer = setTimeout(() => {
-            if (runToken !== knowledgeEditorAlignRunToken) return;
+            if (runToken !== knowledgeEditorControllerState.align.runToken) return;
             if (!isKnowledgeEditorSideBySideActive()) return;
-            if (reason === 'typing' && (Date.now() - knowledgeEditorLastInputAt) < 650) return;
-            if (knowledgeEditorAlignBusy) return;
-            knowledgeEditorAlignBusy = true;
+            if (reason === 'typing' && (Date.now() - knowledgeEditorControllerState.align.lastInputAt) < 650) return;
+            if (knowledgeEditorControllerState.align.busy) return;
+            knowledgeEditorControllerState.align.busy = true;
             requestAnimationFrame(() => {
                 try {
-                    if (runToken !== knowledgeEditorAlignRunToken) return;
+                    if (runToken !== knowledgeEditorControllerState.align.runToken) return;
                     if (!isKnowledgeEditorSideBySideActive()) return;
                     alignKnowledgeEditorBlocks(reason === 'typing' ? 'light' : 'full');
                     if (reason !== 'typing') {
                         syncKnowledgeEditorMirrorScroll(false);
                     }
-                    knowledgeEditorAlignLastRunAt = Date.now();
+                    knowledgeEditorControllerState.align.lastRunAt = Date.now();
                 } finally {
-                    knowledgeEditorAlignBusy = false;
+                    knowledgeEditorControllerState.align.busy = false;
                 }
             });
         }, delay);
-        knowledgeEditorAlignRetryTimers.push(timer);
+        knowledgeEditorControllerState.align.retryTimers.push(timer);
     });
 }
 
 function syncKnowledgeEditorMirrorScroll(fromPreview) {
-    if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-    if (!isKnowledgeEditorSideBySideActive()) return;
-
-    const preview = getKnowledgeEditorPreviewEl();
-    const scroller = getKnowledgeEditorScrollerEl();
-    if (!preview || !scroller || !easyMDE || !easyMDE.codemirror) return;
-
-    if (fromPreview && lastScrollSource === 'editor') return;
-    if (!fromPreview && lastScrollSource === 'preview') return;
-
-    lastScrollSource = fromPreview ? 'preview' : 'editor';
-    clearTimeout(scrollResetTimer);
-    scrollResetTimer = setTimeout(() => { lastScrollSource = null; }, 50);
-
-    knowledgeEditorScrollSyncLock = true;
-    if (isKnowledgeEditorDebugEnabled()) {
-        logKnowledgeEditorDebug('mirrorScroll:start', {
-            fromPreview,
-            preview: summarizeKnowledgeEditorNode(preview),
-            scroller: summarizeKnowledgeEditorNode(scroller),
-            layout: collectKnowledgeEditorLayoutSnapshot()
-        });
-    }
-    requestAnimationFrame(() => {
-        try {
-            if (fromPreview) {
-                const previewProgress = readScrollableProgress(preview);
-                let cmInfo = null;
-                let targetTop = 0;
-                if (easyMDE && easyMDE.__editorType === 'toastui') {
-                    const editorProgress = readScrollableProgress(scroller);
-                    const editorMax = Math.max(0, Number((scroller.scrollHeight || 0) - (scroller.clientHeight || 0)));
-                    targetTop = editorMax > 0
-                        ? Math.round(editorMax * Number(previewProgress.ratio || 0))
-                        : Math.max(0, Number(previewProgress.top || 0));
-                    scroller.scrollTop = targetTop;
-                    cmInfo = {
-                        top: editorProgress.top,
-                        height: Number(scroller.scrollHeight || 0),
-                        clientHeight: Number(scroller.clientHeight || 0)
-                    };
-                } else {
-                    cmInfo = easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null;
-                    const cmMax = Math.max(0, Number(((cmInfo && cmInfo.height) || 0) - ((cmInfo && cmInfo.clientHeight) || 0)));
-                    targetTop = cmMax > 0
-                        ? Math.round(cmMax * Number(previewProgress.ratio || 0))
-                        : Math.max(0, Number(previewProgress.top || 0));
-                    easyMDE.codemirror.scrollTo(null, targetTop);
-                }
-                logKnowledgeEditorDebug('mirrorScroll:applyToEditor', {
-                    previewProgress,
-                    cmInfo,
-                    targetTop
-                });
-            } else {
-                const cmProgress = (easyMDE && easyMDE.__editorType === 'toastui')
-                    ? readScrollableProgress(scroller)
-                    : readCodeMirrorProgress();
-                const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
-                const targetTop = previewMax > 0
-                    ? Math.round(previewMax * Number(cmProgress.ratio || 0))
-                    : Math.max(0, Number(cmProgress.top || 0));
-                preview.scrollTop = targetTop;
-                logKnowledgeEditorDebug('mirrorScroll:applyToPreview', {
-                    cmProgress,
-                    previewMax,
-                    targetTop
-                });
-            }
-        } finally {
-            requestAnimationFrame(() => {
-                knowledgeEditorScrollSyncLock = false;
-                if (isKnowledgeEditorDebugEnabled()) {
-                    logKnowledgeEditorDebug('mirrorScroll:end', {
-                        fromPreview,
-                        preview: summarizeKnowledgeEditorNode(preview),
-                        scroller: summarizeKnowledgeEditorNode(scroller)
-                    });
-                }
-            });
-        }
-    });
+    knowledgeEditorController.syncMirrorScroll(fromPreview);
 }
 
 function getKnowledgeEditorPreviewEl() {
@@ -30029,8 +22397,8 @@ function getKnowledgeEditorPreviewEl() {
 }
 
 function getKnowledgeEditorScrollerEl() {
-    if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.getScrollerElement === 'function') {
-        const scroller = easyMDE.codemirror.getScrollerElement();
+    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror && typeof knowledgeEditorControllerState.editor.codemirror.getScrollerElement === 'function') {
+        const scroller = knowledgeEditorControllerState.editor.codemirror.getScrollerElement();
         if (scroller) return scroller;
     }
     return document.querySelector('#knowledgeViewer .toastui-editor-md-container .CodeMirror-scroll')
@@ -30043,606 +22411,72 @@ function getToastProseMirrorEl() {
 }
 
 function bindKnowledgeEditorScrollTracking() {
-    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-    if (!title) return;
-
-    const preview = getKnowledgeEditorPreviewEl();
-    if (preview && preview.dataset.nexoraScrollBound !== '1') {
-        preview.dataset.nexoraScrollBound = '1';
-        preview.addEventListener('scroll', () => {
-            cancelKnowledgeEditorRestores();
-            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-            if (!activeTitle) return;
-
-            const state = getKnowledgeEditorState(activeTitle);
-            const progress = readScrollableProgress(preview);
-            state.previewTop = progress.top;
-            state.previewRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = activeTitle;
-            if (isKnowledgeEditorDebugEnabled()) {
-                logKnowledgeEditorDebug('previewScroll', {
-                    title: activeTitle,
-                    top: progress.top,
-                    ratio: progress.ratio,
-                    preview: summarizeKnowledgeEditorNode(preview)
-                });
-            }
-            syncKnowledgeEditorMirrorScroll(true);
-        }, { passive: true });
-    }
-
-    const scroller = getKnowledgeEditorScrollerEl();
-    if (scroller && scroller.dataset.nexoraScrollBound !== '1') {
-        scroller.dataset.nexoraScrollBound = '1';
-        scroller.addEventListener('scroll', () => {
-            cancelKnowledgeEditorRestores();
-            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            if (!easyMDE || !easyMDE.codemirror) return;
-            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-            if (!activeTitle) return;
-
-            const state = getKnowledgeEditorState(activeTitle);
-            const progress = (easyMDE && easyMDE.__editorType === 'toastui')
-                ? readScrollableProgress(scroller)
-                : readCodeMirrorProgress();
-            state.editTop = progress.top;
-            state.editRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = activeTitle;
-            if (isKnowledgeEditorDebugEnabled()) {
-                logKnowledgeEditorDebug('editScroll', {
-                    title: activeTitle,
-                    top: progress.top,
-                    ratio: progress.ratio,
-                    scroller: summarizeKnowledgeEditorNode(scroller)
-                });
-            }
-            syncKnowledgeEditorMirrorScroll(false);
-        }, { passive: true });
-    }
-
-    if (easyMDE && easyMDE.__editorType === 'toastui' && easyMDE.codemirror && typeof easyMDE.codemirror.on === 'function') {
-        if (easyMDE.codemirror.__nexoraScrollBound !== true) {
-            easyMDE.codemirror.__nexoraScrollBound = true;
-            easyMDE.codemirror.on('scroll', () => {
-                cancelKnowledgeEditorRestores();
-                if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-                const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-                if (!activeTitle) return;
-
-                const state = getKnowledgeEditorState(activeTitle);
-                const progress = readCodeMirrorProgress();
-                state.editTop = progress.top;
-                state.editRatio = progress.ratio;
-                knowledgeEditorScrollState.activeTitle = activeTitle;
-                if (isKnowledgeEditorDebugEnabled()) {
-                    logKnowledgeEditorDebug('editScroll:cm', {
-                        title: activeTitle,
-                        top: progress.top,
-                        ratio: progress.ratio,
-                        scroller: summarizeKnowledgeEditorNode(getKnowledgeEditorScrollerEl())
-                    });
-                }
-                syncKnowledgeEditorMirrorScroll(false);
-            });
-        }
-    }
-
-    const proseMirror = getToastProseMirrorEl();
-    if (proseMirror && proseMirror.dataset.nexoraPmBound !== '1') {
-        proseMirror.dataset.nexoraPmBound = '1';
-        proseMirror.addEventListener('scroll', () => {
-            cancelKnowledgeEditorRestores();
-            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-            if (!activeTitle) return;
-
-            const state = getKnowledgeEditorState(activeTitle);
-            const progress = readScrollableProgress(proseMirror);
-            state.editTop = progress.top;
-            state.editRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = activeTitle;
-            if (isKnowledgeEditorDebugEnabled()) {
-                logKnowledgeEditorDebug('editScroll:pm', {
-                    title: activeTitle,
-                    top: progress.top,
-                    ratio: progress.ratio,
-                    scroller: summarizeKnowledgeEditorNode(proseMirror)
-                });
-            }
-            syncKnowledgeEditorMirrorScroll(false);
-        }, { passive: true });
-        const refreshPreviewFromPm = () => {
-            if (easyMDE && typeof easyMDE.__queuePreviewRender === 'function') {
-                easyMDE.__queuePreviewRender(true);
-            }
-        };
-        proseMirror.addEventListener('input', refreshPreviewFromPm);
-        proseMirror.addEventListener('keyup', refreshPreviewFromPm);
-        proseMirror.addEventListener('paste', refreshPreviewFromPm);
-        proseMirror.addEventListener('cut', refreshPreviewFromPm);
-        proseMirror.addEventListener('compositionend', refreshPreviewFromPm);
-    }
-
-    const viewer = document.getElementById('knowledgeViewer');
-    if (viewer && !knowledgeEditorDelegatedScrollBound) {
-        knowledgeEditorDelegatedScrollBound = true;
-        viewer.addEventListener('scroll', (e) => {
-            cancelKnowledgeEditorRestores();
-            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-            if (!activeTitle) return;
-            const target = e && e.target;
-            if (!target || !target.classList) return;
-
-            if (
-                target.classList.contains('editor-preview-side')
-                || target.classList.contains('editor-preview')
-                || target.classList.contains('editor-preview-full')
-            ) {
-                const state = getKnowledgeEditorState(activeTitle);
-                const progress = readScrollableProgress(target);
-                state.previewTop = progress.top;
-                state.previewRatio = progress.ratio;
-                knowledgeEditorScrollState.activeTitle = activeTitle;
-                // logKnowledgeEditorDebug('viewerCapture:preview', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
-                syncKnowledgeEditorMirrorScroll(true);
-                return;
-            }
-
-            if (target.classList.contains('CodeMirror-scroll')) {
-                const state = getKnowledgeEditorState(activeTitle);
-                const progress = readCodeMirrorProgress();
-                state.editTop = progress.top;
-                state.editRatio = progress.ratio;
-                knowledgeEditorScrollState.activeTitle = activeTitle;
-                // logKnowledgeEditorDebug('viewerCapture:edit', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
-                syncKnowledgeEditorMirrorScroll(false);
-            }
-        }, true);
-    }
+    knowledgeEditorController.bindScrollTracking();
 }
 
 function bindKnowledgeEditorToolbarHooks() {
-    if (knowledgeEditorToolbarHooksInstalled) return;
-    knowledgeEditorToolbarHooksInstalled = true;
-    document.addEventListener('pointerdown', (e) => {
-        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a, #knowledgeViewer .editor-toolbar button') : null;
-        if (!target || !currentViewingKnowledge || !easyMDE) return;
-        if (easyMDE && easyMDE.__editorType === 'toastui') return;
-        const cls = String(target.className || '');
-        if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
-        knowledgeEditorModeSwitchActive = true;
-        logKnowledgeEditorDebug('toolbarPointerDown', { cls, previewActive: isKnowledgeEditorPreviewActive(), sideBySideActive: isKnowledgeEditorSideBySideActive() });
-        mirrorKnowledgeEditorProgressToBothModes();
-    }, true);
-    document.addEventListener('click', (e) => {
-        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a, #knowledgeViewer .editor-toolbar button') : null;
-        if (!target || !currentViewingKnowledge || !easyMDE) return;
-        if (easyMDE && easyMDE.__editorType === 'toastui') return;
-        const cls = String(target.className || '');
-        if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
-        logKnowledgeEditorDebug('toolbarClick', { cls, previewActive: isKnowledgeEditorPreviewActive(), sideBySideActive: isKnowledgeEditorSideBySideActive() });
-        const pendingSnapshot = knowledgeEditorPendingToggleScrollSnapshot
-            ? { ...knowledgeEditorPendingToggleScrollSnapshot }
-            : null;
-        [0, 40, 140].forEach((delay) => {
-            setTimeout(() => {
-                if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.refresh === 'function') {
-                    easyMDE.codemirror.refresh();
-                }
-                bindKnowledgeEditorScrollTracking();
-                applyKnowledgeEditorToggleSnapshot(pendingSnapshot, isKnowledgeEditorPreviewActive());
-                restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive(), pendingSnapshot);
-                if (isKnowledgeEditorSideBySideActive() && delay === 140) {
-                    scheduleKnowledgeEditorAlignment('toggle');
-                }
-                syncKnowledgeEditorToolbarState();
-                logKnowledgeEditorDebug('toolbarRefresh', {
-                    cls,
-                    previewActive: isKnowledgeEditorPreviewActive(),
-                    sideBySideActive: isKnowledgeEditorSideBySideActive()
-                });
-                if (delay === 140) {
-                    logKnowledgeEditorDebug('toolbarTransitionComplete', {
-                        cls,
-                        previewActive: isKnowledgeEditorPreviewActive(),
-                        sideBySideActive: isKnowledgeEditorSideBySideActive()
-                    });
-                }
-            }, delay);
-        });
-        setTimeout(() => {
-            knowledgeEditorModeSwitchActive = false;
-            knowledgeEditorPendingToggleScrollSnapshot = null;
-        }, 680);
-    }, true);
+    knowledgeEditorController.bindToolbarHooks();
 }
 
 function restoreKnowledgeEditorScrollPosition(forcePreview = null, preferredSnapshot = null) {
-    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-    if (!title) return;
-    const state = getKnowledgeEditorState(title);
-    const preview = getKnowledgeEditorPreviewEl();
-    const scroller = getKnowledgeEditorScrollerEl();
-    const isPreview = forcePreview != null
-        ? !!forcePreview
-        : isKnowledgeEditorPreviewActive();
-    const snapshot = preferredSnapshot && String(preferredSnapshot.title || '').trim() === title
-        ? preferredSnapshot
-        : (knowledgeEditorPendingToggleScrollSnapshot && String(knowledgeEditorPendingToggleScrollSnapshot.title || '').trim() === title
-            ? knowledgeEditorPendingToggleScrollSnapshot
-            : null);
-    const chooseScrollTop = (primary, secondary) => {
-        if (Number.isFinite(Number(primary)) && Number(primary) >= 0) return Number(primary);
-        if (Number.isFinite(Number(secondary)) && Number(secondary) >= 0) return Number(secondary);
-        return 0;
-    };
-    const snapshotTop = (() => {
-        if (!snapshot) return null;
-        if (snapshot.sourceMode === 'preview') {
-            return isPreview ? snapshot.previewTop : snapshot.previewTop;
-        }
-        if (snapshot.sourceMode === 'edit') {
-            return isPreview ? snapshot.editTop : snapshot.editTop;
-        }
-        return isPreview ? snapshot.previewTop : snapshot.editTop;
-    })();
-    const snapshotRatio = (() => {
-        if (!snapshot) return null;
-        if (snapshot.sourceMode === 'preview') {
-            return isPreview ? snapshot.previewRatio : snapshot.previewRatio;
-        }
-        if (snapshot.sourceMode === 'edit') {
-            return isPreview ? snapshot.editRatio : snapshot.editRatio;
-        }
-        return isPreview ? snapshot.previewRatio : snapshot.editRatio;
-    })();
-    const preferredTop = snapshot
-        ? Number(snapshotTop || 0)
-        : (isPreview
-            ? chooseScrollTop(state.previewTop, state.editTop)
-            : chooseScrollTop(state.editTop, state.previewTop));
-    const preferredRatio = snapshot
-        ? Math.max(0, Math.min(1, Number(snapshotRatio || 0)))
-        : (isPreview
-            ? (Number.isFinite(state.previewRatio) ? state.previewRatio : state.editRatio)
-            : (Number.isFinite(state.editRatio) ? state.editRatio : state.previewRatio));
-    logKnowledgeEditorDebug('restoreScroll:prepare', {
-        title,
-        isPreview,
-        preferredTop,
-        preferredRatio,
-        snapshot,
-        state,
-        layout: collectKnowledgeEditorLayoutSnapshot()
-    });
-    const attemptRestore = () => {
-        if (isPreview) {
-            const target = getKnowledgeEditorPreviewEl();
-            if (!target) return;
-            applyScrollableProgress(target, preferredTop, preferredRatio);
-            logKnowledgeEditorDebug('restoreScroll:previewApplied', {
-                title,
-                preferredTop,
-                preferredRatio,
-                target: summarizeKnowledgeEditorNode(target)
-            });
-            return;
-        }
-        const target = getKnowledgeEditorScrollerEl();
-        if (target) {
-            applyScrollableProgress(target, preferredTop, preferredRatio);
-        }
-        if (!(easyMDE && easyMDE.__editorType === 'toastui')) {
-            applyCodeMirrorProgress(preferredTop, preferredRatio);
-        }
-        logKnowledgeEditorDebug('restoreScroll:editApplied', {
-            title,
-            preferredTop,
-            preferredRatio,
-            target: summarizeKnowledgeEditorNode(target)
-        });
-    };
-    
-    cancelKnowledgeEditorRestores();
-    [0, 40, 140, 320, 680].forEach((delay) => {
-        knowledgeEditorRestoreTimeouts.push(setTimeout(() => requestAnimationFrame(attemptRestore), delay));
-    });
+    knowledgeEditorController.restoreScrollPosition(forcePreview, preferredSnapshot);
 }
 
 function storeKnowledgeEditorScrollPosition(forcePreview = null) {
-    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
-    if (!title) return;
-    const state = getKnowledgeEditorState(title);
-    const preview = getKnowledgeEditorPreviewEl();
-    const scroller = getKnowledgeEditorScrollerEl();
-    const isPreview = forcePreview != null
-        ? !!forcePreview
-        : isKnowledgeEditorPreviewActive();
-    if (isPreview && preview) {
-        const progress = readScrollableProgress(preview);
-        state.previewTop = progress.top;
-        state.previewRatio = progress.ratio;
-    } else if (!isPreview && scroller) {
-        const progress = readCodeMirrorProgress();
-        state.editTop = progress.top;
-        state.editRatio = progress.ratio;
-    }
-    knowledgeEditorScrollState.activeTitle = title;
+    knowledgeEditorController.storeScrollPosition(forcePreview);
 }
 
 function installKnowledgeEditorPreviewHooks() {
-    if (knowledgeEditorPreviewHooksInstalled) return;
-    knowledgeEditorPreviewHooksInstalled = true;
-    bindKnowledgeEditorToolbarHooks();
-
-    if (!window.__nexoraKnowledgeEditorSaveShortcutBound) {
-        document.addEventListener('keydown', async (e) => {
-            const viewer = document.getElementById('knowledgeViewer');
-            if (!currentViewingKnowledge || !easyMDE || !viewer || viewer.style.display === 'none') return;
-            const key = String(e.key || '').toLowerCase();
-            if (!(e.ctrlKey || e.metaKey) || key !== 's') return;
-            e.preventDefault();
-            e.stopPropagation();
-            await saveKnowledge(currentViewingKnowledge);
-        }, true);
-        window.__nexoraKnowledgeEditorSaveShortcutBound = true;
-    }
+    knowledgeEditorController.installPreviewHooks();
 }
 
-async function saveKnowledge(title) {
-    if(!easyMDE) return;
-    if (knowledgeImageUploadRuntime.pending.size > 0) {
-        showToast('仍有图片上传中，请稍候再保存');
-        return;
-    }
-    const content = easyMDE.value();
-    
-    try {
-        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}/content`, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                content,
-                ...getWorkspaceKnowledgeRequestFields(),
-            })
-        });
-        const data = await res.json();
-        if(data.success) {
-            showToast('保存成功');
-            const nowSec = Math.floor(Date.now() / 1000);
-            const meta = (knowledgeMetaCache[title] && typeof knowledgeMetaCache[title] === 'object')
-                ? knowledgeMetaCache[title]
-                : {};
-            meta.updated_at = Math.max(nowSec, Number(meta.updated_at || 0));
-            if (Number(meta.vector_updated_at || 0) >= meta.updated_at) {
-            }
-            knowledgeMetaCache[title] = meta;
-            // 保存后立即刷新知识列表与元数据，让“需重新向量化”状态及时可见。
-            if (!getActiveWorkspaceKnowledgeContext()) {
-                await loadKnowledge(currentConversationId);
-            }
-        } else {
-            showToast('保存失败: ' + data.message);
-        }
-    } catch (e) {
-        showToast('请求异常: ' + e.message);
-    }
+async function saveKnowledgeImpl(title) {
+    await knowledgeEditorController.saveKnowledge(title);
 }
 
 // --- Knowledge Settings ---
-let knowledgeSettingsVectorLoadedTitle = '';
-
 function buildKnowledgeShareUrl(shareId) {
-    const safeShareId = String(shareId || '').trim();
-    const shareUsername = getActiveKnowledgeShareUsername();
-
-    if (!safeShareId || !shareUsername) {
-        return '';
-    }
-
-    return `${window.location.origin}/public/knowledge/${shareUsername}/${safeShareId}`;
+    return knowledgeSettingsController.buildKnowledgeShareUrl(shareId);
 }
 
 function applyKnowledgeSettingsMetadata(title, metadata = {}) {
-    const safeTitle = String(title || '').trim();
-    const meta = (metadata && typeof metadata === 'object') ? metadata : {};
-
-    const titleInput = document.getElementById('settingTargetTitle');
-    const publicInput = document.getElementById('settingPublic');
-    const collaborativeInput = document.getElementById('settingCollaborative');
-    const readonlyInput = document.getElementById('settingModelReadonly');
-    const lastModify = document.getElementById('lastModifyTime');
-
-    if (titleInput) titleInput.value = safeTitle;
-    if (publicInput) publicInput.checked = !!meta.public;
-    if (collaborativeInput) collaborativeInput.checked = !!meta.collaborative;
-    if (readonlyInput) readonlyInput.checked = meta.model_readonly === true;
-
-    const shareUrl = buildKnowledgeShareUrl(meta.share_id || '');
-    setShareLinkDisplay(shareUrl, !!meta.public);
-
-    if (lastModify) {
-        if (meta.updated_at) {
-            lastModify.textContent = new Date(Number(meta.updated_at) * 1000).toLocaleString();
-        } else {
-            lastModify.textContent = '-';
-        }
-    }
+    return knowledgeSettingsController.applyKnowledgeSettingsMetadata(title, metadata);
 }
 
 function resetKnowledgeSettingsVectorPanel() {
-    knowledgeSettingsVectorLoadedTitle = '';
-    resetVectorProgressUI();
-    setVectorStatus('进入向量页后加载');
-    const list = document.getElementById('vectorChunkList');
-    if (list) {
-        list.innerHTML = '<div style="color:#94a3b8;">进入向量页后加载分块</div>';
-    }
+    return knowledgeSettingsController.resetKnowledgeSettingsVectorPanel();
 }
 
 function ensureKnowledgeSettingsVectorLoaded() {
-    const titleInput = document.getElementById('settingTargetTitle');
-    const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
-    const safeTitle = String(liveTitle || '').trim();
-
-    if (!safeTitle || knowledgeSettingsVectorLoadedTitle === safeTitle) {
-        return;
-    }
-
-    knowledgeSettingsVectorLoadedTitle = safeTitle;
-    loadVectorChunks(safeTitle);
+    return knowledgeSettingsController.ensureKnowledgeSettingsVectorLoaded();
 }
 
 async function refreshKnowledgeSettingsMetadata(title) {
-    const safeTitle = String(title || '').trim();
-    if (!safeTitle) return;
-
-    try {
-        if (!currentUsername) {
-            await checkUserRole();
-        }
-
-        const listUrl = appendWorkspaceKnowledgeQuery('/api/knowledge/list', safeTitle);
-        const resMeta = await fetch(listUrl);
-        const metaData = await resMeta.json();
-        const metadata = metaData && metaData.basis_knowledge ? metaData.basis_knowledge[safeTitle] : null;
-
-        if (!metadata) {
-            return;
-        }
-
-        knowledgeMetaCache[safeTitle] = metadata;
-
-        const titleInput = document.getElementById('settingTargetTitle');
-        const modalTitle = titleInput ? String(titleInput.value || '').trim() : safeTitle;
-
-        if (String(currentViewingKnowledge || '').trim() === safeTitle && modalTitle === safeTitle) {
-            applyKnowledgeSettingsMetadata(safeTitle, metadata);
-        }
-    } catch (e) {
-        console.error(e);
-    }
+    return knowledgeSettingsController.refreshKnowledgeSettingsMetadata(title);
 }
 
 function openKnowledgeSettingsModal() {
-    if (!currentViewingKnowledge) return;
-    const title = currentViewingKnowledge;
-
-    const metadata = (knowledgeMetaCache && knowledgeMetaCache[title] && typeof knowledgeMetaCache[title] === 'object')
-        ? knowledgeMetaCache[title]
-        : {};
-
-    applyKnowledgeSettingsMetadata(title, metadata);
-    initKnowledgeSettingsTabs();
-    setKnowledgeSettingsActiveTab('ks-basic');
-
-    if (vectorizeTitle && vectorizeTitle !== title) {
-        resetVectorProgressUI();
-    }
-
-    vectorizeTitle = title;
-    resetKnowledgeSettingsVectorPanel();
-    document.getElementById('knowledgeSettingsModal').classList.add('active');
-    void refreshKnowledgeSettingsMetadata(title);
+    return knowledgeSettingsController.openKnowledgeSettingsModal();
 }
 
 function closeKnowledgeSettingsModal() {
-    document.getElementById('knowledgeSettingsModal').classList.remove('active');
-    resetVectorProgressUI();
+    return knowledgeSettingsController.closeKnowledgeSettingsModal();
 }
 
 function initKnowledgeSettingsTabs() {
-    const modal = document.getElementById('knowledgeSettingsModal');
-    if (!modal || modal.dataset.tabsInit === '1') return;
-    modal.dataset.tabsInit = '1';
-    const tabs = modal.querySelectorAll('.admin-tab');
-    const contents = modal.querySelectorAll('.admin-tab-content');
-    tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            const target = tab.getAttribute('data-tab');
-            tabs.forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            contents.forEach(c => c.classList.remove('active'));
-            const panel = modal.querySelector(`#${target}-tab`);
-            if (panel) panel.classList.add('active');
-            if (target === 'ks-vector') {
-                ensureKnowledgeSettingsVectorLoaded();
-            }
-        });
-    });
+    return knowledgeSettingsController.initKnowledgeSettingsTabs();
 }
 
 function setShareLinkDisplay(shareUrl, isPublic) {
-    const shareSection = document.getElementById('shareLinkSection');
-    const shareInput = document.getElementById('shareUrlDisplay');
-
-    if (!shareSection || !shareInput) return;
-
-    if (isPublic && shareUrl) {
-        shareInput.value = shareUrl;
-        shareSection.style.display = 'block';
-    } else {
-        shareSection.style.display = 'none';
-        shareInput.value = '';
-    }
+    return knowledgeSettingsController.setShareLinkDisplay(shareUrl, isPublic);
 }
 
 async function applyKnowledgeSettings() {
-    const oldTitle = currentViewingKnowledge;
-    const workspaceContext = getActiveWorkspaceKnowledgeContext();
-    const newTitle = document.getElementById('settingTargetTitle').value.trim();
-    const isPublic = document.getElementById('settingPublic').checked;
-    const isCollaborative = document.getElementById('settingCollaborative').checked;
-    const isModelReadonly = document.getElementById('settingModelReadonly').checked;
-    
-    if (!newTitle) return showToast('标题不能为空');
-
-    try {
-        const res = await fetch('/api/knowledge/settings', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                title: oldTitle,
-                new_title: newTitle,
-                public: isPublic,
-                collaborative: isCollaborative,
-                model_readonly: isModelReadonly,
-                ...getWorkspaceKnowledgeRequestFields(),
-            })
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast('设置已更新');
-            
-            // If title changed, we must reload the view
-            if (newTitle !== oldTitle) {
-                closeKnowledgeSettingsModal();
-                await viewKnowledge(newTitle, {
-                    workspaceContext,
-                });
-            } else {
-                const shareUrl = data.share_url || '';
-                setShareLinkDisplay(shareUrl, isPublic);
-                if (knowledgeMetaCache[oldTitle]) {
-                    knowledgeMetaCache[oldTitle].model_readonly = isModelReadonly;
-                }
-            }
-            if (!workspaceContext) {
-                loadKnowledge();
-            }
-        } else {
-            showToast('更新失败: ' + data.message);
-        }
-    } catch(e) { showToast('网络错: ' + e.message); }
+    return knowledgeSettingsController.applyKnowledgeSettings();
 }
 
 function copyShareUrl() {
-    const input = document.getElementById('shareUrlDisplay');
-    input.select();
-    document.execCommand('copy');
-    showToast('链接已复制');
+    return knowledgeSettingsController.copyShareUrl();
 }
 
 function showToast(msg) {
@@ -30739,7 +22573,7 @@ function resolveProviderSimpleIconSlug(provider) {
 function providerIconFallbackText(text) {
     const src = String(text || '').trim();
     if (!src) return '?';
-    const cleaned = src.replace(/[^0-9a-zA-Z\u4e00-\u9fa5]+/g, ' ').trim();
+    const cleaned = normalizeProviderIconFallbackSource(src);
     if (!cleaned) return src.slice(0, 1).toUpperCase();
     const first = cleaned.slice(0, 1);
     return /[a-zA-Z]/.test(first) ? first.toUpperCase() : first;
@@ -31018,26 +22852,7 @@ function refreshChatOllamaStatusIndicators() {
 }
 
 function setKnowledgeSettingsActiveTab(target) {
-    const modal = document.getElementById('knowledgeSettingsModal');
-    if (!modal) return;
-
-    const safeTarget = String(target || 'ks-basic').trim() || 'ks-basic';
-    const tabs = modal.querySelectorAll('.admin-tab');
-    const contents = modal.querySelectorAll('.admin-tab-content');
-
-    tabs.forEach((tab) => {
-        tab.classList.toggle('active', String(tab.getAttribute('data-tab') || '') === safeTarget);
-    });
-
-    contents.forEach((content) => {
-        content.classList.remove('active');
-    });
-
-    const panel = modal.querySelector(`#${safeTarget}-tab`);
-    if (panel) panel.classList.add('active');
-    if (safeTarget === 'ks-vector') {
-        ensureKnowledgeSettingsVectorLoaded();
-    }
+    return knowledgeSettingsController.setKnowledgeSettingsActiveTab(target);
 }
 
 async function refreshChatOllamaProviderStatuses(providerKeys = [], options = {}) {
@@ -31818,369 +23633,36 @@ function extractFilesFromClipboardEvent(e) {
     return out;
 }
 
-function setFileUploadProgress(options = {}) {
-    if (!els.fileUploadProgressWrap || !els.fileUploadProgressFill || !els.fileUploadProgressText) return;
-    const visible = !!options.visible;
-    const stage = String(options.stage || 'upload');
-    const percentRaw = Number(options.percent || 0);
-    const percent = Math.max(0, Math.min(100, Number.isFinite(percentRaw) ? percentRaw : 0));
-    const text = String(options.text || '');
-
-    if (!visible) {
-        els.fileUploadProgressWrap.style.display = 'none';
-        els.fileUploadProgressFill.classList.remove('stage-vectorizing', 'stage-ready', 'stage-error');
-        els.fileUploadProgressFill.style.width = '0%';
-        els.fileUploadProgressText.textContent = '';
-        if (els.cancelFileUploadBtn) {
-            els.cancelFileUploadBtn.disabled = true;
-        }
-        return;
-    }
-
-    els.fileUploadProgressWrap.style.display = 'block';
-    els.fileUploadProgressText.textContent = text;
-    els.fileUploadProgressFill.classList.remove('stage-vectorizing', 'stage-ready', 'stage-error');
-
-    if (stage === 'upload') {
-        els.fileUploadProgressFill.style.width = `${percent}%`;
-    } else if (stage === 'vectorizing') {
-        const p = Math.max(1, Math.min(100, percent || 1));
-        els.fileUploadProgressFill.style.width = `${p}%`;
-        els.fileUploadProgressFill.classList.add('stage-vectorizing');
-    } else if (stage === 'ready') {
-        els.fileUploadProgressFill.style.width = '100%';
-        els.fileUploadProgressFill.classList.add('stage-ready');
-    } else if (stage === 'error') {
-        els.fileUploadProgressFill.style.width = '100%';
-        els.fileUploadProgressFill.classList.add('stage-error');
-    }
-
-    if (els.cancelFileUploadBtn) {
-        const cancellable = stage === 'upload' || stage === 'vectorizing';
-        els.cancelFileUploadBtn.disabled = !cancellable;
-    }
+function setFileUploadProgress(...args) {
+    return fileUploadController.setFileUploadProgress(...args);
 }
 
-function cancelCurrentFileUpload() {
-    uploadCancelledByUser = true;
-    if (currentUploadXhr) {
-        try {
-            currentUploadXhr.abort();
-        } catch (e) {
-            // ignore
-        }
-    }
-    if (currentUploadTaskId) {
-        fetch(`/api/upload/task/${encodeURIComponent(currentUploadTaskId)}/cancel`, {
-            method: 'POST'
-        }).catch(() => {});
-    }
+function cancelCurrentFileUpload(...args) {
+    return fileUploadController.cancelCurrentFileUpload(...args);
 }
 
-async function pollUploadTask(taskId, file, index, total) {
-    const safeTaskId = String(taskId || '').trim();
-    if (!safeTaskId) throw new Error('缺少上传任务ID');
-
-    const maxRounds = 900; // up to ~7.5min at 500ms
-    for (let round = 0; round < maxRounds; round++) {
-        if (uploadCancelledByUser) {
-            throw { code: 'upload_cancelled', message: '用户取消上传' };
-        }
-        const res = await fetch(`/api/upload/task/${encodeURIComponent(safeTaskId)}`, {
-            method: 'GET',
-            cache: 'no-store'
-        });
-        const data = await res.json();
-        if (!data || !data.success || !data.task) {
-            throw new Error((data && data.message) ? data.message : '任务查询失败');
-        }
-        const task = data.task;
-        const status = String(task.status || '').toLowerCase();
-        const stage = String(task.stage || '').toLowerCase();
-        const progressRaw = Number(task.progress || 0);
-        const progress = Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, progressRaw)) : 0;
-
-        if (status === 'completed') {
-            return task.result || {};
-        }
-        if (status === 'failed') {
-            throw new Error(task.error || task.message || '上传失败');
-        }
-        if (status === 'cancelled') {
-            throw { code: 'upload_cancelled', message: task.message || '任务已取消' };
-        }
-
-        // 后端总进度是全流程(解析+向量化)，前端这里强制映射为“蓝色向量化 0-100”
-        let vectorPct = 0;
-        if (stage === 'vectorizing' || status === 'running') {
-            if (progress <= 35) vectorPct = 1;
-            else if (progress >= 95) vectorPct = 100;
-            else vectorPct = Math.round(((progress - 35) / 60) * 100);
-        } else if (status === 'completed') {
-            vectorPct = 100;
-        } else {
-            vectorPct = Math.max(1, Math.min(100, progress));
-        }
-        vectorPct = Math.max(1, Math.min(100, vectorPct));
-        setFileUploadProgress({
-            visible: true,
-            stage: 'vectorizing',
-            percent: vectorPct,
-            text: `向量化 ${index + 1}/${total}: ${file.name} (${vectorPct}%)`
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    throw new Error('上传任务超时');
+async function pollUploadTask(...args) {
+    return fileUploadController.pollUploadTask(...args);
 }
 
-function uploadSingleFileWithProgress(file, index, total, options = {}) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        const formData = new FormData();
-        const uploadOptions = (options && typeof options === 'object') ? options : {};
-        formData.append('file', file);
-
-        if (uploadOptions.targetPath) {
-            formData.append('target_path', String(uploadOptions.targetPath || '').trim());
-        }
-
-        currentUploadXhr = xhr;
-
-        xhr.open('POST', '/api/upload', true);
-
-        xhr.upload.onloadstart = () => {
-            setFileUploadProgress({
-                visible: true,
-                stage: 'upload',
-                percent: 0,
-                text: `上传 ${index + 1}/${total}: ${file.name}`
-            });
-        };
-
-        xhr.upload.onprogress = (evt) => {
-            if (!evt || !evt.lengthComputable) return;
-            const progress = (evt.loaded / evt.total) * 100;
-            setFileUploadProgress({
-                visible: true,
-                stage: 'upload',
-                percent: progress,
-                text: `上传 ${index + 1}/${total}: ${file.name} (${Math.round(progress)}%)`
-            });
-        };
-
-        xhr.upload.onload = () => {
-            // 上传体完成后，请求仍在服务端向量化，切换蓝色阶段
-            setFileUploadProgress({
-                visible: true,
-                stage: 'vectorizing',
-                percent: 1,
-                text: `向量化 ${index + 1}/${total}: ${file.name} (1%)`
-            });
-        };
-
-        xhr.onerror = () => {
-            currentUploadXhr = null;
-            reject(new Error('网络错误'));
-        };
-
-        xhr.onabort = () => {
-            currentUploadXhr = null;
-            reject({ code: 'upload_aborted' });
-        };
-
-        xhr.onload = async () => {
-            currentUploadXhr = null;
-            let data = null;
-            try {
-                data = xhr.responseType === 'json' ? xhr.response : JSON.parse(xhr.responseText || '{}');
-            } catch (e) {
-                data = null;
-            }
-
-            if (!(xhr.status >= 200 && xhr.status < 300)) {
-                const errMsg = (data && data.message) ? data.message : `HTTP ${xhr.status}`;
-                reject(new Error(errMsg));
-                return;
-            }
-            if (!data || !data.success) {
-                const msg = data && data.message ? data.message : '上传失败';
-                reject(new Error(msg));
-                return;
-            }
-
-            const taskId = String(data.task_id || '').trim();
-            if (!taskId) {
-                resolve(data);
-                return;
-            }
-
-            currentUploadTaskId = taskId;
-            try {
-                const finalData = await pollUploadTask(taskId, file, index, total);
-                resolve(finalData);
-            } catch (err) {
-                reject(err);
-            } finally {
-                if (currentUploadTaskId === taskId) {
-                    currentUploadTaskId = null;
-                }
-            }
-        };
-
-        xhr.send(formData);
-    });
+function uploadSingleFileWithProgress(...args) {
+    return fileUploadController.uploadSingleFileWithProgress(...args);
 }
 
-function showUploadVectorMessage(data) {
-    if (data && data.vectorized === false && data.vector_message) {
-        showToast(`文件已上传，临时向量化失败: ${data.vector_message}`);
-    }
+function showUploadVectorMessage(...args) {
+    return fileUploadController.showUploadVectorMessage(...args);
 }
 
-function appendUploadedFileEntry(data, fallbackFileName) {
-    if (!data || !data.success) return;
-    const parsedSize = Number(
-        data.size != null ? data.size
-            : (data.file_size != null ? data.file_size : 0)
-    );
-    const normalizedSize = Number.isFinite(parsedSize) ? Math.max(0, Math.floor(parsedSize)) : 0;
-    if (data.type === 'text') {
-        const textContent = String(data.content || '');
-        const textSize = normalizedSize > 0 ? normalizedSize : Number(new Blob([textContent]).size || 0);
-        uploadedFileIds.push({
-            type: 'text',
-            content: textContent,
-            name: data.filename || fallbackFileName,
-            size: textSize
-        });
-    } else if (data.type === 'sandbox_file') {
-        uploadedFileIds.push({
-            type: 'sandbox_file',
-            name: data.update_file_name || data.filename || fallbackFileName,
-            original_name: data.filename || fallbackFileName,
-            sandbox_path: data.sandbox_path,
-            stored_path: data.stored_path,
-            size: normalizedSize
-        });
-        showUploadVectorMessage(data);
-    } else {
-        uploadedFileIds.push({
-            type: 'file',
-            id: data.file_id,
-            name: data.filename || fallbackFileName,
-            size: normalizedSize
-        });
-    }
+function appendUploadedFileEntry(...args) {
+    return fileUploadController.appendUploadedFileEntry(...args);
 }
 
-async function appendUploadedImageEntry(file, index, total) {
-    const maxImageBytes = 8 * 1024 * 1024; // 8MB per image
-    if (file.size > maxImageBytes) {
-        throw new Error(`图片过大: ${file.name}，请控制在 8MB 以内`);
-    }
-    setFileUploadProgress({
-        visible: true,
-        stage: 'upload',
-        percent: 0,
-        text: `读取图片 ${index + 1}/${total}: ${file.name}`
-    });
-    const dataUrl = await readImageAsDataUrl(file, (p) => {
-        setFileUploadProgress({
-            visible: true,
-            stage: 'upload',
-            percent: p,
-            text: `读取图片 ${index + 1}/${total}: ${file.name} (${p}%)`
-        });
-    });
-    uploadedFileIds.push({
-        type: 'image',
-        name: file.name,
-        mime: file.type || '',
-        size: file.size || 0,
-        url: dataUrl
-    });
-    updateFilePreview();
-    setFileUploadProgress({
-        visible: true,
-        stage: 'ready',
-        text: `图片就绪 ${index + 1}/${total}: ${file.name}`
-    });
+async function appendUploadedImageEntry(...args) {
+    return fileUploadController.appendUploadedImageEntry(...args);
 }
 
-async function handleFileUploadFiles(fileList, options = {}) {
-    const files = Array.from(fileList || [])
-        .map((f, idx) => normalizeUploadFile(f, idx))
-        .filter(Boolean);
-    const clearInput = options && options.clearInput;
-    const attachToInput = !(options && options.attachToInput === false);
-    const uploadImagesAsFiles = !!(options && options.uploadImagesAsFiles === true);
-    if (!files.length) return;
-
-    if (isUploadingFiles) {
-        showToast('已有文件上传任务，请先等待完成或中断');
-        if (typeof clearInput === 'function') clearInput();
-        else if (clearInput !== false && els.fileInput) els.fileInput.value = '';
-        return;
-    }
-
-    isUploadingFiles = true;
-    uploadCancelledByUser = false;
-    updateSendButtonState();
-
-    try {
-        for (let i = 0; i < files.length; i++) {
-            if (uploadCancelledByUser) break;
-            const file = files[i];
-            try {
-                if (isImageLikeFile(file) && !uploadImagesAsFiles) {
-                    await appendUploadedImageEntry(file, i, files.length);
-                    await new Promise((resolve) => setTimeout(resolve, 160));
-                } else {
-                    const data = await uploadSingleFileWithProgress(file, i, files.length, {
-                        targetPath: options && options.targetPath,
-                    });
-                    if (attachToInput) {
-                        appendUploadedFileEntry(data, file.name);
-                        updateFilePreview();
-                    } else {
-                        showUploadVectorMessage(data);
-                    }
-                    setFileUploadProgress({
-                        visible: true,
-                        stage: 'ready',
-                        text: `完成 ${i + 1}/${files.length}: ${file.name}`
-                    });
-                    await new Promise((resolve) => setTimeout(resolve, 220));
-                }
-            } catch (err) {
-                if (err && (err.code === 'upload_aborted' || err.code === 'upload_cancelled')) {
-                    showToast('文件上传已中断');
-                    break;
-                }
-                const message = err && err.message ? err.message : '上传失败';
-                showToast(`上传失败: ${message}`);
-                setFileUploadProgress({
-                    visible: true,
-                    stage: 'error',
-                    text: `失败 ${i + 1}/${files.length}: ${file.name}`
-                });
-                await new Promise((resolve) => setTimeout(resolve, 450));
-            }
-        }
-    } finally {
-        if (typeof clearInput === 'function') clearInput();
-        else if (clearInput !== false && els.fileInput) els.fileInput.value = '';
-        isUploadingFiles = false;
-        currentUploadXhr = null;
-        currentUploadTaskId = null;
-        updateSendButtonState();
-        if (els.filePanel && els.filePanel.classList.contains('visible')) {
-            loadCloudFiles();
-        }
-        setTimeout(() => setFileUploadProgress({ visible: false }), 900);
-        uploadCancelledByUser = false;
-    }
+async function handleFileUploadFiles(...args) {
+    return fileUploadController.handleFileUploadFiles(...args);
 }
 
 async function handleFileUpload(e) {
@@ -33204,509 +24686,28 @@ async function saveAdminSystemSettings() {
     });
 }
 
-// 加载用户列表
 async function loadAdminUsersList() {
-    try {
-        const res = await fetch('/api/admin/users');
-        const data = await res.json();
-        if (data.success) {
-            adminUsersCache = Array.isArray(data.users) ? data.users : [];
-            if (!adminSelectedUserId || !adminUsersCache.some(u => (u.user_id || u.username) === adminSelectedUserId)) {
-                const first = adminUsersCache[0];
-                adminSelectedUserId = first ? (first.user_id || first.username) : null;
-            }
-            renderAdminUsersList();
-            renderAdminUserDetail();
-        }
-    } catch (err) {
-        console.error('Failed to load users list', err);
-    }
+    return await adminUsersController.loadAdminUsersList();
 }
 
 function renderAdminUsersList() {
-    const usersList = document.getElementById('adminUsersList');
-    if (!usersList) return;
-    const keyword = adminUserFilterKeyword;
-    const filtered = adminUsersCache.filter((user) => {
-        if (!keyword) return true;
-        const roleText = user.role === 'admin' ? 'admin 管理员' : 'member 普通用户';
-        const text = [
-            user.username || '',
-            user.user_id || '',
-            user.last_ip || '',
-            roleText
-        ].join(' ').toLowerCase();
-        return text.includes(keyword);
-    });
-    if (filtered.length === 0) {
-        usersList.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">没有匹配的用户</div>';
-        return;
-    }
-    usersList.innerHTML = filtered.map((user) => {
-        const userId = user.user_id || user.username;
-        const active = userId === adminSelectedUserId ? 'active' : '';
-        const safeId = encodeURIComponent(userId);
-        const avatar = user.avatar_url || getDefaultAvatarDataUrl(user.username || userId);
-        return `
-            <div class="admin-user-item ${active}" onclick="selectAdminUser('${safeId}')">
-                <img class="admin-user-avatar" src="${avatar}" alt="avatar">
-                <div>
-                    <div class="admin-user-name">${escapeHtml(user.username || userId)}</div>
-                    <div class="admin-user-meta">${escapeHtml(userId)} · ${escapeHtml(user.role || 'member')}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
+    return adminUsersController.renderAdminUsersList();
 }
 
 function renderAdminUserDetail() {
-    const detail = document.getElementById('adminUserDetail');
-    if (!detail) return;
-    const selected = adminUsersCache.find((u) => (u.user_id || u.username) === adminSelectedUserId);
-    if (!selected) {
-        detail.innerHTML = '<div class="admin-user-detail-empty">请选择左侧用户查看详情</div>';
-        return;
-    }
-    const userId = selected.user_id || selected.username;
-    const encodedUserId = encodeURIComponent(userId);
-    const isSelf = userId === currentUsername;
-    const avatar = selected.avatar_url || getDefaultAvatarDataUrl(selected.username || userId);
-    const localMail = selected.local_mail || {};
-    const currentMailUsername = (localMail.username || '').trim();
-    const currentMailGroup = (localMail.group || 'default').trim() || 'default';
-    const currentMailText = currentMailUsername ? `${currentMailUsername} @ ${currentMailGroup}` : '未绑定';
-    const createdAt = selected.created_at ? new Date(selected.created_at * 1000).toLocaleString() : '-';
-    const lastLogin = selected.last_login ? new Date(selected.last_login * 1000).toLocaleString() : '-';
-    detail.innerHTML = `
-        <div class="admin-user-detail-head">
-            <img class="admin-user-avatar" src="${avatar}" alt="avatar">
-            <div>
-                <div class="admin-user-name" style="font-size:16px;">${escapeHtml(selected.username || userId)}</div>
-                <div class="admin-user-meta">ID: ${escapeHtml(userId)}</div>
-            </div>
-        </div>
-        <div class="admin-user-detail-grid">
-            <div class="form-group">
-                <label>用户名</label>
-                <input id="adminDetailNameInput" class="input-modern" value="${escapeHtml(selected.username || userId)}">
-            </div>
-            <div class="form-group">
-                <label>角色</label>
-                <select id="adminDetailRoleSelect" class="input-modern" ${isSelf ? 'disabled' : ''}>
-                    <option value="member" ${selected.role === 'member' ? 'selected' : ''}>member</option>
-                    <option value="admin" ${selected.role === 'admin' ? 'selected' : ''}>admin</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>最后登录IP</label>
-                <div class="admin-info-text">${escapeHtml(selected.last_ip || '-')}</div>
-            </div>
-            <div class="form-group">
-                <label>Token 消耗</label>
-                <div class="admin-info-text mono">${(selected.total_token_usage || 0).toLocaleString()}</div>
-            </div>
-            <div class="form-group">
-                <label>创建时间</label>
-                <div class="admin-info-text">${createdAt}</div>
-            </div>
-            <div class="form-group">
-                <label>最后登录</label>
-                <div class="admin-info-text">${lastLogin}</div>
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>绑定邮箱账户</label>
-                <div class="admin-info-text" style="margin-bottom:8px;">当前: ${escapeHtml(currentMailText)}</div>
-                <div style="display:flex; gap:8px;">
-                    <input id="adminDetailMailUsernameInput" class="input-modern" type="text" placeholder="输入邮箱用户名，例如 himpq">
-                    <button class="btn-primary-outline btn-compact" type="button" onclick="adminBindMailForUser('${encodeURIComponent(userId)}')">确认</button>
-                </div>
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>重置密码</label>
-                <div style="display:flex; gap:8px;">
-                    <input id="adminDetailPasswordInput" class="input-modern" type="text" placeholder="输入新密码">
-                    <button class="btn-primary-outline btn-compact" type="button" onclick="adminResetPassword('${encodeURIComponent(userId)}')">重置</button>
-                </div>
-            </div>
-        </div>
-        <div class="admin-user-actions">
-            <button class="btn-primary-outline btn-compact" type="button" onclick="openUserModelPerm(decodeURIComponent('${encodedUserId}'))">模型权限</button>
-            <button class="btn-primary-outline btn-compact" type="button" onclick="saveAdminUserProfile('${encodedUserId}')">保存资料</button>
-            ${!isSelf ? `<button class="btn-danger-small btn-compact" type="button" onclick="deleteAdminUser(decodeURIComponent('${encodedUserId}'))">删除用户</button>` : ''}
-        </div>
-    `;
+    return adminUsersController.renderAdminUserDetail();
+}
+
+function setAdminUserFilterKeyword(value) {
+    return adminUsersController.setAdminUserFilterKeyword(value);
+}
+
+function resetAdminUserFilterKeyword() {
+    return adminUsersController.resetAdminUserFilterKeyword();
 }
 
 window.selectAdminUser = function(encodedUserId) {
-    adminSelectedUserId = decodeURIComponent(encodedUserId || '');
-    renderAdminUsersList();
-    renderAdminUserDetail();
-};
-
-async function loadAdminMailGroups() {
-    const groupSelect = document.getElementById('adminMailGroupSelect');
-    if (!groupSelect) return;
-    try {
-        const res = await fetch('/api/admin/nexora-mail/groups');
-        const data = await res.json();
-        if (!data.success) {
-            groupSelect.innerHTML = `<option value="default">default</option>`;
-            groupSelect.value = 'default';
-            adminMailGroup = 'default';
-            return;
-        }
-        const groups = Array.isArray(data.groups) ? data.groups : [];
-        const names = groups.map(g => String(g.group || '').trim()).filter(Boolean);
-        if (!names.includes('default')) names.unshift('default');
-        groupSelect.innerHTML = names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
-        if (!names.includes(adminMailGroup)) adminMailGroup = names[0] || 'default';
-        groupSelect.value = adminMailGroup;
-    } catch (err) {
-        groupSelect.innerHTML = `<option value="default">default</option>`;
-        groupSelect.value = 'default';
-        adminMailGroup = 'default';
-    }
-}
-
-async function loadAdminMailUsersList() {
-    const listEl = document.getElementById('adminMailUsersList');
-    if (listEl) listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">加载中...</div>';
-    try {
-        await loadAdminMailGroups();
-        const res = await fetch(`/api/admin/nexora-mail/users?group=${encodeURIComponent(adminMailGroup)}`);
-        const data = await res.json();
-        if (!data.success) {
-            adminMailUsersCache = [];
-            adminSelectedMailUser = null;
-            renderAdminMailUsersList();
-            renderAdminMailDetailError(data.message || '读取邮箱用户失败');
-            return;
-        }
-        adminMailUsersCache = Array.isArray(data.users) ? data.users : [];
-        await ensureAdminUsersCacheForBinding();
-        if (!adminSelectedMailUser || !adminMailUsersCache.some(u => (u.username || '') === adminSelectedMailUser)) {
-            adminSelectedMailUser = adminMailUsersCache[0] ? adminMailUsersCache[0].username : null;
-        }
-        renderAdminMailUsersList();
-        renderAdminMailUserDetail();
-    } catch (err) {
-        adminMailUsersCache = [];
-        adminSelectedMailUser = null;
-        renderAdminMailUsersList();
-        renderAdminMailDetailError('邮箱服务连接失败');
-    }
-}
-
-async function ensureAdminUsersCacheForBinding() {
-    if (Array.isArray(adminUsersCache) && adminUsersCache.length > 0) return;
-    try {
-        const res = await fetch('/api/admin/users');
-        const data = await res.json();
-        if (data.success && Array.isArray(data.users)) {
-            adminUsersCache = data.users;
-        }
-    } catch (err) {
-        // ignore
-    }
-}
-
-function renderAdminMailUsersList() {
-    const listEl = document.getElementById('adminMailUsersList');
-    if (!listEl) return;
-    const kw = adminMailUserFilterKeyword;
-    const filtered = adminMailUsersCache.filter((item) => {
-        if (!kw) return true;
-        const perms = Array.isArray(item.permissions) ? item.permissions.join(' ') : '';
-        const txt = `${item.username || ''} ${item.path || ''} ${perms}`.toLowerCase();
-        return txt.includes(kw);
-    });
-    if (filtered.length === 0) {
-        listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">没有匹配的邮箱用户</div>';
-        return;
-    }
-    listEl.innerHTML = filtered.map((item) => {
-        const uname = String(item.username || '');
-        const active = uname === adminSelectedMailUser ? 'active' : '';
-        const safe = encodeURIComponent(uname);
-        const avatar = getDefaultAvatarDataUrl(uname || 'M');
-        return `
-            <div class="admin-user-item ${active}" onclick="selectAdminMailUser('${safe}')">
-                <img class="admin-user-avatar" src="${avatar}" alt="avatar">
-                <div>
-                    <div class="admin-user-name">${escapeHtml(uname)}</div>
-                    <div class="admin-user-meta">group: ${escapeHtml(adminMailGroup)}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-function renderAdminMailDetailError(msg) {
-    const detail = document.getElementById('adminMailUserDetail');
-    if (!detail) return;
-    detail.innerHTML = `<div class="admin-user-detail-empty">${escapeHtml(msg || '加载失败')}</div>`;
-}
-
-function renderAdminMailCreateForm() {
-    const detail = document.getElementById('adminMailUserDetail');
-    if (!detail) return;
-    detail.innerHTML = `
-        <div class="admin-user-detail-head">
-            <div>
-                <div class="admin-user-name" style="font-size:16px;">新建邮箱用户</div>
-                <div class="admin-user-meta">当前组: ${escapeHtml(adminMailGroup)}</div>
-            </div>
-        </div>
-        <div class="admin-user-detail-grid">
-            <div class="form-group">
-                <label>邮箱用户名</label>
-                <input id="adminMailCreateUsername" class="input-modern" placeholder="例如: alice">
-            </div>
-            <div class="form-group">
-                <label>初始密码</label>
-                <input id="adminMailCreatePassword" class="input-modern" type="text" placeholder="输入密码">
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>权限(可选，逗号分隔)</label>
-                <input id="adminMailCreatePermissions" class="input-modern" placeholder="mailbox.read, mailbox.write">
-            </div>
-        </div>
-        <div class="admin-user-actions">
-            <button class="btn-primary-outline btn-compact" type="button" onclick="submitAdminMailCreateUser()">创建邮箱用户</button>
-        </div>
-    `;
-}
-
-function renderAdminMailUserDetail() {
-    const detail = document.getElementById('adminMailUserDetail');
-    if (!detail) return;
-    const selected = adminMailUsersCache.find((u) => (u.username || '') === adminSelectedMailUser);
-    if (!selected) {
-        detail.innerHTML = '<div class="admin-user-detail-empty">请选择左侧邮箱用户查看详情</div>';
-        return;
-    }
-    const uname = String(selected.username || '');
-    const perms = Array.isArray(selected.permissions) ? selected.permissions : [];
-    const permsText = perms.length ? perms.join(', ') : '-';
-    const encoded = encodeURIComponent(uname);
-    const avatar = getDefaultAvatarDataUrl(uname || 'M');
-    const boundNexoraUser = (adminUsersCache || []).find((u) => {
-        const lm = u && typeof u === 'object' ? (u.local_mail || {}) : {};
-        return (lm.username || '') === uname && (lm.group || 'default') === adminMailGroup;
-    }) || null;
-    const boundPairHtml = boundNexoraUser ? `
-        <div class="admin-bind-pair">
-            <div class="admin-bind-card">
-                <img class="admin-user-avatar" src="${avatar}" alt="mail-avatar">
-                <div>
-                    <div class="admin-user-name">${escapeHtml(uname)}</div>
-                    <div class="admin-user-meta">Mail User · ${escapeHtml(adminMailGroup)}</div>
-                </div>
-            </div>
-            <div class="admin-bind-arrow" aria-hidden="true">↔</div>
-            <div class="admin-bind-card">
-                <img class="admin-user-avatar" src="${boundNexoraUser.avatar_url || getDefaultAvatarDataUrl(boundNexoraUser.username || boundNexoraUser.user_id || 'U')}" alt="nexora-avatar">
-                <div>
-                    <div class="admin-user-name">${escapeHtml(boundNexoraUser.username || boundNexoraUser.user_id || '')}</div>
-                    <div class="admin-user-meta">UserID: ${escapeHtml(boundNexoraUser.user_id || '')}</div>
-                </div>
-            </div>
-        </div>
-    ` : `
-        <div class="admin-bind-pair" style="grid-template-columns: minmax(0, 1fr);">
-            <div class="admin-bind-card">
-                <img class="admin-user-avatar" src="${avatar}" alt="mail-avatar">
-                <div>
-                    <div class="admin-user-name">${escapeHtml(uname)}</div>
-                    <div class="admin-user-meta">Mail User · ${escapeHtml(adminMailGroup)}</div>
-                </div>
-            </div>
-        </div>
-    `;
-    detail.innerHTML = `
-        ${boundPairHtml}
-        <div class="form-group" style="margin-bottom: 8px;">
-            <div style="display:flex; gap:8px;">
-                <input id="adminMailBindNexoraUserInput" class="input-modern" type="text" placeholder="输入 Nexora 用户ID，例如 mujica">
-                <button class="btn-primary-outline btn-compact" type="button" onclick="adminBindNexoraUserForMail('${encoded}')">确认</button>
-            </div>
-        </div>
-        <div class="admin-user-detail-grid">
-            <div class="form-group">
-                <label>邮箱用户名</label>
-                <div class="admin-info-text">${escapeHtml(uname)}</div>
-            </div>
-            <div class="form-group">
-                <label>权限</label>
-                <div class="admin-info-text">${escapeHtml(permsText)}</div>
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>存储路径</label>
-                <div class="admin-info-text mono">${escapeHtml(selected.path || '-')}</div>
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>重置密码</label>
-                <div style="display:flex; gap:8px;">
-                    <input id="adminMailPasswordInput" class="input-modern" type="text" placeholder="输入新密码">
-                    <button class="btn-primary-outline btn-compact" type="button" onclick="adminResetMailPassword('${encoded}')">重置</button>
-                </div>
-            </div>
-        </div>
-        <div class="admin-user-actions">
-            <button class="btn-danger-small btn-compact" type="button" onclick="adminDeleteMailUser('${encoded}')">删除邮箱用户</button>
-        </div>
-    `;
-}
-
-window.selectAdminMailUser = function(encodedUser) {
-    adminSelectedMailUser = decodeURIComponent(encodedUser || '');
-    renderAdminMailUsersList();
-    renderAdminMailUserDetail();
-};
-
-window.submitAdminMailCreateUser = async function() {
-    const unameEl = document.getElementById('adminMailCreateUsername');
-    const pwdEl = document.getElementById('adminMailCreatePassword');
-    const permsEl = document.getElementById('adminMailCreatePermissions');
-    const username = (unameEl && unameEl.value ? unameEl.value : '').trim();
-    const password = (pwdEl && pwdEl.value ? pwdEl.value : '').trim();
-    const permsRaw = (permsEl && permsEl.value ? permsEl.value : '').trim();
-    if (!username || !password) {
-        showToast('请填写邮箱用户名和密码');
-        return;
-    }
-    const permissions = permsRaw ? permsRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
-    try {
-        const res = await fetch('/api/admin/nexora-mail/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                group: adminMailGroup,
-                mail_username: username,
-                password,
-                permissions
-            })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '创建失败');
-            return;
-        }
-        showToast('邮箱用户创建成功');
-        adminSelectedMailUser = username;
-        await loadAdminMailUsersList();
-    } catch (err) {
-        showToast('创建失败');
-    }
-};
-
-window.adminResetMailPassword = async function(encodedUser) {
-    const username = decodeURIComponent(encodedUser || '');
-    const pwdEl = document.getElementById('adminMailPasswordInput');
-    const password = (pwdEl && pwdEl.value ? pwdEl.value : '').trim();
-    if (!password) {
-        showToast('请输入新密码');
-        return;
-    }
-    try {
-        const res = await fetch(`/api/admin/nexora-mail/groups/${encodeURIComponent(adminMailGroup)}/users/${encodeURIComponent(username)}/password`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '重置失败');
-            return;
-        }
-        showToast('邮箱密码已重置');
-        pwdEl.value = '';
-    } catch (err) {
-        showToast('重置失败');
-    }
-};
-
-window.adminBindMailForUser = async function(encodedUserId) {
-    const userId = decodeURIComponent(encodedUserId || '');
-    const input = document.getElementById('adminDetailMailUsernameInput');
-    const mailUsername = (input && input.value ? input.value : '').trim();
-    if (!userId || !mailUsername) {
-        showToast('请输入要绑定的邮箱用户名');
-        return;
-    }
-    try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/local-mail`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mail_username: mailUsername
-            })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '绑定失败');
-            return;
-        }
-        showToast('邮箱绑定成功');
-        await loadAdminUsersList();
-        if (document.getElementById('settings-admin-mail-tab')?.classList.contains('active')) {
-            await loadAdminMailUsersList();
-        }
-    } catch (err) {
-        showToast('绑定失败');
-    }
-};
-
-window.adminBindNexoraUserForMail = async function(encodedMailUser) {
-    const mailUsername = decodeURIComponent(encodedMailUser || '');
-    const input = document.getElementById('adminMailBindNexoraUserInput');
-    const nexoraUserId = (input && input.value ? input.value : '').trim();
-    if (!mailUsername || !nexoraUserId) {
-        showToast('请输入目标 Nexora 用户ID');
-        return;
-    }
-    try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(nexoraUserId)}/local-mail`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                group: adminMailGroup,
-                mail_username: mailUsername
-            })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '绑定失败');
-            return;
-        }
-        showToast('绑定已更新');
-        await loadAdminUsersList();
-        await loadAdminMailUsersList();
-    } catch (err) {
-        showToast('绑定失败');
-    }
-};
-
-window.adminDeleteMailUser = async function(encodedUser) {
-    const username = decodeURIComponent(encodedUser || '');
-    if (!username) return;
-    const ok = await confirmModalAsync('删除邮箱用户', `确认删除邮箱用户「${username}」吗？`, 'danger');
-    if (!ok) return;
-    try {
-        const res = await fetch(`/api/admin/nexora-mail/groups/${encodeURIComponent(adminMailGroup)}/users/${encodeURIComponent(username)}`, {
-            method: 'DELETE'
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '删除失败');
-            return;
-        }
-        showToast('邮箱用户已删除');
-        if (adminSelectedMailUser === username) adminSelectedMailUser = null;
-        await loadAdminMailUsersList();
-    } catch (err) {
-        showToast('删除失败');
-    }
+    return adminUsersController.selectAdminUser(encodedUserId);
 };
 
 function getDefaultAvatarDataUrl(name) {
@@ -33716,8 +24717,6 @@ function getDefaultAvatarDataUrl(name) {
 }
 
 // --- 模型权限管理 ---
-let currentTargetPermUser = null;
-
 async function readAdminJsonResponse(res, fallbackMessage) {
     const rawText = await res.text();
     let data = {};
@@ -33744,91 +24743,15 @@ async function readAdminJsonResponse(res, fallbackMessage) {
 }
 
 window.openUserModelPerm = async function(username) {
-    currentTargetPermUser = username;
-    const modal = document.getElementById('modelPermModal');
-    if (!modal) return;
-    
-    const targetUserSpan = document.getElementById('permTargetUser');
-    if(targetUserSpan) targetUserSpan.textContent = username;
-    modal.classList.add('active');
-    
-    const listContainer = document.getElementById('modelPermList');
-    if(listContainer) {
-// 说明
-    }
-    
-    try {
-        const res = await fetch(`/api/admin/user/models?username=${encodeURIComponent(username)}`, {
-            headers: { 'Accept': 'application/json' }
-        });
-        const data = await readAdminJsonResponse(res, '模型权限加载失败');
-        
-        if (data.success && listContainer) {
-            listContainer.innerHTML = data.models.map(m => `
-                <div class="perm-item">
-                    <label>
-                        <input type="checkbox" class="model-perm-checkbox" data-id="${escapeHtml(m.id || '')}" ${!m.is_blocked ? 'checked' : ''}>
-                        <div class="model-info">
-                            <div class="model-name">${escapeHtml(m.name || m.id || '')}</div>
-                            <div class="model-meta">
-                                <span class="model-id">${escapeHtml(m.id || '')}</span>
-                                ${m.provider ? `<span class="provider-badge">${escapeHtml(m.provider)}</span>` : ''}
-                            </div>
-                        </div>
-                        <span class="status-badge ${!m.is_blocked ? 'status-allowed' : 'status-blocked'}">
-                            ${!m.is_blocked ? '✓ 已开启' : '× 已禁用'}
-                        </span>
-                    </label>
-                </div>
-            `).join('');
-        } else if (listContainer) {
-            listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">${escapeHtml(data.message || data.error || '获取失败')}</div>`;
-        }
-    } catch (err) {
-        if (listContainer) listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">加载错误: ${escapeHtml(err.message)}</div>`;
-    }
+    return await adminUsersController.openUserModelPerm(username);
 };
 
 window.saveUserModelPermissions = async function() {
-    if (!currentTargetPermUser) return;
-    
-    const checkboxes = document.querySelectorAll('.model-perm-checkbox');
-    const blocked_models = [];
-    checkboxes.forEach(cb => {
-        if (!cb.checked) {
-            blocked_models.push(cb.getAttribute('data-id'));
-        }
-    });
-    
-    try {
-        const res = await fetch('/api/admin/user/models/update', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                username: currentTargetPermUser,
-                blocked_models: blocked_models
-            })
-        });
-        const data = await readAdminJsonResponse(res, '模型权限保存失败');
-        if (data.success) {
-// 说明
-            closeModelPermModal();
-            // 如果修改的是当前登录用户，则刷新页面
-            if (currentTargetPermUser === currentUsername) {
-                setTimeout(() => location.reload(), 800);
-            }
-        } else {
-            showToast('更新失败: ' + (data.message || data.error || '未知错误'));
-        }
-    } catch (err) {
-        showToast('保存时发生错误: ' + err.message);
-    }
+    return await adminUsersController.saveUserModelPermissions();
 };
 
 window.closeModelPermModal = function() {
-    const modal = document.getElementById('modelPermModal');
-    if (modal) modal.classList.remove('active');
-    currentTargetPermUser = null;
+    return adminUsersController.closeModelPermModal();
 };
 
 const ADMIN_QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit';
@@ -36617,190 +27540,47 @@ function closeAddUserModal() {
 
 // 添加用户
 async function submitAddUser() {
-    const username = document.getElementById('formUsername').value.trim();
-    const password = document.getElementById('formPassword').value.trim();
-    const role = document.getElementById('formRole').value;
-    
-    if (!username || !password) {
-        alert('请输入用户名和密码');
-        return;
-    }
-    
-    try {
-        const res = await fetch('/api/admin/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, role })
-        });
-        const data = await res.json();
-        if (data.success) {
-            alert('用户添加成功');
-            document.getElementById('formUsername').value = '';
-            document.getElementById('formPassword').value = '';
-            closeAddUserModal(); // 关闭
-            adminSelectedUserId = username;
-            await loadAdminUsersList();
-            await loadAdminStats();
-        } else {
-            alert('Error: ' + data.message);
-        }
-    } catch (err) {
-        alert('Network error');
-    }
+    return await adminUsersController.submitAddUser();
 }
 
 // 删除用户
 async function deleteAdminUser(username) {
-    if (username === currentUsername) {
-        showToast('你不能删除自己');
-        return;
-    }
-
-    const ok = await confirmModalAsync('删除用户', `确定要删除用户「${username}」吗？`, 'danger');
-    if (!ok) return;
-    
-    try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
-            method: 'DELETE'
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast('用户已删除');
-            if (adminSelectedUserId === username) {
-                adminSelectedUserId = null;
-            }
-            await loadAdminUsersList();
-            await loadAdminStats();
-        } else {
-            showToast('删除失败: ' + data.message);
-        }
-    } catch (err) {
-        showToast('网络错误');
-    }
+    return await adminUsersController.deleteAdminUser(username);
 }
 
 // 改变用户角色
 async function changeUserRole(username, newRole) {
-    if (username === currentUsername) {
-        showToast('你不能修改自己的权限');
-        return;
-    }
-
-    const ok = await confirmModalAsync(
-        '修改用户权限',
-        `确定要将「${username}」修改为${newRole === 'admin' ? '管理员' : '普通用户'}吗？`,
-        'primary'
-    );
-    if (!ok) {
-        return;
-    }
-
-    try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(username)}/role`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role: newRole })
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast(`已将 ${username} 改为${newRole === 'admin' ? '管理员' : '普通用户'}`);
-            await loadAdminUsersList();
-            await loadAdminStats();
-        } else {
-            showToast('更新失败: ' + data.message);
-        }
-    } catch (err) {
-        showToast('网络错误');
-    }
+    return await adminUsersController.changeUserRole(username, newRole);
 }
 
 window.saveAdminUserProfile = async function(encodedUserId) {
-    const userId = decodeURIComponent(encodedUserId || '');
-    const nameInput = document.getElementById('adminDetailNameInput');
-    const roleSelect = document.getElementById('adminDetailRoleSelect');
-    if (!nameInput || !roleSelect) return;
-    const displayName = (nameInput.value || '').trim();
-    const role = roleSelect.value;
-    if (!displayName) {
-        showToast('用户名不能为空');
-        return;
-    }
-    try {
-        const profileRes = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/profile`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ display_name: displayName })
-        });
-        const profileData = await profileRes.json();
-        if (!profileData.success) {
-            showToast(profileData.message || '保存失败');
-            return;
-        }
-        if (userId !== currentUsername) {
-            const roleRes = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ role })
-            });
-            const roleData = await roleRes.json();
-            if (!roleData.success) {
-                showToast(roleData.message || '角色更新失败');
-                return;
-            }
-        }
-        showToast('用户资料已保存');
-        await loadAdminUsersList();
-    } catch (err) {
-        showToast('保存失败');
-    }
+    return await adminUsersController.saveAdminUserProfile(encodedUserId);
 };
 
 window.adminResetPassword = async function(encodedUserId) {
-    const userId = decodeURIComponent(encodedUserId || '');
-    const pwdInput = document.getElementById('adminDetailPasswordInput');
-    if (!pwdInput) return;
-    const pwd = (pwdInput.value || '').trim();
-    if (!pwd) {
-        showToast('请输入新密码');
-        return;
-    }
-    try {
-        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: pwd })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '重置失败');
-            return;
-        }
-        showToast('密码已重置');
-        pwdInput.value = '';
-    } catch (err) {
-        showToast('重置失败');
-    }
+    return await adminUsersController.adminResetPassword(encodedUserId);
 };
 
 
 
 async function updateVectorInSettings() {
-    if (!currentViewingKnowledge) {
+    if (!knowledgeEditorControllerState.currentTitle) {
         showToast('请先选择知识点');
         return;
     }
-    if (vectorizeTasks[currentViewingKnowledge] && vectorizeTasks[currentViewingKnowledge].running) {
+    const vectorizeTasks = knowledgeVectorController.getVectorizeTasks();
+    if (vectorizeTasks[knowledgeEditorControllerState.currentTitle] && vectorizeTasks[knowledgeEditorControllerState.currentTitle].running) {
         showToast('该知识点正在向量化');
         return;
     }
     showToast('正在更新到向量库，可先关闭窗口');
     setVectorStatus('更新中...');
-    vectorizeTitle = currentViewingKnowledge;
-    const runId = ++vectorizeRunId;
+    knowledgeVectorController.setVectorizeTitle(knowledgeEditorControllerState.currentTitle);
+    const runId = knowledgeVectorController.nextVectorizeRunId();
     try {
         const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
-        if (runId !== vectorizeRunId) return;
+        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorControllerState.currentTitle;
+        if (runId !== knowledgeVectorController.getVectorizeRunId()) return;
 
         const metaRes = await fetch('/api/knowledge/list');
         const metaData = await metaRes.json();
@@ -36830,42 +27610,42 @@ async function updateVectorInSettings() {
             }
         }
 
-        if (vectorizeTitle === currentViewingKnowledge) startVectorProgress(100);
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) startVectorProgress(100);
         const vectorizeData = await vectorizeKnowledgeTitle(liveTitle, {
             silent: true,
             onProgress: (pct, msg) => {
-                if (vectorizeTitle !== currentViewingKnowledge) return;
+                if (knowledgeVectorController.getVectorizeTitle() !== knowledgeEditorControllerState.currentTitle) return;
                 updateVectorProgress(Math.max(0, Math.min(100, Number(pct) || 0)), 100, msg);
             }
         });
         if (!vectorizeData.success) {
             setVectorStatus('向量化失败');
-            if (vectorizeTitle === currentViewingKnowledge) {
+            if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
                 stopVectorProgress('向量化失败', true);
             }
             showToast('向量化失败: ' + (vectorizeData.message || '未知错误'));
             return;
         }
         const storedCount = Number(vectorizeData.stored_count || 0);
-        if (vectorizeTitle === currentViewingKnowledge) updateVectorProgress(100, 100, `完成 ${storedCount} 块`);
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) updateVectorProgress(100, 100, `完成 ${storedCount} 块`);
 
         showToast('已更新到向量库');
         setVectorStatus(`已更新，${storedCount} 块`);
-        if (vectorizeTitle === currentViewingKnowledge) {
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
             stopVectorProgress(`完成 ${storedCount} 块`);
         }
         loadVectorChunks(liveTitle);
     } catch (e) {
         showToast('向量化失败: ' + e.message);
         setVectorStatus('向量化失败');
-        if (vectorizeTitle === currentViewingKnowledge) {
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
             stopVectorProgress('向量化失败', true);
         }
     }
 }
 
 async function deleteVectorInSettings() {
-    if (!currentViewingKnowledge) {
+    if (!knowledgeEditorControllerState.currentTitle) {
         showToast('请先选择知识点');
         return;
     }
@@ -36874,7 +27654,7 @@ async function deleteVectorInSettings() {
     setVectorStatus('删除中...');
     try {
         const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
+        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorControllerState.currentTitle;
         const res = await fetch(`/api/knowledge/vector/titles/${encodeURIComponent(liveTitle)}`, {
             method: 'DELETE'
         });
@@ -36956,94 +27736,15 @@ async function searchChroma() {
 }
 
 async function loadVectorChunks(title) {
-    const list = document.getElementById('vectorChunkList');
-    if (!list) return;
-    if (!title) {
-        list.innerHTML = '<div style="color:#94a3b8;"></div>';
-        setVectorStatus('请选择知识点');
-        return;
-    }
-    list.innerHTML = '<div style="color:#94a3b8;">加载中...</div>';
-    setVectorStatus('加载中...');
-    try {
-        const res = await fetch('/api/knowledge/vector/chunks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            list.innerHTML = `<div style="color:#ef4444;">${data.message || '加载失败'}</div>`;
-            setVectorStatus('加载失败');
-            return;
-        }
-        const chunks = data.chunks || [];
-        if (chunks.length === 0) {
-            list.innerHTML = '<div style="color:#94a3b8;">暂无数据</div>';
-            setVectorStatus('暂无数据');
-            return;
-        }
-        list.innerHTML = '';
-        chunks.forEach((chunk) => {
-            const row = document.createElement('div');
-            row.style.cssText = 'padding:6px 0; border-bottom:1px dashed #e2e8f0; display:flex; gap:8px; align-items:flex-start; justify-content: space-between;';
-
-            const body = document.createElement('div');
-            body.style.cssText = 'flex:1;';
-
-            const indexEl = document.createElement('div');
-            indexEl.style.cssText = 'font-weight:600;';
-            indexEl.textContent = `Chunk ${chunk.chunk_id != null ? chunk.chunk_id : '-'}`;
-
-            const previewEl = document.createElement('div');
-            previewEl.style.cssText = 'color:#64748b; font-size:12px; word-break: break-word;';
-            previewEl.textContent = String(chunk.text == null ? '' : chunk.text).slice(0, 80);
-
-            const deleteBtn = document.createElement('button');
-            deleteBtn.type = 'button';
-            deleteBtn.className = 'btn-primary';
-            deleteBtn.style.cssText = 'background:#ef4444; padding: 4px 8px; font-size: 11px;';
-            deleteBtn.textContent = '删除';
-
-            // 使用事件绑定避免标题或向量 ID 中的引号破坏内联 JS。
-            deleteBtn.addEventListener('click', () => {
-                deleteVectorChunk(String(chunk.id == null ? '' : chunk.id), title);
-            });
-
-            body.appendChild(indexEl);
-            body.appendChild(previewEl);
-            row.appendChild(body);
-            row.appendChild(deleteBtn);
-            list.appendChild(row);
-        });
-        setVectorStatus(`已加载 ${chunks.length} 块`);
-    } catch (e) {
-        list.innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
-        setVectorStatus('加载失败');
-    }
+    return knowledgeVectorController.loadVectorChunks(title);
 }
 
 function setVectorStatus(text) {
-    const el = document.getElementById('vectorStatusText');
-    if (el) el.textContent = text;
+    return knowledgeVectorController.setVectorStatus(text);
 }
+
 function setKnowledgeItemProgress(title, percent, active = true, stage = 'vectorizing') {
-    const container = els.panelBasisList;
-    if (!container) return;
-    const safeTitle = escapeCssSelector(title);
-    const item = container.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
-    if (!item) return;
-    const bar = item.querySelector('.knowledge-progress');
-    if (!bar) return;
-    bar.classList.remove('vectorizing');
-    if (stage === 'vectorizing') bar.classList.add('vectorizing');
-    bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
-    bar.style.opacity = active ? '1' : '0';
-    if (!active) {
-        setTimeout(() => {
-            bar.style.width = '0%';
-        }, 200);
-    }
+    return knowledgeVectorController.setKnowledgeItemProgress(title, percent, active, stage);
 }
 
 function escapeCssSelector(value) {
@@ -37054,43 +27755,11 @@ function escapeCssSelector(value) {
 }
 
 async function createKnowledgeVectorizeTask(title, library = 'knowledge') {
-    const res = await fetch('/api/knowledge/vector/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, library })
-    });
-    const data = await res.json();
-    if (!res.ok || !data || !data.success || !data.task_id) {
-        throw new Error((data && data.message) ? data.message : '创建知识向量化任务失败');
-    }
-    return String(data.task_id);
+    return getNexoraChatKnowledge().createKnowledgeVectorizeTask(title, library);
 }
 
 async function pollKnowledgeVectorTask(taskId, onProgress) {
-    const safeTaskId = String(taskId || '').trim();
-    if (!safeTaskId) throw new Error('任务ID为空');
-    const maxRounds = 1200;
-    for (let i = 0; i < maxRounds; i++) {
-        const res = await fetch(`/api/knowledge/vector/tasks/${encodeURIComponent(safeTaskId)}`, {
-            method: 'GET',
-            cache: 'no-store'
-        });
-        const data = await res.json();
-        if (!res.ok || !data || !data.success || !data.task) {
-            throw new Error((data && data.message) ? data.message : '任务查询失败');
-        }
-        const task = data.task;
-        const status = String(task.status || '').toLowerCase();
-        const stage = String(task.stage || '').toLowerCase();
-        const rawProgress = Number(task.progress || 0);
-        const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, rawProgress)) : 0;
-        if (typeof onProgress === 'function') onProgress({ status, stage, progress, task });
-        if (status === 'completed') return task;
-        if (status === 'failed') throw new Error(task.error || task.message || '任务失败');
-        if (status === 'cancelled') throw new Error(task.message || '任务已取消');
-        await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-    throw new Error('任务超时');
+    return getNexoraChatKnowledge().pollKnowledgeVectorTask(taskId, onProgress);
 }
 
 async function bulkVectorizeAllBasis() {
@@ -37098,242 +27767,44 @@ async function bulkVectorizeAllBasis() {
         showToast('正在批量向量化，请稍候');
         return;
     }
-    bulkVectorizeRunning = true;
-    syncBulkVectorizeButtonVisibility();
-    showToast('开始批量向量化');
-    let titles = [];
-    try {
-        const metaRes = await fetch('/api/knowledge/list');
-        const metaData = await metaRes.json();
-        knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
-        syncBulkVectorizeButtonVisibility();
-        if (!knowledgeVectorizationEnabled) {
-            showToast('知识向量化未启用或未配置');
-            bulkVectorizeRunning = false;
-            syncBulkVectorizeButtonVisibility();
-            return;
-        }
 
-        const basisMeta = metaData && metaData.basis_knowledge ? metaData.basis_knowledge : {};
-        const listEls = els.panelBasisList ? Array.from(els.panelBasisList.querySelectorAll('.knowledge-item')) : [];
-        titles = listEls.length > 0 ? listEls.map(el => el.dataset.title).filter(Boolean) : Object.keys(basisMeta);
-        if (titles.length === 0) {
-            showToast('没有可向量化的知识点');
-            bulkVectorizeRunning = false;
-            syncBulkVectorizeButtonVisibility();
-            return;
-        }
-        for (const title of titles) {
-            const meta = basisMeta[title] || {};
-            const updatedAt = Number(meta.updated_at || 0);
-            const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
-            if (updatedAt > 0 && vectorUpdatedAt >= updatedAt) {
-                const chunksRes = await fetch('/api/knowledge/vector/chunks', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title })
-                });
-                const chunksData = await chunksRes.json();
-                const chunkCount = (chunksData && chunksData.chunks ? chunksData.chunks : []).length;
-                if (chunkCount > 0) {
-                    setKnowledgeItemVectorState(title, null);
-                    continue;
-                }
-            }
-            await vectorizeKnowledgeTitle(title);
-        }
-    } catch (e) {
-        showToast('批量向量化失败: ' + e.message);
-    } finally {
-        bulkVectorizeRunning = false;
-        syncBulkVectorizeButtonVisibility();
-        loadKnowledge(currentConversationId);
-    }
+    return knowledgeVectorController.bulkVectorizeAllBasis();
 }
 
 async function vectorizeKnowledgeTitle(title, options = {}) {
-    const silent = !!options.silent;
-    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-    if (vectorizeTasks[title] && vectorizeTasks[title].running) {
-        return { success: false, message: '该知识点正在向量化' };
-    }
-    vectorizeTasks[title] = { running: true, runId: Date.now() };
-    try {
-        setKnowledgeItemVectorState(title, 'uploading');
-        setKnowledgeItemProgress(title, 1, true, 'vectorizing');
-
-        const taskId = await createKnowledgeVectorizeTask(title, 'knowledge');
-        const task = await pollKnowledgeVectorTask(taskId, ({ status, progress, task }) => {
-            if (status === 'completed') return;
-            // 后端进度为 12-96，前端知识条映射到 1-99
-            let pct = 1;
-            if (progress <= 12) pct = 1;
-            else if (progress >= 96) pct = 99;
-            else pct = Math.max(1, Math.min(99, Math.round(((progress - 12) / 84) * 100)));
-            setKnowledgeItemProgress(title, pct, true, 'vectorizing');
-            if (onProgress) onProgress(pct, String((task && task.message) || '向量化中'));
-        });
-
-        const result = (task && task.result) ? task.result : {};
-        const storedCount = Number(result.stored_count || 0);
-
-        if (knowledgeMetaCache[title]) {
-            const updatedAt = Number(knowledgeMetaCache[title].updated_at || 0);
-            knowledgeMetaCache[title].vector_updated_at = Math.max(updatedAt, Date.now());
-            knowledgeMetaCache[title].vector_exists = true;
-            knowledgeMetaCache[title].needs_vector_refresh = false;
-        }
-        const list = els.panelBasisList;
-        if (list) {
-            const safeTitle = escapeCssSelector(title);
-            const item = list.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
-            if (item) {
-                item.classList.remove('needs-vector');
-                const vectorBtn = item.querySelector('.knowledge-item-btn.vectorize');
-                if (vectorBtn) vectorBtn.remove();
-            }
-        }
-        setKnowledgeItemProgress(title, 100, false, 'vectorizing');
-        setKnowledgeItemVectorState(title, null);
-        vectorizeTasks[title] = { running: false, runId: Date.now() };
-        if (onProgress) onProgress(100, `完成 ${storedCount} 块`);
-        if (!silent) showToast(`已更新到向量库 (${storedCount} 块)`);
-        return { success: true, stored_count: storedCount };
-    } catch (e) {
-        setKnowledgeItemProgress(title, 100, false, 'vectorizing');
-        setKnowledgeItemVectorState(title, null);
-        vectorizeTasks[title] = { running: false, runId: Date.now() };
-        if (onProgress) onProgress(100, '向量化失败');
-        if (!silent) showToast('向量化失败: ' + (e && e.message ? e.message : '未知错误'));
-        return { success: false, message: e && e.message ? e.message : '向量化失败' };
-    }
+    return knowledgeVectorController.vectorizeKnowledgeTitle(title, options);
 }
 
-let vectorProgressTimer = null;
-let vectorizeRunId = 0;
-let vectorizeTitle = null;
-const vectorizeTasks = {};
 function startVectorProgress(total) {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!wrap || !bar || !text) return;
-    wrap.style.display = 'block';
-    bar.style.width = '0%';
-// 说明
-    if (vectorProgressTimer) clearInterval(vectorProgressTimer);
-    vectorProgressTimer = null;
-    updateVectorProgress(0, total || 0);
+    return knowledgeVectorController.startVectorProgress(total);
 }
 
 function updateVectorProgress(done, total, message) {
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!bar || !text) return;
-    if (!total) {
-        bar.style.width = '0%';
-        if (message) text.textContent = String(message);
-        return;
-    }
-    const pct = Math.min(100, Math.round((done / total) * 100));
-    bar.style.width = `${pct}%`;
-    text.textContent = message ? String(message) : `向量化中 ${pct}%`;
+    return knowledgeVectorController.updateVectorProgress(done, total, message);
 }
 
 function stopVectorProgress(message, isError = false) {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!wrap || !bar || !text) return;
-    if (vectorProgressTimer) {
-        clearInterval(vectorProgressTimer);
-        vectorProgressTimer = null;
-    }
-    bar.style.width = '100%';
-    bar.style.background = isError ? '#ef4444' : 'linear-gradient(90deg, #0f172a, #1e293b)';
-    text.textContent = message || '完成';
-    setTimeout(() => {
-        wrap.style.display = 'none';
-        bar.style.width = '0%';
-        bar.style.background = 'linear-gradient(90deg, #0f172a, #1e293b)';
-        text.textContent = '';
-    }, 1200);
+    return knowledgeVectorController.stopVectorProgress(message, isError);
 }
 
 function cancelVectorizeProgress() {
-    vectorizeRunId += 1;
-    vectorizeTitle = null;
-    stopVectorProgress('已取消', true);
+    return knowledgeVectorController.cancelVectorizeProgress();
 }
 
 function resetVectorProgressUI() {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const textEl = document.getElementById('vectorProgressText');
-    if (wrap) wrap.style.display = 'none';
-    if (bar) {
-        bar.style.width = '0%';
-        bar.style.background = 'linear-gradient(90deg, #0f172a, #1e293b)';
-    }
-    if (textEl) textEl.textContent = '';
+    return knowledgeVectorController.resetVectorProgressUI();
 }
 
 async function deleteVectorChunk(vectorId, title) {
-    if (!vectorId) return;
-    const ok = await confirmModalAsync('删除向量分块', '确定删除该分块吗？', 'danger');
-    if (!ok) return;
-    setVectorStatus('删除中...');
-    try {
-        const res = await fetch(`/api/knowledge/vector/chunks/${encodeURIComponent(vectorId)}`, {
-            method: 'DELETE'
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast('删除失败: ' + (data.message || 'Unknown error'));
-            setVectorStatus('删除失败');
-        }
-        loadVectorChunks(title);
-    } catch (e) {
-        showToast('删除失败: ' + e.message);
-        setVectorStatus('删除失败');
-    }
+    return knowledgeVectorController.deleteVectorChunk(vectorId, title);
 }
 
 function setKnowledgeItemVectorButtonState(item, mode = 'idle') {
-    if (!item) return;
-    const btn = item.querySelector('.knowledge-item-btn.vectorize');
-    if (!btn) return;
-    const isLoading = mode === 'loading';
-    btn.classList.toggle('is-loading', isLoading);
-    btn.disabled = isLoading;
-    if (isLoading) {
-        btn.title = '向量化中...';
-        btn.innerHTML = '<i class="fa-solid fa-spinner"></i>';
-    } else {
-        btn.title = '需要重新向量化';
-        btn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
-    }
+    return knowledgeVectorController.setKnowledgeItemVectorButtonState(item, mode);
 }
 
 function setKnowledgeItemVectorState(title, state) {
-    const container = els.panelBasisList;
-    if (!container) return;
-    const safeTitle = escapeCssSelector(title);
-    const item = container.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
-    if (!item) return;
-    item.classList.remove('vector-pending', 'vector-uploading');
-    if (state === 'pending') {
-        item.classList.add('vector-pending');
-        setKnowledgeItemVectorButtonState(item, 'idle');
-        return;
-    }
-    if (state === 'uploading') {
-        item.classList.add('vector-uploading');
-        item.classList.add('needs-vector');
-        setKnowledgeItemVectorButtonState(item, 'loading');
-        return;
-    }
-    setKnowledgeItemVectorButtonState(item, 'idle');
+    return knowledgeVectorController.setKnowledgeItemVectorState(title, state);
 }
 
 // 设置模态框相关函数
@@ -37392,91 +27863,11 @@ function closeSettingsModal() {
 }
 
 function initSettingsTabs() {
-    const modal = document.getElementById('settingsModal');
-    if (!modal || modal.dataset.settingsTabsInit === '1') return;
-    modal.dataset.settingsTabsInit = '1';
-
-    const tabs = modal.querySelectorAll('.admin-tab');
-    tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            const tabName = tab.getAttribute('data-tab');
-            if (tabName) switchSettingsTab(tabName);
-        });
-    });
+    adminSettingsTabsController.initSettingsTabs();
 }
 
 function switchSettingsTab(tabName) {
-    if (tabName !== 'quota' && tabName !== 'admin-models') {
-        _closeQuotaAdjustPopover();
-    }
-    const modal = document.getElementById('settingsModal');
-    if (modal && modal.dataset) {
-        modal.dataset.activeSettingsTab = String(tabName || '');
-    }
-    // 隐藏所有标签页
-    document.querySelectorAll('#settingsModal .admin-tab-content').forEach(tab => {
-        tab.classList.remove('active');
-    });
-
-    // 取消激活所有按钮
-    document.querySelectorAll('#settingsModal .admin-tab').forEach(btn => {
-        btn.classList.remove('active');
-    });
-
-    // 显示选中的标签页
-    const selectedTab = document.getElementById('settings-' + tabName + '-tab');
-    if (selectedTab) {
-        selectedTab.classList.add('active');
-        selectedTab.scrollTop = 0;
-    }
-
-    // 激活选中的按钮
-    const selectedBtn = document.querySelector(`#settingsModal .admin-tab[data-tab="${tabName}"]`);
-    if (selectedBtn) selectedBtn.classList.add('active');
-    const settingsContent = modal ? modal.querySelector('.admin-content.settings-content') : null;
-    if (settingsContent) settingsContent.scrollTop = 0;
-
-    if (tabName === 'admin-users') {
-        adminUserFilterKeyword = '';
-        const filterInput = document.getElementById('adminUserFilterInput');
-        if (filterInput) filterInput.value = '';
-        loadAdminUsersList();
-        loadAdminStats();
-    }
-    if (tabName === 'admin-system') {
-        void loadAdminSystemSettings();
-    }
-    if (tabName === 'admin-mail') {
-        adminMailUserFilterKeyword = '';
-        const filterInput = document.getElementById('adminMailUserFilterInput');
-        if (filterInput) filterInput.value = '';
-        loadAdminMailUsersList();
-    }
-    if (tabName === 'admin-stats') {
-        loadAdminStats();
-    }
-    if (tabName === 'quota') {
-        void loadServerQuotaSettings();
-    }
-    if (tabName === 'admin-models') {
-        loadAdminModelConfig();
-        void loadServerQuotaSettings();
-    }
-    if (tabName === 'admin-gen-image') {
-        adminGenImageApiFilterKeyword = '';
-        const filterInput = document.getElementById('adminGenImageApiSearchInput');
-        if (filterInput) filterInput.value = '';
-        void loadAdminGenImageApis();
-    }
-    if (tabName === 'admin-auth') {
-        void loadAdminPublicApiAuth();
-    }
-    if (tabName === 'admin-chroma') {
-        loadAdminChromaStats();
-    }
-    if (tabName === 'skills') {
-        void loadSkillSettings(true);
-    }
+    adminSettingsTabsController.switchSettingsTab(tabName);
 }
 
 function getSettingsSkillListEl() {

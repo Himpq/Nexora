@@ -12428,6 +12428,8 @@ def _resolve_workspace_chat_context(username: str, data: Dict[str, Any], convers
         "workspace_memory": workspace.get("workspace_memory") if isinstance(workspace.get("workspace_memory"), dict) else {},
         "workspace_prompt": workspace.get("workspace_prompt") if isinstance(workspace.get("workspace_prompt"), dict) else {},
         "knowledge_documents": workspace.get("knowledge_documents") if isinstance(workspace.get("knowledge_documents"), list) else [],
+        "workspace_files": workspace.get("workspace_files") if isinstance(workspace.get("workspace_files"), list) else [],
+        "workspace_tasks": workspace.get("workspace_tasks") if isinstance(workspace.get("workspace_tasks"), list) else [],
     }
 
 
@@ -12442,6 +12444,8 @@ def _merge_workspace_chat_payload(payload: Dict[str, Any], workspace_context: Di
             "workspace_memory": workspace_context.get("workspace_memory") if isinstance(workspace_context.get("workspace_memory"), dict) else {},
             "workspace_prompt": workspace_context.get("workspace_prompt") if isinstance(workspace_context.get("workspace_prompt"), dict) else {},
             "knowledge_documents": workspace_context.get("knowledge_documents") if isinstance(workspace_context.get("knowledge_documents"), list) else [],
+            "workspace_files": workspace_context.get("workspace_files") if isinstance(workspace_context.get("workspace_files"), list) else [],
+            "workspace_tasks": workspace_context.get("workspace_tasks") if isinstance(workspace_context.get("workspace_tasks"), list) else [],
         }
 
     return merged
@@ -13203,6 +13207,25 @@ def chat_stream():
                     raw_conversation_mode_payload,
                     workspace_chat_context
                 )
+            if debug_mode:
+                workspace_context_debug = {
+                    "requested": bool(_get_workspace_request_value(data, 'workspace_id', 'workspace', 'workspaces')),
+                    "resolved": bool(workspace_chat_context),
+                    "workspace_id": str(workspace_chat_context.get("workspace_id") or "") if workspace_chat_context else "",
+                    "workspace_title": str(workspace_chat_context.get("workspace_title") or "") if workspace_chat_context else "",
+                    "knowledge_count": len(workspace_chat_context.get("knowledge_documents") or []) if workspace_chat_context else 0,
+                    "file_count": len(workspace_chat_context.get("workspace_files") or []) if workspace_chat_context else 0,
+                    "task_count": len(workspace_chat_context.get("workspace_tasks") or []) if workspace_chat_context else 0,
+                    "memory_chars": len(str((workspace_chat_context.get("workspace_memory") or {}).get("content") or "")) if workspace_chat_context else 0,
+                    "prompt_chars": len(str((workspace_chat_context.get("workspace_prompt") or {}).get("content") or "")) if workspace_chat_context else 0,
+                }
+                push_chunk({
+                    "type": "debug_trace",
+                    "direction": "server->model",
+                    "stage": "workspace_context",
+                    "title": "Workspace Context",
+                    "payload": workspace_context_debug,
+                })
             worker_active_tool_skills = list(active_tool_skills) if isinstance(active_tool_skills, list) else []
             worker_longdoc_skills = list(longdoc_skills) if isinstance(longdoc_skills, list) else []
             _chat_latency_mark(

@@ -2,10 +2,13 @@ import hashlib
 import mimetypes
 import os
 import secrets
+import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+import urllib.parse
+from collections import deque
+from typing import Any, Deque, Dict, Optional, Tuple
 
-from flask import Blueprint, jsonify, request, send_file, session
+from flask import Blueprint, Response, jsonify, request, send_file, session, stream_with_context
 
 from api.datastorage import get_path_lock, safe_read_json, safe_write_json
 from api.file_sandbox import UserFileSandbox
@@ -30,6 +33,11 @@ TRANSFER_MAX_DOWNLOADS_MIN = 1
 TRANSFER_MAX_DOWNLOADS_MAX = 50
 LIVE_TRANSFER_HEARTBEAT_TIMEOUT_SECONDS = 15
 LIVE_TRANSFER_EVENTS_LIMIT = 30
+LIVE_TRANSFER_FILE_SIZE_MAX = 10 * 1024 * 1024 * 1024 * 1024
+LIVE_TRANSFER_CHUNK_MAX_BYTES = 1024 * 1024
+LIVE_TRANSFER_QUEUE_MAX_CHUNKS = 8
+LIVE_TRANSFER_DOWNLOAD_WAIT_SECONDS = 45
+LIVE_TRANSFER_DOWNLOAD_ID_MAX_LENGTH = 96
 
 
 def current_username() -> str:
@@ -94,6 +102,227 @@ def coerce_int(value: Any, minimum: int, maximum: int, field_name: str) -> int:
         raise ValueError(f"{field_name} 必须在 {minimum} 到 {maximum} 之间")
 
     return number
+
+
+def normalize_live_download_id(value: Any) -> str:
+    raw = str(value or "").strip()
+
+    if not raw:
+        raise ValueError("缺少 download_id")
+
+    if len(raw) > LIVE_TRANSFER_DOWNLOAD_ID_MAX_LENGTH:
+        raise ValueError("download_id 过长")
+
+    for ch in raw:
+        if not (ch.isalnum() or ch in {"-", "_"}):
+            raise ValueError("download_id 格式错误")
+
+    return raw
+
+
+def build_attachment_content_disposition(download_name: str) -> str:
+    safe_download_name = safe_filename(download_name, default="download.bin", max_len=180)
+    ascii_name = safe_download_name.encode("ascii", errors="ignore").decode("ascii").strip()
+
+    if not ascii_name:
+        ascii_name = "download.bin"
+
+    quoted_name = urllib.parse.quote(safe_download_name)
+
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted_name}"
+
+
+class LiveTransferDownloadSession:
+    """单个下载请求的内存中转队列，发送端写入分片，下载端同步读出分片。"""
+
+    def __init__(self, *, code_hash: str, download_id: str):
+        self.code_hash = str(code_hash or "").strip()
+        self.download_id = normalize_live_download_id(download_id)
+        self.condition = threading.Condition()
+        self.chunks: Deque[bytes] = deque()
+        self.closed = False
+        self.failed_message = ""
+        self.expected_chunk_index = 0
+        self.bytes_received = 0
+        self.bytes_sent = 0
+        self.created_at = int(time.time())
+        self.updated_at = self.created_at
+
+    def push_chunk(self, chunk_index: int, chunk: bytes) -> Dict[str, Any]:
+        index = int(chunk_index)
+
+        if index < 0:
+            raise ValueError("chunk_index 不能小于 0")
+
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise ValueError("分片内容必须是二进制")
+
+        chunk_bytes = bytes(chunk)
+
+        if not chunk_bytes:
+            raise ValueError("分片内容不能为空")
+
+        if len(chunk_bytes) > LIVE_TRANSFER_CHUNK_MAX_BYTES:
+            raise ValueError(f"单个分片不能超过 {LIVE_TRANSFER_CHUNK_MAX_BYTES} 字节")
+
+        with self.condition:
+            if index != self.expected_chunk_index:
+                raise ValueError(f"分片顺序错误，期待 {self.expected_chunk_index}，收到 {index}")
+
+            while (
+                len(self.chunks) >= LIVE_TRANSFER_QUEUE_MAX_CHUNKS
+                and not self.closed
+                and not self.failed_message
+            ):
+                self.condition.wait(10)
+
+            if self.failed_message:
+                raise RuntimeError(self.failed_message)
+
+            if self.closed:
+                raise RuntimeError("下载端已断开")
+
+            self.chunks.append(chunk_bytes)
+            self.expected_chunk_index += 1
+            self.bytes_received += len(chunk_bytes)
+            self.updated_at = int(time.time())
+            self.condition.notify_all()
+
+            return {
+                "download_id": self.download_id,
+                "chunk_index": index,
+                "bytes_received": self.bytes_received,
+                "queued_chunks": len(self.chunks),
+            }
+
+    def finish(self, expected_size: int) -> Dict[str, Any]:
+        safe_expected_size = int(expected_size)
+
+        if safe_expected_size < 0:
+            raise ValueError("file_size 不能小于 0")
+
+        with self.condition:
+            if self.failed_message:
+                raise RuntimeError(self.failed_message)
+
+            if self.bytes_received != safe_expected_size:
+                self.failed_message = f"传输大小不一致，期待 {safe_expected_size} 字节，收到 {self.bytes_received} 字节"
+                self.closed = True
+                self.condition.notify_all()
+                raise ValueError(self.failed_message)
+
+            self.closed = True
+            self.updated_at = int(time.time())
+            self.condition.notify_all()
+
+            return {
+                "download_id": self.download_id,
+                "bytes_received": self.bytes_received,
+            }
+
+    def fail(self, message: str) -> None:
+        with self.condition:
+            self.failed_message = str(message or "在线传输已中断").strip() or "在线传输已中断"
+            self.closed = True
+            self.updated_at = int(time.time())
+            self.condition.notify_all()
+
+    def read_next_chunk(self) -> Optional[bytes]:
+        deadline = time.time() + LIVE_TRANSFER_DOWNLOAD_WAIT_SECONDS
+
+        with self.condition:
+            while not self.chunks and not self.closed and not self.failed_message:
+                remaining = deadline - time.time()
+
+                if remaining <= 0:
+                    self.failed_message = "发送端传输超时"
+                    self.closed = True
+                    self.condition.notify_all()
+                    raise TimeoutError(self.failed_message)
+
+                self.condition.wait(min(1, remaining))
+
+            if self.failed_message:
+                raise RuntimeError(self.failed_message)
+
+            if self.chunks:
+                chunk = self.chunks.popleft()
+                self.bytes_sent += len(chunk)
+                self.updated_at = int(time.time())
+                self.condition.notify_all()
+
+                return chunk
+
+            return None
+
+
+class LiveTransferRelayRuntime:
+    """进程内实时中转运行时，只保存活跃下载请求的短期分片队列。"""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.sessions: Dict[str, LiveTransferDownloadSession] = {}
+
+    def create_download_session(self, *, code_hash: str) -> LiveTransferDownloadSession:
+        safe_code_hash = str(code_hash or "").strip()
+
+        if not safe_code_hash:
+            raise ValueError("缺少 code_hash")
+
+        with self.lock:
+            for _ in range(100):
+                download_id = secrets.token_urlsafe(24)
+
+                if download_id not in self.sessions:
+                    session_item = LiveTransferDownloadSession(
+                        code_hash=safe_code_hash,
+                        download_id=download_id,
+                    )
+                    self.sessions[download_id] = session_item
+
+                    return session_item
+
+        raise RuntimeError("下载会话创建失败")
+
+    def get_download_session(self, *, code_hash: str, download_id: str) -> LiveTransferDownloadSession:
+        safe_code_hash = str(code_hash or "").strip()
+        safe_download_id = normalize_live_download_id(download_id)
+
+        with self.lock:
+            session_item = self.sessions.get(safe_download_id)
+
+            if not session_item or session_item.code_hash != safe_code_hash:
+                raise FileNotFoundError("接收端连接不存在或已结束")
+
+            return session_item
+
+    def close_download_session(self, download_id: str, message: str = "") -> None:
+        safe_download_id = str(download_id or "").strip()
+
+        if not safe_download_id:
+            return
+
+        with self.lock:
+            session_item = self.sessions.pop(safe_download_id, None)
+
+        if session_item:
+            session_item.fail(message or "下载会话已关闭")
+
+    def close_transfer_sessions(self, code_hash: str, message: str = "") -> None:
+        safe_code_hash = str(code_hash or "").strip()
+
+        if not safe_code_hash:
+            return
+
+        with self.lock:
+            matched_ids = [
+                download_id for download_id, session_item in self.sessions.items()
+                if session_item.code_hash == safe_code_hash
+            ]
+            matched_sessions = [self.sessions.pop(download_id) for download_id in matched_ids]
+
+        for session_item in matched_sessions:
+            session_item.fail(message or "在线传输已关闭")
 
 
 class FileTransferStore:
@@ -260,7 +489,9 @@ class FileTransferStore:
         self,
         *,
         owner: str,
-        upload_file: Any,
+        file_name: str,
+        file_size: int,
+        mime_type: str,
         expires_in_minutes: int,
         max_downloads: int,
     ) -> Dict[str, Any]:
@@ -269,26 +500,22 @@ class FileTransferStore:
         if not safe_owner:
             raise PermissionError("login required")
 
-        if upload_file is None:
-            raise ValueError("缺少 file")
+        if not str(file_name or "").strip():
+            raise ValueError("缺少 file_name")
 
         original_name = safe_filename(
-            getattr(upload_file, "filename", "") or "transfer.bin",
+            file_name,
             default="transfer.bin",
             max_len=180,
         )
-        stored_name = f"{secrets.token_hex(16)}_{original_name}"
-        stored_abs_path = os.path.join(LIVE_TRANSFER_DIR, stored_name)
-        stored_rel_path = os.path.relpath(stored_abs_path, BASE_DIR).replace("\\", "/")
+        safe_size = coerce_int(file_size, 0, LIVE_TRANSFER_FILE_SIZE_MAX, "file_size")
+        safe_mime_type = str(mime_type or "").strip()[:180]
 
-        upload_file.save(stored_abs_path)
-
-        if not os.path.isfile(stored_abs_path):
-            raise FileNotFoundError("临时传输文件保存失败")
+        if not safe_mime_type:
+            safe_mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
 
         created_at = int(time.time())
         expires_at = created_at + expires_in_minutes * 60
-        size = os.path.getsize(stored_abs_path)
 
         with self.lock:
             data = self._load_index()
@@ -299,9 +526,10 @@ class FileTransferStore:
                 "transfer_type": "live",
                 "code_hash": code_hash,
                 "owner": safe_owner,
-                "stored_path": stored_rel_path,
                 "original_name": original_name,
-                "size": int(size),
+                "size": int(safe_size),
+                "mime_type": safe_mime_type,
+                "relay_mode": "memory_stream",
                 "created_at": created_at,
                 "expires_at": expires_at,
                 "max_downloads": max_downloads,
@@ -371,7 +599,7 @@ class FileTransferStore:
             if str(record.get("transfer_type") or "").strip() != "live":
                 raise ValueError("该读取码不是在线传输")
 
-            self._assert_record_active(record, current_time, require_heartbeat=False)
+            self._assert_live_owner_record_available(record, current_time)
             record["last_heartbeat_at"] = current_time
             self._save_index(data)
 
@@ -415,12 +643,111 @@ class FileTransferStore:
             "events": filtered,
         }
 
+    def touch_live_transfer_for_upload(self, *, owner: str, code: str) -> Dict[str, Any]:
+        safe_owner = str(owner or "").strip()
+        code_hash = hash_transfer_code(code)
+        current_time = int(time.time())
+
+        if not safe_owner:
+            raise PermissionError("login required")
+
+        with self.lock:
+            data = self._load_index()
+            self._prune_expired(data, current_time)
+            transfers = data["transfers"]
+            record = transfers.get(code_hash)
+
+            if not isinstance(record, dict):
+                self._save_index(data)
+                raise FileNotFoundError("读取码不存在或已过期")
+
+            if str(record.get("owner") or "").strip() != safe_owner:
+                raise PermissionError("无权发送该在线传输")
+
+            if str(record.get("transfer_type") or "").strip() != "live":
+                raise ValueError("该读取码不是在线传输")
+
+            self._assert_live_owner_record_available(record, current_time)
+            record["last_heartbeat_at"] = current_time
+            self._save_index(data)
+
+            return dict(record)
+
+    def append_live_transfer_event(
+        self,
+        *,
+        code_hash: str,
+        event_type: str,
+        download_id: str = "",
+        ip_address: str = "",
+        user_agent: str = "",
+        bytes_transferred: int = 0,
+        message: str = "",
+    ) -> None:
+        safe_code_hash = str(code_hash or "").strip()
+        safe_event_type = str(event_type or "").strip()
+
+        if not safe_code_hash or not safe_event_type:
+            return
+
+        with self.lock:
+            data = self._load_index()
+            transfers = data["transfers"]
+            record = transfers.get(safe_code_hash)
+
+            if not isinstance(record, dict):
+                return
+
+            if str(record.get("transfer_type") or "").strip() != "live":
+                return
+
+            events = record.get("download_events")
+
+            if not isinstance(events, list):
+                events = []
+
+            next_id = 1
+
+            if events:
+                event_ids = [int(item.get("id") or 0) for item in events if isinstance(item, dict)]
+
+                if event_ids:
+                    next_id = max(event_ids) + 1
+
+            event = {
+                "id": next_id,
+                "type": safe_event_type,
+                "at": int(time.time()),
+            }
+            safe_download_id = str(download_id or "").strip()
+            safe_message = str(message or "").strip()
+
+            if safe_download_id:
+                event["download_id"] = safe_download_id
+
+            if ip_address:
+                event["ip"] = str(ip_address or "").strip()[:120]
+
+            if user_agent:
+                event["user_agent"] = str(user_agent or "").strip()[:500]
+
+            if bytes_transferred:
+                event["bytes_transferred"] = int(bytes_transferred)
+
+            if safe_message:
+                event["message"] = safe_message[:500]
+
+            events.append(event)
+            record["download_events"] = events[-LIVE_TRANSFER_EVENTS_LIMIT:]
+            self._save_index(data)
+
     def claim_download(
         self,
         code: str,
         *,
         ip_address: str = "",
         user_agent: str = "",
+        live_download_id: str = "",
     ) -> Dict[str, Any]:
         code_hash = hash_transfer_code(code)
         current_time = int(time.time())
@@ -439,6 +766,7 @@ class FileTransferStore:
             record["download_count"] = int(record.get("download_count") or 0) + 1
 
             if str(record.get("transfer_type") or "").strip() == "live":
+                safe_download_id = normalize_live_download_id(live_download_id)
                 events = record.get("download_events")
 
                 if not isinstance(events, list):
@@ -447,12 +775,16 @@ class FileTransferStore:
                 next_id = 1
 
                 if events:
-                    next_id = max(int(item.get("id") or 0) for item in events if isinstance(item, dict)) + 1
+                    event_ids = [int(item.get("id") or 0) for item in events if isinstance(item, dict)]
+
+                    if event_ids:
+                        next_id = max(event_ids) + 1
 
                 events.append({
                     "id": next_id,
-                    "type": "download",
+                    "type": "download_request",
                     "at": current_time,
+                    "download_id": safe_download_id,
                     "ip": str(ip_address or "").strip()[:120],
                     "user_agent": str(user_agent or "").strip()[:500],
                 })
@@ -508,6 +840,15 @@ class FileTransferStore:
             if last_heartbeat_at + timeout_seconds < now:
                 raise PermissionError("在线传输窗口已关闭，读取码失效")
 
+    def _assert_live_owner_record_available(self, record: Dict[str, Any], now: int) -> None:
+        if bool(record.get("revoked")):
+            raise PermissionError("读取码已撤销")
+
+        expires_at = int(record.get("expires_at") or 0)
+
+        if expires_at <= now:
+            raise FileNotFoundError("读取码已过期")
+
     def _public_record(
         self,
         record: Dict[str, Any],
@@ -526,7 +867,9 @@ class FileTransferStore:
         payload = {
             "file_name": file_name,
             "size": int(record.get("size") or 0),
-            "mime_type": mimetypes.guess_type(file_name)[0] or "application/octet-stream",
+            "mime_type": str(record.get("mime_type") or "").strip()
+            or mimetypes.guess_type(file_name)[0]
+            or "application/octet-stream",
             "created_at": int(record.get("created_at") or 0),
             "expires_at": int(record.get("expires_at") or 0),
             "max_downloads": max_downloads,
@@ -534,6 +877,7 @@ class FileTransferStore:
             "remaining_downloads": remaining_downloads,
             "revoked": bool(record.get("revoked")),
             "transfer_type": str(record.get("transfer_type") or "sandbox").strip() or "sandbox",
+            "relay_mode": str(record.get("relay_mode") or "").strip(),
         }
 
         if include_private:
@@ -555,29 +899,7 @@ def resolve_record_file(record: Dict[str, Any]) -> Tuple[str, str, str]:
     transfer_type = str(record.get("transfer_type") or "").strip()
 
     if transfer_type == "live":
-        stored_path = str(record.get("stored_path") or "").strip().replace("\\", "/")
-
-        if not stored_path:
-            raise FileNotFoundError("在线传输文件信息不完整")
-
-        abs_path = os.path.normpath(os.path.join(BASE_DIR, stored_path))
-        live_root = os.path.normpath(os.path.abspath(LIVE_TRANSFER_DIR))
-        abs_path_real = os.path.normpath(os.path.abspath(abs_path))
-
-        if abs_path_real == live_root or not abs_path_real.startswith(live_root + os.sep):
-            raise FileNotFoundError("在线传输文件路径无效")
-
-        if not os.path.isfile(abs_path_real):
-            raise FileNotFoundError("在线传输文件不存在")
-
-        download_name = safe_filename(
-            record.get("original_name") or "download.bin",
-            default="download.bin",
-            max_len=180,
-        )
-        mimetype = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
-
-        return abs_path_real, download_name, mimetype
+        raise ValueError("在线传输必须通过实时中转流读取")
 
     owner = str(record.get("owner") or "").strip()
     file_ref = str(record.get("file_ref") or "").strip()
@@ -616,6 +938,93 @@ def get_download_client_ip() -> str:
 
 
 transfer_store = FileTransferStore()
+live_transfer_runtime = LiveTransferRelayRuntime()
+
+
+def get_live_transfer_request_download_id() -> str:
+    return normalize_live_download_id(
+        request.headers.get("X-Live-Transfer-Download-Id")
+        or request.args.get("download_id")
+        or request.form.get("download_id")
+    )
+
+
+def get_live_transfer_request_file_size() -> int:
+    data = request.get_json(silent=True) or {}
+
+    return coerce_int(
+        request.headers.get("X-Live-Transfer-File-Size")
+        or request.args.get("file_size")
+        or request.form.get("file_size")
+        or data.get("file_size", 0),
+        0,
+        LIVE_TRANSFER_FILE_SIZE_MAX,
+        "file_size",
+    )
+
+
+def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTransferDownloadSession) -> Response:
+    code_hash = str(record.get("code_hash") or session_item.code_hash or "").strip()
+    download_name = safe_filename(
+        record.get("original_name") or "download.bin",
+        default="download.bin",
+        max_len=180,
+    )
+    mimetype = str(record.get("mime_type") or "").strip() or mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+
+    def generate():
+        completed = False
+
+        try:
+            while True:
+                chunk = session_item.read_next_chunk()
+
+                if chunk is None:
+                    completed = True
+                    break
+
+                yield chunk
+
+            transfer_store.append_live_transfer_event(
+                code_hash=code_hash,
+                event_type="download_complete",
+                download_id=session_item.download_id,
+                bytes_transferred=session_item.bytes_sent,
+            )
+        except GeneratorExit:
+            session_item.fail("接收端已断开")
+            transfer_store.append_live_transfer_event(
+                code_hash=code_hash,
+                event_type="download_aborted",
+                download_id=session_item.download_id,
+                bytes_transferred=session_item.bytes_sent,
+                message="接收端已断开",
+            )
+            raise
+        except Exception as exc:
+            session_item.fail(str(exc))
+            transfer_store.append_live_transfer_event(
+                code_hash=code_hash,
+                event_type="download_failed",
+                download_id=session_item.download_id,
+                bytes_transferred=session_item.bytes_sent,
+                message=str(exc),
+            )
+            print(f"[Files] live transfer stream failed: {exc}")
+            raise
+        finally:
+            if completed:
+                live_transfer_runtime.close_download_session(session_item.download_id, "下载会话已完成")
+            else:
+                live_transfer_runtime.close_download_session(session_item.download_id, "下载会话已结束")
+
+    headers = {
+        "Content-Disposition": build_attachment_content_disposition(download_name),
+        "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
+    }
+
+    return Response(stream_with_context(generate()), headers=headers, mimetype=mimetype)
 
 
 @files_bp.route("/api/files/transfer/create", methods=["POST"])
@@ -674,22 +1083,42 @@ def list_file_transfers():
 def create_live_file_transfer():
     try:
         username = current_username()
-        upload_file = request.files.get("file")
+        if request.files.get("file") is not None:
+            raise ValueError("在线传输不接收文件内容，请只提交文件元数据")
+
+        data = request.get_json(silent=True) or {}
+        file_name = str(
+            data.get("file_name")
+            or data.get("filename")
+            or request.form.get("file_name")
+            or request.form.get("filename")
+            or ""
+        ).strip()
+        file_size = data.get("file_size", request.form.get("file_size", request.form.get("size", 0)))
+        mime_type = str(
+            data.get("mime_type")
+            or data.get("type")
+            or request.form.get("mime_type")
+            or request.form.get("type")
+            or ""
+        ).strip()
         expires_in_minutes = coerce_int(
-            request.form.get("expires_in_minutes", TRANSFER_EXPIRE_MINUTES_DEFAULT),
+            data.get("expires_in_minutes", request.form.get("expires_in_minutes", TRANSFER_EXPIRE_MINUTES_DEFAULT)),
             TRANSFER_EXPIRE_MINUTES_MIN,
             TRANSFER_EXPIRE_MINUTES_MAX,
             "expires_in_minutes",
         )
         max_downloads = coerce_int(
-            request.form.get("max_downloads", TRANSFER_MAX_DOWNLOADS_DEFAULT),
+            data.get("max_downloads", request.form.get("max_downloads", TRANSFER_MAX_DOWNLOADS_DEFAULT)),
             TRANSFER_MAX_DOWNLOADS_MIN,
             TRANSFER_MAX_DOWNLOADS_MAX,
             "max_downloads",
         )
         transfer = transfer_store.create_live_transfer(
             owner=username,
-            upload_file=upload_file,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
             expires_in_minutes=expires_in_minutes,
             max_downloads=max_downloads,
         )
@@ -707,6 +1136,79 @@ def create_live_file_transfer():
     except Exception as exc:
         print(f"[Files] create live transfer failed: {exc}")
         return json_error(f"创建在线传输失败: {str(exc)}", 500)
+
+
+@files_bp.route("/api/files/live-transfer/<path:code>/chunk", methods=["POST"])
+def push_live_file_transfer_chunk(code):
+    try:
+        username = current_username()
+        code_hash = hash_transfer_code(code)
+        download_id = get_live_transfer_request_download_id()
+        chunk_index = coerce_int(
+            request.headers.get("X-Live-Transfer-Chunk-Index")
+            or request.args.get("chunk_index")
+            or request.form.get("chunk_index"),
+            0,
+            1000000000,
+            "chunk_index",
+        )
+        content_length = int(request.content_length or 0)
+
+        if content_length > LIVE_TRANSFER_CHUNK_MAX_BYTES:
+            raise ValueError(f"单个分片不能超过 {LIVE_TRANSFER_CHUNK_MAX_BYTES} 字节")
+
+        transfer_store.touch_live_transfer_for_upload(owner=username, code=code)
+        session_item = live_transfer_runtime.get_download_session(
+            code_hash=code_hash,
+            download_id=download_id,
+        )
+        result = session_item.push_chunk(
+            chunk_index=chunk_index,
+            chunk=request.get_data(cache=False, as_text=False),
+        )
+
+        return jsonify({
+            "success": True,
+            **result,
+        })
+    except PermissionError as exc:
+        return json_error(str(exc), 403)
+    except FileNotFoundError as exc:
+        return json_error(str(exc), 404)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except Exception as exc:
+        print(f"[Files] push live transfer chunk failed: {exc}")
+        return json_error(f"发送在线传输分片失败: {str(exc)}", 500)
+
+
+@files_bp.route("/api/files/live-transfer/<path:code>/finish", methods=["POST"])
+def finish_live_file_transfer_upload(code):
+    try:
+        username = current_username()
+        code_hash = hash_transfer_code(code)
+        download_id = get_live_transfer_request_download_id()
+        file_size = get_live_transfer_request_file_size()
+        transfer_store.touch_live_transfer_for_upload(owner=username, code=code)
+        session_item = live_transfer_runtime.get_download_session(
+            code_hash=code_hash,
+            download_id=download_id,
+        )
+        result = session_item.finish(file_size)
+
+        return jsonify({
+            "success": True,
+            **result,
+        })
+    except PermissionError as exc:
+        return json_error(str(exc), 403)
+    except FileNotFoundError as exc:
+        return json_error(str(exc), 404)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except Exception as exc:
+        print(f"[Files] finish live transfer failed: {exc}")
+        return json_error(f"结束在线传输失败: {str(exc)}", 500)
 
 
 @files_bp.route("/api/files/live-transfer/<path:code>/heartbeat", methods=["POST"])
@@ -729,7 +1231,13 @@ def heartbeat_live_file_transfer(code):
 def revoke_live_file_transfer(code):
     try:
         username = current_username()
-        return jsonify(transfer_store.revoke_transfer(owner=username, code=code))
+        result = transfer_store.revoke_transfer(owner=username, code=code)
+        live_transfer_runtime.close_transfer_sessions(
+            hash_transfer_code(code),
+            "在线传输已关闭",
+        )
+
+        return jsonify(result)
     except PermissionError as exc:
         return json_error(str(exc), 403)
     except FileNotFoundError as exc:
@@ -788,7 +1296,13 @@ def get_file_transfer(code):
 def revoke_file_transfer(code):
     try:
         username = current_username()
-        return jsonify(transfer_store.revoke_transfer(owner=username, code=code))
+        result = transfer_store.revoke_transfer(owner=username, code=code)
+        live_transfer_runtime.close_transfer_sessions(
+            hash_transfer_code(code),
+            "读取码已撤销",
+        )
+
+        return jsonify(result)
     except PermissionError as exc:
         return json_error(str(exc), 403)
     except FileNotFoundError as exc:
@@ -802,21 +1316,44 @@ def revoke_file_transfer(code):
 
 @files_bp.route("/api/files/transfer/<path:code>/download", methods=["GET"])
 def download_file_transfer(code):
+    session_item = None
+
     try:
+        code_hash = hash_transfer_code(code)
+        session_item = live_transfer_runtime.create_download_session(code_hash=code_hash)
         record = transfer_store.claim_download(
             code,
             ip_address=get_download_client_ip(),
             user_agent=str(request.headers.get("User-Agent") or "").strip(),
+            live_download_id=session_item.download_id,
         )
+
+        if str(record.get("transfer_type") or "").strip() == "live":
+            return stream_live_transfer_download(record, session_item)
+
+        live_transfer_runtime.close_download_session(session_item.download_id, "非在线传输下载")
+        session_item = None
         abs_path, download_name, mimetype = resolve_record_file(record)
 
         return send_file(abs_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
     except FileNotFoundError as exc:
+        if session_item:
+            live_transfer_runtime.close_download_session(session_item.download_id, str(exc))
+
         return json_error(str(exc), 404)
     except PermissionError as exc:
+        if session_item:
+            live_transfer_runtime.close_download_session(session_item.download_id, str(exc))
+
         return json_error(str(exc), 403)
     except ValueError as exc:
+        if session_item:
+            live_transfer_runtime.close_download_session(session_item.download_id, str(exc))
+
         return json_error(str(exc), 400)
     except Exception as exc:
+        if session_item:
+            live_transfer_runtime.close_download_session(session_item.download_id, str(exc))
+
         print(f"[Files] download transfer failed: {exc}")
         return json_error(f"下载传输文件失败: {str(exc)}", 500)
