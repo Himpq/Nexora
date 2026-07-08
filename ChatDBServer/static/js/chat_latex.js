@@ -532,6 +532,13 @@
             ],
             ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
             throwOnError: false,
+            strict: (errorCode) => {
+                if (errorCode === 'unicodeTextInMathMode') {
+                    return 'ignore';
+                }
+
+                return 'warn';
+            },
         };
     }
 

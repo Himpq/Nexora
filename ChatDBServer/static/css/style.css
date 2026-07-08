@@ -611,7 +611,43 @@ body.learning-workspace-active .sidebar-footer {
     font-size: 12px;
 }
 
-.header-right { display: flex; align-items: center; gap: 10px; width: 200px; justify-content: flex-end; }
+.header-right { display: flex; align-items: center; gap: 8px; width: 220px; justify-content: flex-end; }
+.chat-header .header-right > .btn-icon {
+    box-sizing: border-box;
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.chat-header .header-right > .btn-icon svg,
+.chat-header .header-right > .btn-icon i {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    display: block;
+}
+
+.chat-header .header-right > .btn-icon i {
+    font-size: 20px;
+    line-height: 20px;
+    text-align: center;
+}
+
+.chat-header .header-right > .btn-icon:hover {
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.chat-header .header-right > .btn-icon[hidden] {
+    display: none !important;
+}
+
 .header-center {
   flex: 1;
   text-align: center;

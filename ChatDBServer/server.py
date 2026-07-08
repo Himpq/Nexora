@@ -44,7 +44,7 @@ from timeline import list_entries as list_timeline_entries, record_notes_snapsho
 from datastorage import safe_read_json, safe_write_json, get_path_lock
 from usage_logs import is_usage_log_path, read_usage_log_records, replace_usage_log_records
 from knowledge_word_exporter import KnowledgeWordExporter
-from runlog import init_run_logger
+from runlog import append_log_text, init_run_logger
 import conversation_asset_store
 import prompts
 from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
@@ -99,6 +99,19 @@ app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = timedelta(hours=1)
 sock = Sock(app)
 CORS(app)
+
+
+@app.before_request
+def disable_websocket_compression_extensions():
+    """浏览器控制通道只传小型 JSON 事件，禁用压缩扩展避免帧协商不一致。"""
+    path = str(request.path or '').strip()
+
+    if not path.startswith('/ws/'):
+        return None
+
+    request.environ.pop('HTTP_SEC_WEBSOCKET_EXTENSIONS', None)
+    return None
+
 
 # 切换到正确的工作目录
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -2520,6 +2533,8 @@ _MAIL_CACHE_LOCKS = {}
 _MAIL_CACHE_LOCKS_GUARD = threading.Lock()
 _BROWSER_WS_CLIENTS = {}
 _BROWSER_WS_LOCK = threading.Lock()
+_PUBLIC_KNOWLEDGE_WS_CLIENTS = {}
+_PUBLIC_KNOWLEDGE_WS_LOCK = threading.Lock()
 _NEXORA_MAIL_EVENT_STREAM_LOCK = threading.Lock()
 _NEXORA_MAIL_EVENT_STREAM_STARTED = False
 _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION = 0
@@ -2546,6 +2561,15 @@ def _browser_ws_client_payload(event_type: str, payload: Dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _log_browser_ws_runtime(event_name: str, payload: Dict[str, Any]) -> None:
+    safe_payload = dict(payload if isinstance(payload, dict) else {})
+    safe_payload['event'] = str(event_name or '').strip()
+    append_log_text(
+        json.dumps(safe_payload, ensure_ascii=False, separators=(',', ':')),
+        source='browser_wss',
+    )
+
+
 def _send_browser_ws_client(client: Dict[str, Any], event_type: str, payload: Dict[str, Any]) -> bool:
     ws = client.get('ws')
     lock = client.get('lock')
@@ -2559,7 +2583,14 @@ def _send_browser_ws_client(client: Dict[str, Any], event_type: str, payload: Di
             ws.send(message)
 
         return True
-    except Exception:
+    except Exception as e:
+        _log_browser_ws_runtime('send_failed', {
+            'username': str(client.get('username') or ''),
+            'client_id': str(client.get('client_id') or ''),
+            'event_type': str(event_type or ''),
+            'message_bytes': len(str(message).encode('utf-8')),
+            'error': repr(e),
+        })
         return False
 
 
@@ -2612,6 +2643,167 @@ def _send_browser_event_to_all(event_type: str, payload: Dict[str, Any]) -> None
 
     for user, client_id in dead_clients:
         _drop_browser_ws_client(user, client_id)
+
+
+def _public_knowledge_ws_room(owner_username: str, share_id: str) -> str:
+    owner = str(owner_username or '').strip()
+    sid = str(share_id or '').strip()
+    return f"{owner}:{sid}" if owner and sid else ''
+
+
+def _send_public_knowledge_ws_client(client: Dict[str, Any], event_type: str, payload: Dict[str, Any]) -> bool:
+    ws = client.get('ws')
+    lock = client.get('lock')
+    if not ws or not lock:
+        return False
+
+    try:
+        message = _browser_ws_client_payload(event_type, payload)
+
+        with lock:
+            ws.send(message)
+
+        return True
+    except Exception:
+        return False
+
+
+def _drop_public_knowledge_ws_client(room: str, client_id: str) -> None:
+    safe_room = str(room or '').strip()
+    if not safe_room:
+        return
+
+    with _PUBLIC_KNOWLEDGE_WS_LOCK:
+        room_clients = _PUBLIC_KNOWLEDGE_WS_CLIENTS.get(safe_room)
+        if not room_clients:
+            return
+
+        room_clients.pop(client_id, None)
+
+        if not room_clients:
+            _PUBLIC_KNOWLEDGE_WS_CLIENTS.pop(safe_room, None)
+
+
+def _send_public_knowledge_event(
+    owner_username: str,
+    share_id: str,
+    event_type: str,
+    payload: Dict[str, Any]
+) -> None:
+    room = _public_knowledge_ws_room(owner_username, share_id)
+    if not room:
+        return
+
+    with _PUBLIC_KNOWLEDGE_WS_LOCK:
+        room_clients = dict(_PUBLIC_KNOWLEDGE_WS_CLIENTS.get(room) or {})
+
+    dead_client_ids = []
+
+    for client_id, client in room_clients.items():
+
+        if not _send_public_knowledge_ws_client(client, event_type, payload):
+            dead_client_ids.append(client_id)
+
+    for client_id in dead_client_ids:
+        _drop_public_knowledge_ws_client(room, client_id)
+
+
+def _knowledge_content_hash(content: Any) -> str:
+    return hashlib.sha256(str(content or '').encode('utf-8')).hexdigest()
+
+
+def _knowledge_revision_token(value: Any) -> str:
+    try:
+        numeric = float(value or 0)
+    except Exception:
+        return str(value or '').strip()
+
+    if numeric <= 0:
+        return ''
+
+    return f"{numeric:.6f}"
+
+
+def _build_knowledge_version_payload(title: str, metadata: Any, content: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    updated_at = meta.get('updated_at') or 0
+
+    return {
+        'title': str(title or '').strip(),
+        'basis_id': str(meta.get('basis_id') or '').strip(),
+        'updated_at': updated_at,
+        'content_revision': _knowledge_revision_token(updated_at),
+        'content_hash': _knowledge_content_hash(content),
+    }
+
+
+def _knowledge_update_response_payload(title: str, result: Any, content: Any = None, user: Optional[User] = None) -> Dict[str, Any]:
+    if isinstance(result, dict):
+        payload = dict(result)
+        payload.setdefault('message', 'Success')
+    else:
+        payload = {'message': str(result or 'Success')}
+
+    payload['success'] = True
+    payload.setdefault('title', str(title or '').strip())
+
+    if content is not None and ('content_hash' not in payload or 'content_revision' not in payload):
+        meta = user.getBasisMetadata(title) if user else {}
+        payload.update(_build_knowledge_version_payload(title, meta, content))
+
+    return payload
+
+
+def _knowledge_conflict_response_payload(result: Any) -> Dict[str, Any]:
+    if isinstance(result, dict):
+        payload = dict(result)
+    else:
+        payload = {'message': str(result or '知识内容保存失败')}
+
+    payload['success'] = False
+    payload.setdefault('code', 'knowledge_content_update_failed')
+    return payload
+
+
+def _publish_knowledge_changed_event(
+    owner_username: str,
+    title: str,
+    payload: Dict[str, Any],
+    *,
+    source: str = 'knowledge_save',
+    actor_username: str = '',
+    share_id: str = '',
+    content: Any = None,
+) -> None:
+    owner = str(owner_username or '').strip()
+    safe_title = str(title or payload.get('title') or '').strip()
+
+    if not owner or not safe_title:
+        return
+
+    event_payload = {
+        'owner_username': owner,
+        'title': safe_title,
+        'source': str(source or '').strip() or 'knowledge_save',
+        'actor_username': str(actor_username or '').strip(),
+        'basis_id': str(payload.get('basis_id') or '').strip(),
+        'updated_at': payload.get('updated_at') or 0,
+        'content_revision': str(payload.get('content_revision') or '').strip(),
+        'content_hash': str(payload.get('content_hash') or '').strip(),
+    }
+
+    if content is not None:
+        event_payload['content'] = str(content or '')
+
+    _send_browser_event_to_user(owner, 'knowledge_changed', event_payload)
+
+    safe_share_id = str(share_id or payload.get('share_id') or '').strip()
+
+    if safe_share_id:
+        _send_public_knowledge_event(owner, safe_share_id, 'knowledge_changed', {
+            **event_payload,
+            'share_id': safe_share_id,
+        })
 
 
 def _invalidate_provider_models_cache_for_providers(provider_names: List[str]) -> None:
@@ -14532,6 +14724,7 @@ def get_all_basis():
     """获取所有基础知识"""
     username = session['username']
     user = User(username)
+    include_content = str(request.args.get('include_content') or '1').strip().lower() not in {'0', 'false', 'no'}
     
     try:
         knowledge_list = user.getKnowledgeList(1)  # 1表示基础知识
@@ -14545,13 +14738,19 @@ def get_all_basis():
             safe_title = str(title or '').strip()
             if not safe_title:
                 continue
-            content = user.getBasisContent(safe_title)
-            result.append({
+            item = {
                 'title': safe_title,
-                'content': content,
                 'pin': bool((meta or {}).get('pin', False)) if isinstance(meta, dict) else False,
-                'model_readonly': bool((meta or {}).get('model_readonly', False)) if isinstance(meta, dict) else False
-            })
+                'model_readonly': bool((meta or {}).get('model_readonly', False)) if isinstance(meta, dict) else False,
+                'updated_at': (meta or {}).get('updated_at') if isinstance(meta, dict) else 0,
+                'basis_id': str((meta or {}).get('basis_id') or '').strip() if isinstance(meta, dict) else ''
+            }
+
+            if include_content:
+                content = user.getBasisContent(safe_title)
+                item['content'] = content
+
+            result.append(item)
         return jsonify({'success': True, 'knowledge': result})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -14604,6 +14803,8 @@ def update_basis_content(title=None):
     
     title = title or data.get('title')
     content = data.get('content')
+    base_content_revision = data.get('base_content_revision') or data.get('base_revision')
+    base_content_hash = data.get('base_content_hash') or data.get('content_hash')
     
     if not title:
         return jsonify({'success': False, 'message': '标题不能为空'}), 400
@@ -14618,8 +14819,27 @@ def update_basis_content(title=None):
             title,
             content,
             timeline_actor=_current_user_timeline_actor(),
+            base_content_revision=base_content_revision,
+            base_content_hash=base_content_hash,
         )
-        return jsonify({'success': success, 'message': msg})
+        if success:
+            payload = _knowledge_update_response_payload(title, msg, content, user)
+            publish_meta = user.getBasisMetadata(title)
+            publish_share_id = str((publish_meta or {}).get('share_id') or '').strip() if isinstance(publish_meta, dict) else ''
+            _publish_knowledge_changed_event(
+                username,
+                title,
+                payload,
+                source='owner_save',
+                actor_username=str(session.get('username') or '').strip(),
+                share_id=publish_share_id,
+                content=content,
+            )
+            return jsonify(payload)
+
+        payload = _knowledge_conflict_response_payload(msg)
+        status_code = 409 if payload.get('code') == 'knowledge_content_conflict' else 400
+        return jsonify(payload), status_code
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -14635,6 +14855,7 @@ def get_basis_content(title):
         user = User(username)
         content = user.getBasisContent(title)
         metadata = user.getBasisMetadata(title)
+        version_payload = _build_knowledge_version_payload(title, metadata, content)
         return jsonify({
             'success': True, 
             'knowledge': {
@@ -14644,6 +14865,7 @@ def get_basis_content(title):
                 'owner_username': username,
                 'added_by': document.get('added_by') if document else username,
                 'workspace_id': workspace_id,
+                **version_payload,
             }
         })
     except Exception as e:
@@ -14809,6 +15031,15 @@ def update_knowledge_settings():
         # 如果获取了新标题或状态，返回新的 share_url
         meta = user.getBasisMetadata(new_title or title)
         share_id = meta.get('share_id', '')
+
+        if share_id and not (bool(meta.get('public')) and bool(meta.get('collaborative'))):
+            _send_public_knowledge_event(username, share_id, 'public_knowledge_closed', {
+                'owner_username': username,
+                'share_id': share_id,
+                'title': new_title or title,
+                'message': '该协作链接已关闭或权限已变更',
+            })
+
         base_url = get_public_base_url()
         share_url = f"{base_url}/public/knowledge/{username}/{share_id}"
         return jsonify({'success': True, 'message': msg, 'share_url': share_url, 'owner_username': username})
@@ -14845,13 +15076,17 @@ def public_view_knowledge(username, share_id):
         return "该知识点未公开或不存在", 403
         
     content = user.getBasisContent(title)
+    version_payload = _build_knowledge_version_payload(title, meta, content)
     # 如果允许协作，则进入协作编辑器，否则只读渲染
     if meta.get("collaborative"):
         return render_template('knowledge_public_edit.html', 
                                username=username, 
                                title=title, 
                                share_id=share_id,
-                               content=content)
+                               content=content,
+                               content_revision=version_payload.get('content_revision', ''),
+                               content_hash=version_payload.get('content_hash', ''),
+                               updated_at=version_payload.get('updated_at', 0))
     else:
         return render_template('knowledge_public_view.html', 
                                username=username, 
@@ -14867,12 +15102,14 @@ def public_api_get_knowledge(username, share_id):
         return jsonify({'success': False, 'message': 'Forbidden'}), 403
         
     content = user.getBasisContent(title)
+    version_payload = _build_knowledge_version_payload(title, meta, content)
     return jsonify({
         'success': True,
         'title': title,
         'content': content,
         'username': username,
-        'collaborative': meta.get("collaborative", False)
+        'collaborative': meta.get("collaborative", False),
+        **version_payload,
     })
 
 @app.route('/api/public/knowledge/<username>/<share_id>', methods=['PUT', 'POST'])
@@ -14885,12 +15122,35 @@ def public_api_edit_knowledge(username, share_id):
         
     data = request.get_json()
     content = data.get('content')
+    base_content_revision = data.get('base_content_revision') or data.get('base_revision')
+    base_content_hash = data.get('base_content_hash') or data.get('content_hash')
     
-    if not content:
+    if content is None:
         return jsonify({'success': False, 'message': '内容不能为空'})
         
-    success, msg = user.updateBasisContent(title, content)
-    return jsonify({'success': success, 'message': msg})
+    success, msg = user.updateBasisContent(
+        title,
+        content,
+        base_content_revision=base_content_revision,
+        base_content_hash=base_content_hash,
+    )
+
+    if success:
+        payload = _knowledge_update_response_payload(title, msg, content, user)
+        _publish_knowledge_changed_event(
+            username,
+            title,
+            payload,
+            source='public_collab_save',
+            actor_username='public_collaborator',
+            share_id=share_id,
+            content=content,
+        )
+        return jsonify(payload)
+
+    payload = _knowledge_conflict_response_payload(msg)
+    status_code = 409 if payload.get('code') == 'knowledge_content_conflict' else 400
+    return jsonify(payload), status_code
 
 
 def _resolve_public_collab_basis(username: str, share_id: str) -> Tuple[Optional[User], Optional[str], Optional[Dict[str, Any]], Optional[Response]]:
@@ -16058,6 +16318,87 @@ def get_agent_status():
 from agent_tunnel import handle_agent_result
 
 
+@sock.route('/ws/public/knowledge/<username>/<share_id>')
+def public_knowledge_socket(ws, username, share_id):
+    user, title, meta, err = _resolve_public_collab_basis(username, share_id)
+    if err is not None:
+        try:
+            ws.send(json.dumps({'type': 'error', 'message': 'Forbidden'}, ensure_ascii=False))
+        except Exception:
+            pass
+        return
+
+    owner = str(user.user or username or '').strip()
+    safe_share_id = str(share_id or '').strip()
+    room = _public_knowledge_ws_room(owner, safe_share_id)
+    client_id = uuid.uuid4().hex
+
+    if not room:
+        try:
+            ws.send(json.dumps({'type': 'error', 'message': 'invalid room'}, ensure_ascii=False))
+        except Exception:
+            pass
+        return
+
+    client = {
+        'ws': ws,
+        'lock': threading.Lock(),
+        'connected_at': int(time.time()),
+        'owner_username': owner,
+        'share_id': safe_share_id,
+        'title': str(title or '').strip(),
+    }
+
+    with _PUBLIC_KNOWLEDGE_WS_LOCK:
+        _PUBLIC_KNOWLEDGE_WS_CLIENTS.setdefault(room, {})[client_id] = client
+
+    _send_public_knowledge_ws_client(client, 'public_knowledge_ready', {
+        'client_id': client_id,
+        'owner_username': owner,
+        'share_id': safe_share_id,
+        'title': str(title or '').strip(),
+    })
+
+    try:
+        while True:
+            raw = ws.receive()
+
+            if raw is None:
+                break
+
+            try:
+                data = json.loads(raw) if raw else {}
+            except Exception:
+                data = {}
+
+            msg_type = str(data.get('type') or '').strip()
+
+            if msg_type == 'ping':
+                _send_public_knowledge_ws_client(client, 'pong', {'client_id': client_id})
+            elif msg_type == 'sync_knowledge':
+                live_user, live_title, live_meta, live_err = _resolve_public_collab_basis(owner, safe_share_id)
+
+                if live_err is not None:
+                    _send_public_knowledge_ws_client(client, 'public_knowledge_closed', {
+                        'message': '该协作链接已关闭或权限已变更',
+                    })
+                    break
+
+                live_content = live_user.getBasisContent(live_title)
+                live_payload = _build_knowledge_version_payload(live_title, live_meta, live_content)
+                _send_public_knowledge_ws_client(client, 'knowledge_state', {
+                    'owner_username': owner,
+                    'share_id': safe_share_id,
+                    'title': live_title,
+                    **live_payload,
+                })
+
+    except Exception as e:
+        print(f"[Public Knowledge WSS] disconnected owner={owner} share_id={safe_share_id} client={client_id}: {e}")
+    finally:
+        _drop_public_knowledge_ws_client(room, client_id)
+
+
 @sock.route('/ws/browser')
 def browser_sync_socket(ws):
     username = str(session.get('username') or '').strip()
@@ -16070,11 +16411,18 @@ def browser_sync_socket(ws):
     client = {
         'ws': ws,
         'lock': threading.Lock(),
+        'username': username,
+        'client_id': client_id,
         'connected_at': int(time.time()),
     }
 
     with _BROWSER_WS_LOCK:
         _BROWSER_WS_CLIENTS.setdefault(username, {})[client_id] = client
+
+    _log_browser_ws_runtime('connected', {
+        'username': username,
+        'client_id': client_id,
+    })
 
     _send_browser_ws_client(client, 'browser_ready', {
         'client_id': client_id,
@@ -16165,8 +16513,17 @@ def browser_sync_socket(ws):
                     )
 
     except Exception as e:
+        _log_browser_ws_runtime('receive_failed', {
+            'username': username,
+            'client_id': client_id,
+            'error': repr(e),
+        })
         print(f"[Browser WSS] disconnected username={username} client={client_id}: {e}")
     finally:
+        _log_browser_ws_runtime('disconnected', {
+            'username': username,
+            'client_id': client_id,
+        })
         _drop_browser_ws_client(username, client_id)
 
 

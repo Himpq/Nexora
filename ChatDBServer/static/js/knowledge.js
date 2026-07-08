@@ -104,16 +104,35 @@ function switchTab(tab) {
 
 // 加载基础知识
 async function loadBasisKnowledge() {
+    renderBasisKnowledgeLoading();
+
     try {
-        const response = await fetch('/api/knowledge/basis');
+        const response = await fetch('/api/knowledge/basis?include_content=0');
         const data = await response.json();
         
         if (data.success) {
             renderBasisKnowledge(data.knowledge);
+        } else {
+            showError(data.error || data.message || '加载基础知识失败');
         }
     } catch (error) {
         console.error('加载基础知识失败:', error);
         showError('加载基础知识失败');
+    }
+}
+
+function renderBasisKnowledgeLoading() {
+    basisGrid.innerHTML = '';
+
+    for (let i = 0; i < 6; i++) {
+        const card = document.createElement('div');
+        card.className = 'knowledge-card knowledge-card-loading';
+        card.innerHTML = `
+            <div class="skeleton skeleton-title"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line short"></div>
+        `;
+        basisGrid.appendChild(card);
     }
 }
 
@@ -131,9 +150,10 @@ function renderBasisKnowledge(knowledgeList) {
         card.className = 'knowledge-card';
         
         // 截取内容预览
-        const preview = item.content.length > 100 
-            ? item.content.substring(0, 100) + '...' 
-            : item.content;
+        const updatedAt = Number(item.updated_at || 0)
+            ? new Date(Number(item.updated_at || 0) * 1000).toLocaleString()
+            : '未记录更新时间';
+        const preview = `最后更新：${updatedAt}`;
         
         card.innerHTML = `
             <h3>${escapeHtml(item.title)}</h3>

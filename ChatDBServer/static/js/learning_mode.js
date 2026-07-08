@@ -13,6 +13,7 @@
     const SIDEBAR_CHAT_NEAR_BOTTOM_PX = 45;
     const SIDEBAR_CHAT_BREAK_UP_PX = 0;
     const sidebarChatScrollState = new WeakMap();
+    const learningModeLogger = window.NexoraLog.logger('LearningMode');
 
     // ---- Chat bridge (registered by chat.js) ----
     let chatBridge = null;
@@ -207,7 +208,7 @@
                 iframe.contentWindow.postMessage({ type: 'nexora:puzzle:unlock' }, '*');
             } catch (_) {}
             try {
-                console.log('[LearningMode] syncPuzzleCardLockState unlock', { puzzleId });
+                learningModeLogger.debug('[LearningMode] syncPuzzleCardLockState unlock', { puzzleId });
             } catch (_) {}
             return;
         }
@@ -231,7 +232,7 @@
             );
         } catch (_) {}
         try {
-            console.log('[LearningMode] syncPuzzleCardLockState lock', { puzzleId });
+            learningModeLogger.debug('[LearningMode] syncPuzzleCardLockState lock', { puzzleId });
         } catch (_) {}
     }
 
@@ -252,7 +253,7 @@
         const storedRecord = getStoredPuzzleSubmissionRecord(cardId);
         const shouldUseStoredResolved = !!(storedRecord && storedRecord.submission && typeof storedRecord.submission === 'object');
         try {
-            console.log('[LearningMode] createPuzzleCardNode', {
+            learningModeLogger.debug('[LearningMode] createPuzzleCardNode', {
                 cardId,
                 payloadHasId: !!String(payload.puzzle_id || '').trim(),
                 payloadResolved,
@@ -586,7 +587,7 @@
             : [];
         const submission = (data.submission && typeof data.submission === 'object') ? data.submission : null;
         try {
-            console.log('[LearningMode] puzzle submit payload', {
+            learningModeLogger.debug('[LearningMode] puzzle submit payload', {
                 steps: orderedSteps.length,
                 sourceWindow: !!(event && event.source),
                 hasSubmission: !!submission
@@ -1639,7 +1640,7 @@
             : (Array.isArray(submission && submission.ordered_steps) ? submission.ordered_steps : []);
         const puzzleIdHint = String(payload.puzzle_id || (submission && submission.puzzle_id) || '').trim();
         try {
-            console.log('[LearningMode] handlePuzzleIframeSubmit', {
+            learningModeLogger.debug('[LearningMode] handlePuzzleIframeSubmit', {
                 hasCard: !!puzzleCard,
                 steps: resolvedSteps.length,
                 hasSubmission: !!submission,
@@ -1669,7 +1670,7 @@
             rememberLockedPuzzle(fallbackCardId, serverState.submission);
         }
         try {
-            console.log('[LearningMode] appendPuzzleStep', {
+            learningModeLogger.debug('[LearningMode] appendPuzzleStep', {
                 puzzleId: payload.puzzle_id,
                 hasStepCallId: !!String((step && step.call_id) || '').trim(),
                 hasServerState: !!serverState,

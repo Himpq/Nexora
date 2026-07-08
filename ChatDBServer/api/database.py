@@ -150,6 +150,33 @@ class User:
         digest = hashlib.md5(seed.encode("utf-8")).hexdigest()[:12]
         return f"kb_{digest}"
 
+    def _basis_content_hash(self, content):
+        return hashlib.sha256(str(content or "").encode("utf-8")).hexdigest()
+
+    def _basis_revision_token(self, value):
+        try:
+            numeric = float(value or 0)
+        except Exception:
+            return str(value or "").strip()
+
+        if numeric <= 0:
+            return ""
+
+        return f"{numeric:.6f}"
+
+    def _build_basis_version_payload(self, title, meta, content):
+        safe_meta = meta if isinstance(meta, dict) else {}
+        updated_at = safe_meta.get("updated_at") or 0
+        basis_id = str(safe_meta.get("basis_id") or "").strip()
+
+        return {
+            "title": str(title or "").strip(),
+            "basis_id": basis_id,
+            "updated_at": updated_at,
+            "content_revision": self._basis_revision_token(updated_at),
+            "content_hash": self._basis_content_hash(content),
+        }
+
     def _ensure_basis_ids_in_db(self, db):
         changed = False
         data_basis = db.get("data_basis", {})
@@ -874,20 +901,66 @@ class User:
             "matches": matches
         }, ensure_ascii=False)
 
-    def updateBasisContent(self, title, content, timeline_actor=None):
+    def updateBasisContent(
+        self,
+        title,
+        content,
+        timeline_actor=None,
+        base_content_revision=None,
+        base_content_hash=None
+    ):
         lock = get_user_lock(self.user)
         with lock:
             db = safe_read_json(self.path + "database.json", default={})
             
             if title not in db.get("data_basis", {}):
                 return False, "Title not found"
-                
-            src = db["data_basis"][title]["src"]
+
+            meta = db["data_basis"][title]
+            src = meta["src"]
             try:
                 original = safe_read_text(src)
+                current_version = self._build_basis_version_payload(title, meta, original)
+                expected_revision = str(base_content_revision or "").strip()
+                expected_hash = str(base_content_hash or "").strip().lower()
+
+                revision_conflict = bool(
+                    expected_revision
+                    and expected_revision != str(current_version.get("content_revision") or "")
+                )
+                hash_conflict = bool(
+                    expected_hash
+                    and expected_hash != str(current_version.get("content_hash") or "").lower()
+                )
+
+                if revision_conflict or hash_conflict:
+                    if str(content or "") == str(original or ""):
+                        return True, current_version
+
+                    print(
+                        "[KnowledgeSync] content conflict "
+                        f"user={self.user} title={title} "
+                        f"expected_revision={expected_revision} "
+                        f"current_revision={current_version.get('content_revision') or ''} "
+                        f"expected_hash={(expected_hash or '')[:12]} "
+                        f"current_hash={str(current_version.get('content_hash') or '')[:12]} "
+                        f"incoming_length={len(str(content or ''))} "
+                        f"current_length={len(str(original or ''))}"
+                    )
+
+                    return False, {
+                        "code": "knowledge_content_conflict",
+                        "message": "知识内容已被其他编辑端更新，已拒绝覆盖。",
+                        "server": {
+                            **current_version,
+                            "content": original,
+                        }
+                    }
+
                 safe_write_text(src, content)
-                db["data_basis"][title]["updated_at"] = time.time()
-                db["data_basis"][title]["vector_updated_at"] = 0
+                meta["updated_at"] = time.time()
+                meta["vector_updated_at"] = 0
+                saved_version = self._build_basis_version_payload(title, meta, content)
                 safe_write_json(self.path + "database.json", db)
             except Exception as e:
                 return False, str(e)
@@ -903,7 +976,10 @@ class User:
                 timeline_actor=timeline_actor,
                 extra={"field": "content"}
             )
-        return True, "Success"
+        return True, {
+            "message": "Success",
+            **saved_version,
+        }
     
     def updateBasis(
         self,

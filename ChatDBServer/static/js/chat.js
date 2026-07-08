@@ -12,6 +12,10 @@ const INVISIBLE_TEXT_PATTERN = new RegExp(`[${INVISIBLE_TEXT_CHARS}]`, 'g');
 const PRIVATE_USE_AREA_PATTERN = new RegExp(`[${String.fromCharCode(0xE000)}-${String.fromCharCode(0xF8FF)}]`, 'g');
 const DIRTY_NOT_EQUAL_PLACEHOLDER = String.fromCharCode(0xE020);
 const NOTE_SELECTION_PARAGRAPH_MARKER = String.fromCharCode(0xE001);
+const rebuildLayoutLogger = window.NexoraLog.logger('rebuildLayout');
+const turnPopupLogger = window.NexoraLog.logger('TurnPopup');
+const longTaskLogger = window.NexoraLog.logger('LongTask');
+const nexoraLatencyLogger = window.NexoraLog.logger('NexoraLatency');
 
 function removeInvisibleTextChars(text) {
     return String(text || '').replace(INVISIBLE_TEXT_PATTERN, '');
@@ -506,12 +510,28 @@ let adminPublicApiActionMode = 'generate';
 let adminSelectedPublicApiKeyId = '';
 let adminPublicApiModalCompleted = false;
 let adminPublicApiDeleteTargetKey = null;
+const ADMIN_QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit';
+const ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY = 'chatdb.admin.quota_adjust_mode';
+let adminModelConfigCache = { models: {}, providers: {} };
+let adminSelectedProvider = '';
+let adminModelSearchKeyword = '';
+let adminQuotaDefaultOverageAction = 'disable_model';
+let adminProviderOverageActionMap = {};
+let adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
+let adminServerQuotaProvidersCache = [];
+let adminQuotaOverageNoticeChecked = false;
+let adminTextConfirmHandler = null;
+let adminPanelScrollState = { providers: 0, models: 0 };
+let adminConfigState = { mode: '', originalKey: '' };
+let adminOllamaModelStatusCache = {};
+let adminOllamaStatusPending = new Map();
+let adminOllamaStatusModalState = { provider: '', model: '', status: null, loading: false };
 const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
 const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260620_01';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260708_console_gate_01';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
 const BROWSER_SYNC_PING_MS = 20000;
@@ -525,6 +545,11 @@ let browserSyncPingTimer = null;
 let browserModelConfigSyncTimer = null;
 let browserOllamaStatusProviders = [];
 let browserSyncManuallyClosed = false;
+let browserSyncSocketSerial = 0;
+let originalHeaderState = null;
+let navigationStack = [];
+let currentSearchQuery = ''; // 保存搜索关键词，以便返回时重新显示
+let chatHeaderBaseState = null;
 let chatModelConfigSyncState = {
     version: '',
     inFlight: false,
@@ -570,6 +595,69 @@ let tokenBudgetTooltipState = {
 };
 const MODEL_CONTEXT_REFRESH_DELAY_MS = 1200;
 const MODEL_CONTEXT_RELOAD_DELAY_MS = 12000;
+const LOCAL_PROVIDER_ICON_MAP = {
+    github: '',
+    alibabacloud: '/static/img/Index/static/icons/aliyun.png',
+    aliyun: '/static/img/icons/tongyi_single_icon.png',
+    bytedance: '/static/img/icons/volcengine_single_icon.svg',
+    volcengine: '/static/img/icons/volcengine_single_icon.svg',
+    qq: '/static/img/icons/tencent_cloud_single_icon.svg',
+    wechat: '/static/img/icons/tencent_cloud_single_icon.svg',
+    tencent: '/static/img/icons/tencent_cloud_single_icon.svg',
+    deepseek: '/static/img/icons/deepseek_single_icon.svg',
+    openai: '/static/img/icons/openai_single_icon.svg',
+    stepfun: '/static/img/icons/stepfun_single_icon.png',
+    moonshot: '/static/img/icons/kimi_single_icon.png',
+    kimi: '/static/img/icons/kimi_single_icon.png',
+    minimax: '/static/img/icons/minimax_single_icon.png',
+    siliconflow: '/static/img/icons/siliconflow_single_icon.svg',
+    openrouter: '/static/img/icons/openrouter_single_icon.svg',
+    xunfei: '/static/img/icons/xunfei_spark_single_icon.svg',
+    spark: '/static/img/icons/xunfei_spark_single_icon.svg',
+    hunyuan: '/static/img/icons/hunyuan_single_icon.png',
+    ollama: '/static/img/icons/ollama_single_icon.svg',
+    nvidia: '/static/img/icons/nvidia.svg',
+    zhipu: '/static/img/icons/zhipu_single_icon.svg',
+    zhipuai: '/static/img/icons/zhipu_single_icon.svg',
+    zai: '/static/img/icons/zhipu_single_icon.svg',
+    bigmodel: '/static/img/icons/zhipu_single_icon.svg'
+};
+const MODEL_PROVIDER_LABEL_MAP = {
+    volcengine: '火山引擎',
+    aliyun: '阿里云',
+    dashscope: '阿里云',
+    stepfun: '阶跃星辰',
+    github: 'GitHub',
+    suanli: '算力猫',
+    openai: 'OpenAI',
+    deepseek: 'DeepSeek',
+    ollama: 'Ollama',
+    openrouter: 'OpenRouter',
+    siliconflow: '硅基流动',
+    moonshot: '月之暗面',
+    zhipu: '智谱',
+    hunyuan: '腾讯混元',
+    minimax: 'MiniMax',
+    nvidia: 'NVIDIA',
+};
+const MODEL_PROVIDER_ORDER_MAP = {
+    volcengine: 10,
+    aliyun: 20,
+    dashscope: 20,
+    stepfun: 30,
+    github: 40,
+    suanli: 50,
+    openai: 60,
+    deepseek: 70,
+    ollama: 80,
+    openrouter: 90,
+    siliconflow: 100,
+    moonshot: 110,
+    zhipu: 120,
+    hunyuan: 130,
+    minimax: 140,
+    nvidia: 150,
+};
 let modelOptionsDockState = null;
 let modelSelectListenersBound = false;
 let modelContextRefreshScheduled = false;
@@ -634,6 +722,82 @@ const userPromptEditController = getNexoraChatMessages().createUserPromptEditCon
     startRegenerate,
     isChatMobileLayout,
 });
+// --- Knowledge View Logic ---
+let knowledgeMetaCache = {};
+let knowledgeVectorizationEnabled = false;
+let bulkVectorizeRunning = false;
+const KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME = 'nexora-upload://';
+const KNOWLEDGE_IMAGE_PENDING_ALT = '上传中...';
+const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
+const knowledgeImageUploadRuntime = {
+    pending: new Map()
+};
+const knowledgeEditorController = getNexoraChatKnowledge().createKnowledgeEditorController({
+    getPreviewEl: () => getKnowledgeEditorPreviewEl(),
+    getScrollerEl: () => getKnowledgeEditorScrollerEl(),
+    getProseMirrorEl: () => getToastProseMirrorEl(),
+    getViewerEl: () => document.getElementById('knowledgeViewer'),
+    logDebug: (...args) => logKnowledgeEditorDebug(...args),
+    collectLayoutSnapshot: () => collectKnowledgeEditorLayoutSnapshot(),
+    summarizeNode: (...args) => summarizeKnowledgeEditorNode(...args),
+    getPendingImageUploadCount: () => knowledgeImageUploadRuntime.pending.size,
+    getWorkspaceKnowledgeRequestFields,
+    appendWorkspaceKnowledgeQuery,
+    getActiveWorkspaceKnowledgeContext,
+    getKnowledgeMetaCache: () => knowledgeMetaCache,
+    getCurrentConversationId: () => currentConversationId,
+    getCurrentUsername: () => currentUsername,
+    loadKnowledge,
+    showToast,
+    renderMarkdownForNotes,
+    bindSourceMarkdown,
+    renderMathSafe,
+    isDebugEnabled: () => isKnowledgeEditorDebugEnabled(),
+    escapeRegexPattern,
+    normalizeUploadFile,
+    normalizeKnowledgeImageFileName,
+    allocateKnowledgeImageSlot,
+    uploadKnowledgeImageByFile,
+    buildKnowledgeImagePlaceholderToken,
+    buildKnowledgeImagePlaceholderMarkdown,
+    normalizeKnowledgeImageAltText,
+    trackPendingImageUpload: (imageId, payload) => knowledgeImageUploadRuntime.pending.set(imageId, payload),
+    releasePendingImageUpload: (imageId) => knowledgeImageUploadRuntime.pending.delete(imageId),
+    extractFilesFromClipboardEvent,
+    knowledgeImagePendingAlt: KNOWLEDGE_IMAGE_PENDING_ALT,
+    knowledgeImageFailedAlt: KNOWLEDGE_IMAGE_FAILED_ALT,
+    normalizeWorkspaceConversationHeaderContext: normalizeWorkspaceConversationHeaderContextForConversationLoad,
+    restoreWorkspaceDetailInputContainer: restoreWorkspaceDetailInputContainerForConversationLoad,
+    getOriginalHeaderState: () => originalHeaderState,
+    setOriginalHeaderState: (nextState) => {
+        originalHeaderState = nextState;
+    },
+    getNavigationStack: () => navigationStack,
+    setNavigationStack: (nextStack) => {
+        navigationStack = nextStack;
+    },
+    saveCurrentViewerState,
+    getElements: () => els,
+    syncTurnIndicatorVisibility: () => _syncTurnIndicatorVisibility(),
+    applyDesktopHeaderTools,
+    hideFileCenterContextMenu,
+    closeFileCenterSortDropdown,
+    exitLearningFeedComposeMode,
+    getCurrentSearchQuery: () => currentSearchQuery,
+    setLastKnowledgeSearchResults: (results) => {
+        lastKnowledgeSearchResults = results;
+    },
+    renderSearchResultsFromCache,
+    escapeHtml,
+    selectWorkspaceProject: selectWorkspaceProjectForConversationLoad,
+    resizeMessageInput,
+    restoreHeaderState,
+    getChatHeaderBaseState: () => chatHeaderBaseState,
+    clearMailViewUrl,
+    syncLearningHeaderMode,
+});
+
+
 const knowledgeController = getNexoraChatKnowledge().createKnowledgeController({
     escapeHtml,
     showToast,
@@ -646,7 +810,7 @@ const knowledgeSidebarController = getNexoraChatKnowledge().createKnowledgeSideb
     getElements: () => els,
     getCurrentConversationId: () => currentConversationId,
     getUploadedFileIds: () => uploadedFileIds,
-    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getCurrentViewingKnowledge: () => knowledgeEditorController.getCurrentTitle(),
     getKnowledgeMetaCache: () => knowledgeMetaCache,
     setKnowledgeMetaCache: (value) => {
         knowledgeMetaCache = (value && typeof value === 'object') ? value : {};
@@ -675,7 +839,7 @@ const knowledgeSidebarController = getNexoraChatKnowledge().createKnowledgeSideb
 const knowledgeVectorController = getNexoraChatKnowledge().createKnowledgeVectorController({
     getElements: () => els,
     getCurrentConversationId: () => currentConversationId,
-    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getCurrentViewingKnowledge: () => knowledgeEditorController.getCurrentTitle(),
     getKnowledgeMetaCache: () => knowledgeMetaCache,
     isKnowledgeVectorizationEnabled: () => knowledgeVectorizationEnabled,
     setKnowledgeVectorizationEnabled: (enabled) => {
@@ -693,11 +857,11 @@ const knowledgeVectorController = getNexoraChatKnowledge().createKnowledgeVector
     pollKnowledgeVectorTask,
 });
 const knowledgeWorkspaceController = getNexoraChatKnowledge().createKnowledgeWorkspaceController({
-    getKnowledgeWorkspaceReturnContext: () => knowledgeEditorControllerState.workspaceReturnContext,
+    getKnowledgeWorkspaceReturnContext: () => knowledgeEditorController.getWorkspaceReturnContext(),
     getCurrentUsername: () => currentUsername,
 });
 const knowledgeSettingsController = getNexoraChatKnowledge().createKnowledgeSettingsController({
-    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getCurrentViewingKnowledge: () => knowledgeEditorController.getCurrentTitle(),
     getCurrentUsername: () => currentUsername,
     ensureCurrentUser: checkUserRole,
     getActiveWorkspaceKnowledgeContext,
@@ -1054,7 +1218,7 @@ const conversationListController = getNexoraChatConversations().createConversati
     showToast,
     isChatMobileLayout,
     showPinContextMenu,
-    getCurrentViewingKnowledge: () => knowledgeEditorControllerState.currentTitle,
+    getCurrentViewingKnowledge: () => knowledgeEditorController.getCurrentTitle(),
     closeKnowledgeView,
     markConversationStreamRead,
     loadConversation,
@@ -1131,6 +1295,31 @@ const adminUsersController = getNexoraChatAdminUsers().createAdminUsersControlle
     readAdminJsonResponse,
     closeAddUserModal,
 });
+const mailsModuleForRuntime = getNexoraChatMailsIfEnabled();
+
+if (mailsModuleForRuntime) {
+    mailsModuleForRuntime.setMailUiRuntime({
+        closeKnowledgePanel,
+        closeCloudFilePanel,
+        exitLearningFeedComposeMode,
+        restoreWorkspaceDetailInputContainer: restoreWorkspaceDetailInputContainerForConversationLoad,
+        getOriginalHeaderState: () => originalHeaderState,
+        setOriginalHeaderState: (nextState) => {
+            originalHeaderState = nextState;
+        },
+        resetKnowledgeViewRuntimeState: () => {
+            knowledgeEditorController.clearCurrentTitle();
+            knowledgeEditorController.clearWorkspaceReturnContext();
+            knowledgeEditorController.clearPendingHighlightData();
+            navigationStack = [];
+        },
+        getElements: () => els,
+        applyDesktopHeaderTools,
+        syncTurnIndicatorVisibility: () => _syncTurnIndicatorVisibility(),
+    });
+    mailsModuleForRuntime.setAdminUsersRuntime(adminUsersController);
+}
+
 const adminSettingsTabsController = getNexoraChatAdmin().createAdminSettingsTabsController({
     closeQuotaAdjustPopover: () => _closeQuotaAdjustPopover(),
     getSettingsModal: () => document.getElementById('settingsModal'),
@@ -4559,6 +4748,13 @@ async function syncChatModelsFromBrowserEvent(payload = {}) {
 function handleBrowserSyncMessage(payload) {
     const msgType = String(payload && payload.type ? payload.type : '').trim();
 
+    if (msgType === 'browser_ready') {
+        if (knowledgeEditorController && typeof knowledgeEditorController.syncCurrentKnowledgeFromServer === 'function') {
+            void knowledgeEditorController.syncCurrentKnowledgeFromServer('browser-ready');
+        }
+        return;
+    }
+
     if (msgType === 'agent_status') {
         setDesktopAgentIndicatorState(!!payload.online);
         return;
@@ -4586,6 +4782,15 @@ function handleBrowserSyncMessage(payload) {
 
     if (msgType === 'ollama_status_state' || msgType === 'ollama_status_changed') {
         handleBrowserOllamaStatusEvent(payload);
+        return;
+    }
+
+    if (msgType === 'knowledge_changed') {
+        if (knowledgeEditorController && typeof knowledgeEditorController.handleKnowledgeChangedEvent === 'function') {
+            void knowledgeEditorController.handleKnowledgeChangedEvent(payload);
+        } else {
+            void loadKnowledge(currentConversationId);
+        }
         return;
     }
 
@@ -4643,41 +4848,56 @@ function startBrowserSyncPing() {
 // === Browser WSS Sync ===
 let agentStatusPollTimer = null;
 function startAgentStatusPolling() {
-    if (browserSyncSocket && browserSyncSocket.readyState === WebSocket.OPEN) return;
+    if (browserSyncSocket && (
+        browserSyncSocket.readyState === WebSocket.CONNECTING ||
+        browserSyncSocket.readyState === WebSocket.OPEN
+    )) return;
 
     browserSyncManuallyClosed = false;
     clearBrowserSyncTimers();
 
+    const socketSerial = ++browserSyncSocketSerial;
+    let socket = null;
+
     try {
-        browserSyncSocket = new WebSocket(getBrowserSyncWsUrl());
+        socket = new WebSocket(getBrowserSyncWsUrl());
+        browserSyncSocket = socket;
     } catch (e) {
         setDesktopAgentIndicatorState(false, ' (状态通道启动失败)');
         scheduleBrowserSyncReconnect();
         return;
     }
 
-    browserSyncSocket.addEventListener('open', () => {
+    socket.addEventListener('open', () => {
+        if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
+
         syncBrowserCurrentConversation();
         startBrowserSyncPing();
         startBrowserModelConfigSyncTimer();
         subscribeBrowserOllamaStatus(browserOllamaStatusProviders.length ? browserOllamaStatusProviders : getBrowserOllamaProviderKeys());
     });
 
-    browserSyncSocket.addEventListener('message', (event) => {
+    socket.addEventListener('message', (event) => {
+        if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
+
         try {
             handleBrowserSyncMessage(JSON.parse(event.data || '{}'));
         } catch (e) {
         }
     });
 
-    browserSyncSocket.addEventListener('close', () => {
+    socket.addEventListener('close', () => {
+        if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
+
         browserSyncSocket = null;
         clearBrowserSyncTimers();
         setDesktopAgentIndicatorState(false, ' (状态通道断开)');
         scheduleBrowserSyncReconnect();
     });
 
-    browserSyncSocket.addEventListener('error', () => {
+    socket.addEventListener('error', () => {
+        if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
+
         setDesktopAgentIndicatorState(false, ' (状态通道异常)');
     });
 }
@@ -4695,6 +4915,8 @@ function stopBrowserSyncSocket() {
         browserSyncSocket.close();
         browserSyncSocket = null;
     }
+
+    browserSyncSocketSerial += 1;
 }
 
 let rightSidebarLastInteractionTarget = null;
@@ -6739,8 +6961,8 @@ window.openFilesFrameView = function(options = {}) {
     closeCloudFilePanel();
     exitLearningFeedComposeMode({ clear: false });
     clearCurrentConversationSelectionForWorkspaceNavigation();
-    captureWorkspaceDetailInputHome();
-    restoreWorkspaceDetailInputContainer();
+    captureWorkspaceDetailInputHomeForConversationLoad();
+    restoreWorkspaceDetailInputContainerForConversationLoad();
 
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
@@ -7019,6 +7241,7 @@ const els = {
 
 function resetKnowledgeViewRuntimeState() {
     knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearWorkspaceReturnContext();
     knowledgeEditorController.clearPendingHighlightData();
     navigationStack = [];
 }
@@ -9887,7 +10110,7 @@ function buildSelectionAnchorFromChatTarget(target, markdownText = '', plainText
 function buildSelectionAnchorFromKnowledgeTarget(markdownText = '', plainText = '') {
     return {
         type: 'knowledge',
-        title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
+        title: String(knowledgeEditorController.getCurrentTitle() || '').trim(),
         snippet: buildNoteAnchorSnippet(markdownText, 280),
         plainSnippet: buildNoteAnchorSnippet(plainText || markdownText, 280)
     };
@@ -9897,7 +10120,7 @@ function resolveSelectionSource(target, selectionText = '', plainText = '') {
     const t = target && target.nodeType === Node.TEXT_NODE ? target.parentElement : target;
     const viewer = document.getElementById('knowledgeViewer');
     if (viewer && viewer.style.display !== 'none' && t && viewer.contains(t)) {
-        const knowledgeTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
+        const knowledgeTitle = String(knowledgeEditorController.getCurrentTitle() || '').trim();
         const sourceTitle = knowledgeTitle || (els.conversationTitle ? String(els.conversationTitle.textContent || '').trim() : '');
         return {
             source: '知识库',
@@ -11742,7 +11965,7 @@ try {
     if (typeof PerformanceObserver !== 'undefined') {
         const _ltObs = new PerformanceObserver((list) => {
             for (const entry of list.getEntries()) {
-                console.warn(`[LongTask] duration=${entry.duration.toFixed(1)}ms start=${entry.startTime.toFixed(1)}ms name=${entry.name} attribution=${JSON.stringify(entry.attribution?.map(a => a.name) || [])}`);
+                longTaskLogger.debug(`[LongTask] duration=${entry.duration.toFixed(1)}ms start=${entry.startTime.toFixed(1)}ms name=${entry.name} attribution=${JSON.stringify(entry.attribution?.map(a => a.name) || [])}`);
             }
         });
         _ltObs.observe({ type: 'longtask', buffered: true });
@@ -14094,12 +14317,24 @@ function resetWorkspaceReadonlyConversationStateForConversationLoad() {
     return getWorkspaceFunctionForConversationLoad('resetWorkspaceReadonlyConversationState')();
 }
 
+function captureWorkspaceDetailInputHomeForConversationLoad() {
+    return getWorkspaceFunctionForConversationLoad('captureWorkspaceDetailInputHome')();
+}
+
+function restoreWorkspaceDetailInputContainerForConversationLoad() {
+    return getWorkspaceFunctionForConversationLoad('restoreWorkspaceDetailInputContainer')();
+}
+
 function normalizeWorkspaceConversationHeaderContextForConversationLoad(context) {
     return getWorkspaceFunctionForConversationLoad('normalizeWorkspaceConversationHeaderContext')(context);
 }
 
 function renderWorkspaceConversationHierarchyForConversationLoad(context) {
     return getWorkspaceFunctionForConversationLoad('renderWorkspaceConversationHierarchy')(context);
+}
+
+function selectWorkspaceProjectForConversationLoad(workspaceId, options = {}) {
+    return getWorkspaceFunctionForConversationLoad('selectWorkspaceProject')(workspaceId, options);
 }
 
 function clearWorkspaceHierarchySlotForConversationLoad() {
@@ -14110,6 +14345,8 @@ function resetKnowledgeNavigationForConversationLoad() {
     navigationStack = [];
     currentSearchQuery = '';
     knowledgeEditorController.clearCurrentTitle();
+    knowledgeEditorController.clearWorkspaceReturnContext();
+    knowledgeEditorController.clearPendingHighlightData();
     originalHeaderState = null;
     cachedPuzzleStates = {};
 }
@@ -14347,7 +14584,7 @@ function createNexoraLatencyProbe(scope, meta = {}) {
             }
 
             try {
-                console.warn(`[NexoraLatency] ${scope} ${total.toFixed(1)}ms`, {
+                nexoraLatencyLogger.debug(`[NexoraLatency] ${scope} ${total.toFixed(1)}ms`, {
                     reason,
                     total_ms: Number(total.toFixed(1)),
                     meta,
@@ -18120,7 +18357,7 @@ function rebuildTurnIndicatorLayoutCacheChunked(buildToken, startIndex) {
     turnIndicatorState.layoutRefreshInProgress = false;
     turnIndicatorState.layoutRefreshIndex = 0;
     const _tRebuild1 = performance.now();
-    console.log(`[rebuildLayout] msgs=${userMsgs.length} readOffsetTop=${(_tRebuild1-_tRebuild0).toFixed(1)}ms`);
+    rebuildLayoutLogger.debug(`[rebuildLayout] msgs=${userMsgs.length} readOffsetTop=${(_tRebuild1-_tRebuild0).toFixed(1)}ms`);
     updateTurnIndicatorActive(turnIndicatorState.layoutRefreshOptions || {});
 }
 
@@ -18535,7 +18772,7 @@ function showTurnListPopup() {
         popup.scrollTop = itemTop - (popupHeight / 2) + (ITEM_H / 2);
     }
     const _t4 = performance.now();
-    console.log(`[TurnPopup] msgs=${userMsgs.length} clear=${(_t1-_t0).toFixed(1)}ms build=${(_t2-_t1).toFixed(1)}ms append+visible=${(_t3-_t2).toFixed(1)}ms scroll=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
+    turnPopupLogger.debug(`[TurnPopup] msgs=${userMsgs.length} clear=${(_t1-_t0).toFixed(1)}ms build=${(_t2-_t1).toFixed(1)}ms append+visible=${(_t3-_t2).toFixed(1)}ms scroll=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
 }
 
 function hideTurnListPopup() {
@@ -18693,7 +18930,7 @@ function updateTurnIndicatorActive(options = {}) {
     if (!userMsgs.length) return;
 
     if (turnIndicatorState.layoutDirty || turnIndicatorState.layoutRefreshInProgress || turnIndicatorState.layoutRefreshRaf) {
-        console.log(`[updateActive] layout dirty → scheduling rebuild (dirty=${turnIndicatorState.layoutDirty} inProgress=${turnIndicatorState.layoutRefreshInProgress})`);
+        turnPopupLogger.debug(`[updateActive] layout dirty scheduling rebuild (dirty=${turnIndicatorState.layoutDirty} inProgress=${turnIndicatorState.layoutRefreshInProgress})`);
         scheduleTurnIndicatorLayoutRefresh({
             animate: !!options.animate,
             forceScroll: !!options.forceScroll,
@@ -19130,72 +19367,6 @@ async function deleteKnowledge(title, type = 'basis') {
     return knowledgeSidebarController.deleteKnowledge(title, type);
 }
 
-// --- Knowledge View Logic ---
-let originalHeaderState = null;
-let knowledgeMetaCache = {};
-let knowledgeVectorizationEnabled = false;
-let bulkVectorizeRunning = false;
-const knowledgeEditorControllerState = {
-    editor: null,
-    currentTitle: null,
-    workspaceReturnContext: null,
-    pendingHighlightData: null,
-    scroll: {
-        activeTitle: '',
-        byTitle: Object.create(null),
-        syncLock: false,
-        delegatedBound: false,
-        pendingToggleSnapshot: null,
-        modeSwitchActive: false,
-        restoreTimeouts: [],
-        lastSource: null,
-        resetTimer: null
-    },
-    hooks: {
-        previewInstalled: false,
-        toolbarInstalled: false
-    },
-    align: {
-        widgets: [],
-        debounce: null,
-        retryTimers: [],
-        runToken: 0,
-        lastRunAt: 0,
-        busy: false,
-        lastInputAt: 0
-    }
-};
-const KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME = 'nexora-upload://';
-const KNOWLEDGE_IMAGE_PENDING_ALT = '上传中...';
-const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
-const knowledgeImageUploadRuntime = {
-    pending: new Map()
-};
-const knowledgeEditorController = getNexoraChatKnowledge().createKnowledgeEditorController({
-    state: knowledgeEditorControllerState,
-    createToastUiKnowledgeEditor: (...args) => createToastUiKnowledgeEditorImpl(...args),
-    viewKnowledge: (...args) => viewKnowledgeImpl(...args),
-    closeKnowledgeView: (...args) => closeKnowledgeViewImpl(...args),
-    scheduleAlignment: (...args) => scheduleKnowledgeEditorAlignment(...args),
-    getPreviewEl: () => getKnowledgeEditorPreviewEl(),
-    getScrollerEl: () => getKnowledgeEditorScrollerEl(),
-    getProseMirrorEl: () => getToastProseMirrorEl(),
-    getViewerEl: () => document.getElementById('knowledgeViewer'),
-    logDebug: (...args) => logKnowledgeEditorDebug(...args),
-    collectLayoutSnapshot: () => collectKnowledgeEditorLayoutSnapshot(),
-    summarizeNode: (...args) => summarizeKnowledgeEditorNode(...args),
-    mirrorProgressToBothModes: (...args) => mirrorKnowledgeEditorProgressToBothModes(...args),
-    applyToggleSnapshot: (...args) => applyKnowledgeEditorToggleSnapshot(...args),
-    syncToolbarState: () => syncKnowledgeEditorToolbarState(),
-    getPendingImageUploadCount: () => knowledgeImageUploadRuntime.pending.size,
-    getWorkspaceKnowledgeRequestFields,
-    getActiveWorkspaceKnowledgeContext,
-    getKnowledgeMetaCache: () => knowledgeMetaCache,
-    getCurrentConversationId: () => currentConversationId,
-    loadKnowledge,
-    showToast,
-});
-
 function createToastUiKnowledgeEditor(...args) {
     return knowledgeEditorController.createToastUiKnowledgeEditor(...args);
 }
@@ -19299,966 +19470,12 @@ async function uploadKnowledgeImageByFile({ imageId, file, fileName = '', basisT
 }
 
 function destroyKnowledgeMarkdownEditor() {
-    if (knowledgeEditorControllerState.editor && typeof knowledgeEditorControllerState.editor.__cleanupPreviewBridge === 'function') {
-        try {
-            knowledgeEditorControllerState.editor.__cleanupPreviewBridge();
-        } catch (_) {}
-    }
-    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui' && knowledgeEditorControllerState.editor.__editor && typeof knowledgeEditorControllerState.editor.__editor.destroy === 'function') {
-        try {
-            knowledgeEditorControllerState.editor.__editor.destroy();
-        } catch (_) {}
-    }
-    knowledgeEditorController.clearEditor();
-}
-
-function createToastUiKnowledgeEditorImpl(initialValue = '') {
-    const host = document.getElementById('knowledgeEditor');
-    const ToastEditor = window.toastui && window.toastui.Editor;
-    if (!host || !ToastEditor) return null;
-
-    const getToastCodeMirror = () => {
-        try {
-            if (editor && editor.mdEditor && editor.mdEditor.cm) return editor.mdEditor.cm;
-        } catch (_) {}
-        try {
-            if (editor && typeof editor.getCurrentModeEditor === 'function') {
-                const modeEditor = editor.getCurrentModeEditor();
-                if (modeEditor && modeEditor.cm) return modeEditor.cm;
-            }
-        } catch (_) {}
-        return null;
-    };
-    const getToastUiRoot = () => host.querySelector('.toastui-editor-defaultUI');
-    const getToastEditorContainer = () => host.querySelector('.toastui-editor-md-container');
-    const getToastVerticalPane = () => (
-        host.querySelector('.toastui-editor-md-container .toastui-editor-md-vertical-style')
-        || host.querySelector('.toastui-editor-md-vertical-style')
-    );
-    const getToastEditPane = () => host.querySelector('.toastui-editor-md-container');
-    const getToastProseMirrorEl = () => host.querySelector('.ProseMirror');
-    const getToastPreviewPane = () => host.querySelector('.toastui-editor-md-container .toastui-editor-md-preview');
-    const getToastSplitter = () => host.querySelector('.toastui-editor-md-splitter');
-    const ensureToastCustomPreviewPane = () => {
-        const parent = getToastUiRoot();
-        if (!parent) return null;
-        let pane = parent.querySelector('.nexora-toast-preview');
-        if (!pane) {
-            pane = document.createElement('div');
-            pane.className = 'nexora-toast-preview';
-            pane.innerHTML = '<div class="toastui-editor-contents"></div>';
-            parent.appendChild(pane);
-        }
-        return pane;
-    };
-    const ensureToastCustomSplitter = () => {
-        const parent = getToastUiRoot();
-        if (!parent) return null;
-        let splitter = parent.querySelector('.nexora-toast-splitter');
-        if (!splitter) {
-            splitter = document.createElement('div');
-            splitter.className = 'nexora-toast-splitter';
-            parent.appendChild(splitter);
-        }
-        return splitter;
-    };
-    const getToastPreviewContentRoot = () => {
-        const pane = ensureToastCustomPreviewPane();
-        return pane ? pane.querySelector('.toastui-editor-contents') : null;
-    };
-    const findBestScrollableDescendant = (root) => {
-        if (!root || !root.querySelectorAll) return null;
-        const candidates = [root, ...Array.from(root.querySelectorAll('*'))];
-        let best = null;
-        let bestOverflow = -1;
-        candidates.forEach((node) => {
-            if (!node || node.nodeType !== 1) return;
-            const className = String(node.className || '');
-            if (className.includes('nexora-toast-preview')) return;
-            const overflow = Math.max(0, Number(node.scrollHeight || 0) - Number(node.clientHeight || 0));
-            if (overflow <= 0) return;
-            const score = /CodeMirror|ProseMirror|toastui-editor/.test(className) ? overflow + 100000 : overflow;
-            if (score > bestOverflow) {
-                bestOverflow = score;
-                best = node;
-            }
-        });
-        return best;
-    };
-    const getToastEditorScroller = () => {
-        const proseMirror = getToastProseMirrorEl();
-        if (proseMirror) return proseMirror;
-        const editPane = getToastEditPane();
-        const discovered = findBestScrollableDescendant(editPane);
-        if (discovered) return discovered;
-        return host.querySelector('.toastui-editor-md-container .CodeMirror-scroll')
-            || host.querySelector('.toastui-editor-md-container .toastui-editor');
-    };
-
-    host.innerHTML = '';
-    const editor = new ToastEditor({
-        el: host,
-        initialEditType: 'markdown',
-        previewStyle: 'vertical',
-        height: '100%',
-        initialValue: String(initialValue || ''),
-        usageStatistics: false,
-        hideModeSwitch: true,
-        toolbarItems: []
-    });
-    try {
-        if (typeof editor.changeMode === 'function') {
-            editor.changeMode('markdown', true);
-        }
-    } catch (_) {}
-
-    let viewMode = 'preview';
-    let fullscreen = false;
-    let previewRenderDebounceTimer = 0;
-    let previewBridgeCleanupFns = [];
-    let lastRenderedPreviewMarkdown = null;
-    const previewRenderTypingDelay = 180;
-
-    const queueToastPreviewRender = (preserveScroll = false, delay = previewRenderTypingDelay) => {
-        if (viewMode === 'edit') return;
-
-        if (previewRenderDebounceTimer) {
-            clearTimeout(previewRenderDebounceTimer);
-            previewRenderDebounceTimer = 0;
-        }
-
-        previewRenderDebounceTimer = setTimeout(() => {
-            previewRenderDebounceTimer = 0;
-            renderToastPreview(preserveScroll);
-        }, Math.max(0, Number(delay || 0)));
-    };
-
-    const renderToastPreview = (preserveScroll = true) => {
-        if (viewMode === 'edit') return;
-
-        const pane = ensureToastCustomPreviewPane();
-        const root = getToastPreviewContentRoot();
-        if (!pane || !root) return;
-        const progress = preserveScroll ? readScrollableProgress(pane) : { top: 0, ratio: 0 };
-        const markdown = String(editor.getMarkdown() || '');
-        if (lastRenderedPreviewMarkdown === markdown) {
-            if (preserveScroll) {
-                requestAnimationFrame(() => {
-                    applyScrollableProgress(pane, progress.top, progress.ratio);
-                });
-            }
-            return;
-        }
-
-        lastRenderedPreviewMarkdown = markdown;
-        root.innerHTML = renderMarkdownForNotes(markdown);
-        bindSourceMarkdown(root, markdown);
-        renderMathSafe(root);
-        if (isKnowledgeEditorDebugEnabled()) {
-            logKnowledgeEditorDebug('toastPreviewRender', {
-                preserveScroll,
-                markdownLength: markdown.length,
-                pane: summarizeKnowledgeEditorNode(pane),
-                root: summarizeKnowledgeEditorNode(root)
-            });
-        }
-        if (preserveScroll) {
-            requestAnimationFrame(() => {
-                applyScrollableProgress(pane, progress.top, progress.ratio);
-                if (isKnowledgeEditorDebugEnabled()) {
-                    logKnowledgeEditorDebug('toastPreviewRenderRestore', {
-                        top: progress.top,
-                        ratio: progress.ratio,
-                        pane: summarizeKnowledgeEditorNode(pane)
-                    });
-                }
-            });
-        }
-    };
-    const setViewMode = (mode) => {
-        logKnowledgeEditorDebug('toastSetViewMode:start', {
-            requestedMode: mode,
-            previousMode: viewMode,
-            layout: collectKnowledgeEditorLayoutSnapshot()
-        });
-        viewMode = String(mode || 'split');
-        host.classList.remove('knowledge-toast-mode-edit', 'knowledge-toast-mode-preview', 'knowledge-toast-mode-split');
-        if (viewMode === 'edit') {
-            host.classList.add('knowledge-toast-mode-edit');
-        } else if (viewMode === 'preview') {
-            host.classList.add('knowledge-toast-mode-preview');
-        } else {
-            viewMode = 'split';
-            host.classList.add('knowledge-toast-mode-split');
-        }
-
-        const toolbar = host.querySelector('.editor-toolbar');
-        if (toolbar) {
-            const previewBtn = toolbar.querySelector('.preview');
-            const sideBtn = toolbar.querySelector('.side-by-side');
-            if (previewBtn) previewBtn.classList.toggle('active', viewMode === 'preview');
-            if (sideBtn) sideBtn.classList.toggle('active', viewMode === 'split');
-        }
-
-        try {
-            if (typeof editor.changePreviewStyle === 'function') {
-                editor.changePreviewStyle('vertical');
-            }
-        } catch (_) {}
-
-        const mdContainer = getToastEditorContainer();
-        const uiRoot = getToastUiRoot();
-        const editPane = getToastEditPane();
-        const previewPane = ensureToastCustomPreviewPane();
-        const splitter = ensureToastCustomSplitter();
-        const builtInPreview = getToastPreviewPane();
-        const builtInSplitter = getToastSplitter();
-        if (builtInPreview) builtInPreview.style.setProperty('display', 'none', 'important');
-        if (builtInSplitter) builtInSplitter.style.setProperty('display', 'none', 'important');
-        if (uiRoot && mdContainer && editPane && previewPane && splitter) {
-            if (previewPane.parentElement !== uiRoot) {
-                uiRoot.appendChild(previewPane);
-            }
-            if (splitter.parentElement !== uiRoot) {
-                uiRoot.appendChild(splitter);
-            }
-            mdContainer.classList.add('nexora-toast-layout');
-            editPane.classList.add('nexora-toast-edit-pane');
-            previewPane.classList.add('nexora-toast-preview-pane');
-            splitter.classList.add('nexora-toast-divider');
-            uiRoot.classList.remove('nexora-mode-edit', 'nexora-mode-preview', 'nexora-mode-split');
-            uiRoot.classList.add(viewMode === 'split' ? 'nexora-mode-split' : (viewMode === 'preview' ? 'nexora-mode-preview' : 'nexora-mode-edit'));
-
-            uiRoot.style.setProperty('display', 'grid', 'important');
-            uiRoot.style.setProperty('grid-template-rows', 'auto minmax(0, 1fr)', 'important');
-            uiRoot.style.setProperty('align-items', 'stretch', 'important');
-            uiRoot.style.setProperty('min-height', '0', 'important');
-            uiRoot.style.setProperty('height', '100%', 'important');
-
-            const toolbarEl = toolbar;
-            if (toolbarEl) {
-                toolbarEl.style.setProperty('grid-row', '1', 'important');
-                toolbarEl.style.setProperty('grid-column', '1 / -1', 'important');
-            }
-
-            editPane.style.setProperty('min-height', '0', 'important');
-            editPane.style.setProperty('height', '100%', 'important');
-            editPane.style.setProperty('overflow', 'hidden', 'important');
-            editPane.style.setProperty('position', 'relative', 'important');
-            editPane.style.setProperty('grid-row', '2', 'important');
-
-            previewPane.style.setProperty('min-height', '0', 'important');
-            previewPane.style.setProperty('height', '100%', 'important');
-            previewPane.style.setProperty('overflow-y', 'auto', 'important');
-            previewPane.style.setProperty('overflow-x', 'hidden', 'important');
-            previewPane.style.setProperty('position', 'relative', 'important');
-            previewPane.style.setProperty('grid-row', '2', 'important');
-
-            splitter.style.setProperty('width', '1px', 'important');
-            splitter.style.setProperty('min-width', '1px', 'important');
-            splitter.style.setProperty('background', '#e5e7eb', 'important');
-            splitter.style.setProperty('grid-row', '2', 'important');
-
-            if (viewMode === 'split') {
-                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr) 1px minmax(0, 1fr)', 'important');
-                editPane.style.setProperty('display', 'block', 'important');
-                editPane.style.setProperty('grid-column', '1', 'important');
-                previewPane.style.setProperty('display', 'block', 'important');
-                previewPane.style.setProperty('grid-column', '3', 'important');
-                splitter.style.setProperty('display', 'block', 'important');
-                splitter.style.setProperty('grid-column', '2', 'important');
-            } else if (viewMode === 'preview') {
-                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
-                editPane.style.setProperty('display', 'none', 'important');
-                previewPane.style.setProperty('display', 'block', 'important');
-                previewPane.style.setProperty('grid-column', '1', 'important');
-                splitter.style.setProperty('display', 'none', 'important');
-            } else {
-                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
-                editPane.style.setProperty('display', 'block', 'important');
-                editPane.style.setProperty('grid-column', '1', 'important');
-                previewPane.style.setProperty('display', 'none', 'important');
-                splitter.style.setProperty('display', 'none', 'important');
-            }
-        }
-
-        if (toolbar) {
-            toolbar.querySelectorAll('[data-cmd]').forEach((node) => {
-                node.classList.toggle('disabled', viewMode === 'preview');
-                node.setAttribute('aria-disabled', viewMode === 'preview' ? 'true' : 'false');
-            });
-        }
-        renderToastPreview(viewMode !== 'preview');
-        requestAnimationFrame(() => {
-            const cm = getToastCodeMirror();
-            try {
-                if (cm && typeof cm.refresh === 'function') cm.refresh();
-            } catch (_) {}
-            logKnowledgeEditorDebug('toastSetViewMode:afterRefresh', {
-                finalMode: viewMode,
-                layoutBrief: {
-                    verticalParent: uiRoot ? String(uiRoot.className || '') : '',
-                    verticalDisplay: uiRoot ? String((window.getComputedStyle(uiRoot).display || '')) : '',
-                    verticalColumns: uiRoot ? String((window.getComputedStyle(uiRoot).gridTemplateColumns || '')) : '',
-                    editParent: editPane && editPane.parentElement ? String(editPane.parentElement.className || '') : '',
-                    previewParent: previewPane && previewPane.parentElement ? String(previewPane.parentElement.className || '') : '',
-                    editDisplay: editPane ? String((window.getComputedStyle(editPane).display || '')) : '',
-                    previewDisplay: previewPane ? String((window.getComputedStyle(previewPane).display || '')) : '',
-                    splitterDisplay: splitter ? String((window.getComputedStyle(splitter).display || '')) : ''
-                },
-                layout: collectKnowledgeEditorLayoutSnapshot()
-            });
-        });
-    };
-
-    const setFullscreen = (enabled) => {
-        fullscreen = !!enabled;
-        host.classList.toggle('knowledge-toast-fullscreen', fullscreen);
-        const toolbar = host.querySelector('.editor-toolbar');
-        if (toolbar) {
-            const fullBtn = toolbar.querySelector('.fullscreen');
-            if (fullBtn) fullBtn.classList.toggle('active', fullscreen);
-        }
-    };
-
-    const commandAliases = {
-        heading: ['heading'],
-        bold: ['bold'],
-        italic: ['italic'],
-        strike: ['strike'],
-        quote: ['blockQuote', 'quote'],
-        ul: ['bulletList', 'unorderedList', 'ul'],
-        ol: ['orderedList', 'ol'],
-        link: ['addLink', 'link'],
-        image: ['addImage', 'image'],
-        table: ['addTable', 'table']
-    };
-
-    const runToastCommand = (aliases, payload) => {
-        const list = Array.isArray(aliases) ? aliases : [aliases];
-        for (let i = 0; i < list.length; i++) {
-            const name = String(list[i] || '').trim();
-            if (!name) continue;
-            try {
-                const result = typeof payload === 'undefined'
-                    ? editor.exec(name)
-                    : editor.exec(name, payload);
-                if (result !== false) return true;
-            } catch (_) {}
-        }
-        return false;
-    };
-
-    const getSelectedMarkdownText = () => {
-        try {
-            if (typeof editor.getSelectedText === 'function') {
-                return String(editor.getSelectedText() || '').trim();
-            }
-        } catch (_) {}
-        return '';
-    };
-
-    const insertMarkdownFallback = (markdown) => {
-        const text = String(markdown || '');
-        if (!text) return;
-        try {
-            if (typeof editor.replaceSelection === 'function') {
-                editor.replaceSelection(text);
-                return;
-            }
-        } catch (_) {}
-        try {
-            if (typeof editor.insertText === 'function') {
-                editor.insertText(text);
-                return;
-            }
-        } catch (_) {}
-        try {
-            const current = String(editor.getMarkdown() || '');
-            editor.setMarkdown(current + text, false);
-        } catch (_) {}
-    };
-
-    const replaceKnowledgeImagePlaceholder = (placeholderToken, resolveMarkdown) => {
-        const token = String(placeholderToken || '').trim();
-        if (!token) return false;
-        const markdown = String(editor.getMarkdown() || '');
-        if (!markdown.includes(token)) return false;
-        const cm = getToastCodeMirror();
-        const scroller = getToastEditorScroller();
-        const windowScrollY = Number(window.scrollY || window.pageYOffset || 0);
-        const cmScrollInfo = cm && typeof cm.getScrollInfo === 'function' ? cm.getScrollInfo() : null;
-        const cmSelections = cm && typeof cm.listSelections === 'function' ? cm.listSelections() : null;
-        const cmCursor = cm && typeof cm.getCursor === 'function' ? cm.getCursor() : null;
-        const scrollerTop = scroller ? Number(scroller.scrollTop || 0) : 0;
-        const scrollerLeft = scroller ? Number(scroller.scrollLeft || 0) : 0;
-        const escapedToken = escapeRegexPattern(token);
-        const pattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapedToken}\\)`, 'g');
-        let changed = false;
-        const next = markdown.replace(pattern, (_, altText) => {
-            changed = true;
-            const safeAlt = String(altText || '').trim();
-            const out = resolveMarkdown(safeAlt);
-            return String(out || '');
-        });
-        if (!changed) return false;
-        editor.setMarkdown(next, false);
-        if (cm) {
-            try {
-                if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
-                    cm.setSelections(cmSelections);
-                } else if (cmCursor && typeof cm.setCursor === 'function') {
-                    cm.setCursor(cmCursor);
-                }
-            } catch (_) {}
-        }
-        if (cm && cmScrollInfo && typeof cm.scrollTo === 'function') {
-            cm.scrollTo(Number(cmScrollInfo.left || 0), Number(cmScrollInfo.top || 0));
-        }
-        if (scroller) {
-            scroller.scrollTop = scrollerTop;
-            scroller.scrollLeft = scrollerLeft;
-        }
-        requestAnimationFrame(() => {
-            if (cm) {
-                try {
-                    if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
-                        cm.setSelections(cmSelections);
-                    } else if (cmCursor && typeof cm.setCursor === 'function') {
-                        cm.setCursor(cmCursor);
-                    }
-                } catch (_) {}
-            }
-            if (scroller) {
-                scroller.scrollTop = scrollerTop;
-                scroller.scrollLeft = scrollerLeft;
-            }
-            window.scrollTo(window.scrollX || 0, windowScrollY);
-        });
-        queueToastPreviewRender(true, 0);
-        return true;
-    };
-
-    const allocateAndUploadKnowledgeImage = async (file) => {
-        const picked = normalizeUploadFile(file, 0) || file;
-        const mime = String((picked && picked.type) || '').toLowerCase();
-        if (!mime.startsWith('image/')) {
-            throw new Error('仅支持图片文件');
-        }
-        const size = Number((picked && picked.size) || 0);
-        if (size > 12 * 1024 * 1024) {
-            throw new Error('图片过大，请控制在 12MB 以内');
-        }
-        const fileName = normalizeKnowledgeImageFileName(picked, `knowledge-image-${Date.now()}`);
-        const basisTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
-        const allocated = await allocateKnowledgeImageSlot(fileName, basisTitle);
-        const imageId = String(allocated.image_id || '').trim().toLowerCase();
-        if (!imageId) {
-            throw new Error('图片分配失败：image_id 为空');
-        }
-        const placeholderToken = buildKnowledgeImagePlaceholderToken(imageId);
-        if (!placeholderToken) {
-            throw new Error('图片分配失败：占位符无效');
-        }
-        const placeholderMarkdown = buildKnowledgeImagePlaceholderMarkdown(placeholderToken, `${KNOWLEDGE_IMAGE_PENDING_ALT} ${fileName}`);
-        insertMarkdownFallback(`${placeholderMarkdown}\n`);
-        queueToastPreviewRender(false, 0);
-        knowledgeImageUploadRuntime.pending.set(imageId, {
-            imageId,
-            fileName,
-            placeholderToken,
-            startedAt: Date.now()
-        });
-
-        try {
-            const uploaded = await uploadKnowledgeImageByFile({
-                imageId,
-                file: picked,
-                fileName,
-                basisTitle
-            });
-            const finalUrl = String(uploaded.image_url || '').trim();
-            if (!finalUrl) {
-                throw new Error('上传成功但返回地址为空');
-            }
-            const replaced = replaceKnowledgeImagePlaceholder(placeholderToken, (existingAlt) => {
-                const alt = normalizeKnowledgeImageAltText(existingAlt || fileName);
-                return `![${alt}](${finalUrl})`;
-            });
-            if (!replaced) {
-                showToast(`图片已上传：${fileName}（占位符已被删除，可手动插入）`);
-            } else {
-                showToast(`图片已上传：${fileName}`);
-            }
-            return uploaded;
-        } catch (err) {
-            const errText = String((err && err.message) || err || '上传失败').trim() || '上传失败';
-            replaceKnowledgeImagePlaceholder(placeholderToken, () => {
-                const failedAlt = `${KNOWLEDGE_IMAGE_FAILED_ALT} ${normalizeKnowledgeImageAltText(fileName)}`;
-                return `![${failedAlt}](${placeholderToken})`;
-            });
-            throw new Error(errText);
-        } finally {
-            knowledgeImageUploadRuntime.pending.delete(imageId);
-        }
-    };
-
-    const handleKnowledgeImageFiles = async (files) => {
-        const items = Array.isArray(files) ? files : [];
-        const imageFiles = items.filter((f) => {
-            const mime = String((f && f.type) || '').toLowerCase();
-            return mime.startsWith('image/');
-        });
-        if (!imageFiles.length) return;
-        for (let i = 0; i < imageFiles.length; i++) {
-            try {
-                await allocateAndUploadKnowledgeImage(imageFiles[i]);
-            } catch (err) {
-                showToast(String((err && err.message) || err || '图片上传失败'));
-            }
-        }
-    };
-
-    const handleToolbarCommand = async (cmd) => {
-        const command = String(cmd || '').trim();
-        if (!command) return;
-
-        if (command === 'heading' || command.startsWith('heading:')) {
-            let level = 2;
-            if (command.startsWith('heading:')) {
-                const parsedLevel = Number(command.split(':')[1] || 2);
-                if (Number.isFinite(parsedLevel) && parsedLevel >= 1 && parsedLevel <= 6) {
-                    level = parsedLevel;
-                }
-            }
-            if (!runToastCommand(commandAliases.heading, { level })) {
-                insertMarkdownFallback(`\n${'#'.repeat(level)} 标题`);
-            }
-            return;
-        }
-
-        if (command === 'link') {
-            const selected = getSelectedMarkdownText();
-            const linkUrl = 'https://';
-            const linkText = selected || '链接文本';
-            if (!runToastCommand(commandAliases.link, { linkUrl, linkText })) {
-                insertMarkdownFallback(`[${linkText}](${linkUrl})`);
-            }
-            showToast('已插入链接模板');
-            return;
-        }
-
-        if (command === 'image') {
-            const picker = document.createElement('input');
-            picker.type = 'file';
-            picker.accept = 'image/*';
-            picker.multiple = true;
-            picker.style.display = 'none';
-            document.body.appendChild(picker);
-            const cleanupPicker = () => {
-                if (picker.parentNode) picker.parentNode.removeChild(picker);
-            };
-            picker.addEventListener('change', async () => {
-                const files = picker.files ? Array.from(picker.files) : [];
-                try {
-                    await handleKnowledgeImageFiles(files);
-                } finally {
-                    cleanupPicker();
-                }
-            }, { once: true });
-            setTimeout(cleanupPicker, 60000);
-            picker.click();
-            if (!picker.parentNode) {
-                const altText = getSelectedMarkdownText() || '图片描述';
-                if (!runToastCommand(commandAliases.image, { imageUrl: 'https://', altText })) {
-                    insertMarkdownFallback(`![${altText}](https://)`);
-                }
-            }
-            return;
-        }
-
-        if (command === 'table') {
-            const rowCount = 2;
-            const columnCount = 2;
-            if (!runToastCommand(commandAliases.table, { rowCount, columnCount })) {
-                const headers = Array.from({ length: columnCount }, (_, i) => `列${i + 1}`);
-                const divider = Array.from({ length: columnCount }, () => '---');
-                const body = Array.from({ length: Math.max(1, rowCount - 1) }, () => `| ${Array.from({ length: columnCount }, () => ' ').join(' | ')} |`).join('\n');
-                insertMarkdownFallback(`\n| ${headers.join(' | ')} |\n| ${divider.join(' | ')} |\n${body}`);
-            }
-            showToast('已插入表格模板');
-            return;
-        }
-
-        const aliases = commandAliases[command] || [command];
-        if (!runToastCommand(aliases)) {
-            if (command === 'quote') insertMarkdownFallback('\n> ');
-            if (command === 'ul') insertMarkdownFallback('\n- ');
-            if (command === 'ol') insertMarkdownFallback('\n1. ');
-        }
-    };
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'editor-toolbar';
-    toolbar.innerHTML = `
-        <div class="heading-control">
-            <a role="button" tabindex="0" class="heading" data-cmd="heading" title="标题"><i class="fa fa-header"></i></a>
-            <div class="heading-menu" hidden>
-                <button type="button" class="heading-option" data-cmd="heading:1">#</button>
-                <button type="button" class="heading-option" data-cmd="heading:2">##</button>
-                <button type="button" class="heading-option" data-cmd="heading:3">###</button>
-                <button type="button" class="heading-option" data-cmd="heading:4">####</button>
-            </div>
-        </div>
-        <a role="button" tabindex="0" class="bold" data-cmd="bold" title="粗体"><i class="fa fa-bold"></i></a>
-        <a role="button" tabindex="0" class="italic" data-cmd="italic" title="斜体"><i class="fa fa-italic"></i></a>
-        <a role="button" tabindex="0" class="strikethrough" data-cmd="strike" title="删除线"><i class="fa fa-strikethrough"></i></a>
-        <i class="separator"></i>
-        <a role="button" tabindex="0" class="quote" data-cmd="quote" title="引用"><i class="fa fa-quote-left"></i></a>
-        <a role="button" tabindex="0" class="unordered-list" data-cmd="ul" title="无序列表"><i class="fa fa-list-ul"></i></a>
-        <a role="button" tabindex="0" class="ordered-list" data-cmd="ol" title="有序列表"><i class="fa fa-list-ol"></i></a>
-        <a role="button" tabindex="0" class="link" data-cmd="link" title="链接"><i class="fa fa-link"></i></a>
-        <a role="button" tabindex="0" class="image" data-cmd="image" title="图片"><i class="fa-solid fa-image"></i></a>
-        <a role="button" tabindex="0" class="table" data-cmd="table" title="表格"><i class="fa fa-table"></i></a>
-        <i class="separator"></i>
-        <a role="button" tabindex="0" class="preview" data-action="preview" title="预览"><i class="fa fa-eye"></i></a>
-        <a role="button" tabindex="0" class="side-by-side" data-action="split" title="分屏"><i class="fa fa-columns"></i></a>
-        <a role="button" tabindex="0" class="fullscreen" data-action="fullscreen" title="全屏"><i class="fa fa-arrows-alt"></i></a>
-    `;
-    toolbar.addEventListener('click', (e) => {
-        const btn = e.target && e.target.closest ? e.target.closest('[data-cmd], [data-action]') : null;
-        if (!btn || !toolbar.contains(btn)) return;
-        e.preventDefault();
-        const headingControl = btn.closest('.heading-control');
-        if (headingControl && btn.classList.contains('heading')) {
-            const menu = headingControl.querySelector('.heading-menu');
-            if (menu) {
-                const willShow = !!menu.hidden;
-                toolbar.querySelectorAll('.heading-menu').forEach((node) => {
-                    node.hidden = true;
-                });
-                menu.hidden = !willShow;
-            }
-            return;
-        }
-        toolbar.querySelectorAll('.heading-menu').forEach((node) => {
-            node.hidden = true;
-        });
-        const cmd = String(btn.dataset.cmd || '');
-        const action = String(btn.dataset.action || '');
-        logKnowledgeEditorDebug('toastToolbarClick', {
-            cmd,
-            action,
-            currentMode: viewMode,
-            layout: collectKnowledgeEditorLayoutSnapshot()
-        });
-        if (cmd) {
-            if (viewMode === 'preview') return;
-            void handleToolbarCommand(cmd);
-            queueToastPreviewRender(false, 0);
-            return;
-        }
-        if (action === 'preview') {
-            const editProgress = readScrollableProgress(getToastEditorScroller());
-            const snapshot = {
-                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
-                sourceMode: viewMode,
-                previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
-                previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
-                editTop: editProgress.top,
-                editRatio: editProgress.ratio
-            };
-            setViewMode(viewMode === 'preview' ? 'edit' : 'preview');
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
-            return;
-        }
-        if (action === 'split') {
-            const editProgress = readScrollableProgress(getToastEditorScroller());
-            const snapshot = {
-                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
-                sourceMode: viewMode,
-                previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
-                previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
-                editTop: editProgress.top,
-                editRatio: editProgress.ratio
-            };
-            setViewMode(viewMode === 'split' ? 'edit' : 'split');
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
-            return;
-        }
-        if (action === 'fullscreen') {
-            setFullscreen(!fullscreen);
-        }
-    });
-    if (!window.__nexoraKnowledgeHeadingMenuDismissBound) {
-        document.addEventListener('pointerdown', (e) => {
-            const editorToolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
-            if (!editorToolbar || editorToolbar.contains(e.target)) return;
-            editorToolbar.querySelectorAll('.heading-menu').forEach((node) => {
-                node.hidden = true;
-            });
-        });
-        window.__nexoraKnowledgeHeadingMenuDismissBound = true;
-    }
-
-    const uiRoot = host.querySelector('.toastui-editor-defaultUI');
-    if (uiRoot) {
-        const toastToolbar = uiRoot.querySelector('.toastui-editor-toolbar');
-        if (toastToolbar) {
-            toastToolbar.style.display = 'none';
-        }
-        if (uiRoot.firstChild) {
-            uiRoot.insertBefore(toolbar, uiRoot.firstChild);
-        } else {
-            uiRoot.appendChild(toolbar);
-        }
-    } else {
-        host.insertBefore(toolbar, host.firstChild);
-    }
-    setViewMode('preview');
-    try {
-        if (typeof editor.on === 'function') {
-            const onEditorChange = () => queueToastPreviewRender(true);
-            editor.on('change', onEditorChange);
-        }
-    } catch (_) {}
-
-    const handlePasteImageUploadEvent = (evt) => {
-        const files = extractFilesFromClipboardEvent(evt).filter((f) => {
-            const mime = String((f && f.type) || '').toLowerCase();
-            return mime.startsWith('image/');
-        });
-        if (!files.length) return false;
-        evt.preventDefault();
-        evt.stopPropagation();
-        void handleKnowledgeImageFiles(files);
-        return true;
-    };
-
-    const handleDropImageUploadEvent = (evt) => {
-        const dt = evt && evt.dataTransfer ? evt.dataTransfer : null;
-        if (!dt || !dt.files || dt.files.length <= 0) return false;
-        const files = Array.from(dt.files)
-            .map((f, idx) => normalizeUploadFile(f, idx))
-            .filter((f) => {
-                const mime = String((f && f.type) || '').toLowerCase();
-                return mime.startsWith('image/');
-            });
-        if (!files.length) return false;
-        evt.preventDefault();
-        evt.stopPropagation();
-        void handleKnowledgeImageFiles(files);
-        return true;
-    };
-
-    const bindKnowledgeImageUploadBridge = () => {
-        const targets = [];
-        const scroller = getToastEditorScroller();
-        if (scroller) targets.push(scroller);
-        if (host && !targets.includes(host)) targets.push(host);
-        if (!targets.length) return;
-        const onPaste = (evt) => { handlePasteImageUploadEvent(evt); };
-        const onDrop = (evt) => { handleDropImageUploadEvent(evt); };
-        targets.forEach((target) => {
-            target.addEventListener('paste', onPaste, true);
-            target.addEventListener('drop', onDrop, true);
-        });
-        previewBridgeCleanupFns.push(() => {
-            targets.forEach((target) => {
-                target.removeEventListener('paste', onPaste, true);
-                target.removeEventListener('drop', onDrop, true);
-            });
-        });
-    };
-
-    const bindPreviewBridge = () => {
-        const proseMirror = getToastProseMirrorEl();
-        if (!proseMirror) return;
-        const queue = () => queueToastPreviewRender(true);
-        proseMirror.addEventListener('input', queue);
-        proseMirror.addEventListener('keyup', queue);
-        proseMirror.addEventListener('paste', queue);
-        proseMirror.addEventListener('cut', queue);
-        proseMirror.addEventListener('compositionend', queue);
-        const observer = new MutationObserver(() => queueToastPreviewRender(true));
-        observer.observe(proseMirror, {
-            childList: true,
-            subtree: true,
-            characterData: true
-        });
-        previewBridgeCleanupFns.push(() => {
-            proseMirror.removeEventListener('input', queue);
-            proseMirror.removeEventListener('keyup', queue);
-            proseMirror.removeEventListener('paste', queue);
-            proseMirror.removeEventListener('cut', queue);
-            proseMirror.removeEventListener('compositionend', queue);
-            observer.disconnect();
-        });
-    };
-    requestAnimationFrame(() => {
-        bindPreviewBridge();
-        bindKnowledgeImageUploadBridge();
-    });
-
-    const codemirrorCompat = {
-        on: (eventName, handler) => {
-            if (typeof handler !== 'function') return;
-            if (eventName === 'change') {
-                try {
-                    if (typeof editor.on === 'function') {
-                        editor.on('change', handler);
-                    }
-                } catch (_) {}
-                return;
-            }
-            if (eventName === 'scroll') {
-                const cm = getToastCodeMirror();
-                try {
-                    if (cm && typeof cm.on === 'function') {
-                        cm.on('scroll', handler);
-                    }
-                } catch (_) {}
-            }
-        },
-        refresh: () => {
-            const cm = getToastCodeMirror();
-            try {
-                if (cm && typeof cm.refresh === 'function') cm.refresh();
-            } catch (_) {}
-        },
-        getScrollInfo: () => {
-            const cm = getToastCodeMirror();
-            if (cm && typeof cm.getScrollInfo === 'function') {
-                try {
-                    return cm.getScrollInfo();
-                } catch (_) {}
-            }
-            const scroller = getToastEditorScroller();
-            if (!scroller) return { top: 0, height: 0, clientHeight: 0 };
-            return {
-                top: Math.max(0, Number(scroller.scrollTop || 0)),
-                height: Math.max(0, Number(scroller.scrollHeight || 0)),
-                clientHeight: Math.max(0, Number(scroller.clientHeight || 0))
-            };
-        },
-        scrollTo: (_x, y) => {
-            const cm = getToastCodeMirror();
-            if (cm && typeof cm.scrollTo === 'function') {
-                try {
-                    cm.scrollTo(null, Math.max(0, Number(y || 0)));
-                    return;
-                } catch (_) {}
-            }
-            const scroller = getToastEditorScroller();
-            if (!scroller) return;
-            scroller.scrollTop = Math.max(0, Number(y || 0));
-        },
-        getScrollerElement: () => getToastEditorScroller(),
-        setCursor: (line, ch) => {
-            const cm = getToastCodeMirror();
-            if (cm && typeof cm.setCursor === 'function') {
-                try {
-                    cm.setCursor(line, ch);
-                } catch (_) {}
-            }
-        },
-        lineCount: () => String(editor.getMarkdown() || '').split('\n').length,
-        getLine: (line) => {
-            const lines = String(editor.getMarkdown() || '').split('\n');
-            return String(lines[Math.max(0, Number(line) || 0)] || '');
-        },
-        heightAtLine: (line) => (Math.max(0, Number(line) || 0) * 22),
-        defaultTextHeight: () => 22,
-        getLineHandle: () => ({ height: 22 }),
-        addLineWidget: () => ({ clear: () => {} })
-    };
-
-    const toastKnowledgeEditorApi = {
-        __editorType: 'toastui',
-        __editor: editor,
-        __alignedBound: true,
-        __queuePreviewRender: queueToastPreviewRender,
-        __renderPreviewNow: renderToastPreview,
-        get __viewMode() {
-            return viewMode;
-        },
-        get __isFullscreen() {
-            return fullscreen;
-        },
-        value(nextValue) {
-            if (typeof nextValue === 'undefined') {
-                return editor.getMarkdown();
-            }
-            lastRenderedPreviewMarkdown = null;
-            editor.setMarkdown(String(nextValue || ''), false);
-            renderToastPreview(false);
-            return String(nextValue || '');
-        },
-        isPreviewActive() {
-            return viewMode !== 'edit';
-        },
-        isSideBySideActive() {
-            return viewMode === 'split';
-        },
-        togglePreview() {
-            const snapshot = {
-                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
-                sourceMode: viewMode,
-                previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
-                previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
-                editTop: readCodeMirrorProgress().top,
-                editRatio: readCodeMirrorProgress().ratio
-            };
-            setViewMode(viewMode === 'preview' ? 'edit' : 'preview');
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
-        },
-        toggleFullScreen() {
-            setFullscreen(!fullscreen);
-        },
-        toggleSideBySide() {
-            const snapshot = {
-                title: String(knowledgeEditorControllerState.currentTitle || '').trim(),
-                sourceMode: viewMode,
-                previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
-                previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
-                editTop: readCodeMirrorProgress().top,
-                editRatio: readCodeMirrorProgress().ratio
-            };
-            setViewMode(viewMode === 'split' ? 'edit' : 'split');
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
-            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
-        },
-        codemirror: codemirrorCompat
-    };
-
-    toastKnowledgeEditorApi.__cleanupPreviewBridge = () => {
-        if (previewRenderDebounceTimer) {
-            clearTimeout(previewRenderDebounceTimer);
-            previewRenderDebounceTimer = 0;
-        }
-        previewBridgeCleanupFns.forEach((fn) => {
-            try { fn(); } catch (_) {}
-        });
-        previewBridgeCleanupFns = [];
-    };
-
-    return toastKnowledgeEditorApi;
+    return knowledgeEditorController.destroyEditor();
 }
 
 function getKnowledgePreviewContentEl() {
-    return document.querySelector('#knowledgeViewer .nexora-toast-preview .toastui-editor-contents')
-        || document.querySelector('#knowledgeViewer .toastui-editor-md-preview .toastui-editor-contents')
-        || document.querySelector('#knowledgeViewer .editor-preview')
-        || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side');
+    return knowledgeEditorController.getPreviewContentEl();
 }
-
-// 导航栈管理：追踪视图层级，支持多层返回
-let navigationStack = [];
-let currentSearchQuery = ''; // 保存搜索关键词，以便返回时重新显示
-let chatHeaderBaseState = null;
 
 function captureChatHeaderBaseState() {
     const headerTitle = document.getElementById('conversationTitle');
@@ -20407,7 +19624,7 @@ function restoreViewerState(state) {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
 
-    restoreWorkspaceDetailInputContainer();
+    restoreWorkspaceDetailInputContainerForConversationLoad();
     
     viewer.style.display = state.viewerDisplay;
     viewer.innerHTML = state.viewerHTML;
@@ -20419,258 +19636,6 @@ function restoreViewerState(state) {
     if (state.extra && state.extra.searchQuery) {
         currentSearchQuery = state.extra.searchQuery;
     }
-}
-
-async function viewKnowledgeImpl(title, options = {}) {
-    knowledgeEditorController.setCurrentTitle(title);
-    const {
-        forceEditMode = false,
-        highlightData = null,
-        fromSearch = false,
-        workspaceContext = null,
-    } = options;
-    const normalizedWorkspaceContext = workspaceContext
-        ? normalizeWorkspaceConversationHeaderContext(workspaceContext)
-        : null;
-    const workspaceKnowledgeUser = workspaceContext && typeof workspaceContext === 'object'
-        ? String(workspaceContext.user || workspaceContext.addedBy || workspaceContext.added_by || '').trim()
-        : '';
-
-    knowledgeEditorController.setWorkspaceReturnContext(normalizedWorkspaceContext && normalizedWorkspaceContext.workspaceId
-        ? {
-            ...normalizedWorkspaceContext,
-            user: workspaceKnowledgeUser,
-        }
-        : null);
-    knowledgeEditorController.setPendingHighlightData(highlightData);
-    if (!fromSearch && !highlightData) {
-        const state = getKnowledgeEditorState(title);
-        state.previewTop = 0;
-        state.previewRatio = 0;
-        state.editTop = 0;
-        state.editRatio = 0;
-    }
-    const viewer = document.getElementById('knowledgeViewer');
-    const msgs = document.getElementById('messagesContainer');
-    const inputWrapper = document.getElementById('inputWrapper');
-    const headerTitle = document.getElementById('conversationTitle');
-    const headerLeft = document.querySelector('.header-left');
-    const headerRight = document.querySelector('.header-right');
-
-    if(!viewer || !msgs) return;
-
-    restoreWorkspaceDetailInputContainer();
-
-    logKnowledgeEditorDebug('viewKnowledge:start', {
-        title,
-        forceEditMode,
-        fromSearch,
-        hasHighlightData: !!highlightData,
-        state: getKnowledgeEditorState(title)
-    });
-    
-    // 1. Save Header State
-    if (!originalHeaderState) {
-        originalHeaderState = {
-            title: headerTitle.textContent,
-            leftHTML: headerLeft.innerHTML,
-            rightHTML: headerRight.innerHTML
-        };
-    }
-    
-    // 导航栈管理：如果是从搜索结果进来的，保存知识项到栈
-    // navigationStack 会在 searchKnowledgeVectors 或 openKnowledgeAtChunk 中被管理
-    if (navigationStack.length > 0) {
-        // 在栈上添加知识项
-        navigationStack.push({
-            type: 'knowledge',
-            title: title,
-            state: saveCurrentViewerState() // 当前页面状态（用于返回时恢复）
-        });
-    }
-
-    // 如果不是从搜索进入，清空导航栈（避免返回到搜索）
-    if (!fromSearch) {
-        navigationStack = [];
-    }
-
-    // 2. Fetch Content
-    let content = '';
-    try {
-        const contentUrl = appendWorkspaceKnowledgeQuery(
-            `/api/knowledge/basis/${encodeURIComponent(title)}`,
-            title,
-        );
-        const res = await fetch(contentUrl);
-        const data = await res.json();
-        if(data.success) {
-            content = data.knowledge.content;
-
-            if (data.knowledge && data.knowledge.metadata && typeof data.knowledge.metadata === 'object') {
-                knowledgeMetaCache[title] = data.knowledge.metadata;
-            }
-        }
-    } catch(e) { console.error(e); }
-
-    // 3. UI Switch
-    msgs.style.display = 'none';
-    if (els.learningMainPanel) {
-        els.learningMainPanel.style.display = 'none';
-    }
-    const inputDock = document.querySelector('.input-dock');
-    if (inputDock) inputDock.style.display = 'none';
-    if(inputWrapper) inputWrapper.style.display = 'none';
-    viewer.style.display = 'flex';
-    viewer.style.flexDirection = 'column';
-    _syncTurnIndicatorVisibility();
-    // 如果当前viewer是搜索页，先恢复为编辑器容器
-    const existingEditorMount = document.getElementById('knowledgeEditor');
-    if (!existingEditorMount || String(existingEditorMount.tagName || '').toUpperCase() !== 'DIV') {
-        viewer.innerHTML = '<div id="knowledgeEditor" class="knowledge-toast-editor"></div>';
-        // 搜索页替换会销毁编辑器，需重建
-        destroyKnowledgeMarkdownEditor();
-    }
-
-    // 4. Update Header
-    headerTitle.textContent = title;
-    const backHandler = knowledgeEditorControllerState.workspaceReturnContext
-        ? 'closeWorkspaceKnowledgeView()'
-        : 'closeKnowledgeView()';
-    
-    // Left: Back + Knowledge actions (设置/保存/删除)
-    headerLeft.innerHTML = `
-        <button class="btn-icon" onclick="${backHandler}" title="Back">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
-        </button>
-        <button class="btn-icon knowledge-action" onclick="openKnowledgeSettingsModal()" title="设置">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-        </button>
-        <button class="btn-icon knowledge-action" id="btnSaveKnowledge" onclick="saveKnowledge('${title.replace(/'/g, "\\'")}')" title="保存">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-        </button>
-        <button class="btn-icon knowledge-action" id="exportKnowledgeBtn" onclick="exportKnowledgeToWord('${title.replace(/'/g, "\\'")}')" title="导出 Word">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" y1="3" x2="12" y2="15"></line>
-            </svg>
-        </button>
-        <button class="btn-icon knowledge-action knowledge-action-danger" onclick="confirmDeleteKnowledge('${title.replace(/'/g, "\\'")}', 'basis')" title="删除">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-        </button>
-    `;
-    applyDesktopHeaderTools(headerRight);
-
-    // 5. Initialize Editor (Toast UI)
-    if (!knowledgeEditorControllerState.editor || knowledgeEditorControllerState.editor.__editorType !== 'toastui' || !document.getElementById('knowledgeEditor')) {
-        destroyKnowledgeMarkdownEditor();
-        knowledgeEditorController.setEditor(createToastUiKnowledgeEditor(content || ''));
-    }
-    if (!knowledgeEditorControllerState.editor) {
-        showToast('Markdown Editor 初始化失败');
-        return;
-    }
-    installKnowledgeEditorPreviewHooks();
-
-    if (!knowledgeEditorControllerState.editor.__alignedBound) {
-        knowledgeEditorControllerState.editor.codemirror.on("change", () => {
-            knowledgeEditorControllerState.align.lastInputAt = Date.now();
-            clearTimeout(knowledgeEditorControllerState.align.debounce);
-            knowledgeEditorControllerState.align.debounce = setTimeout(() => {
-                if (isKnowledgeEditorSideBySideActive()) {
-                    scheduleKnowledgeEditorAlignment('typing');
-                }
-            }, 700);
-        });
-        knowledgeEditorControllerState.editor.__alignedBound = true;
-    }
-
-    const viewportHeight = window.innerHeight;
-    const headerHeight = 60;
-
-    knowledgeEditorControllerState.editor.value(content || '');
-    try {
-        if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror) {
-            knowledgeEditorControllerState.editor.codemirror.scrollTo(null, 0);
-            if (typeof knowledgeEditorControllerState.editor.codemirror.setCursor === 'function') {
-                knowledgeEditorControllerState.editor.codemirror.setCursor(0, 0);
-            }
-        }
-    } catch (_) {}
-    logKnowledgeEditorDebug('viewKnowledge:afterValue', {
-        title,
-        forceEditMode,
-        fromSearch,
-        hasHighlightData: !!highlightData,
-        layout: collectKnowledgeEditorLayoutSnapshot()
-    });
-
-    // Default to Preview Mode unless forced edit mode
-    if (forceEditMode) {
-        if (isKnowledgeEditorPreviewActive()) {
-            storeKnowledgeEditorScrollPosition(true);
-            toggleKnowledgeEditorPreviewMode();
-        }
-    } else {
-        if (!isKnowledgeEditorPreviewActive()) {
-            storeKnowledgeEditorScrollPosition(false);
-            toggleKnowledgeEditorPreviewMode();
-        }
-    }
-    bindKnowledgeEditorScrollTracking();
-    restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
-    [0, 40, 140, 320, 680].forEach((delay) => {
-        setTimeout(() => {
-            bindKnowledgeEditorScrollTracking();
-            restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
-            if (isKnowledgeEditorSideBySideActive() && (delay === 0 || delay === 320 || delay === 680)) {
-                scheduleKnowledgeEditorAlignment('layout');
-            }
-            syncKnowledgeEditorToolbarState();
-            logKnowledgeEditorDebug('viewKnowledge:stabilizeTick', {
-                delay,
-                isPreviewActive: isKnowledgeEditorPreviewActive(),
-                isSideBySideActive: isKnowledgeEditorSideBySideActive(),
-                layout: collectKnowledgeEditorLayoutSnapshot()
-            });
-        }, delay);
-    });
-
-    const highlightWhenReady = (retryCount = 0) => {
-        if (!knowledgeEditorControllerState.pendingHighlightData || !knowledgeEditorControllerState.pendingHighlightData.text) return;
-        if (retryCount > 30) { // 最多重试30次（约4.5秒）
-            console.warn('预览内容加载超时，取消高亮');
-            knowledgeEditorController.clearPendingHighlightData();
-            return;
-        }
-        
-        const preview = getKnowledgePreviewContentEl();
-        if (!preview) {
-            setTimeout(() => highlightWhenReady(retryCount + 1), 150);
-            return;
-        }
-        
-        // 检查预览内容是否真正包含文本内容（不只是HTML标签）
-        const textContent = preview.textContent || '';
-        const hasContent = textContent.trim().length > 50; // 至少有50个字符
-        
-        if (!hasContent) {
-            setTimeout(() => highlightWhenReady(retryCount + 1), 150);
-            return;
-        }
-        
-        // 内容已加载，执行高亮
-        highlightTextInPreview(knowledgeEditorControllerState.pendingHighlightData.text, knowledgeEditorControllerState.pendingHighlightData.meta);
-        knowledgeEditorController.clearPendingHighlightData(); // 清空，避免重复高亮
-    };
-
-    setTimeout(() => {
-        knowledgeEditorControllerState.editor.codemirror.refresh();
-        if (!forceEditMode) {
-            setTimeout(() => highlightWhenReady(0), 200);
-        }
-    }, 150);
-    _syncTurnIndicatorVisibility();
 }
 
 function parseKnowledgeWordFilename(disposition) {
@@ -20708,7 +19673,7 @@ function downloadKnowledgeWordBlob(blob, filename) {
 }
 
 async function exportKnowledgeToWord(title) {
-    const resolvedTitle = String(title || knowledgeEditorControllerState.currentTitle || '').trim();
+    const resolvedTitle = String(title || knowledgeEditorController.getCurrentTitle() || '').trim();
     if (!resolvedTitle) {
         showToast('未找到知识标题');
         return;
@@ -20750,227 +19715,13 @@ async function exportKnowledgeToWord(title) {
 }
 
 function highlightTextInPreview(text, meta = {}) {
-    const preview = getKnowledgePreviewContentEl();
-    if (!preview) {
-        console.warn('预览元素不存在');
-        return;
-    }
-    
-    // 获取预览中的所有文本节点
-    const walker = document.createTreeWalker(
-        preview,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-    );
-    
-    let searchText = text;
-    let foundNode = null;
-    let foundOffset = -1;
-    let node = walker.nextNode();
-    
-    // 查找包含目标文本的节点
-    while (node) {
-        const nodeText = node.textContent;
-        const idx = nodeText.indexOf(searchText);
-        if (idx >= 0) {
-            foundNode = node;
-            foundOffset = idx;
-            break;
-        }
-        // 尝试简短版本
-        if (text.length > 80) {
-            const short = text.slice(0, 80);
-            const idx2 = nodeText.indexOf(short);
-            if (idx2 >= 0) {
-                foundNode = node;
-                foundOffset = idx2;
-                searchText = short;
-                break;
-            }
-        }
-        node = walker.nextNode();
-    }
-    
-    if (!foundNode) {
-        console.warn('未找到匹配的文本节点');
-        return;
-    }
-    
-    const parent = foundNode.parentNode;
-    if (!parent) return;
-    
-    // 创建高亮span
-    const span = document.createElement('span');
-    span.className = 'cm-search-highlight';
-    span.style.backgroundColor = 'rgba(34, 197, 94, 0.25)';
-    span.style.borderBottom = '1px solid rgba(34, 197, 94, 0.7)';
-    
-    // 分割文本节点
-    const beforeText = foundNode.textContent.slice(0, foundOffset);
-    const highlightedText = foundNode.textContent.slice(foundOffset, foundOffset + searchText.length);
-    const afterText = foundNode.textContent.slice(foundOffset + searchText.length);
-    
-    const beforeNode = document.createTextNode(beforeText);
-    const highlightNode = document.createTextNode(highlightedText);
-    const afterNode = document.createTextNode(afterText);
-    
-    span.appendChild(highlightNode);
-    
-    parent.insertBefore(beforeNode, foundNode);
-    parent.insertBefore(span, foundNode);
-    parent.insertBefore(afterNode, foundNode);
-    parent.removeChild(foundNode);
-    
-    // 先滚动到顶部，然后再滚动到高亮位置，形成从上到下的定位效果
-    preview.scrollTop = 0;
-    
-    // 使用 requestAnimationFrame 确保滚动在下一帧执行
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            // 增加延迟，让"从上到下"的滚动效果更明显
-            setTimeout(() => {
-                // 获取元素位置并手动滚动（更可靠）
-                const spanRect = span.getBoundingClientRect();
-                const previewRect = preview.getBoundingClientRect();
-                const scrollOffset = spanRect.top - previewRect.top - (previewRect.height / 2) + preview.scrollTop;
-                
-                // 使用平滑滚动
-                preview.scrollTo({
-                    top: scrollOffset,
-                    behavior: 'smooth'
-                });
-                
-                // 添加短暂的脉冲动画效果
-                span.style.transition = 'all 0.3s ease';
-                span.style.transform = 'scale(1.05)';
-                setTimeout(() => {
-                    span.style.transform = 'scale(1)';
-                }, 400);
-            }, 400);
-        });
-    });
+    return knowledgeEditorController.highlightTextInPreview(text, meta);
 }
 
 function closeWorkspaceKnowledgeView() {
     closeKnowledgeView({
         restoreWorkspaceContext: true,
     });
-}
-
-function closeKnowledgeViewImpl(options = {}) {
-    const closeOptions = (options && typeof options === 'object') ? options : {};
-    const useNavigationStack = closeOptions.useNavigationStack !== false;
-    const syncLearningHeader = closeOptions.syncLearningHeader !== false;
-    const workspaceReturnContext = closeOptions.restoreWorkspaceContext === true
-        ? knowledgeEditorControllerState.workspaceReturnContext
-        : null;
-    const viewer = document.getElementById('knowledgeViewer');
-    const msgs = document.getElementById('messagesContainer');
-    const inputWrapper = document.getElementById('inputWrapper');
-    const headerTitle = document.getElementById('conversationTitle');
-    const headerLeft = document.querySelector('.header-left');
-    const headerRight = document.querySelector('.header-right');
-    const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
-    const closingTitle = String(knowledgeEditorControllerState.currentTitle || '').trim();
-
-    if (typeof hideFileCenterContextMenu === 'function') {
-        hideFileCenterContextMenu();
-    }
-
-    if (typeof closeFileCenterSortDropdown === 'function') {
-        closeFileCenterSortDropdown();
-    }
-
-    restoreWorkspaceDetailInputContainer();
-    exitLearningFeedComposeMode({ clear: false });
-    exitKnowledgeEditorSpecialModes();
-    storeKnowledgeEditorScrollPosition();
-    knowledgeEditorController.clearTitleState(closingTitle);
-    knowledgeEditorController.clearCurrentTitle();
-    knowledgeEditorController.clearWorkspaceReturnContext();
-    
-    // 检查导航栈
-    if (useNavigationStack && navigationStack.length > 1) {
-        // 弹出当前项（知识详情），查看前一个项
-        navigationStack.pop(); // 移除知识点
-        const prevItem = navigationStack[navigationStack.length - 1];
-        
-        if (prevItem.type === 'search') {
-            // 返回到搜索页面 - 重新渲染搜索结果
-            const query = prevItem.query || currentSearchQuery;
-            
-            // 恢复搜索结果缓存
-            if (prevItem.resultsCache && prevItem.resultsCache.length > 0) {
-                lastKnowledgeSearchResults = prevItem.resultsCache;
-            }
-            
-            // 重新显示搜索界面
-            viewer.style.display = 'flex';
-            viewer.style.flexDirection = 'column';
-            msgs.style.display = 'none';
-            if (inputWrapper) inputWrapper.style.display = 'none';
-            _syncTurnIndicatorVisibility();
-            
-            // 更新Header
-            headerTitle.textContent = '向量库搜索';
-            headerLeft.innerHTML = `
-                <button class="btn-icon" onclick="closeKnowledgeSearchResultView()" title="Back">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
-                </button>
-            `;
-            applyDesktopHeaderTools(headerRight);
-            
-            // 重新渲染搜索结果
-            viewer.innerHTML = `
-                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-                    <div style="padding: 20px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;">
-                        <div style="font-size: 14px; color: #64748b;">搜索: <strong style="color: #0f172a;">${escapeHtml(query)}</strong></div>
-                    </div>
-                    <div id="knowledgeSearchResultsList" style="flex: 1; overflow-y: auto; padding: 0;"></div>
-                </div>
-            `;
-            
-            renderSearchResultsFromCache();
-            return;
-        } else if (prevItem.type === 'chat') {
-            // 返回到聊天页面
-            navigationStack.pop(); // 移除搜索项
-        }
-    }
-
-    if (workspaceReturnContext && workspaceReturnContext.workspaceId) {
-        navigationStack = [];
-        void selectWorkspaceProject(workspaceReturnContext.workspaceId);
-        return;
-    }
-    
-    // 返回到聊天界面
-    viewer.style.display = 'none';
-    msgs.style.display = 'flex';
-    const inputDock = document.querySelector('.input-dock');
-    if (inputDock) inputDock.style.display = 'block';
-    if(inputWrapper) inputWrapper.style.display = 'block';
-    if (els.messageInput && els.messageInput.value) {
-        requestAnimationFrame(() => {
-            resizeMessageInput();
-        });
-    }
-    navigationStack = []; // 清空栈
-
-    if (originalHeaderState) {
-        restoreHeaderState(originalHeaderState);
-    } else if (chatHeaderBaseState) {
-        restoreHeaderState(chatHeaderBaseState);
-    }
-    if (wasMailView) clearMailViewUrl();
-    originalHeaderState = null;
-
-    if (syncLearningHeader) {
-        void syncLearningHeaderMode();
-    }
-
-    _syncTurnIndicatorVisibility();
 }
 
 function closeKnowledgeViewBeforeLearningSwitch() {
@@ -21086,7 +19837,7 @@ window.openWorkflowPlaceholderView = function() {
 
     if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
 
-    restoreWorkspaceDetailInputContainer();
+    restoreWorkspaceDetailInputContainerForConversationLoad();
 
     if (!originalHeaderState) {
         originalHeaderState = {
@@ -21428,10 +20179,10 @@ async function searchKnowledgeVectors(query) {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
 
-    restoreWorkspaceDetailInputContainer();
+    restoreWorkspaceDetailInputContainerForConversationLoad();
     
     // 关闭任何可能打开的知识库详情视图
-    if (knowledgeEditorControllerState.currentTitle) {
+    if (knowledgeEditorController.getCurrentTitle()) {
         closeKnowledgeView();
     }
     
@@ -21583,7 +20334,7 @@ function closeKnowledgeSearchResultView() {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
 
-    restoreWorkspaceDetailInputContainer();
+    restoreWorkspaceDetailInputContainerForConversationLoad();
     viewer.style.display = 'none';
     viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
     msgs.style.display = 'flex';
@@ -21675,7 +20426,7 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-function getKnowledgeEditorState(title = knowledgeEditorControllerState.currentTitle || '') {
+function getKnowledgeEditorState(title = knowledgeEditorController.getCurrentTitle() || '') {
     return knowledgeEditorController.getTitleState(title);
 }
 
@@ -21764,8 +20515,8 @@ function collectKnowledgeEditorLayoutSnapshot() {
     const scroller = getKnowledgeEditorScrollerEl ? getKnowledgeEditorScrollerEl() : null;
     const previewEl = getKnowledgeEditorPreviewEl ? getKnowledgeEditorPreviewEl() : null;
     return {
-        currentTitle: String(knowledgeEditorControllerState.currentTitle || ''),
-        activeTitle: String((knowledgeEditorControllerState.scroll && knowledgeEditorControllerState.scroll.activeTitle) || ''),
+        currentTitle: String(knowledgeEditorController.getCurrentTitle() || ''),
+        activeTitle: knowledgeEditorController.getActiveScrollTitle(),
         isPreviewActive: typeof isKnowledgeEditorPreviewActive === 'function' ? !!isKnowledgeEditorPreviewActive() : null,
         isSideBySideActive: typeof isKnowledgeEditorSideBySideActive === 'function' ? !!isKnowledgeEditorSideBySideActive() : null,
         isFullscreenActive: typeof isKnowledgeEditorFullscreenActive === 'function' ? !!isKnowledgeEditorFullscreenActive() : null,
@@ -21793,597 +20544,19 @@ window.__nexoraDumpKnowledgeEditorLayout = function() {
 };
 
 function getKnowledgeEditorScrollMetrics() {
-    const preview = getKnowledgeEditorPreviewEl();
-    const previewProgress = preview ? readScrollableProgress(preview) : { top: 0, ratio: 0 };
-    const previewMax = preview ? Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0))) : 0;
-    let editProgress = { top: 0, ratio: 0 };
-    let editMax = 0;
-
-    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror && typeof knowledgeEditorControllerState.editor.codemirror.getScrollInfo === 'function') {
-        const info = knowledgeEditorControllerState.editor.codemirror.getScrollInfo();
-        editProgress = readCodeMirrorProgress();
-        editMax = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
-    }
-
-    return {
-        previewProgress,
-        previewMax,
-        editProgress,
-        editMax
-    };
+    return knowledgeEditorController.getScrollMetrics();
 }
 
 function captureKnowledgeEditorToggleSnapshot(forcePreviewSource = null) {
-    const title = String(knowledgeEditorControllerState.currentTitle || knowledgeEditorControllerState.scroll.activeTitle || '').trim();
-    if (!title) return null;
-
-    const metrics = getKnowledgeEditorScrollMetrics();
-    const usePreviewSource = forcePreviewSource != null
-        ? !!forcePreviewSource
-        : (isKnowledgeEditorSideBySideActive()
-            ? metrics.previewMax >= metrics.editMax
-            : isKnowledgeEditorPreviewActive());
-    const sourceProgress = usePreviewSource ? metrics.previewProgress : metrics.editProgress;
-
-    return {
-        title,
-        sourceMode: usePreviewSource ? 'preview' : 'edit',
-        previewTop: sourceProgress.top,
-        previewRatio: sourceProgress.ratio,
-        editTop: sourceProgress.top,
-        editRatio: sourceProgress.ratio,
-        previewMax: metrics.previewMax,
-        editMax: metrics.editMax
-    };
-}
-
-function mirrorKnowledgeEditorProgressToBothModes(forcePreviewSource = null) {
-    const snapshot = captureKnowledgeEditorToggleSnapshot(forcePreviewSource);
-    if (!snapshot) return;
-
-    const state = getKnowledgeEditorState(snapshot.title);
-    state.previewTop = snapshot.previewTop;
-    state.previewRatio = snapshot.previewRatio;
-    state.editTop = snapshot.editTop;
-    state.editRatio = snapshot.editRatio;
-    knowledgeEditorController.setActiveScrollTitle(snapshot.title);
-    logKnowledgeEditorDebug('mirrorProgress', {
-        title: snapshot.title,
-        mode: snapshot.sourceMode,
-        previewTop: state.previewTop,
-        previewRatio: state.previewRatio,
-        editTop: state.editTop,
-        editRatio: state.editRatio,
-        previewMax: snapshot.previewMax,
-        editMax: snapshot.editMax
-    });
-    knowledgeEditorControllerState.scroll.pendingToggleSnapshot = snapshot;
-}
-
-function applyKnowledgeEditorToggleSnapshot(snapshot, forcePreview = null) {
-    if (!snapshot) return;
-    const isPreview = forcePreview != null ? !!forcePreview : isKnowledgeEditorPreviewActive();
-    if (isPreview) {
-        const preview = getKnowledgeEditorPreviewEl();
-        if (preview) {
-            applyScrollableProgress(preview, snapshot.previewTop, snapshot.previewRatio);
-        }
-    } else {
-        const scroller = getKnowledgeEditorScrollerEl();
-        if (scroller) {
-            applyScrollableProgress(scroller, snapshot.editTop, snapshot.editRatio);
-        }
-        applyCodeMirrorProgress(snapshot.editTop, snapshot.editRatio);
-    }
-    logKnowledgeEditorDebug('toggleSnapshotRestore', {
-        title: snapshot.title,
-        sourceMode: snapshot.sourceMode,
-        isPreview,
-        previewTop: snapshot.previewTop,
-        previewRatio: snapshot.previewRatio,
-        editTop: snapshot.editTop,
-        editRatio: snapshot.editRatio
-    });
-}
-
-function cancelKnowledgeEditorRestores() {
-    knowledgeEditorController.cancelRestores();
-}
-
-function isKnowledgeEditorPreviewActive() {
-    return knowledgeEditorController.isPreviewActive();
-}
-
-function isKnowledgeEditorSideBySideActive() {
-    return knowledgeEditorController.isSideBySideActive();
-}
-
-function isKnowledgeEditorFullscreenActive() {
-    return knowledgeEditorController.isFullscreenActive();
-}
-
-function syncKnowledgeEditorToolbarState() {
-    const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
-    if (!toolbar) return;
-    const previewBtn = toolbar.querySelector('.preview');
-    const sideBtn = toolbar.querySelector('.side-by-side');
-    const fullBtn = toolbar.querySelector('.fullscreen');
-    const isPreview = isKnowledgeEditorPreviewActive();
-    const isSide = isKnowledgeEditorSideBySideActive();
-    const isFull = isKnowledgeEditorFullscreenActive();
-    if (previewBtn) previewBtn.classList.toggle('active', isPreview && !isSide);
-    if (sideBtn) sideBtn.classList.toggle('active', isSide);
-    if (fullBtn) fullBtn.classList.toggle('active', isFull);
-}
-
-function toggleKnowledgeEditorPreviewMode() {
-    if (!knowledgeEditorControllerState.editor) return;
-    if (typeof knowledgeEditorControllerState.editor.togglePreview === 'function') {
-        knowledgeEditorControllerState.editor.togglePreview();
-        return;
-    }
-    if (typeof EasyMDE !== 'undefined' && EasyMDE && typeof EasyMDE.togglePreview === 'function') {
-        EasyMDE.togglePreview(knowledgeEditorControllerState.editor);
-    }
-}
-
-function exitKnowledgeEditorSpecialModes() {
-    if (!knowledgeEditorControllerState.editor) return;
-    try {
-        if (isKnowledgeEditorFullscreenActive() && typeof knowledgeEditorControllerState.editor.toggleFullScreen === 'function') {
-            knowledgeEditorControllerState.editor.toggleFullScreen();
-        }
-    } catch (_) {}
-    try {
-        if (isKnowledgeEditorSideBySideActive() && typeof knowledgeEditorControllerState.editor.toggleSideBySide === 'function') {
-            knowledgeEditorControllerState.editor.toggleSideBySide();
-        }
-    } catch (_) {}
+    return knowledgeEditorController.captureToggleSnapshot(forcePreviewSource);
 }
 
 function isKnowledgeEditorAlignDebugEnabled() {
     return !!window.__NEXORA_ALIGN_DEBUG;
 }
 
-function cancelKnowledgeEditorAlignRetries() {
-    knowledgeEditorControllerState.align.retryTimers.forEach((timer) => clearTimeout(timer));
-    knowledgeEditorControllerState.align.retryTimers = [];
-}
-
-function mapKnowledgePreviewAnchorType(node) {
-    if (node && node.classList && node.classList.contains('nexora-preview-cm-header')) return 'heading';
-    const tag = String((node && node.tagName) || '').toUpperCase();
-    if (/^H[1-6]$/.test(tag)) return 'heading';
-    if (tag === 'PRE') return 'code';
-    if (tag === 'TABLE') return 'table';
-    if (tag === 'BLOCKQUOTE') return 'blockquote';
-    if (tag === 'UL' || tag === 'OL') return 'list';
-    if (tag === 'HR') return 'hr';
-    return 'paragraph';
-}
-
-function extractKnowledgePreviewHeadingLevel(node) {
-    if (!node) return 0;
-    const tag = String(node.tagName || '').toUpperCase();
-    if (/^H[1-6]$/.test(tag)) return Number(tag.slice(1));
-    const dataLevel = Number(node.dataset && node.dataset.cmHeaderLevel);
-    if (Number.isFinite(dataLevel) && dataLevel >= 1 && dataLevel <= 6) return dataLevel;
-    const cls = String(node.className || '');
-    const match = /\bcm-header-(\d)\b/.exec(cls);
-    if (match) return Number(match[1]);
-    return 1;
-}
-
 function normalizeKnowledgePreviewHeadingTags(root) {
-    if (!root || !root.querySelectorAll) return;
-    const headings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'));
-    headings.forEach((heading) => {
-        const level = Number(String(heading.tagName || 'H1').slice(1)) || 1;
-        const replacement = document.createElement('div');
-        const normalizedLevel = Math.max(1, Math.min(6, level));
-        replacement.className = `nexora-preview-cm-header nexora-preview-cm-header-${normalizedLevel} cm-header cm-header-${normalizedLevel}`;
-        replacement.dataset.cmHeaderLevel = String(normalizedLevel);
-        if (heading.id) replacement.id = heading.id;
-        replacement.innerHTML = heading.innerHTML;
-        heading.replaceWith(replacement);
-    });
-}
-
-function getKnowledgeEditorEffectiveCmBottom(cm) {
-    if (!cm || typeof cm.lineCount !== 'function' || cm.lineCount() <= 0) return 0;
-    let lastLine = Math.max(0, cm.lineCount() - 1);
-    while (lastLine > 0 && !String(cm.getLine(lastLine) || '').trim()) {
-        lastLine -= 1;
-    }
-    const lastTop = Number(cm.heightAtLine(lastLine, "local") || 0);
-    const lineHandle = cm.getLineHandle(lastLine);
-    const lineHeight = Number((lineHandle && lineHandle.height) || cm.defaultTextHeight() || 0);
-    return Math.max(0, Math.round(lastTop + lineHeight));
-}
-
-function collectKnowledgeEditorMarkdownAnchors(cm) {
-    const anchors = [];
-    let inFence = false;
-    let previousType = '';
-    let previousWasBlank = true;
-
-    for (let i = 0; i < cm.lineCount(); i++) {
-        const line = String(cm.getLine(i) || '');
-        const trimmed = line.trim();
-
-        if (/^```/.test(trimmed)) {
-            if (!inFence) {
-                anchors.push({ line: i, type: 'code', level: 0, textNorm: '' });
-            }
-            inFence = !inFence;
-            previousType = 'fence';
-            previousWasBlank = false;
-            continue;
-        }
-
-        if (inFence) continue;
-
-        if (!trimmed) {
-            previousWasBlank = true;
-            continue;
-        }
-
-        let currentType = 'paragraph';
-        let level = 0;
-        let textRaw = trimmed;
-        const headingMatch = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(trimmed);
-        if (headingMatch) {
-            currentType = 'heading';
-            level = headingMatch[1].length;
-            textRaw = headingMatch[2];
-        } else if (/^>\s?/.test(trimmed)) {
-            currentType = 'blockquote';
-            textRaw = trimmed.replace(/^>\s?/, '');
-        } else if (/^[-*+]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
-            currentType = 'list';
-        } else if (/^\|.+\|$/.test(trimmed) || /^:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+$/.test(trimmed)) {
-            currentType = 'table';
-        } else if (/^[-*_]{3,}\s*$/.test(trimmed)) {
-            currentType = 'hr';
-            textRaw = '';
-        }
-
-        if (previousWasBlank || currentType !== previousType || currentType === 'heading' || currentType === 'hr') {
-            anchors.push({
-                line: i,
-                type: currentType,
-                level,
-                textNorm: normalizeKnowledgeAnchorText(textRaw)
-            });
-        }
-
-        previousType = currentType;
-        previousWasBlank = false;
-    }
-
-    return anchors;
-}
-
-function collectKnowledgeEditorPreviewAnchors(preview) {
-    if (!preview) return [];
-    const anchorTags = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'PRE', 'TABLE', 'BLOCKQUOTE', 'UL', 'OL', 'HR']);
-    const directChildren = Array.from(preview.children || []).filter((node) => {
-        const tag = String(node.tagName || '').toUpperCase();
-        return anchorTags.has(tag) || (node.classList && node.classList.contains('nexora-preview-cm-header'));
-    });
-    const nodes = directChildren.length > 0
-        ? directChildren
-        : Array.from(preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, table, blockquote, ul, ol, hr, .nexora-preview-cm-header'));
-    return nodes.map((el) => {
-        return {
-            el,
-            type: mapKnowledgePreviewAnchorType(el),
-            level: extractKnowledgePreviewHeadingLevel(el),
-            textNorm: normalizeKnowledgeAnchorText(el.textContent || '')
-        };
-    });
-}
-
-function normalizeKnowledgeAnchorText(text) {
-    return String(text || '')
-        .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
-        .replace(/[`*_~>#\[\]()!.,:;'"，。！？：；、\s]+/g, '')
-        .toLowerCase();
-}
-
-function areKnowledgeAnchorsCompatible(cmAnchor, previewAnchor) {
-    if (!cmAnchor || !previewAnchor) return false;
-    if (cmAnchor.type === previewAnchor.type) {
-        if (cmAnchor.type === 'heading') {
-            const levelMatch = !cmAnchor.level || !previewAnchor.level || cmAnchor.level === previewAnchor.level;
-            if (!levelMatch) return false;
-            if (cmAnchor.textNorm && previewAnchor.textNorm) {
-                return cmAnchor.textNorm === previewAnchor.textNorm
-                    || cmAnchor.textNorm.includes(previewAnchor.textNorm)
-                    || previewAnchor.textNorm.includes(cmAnchor.textNorm);
-            }
-            return true;
-        }
-
-        if ((cmAnchor.type === 'paragraph' || cmAnchor.type === 'blockquote') && cmAnchor.textNorm && previewAnchor.textNorm) {
-            return cmAnchor.textNorm.includes(previewAnchor.textNorm)
-                || previewAnchor.textNorm.includes(cmAnchor.textNorm);
-        }
-
-        return true;
-    }
-
-    if (cmAnchor.type === 'paragraph' && (previewAnchor.type === 'paragraph' || previewAnchor.type === 'blockquote')) return true;
-    if (cmAnchor.type === 'blockquote' && (previewAnchor.type === 'paragraph' || previewAnchor.type === 'blockquote')) return true;
-    return false;
-}
-
-function buildKnowledgeAnchorPairs(cmAnchors, previewAnchors) {
-    const pairs = [];
-    const pairCount = Math.min(cmAnchors.length, previewAnchors.length);
-    for (let i = 0; i < pairCount; i++) {
-        pairs.push({
-            cmAnchor: cmAnchors[i],
-            previewAnchor: previewAnchors[i]
-        });
-    }
-    return pairs;
-}
-
-function alignKnowledgeEditorBlocks(mode = 'full') {
-    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui') return;
-    if (!isKnowledgeEditorSideBySideActive()) return;
-    const preview = getKnowledgeEditorPreviewEl();
-    const scroller = getKnowledgeEditorScrollerEl();
-    if (!preview || !scroller || !knowledgeEditorControllerState.editor || !knowledgeEditorControllerState.editor.codemirror) return;
-
-    const cm = knowledgeEditorControllerState.editor.codemirror;
-    
-    knowledgeEditorControllerState.align.widgets.forEach(w => w.clear());
-    knowledgeEditorControllerState.align.widgets = [];
-
-    const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
-    previewAnchors.forEach(({ el }) => {
-        if (!el || !el.dataset) return;
-        if (el.dataset.nexoraAlignBound === '1') {
-            el.style.marginTop = '';
-            delete el.dataset.nexoraAlignBound;
-        }
-        if (el.dataset.nexoraAlignMarginBottom === '1') {
-            el.style.marginBottom = '';
-            delete el.dataset.nexoraAlignMarginBottom;
-        }
-    });
-    preview.style.paddingBottom = '';
-
-    const cmAnchors = collectKnowledgeEditorMarkdownAnchors(cm);
-    const anchorPairs = buildKnowledgeAnchorPairs(cmAnchors, previewAnchors);
-    const cmTotalBefore = getKnowledgeEditorEffectiveCmBottom(cm);
-    const cmOffsets = anchorPairs.map((pair) => cm.heightAtLine(Number(pair.cmAnchor && pair.cmAnchor.line), "local"));
-    cmOffsets.push(cmTotalBefore);
-    const useLightMode = mode === 'light';
-    const debugAlign = !useLightMode && isKnowledgeEditorAlignDebugEnabled();
-    const pairDebugRows = debugAlign ? [] : null;
-    let rangeStart = 0;
-    let rangeEnd = Math.max(0, anchorPairs.length - 1);
-    if (useLightMode && anchorPairs.length > 0) {
-        const cmInfo = cm.getScrollInfo();
-        const viewStart = Math.max(0, Number((cmInfo && cmInfo.top) || 0) - 600);
-        const viewEnd = Math.max(viewStart, Number((cmInfo && cmInfo.top) || 0) + Number((cmInfo && cmInfo.clientHeight) || 0) + 800);
-
-        while (rangeStart < anchorPairs.length - 1 && Number(cmOffsets[rangeStart + 1] || 0) < viewStart) {
-            rangeStart += 1;
-        }
-        rangeEnd = rangeStart;
-        while (rangeEnd < anchorPairs.length - 1 && Number(cmOffsets[rangeEnd] || 0) <= viewEnd) {
-            rangeEnd += 1;
-        }
-        rangeStart = Math.max(0, rangeStart - 6);
-        rangeEnd = Math.min(anchorPairs.length - 1, rangeEnd + 8);
-    }
-
-    const previewOffsets = useLightMode
-        ? null
-        : anchorPairs.map((pair) => Number((pair.previewAnchor && pair.previewAnchor.el && pair.previewAnchor.el.offsetTop) || 0));
-    if (previewOffsets) {
-        previewOffsets.push(Math.max(preview.scrollHeight, previewOffsets.length ? previewOffsets[previewOffsets.length - 1] : 0));
-    }
-    const previewOffsetCache = new Map();
-    const readPreviewOffset = (index) => {
-        if (index >= anchorPairs.length) return Math.max(preview.scrollHeight, 0);
-        if (previewOffsets) return Number(previewOffsets[index] || 0);
-        if (previewOffsetCache.has(index)) return Number(previewOffsetCache.get(index) || 0);
-        const node = anchorPairs[index] && anchorPairs[index].previewAnchor && anchorPairs[index].previewAnchor.el;
-        const value = Number((node && node.offsetTop) || 0);
-        previewOffsetCache.set(index, value);
-        return value;
-    };
-    let previewAdded = 0;
-    let editorAdded = 0;
-
-    for (let i = rangeStart; i <= rangeEnd; i++) {
-        const cmLine = Number(anchorPairs[i].cmAnchor && anchorPairs[i].cmAnchor.line);
-        const prNode = anchorPairs[i].previewAnchor && anchorPairs[i].previewAnchor.el;
-        if (!prNode || !Number.isFinite(cmLine)) continue;
-
-        const nextCmLine = i + 1 < anchorPairs.length
-            ? Number(anchorPairs[i + 1].cmAnchor && anchorPairs[i + 1].cmAnchor.line)
-            : null;
-
-        const cmStart = Number(cmOffsets[i] || 0);
-        const cmEnd = Number(cmOffsets[i + 1] || cmTotalBefore);
-        const editHeight = Math.max(0, Math.round(cmEnd - cmStart));
-
-        const previewStart = readPreviewOffset(i);
-        const previewEnd = readPreviewOffset(i + 1);
-        const previewHeight = Math.max(0, Math.round(previewEnd - previewStart));
-
-        const targetHeight = Math.max(editHeight, previewHeight);
-        const editPad = Math.max(0, targetHeight - editHeight);
-        const previewPad = Math.max(0, targetHeight - previewHeight);
-
-        if (debugAlign) {
-            const style = window.getComputedStyle(prNode);
-            pairDebugRows.push({
-                i,
-                cmLine,
-                previewTag: String(prNode.tagName || '').toLowerCase(),
-                previewText: String(prNode.textContent || '').trim().slice(0, 80),
-                previewFontSize: (style.fontSize || ''),
-                previewLineHeight: (style.lineHeight || ''),
-                editHeight,
-                previewHeight,
-                targetHeight,
-                editPad,
-                previewPad
-            });
-        }
-
-        if (previewPad > 1) {
-            const currentMb = parseFloat(window.getComputedStyle(prNode).marginBottom) || 0;
-            prNode.style.marginBottom = `${Math.round(currentMb + previewPad)}px`;
-            prNode.dataset.nexoraAlignMarginBottom = '1';
-            previewAdded += previewPad;
-        }
-
-        if (editPad > 1) {
-            const div = document.createElement("div");
-            div.style.height = `${Math.round(editPad)}px`;
-            div.style.pointerEvents = "none";
-            const insertLine = Number.isFinite(nextCmLine) ? nextCmLine : Math.max(0, cm.lineCount() - 1);
-            const widget = cm.addLineWidget(insertLine, div, {
-                coverGutter: false,
-                noHScroll: true,
-                above: Number.isFinite(nextCmLine)
-            });
-            knowledgeEditorControllerState.align.widgets.push(widget);
-            editorAdded += editPad;
-        }
-    }
-
-    if (!useLightMode && previewAnchors.length > anchorPairs.length) {
-        const firstExtra = previewAnchors[anchorPairs.length];
-        const firstExtraNode = firstExtra && firstExtra.el;
-        if (firstExtraNode) {
-            const extraPreviewHeight = Math.max(0, Math.round(preview.scrollHeight - Number(firstExtraNode.offsetTop || 0)));
-            if (extraPreviewHeight > 1) {
-                const div = document.createElement("div");
-                div.style.height = `${extraPreviewHeight}px`;
-                div.style.pointerEvents = "none";
-                const widget = cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {
-                    coverGutter: false,
-                    noHScroll: true
-                });
-                knowledgeEditorControllerState.align.widgets.push(widget);
-                editorAdded += extraPreviewHeight;
-            }
-        }
-    } else if (!useLightMode && cmAnchors.length > anchorPairs.length) {
-        const firstExtraCm = cmAnchors[anchorPairs.length];
-        if (firstExtraCm && Number.isFinite(firstExtraCm.line)) {
-            const extraCmStart = cm.heightAtLine(firstExtraCm.line, "local");
-            const extraCmHeight = Math.max(0, Math.round(cmTotalBefore - extraCmStart));
-            if (extraCmHeight > 1) {
-                preview.style.paddingBottom = `${extraCmHeight}px`;
-                previewAdded += extraCmHeight;
-            }
-        }
-    }
-
-    if (debugAlign) {
-        try {
-            console.info('[KnowledgeAlign] summary', {
-                anchorPairs: anchorPairs.length,
-                previewAnchors: previewAnchors.length,
-                cmAnchors: cmAnchors.length,
-                previewAdded,
-                editorAdded
-            });
-            console.table(pairDebugRows.slice(0, 120));
-        } catch (_) {}
-    }
-
-    if (!useLightMode) {
-        // Synchronize bottom space
-        setTimeout(() => {
-            const cmScroll = cm.getScrollInfo();
-            const cmMax = Math.max(0, cmScroll.height - cmScroll.clientHeight);
-            const prevMax = Math.max(0, preview.scrollHeight - preview.clientHeight);
-            const diff = Math.round(cmMax - prevMax);
-
-            if (diff > 1) {
-                preview.style.paddingBottom = `${Math.max(0, diff)}px`;
-            } else if (diff < -1) {
-                const div = document.createElement("div");
-                div.style.height = `${Math.round(Math.abs(diff))}px`;
-                div.style.pointerEvents = "none";
-                knowledgeEditorControllerState.align.widgets.push(cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {coverGutter: false, noHScroll: true}));
-            }
-        }, 40);
-
-        const pendingImages = Array.from(preview.querySelectorAll('img')).filter((img) => !img.complete);
-        pendingImages.forEach((img) => {
-            if (img.dataset.nexoraAlignLoadBound === '1') return;
-            img.dataset.nexoraAlignLoadBound = '1';
-            const onDone = () => {
-                delete img.dataset.nexoraAlignLoadBound;
-                if (isKnowledgeEditorSideBySideActive()) {
-                    scheduleKnowledgeEditorAlignment('image');
-                }
-            };
-            img.addEventListener('load', onDone, { once: true });
-            img.addEventListener('error', onDone, { once: true });
-        });
-    }
-}
-
-function scheduleKnowledgeEditorAlignment(reason = 'typing') {
-    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.__editorType === 'toastui') return;
-    if (!isKnowledgeEditorSideBySideActive()) return;
-    cancelKnowledgeEditorAlignRetries();
-    const runToken = ++knowledgeEditorControllerState.align.runToken;
-    const now = Date.now();
-    let delays;
-    if (reason === 'toggle') {
-        delays = [0, 180, 420];
-    } else if (reason === 'layout') {
-        delays = [100, 320];
-    } else if (reason === 'image') {
-        delays = [120, 380];
-    } else {
-        delays = [1200];
-        if (now - knowledgeEditorControllerState.align.lastRunAt < 300) {
-            delays = [1400];
-        }
-    }
-
-    delays.forEach((delay) => {
-        const timer = setTimeout(() => {
-            if (runToken !== knowledgeEditorControllerState.align.runToken) return;
-            if (!isKnowledgeEditorSideBySideActive()) return;
-            if (reason === 'typing' && (Date.now() - knowledgeEditorControllerState.align.lastInputAt) < 650) return;
-            if (knowledgeEditorControllerState.align.busy) return;
-            knowledgeEditorControllerState.align.busy = true;
-            requestAnimationFrame(() => {
-                try {
-                    if (runToken !== knowledgeEditorControllerState.align.runToken) return;
-                    if (!isKnowledgeEditorSideBySideActive()) return;
-                    alignKnowledgeEditorBlocks(reason === 'typing' ? 'light' : 'full');
-                    if (reason !== 'typing') {
-                        syncKnowledgeEditorMirrorScroll(false);
-                    }
-                    knowledgeEditorControllerState.align.lastRunAt = Date.now();
-                } finally {
-                    knowledgeEditorControllerState.align.busy = false;
-                }
-            });
-        }, delay);
-        knowledgeEditorControllerState.align.retryTimers.push(timer);
-    });
-}
-
-function syncKnowledgeEditorMirrorScroll(fromPreview) {
-    knowledgeEditorController.syncMirrorScroll(fromPreview);
+    return knowledgeEditorController.normalizePreviewHeadingTags(root);
 }
 
 function getKnowledgeEditorPreviewEl() {
@@ -22397,8 +20570,8 @@ function getKnowledgeEditorPreviewEl() {
 }
 
 function getKnowledgeEditorScrollerEl() {
-    if (knowledgeEditorControllerState.editor && knowledgeEditorControllerState.editor.codemirror && typeof knowledgeEditorControllerState.editor.codemirror.getScrollerElement === 'function') {
-        const scroller = knowledgeEditorControllerState.editor.codemirror.getScrollerElement();
+    if (knowledgeEditorController.getEditorCodeMirror() && typeof knowledgeEditorController.getEditorCodeMirror().getScrollerElement === 'function') {
+        const scroller = knowledgeEditorController.getEditorCodeMirror().getScrollerElement();
         if (scroller) return scroller;
     }
     return document.querySelector('#knowledgeViewer .toastui-editor-md-container .CodeMirror-scroll')
@@ -22428,10 +20601,6 @@ function storeKnowledgeEditorScrollPosition(forcePreview = null) {
 
 function installKnowledgeEditorPreviewHooks() {
     knowledgeEditorController.installPreviewHooks();
-}
-
-async function saveKnowledgeImpl(title) {
-    await knowledgeEditorController.saveKnowledge(title);
 }
 
 // --- Knowledge Settings ---
@@ -22490,34 +20659,6 @@ function showToast(msg) {
     toast.classList.add('show');
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
-
-const LOCAL_PROVIDER_ICON_MAP = {
-    github: '',
-    alibabacloud: '/static/img/Index/static/icons/aliyun.png',
-    aliyun: '/static/img/icons/tongyi_single_icon.png',
-    bytedance: '/static/img/icons/volcengine_single_icon.svg',
-    volcengine: '/static/img/icons/volcengine_single_icon.svg',
-    qq: '/static/img/icons/tencent_cloud_single_icon.svg',
-    wechat: '/static/img/icons/tencent_cloud_single_icon.svg',
-    tencent: '/static/img/icons/tencent_cloud_single_icon.svg',
-    deepseek: '/static/img/icons/deepseek_single_icon.svg',
-    openai: '/static/img/icons/openai_single_icon.svg',
-    stepfun: '/static/img/icons/stepfun_single_icon.png',
-    moonshot: '/static/img/icons/kimi_single_icon.png',
-    kimi: '/static/img/icons/kimi_single_icon.png',
-    minimax: '/static/img/icons/minimax_single_icon.png',
-    siliconflow: '/static/img/icons/siliconflow_single_icon.svg',
-    openrouter: '/static/img/icons/openrouter_single_icon.svg',
-    xunfei: '/static/img/icons/xunfei_spark_single_icon.svg',
-    spark: '/static/img/icons/xunfei_spark_single_icon.svg',
-    hunyuan: '/static/img/icons/hunyuan_single_icon.png',
-    ollama: '/static/img/icons/ollama_single_icon.svg',
-    nvidia: '/static/img/icons/nvidia.svg',
-    zhipu: '/static/img/icons/zhipu_single_icon.svg',
-    zhipuai: '/static/img/icons/zhipu_single_icon.svg',
-    zai: '/static/img/icons/zhipu_single_icon.svg',
-    bigmodel: '/static/img/icons/zhipu_single_icon.svg'
-};
 
 function resolveProviderSimpleIconSlug(provider) {
     const p = String(provider || '').trim().toLowerCase();
@@ -22607,44 +20748,6 @@ function renderProviderInlineHtml(provider, labelText = '') {
         </span>
     `;
 }
-
-const MODEL_PROVIDER_LABEL_MAP = {
-    volcengine: '火山引擎',
-    aliyun: '阿里云',
-    dashscope: '阿里云',
-    stepfun: '阶跃星辰',
-    github: 'GitHub',
-    suanli: '算力猫',
-    openai: 'OpenAI',
-    deepseek: 'DeepSeek',
-    ollama: 'Ollama',
-    openrouter: 'OpenRouter',
-    siliconflow: '硅基流动',
-    moonshot: '月之暗面',
-    zhipu: '智谱',
-    hunyuan: '腾讯混元',
-    minimax: 'MiniMax',
-    nvidia: 'NVIDIA',
-};
-
-const MODEL_PROVIDER_ORDER_MAP = {
-    volcengine: 10,
-    aliyun: 20,
-    dashscope: 20,
-    stepfun: 30,
-    github: 40,
-    suanli: 50,
-    openai: 60,
-    deepseek: 70,
-    ollama: 80,
-    openrouter: 90,
-    siliconflow: 100,
-    moonshot: 110,
-    zhipu: 120,
-    hunyuan: 130,
-    minimax: 140,
-    nvidia: 150,
-};
 
 function normalizeModelProviderKey(provider) {
     return String(provider || 'other').trim().toLowerCase() || 'other';
@@ -24753,24 +22856,6 @@ window.saveUserModelPermissions = async function() {
 window.closeModelPermModal = function() {
     return adminUsersController.closeModelPermModal();
 };
-
-const ADMIN_QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit';
-const ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY = 'chatdb.admin.quota_adjust_mode';
-
-let adminModelConfigCache = { models: {}, providers: {} };
-let adminSelectedProvider = '';
-let adminModelSearchKeyword = '';
-let adminQuotaDefaultOverageAction = 'disable_model';
-let adminProviderOverageActionMap = {};
-let adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
-let adminServerQuotaProvidersCache = [];
-let adminQuotaOverageNoticeChecked = false;
-let adminTextConfirmHandler = null;
-let adminPanelScrollState = { providers: 0, models: 0 };
-let adminConfigState = { mode: '', originalKey: '' };
-let adminOllamaModelStatusCache = {};
-let adminOllamaStatusPending = new Map();
-let adminOllamaStatusModalState = { provider: '', model: '', status: null, loading: false };
 
 function encodeAdminInlineArg(value) {
     return encodeURIComponent(String(value || '')).replace(/[!'()*]/g, (char) => {
@@ -27564,22 +25649,22 @@ window.adminResetPassword = async function(encodedUserId) {
 
 
 async function updateVectorInSettings() {
-    if (!knowledgeEditorControllerState.currentTitle) {
+    if (!knowledgeEditorController.getCurrentTitle()) {
         showToast('请先选择知识点');
         return;
     }
     const vectorizeTasks = knowledgeVectorController.getVectorizeTasks();
-    if (vectorizeTasks[knowledgeEditorControllerState.currentTitle] && vectorizeTasks[knowledgeEditorControllerState.currentTitle].running) {
+    if (vectorizeTasks[knowledgeEditorController.getCurrentTitle()] && vectorizeTasks[knowledgeEditorController.getCurrentTitle()].running) {
         showToast('该知识点正在向量化');
         return;
     }
     showToast('正在更新到向量库，可先关闭窗口');
     setVectorStatus('更新中...');
-    knowledgeVectorController.setVectorizeTitle(knowledgeEditorControllerState.currentTitle);
+    knowledgeVectorController.setVectorizeTitle(knowledgeEditorController.getCurrentTitle());
     const runId = knowledgeVectorController.nextVectorizeRunId();
     try {
         const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorControllerState.currentTitle;
+        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorController.getCurrentTitle();
         if (runId !== knowledgeVectorController.getVectorizeRunId()) return;
 
         const metaRes = await fetch('/api/knowledge/list');
@@ -27610,42 +25695,42 @@ async function updateVectorInSettings() {
             }
         }
 
-        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) startVectorProgress(100);
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorController.getCurrentTitle()) startVectorProgress(100);
         const vectorizeData = await vectorizeKnowledgeTitle(liveTitle, {
             silent: true,
             onProgress: (pct, msg) => {
-                if (knowledgeVectorController.getVectorizeTitle() !== knowledgeEditorControllerState.currentTitle) return;
+                if (knowledgeVectorController.getVectorizeTitle() !== knowledgeEditorController.getCurrentTitle()) return;
                 updateVectorProgress(Math.max(0, Math.min(100, Number(pct) || 0)), 100, msg);
             }
         });
         if (!vectorizeData.success) {
             setVectorStatus('向量化失败');
-            if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
+            if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorController.getCurrentTitle()) {
                 stopVectorProgress('向量化失败', true);
             }
             showToast('向量化失败: ' + (vectorizeData.message || '未知错误'));
             return;
         }
         const storedCount = Number(vectorizeData.stored_count || 0);
-        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) updateVectorProgress(100, 100, `完成 ${storedCount} 块`);
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorController.getCurrentTitle()) updateVectorProgress(100, 100, `完成 ${storedCount} 块`);
 
         showToast('已更新到向量库');
         setVectorStatus(`已更新，${storedCount} 块`);
-        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorController.getCurrentTitle()) {
             stopVectorProgress(`完成 ${storedCount} 块`);
         }
         loadVectorChunks(liveTitle);
     } catch (e) {
         showToast('向量化失败: ' + e.message);
         setVectorStatus('向量化失败');
-        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorControllerState.currentTitle) {
+        if (knowledgeVectorController.getVectorizeTitle() === knowledgeEditorController.getCurrentTitle()) {
             stopVectorProgress('向量化失败', true);
         }
     }
 }
 
 async function deleteVectorInSettings() {
-    if (!knowledgeEditorControllerState.currentTitle) {
+    if (!knowledgeEditorController.getCurrentTitle()) {
         showToast('请先选择知识点');
         return;
     }
@@ -27654,7 +25739,7 @@ async function deleteVectorInSettings() {
     setVectorStatus('删除中...');
     try {
         const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorControllerState.currentTitle;
+        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : knowledgeEditorController.getCurrentTitle();
         const res = await fetch(`/api/knowledge/vector/titles/${encodeURIComponent(liveTitle)}`, {
             method: 'DELETE'
         });

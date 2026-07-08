@@ -201,6 +201,14 @@ let workspaceProjectsState = {
     taskCalendarMonthJumpOpen: false,
 };
 
+function logWorkspaceKnowledgeDebug(message, details = {}) {
+    if (!window.__NEXORA_WORKSPACE_KNOWLEDGE_DEBUG) {
+        return;
+    }
+
+    console.debug('[WorkspaceKnowledge]', message, details);
+}
+
 const WORKSPACE_TASK_STATUS_OPTIONS = [
     { value: 'todo', label: '待办', icon: 'fa-regular fa-circle' },
     { value: 'doing', label: '进行中', icon: 'fa-solid fa-spinner' },
@@ -1569,8 +1577,10 @@ async function confirmDeleteSelectedWorkspaceProject() {
     }
 }
 
-async function selectWorkspaceProject(workspaceId) {
+async function selectWorkspaceProject(workspaceId, options = {}) {
     const id = String(workspaceId || '').trim();
+    const opts = (options && typeof options === 'object') ? options : {};
+    const requestedDetailTab = String(opts.activeDetailTab || opts.detailTab || '').trim();
 
     if (!id) {
         return;
@@ -1584,6 +1594,10 @@ async function selectWorkspaceProject(workspaceId) {
             workspaceProjectsState.taskCalendarMonth = '';
         }
 
+        if (requestedDetailTab) {
+            workspaceProjectsState.activeDetailTab = normalizeWorkspaceDetailTab(requestedDetailTab);
+        }
+
         const res = await fetch(`/api/workspace/${encodeURIComponent(id)}`);
         const data = await res.json();
 
@@ -1593,6 +1607,12 @@ async function selectWorkspaceProject(workspaceId) {
 
         workspaceProjectsState.selectedWorkspace = data.workspace || null;
         renderWorkspaceProjectsList();
+        logWorkspaceKnowledgeDebug('selectWorkspaceProject:detailTab', {
+            workspaceId: id,
+            requestedDetailTab,
+            activeDetailTab: workspaceProjectsState.activeDetailTab,
+            source: String(opts.source || '').trim(),
+        });
         openWorkspaceProjectDetailView(workspaceProjectsState.selectedWorkspace);
     } catch (error) {
         console.error('selectWorkspaceProject failed', error);
@@ -2585,12 +2605,34 @@ async function openWorkspaceDetailKnowledge(title, knowledgeType = 'basis', adde
         return;
     }
 
+    const marker = findWorkspaceKnowledgeItem(workspace, safeTitle, safeType, resourceUser);
+
+    if (!marker) {
+        console.warn('[WorkspaceKnowledge] knowledge marker missing before open', {
+            workspaceId,
+            title: safeTitle,
+            knowledgeType: safeType,
+            user: resourceUser,
+        });
+        showToast('Workspace 知识库归属记录不存在');
+        return;
+    }
+
+    workspaceProjectsState.activeDetailTab = 'knowledge';
+    logWorkspaceKnowledgeDebug('openWorkspaceDetailKnowledge', {
+        workspaceId,
+        title: safeTitle,
+        knowledgeType: safeType,
+        user: resourceUser,
+    });
+
     await viewKnowledge(safeTitle, {
         workspaceContext: {
             workspaceId,
             workspaceTitle: getWorkspaceProjectTitle(workspace),
             knowledgeType: safeType,
             user: resourceUser,
+            returnTab: 'knowledge',
         },
     });
 }
@@ -5816,3 +5858,12 @@ window.openWorkspacesFrameView = function() {
     void loadWorkspaceProjects();
     _syncTurnIndicatorVisibility();
 };
+
+Object.assign(window, {
+    resetWorkspaceReadonlyConversationState,
+    captureWorkspaceDetailInputHome,
+    restoreWorkspaceDetailInputContainer,
+    normalizeWorkspaceConversationHeaderContext,
+    renderWorkspaceConversationHierarchy,
+    selectWorkspaceProject,
+});

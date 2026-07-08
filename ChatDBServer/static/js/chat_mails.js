@@ -13,9 +13,66 @@
         return shared;
     }
 
-function getAdminUsersModule() {
-    return getShared().getModule('adminUsers');
-}
+    let adminUsersRuntime = null;
+    let mailUiRuntime = null;
+
+    function requireRuntimeFunctions(controller, required, label) {
+        if (!controller || typeof controller !== 'object') {
+            throw new Error(`${label} 缺少运行态 controller`);
+        }
+
+        for (const key of required) {
+
+            if (typeof controller[key] !== 'function') {
+                throw new Error(`${label} 运行态 controller 缺少函数: ${key}`);
+            }
+        }
+    }
+
+    function setMailUiRuntime(controller) {
+        requireRuntimeFunctions(controller, [
+            'closeKnowledgePanel',
+            'closeCloudFilePanel',
+            'exitLearningFeedComposeMode',
+            'restoreWorkspaceDetailInputContainer',
+            'getOriginalHeaderState',
+            'setOriginalHeaderState',
+            'resetKnowledgeViewRuntimeState',
+            'getElements',
+            'applyDesktopHeaderTools',
+            'syncTurnIndicatorVisibility',
+        ], 'Chat Mails UI');
+
+        mailUiRuntime = controller;
+    }
+
+    function getMailUiRuntime() {
+
+        if (!mailUiRuntime) {
+            throw new Error('Chat Mails 尚未绑定 UI 运行态 controller');
+        }
+
+        return mailUiRuntime;
+    }
+
+    function setAdminUsersRuntime(controller) {
+        requireRuntimeFunctions(controller, [
+            'ensureAdminUsersCache',
+            'getUsersCache',
+            'loadAdminUsersList',
+        ], 'Chat Mails Admin Users');
+
+        adminUsersRuntime = controller;
+    }
+
+    function getAdminUsersRuntime() {
+
+        if (!adminUsersRuntime) {
+            throw new Error('Chat Mails 尚未绑定 Admin Users 运行态 controller');
+        }
+
+        return adminUsersRuntime;
+    }
 
 let adminMailUsersCache = [];
 let adminSelectedMailUser = null;
@@ -494,9 +551,11 @@ async function openMailPlaceholderView() {
         return;
     }
 
-    closeKnowledgePanel();
-    closeCloudFilePanel();
-    exitLearningFeedComposeMode({ clear: false });
+    const runtime = getMailUiRuntime();
+
+    runtime.closeKnowledgePanel();
+    runtime.closeCloudFilePanel();
+    runtime.exitLearningFeedComposeMode({ clear: false });
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -506,19 +565,17 @@ async function openMailPlaceholderView() {
 
     if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
 
-    restoreWorkspaceDetailInputContainer();
+    runtime.restoreWorkspaceDetailInputContainer();
 
-    if (!originalHeaderState) {
-        originalHeaderState = {
+    if (!runtime.getOriginalHeaderState()) {
+        runtime.setOriginalHeaderState({
             title: headerTitle.textContent,
             leftHTML: headerLeft.innerHTML,
             rightHTML: headerRight.innerHTML
-        };
+        });
     }
 
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
-    navigationStack = [];
+    runtime.resetKnowledgeViewRuntimeState();
     if (isMailMobileLayout()) {
         mailViewState.sidebarCollapsed = false;
         saveMailSidebarCollapsedState(false);
@@ -531,7 +588,8 @@ async function openMailPlaceholderView() {
     }
 
     msgs.style.display = 'none';
-    if (els.learningMainPanel) els.learningMainPanel.style.display = 'none';
+    const elements = runtime.getElements();
+    if (elements && elements.learningMainPanel) elements.learningMainPanel.style.display = 'none';
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'none';
     if (inputWrapper) inputWrapper.style.display = 'none';
@@ -544,7 +602,7 @@ async function openMailPlaceholderView() {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
         </button>
     `;
-    applyDesktopHeaderTools(headerRight);
+    runtime.applyDesktopHeaderTools(headerRight);
 
     viewer.innerHTML = `
         <div class="mail-workspace ${mailViewState.sidebarCollapsed ? 'mail-sidebar-collapsed' : ''}" id="mailWorkspace">
@@ -611,7 +669,7 @@ async function openMailPlaceholderView() {
     `;
     setMailMobileDetailMode(false);
     initMailWorkspace();
-    _syncTurnIndicatorVisibility();
+    runtime.syncTurnIndicatorVisibility();
 };
 
 
@@ -1597,34 +1655,57 @@ async function loadAdminMailGroups() {
 async function loadAdminMailUsersList() {
     const listEl = document.getElementById('adminMailUsersList');
     if (listEl) listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">加载中...</div>';
+
+    let data = null;
+
     try {
         await loadAdminMailGroups();
         const res = await fetch(`/api/admin/nexora-mail/users?group=${encodeURIComponent(adminMailGroup)}`);
-        const data = await res.json();
-        if (!data.success) {
-            adminMailUsersCache = [];
-            adminSelectedMailUser = null;
-            renderAdminMailUsersList();
-            renderAdminMailDetailError(data.message || '读取邮箱用户失败');
-            return;
-        }
-        adminMailUsersCache = Array.isArray(data.users) ? data.users : [];
-        await ensureAdminUsersCacheForBinding();
-        if (!adminSelectedMailUser || !adminMailUsersCache.some(u => (u.username || '') === adminSelectedMailUser)) {
-            adminSelectedMailUser = adminMailUsersCache[0] ? adminMailUsersCache[0].username : null;
-        }
-        renderAdminMailUsersList();
-        renderAdminMailUserDetail();
+        data = await res.json();
     } catch (err) {
+        console.error('[NexoraMail Admin] 邮箱用户请求失败', {
+            group: adminMailGroup,
+            error: err,
+        });
         adminMailUsersCache = [];
         adminSelectedMailUser = null;
         renderAdminMailUsersList();
         renderAdminMailDetailError('邮箱服务连接失败');
+        return;
+    }
+
+    if (!data.success) {
+        adminMailUsersCache = [];
+        adminSelectedMailUser = null;
+        renderAdminMailUsersList();
+        renderAdminMailDetailError(data.message || '读取邮箱用户失败');
+        return;
+    }
+
+    adminMailUsersCache = Array.isArray(data.users) ? data.users : [];
+
+    try {
+        await ensureAdminUsersCacheForBinding();
+
+        if (!adminSelectedMailUser || !adminMailUsersCache.some(u => (u.username || '') === adminSelectedMailUser)) {
+            adminSelectedMailUser = adminMailUsersCache[0] ? adminMailUsersCache[0].username : null;
+        }
+
+        renderAdminMailUsersList();
+        renderAdminMailUserDetail();
+    } catch (err) {
+        console.error('[NexoraMail Admin] 邮箱用户渲染失败', {
+            group: adminMailGroup,
+            usersCount: adminMailUsersCache.length,
+            selectedUser: adminSelectedMailUser,
+            error: err,
+        });
+        renderAdminMailDetailError('邮箱用户渲染失败，请查看控制台错误');
     }
 }
 
 async function ensureAdminUsersCacheForBinding() {
-    await getAdminUsersModule().ensureAdminUsersCache();
+    await getAdminUsersRuntime().ensureAdminUsersCache();
 }
 
 function renderAdminMailUsersList() {
@@ -1707,7 +1788,7 @@ function renderAdminMailUserDetail() {
     const permsText = perms.length ? perms.join(', ') : '-';
     const encoded = encodeURIComponent(uname);
     const avatar = getDefaultAvatarDataUrl(uname || 'M');
-    const boundNexoraUser = (getAdminUsersModule().getUsersCache() || []).find((u) => {
+    const boundNexoraUser = (getAdminUsersRuntime().getUsersCache() || []).find((u) => {
         const lm = u && typeof u === 'object' ? (u.local_mail || {}) : {};
         return (lm.username || '') === uname && (lm.group || 'default') === adminMailGroup;
     }) || null;
@@ -1865,7 +1946,7 @@ async function adminBindMailForUser(encodedUserId) {
             return;
         }
         showToast('邮箱绑定成功');
-        await getAdminUsersModule().loadAdminUsersList();
+        await getAdminUsersRuntime().loadAdminUsersList();
         if (document.getElementById('settings-admin-mail-tab')?.classList.contains('active')) {
             await loadAdminMailUsersList();
         }
@@ -1897,7 +1978,7 @@ async function adminBindNexoraUserForMail(encodedMailUser) {
             return;
         }
         showToast('绑定已更新');
-        await getAdminUsersModule().loadAdminUsersList();
+        await getAdminUsersRuntime().loadAdminUsersList();
         await loadAdminMailUsersList();
     } catch (err) {
         showToast('绑定失败');
@@ -2043,6 +2124,8 @@ function bindAdminMailManagementEvents() {
         loadMailSent,
         loadMailDetail,
         initMailWorkspace,
+        setMailUiRuntime,
+        setAdminUsersRuntime,
         loadAdminMailGroups,
         loadAdminMailUsersList,
         renderAdminMailUsersList,

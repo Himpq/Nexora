@@ -2,6 +2,8 @@
     'use strict';
 
     const MODULE_NAME = 'messages';
+    const renderMessagesLogger = window.NexoraLog.logger('renderMessages');
+    const renderTurnIndicatorLogger = window.NexoraLog.logger('renderTurnIndicator');
 
     function getShared() {
         const shared = window.NexoraChatShared;
@@ -698,7 +700,7 @@
                 const renderStart = performance.now();
                 renderRows.forEach((message, index) => appendMessage(message, readMessageRenderIndex(message, index)));
                 const renderEnd = performance.now();
-                console.log(`[renderMessages] appendMessage count=${renderRows.length} time=${(renderEnd - renderStart).toFixed(1)}ms`);
+                renderMessagesLogger.debug(`[renderMessages] appendMessage count=${renderRows.length} time=${(renderEnd - renderStart).toFixed(1)}ms`);
             } finally {
                 setIsBatchRenderingMessages(false);
                 setRenderLastUserMessageIndexHint(-1);
@@ -706,7 +708,7 @@
 
             let stepStart = performance.now();
             refreshLastUserPromptEditButtons();
-            console.log(`[renderMessages] refreshEditBtns = ${(performance.now() - stepStart).toFixed(1)}ms`);
+            renderMessagesLogger.debug(`[renderMessages] refreshEditBtns = ${(performance.now() - stepStart).toFixed(1)}ms`);
             stepStart = performance.now();
 
             let shouldPinBottom = false;
@@ -730,14 +732,14 @@
                 shouldPinBottom = true;
             }
 
-            console.log(`[renderMessages] scrollToBottom = ${(performance.now() - stepStart).toFixed(1)}ms`);
+            renderMessagesLogger.debug(`[renderMessages] scrollToBottom = ${(performance.now() - stepStart).toFixed(1)}ms`);
             stepStart = performance.now();
 
             if (shouldPinBottom) {
                 pinMessagesToBottomFor(4200);
             }
 
-            console.log(`[renderMessages] pinBottom = ${(performance.now() - stepStart).toFixed(1)}ms`);
+            renderMessagesLogger.debug(`[renderMessages] pinBottom = ${(performance.now() - stepStart).toFixed(1)}ms`);
 
             if (instant) {
                 // Instant render should stay `auto` while bottom-pin is active.
@@ -752,11 +754,11 @@
 
             notifyLearningSidebarBridge();
 
-            console.log('[renderMessages] all sync work done, scheduling turnIndicator in 200ms');
+            renderMessagesLogger.debug('[renderMessages] all sync work done, scheduling turnIndicator in 200ms');
             setTimeout(() => {
                 const turnIndicatorStart = performance.now();
                 renderTurnIndicator(renderRows, { animate: false });
-                console.log(`[renderTurnIndicator] total = ${(performance.now() - turnIndicatorStart).toFixed(1)}ms`);
+                renderTurnIndicatorLogger.debug(`[renderTurnIndicator] total = ${(performance.now() - turnIndicatorStart).toFixed(1)}ms`);
             }, 200);
         }
 
