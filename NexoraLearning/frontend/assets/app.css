@@ -3638,6 +3638,7 @@ body {
 }
 
 .profile-status-icon,
+.profile-agents-icon,
 .profile-admin-settings-icon {
   position: absolute;
   top: 14px;
@@ -3657,11 +3658,24 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.profile-admin-settings-icon {
+.profile-agents-icon {
   right: 50px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-agents-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.profile-admin-settings-icon {
+  right: 86px;
 }
 
 .profile-status-icon:hover,
+.profile-agents-icon:hover,
 .profile-admin-settings-icon:hover {
   border-color: #111111;
   color: #111111;

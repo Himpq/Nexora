@@ -9,6 +9,109 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+try:
+    from core import runlog as _runlog
+except Exception:  # pragma: no cover
+    try:
+        from . import runlog as _runlog  # type: ignore
+    except Exception:
+        _runlog = None  # type: ignore
+
+
+def _first_choice_text(payload: Any) -> str:
+    try:
+        choices = payload.get("choices") if isinstance(payload, Mapping) else None
+        message = (choices[0] or {}).get("message") if choices else None
+        return str((message or {}).get("content") or "")
+    except Exception:
+        return ""
+
+
+def _response_output_text(payload: Any) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+
+    parts: List[str] = []
+    output_items = payload.get("output")
+    if isinstance(output_items, list):
+        for item in output_items:
+            if not isinstance(item, Mapping):
+                continue
+
+            content_items = item.get("content")
+            if isinstance(content_items, list):
+                for content in content_items:
+                    if not isinstance(content, Mapping):
+                        continue
+
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                        continue
+
+                    value = content.get("value")
+                    if isinstance(value, str):
+                        parts.append(value)
+            else:
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+
+    return "\n".join(parts)
+
+
+def _request_prompt_chars(request_payload: Mapping[str, Any]) -> int:
+    prompt_chars = 0
+
+    for msg in (request_payload or {}).get("messages") or []:
+        if isinstance(msg, Mapping):
+            prompt_chars += len(str(msg.get("content") or ""))
+
+    instructions = (request_payload or {}).get("instructions")
+    if instructions is not None:
+        prompt_chars += len(str(instructions))
+
+    input_items = (request_payload or {}).get("input")
+    if input_items is not None:
+        try:
+            prompt_chars += len(json.dumps(input_items, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            prompt_chars += len(str(input_items))
+
+    return prompt_chars
+
+
+def _usage_tokens_from_result(result: Any, request_payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """优先取上游 usage；缺失时按 ~4 字符/token 估算并标记 estimated。"""
+    payload = result.get("payload") if isinstance(result, Mapping) else None
+    usage = payload.get("usage") if isinstance(payload, Mapping) else None
+
+    if isinstance(usage, Mapping):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+
+        if prompt is not None or completion is not None:
+            prompt_count = int(prompt or 0)
+            completion_count = int(completion or 0)
+            return {
+                "prompt": prompt_count,
+                "completion": completion_count,
+                "total": int(usage.get("total_tokens") or (prompt_count + completion_count)),
+            }
+
+    prompt_chars = _request_prompt_chars(request_payload)
+    completion_chars = len(_first_choice_text(payload) or _response_output_text(payload))
+    return {
+        "prompt": prompt_chars // 4,
+        "completion": completion_chars // 4,
+        "total": (prompt_chars + completion_chars) // 4,
+        "estimated": True,
+    }
+
 
 class NexoraProxy:
     """Thin HTTP client around fixed Nexora PAPI endpoints."""
@@ -509,25 +612,62 @@ class NexoraProxy:
                 payload[key] = value
 
         endpoint = self.chat_completions_path if use_chat_path else self.completions_path
-        if payload.get("stream") is True:
-            status, resp, used_endpoint = self._request_chat_stream(
-                endpoint,
-                payload=payload,
-                username=target_username,
-                request_timeout=request_timeout,
-                on_delta=on_delta,
-                on_reasoning_delta=on_reasoning_delta,
-                cancel_event=cancel_event,
-            )
-        else:
-            status, resp, used_endpoint = self._request_json(
-                endpoint,
-                method="POST",
-                payload=payload,
-                username=target_username,
-                request_timeout=request_timeout,
-            )
-        return self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+        span_id = ""
+
+        if _runlog is not None:
+            try:
+                span_id = _runlog.start_span(
+                    "llm",
+                    str(payload.get("model") or "chat"),
+                    args={
+                        "endpoint": endpoint,
+                        "message_count": len(payload["messages"]),
+                        "stream": payload["stream"],
+                    },
+                )
+            except Exception:
+                span_id = ""
+
+        try:
+            if payload.get("stream") is True:
+                status, resp, used_endpoint = self._request_chat_stream(
+                    endpoint,
+                    payload=payload,
+                    username=target_username,
+                    request_timeout=request_timeout,
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                    cancel_event=cancel_event,
+                )
+            else:
+                status, resp, used_endpoint = self._request_json(
+                    endpoint,
+                    method="POST",
+                    payload=payload,
+                    username=target_username,
+                    request_timeout=request_timeout,
+                )
+            result = self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+        except Exception as exc:
+            if span_id:
+                try:
+                    _runlog.end_span(span_id, status="error", result=repr(exc))
+                except Exception:
+                    pass
+            raise
+
+        if span_id:
+            try:
+                _runlog.end_span(
+                    span_id,
+                    status="ok" if result.get("ok") else "error",
+                    tokens=_usage_tokens_from_result(result, payload),
+                    result=_first_choice_text(result.get("payload"))[:300],
+                )
+            except Exception:
+                pass
+
+        return result
 
     def responses(
         self,
@@ -572,14 +712,51 @@ class NexoraProxy:
             if value is not None:
                 payload[key] = value
 
-        status, resp, endpoint = self._request_json(
-            self.responses_path,
-            method="POST",
-            payload=payload,
-            username=target_username,
-            request_timeout=request_timeout,
-        )
-        return self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        span_id = ""
+
+        if _runlog is not None:
+            try:
+                span_id = _runlog.start_span(
+                    "llm",
+                    str(payload.get("model") or "responses"),
+                    args={
+                        "endpoint": self.responses_path,
+                        "input_count": len(payload.get("input") or []),
+                        "stream": False,
+                    },
+                )
+            except Exception:
+                span_id = ""
+
+        try:
+            status, resp, endpoint = self._request_json(
+                self.responses_path,
+                method="POST",
+                payload=payload,
+                username=target_username,
+                request_timeout=request_timeout,
+            )
+            result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        except Exception as exc:
+            if span_id:
+                try:
+                    _runlog.end_span(span_id, status="error", result=repr(exc))
+                except Exception:
+                    pass
+            raise
+
+        if span_id:
+            try:
+                _runlog.end_span(
+                    span_id,
+                    status="ok" if result.get("ok") else "error",
+                    tokens=_usage_tokens_from_result(result, payload),
+                    result=_response_output_text(result.get("payload"))[:300],
+                )
+            except Exception:
+                pass
+
+        return result
 
     def complete_raw(
         self,

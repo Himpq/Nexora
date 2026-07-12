@@ -1054,6 +1054,25 @@ class NexoraWindowApi:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    def select_project_folder(self):
+        """弹出原生文件夹选择对话框，供 NexoraCode 项目会话选择本地项目路径。"""
+        if not self._window:
+            return {"success": False, "message": "window not ready"}
+        try:
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            path = ""
+            if isinstance(result, (list, tuple)) and result:
+                path = str(result[0] or "")
+            elif isinstance(result, str):
+                path = result
+            path = path.strip()
+            if not path:
+                return {"success": False, "cancelled": True}
+            print(f"[NexoraCode] project folder selected: {path}")
+            return {"success": True, "path": path}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     def _get_notes_window(self):
         with self._notes_window_lock:
             nw = self._notes_window
@@ -3230,6 +3249,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                         task_id = payload.get("task_id")
                         tool_name = payload.get("tool_name")
                         args = payload.get("args", {})
+                        request_context = payload.get("context", {})
                         sent_at = payload.get("sent_at")
                         try:
                             server_to_agent_ms = max(0.0, (received_at - float(sent_at)) * 1000.0) if sent_at else None
@@ -3243,6 +3263,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                             task_id=task_id,
                             tool_name=tool_name,
                             args=args,
+                            request_context=request_context,
                             received_at=received_at,
                             server_to_agent_ms=server_to_agent_ms,
                         ):
@@ -3252,6 +3273,8 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                                     "task_id": str(task_id or ""),
                                     "is_cancelled": lambda: _is_tool_task_cancelled(task_id),
                                 }
+                                if isinstance(request_context, dict):
+                                    task_context.update(request_context)
                                 result = registry.execute(tool_name, args, context=task_context)
                                 exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
                             except Exception as e:

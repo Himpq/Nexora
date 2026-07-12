@@ -1046,9 +1046,9 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 互动实验组件格式：
 - `nxl-lab` 只能作为 Markdown fenced code block 出现在正文中，不能包裹全文
 - `nxl-lab` 内部必须是合法 JSON object，不能写 JSON 注释、尾随逗号或 Markdown
-- 当前只允许三种 type：`canvas_scene`、`formula_simulation`、`code_trace`
+- 当前只允许四种 type：`canvas_scene`、`formula_simulation`、`code_trace`、`sandbox_component`
 - 每个 `nxl-lab` 必须包含 `type`、`title`；`description` 可选但必须是字符串
-- 不要输出 HTML、CSS、JavaScript；实验由前端受控渲染器执行
+- 除 `sandbox_component.component` 内部外，不要输出 HTML、CSS、JavaScript；旧 DSL 实验由前端受控渲染器执行
 - 优先使用 `canvas_scene` 构造演示效果；它是通用 2D 画布模板，适合公式、流程、物理图示、状态变化、算法过程、参数联动和工程系统结构
 - `parameters` 中每个参数必须包含 `key`、`label`、`min`、`max`、`step`、`value`、`unit`；`key` 必须是变量名，`min/max/step/value` 必须是数字
 - `canvas_scene` 必须包含 `scene.width`、`scene.height`、`scene.elements`；图元 type 只支持 `rect`、`circle`、`line`、`arrow`、`text`、`particle_field`、`graph`、`plot`
@@ -1059,9 +1059,15 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 - `plot` 是曲线基础积木；它可以表达信号波形、控制响应、损失曲线、激活函数、阈值变化和参数扫描
 - `plot` 必须有 `x/y/width/height/x_min/x_max/y_min/y_max/curves`；每条 curve 必须有 `expression`
 - `canvas_scene` 的数值字段可以写数字，也可以写以 `=` 开头的安全表达式，例如 `"=80 + V * 12"`；表达式只能使用参数名、`t`、`W`、`H` 和 abs/sqrt/sin/cos/tan/exp/log/min/max/floor/ceil/round/pi/clamp 等数学函数
-- `plot.curves[].expression` 可以额外使用变量 `x` 表示横轴采样点
+- `plot.curves[].expression` 必须至少有一条曲线使用变量 `x` 表示横轴采样点；如果要画“随维度变化”的曲线，表达式必须写 `sqrt(x / 3)` 这类随 `x` 变化的形式，不能只写 `sqrt(dim / 3)` 这种只会随滑块整体跳变的水平线
+- `plot` 中的可调参数只能用来改变曲线形状、阈值或标记位置；如果所有曲线都不依赖 `x`，不要使用 `plot`，改用 `text`、`rect`、`arrow`、`graph` 或其他图元表达当前状态
 - `formula_simulation` 当前只支持 `formula_key: "ideal_gas"`，且 parameters 必须包含 `n`、`T`、`V`；如果需要更自由的视觉构图，请用 `canvas_scene`
 - `code_trace` 必须由你生成 `code` 和逐步执行的 `steps`；每个 step 必须包含 `line_index`、`variables`、`output`
+- 当 `canvas_scene` 无法表达真正有教学价值的实验时，使用 `sandbox_component`，让组件代码在独立 iframe 沙箱中运行
+- `sandbox_component` 必须包含 `component.html`、`component.css`、`component.js`；HTML 只写主体片段，不写 `<script>`、`<style>`、`<iframe>`、`<form>`、`src`、`href` 或外链资源
+- `sandbox_component.component.js` 必须定义 `function mount(ctx)`，可以定义 `function update(ctx)` 响应参数变化；从 `ctx.root` 查找组件根节点，从 `ctx.params` 读取参数，用 `ctx.setStatus(text)` 回传状态
+- `sandbox_component` 禁止联网和跨窗口访问：不要使用 fetch、XMLHttpRequest、WebSocket、EventSource、sendBeacon、import、Worker、localStorage、sessionStorage、indexedDB、document.cookie、parent、top、opener、location、eval、Function
+- `sandbox_component` 代码必须自包含，只使用浏览器内置 Canvas/SVG/DOM API；不要依赖外部库、外部图片、CDN、字体或接口
 
 通用 canvas_scene 示例：
 ```nxl-lab
@@ -1164,6 +1170,23 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
     {"line_index": 0, "variables": {"i": 2}, "output": ""},
     {"line_index": 1, "variables": {"i": 2}, "output": "123"}
   ]
+}
+```
+
+沙箱组件示例：
+```nxl-lab
+{
+  "type": "sandbox_component",
+  "title": "高维距离退化采样实验",
+  "description": "拖动维度，观察随机向量距离分布如何变窄。",
+  "parameters": [
+    {"key": "dim", "label": "维度", "min": 2, "max": 120, "step": 2, "value": 20, "unit": ""}
+  ],
+  "component": {
+    "html": "<canvas id=\"stage\" width=\"640\" height=\"360\"></canvas>",
+    "css": "#stage{width:100%;height:320px;display:block;background:#f8fafc}",
+    "js": "function mount(ctx){const canvas=ctx.root.querySelector('#stage');const g=canvas.getContext('2d');function draw(){const dim=Number(ctx.params.dim||20);g.clearRect(0,0,640,360);g.fillStyle='#f8fafc';g.fillRect(0,0,640,360);g.strokeStyle='#111827';g.strokeRect(60,40,520,260);g.fillStyle='#2563eb';for(let i=0;i<80;i+=1){const spread=Math.max(8,120/Math.sqrt(dim));const x=320+(i-40)*5.8;const y=170+Math.sin(i*1.7)*spread;g.beginPath();g.arc(x,y,3,0,Math.PI*2);g.fill();}g.fillStyle='#111827';g.font='700 16px sans-serif';g.fillText('dim = '+dim,70,26);ctx.setStatus('维度越高，样本距离越集中');}window.update=draw;draw();}"
+  }
 }
 ```
 

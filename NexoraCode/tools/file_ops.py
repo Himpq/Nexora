@@ -13,6 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from core.config import config
+from tools.path_guard import build_permission_required, is_sensitive_path, resolve_allowed_path
 
 
 _FILE_LOCKS = {}
@@ -98,6 +99,19 @@ def _check_allowed(target: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _resolve_allowed_file_path(path: str, context: dict | None = None, access: str = "read"):
+    resolved, error = resolve_allowed_path(path, context=context, access=access)
+
+    if error:
+        return None, build_permission_required(
+            path,
+            operation=access,
+            sensitive=is_sensitive_path(Path(str(path or ""))),
+        )
+
+    return resolved, None
 
 
 def _sha256_text(content: str, encoding: str) -> str:
@@ -963,10 +977,11 @@ def file_read(
     end_line=None,
     offset=None,
     limit=None,
+    _nexora_context=None,
 ) -> dict:
-    p = Path(path)
-    if not _check_allowed(p):
-        return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
+    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
+    if permission_error:
+        return permission_error
     if not p.exists():
         return {"success": False, "error": f"File not found: {path}"}
     if not p.is_file():
@@ -1011,11 +1026,11 @@ def file_read(
         return {"success": False, "error": str(e)}
 
 
-def file_probe(path: str) -> dict:
-    p = Path(path)
+def file_probe(path: str, _nexora_context=None) -> dict:
+    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
 
-    if not _check_allowed(p):
-        return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
+    if permission_error:
+        return permission_error
 
     if not p.exists():
         return {"success": False, "error": f"File not found: {path}"}
@@ -1042,9 +1057,9 @@ def file_probe(path: str) -> dict:
 
 
 def file_write(path: str, content: str, encoding: str = "utf-8", _nexora_context=None) -> dict:
-    p = Path(path)
-    if not _check_allowed(p):
-        return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
+    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="write")
+    if permission_error:
+        return permission_error
     try:
         cancel_checker = _context_cancel_checker(_nexora_context)
         _raise_if_cancelled(cancel_checker)
@@ -1292,8 +1307,9 @@ def file_patch(
     p = Path(path)
     cancel_checker = _context_cancel_checker(_nexora_context)
 
-    if not _check_allowed(p):
-        return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
+    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="write")
+    if permission_error:
+        return permission_error
 
     if not p.exists():
         return {"success": False, "error": f"File not found: {path}"}
@@ -1363,10 +1379,10 @@ def file_patch(
         return {"success": False, "error": str(e)}
 
 
-def file_list(path: str) -> dict:
-    p = Path(path)
-    if not _check_allowed(p):
-        return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
+def file_list(path: str, _nexora_context=None) -> dict:
+    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
+    if permission_error:
+        return permission_error
     if not p.is_dir():
         return {"success": False, "error": f"Not a directory: {path}"}
     try:

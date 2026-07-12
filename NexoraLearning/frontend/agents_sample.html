@@ -1,0 +1,1297 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoraLearning · 多智能体协作台</title>
+  <style>
+    :root {
+      --nxl-bg: #ffffff;
+      --nxl-panel: #ffffff;
+      --nxl-line: #e7e7e7;
+      --nxl-line-strong: #d5d5d5;
+      --nxl-text: #131313;
+      --nxl-soft: #667085;
+      --nxl-muted: #94a3b8;
+      --nxl-shadow: 0 8px 18px rgba(17, 17, 17, 0.04);
+      --nxl-radius: 18px;
+      --st-run: #3b82f6;
+      --st-run-soft: #dbeafe;
+      --st-run-ink: #1d4ed8;
+      --st-done: #10b981;
+      --st-done-soft: #d1fae5;
+      --st-done-ink: #047857;
+      --st-warn: #f59e0b;
+      --st-warn-soft: #fef3c7;
+      --st-warn-ink: #b45309;
+      --st-fail: #ef4444;
+      --st-fail-soft: #fee2e2;
+      --st-fail-ink: #b91c1c;
+      --st-idle: #94a3b8;
+      --st-idle-soft: #f1f5f9;
+      --st-idle-ink: #64748b;
+      --edge: #e2e8f0;
+      --edge-used: #bfdbfe;
+      --mono: Consolas, "Cascadia Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%; margin: 0; overflow: hidden;
+      background: var(--nxl-bg); color: var(--nxl-text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    .agents-shell {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column;
+      padding: 18px 22px 16px;
+      gap: 14px;
+    }
+
+    /* ── 顶栏 ─────────────────────────────── */
+    .topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex: none; }
+    .topbar-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .topbar-title h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.01em; }
+    .mode-chip {
+      font-size: 12px; font-weight: 600; border-radius: 999px; padding: 3px 10px;
+      background: var(--st-run-soft); color: var(--st-run-ink);
+    }
+    .topbar-sub { margin: 4px 0 0; font-size: 12.5px; color: var(--nxl-soft); }
+
+    .controls { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+    .ctl-btn {
+      border: 1px solid var(--nxl-line-strong); background: #fff; color: var(--nxl-text);
+      font: inherit; font-size: 13px; font-weight: 600;
+      border-radius: 10px; padding: 7px 14px; cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .ctl-btn:hover { border-color: #111111; }
+    .ctl-btn.is-primary { background: #111111; color: #fff; border-color: #111111; }
+    .btn-group { display: flex; border: 1px solid var(--nxl-line-strong); border-radius: 10px; overflow: hidden; }
+    .btn-group .ctl-btn { border: 0; border-radius: 0; padding: 7px 11px; }
+    .btn-group .ctl-btn + .ctl-btn { border-left: 1px solid var(--nxl-line); }
+    .btn-group .ctl-btn.is-active { background: #111111; color: #fff; }
+
+    .live-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 600; color: var(--nxl-soft);
+      border: 1px solid var(--nxl-line); border-radius: 999px; padding: 5px 11px;
+    }
+    .live-chip .lc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); }
+    .live-chip.is-on .lc-dot { background: var(--st-done); animation: lc-pulse 1.6s ease-in-out infinite; }
+    .live-chip.is-warn .lc-dot { background: var(--st-warn); }
+    @keyframes lc-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); } 50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12); } }
+
+    /* ── KPI 行 ────────────────────────────── */
+    .kpi-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; flex: none; }
+    .kpi-tile {
+      border: 1px solid var(--nxl-line); border-radius: 14px; background: var(--nxl-panel);
+      box-shadow: var(--nxl-shadow); padding: 12px 16px 11px;
+      display: flex; flex-direction: column; gap: 3px; min-width: 0;
+    }
+    .kpi-label { font-size: 12px; color: var(--nxl-soft); font-weight: 600; letter-spacing: 0.02em; }
+    .kpi-value { font-size: 24px; font-weight: 600; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kpi-value small { font-size: 13px; font-weight: 600; color: var(--nxl-muted); margin-left: 2px; }
+
+    /* ── 主体两栏 ──────────────────────────── */
+    .main-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; }
+
+    .canvas-card, .side-card {
+      border: 1px solid var(--nxl-line); border-radius: var(--nxl-radius);
+      background: var(--nxl-panel); box-shadow: var(--nxl-shadow);
+      min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    }
+    .card-head {
+      flex: none; display: flex; align-items: center; justify-content: space-between;
+      padding: 13px 18px 11px; border-bottom: 1px solid var(--nxl-line);
+    }
+    .card-head h2 { margin: 0; font-size: 14.5px; font-weight: 700; letter-spacing: 0.02em; }
+    .card-head .head-note { font-size: 12px; color: var(--nxl-muted); }
+
+    /* ── 流水线画布 ────────────────────────── */
+    .canvas-scroll { flex: 1; min-height: 0; overflow: auto; }
+    .pipeline-canvas {
+      position: relative;
+      display: grid; grid-template-columns: repeat(3, minmax(212px, 1fr));
+      gap: 20px 56px; padding: 20px 26px 26px; min-width: 780px;
+    }
+    .pipeline-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+    .lane { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .lane-title {
+      font-size: 12px; font-weight: 700; color: var(--nxl-muted);
+      letter-spacing: 0.08em; text-transform: uppercase;
+      padding-bottom: 2px; border-bottom: 1px dashed var(--nxl-line);
+    }
+
+    .agent-node {
+      position: relative; z-index: 2;
+      border: 1px solid var(--nxl-line); border-left: 3px solid transparent;
+      border-radius: 12px; background: #fff;
+      padding: 10px 12px 9px; cursor: pointer;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+    }
+    .agent-node:hover { transform: translateY(-1px); box-shadow: 0 10px 22px rgba(17,17,17,0.07); }
+    .agent-node.is-selected { border-color: #111111; border-left-color: #111111 !important; }
+    .agent-node.st-running { border-color: #93c5fd; border-left-color: var(--st-run); animation: node-breathe 1.6s ease-in-out infinite; }
+    .agent-node.st-revise { border-color: #fcd34d; border-left-color: var(--st-warn); }
+    .agent-node.st-done { border-left-color: var(--st-done); }
+    .agent-node.st-failed { border-color: #fca5a5; border-left-color: var(--st-fail); }
+    @keyframes node-breathe {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.0); }
+      50% { box-shadow: 0 0 0 5px rgba(59, 130, 246, 0.10); }
+    }
+
+    .node-top { display: flex; align-items: center; gap: 8px; }
+    .node-icon {
+      flex: none; width: 30px; height: 30px; border-radius: 9px;
+      background: #f8fafc; border: 1px solid var(--nxl-line);
+      display: flex; align-items: center; justify-content: center; font-size: 15px;
+    }
+    .node-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .node-model { display: block; font-size: 10.5px; font-weight: 500; color: var(--nxl-muted); font-family: var(--mono); }
+
+    .st-badge {
+      flex: none; display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px;
+      background: var(--st-idle-soft); color: var(--st-idle-ink);
+    }
+    .st-badge .st-ic { font-size: 10px; line-height: 1; }
+    .agent-node.st-running .st-badge { background: var(--st-run-soft); color: var(--st-run-ink); }
+    .agent-node.st-revise  .st-badge { background: var(--st-warn-soft); color: var(--st-warn-ink); }
+    .agent-node.st-done    .st-badge { background: var(--st-done-soft); color: var(--st-done-ink); }
+    .agent-node.st-failed  .st-badge { background: var(--st-fail-soft); color: var(--st-fail-ink); }
+    .agent-node.st-queued  .st-badge { background: #eff6ff; color: var(--st-run-ink); }
+
+    .node-role { margin-top: 6px; font-size: 11.5px; color: var(--nxl-soft); line-height: 1.4; }
+
+    .node-progress { margin-top: 7px; height: 4px; border-radius: 2px; background: #eef2f7; overflow: hidden; display: none; }
+    .node-progress i { display: block; height: 100%; width: 0%; border-radius: 2px; background: var(--st-run); transition: width 0.3s ease; }
+    .agent-node.st-running .node-progress, .agent-node.st-revise .node-progress { display: block; }
+    .agent-node.st-revise .node-progress i { background: var(--st-warn); }
+
+    .node-stream {
+      margin-top: 7px; display: none; font-family: var(--mono); font-size: 10.5px;
+      color: var(--st-run-ink); background: #f8fafc; border-radius: 7px;
+      padding: 4px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent-node.st-running .node-stream, .agent-node.st-revise .node-stream { display: block; }
+    .agent-node.st-revise .node-stream { color: var(--st-warn-ink); }
+    .node-stream::after { content: "▍"; animation: caret-blink 0.9s step-end infinite; }
+    @keyframes caret-blink { 50% { opacity: 0; } }
+
+    .node-meta { margin-top: 7px; display: none; font-size: 10.5px; color: var(--nxl-muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .agent-node.st-done .node-meta, .agent-node.st-failed .node-meta { display: block; }
+
+    /* ── 右侧:详情 + 事件流 ────────────────── */
+    .side-col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+    .detail-card { flex: none; }
+    .detail-body { padding: 13px 16px 14px; font-size: 12.5px; }
+    .detail-empty { color: var(--nxl-muted); font-size: 12.5px; line-height: 1.6; }
+    .detail-title { display: flex; align-items: center; gap: 9px; }
+    .detail-title .node-icon { width: 34px; height: 34px; font-size: 17px; }
+    .detail-title .span-badge {
+      width: 34px; height: 34px; border-radius: 8px;
+      border: 1px solid var(--nxl-line); background: #f8fafc;
+      color: var(--nxl-soft); display: inline-flex; align-items: center; justify-content: center;
+      font-size: 11px; font-family: var(--mono); font-weight: 800;
+    }
+    .detail-title .dt-name { font-size: 14.5px; font-weight: 700; }
+    .detail-title .dt-model { font-size: 11px; color: var(--nxl-muted); font-family: var(--mono); }
+    .detail-desc { margin: 9px 0 0; color: var(--nxl-soft); line-height: 1.55; }
+    .detail-grid { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .detail-stat { background: #f8fafc; border-radius: 9px; padding: 7px 9px; }
+    .detail-stat .ds-label { font-size: 10.5px; color: var(--nxl-muted); font-weight: 600; }
+    .detail-stat .ds-value { font-size: 14px; font-weight: 600; margin-top: 1px; }
+    .detail-io { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .io-row { display: flex; gap: 7px; align-items: baseline; min-width: 0; }
+    .io-tag { flex: none; font-size: 10.5px; font-weight: 700; color: var(--nxl-muted); letter-spacing: 0.05em; }
+    .io-text { flex: 1; min-width: 0; font-size: 11.5px; color: var(--nxl-soft); line-height: 1.5; }
+
+    .feed-card { flex: 1; min-height: 0; }
+    .event-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px 14px; scroll-behavior: smooth; }
+    .event-item {
+      display: flex; gap: 9px; padding: 7px 4px;
+      border-bottom: 1px dashed #eef1f5;
+      animation: ev-in 0.3s ease both;
+    }
+    @keyframes ev-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+    .ev-rail { flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; padding-top: 2px; }
+    .ev-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); box-shadow: 0 0 0 2px #fff; }
+    .event-item.k-handoff .ev-dot { background: var(--st-run); }
+    .event-item.k-done    .ev-dot { background: var(--st-done); }
+    .event-item.k-reject  .ev-dot { background: var(--st-warn); }
+    .event-item.k-milestone .ev-dot { background: #111111; }
+    .ev-main { flex: 1; min-width: 0; }
+    .ev-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+    .ev-time { font-family: var(--mono); font-size: 10px; color: var(--nxl-muted); }
+    .ev-actors { font-size: 11.5px; font-weight: 700; }
+    .ev-actors .ev-arrow { color: var(--st-run); padding: 0 2px; }
+    .ev-kind-tag {
+      font-size: 9.5px; font-weight: 700; border-radius: 5px; padding: 1px 5px;
+      background: var(--st-idle-soft); color: var(--st-idle-ink); letter-spacing: 0.04em;
+    }
+    .event-item.k-handoff .ev-kind-tag { background: var(--st-run-soft); color: var(--st-run-ink); }
+    .event-item.k-done    .ev-kind-tag { background: var(--st-done-soft); color: var(--st-done-ink); }
+    .event-item.k-reject  .ev-kind-tag { background: var(--st-warn-soft); color: var(--st-warn-ink); }
+    .event-item.k-milestone .ev-kind-tag { background: #111111; color: #fff; }
+    .ev-msg { margin-top: 2px; font-size: 11.5px; color: var(--nxl-soft); line-height: 1.5; word-break: break-all; }
+    .event-item.k-milestone .ev-msg { color: var(--nxl-text); font-weight: 600; }
+    .ev-brief { margin-top: 1px; font-size: 10px; color: var(--nxl-muted); font-family: var(--mono); word-break: break-all; }
+
+    .event-waiting { padding: 26px 10px; text-align: center; color: var(--nxl-muted); font-size: 12px; line-height: 1.7; }
+
+    /* 流动圆点(SVG) */
+    .flow-dot { stroke: #ffffff; stroke-width: 2; }
+
+    /* ── 执行时间线 ────────────────────────── */
+    .timeline-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .timeline-wrap[hidden] { display: none; }
+    .canvas-scroll[hidden] { display: none; }
+    .tl-toolbar {
+      flex: none; display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--nxl-line); flex-wrap: wrap;
+    }
+    .tl-runs { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+    .tl-run-chip {
+      border: 1px solid var(--nxl-line-strong); background: #fff; color: var(--nxl-text);
+      font: inherit; font-size: 11.5px; font-weight: 600; border-radius: 999px;
+      padding: 3px 10px; cursor: pointer; white-space: nowrap;
+    }
+    .tl-run-chip.is-active { background: #111111; color: #fff; border-color: #111111; }
+    .tl-run-chip .rc-st { margin-left: 5px; font-size: 10px; }
+    .tl-run-chip.rs-running .rc-st { color: var(--st-run); }
+    .tl-run-chip.is-active.rs-running .rc-st { color: #93c5fd; }
+    .tl-run-chip.rs-error .rc-st { color: var(--st-fail); }
+    .tl-summary { font-size: 11.5px; color: var(--nxl-muted); font-family: var(--mono); white-space: nowrap; }
+
+    .tl-scroll { flex: 1; min-height: 0; overflow: auto; padding: 6px 16px 16px; }
+    .tl-axis {
+      position: relative; height: 20px; margin-left: 158px; margin-bottom: 2px;
+      border-bottom: 1px solid var(--nxl-line);
+    }
+    .tl-axis span {
+      position: absolute; top: 2px; transform: translateX(-50%);
+      font-size: 10px; color: var(--nxl-muted); font-family: var(--mono);
+    }
+    .tl-lane { display: grid; grid-template-columns: 148px 1fr; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed #eef1f5; }
+    .tl-lane-label { min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; }
+    .tl-lane-label .tll-icon { flex: none; font-size: 14px; }
+    .tl-lane-label .tll-badge {
+      flex: none; width: 20px; height: 20px; border-radius: 6px;
+      background: #f1f5f9; border: 1px solid var(--nxl-line);
+      color: var(--nxl-soft); font-size: 10.5px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-family: var(--mono); text-transform: uppercase;
+    }
+    .tl-lane-label .tll-text { min-width: 0; overflow: hidden; }
+    .tl-lane-label .tll-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tl-lane-label small { display: block; font-size: 9.5px; font-weight: 500; color: var(--nxl-muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tl-track {
+      position: relative; height: 26px; border-radius: 6px;
+      background: repeating-linear-gradient(to right, transparent, transparent calc(20% - 1px), #f1f5f9 calc(20% - 1px), #f1f5f9 20%);
+    }
+    .tl-span {
+      position: absolute; top: 5px; height: 16px; min-width: 3px;
+      border-radius: 5px; background: var(--st-run); opacity: 0.92; cursor: pointer;
+      transition: box-shadow 0.15s;
+    }
+    .tl-span:hover { box-shadow: 0 0 0 2px rgba(17, 17, 17, 0.25); z-index: 3; }
+    .tl-span.is-error { background: var(--st-fail); }
+    .tl-span.is-running { background: #60a5fa; animation: tl-breathe 1.4s ease-in-out infinite; }
+    .tl-span.is-selected { box-shadow: 0 0 0 2px #111111; z-index: 3; }
+    @keyframes tl-breathe { 0%, 100% { opacity: 0.92; } 50% { opacity: 0.55; } }
+    .tl-marker {
+      position: absolute; top: 8px; width: 9px; height: 9px;
+      transform: translateX(-5px) rotate(45deg); border-radius: 2px;
+      background: var(--st-warn); cursor: pointer; z-index: 2;
+    }
+    .tl-marker:hover, .tl-marker.is-selected { box-shadow: 0 0 0 2px rgba(17, 17, 17, 0.25); }
+    .tl-marker.is-error { background: var(--st-fail); }
+    .tl-empty { padding: 30px 10px; text-align: center; color: var(--nxl-muted); font-size: 12px; line-height: 1.7; }
+    .tl-legend { display: flex; gap: 12px; align-items: center; font-size: 10.5px; color: var(--nxl-muted); }
+    .tl-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+
+    /* span 详情里的 token 徽标 */
+    .ds-token-note { font-size: 9.5px; color: var(--nxl-muted); font-weight: 500; }
+
+    @media (max-width: 1180px) {
+      .main-grid { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 300px; }
+      .side-col { flex-direction: row; }
+      .detail-card { width: 300px; flex: none; }
+      .feed-card { flex: 1; }
+      .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+<main class="agents-shell">
+
+  <header class="topbar">
+    <div>
+      <div class="topbar-title">
+        <h1>多智能体协作台</h1>
+        <span class="mode-chip" id="modeChip">实时 · runlog 事件流</span>
+      </div>
+      <p class="topbar-sub" id="subTitle">监听 NexoraLearning 教材处理链路:提炼 / 精读 / 出题 / 批注 / 导读 / 向量化 / 视频生成</p>
+    </div>
+    <div class="controls">
+      <span class="live-chip" id="liveChip"><span class="lc-dot"></span><span class="lc-tx">连接中…</span></span>
+    </div>
+  </header>
+
+  <section class="kpi-row" aria-label="流程概览">
+    <div class="kpi-tile"><span class="kpi-label" id="kpiLabel1">活跃智能体</span><span class="kpi-value" id="kpiActive">0<small>/ 8</small></span></div>
+    <div class="kpi-tile"><span class="kpi-label" id="kpiLabel2">已完成任务</span><span class="kpi-value" id="kpiTasks">0</span></div>
+    <div class="kpi-tile"><span class="kpi-label" id="kpiLabel3">模型调用 · Token</span><span class="kpi-value" id="kpiThird">0</span></div>
+    <div class="kpi-tile"><span class="kpi-label" id="kpiLabel4">监听时长</span><span class="kpi-value" id="kpiClock">00:00.0</span></div>
+  </section>
+
+  <section class="main-grid">
+    <article class="canvas-card">
+      <header class="card-head">
+        <h2 id="canvasTitle">协作流水线</h2>
+        <span style="display:flex;align-items:center;gap:10px;">
+          <span class="head-note" id="canvasNote">点击节点查看智能体详情</span>
+          <span class="btn-group" id="viewGroup">
+            <button class="ctl-btn is-active" data-view="pipeline" type="button">流水线</button>
+            <button class="ctl-btn" data-view="timeline" type="button">执行时间线</button>
+          </span>
+        </span>
+      </header>
+      <div class="canvas-scroll" id="canvasScroll">
+        <div class="pipeline-canvas" id="pipelineCanvas">
+          <svg class="pipeline-svg" id="pipelineSvg"></svg>
+          <!-- 泳道由 JS 渲染 -->
+        </div>
+      </div>
+      <div class="timeline-wrap" id="timelineWrap" hidden>
+        <div class="tl-toolbar">
+          <div class="tl-runs" id="tlRuns"></div>
+          <span class="tl-legend">
+            <span><i style="background:var(--st-run)"></i>LLM 调用</span>
+            <span><i style="background:var(--st-warn);border-radius:2px;transform:rotate(45deg)"></i>工具调用</span>
+            <span><i style="background:var(--st-fail)"></i>异常</span>
+            <span class="tl-summary" id="tlSummary"></span>
+          </span>
+        </div>
+        <div class="tl-scroll" id="tlScroll">
+          <div class="tl-axis" id="tlAxis"></div>
+          <div id="tlLanes"><div class="tl-empty">暂无任务执行记录。<br>触发一次教材提炼 / 精读 / 出题,任务时间线会实时出现在这里。</div></div>
+        </div>
+      </div>
+    </article>
+
+    <div class="side-col">
+      <article class="side-card detail-card">
+        <header class="card-head"><h2>智能体详情</h2></header>
+        <div class="detail-body" id="detailBody">
+          <p class="detail-empty">点击左侧流水线中的智能体节点,查看它的角色、输入输出与运行统计。</p>
+        </div>
+      </article>
+      <article class="side-card feed-card">
+        <header class="card-head">
+          <h2>协作事件流</h2>
+          <span class="head-note" id="eventCount">0 条</span>
+        </header>
+        <div class="event-scroll" id="eventScroll"></div>
+      </article>
+    </div>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── 智能体元数据(角色与 config.models / runlog source 对应) ── */
+  var LANES = [
+    { title: "① 资料摄取", agents: ["rough", "review", "split"] },
+    { title: "② 内容加工", agents: ["intensive", "annotate", "quiz", "summary"] },
+    { title: "③ 知识沉淀", agents: ["vector"] },
+  ];
+  var AGENT_TOTAL = 8;
+
+  var AGENTS = {
+    rough:     { icon: "📖", name: "粗读 Agent",       model: "rough_reading",     role: "定位目录与章节边界,产出全书结构与章节摘要",
+                 input: "教材原文(PDF 提取文本)", output: "bookinfo.xml:章节名 / 范围 / 摘要" },
+    review:    { icon: "🛡️", name: "一致性审核 Agent", model: "summary_review",    role: "逐章校验摘要与原文一致性,不合格打回重写",
+                 input: "章节结构 + 摘要 + 原文抽样", output: "审核结论(通过 / 打回与理由)" },
+    split:     { icon: "✂️", name: "切分 Agent",       model: "split_chapters",    role: "把章节切分为适合单次学习的小节(session)",
+                 input: "审核通过的章节结构", output: "学习小节及边界" },
+    intensive: { icon: "🔬", name: "精读 Agent",       model: "intensive_reading", role: "逐章精读,提炼关键点、术语表与学习笔记",
+                 input: "章节全文", output: "key_points / vocabulary / notes" },
+    annotate:  { icon: "✍️", name: "批注 Agent",       model: "annotation",        role: "在原文植入术语解释与难点批注锚点",
+                 input: "精读产物 + 原文段落", output: "行内批注(锚点 + 解释)" },
+    quiz:      { icon: "🎯", name: "出题 Agent",       model: "question_generation", role: "按章节生成分层练习题(基础 / 进阶 / 迁移)",
+                 input: "章节要点 + 术语", output: "题库条目(题干 / 提示 / 答案)" },
+    summary:   { icon: "📋", name: "导读 Agent",       model: "book_summary",      role: "汇总全书导读、大纲与读前引导问题",
+                 input: "全部章节精读产物", output: "全书导读 / 大纲 / 读前问题" },
+    vector:    { icon: "🧩", name: "向量化 Worker",    model: "embedding",         role: "切片嵌入,把精读知识写入 NexoraDB 向量库",
+                 input: "精读产物 + 批注 + 导读", output: "向量切片(bge-small-zh)" },
+  };
+
+  var EDGES = [
+    ["rough", "review"], ["review", "split"], ["split", "intensive"],
+    ["intensive", "annotate"], ["intensive", "quiz"], ["intensive", "summary"],
+    ["annotate", "vector"], ["summary", "vector"],
+  ];
+
+  // 实时模式的接力推断:下游被激活时,从主上游画流动,并把仍在运行的上游标记完成。
+  var UPSTREAM = {
+    review: "rough", split: "review", intensive: "split",
+    annotate: "intensive", quiz: "intensive", summary: "intensive",
+    vector: "summary",
+  };
+
+  /* ── DOM 构建 ─────────────────────────────── */
+  var canvas = document.getElementById("pipelineCanvas");
+  var svg = document.getElementById("pipelineSvg");
+  var nodeEls = {};
+
+  LANES.forEach(function (lane) {
+    var laneEl = document.createElement("section");
+    laneEl.className = "lane";
+    var title = document.createElement("div");
+    title.className = "lane-title";
+    title.textContent = lane.title;
+    laneEl.appendChild(title);
+
+    lane.agents.forEach(function (id) {
+      var a = AGENTS[id];
+      var node = document.createElement("article");
+      node.className = "agent-node st-idle";
+      node.dataset.agent = id;
+      node.innerHTML =
+        '<div class="node-top">' +
+          '<span class="node-icon">' + a.icon + "</span>" +
+          '<span class="node-name">' + a.name + '<span class="node-model">' + a.model + "</span></span>" +
+          '<span class="st-badge"><span class="st-ic">●</span><span class="st-tx">待命</span></span>' +
+        "</div>" +
+        '<p class="node-role">' + a.role + "</p>" +
+        '<div class="node-progress"><i></i></div>' +
+        '<div class="node-stream"></div>' +
+        '<div class="node-meta"></div>';
+      node.addEventListener("click", function () { selectAgent(id); });
+      laneEl.appendChild(node);
+      nodeEls[id] = node;
+    });
+    canvas.appendChild(laneEl);
+  });
+
+  /* ── SVG 连线 ─────────────────────────────── */
+  var edgePaths = {};
+
+  function anchor(el, side) {
+    var x = el.offsetLeft, y = el.offsetTop, w = el.offsetWidth, h = el.offsetHeight;
+    if (side === "right") return [x + w, y + h / 2];
+    if (side === "left") return [x, y + h / 2];
+    if (side === "bottom") return [x + w / 2, y + h];
+    return [x + w / 2, y];
+  }
+
+  function laneIndexOf(id) {
+    for (var i = 0; i < LANES.length; i++) if (LANES[i].agents.indexOf(id) >= 0) return i;
+    return -1;
+  }
+
+  function drawEdges() {
+    svg.setAttribute("width", canvas.scrollWidth);
+    svg.setAttribute("height", canvas.scrollHeight);
+    svg.setAttribute("viewBox", "0 0 " + canvas.scrollWidth + " " + canvas.scrollHeight);
+    EDGES.forEach(function (pair) {
+      var key = pair[0] + ">" + pair[1];
+      var from = nodeEls[pair[0]], to = nodeEls[pair[1]];
+      var sameLane = laneIndexOf(pair[0]) === laneIndexOf(pair[1]);
+      var p1, p2, d;
+      if (sameLane) {
+        p1 = anchor(from, "bottom"); p2 = anchor(to, "top");
+        d = "M" + p1[0] + "," + p1[1] + " C" + p1[0] + "," + (p1[1] + 22) + " " + p2[0] + "," + (p2[1] - 22) + " " + p2[0] + "," + p2[1];
+      } else {
+        p1 = anchor(from, "right"); p2 = anchor(to, "left");
+        var mx = (p1[0] + p2[0]) / 2;
+        d = "M" + p1[0] + "," + p1[1] + " C" + mx + "," + p1[1] + " " + mx + "," + p2[1] + " " + p2[0] + "," + p2[1];
+      }
+      var path = edgePaths[key];
+      if (!path) {
+        path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "var(--edge)");
+        path.setAttribute("stroke-width", "1.5");
+        svg.appendChild(path);
+        edgePaths[key] = path;
+      }
+      path.setAttribute("d", d);
+    });
+  }
+
+  /* ── 状态渲染 ─────────────────────────────── */
+  var ST_LABEL = {
+    idle: ["●", "待命"], queued: ["◷", "排队"], running: ["▶", "运行中"],
+    revise: ["↺", "修订中"], done: ["✓", "完成"], failed: ["✕", "异常"],
+  };
+  var activeSet = {};
+  var agentState = {};
+
+  function setStatus(id, st, meta) {
+    var node = nodeEls[id];
+    if (!node) return;
+    node.className = node.className.replace(/\bst-\w+\b/g, "").trim() + " st-" + st;
+    var lab = ST_LABEL[st] || ST_LABEL.idle;
+    node.querySelector(".st-ic").textContent = lab[0];
+    node.querySelector(".st-tx").textContent = lab[1];
+    if (meta !== undefined && meta !== null && meta !== "") node.querySelector(".node-meta").textContent = meta;
+    agentState[id] = st;
+    if (st === "running" || st === "revise") activeSet[id] = true; else delete activeSet[id];
+    kpi.active = Object.keys(activeSet).length;
+    renderKpi();
+    if (selectedAgent === id) renderDetail(id);
+  }
+
+  function setProg(id, p) {
+    var bar = nodeEls[id] && nodeEls[id].querySelector(".node-progress i");
+    if (bar) bar.style.width = Math.max(0, Math.min(100, p)) + "%";
+  }
+
+  function setStream(id, text) {
+    var el = nodeEls[id] && nodeEls[id].querySelector(".node-stream");
+    if (el) el.textContent = text;
+  }
+
+  /* ── 流动圆点 ─────────────────────────────── */
+  var flows = [];
+
+  function spawnFlow(key, reverse, kind) {
+    var path = edgePaths[key];
+    if (!path) return;
+    var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("r", "4.5");
+    dot.setAttribute("class", "flow-dot");
+    dot.setAttribute("fill", kind === "warn" ? "var(--st-warn)" : "var(--st-run)");
+    svg.appendChild(dot);
+    path.setAttribute("stroke", kind === "warn" ? "var(--st-warn)" : "var(--st-run)");
+    path.setAttribute("stroke-width", "2");
+    flows.push({ path: path, dot: dot, start: wallClock, dur: 0.85, reverse: !!reverse, kind: kind || "info" });
+  }
+
+  function stepFlows() {
+    for (var i = flows.length - 1; i >= 0; i--) {
+      var f = flows[i];
+      var k = (wallClock - f.start) / f.dur;
+      if (k >= 1) {
+        if (f.dot.parentNode) svg.removeChild(f.dot);
+        f.path.setAttribute("stroke", f.kind === "warn" ? "var(--edge)" : "var(--edge-used)");
+        f.path.setAttribute("stroke-width", "1.5");
+        flows.splice(i, 1);
+        continue;
+      }
+      var len = f.path.getTotalLength();
+      var pt = f.path.getPointAtLength((f.reverse ? 1 - k : k) * len);
+      f.dot.setAttribute("cx", pt.x);
+      f.dot.setAttribute("cy", pt.y);
+    }
+  }
+
+  /* ── KPI ─────────────────────────────────── */
+  var kpi = { active: 0, tasks: 0, tok: 0, calls: 0 };
+  var kpiActiveEl = document.getElementById("kpiActive");
+  var kpiTasksEl = document.getElementById("kpiTasks");
+  var kpiThirdEl = document.getElementById("kpiThird");
+  var kpiClockEl = document.getElementById("kpiClock");
+
+  function fmtTok(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+    return String(n);
+  }
+
+  function fmtClock(sec) {
+    if (sec < 0) sec = 0;
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
+  }
+
+  function renderKpi() {
+    kpiActiveEl.innerHTML = kpi.active + "<small>/ " + AGENT_TOTAL + "</small>";
+    kpiTasksEl.textContent = kpi.tasks;
+    kpiThirdEl.textContent = kpi.calls + (kpi.tok ? " · " + fmtTok(kpi.tok) : "");
+  }
+
+  /* ── 事件流 ───────────────────────────────── */
+  var eventScroll = document.getElementById("eventScroll");
+  var eventCountEl = document.getElementById("eventCount");
+  var eventCount = 0;
+  var KIND_TAG = { info: "状态", handoff: "交接", reject: "打回", done: "完成", milestone: "里程碑" };
+  var MAX_EVENT_ITEMS = 300;
+
+  function agentLabel(ref) {
+    return AGENTS[ref] ? AGENTS[ref].name : ref;
+  }
+
+  function pushEvent(kind, from, to, msg, timeStr, brief) {
+    var waiting = eventScroll.querySelector(".event-waiting");
+    if (waiting) waiting.remove();
+    var item = document.createElement("div");
+    item.className = "event-item k-" + kind;
+    var actors = "<span>" + agentLabel(from) + "</span>" + (to ? '<span class="ev-arrow">→</span><span>' + agentLabel(to) + "</span>" : "");
+    item.innerHTML =
+      '<div class="ev-rail"><span class="ev-dot"></span></div>' +
+      '<div class="ev-main">' +
+        '<div class="ev-head"><span class="ev-time">' + timeStr + '</span><span class="ev-actors">' + actors + '</span><span class="ev-kind-tag">' + (KIND_TAG[kind] || kind) + "</span></div>" +
+        '<p class="ev-msg"></p>' +
+        (brief ? '<p class="ev-brief"></p>' : "") +
+      "</div>";
+    item.querySelector(".ev-msg").textContent = msg;
+    if (brief) item.querySelector(".ev-brief").textContent = brief;
+    eventScroll.appendChild(item);
+    while (eventScroll.children.length > MAX_EVENT_ITEMS) eventScroll.removeChild(eventScroll.firstChild);
+    eventCount++;
+    eventCountEl.textContent = eventCount + " 条";
+    if (!eventScroll.matches(":hover")) eventScroll.scrollTop = eventScroll.scrollHeight;
+  }
+
+  /* ── 详情面板 ─────────────────────────────── */
+  var detailBody = document.getElementById("detailBody");
+  var selectedAgent = null;
+  var agentStats = {};
+
+  function statsOf(id) {
+    return agentStats[id] || (agentStats[id] = { tok: 0, tasks: 0, calls: 0, last: "" });
+  }
+
+  function selectAgent(id) {
+    if (selectedAgent && nodeEls[selectedAgent]) nodeEls[selectedAgent].classList.remove("is-selected");
+    selectedAgent = id;
+    nodeEls[id].classList.add("is-selected");
+    renderDetail(id);
+  }
+
+  function renderDetail(id) {
+    var a = AGENTS[id];
+    var st = statsOf(id);
+    var badge = nodeEls[id].querySelector(".st-tx").textContent;
+    var third = '<div class="detail-stat"><div class="ds-label">模型调用</div><div class="ds-value">' + st.calls + "</div></div>";
+    detailBody.innerHTML =
+      '<div class="detail-title">' +
+        '<span class="node-icon">' + a.icon + "</span>" +
+        '<span><span class="dt-name">' + a.name + '</span><br><span class="dt-model">models.' + a.model + "</span></span>" +
+      "</div>" +
+      '<p class="detail-desc">' + a.role + "。</p>" +
+      '<div class="detail-grid">' +
+        '<div class="detail-stat"><div class="ds-label">状态</div><div class="ds-value">' + badge + "</div></div>" +
+        third +
+        '<div class="detail-stat"><div class="ds-label">任务</div><div class="ds-value">' + st.tasks + "</div></div>" +
+      "</div>" +
+      '<div class="detail-io">' +
+        '<div class="io-row"><span class="io-tag">输入</span><span class="io-text">' + a.input + "</span></div>" +
+        '<div class="io-row"><span class="io-tag">输出</span><span class="io-text">' + a.output + "</span></div>" +
+        (st.last ? '<div class="io-row"><span class="io-tag">最近</span><span class="io-text" id="detailLast"></span></div>' : "") +
+      "</div>";
+    if (st.last) {
+      var lastEl = document.getElementById("detailLast");
+      if (lastEl) lastEl.textContent = st.last;
+    }
+  }
+
+  /* ── 执行时间线(kind=run/span 事件驱动) ───── */
+  var tlRunsEl = document.getElementById("tlRuns");
+  var tlLanesEl = document.getElementById("tlLanes");
+  var tlAxisEl = document.getElementById("tlAxis");
+  var tlSummaryEl = document.getElementById("tlSummary");
+  var timelineWrap = document.getElementById("timelineWrap");
+  var canvasScrollEl = document.getElementById("canvasScroll");
+  var panelView = "pipeline";
+  var TL = { runs: {}, order: [], spans: {}, spanOrder: [], selected: "", follow: true, dirty: false, selectedSpan: "" };
+
+  function esc(s) {
+    return String(s || "").replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function fmtDur(ms) {
+    ms = Math.max(0, Number(ms) || 0);
+    if (ms >= 60000) return (ms / 60000).toFixed(1) + "m";
+    if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
+    return Math.round(ms) + "ms";
+  }
+
+  function tsToMs(r) {
+    var n = Number(r.started_at_ms || r.ended_at_ms);
+    if (n) return n;
+    var t = Date.parse(String(r.timestamp || "").replace(" ", "T"));
+    return isNaN(t) ? Date.now() : t;
+  }
+
+  var TL_AGENT_LABELS = {
+    section: { name: "分节", badge: "S" },
+    default: { name: "默认", badge: "D" },
+  };
+
+  function tlAgentKey(source) { return SOURCE_AGENT[String(source || "").trim()] || ""; }
+
+  function tlBadge(source) {
+    var raw = String(source || "default").trim() || "default";
+    var parts = raw.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    var text = "";
+    for (var i = 0; i < parts.length && text.length < 2; i++) text += parts[i].charAt(0);
+    return (text || raw.charAt(0) || "D").slice(0, 2).toUpperCase();
+  }
+
+  function tlAgentInfo(source) {
+    var raw = String(source || "default").trim() || "default";
+    var key = tlAgentKey(raw);
+    if (key && AGENTS[key]) return { icon: AGENTS[key].icon, name: AGENTS[key].name, sub: source };
+    if (TL_AGENT_LABELS[raw]) {
+      return { badge: TL_AGENT_LABELS[raw].badge, name: TL_AGENT_LABELS[raw].name, sub: raw };
+    }
+    return { badge: tlBadge(raw), name: raw, sub: raw };
+  }
+
+  function tlEnsureRun(id, name, startMs) {
+    if (!TL.runs[id]) {
+      TL.runs[id] = { id: id, name: name || (id === "__adhoc__" ? "散发调用" : id.slice(0, 8)), startMs: startMs || Date.now(), endMs: 0, status: "running" };
+      TL.order.push(id);
+      if (TL.order.length > 12) {
+        var drop = TL.order.shift();
+        delete TL.runs[drop];
+        TL.spanOrder = TL.spanOrder.filter(function (sid) {
+          var sp = TL.spans[sid];
+          if (sp && sp.runId === drop) { delete TL.spans[sid]; return false; }
+          return true;
+        });
+        if (TL.selected === drop) { TL.selected = ""; TL.follow = true; }
+      }
+      if (TL.follow) TL.selected = id;
+    }
+    return TL.runs[id];
+  }
+
+  function tlHandleRecord(r) {
+    if (String(r.kind || "") === "run") {
+      var rid = String(r.run_id || "");
+      if (!rid) return;
+      if (String(r.phase) === "start") {
+        var run = tlEnsureRun(rid, String(r.name || "task"), tsToMs(r));
+        run.name = String(r.name || run.name);
+        run.startMs = tsToMs(r);
+        run.status = "running";
+        run.endMs = 0;
+        if (TL.follow) TL.selected = rid;
+        pushEvent("milestone", "系统", null, "任务开始:" + run.name, recordTime(r), payloadBrief(r.meta));
+      } else {
+        var run2 = tlEnsureRun(rid, "", tsToMs(r));
+        run2.endMs = tsToMs(r);
+        run2.status = String(r.status || "ok");
+        pushEvent(run2.status === "error" ? "reject" : "milestone", "系统", null,
+          "任务结束:" + (run2.name || rid) + " · " + run2.status, recordTime(r));
+      }
+      TL.dirty = true;
+      return;
+    }
+
+    var sid = String(r.span_id || "");
+    if (!sid) return;
+    var runId = String(r.run_id || "") || "__adhoc__";
+    tlEnsureRun(runId, "", Number(r.started_at_ms) || undefined);
+    var sp = TL.spans[sid];
+    if (!sp) {
+      sp = TL.spans[sid] = {
+        id: sid, runId: runId, agent: String(r.agent || "default"), type: String(r.span_type || "tool"),
+        name: String(r.name || ""), startMs: 0, endMs: 0, status: "", tokens: null, args: "", result: "", instant: false,
+      };
+      TL.spanOrder.push(sid);
+    }
+    if (String(r.phase) === "start") {
+      sp.startMs = Number(r.started_at_ms) || Date.now();
+      sp.args = String(r.args_summary || "");
+      sp.name = String(r.name || sp.name);
+    } else {
+      sp.endMs = Number(r.ended_at_ms) || Date.now();
+      if (!sp.startMs) sp.startMs = Number(r.started_at_ms) || sp.endMs;
+      sp.status = String(r.status || "ok");
+      sp.name = sp.name || String(r.name || "");
+      sp.instant = !!r.instant;
+      if (r.tokens && typeof r.tokens === "object") sp.tokens = r.tokens;
+      sp.result = String(r.result_summary || "");
+      if (!sp.args) sp.args = String(r.args_summary || "");
+      var tot = (sp.tokens && Number(sp.tokens.total)) || 0;
+      if (sp.type === "llm") kpi.calls += 1;
+      if (tot) {
+        kpi.tok += tot;
+        var mapped = tlAgentKey(sp.agent);
+        if (mapped) statsOf(mapped).tok += tot;
+      }
+      if (sp.type === "llm" || tot) renderKpi();
+    }
+    TL.dirty = true;
+  }
+
+  function renderSpanDetail(sp) {
+    TL.selectedSpan = sp.id;
+    var info = tlAgentInfo(sp.agent);
+    var dur = sp.endMs ? fmtDur(sp.endMs - sp.startMs) : "运行中";
+    var tokText = "—";
+    if (sp.tokens && (Number(sp.tokens.total) || 0) > 0) {
+      tokText = fmtTok(Number(sp.tokens.total) || 0);
+    }
+    var tokNote = sp.tokens && sp.tokens.estimated ? '<span class="ds-token-note">(估算)</span>' : "";
+    var tokDetail = sp.tokens && (Number(sp.tokens.total) || 0) > 0
+      ? '<div class="io-row"><span class="io-tag">TOKEN</span><span class="io-text">输入 ' + (Number(sp.tokens.prompt) || 0) + " · 输出 " + (Number(sp.tokens.completion) || 0) + "</span></div>"
+      : "";
+    detailBody.innerHTML =
+      '<div class="detail-title">' +
+        '<span class="span-badge">' + (sp.type === "llm" ? "LLM" : "TOOL") + "</span>" +
+        '<span><span class="dt-name">' + esc(sp.name || (sp.type === "llm" ? "模型调用" : "工具调用")) + '</span><br><span class="dt-model">' + esc(info.name) + " · " + esc(sp.agent) + "</span></span>" +
+      "</div>" +
+      '<div class="detail-grid">' +
+        '<div class="detail-stat"><div class="ds-label">耗时</div><div class="ds-value">' + dur + "</div></div>" +
+        '<div class="detail-stat"><div class="ds-label">Token</div><div class="ds-value">' + tokText + tokNote + "</div></div>" +
+        '<div class="detail-stat"><div class="ds-label">状态</div><div class="ds-value">' + (sp.endMs ? (sp.status === "error" ? "异常" : "完成") : "运行中") + "</div></div>" +
+      "</div>" +
+      '<div class="detail-io">' +
+        (sp.args ? '<div class="io-row"><span class="io-tag">参数</span><span class="io-text" id="spanArgs"></span></div>' : "") +
+        (sp.result ? '<div class="io-row"><span class="io-tag">结果</span><span class="io-text" id="spanResult"></span></div>' : "") +
+        tokDetail +
+      "</div>";
+    var argsEl = document.getElementById("spanArgs");
+    if (argsEl) argsEl.textContent = clip(sp.args, 220);
+    var resultEl = document.getElementById("spanResult");
+    if (resultEl) resultEl.textContent = clip(sp.result, 220);
+    TL.dirty = true;
+  }
+
+  function renderTimeline() {
+    var chips = "";
+    var shown = 0;
+    for (var i = TL.order.length - 1; i >= 0 && shown < 8; i--) {
+      var runItem = TL.runs[TL.order[i]];
+      if (!runItem) continue;
+      shown += 1;
+      chips += '<button class="tl-run-chip' + (runItem.id === TL.selected ? " is-active" : "")
+        + " rs-" + (runItem.endMs ? (runItem.status === "error" ? "error" : "done") : "running")
+        + '" data-run="' + esc(runItem.id) + '" type="button">' + esc(runItem.name)
+        + '<span class="rc-st">' + (runItem.endMs ? (runItem.status === "error" ? "✕" : "✓") : "▶") + "</span></button>";
+    }
+    tlRunsEl.innerHTML = chips;
+
+    var run = TL.runs[TL.selected];
+    if (!run) {
+      tlLanesEl.innerHTML = '<div class="tl-empty">暂无任务执行记录。<br>触发一次教材提炼 / 精读 / 出题,任务时间线会实时出现在这里。</div>';
+      tlAxisEl.innerHTML = "";
+      tlSummaryEl.textContent = "";
+      TL.dirty = false;
+      return;
+    }
+
+    var spans = [];
+    for (var j = 0; j < TL.spanOrder.length; j++) {
+      var item = TL.spans[TL.spanOrder[j]];
+      if (item && item.runId === run.id) spans.push(item);
+    }
+
+    var start = run.startMs;
+    var end = run.endMs || Date.now();
+    spans.forEach(function (sp) {
+      if (sp.startMs && sp.startMs < start) start = sp.startMs;
+      var e2 = sp.endMs || Date.now();
+      if (e2 > end) end = e2;
+    });
+    if (end - start < 400) end = start + 400;
+    var total = end - start;
+
+    var laneOrder = [], laneMap = {};
+    var llmCount = 0, toolCount = 0, tokTotal = 0;
+    spans.forEach(function (sp) {
+      if (!laneMap[sp.agent]) { laneMap[sp.agent] = []; laneOrder.push(sp.agent); }
+      laneMap[sp.agent].push(sp);
+      if (sp.type === "llm") llmCount += 1; else toolCount += 1;
+      tokTotal += (sp.tokens && Number(sp.tokens.total)) || 0;
+    });
+    tlSummaryEl.textContent = "LLM ×" + llmCount + " · 工具 ×" + toolCount + " · " + fmtTok(tokTotal) + " tok · " + fmtDur(total);
+
+    var axis = "";
+    for (var t = 0; t <= 5; t++) {
+      axis += '<span style="left:' + (t * 20) + '%">' + fmtDur(Math.round(total * t / 5)) + "</span>";
+    }
+    tlAxisEl.innerHTML = axis;
+
+    var html = "";
+    laneOrder.forEach(function (agentName) {
+      var info = tlAgentInfo(agentName);
+      var bars = "";
+      laneMap[agentName].forEach(function (sp) {
+        var left = Math.max(0, Math.min(100, (sp.startMs - start) / total * 100));
+        var selectedCls = sp.id === TL.selectedSpan ? " is-selected" : "";
+        var errorCls = sp.status === "error" ? " is-error" : "";
+        if (sp.instant) {
+          bars += '<span class="tl-marker' + errorCls + selectedCls + '" data-span="' + esc(sp.id) + '" style="left:' + left + '%" title="' + esc(sp.name) + '"></span>';
+        } else {
+          var endMs = sp.endMs || Date.now();
+          var width = Math.max(0.4, Math.min(100 - left, (endMs - sp.startMs) / total * 100));
+          bars += '<span class="tl-span' + (sp.endMs ? "" : " is-running") + errorCls + selectedCls
+            + '" data-span="' + esc(sp.id) + '" style="left:' + left + "%;width:" + width
+            + '%" title="' + esc(sp.name) + " · " + (sp.endMs ? fmtDur(endMs - sp.startMs) : "运行中") + '"></span>';
+        }
+      });
+      var mark = info.icon
+        ? '<span class="tll-icon">' + info.icon + "</span>"
+        : '<span class="tll-badge">' + esc(info.badge || tlBadge(agentName)) + "</span>";
+      html += '<div class="tl-lane"><div class="tl-lane-label">' + mark
+        + '<span class="tll-text"><span class="tll-name">' + esc(info.name)
+        + '</span><small>' + esc(info.sub || "") + "</small></span></div>"
+        + '<div class="tl-track">' + bars + "</div></div>";
+    });
+    tlLanesEl.innerHTML = html || '<div class="tl-empty">该任务暂无调用记录…</div>';
+    TL.dirty = false;
+  }
+
+  tlLanesEl.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-span]");
+    if (!el) return;
+    var sp = TL.spans[el.dataset.span];
+    if (sp) { renderSpanDetail(sp); renderTimeline(); }
+  });
+
+  tlRunsEl.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-run]");
+    if (!btn) return;
+    TL.selected = btn.dataset.run;
+    TL.follow = TL.order.length > 0 && TL.selected === TL.order[TL.order.length - 1];
+    TL.selectedSpan = "";
+    renderTimeline();
+  });
+
+  var viewGroup = document.getElementById("viewGroup");
+  var canvasTitle = document.getElementById("canvasTitle");
+  var canvasNote = document.getElementById("canvasNote");
+
+  viewGroup.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-view]");
+    if (!btn) return;
+    panelView = btn.dataset.view;
+    viewGroup.querySelectorAll(".ctl-btn").forEach(function (b) { b.classList.toggle("is-active", b === btn); });
+    var isTl = panelView === "timeline";
+    timelineWrap.hidden = !isTl;
+    canvasScrollEl.hidden = isTl;
+    canvasTitle.textContent = isTl ? "任务执行时间线" : "协作流水线";
+    canvasNote.textContent = isTl ? "点击色条 / 菱形查看调用详情" : "点击节点查看智能体详情";
+    if (isTl) renderTimeline(); else drawEdges();
+  });
+
+  function tlReset() {
+    TL.runs = {}; TL.order = []; TL.spans = {}; TL.spanOrder = [];
+    TL.selected = ""; TL.follow = true; TL.dirty = false; TL.selectedSpan = "";
+    renderTimeline();
+  }
+
+  /* ── 画布重置(两种模式共用) ───────────────── */
+  function resetBoard() {
+    kpi.active = 0; kpi.tasks = 0; kpi.tok = 0; kpi.calls = 0;
+    activeSet = {}; agentState = {}; agentStats = {};
+    renderKpi();
+    kpiClockEl.textContent = "00:00.0";
+    eventScroll.innerHTML = "";
+    eventCount = 0;
+    eventCountEl.textContent = "0 条";
+    flows.forEach(function (f) { if (f.dot.parentNode) svg.removeChild(f.dot); });
+    flows = [];
+    Object.keys(edgePaths).forEach(function (k) {
+      edgePaths[k].setAttribute("stroke", "var(--edge)");
+      edgePaths[k].setAttribute("stroke-width", "1.5");
+    });
+    Object.keys(nodeEls).forEach(function (id) {
+      setStatus(id, "idle");
+      setProg(id, 0);
+      setStream(id, "");
+      nodeEls[id].querySelector(".node-meta").textContent = "";
+    });
+    tlReset();
+    if (selectedAgent) renderDetail(selectedAgent);
+  }
+
+  /* ══════════════ 实时监听引擎 ══════════════ */
+  var es = null, liveStartAt = 0;
+  var liveChip = document.getElementById("liveChip");
+
+  var SOURCE_AGENT = {
+    rough_reading: "rough",
+    summary_review: "review", section_review: "review",
+    split_chapters: "split",
+    intensive_reading: "intensive",
+    question_generation: "quiz", profile_question: "quiz", chapter_quiz: "quiz",
+    annotation: "annotate",
+    book_summary: "summary",
+  };
+
+  var NOISE_RE = /^(frontend_session_user_lookup|frontend_context_|runtime_user_resolution|request_performance|frontend_materials_slow|learning_progress_user_resolution|server_start|frontend_video_search|video_api_)/;
+
+  function clip(text, n) {
+    var s = String(text || "").replace(/\s+/g, " ").trim();
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  }
+
+  function chapterPct(r, doneShift) {
+    var p = (r && r.payload) || {};
+    var total = Number(p.chapter_total) || 0;
+    if (total <= 0) return undefined;
+    var idx = Number(p.chapter_index) || 0;
+    return Math.round(((idx + doneShift) / total) * 100);
+  }
+
+  function srcAction(r, base) {
+    var agent = SOURCE_AGENT[String(r.source || "").trim()];
+    if (!agent) {
+      if (base.streamText || base.quiet) return null;
+      return Object.assign({ sys: true }, base);
+    }
+    return Object.assign({ agent: agent }, base);
+  }
+
+  // 事件类型 → 面板动作。按序匹配,前缀规则放在精确规则之后。
+  var LIVE_RULES = [
+    [/^book_upload$/,                       function () { return { sys: true, kind: "info" }; }],
+    [/^book_refinement_queue$/,             function () { return { agent: "rough", status: "queued", kind: "handoff" }; }],
+    [/^book_refinement_start$/,             function () { return { agent: "rough", status: "running", kind: "info" }; }],
+    [/^book_refinement_(done|outlined)$/,   function () { return { agent: "rough", status: "done", kind: "done", task: 1 }; }],
+    [/^book_section_queue$/,                function () { return { agent: "split", status: "queued", kind: "handoff" }; }],
+    [/^book_section_start$/,                function () { return { agent: "split", status: "running", kind: "info" }; }],
+    [/^book_section_done$/,                 function () { return { agent: "split", status: "done", kind: "done", task: 1 }; }],
+    [/^book_intensive_queue$/,              function () { return { agent: "intensive", status: "queued", kind: "handoff" }; }],
+    [/^book_intensive_start$/,              function () { return { agent: "intensive", status: "running", kind: "info" }; }],
+    [/^book_question_queue$/,               function () { return { agent: "quiz", status: "queued", kind: "handoff" }; }],
+    [/^book_question_start$/,               function () { return { agent: "quiz", status: "running", kind: "info" }; }],
+    [/^book_question_done$/,                function () { return { agent: "quiz", status: "done", kind: "done", task: 1 }; }],
+    [/^book_annotation_queue$/,             function () { return { agent: "annotate", status: "queued", kind: "handoff" }; }],
+    [/^book_annotation_start$/,             function () { return { agent: "annotate", status: "running", kind: "info" }; }],
+    [/^book_annotation_done$/,              function () { return { agent: "annotate", status: "done", kind: "done", task: 1 }; }],
+    [/^book_summary_queue$/,                function () { return { agent: "summary", status: "queued", kind: "handoff" }; }],
+    [/^book_summary_start$/,                function () { return { agent: "summary", status: "running", kind: "info" }; }],
+    [/^book_summary_done$/,                 function () { return { agent: "summary", status: "done", kind: "done", task: 1 }; }],
+    [/^book_(refinement|intensive|question|section|annotation|summary)_error$/, function (r) {
+      var map = { refinement: "rough", intensive: "intensive", question: "quiz", section: "split", annotation: "annotate", summary: "summary" };
+      var m = String(r.event_type || "").match(/^book_(\w+)_error$/);
+      return { agent: map[m ? m[1] : ""] || undefined, sys: !map[m ? m[1] : ""], status: map[m ? m[1] : ""] ? "failed" : undefined, kind: "reject" };
+    }],
+    [/^book_vectorize_queue$/,              function () { return { agent: "vector", status: "queued", kind: "handoff" }; }],
+    [/^book_vectorize_done$/,               function () { return { agent: "vector", status: "done", kind: "done", task: 1 }; }],
+    [/^book_vectorize_error$/,              function () { return { agent: "vector", status: "failed", kind: "reject" }; }],
+    [/^book_video_(queue|start)$/,          function () { return { sys: true, kind: "info" }; }],
+    [/^book_video_done$/,                   function () { return { sys: true, kind: "done" }; }],
+    [/^book_outline_/,                      function () { return { agent: "summary", quiet: true }; }],
+    [/^book_refinement_cancel$/,            function () { return { sys: true, kind: "reject" }; }],
+    [/^book_parse_done$/,                   function () { return { sys: true, kind: "done" }; }],
+    [/^booksproc_start$/,                   function () { return { sys: true, kind: "info" }; }],
+    [/^intensive_loop_start$/,              function () { return { agent: "intensive", status: "running", kind: "info" }; }],
+    [/^intensive_chapter_start$/,           function (r) { return { agent: "intensive", status: "running", kind: "info", prog: chapterPct(r, 0) }; }],
+    [/^intensive_chapter_done$/,            function (r) { return { agent: "intensive", kind: "done", task: 1, prog: chapterPct(r, 1) }; }],
+    [/^book_intensive_done$/,               function () { return { agent: "intensive", status: "done", kind: "done", task: 1 }; }],
+    [/^intensive_/,                         function () { return { agent: "intensive", quiet: true }; }],
+    [/^annotation_chapter_start$/,          function () { return { agent: "annotate", status: "running", kind: "info" }; }],
+    [/^annotation_chapter_done$/,           function () { return { agent: "annotate", status: "done", kind: "done", task: 1 }; }],
+    [/^annotation_chapter_skip$/,           function () { return { agent: "annotate", kind: "info" }; }],
+    [/^annotation_/,                        function () { return { agent: "annotate", quiet: true }; }],
+    [/^chapter_quiz_profile_generate_start$/, function () { return { agent: "quiz", status: "running", kind: "info" }; }],
+    [/^(chapter_quiz_profile_generate_done|chapter_quiz_created)$/, function () { return { agent: "quiz", status: "done", kind: "done", task: 1 }; }],
+    [/^chapter_quiz_/,                      function () { return { agent: "quiz", quiet: true }; }],
+    [/^quiz_answers?_submitted$/,           function () { return { sys: true, kind: "milestone" }; }],
+    [/^memory_job_run_input$/,              function () { return { sys: true, kind: "info" }; }],
+    [/^memory_job_done$/,                   function () { return { sys: true, kind: "done" }; }],
+    [/^memory_job_skip$/,                   function () { return { sys: true, kind: "info" }; }],
+    [/^runtime_memory_/,                    function () { return { sys: true, kind: "info" }; }],
+    [/^(reader_guide_start|pre_reading_questions_start)$/, function () { return { agent: "summary", status: "running", kind: "info" }; }],
+    [/^(reader_guide_done|pre_reading_questions_done)$/,   function () { return { agent: "summary", status: "done", kind: "done", task: 1 }; }],
+    [/^(reader_guide_|pre_reading_questions_)/, function () { return { agent: "summary", quiet: true }; }],
+    [/^pre_reading_qa_saved$/,              function () { return { sys: true, kind: "info" }; }],
+    [/^outline_queued$/,                    function () { return { agent: "summary", status: "queued", kind: "handoff" }; }],
+    [/^outline_/,                           function () { return { agent: "summary", quiet: true }; }],
+    [/^knowledge_graph_generated$/,         function () { return { agent: "vector", kind: "done", task: 1 }; }],
+    [/^personalized_learning_path_stream_start$/, function () { return { sys: true, kind: "info" }; }],
+    [/^personalized_chapter_stream_start$/, function () { return { sys: true, kind: "info" }; }],
+    [/^personalized_chapter_complete$/,     function () { return { sys: true, kind: "done" }; }],
+    [/^personalized_/,                      function () { return { sys: true, kind: "info" }; }],
+    [/^learning_resource_generation_ready$/, function () { return { sys: true, kind: "done" }; }],
+    [/^learning_resource_/,                 function () { return { sys: true, kind: "info" }; }],
+    [/^learning_path_/,                     function () { return { sys: true, kind: "info" }; }],
+    [/^learning_feed_/,                     function () { return { sys: true, kind: "info" }; }],
+    [/^video_generator_pipeline_start$/,    function () { return { sys: true, kind: "info" }; }],
+    [/^video_generator_stage_start$/,       function () { return { sys: true, kind: "info" }; }],
+    [/^video_generator_stage_done$/,        function () { return { sys: true, kind: "done" }; }],
+    [/^video_generator_pipeline_done$/,     function () { return { sys: true, kind: "milestone" }; }],
+    [/^video_/,                             function () { return { sys: true, quiet: true }; }],
+    [/^(frontend_chapter_complete|frontend_session_complete)$/, function () { return { sys: true, kind: "info" }; }],
+    [/^model_context_input$/,               function (r) { return srcAction(r, { status: "running", quiet: true }); }],
+    [/^model_output$/,                      function (r) { return srcAction(r, { streamText: clip(r.content, 90), quiet: true }); }],
+    [/^model_call_error$/,                  function (r) { return srcAction(r, { status: "failed", kind: "reject" }); }],
+    [/^(model_|context_operation)/,         function (r) { return srcAction(r, { quiet: true }); }],
+  ];
+
+  function mapRecord(r) {
+    var kind = String(r.kind || "");
+    var source = String(r.source || "").trim();
+
+    if (kind === "model_text") {
+      var a1 = SOURCE_AGENT[source];
+      return a1 ? { agent: a1, streamText: clip(r.content, 90), quiet: true } : null;
+    }
+    if (kind === "tool_flow") {
+      var a2 = SOURCE_AGENT[source];
+      return a2 ? { agent: a2, streamText: "tool " + String(r.tool_name || "tool") + "(…)", quiet: true } : null;
+    }
+
+    var et = String(r.event_type || "").trim();
+    if (!et || NOISE_RE.test(et)) return null;
+
+    for (var i = 0; i < LIVE_RULES.length; i++) {
+      if (LIVE_RULES[i][0].test(et)) return LIVE_RULES[i][1](r);
+    }
+    if (/_(error|failed)$/.test(et)) {
+      var a3 = SOURCE_AGENT[source];
+      return a3 ? { agent: a3, status: "failed", kind: "reject" } : { sys: true, kind: "reject" };
+    }
+    return { sys: true, kind: "info" };
+  }
+
+  function payloadBrief(p) {
+    if (!p || typeof p !== "object") return "";
+    var keys = ["lecture_id", "book_id", "chapter_name", "chapter_index", "chapter_total", "job_id",
+                "model_name", "stage", "project_id", "chunks_count", "vector_count", "username", "worker", "error"];
+    var parts = [];
+    for (var i = 0; i < keys.length && parts.length < 4; i++) {
+      var k = keys[i];
+      var v = p[k];
+      if (v === undefined || v === null || String(v).trim() === "") continue;
+      parts.push(k + "=" + clip(String(v), 42));
+    }
+    return parts.join(" · ");
+  }
+
+  function recordTime(r) {
+    var ts = String(r.timestamp || "");
+    var m = ts.match(/\d{2}:\d{2}:\d{2}/);
+    return m ? m[0] : ts;
+  }
+
+  // 下游被激活时的接力展示:沿上游链回溯找最近一个非待命祖先,沿链画流动。
+  // 状态一律由真实事件驱动,这里不做任何状态推断。
+  function liveActivate(agent, status) {
+    var prev = agentState[agent] || "idle";
+    if (prev === status) return null;
+    var chain = [];
+    var cur = agent;
+    var from = null;
+    for (var i = 0; i < 3; i++) {
+      var up = UPSTREAM[cur];
+      if (!up) break;
+      chain.push(up + ">" + cur);
+      if ((agentState[up] || "idle") !== "idle") { from = up; break; }
+      cur = up;
+    }
+    if (!from) return null;
+    for (var j = chain.length - 1; j >= 0; j--) {
+      if (edgePaths[chain[j]]) spawnFlow(chain[j], false);
+    }
+    return from;
+  }
+
+  function handleRecord(r) {
+    var recordKind = String(r.kind || "");
+
+    if (recordKind === "run" || recordKind === "span") {
+      tlHandleRecord(r);
+      return;
+    }
+
+    var act = mapRecord(r);
+    if (!act) return;
+
+    var handoffFrom = null;
+    if (act.agent && (act.status === "queued" || act.status === "running")) {
+      handoffFrom = liveActivate(act.agent, act.status);
+    }
+    if (act.agent && act.status) setStatus(act.agent, act.status, act.status === "done" || act.status === "failed" ? recordTime(r) : undefined);
+    if (act.agent && act.prog !== undefined && act.prog !== null) setProg(act.agent, act.prog);
+    if (act.agent && act.streamText) setStream(act.agent, act.streamText);
+
+    if (act.call) { kpi.calls += act.call; }
+    if (act.task) { kpi.tasks += act.task; }
+    if (act.agent) {
+      var st = statsOf(act.agent);
+      if (act.call) st.calls += act.call;
+      if (act.task) st.tasks += act.task;
+      st.last = clip(String(r.title || r.event_type || ""), 60);
+    }
+    if (act.call || act.task) renderKpi();
+
+    if (!act.quiet) {
+      var msg = String(r.title || r.event_type || "").trim() || "(无标题事件)";
+      var brief = payloadBrief(r.payload);
+      var kind = act.kind || "info";
+      var from = act.agent || (r.payload && r.payload.source) || r.source || "系统";
+      if (kind === "handoff" && act.agent) {
+        pushEvent("handoff", handoffFrom || "系统", act.agent, msg, recordTime(r), brief);
+      } else {
+        pushEvent(kind, from, null, msg, recordTime(r), brief);
+      }
+    }
+    if (selectedAgent) renderDetail(selectedAgent);
+  }
+
+  function setLiveChip(state, text) {
+    liveChip.className = "live-chip" + (state === "on" ? " is-on" : state === "warn" ? " is-warn" : "");
+    liveChip.querySelector(".lc-tx").textContent = text;
+  }
+
+  function startLive() {
+    resetBoard();
+    liveStartAt = wallClock;
+    setLiveChip("", "连接中…");
+    eventScroll.innerHTML = '<div class="event-waiting">正在同步服务器启动以来的执行记录…<br>上传教材 / 触发提炼 / 生成导读也会实时出现在这里。</div>';
+    try {
+      es = new EventSource("/api/sample/agents/stream");
+    } catch (err) {
+      setLiveChip("warn", "无法建立连接");
+      return;
+    }
+    es.onopen = function () { setLiveChip("on", "已连接 · 实时监听中"); };
+    es.onerror = function () { setLiveChip("warn", "连接中断,自动重连…"); };
+    es.addEventListener("ready", function () { setLiveChip("on", "已连接 · 实时监听中"); });
+    es.addEventListener("runlog", function (e) {
+      var record;
+      try { record = JSON.parse(e.data); } catch (err) { return; }
+      try { handleRecord(record); } catch (err) {}
+    });
+  }
+
+  /* ── 主循环:wallClock 驱动动画与实时时间线刷新 ── */
+  var wallClock = 0, lastTs = 0, tlRenderClock = 0;
+
+  function tick(ts) {
+    var dt = lastTs ? (ts - lastTs) / 1000 : 0;
+    lastTs = ts;
+    wallClock += dt;
+    kpiClockEl.textContent = fmtClock(wallClock - liveStartAt);
+    if (panelView === "timeline") {
+      tlRenderClock += dt;
+      var selectedRun = TL.runs[TL.selected];
+      var hasLiveRun = selectedRun && !selectedRun.endMs;
+      if (TL.dirty || (hasLiveRun && tlRenderClock > 0.4)) {
+        tlRenderClock = 0;
+        renderTimeline();
+      }
+    }
+    stepFlows();
+    requestAnimationFrame(tick);
+  }
+
+  /* ── 启动 ─────────────────────────────────── */
+  drawEdges();
+  window.addEventListener("resize", drawEdges);
+  startLive();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

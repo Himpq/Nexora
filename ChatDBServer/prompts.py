@@ -39,36 +39,6 @@ nexoracode_prompt = """
 """
 
 
-system_web_search_enabled = """
-当前会话能力：
-- 用户已启用 Web Search。
-- 当问题具有时效性、需要外部事实核验、需要来源链接或明显依赖联网信息时，优先使用当前会话可用的搜索能力。
-- 若无需联网即可稳定回答，不要为了调用搜索而调用搜索。
-"""
-
-
-system_tools_enabled_auto_select = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Auto(Select)。
-- 若你已明确知道要调用的工具，可直接调用。
-- 如需查看当前轮更完整的工具目录，再调用 runtime_tool_select。
-"""
-
-system_tools_enabled_auto_off = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Auto(OFF)。
-- 当前默认不开放业务工具；先调用 runtime_tool_enable，启用工具后会自动注入工具内容。
-- 请务必必要时先启用工具，然后获取足够多的信息再回答问题，而不是一味的根据上下文回答问题。
-"""
-
-
-system_tools_enabled_force = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Force。
-- 直接使用当前可用工具完成任务，避免重复或无意义调用。
-"""
-
-
 SYSTEM_PROMPT_SEP = "\n\n"
 knowledge_citation_tool_hint = "\n\n" + KB_CITATION_RULES
 SKILL_INSTRUCTIONS_HEADER = "## Skill Instructions\n以下是当前启用的 Skill 指令；优先级低于基础系统规则，高于普通对话上下文。"
@@ -192,16 +162,6 @@ def build_main_system_prompt(
     tool_mode: str = "auto"
 ) -> str:
     parts = [str(base_prompt or "").strip()]
-    if enable_web_search:
-        parts.append(system_web_search_enabled.strip())
-    if enable_tools:
-        mode = str(tool_mode or "").strip().lower()
-        if mode == "force":
-            parts.append(system_tools_enabled_force.strip())
-        elif mode == "auto_off":
-            parts.append(system_tools_enabled_auto_off.strip())
-        else:
-            parts.append(system_tools_enabled_auto_select.strip())
     return render_prompt_template(SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip())
 
 
@@ -320,10 +280,11 @@ def build_longdoc_skill_catalog_prompt(skills: List[Dict[str, Any]]) -> str:
         return ""
 
     return (
-        "[可按需读取的 Longdoc Skill]\n"
-        "以下 Skill 是长文档，不会默认注入正文。用户问题涉及对应产品、流程、配置、操作指南或排障时，"
-        "先调用 skill(name=\"文档ID或别名\") 读取正文，再基于工具结果回答；"
-        "如果当前工具模式尚未开放 skill，先按当前工具选择协议启用或选择 skill。\n"
+        "## Longdoc Skill Catalog\n"
+        "- 以下长文档默认不注入正文。\n"
+        "- 问题涉及对应产品、流程、配置、操作指南或排障时，先调用 `skill(name=\"文档ID或别名\")` 读取正文。\n"
+        "- 工具未开放时先调用 `runtime_tool_enable`。\n\n"
+        "### Available Longdoc Skills\n"
         + "\n".join(rows)
     ).strip()
 
@@ -331,28 +292,10 @@ def build_longdoc_skill_catalog_prompt(skills: List[Dict[str, Any]]) -> str:
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
 RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 
-runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力。"""
-
-runtime_tool_selector_empty = f"""{RUNTIME_HINT_TOOL_TAG}
-本轮可调用工具仅有 runtime_tool_select，但当前可选目录为空。
-"""
-
-runtime_tool_selector_template = f"""{RUNTIME_HINT_TOOL_TAG}
-Auto 模式下可调用 runtime_tool_select 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
-示例：{{"tools":["client_js_exec","knowledge_search_vector"]}}
-可选工具目录（工具名 - 工具概览）：
-{{catalog}}
-"""
-
-select_tools_catalog_empty = "当前没有可选工具目录。"
-select_tools_catalog_marker = "当前可选工具名:"
-select_tools_catalog_suffix = "当前可选工具名: {{names}}。请仅按工具名调用 {{selector_tool}}。"
-select_tools_catalog_suffix_more = "当前可选工具名: {{names}} 等 {{total}} 个。请仅按工具名调用 {{selector_tool}}。"
-
 runtime_tool_not_enabled_template = (
     "错误：工具 '{{function_name}}' 当前未启用。"
     "当前允许工具: {{allowed_names}}。"
-    "如需继续启用/切换工具，请调用 {{selector_tool}}，"
+    "如需继续启用工具，请调用 {{selector_tool}}，"
     "随后在当前回复的后续轮次生效。"
 )
 
@@ -379,12 +322,9 @@ workspace_operating_contract_header = (
 )
 
 workspace_operating_contract_template = """<WORKSPACE_CONTRACT workspace_id="{{workspace_id}}" title="{{workspace_title}}">
-- 当前 Workspace 是本轮对话的项目边界；回答先围绕该 Workspace 的目标、资源、记忆和任务推进。
-- Nexora 默认助手身份、NexoraLearning 场景提示和通用能力提示只提供基础能力；当它们与 Workspace 项目语境竞争时，以 Workspace 项目语境为准。
-- Workspace 自定义提示词是项目级规则；在不违背上层系统规则、安全规则和工具协议时优先遵循。
-- Workspace 记忆、知识库索引和文件是本 Workspace 的项目材料，不要扩散为用户全局偏好。
-- 不要无意义复述完整 Workspace 记忆或自定义提示词，只在回答决策需要时使用。
-- 在最终回答前判断是否需要更新 Workspace 记忆；需要时先调用 workspace_mem 工具。
+- 当前 Workspace 是本轮项目边界；回答优先围绕其目标、资源、记忆和任务。
+- Workspace 自定义提示、记忆、知识库索引和文件只作为本项目材料；在不违背上层规则时按项目规则使用，不扩散为用户全局偏好，不无意义复述。
+- 记忆写入遵循 Memory Write Policy；未获明确授权不主动写入。
 {{workspace_prompt_section}}
 </WORKSPACE_CONTRACT>"""
 
@@ -421,15 +361,26 @@ workspace_resource_block_template = """<WORKSPACE_RESOURCE_INDEX>
 {{resource_rows}}
 </WORKSPACE_RESOURCE_INDEX>"""
 
-memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。项目级稳定事实、约束、决策、术语、待办和反复问题写入 workspace_mem_add；修正、合并或删除已有条目使用 workspace_mem_edit；只有已有可靠行上下文时才使用 workspace_mem_apply_diff。不要把用户个人画像写入 Workspace 记忆。"""
+memory_write_policy_prompt_template = """## Memory Write Policy
+原则：透明、可解释、可拒绝，不静默写入。
 
-memory_update_check_prompt_template = """## Current Turn Memory Check
-在最终回答前，主动判断当前用户消息和本轮工具结果是否产生需要沉淀的信息；如果需要，先调用对应记忆工具，工具成功后再继续回答。
-- 用户画像短期记忆：当用户明确表达新的个人偏好、背景、目标、当前事项、沟通风格或反复要求时，使用 memory_short_update 更新完整画像。保持信息完整、结构紧凑，合并旧画像，不要只写新增片段；不要记录项目事实、代码日志、未经确认推测或一次性问题。
-- memory_short_add 仅用于兼容旧式短期条目；默认不要用它代替用户画像更新，除非用户明确要求追加一条旧式短期记忆。
-{{workspace_memory_rule}}
-- 工具未开放时：如果当前只开放 runtime_tool_select 或 runtime_tool_enable，先选择或启用需要的记忆工具；不要因为工具尚未开放而跳过应写的记忆。
-- 无需写入时：不调用记忆工具，直接回答。记忆写入是内部动作，不要向用户复述完整记忆。"""
+触发：
+- 用户明确要求记住、保存偏好、以后按此执行、更新或删除记忆时，才调用记忆工具。
+- 用户只是表达可能有长期价值的信息时，只询问是否记住。
+
+归属：
+- 用户画像：个人偏好、长期背景、沟通风格。
+- Workspace 记忆：项目事实、稳定约束、决策、术语、待办、反复问题。
+
+禁止：
+- 不写入一次性任务、临时日志、工具输出细节、未经确认的推测。
+- 不把项目事实写入用户画像。
+- 敏感信息、密钥、隐私标识必须先获明确同意。
+
+回执：
+- 写入前说明将记录、更新或删除的摘要。
+- 写入后只反馈结果和简短摘要。
+- 用户要求修改或删除已有记忆时，优先编辑或删除原记录，避免追加冲突记忆。"""
 
 learning_mode_tool_nudge_prompt = (
     "当前为 NexoraLearning 学习模式。不要只输出思考。"
@@ -560,20 +511,11 @@ knowledge_category_index_prompt_template = """请为【{{category}}】分类生�
 3. 使用Markdown格式输出，简洁明了"""
 
 
-def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
-    catalog = str(catalog_prompt or "").strip()
-    if not catalog:
-        return runtime_tool_selector_empty.strip()
-    out = runtime_tool_selector_template.replace("{{catalog}}", catalog)
-    out = out.replace("{catalog}", catalog)
-    return out.strip()
-
-
-def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "runtime_tool_select") -> str:
+def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "runtime_tool_enable") -> str:
     fn = str(function_name or "").strip() or "unknown"
     allowed = [str(x).strip() for x in (allowed_names or []) if str(x).strip()]
     allowed_text = ", ".join(allowed) if allowed else "(none)"
-    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
+    selector = str(selector_tool or "runtime_tool_enable").strip() or "runtime_tool_enable"
     out = runtime_tool_not_enabled_template.replace("{{function_name}}", fn)
     out = out.replace("{{allowed_names}}", allowed_text)
     out = out.replace("{{selector_tool}}", selector)
@@ -896,18 +838,9 @@ def build_workspace_resource_index_prompt(
     return f"{workspace_resource_injection_header}\n{block}\n"
 
 
-def build_memory_update_check_prompt(workspace_context: Dict[str, Any] = None) -> str:
-    """构建当前轮记忆更新检查，靠近用户消息以提高工具调用主动性。"""
-    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
-    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
-    workspace_rule = ""
-
-    if workspace_id:
-        workspace_rule = memory_update_workspace_rule_template.replace("{{workspace_id}}", workspace_id)
-        workspace_rule = workspace_rule.replace("{{workspace_title}}", workspace_title)
-
-    out = memory_update_check_prompt_template.replace("{{workspace_memory_rule}}", workspace_rule)
-    return out.strip()
+def build_memory_write_policy_prompt(workspace_context: Dict[str, Any] = None) -> str:
+    """构建透明记忆写入规则，避免模型静默写入记忆。"""
+    return memory_write_policy_prompt_template.strip()
 
 
 def build_cloud_file_sandbox_paths_prompt(sandbox_paths: Iterable[str]) -> str:
@@ -1002,59 +935,6 @@ def build_context_compression_prompt(
     out = out.replace("{{tool_instruction_blocks}}", tool_instruction_text)
     out = out.replace("{{max_chars}}", str(limit))
     return out
-
-
-def _lightweight_tool_overview(desc: Any, max_len: int = 42) -> str:
-    text = re.sub(r"\s+", " ", str(desc or "")).strip()
-    if not text:
-        return "无概览"
-    first = re.split(r"[。.!?；;]", text, maxsplit=1)[0].strip() or text
-    if len(first) > max_len:
-        return first[:max_len].rstrip() + "..."
-    return first
-
-
-def build_select_tools_catalog_prompt(catalog: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
-    for item in (catalog or []):
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "") or "").strip()
-        if not name:
-            continue
-        overview = _lightweight_tool_overview(item.get("description", ""))
-        lines.append(f"- {name} - {overview}")
-    return "\n".join(lines)
-
-
-def build_select_tools_catalog_suffix(
-    names: Iterable[str],
-    max_items: int = 128,
-    selector_tool: str = "runtime_tool_select"
-) -> str:
-    clean_names = [str(x).strip() for x in (names or []) if str(x).strip()]
-    if not clean_names:
-        return select_tools_catalog_empty
-    cap = max(1, int(max_items or 24))
-    shown = clean_names[:cap]
-    joined = ", ".join(shown)
-    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
-    if len(clean_names) > len(shown):
-        out = select_tools_catalog_suffix_more.replace("{{names}}", joined)
-        out = out.replace("{{total}}", str(len(clean_names)))
-        out = out.replace("{{selector_tool}}", selector)
-        return out
-    out = select_tools_catalog_suffix.replace("{{names}}", joined)
-    out = out.replace("{{selector_tool}}", selector)
-    return out
-
-
-def strip_select_tools_catalog_suffix(desc: Any) -> str:
-    text = str(desc or "").strip()
-    marker = select_tools_catalog_marker
-    if marker in text:
-        text = text.split(marker, 1)[0].rstrip(" \n。")
-    return text
 
 
 web_search_default = """

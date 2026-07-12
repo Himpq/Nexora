@@ -266,6 +266,7 @@
       { id: "channels", title: "频道与推送" },
       { id: "users", title: "用户管理" },
       { id: "logs", title: "系统日志" },
+      { id: "agents", title: "执行面板" },
     ];
     el.settingsNavList.innerHTML = `<div class="settings-tab-bar">
       ${tabs.map((tab) => `<button class="settings-tab ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">${escapeHtml(tab.title)}</button>`).join("")}
@@ -607,6 +608,32 @@
       const visibleEntries = group.querySelectorAll(".log-entry:not([style*='display: none'])");
       group.style.display = visibleEntries.length ? "" : "none";
     });
+  }
+
+  function renderSettingsAgents() {
+    state.refinementViewBootstrapped = false;
+
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll settings-agents-scroll">
+        <article class="settings-card settings-agents-toolbar">
+          <div class="settings-agents-title">
+            <div class="settings-kv-label">RUNLOG</div>
+            <div class="settings-kv-value">多智能体执行面板</div>
+          </div>
+          <a class="settings-agents-open-btn" href="/api/sample/agents" target="_blank" rel="noopener" title="新窗口打开">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+              <path d="M15 3h6v6"></path>
+              <path d="M10 14 21 3"></path>
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            </svg>
+            <span>新窗口打开</span>
+          </a>
+        </article>
+        <section class="settings-agents-frame-shell" aria-label="多智能体执行面板">
+          <iframe class="settings-agents-frame" src="/api/sample/agents" title="多智能体执行面板"></iframe>
+        </section>
+      </section>
+    `;
   }
 
   function renderSettingsLectureOptions(selectedLectureId) {
@@ -1595,6 +1622,10 @@
     if (state.settingsTab === "logs") {
       state.refinementViewBootstrapped = false;
       renderSettingsLogs();
+      return;
+    }
+    if (state.settingsTab === "agents") {
+      renderSettingsAgents();
       return;
     }
     if (state.settingsTab === "profile") {

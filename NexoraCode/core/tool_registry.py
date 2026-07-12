@@ -12,8 +12,12 @@ from typing import Any
 # Explicit imports help PyInstaller include tool modules in packaged builds.
 try:
     from tools import catalog as _tool_catalog  # noqa: F401
+    from tools import path_guard as _tool_path_guard  # noqa: F401
     from tools import shell as _tool_shell  # noqa: F401
     from tools import file_ops as _tool_file_ops  # noqa: F401
+    from tools import local_permissions as _tool_local_permissions  # noqa: F401
+    from tools import local_search as _tool_local_search  # noqa: F401
+    from tools import process_manager as _tool_process_manager  # noqa: F401
     from tools import image_search as _tool_image_search  # noqa: F401
     from tools import renderer as _tool_renderer  # noqa: F401
     from tools import long_context as _tool_long_context  # noqa: F401

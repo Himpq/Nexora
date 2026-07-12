@@ -317,7 +317,7 @@
                         } else if (step.type === 'function_call') {
                             const toolName = resolveToolNameFromEvent(step, step.name);
 
-                            if (toolName === 'learning_card' || toolName === 'question' || toolName === 'puzzle') return;
+                            if (toolName === 'learning_card' || toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'puzzle') return;
 
                             if (toolName === 'knowledge_basis_create' || toolName === 'add_basis' || toolName === 'addBasis') {
                                 try {
@@ -335,7 +335,7 @@
                         } else if (step.type === 'function_result') {
                             const toolName = resolveToolNameFromEvent(step, step.name);
 
-                            if (toolName === 'question' || toolName === 'puzzle') return;
+                            if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'puzzle') return;
 
                             if (toolName === 'learning_card') {
                                 const cardPayload = extractLearningCardPayload(step.result);

@@ -199,6 +199,158 @@ TOOL_CATALOG = [
         },
     },
     {
+        "module": "local_search",
+        "name": "local_text_search",
+        "handler": "local_text_search",
+        "description": (
+            "Search text in files under a configured allowed_dirs path. This is a general local search tool, "
+            "not a project manager. It does not read sensitive-looking files unless include_sensitive is explicitly true."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path inside allowed_dirs."},
+                "query": {"type": "string", "description": "Text or regex to search for."},
+                "mode": {
+                    "type": "string",
+                    "enum": ["literal", "regex"],
+                    "default": "literal",
+                    "description": "Search mode.",
+                },
+                "case_sensitive": {"type": "boolean", "default": False},
+                "max_depth": {"type": "integer", "default": 8, "description": "Maximum directory depth to scan."},
+                "max_results": {"type": "integer", "default": 100, "description": "Maximum matches to return."},
+                "context_lines": {"type": "integer", "default": 0, "description": "Context lines before and after each match."},
+                "include_globs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional filename or relative-path glob patterns.",
+                },
+                "exclude_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Additional directory names to skip.",
+                },
+                "include_extensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional text file extensions to scan, such as py, js, md.",
+                },
+                "include_hidden": {"type": "boolean", "default": False},
+                "include_sensitive": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Requires explicit user permission before reading suspected secrets.",
+                },
+                "encoding": {"type": "string", "default": "utf-8-sig"},
+                "max_file_bytes": {"type": "integer", "default": 1048576},
+            },
+            "required": ["path", "query"],
+        },
+    },
+    {
+        "module": "local_permissions",
+        "name": "local_permission_grant",
+        "handler": "local_permission_grant",
+        "description": (
+            "Grant temporary path permission for the current conversation after the user explicitly allowed it. "
+            "This tool only updates NexoraCode in-memory permission state; it does not read or write the target path."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path approved by the user."},
+                "scope": {"type": "string", "enum": ["file", "dir"], "default": "file"},
+                "access": {"type": "string", "enum": ["read", "write", "read_write"], "default": "read"},
+                "reason": {"type": "string", "description": "Short reason shown to the user."},
+                "sensitive": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "True only after the user explicitly approved access to a suspected secret or private path.",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional. Usually injected by NexoraCode bridge for this conversation.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "module": "local_permissions",
+        "name": "local_permission_list",
+        "handler": "local_permission_list",
+        "description": "List temporary path permissions for the current NexoraCode conversation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional. Usually injected by NexoraCode bridge for this conversation.",
+                },
+            },
+        },
+    },
+    {
+        "module": "local_search",
+        "name": "local_file_search_tree",
+        "handler": "local_file_search_tree",
+        "description": (
+            "List files and directories under a configured allowed_dirs path with an explicit maximum depth. "
+            "This returns metadata only and is not tied to any project workflow."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path inside allowed_dirs."},
+                "max_depth": {"type": "integer", "default": 3, "description": "Maximum tree depth."},
+                "pattern": {"type": "string", "default": "*", "description": "Filename or relative-path glob pattern."},
+                "include_files": {"type": "boolean", "default": True},
+                "include_dirs": {"type": "boolean", "default": True},
+                "include_hidden": {"type": "boolean", "default": False},
+                "include_sensitive": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Requires explicit user permission before returning suspected secret paths.",
+                },
+                "exclude_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Additional directory names to skip.",
+                },
+                "max_entries": {"type": "integer", "default": 500},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "module": "process_manager",
+        "name": "local_process_manager",
+        "handler": "local_process_manager",
+        "description": (
+            "Start and manage generic local processes created by this tool only. It does not discover projects, "
+            "does not run project scripts by convention, and cannot manage unrelated system processes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "list", "status", "read", "stop"],
+                    "description": "Process action.",
+                },
+                "process_id": {"type": "string", "description": "Required for status, read, and stop."},
+                "command": {"type": "string", "description": "Command to start."},
+                "cwd": {"type": "string", "description": "Working directory for start."},
+                "timeout": {"type": "integer", "default": 0, "description": "Optional auto-stop timeout in seconds."},
+                "encoding": {"type": "string", "default": "utf-8", "description": "Output decoding encoding."},
+                "max_output_chars": {"type": "integer", "default": 20000},
+                "grace_seconds": {"type": "integer", "default": 5},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "module": "image_search",
         "name": "image_search",
         "handler": "image_search",

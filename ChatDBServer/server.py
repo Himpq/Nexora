@@ -44,6 +44,7 @@ from timeline import list_entries as list_timeline_entries, record_notes_snapsho
 from datastorage import safe_read_json, safe_write_json, get_path_lock
 from usage_logs import is_usage_log_path, read_usage_log_records, replace_usage_log_records
 from knowledge_word_exporter import KnowledgeWordExporter
+from knowledge_collab import KnowledgeCollabHub
 from runlog import append_log_text, init_run_logger
 import conversation_asset_store
 import prompts
@@ -111,6 +112,31 @@ def disable_websocket_compression_extensions():
 
     request.environ.pop('HTTP_SEC_WEBSOCKET_EXTENSIONS', None)
     return None
+
+
+class _WebSocketHandledResponse(Response):
+    """WebSocket 会话结束后阻止 Werkzeug 向已升级的 socket 补写 HTTP 响应。
+
+    flask-sock 的 werkzeug 分支在 WS 结束后会让 Werkzeug 写一个 `HTTP/1.1 200 OK`
+    到同一条 TCP 连接上（紧跟在 CLOSE 帧后面），浏览器会因此报
+    "Invalid frame header"。抛 ConnectionError 会命中 Werkzeug dev server 的
+    connection_dropped 分支，静默结束连接、不写任何字节。
+    """
+
+    def __call__(self, environ, start_response):
+        raise ConnectionError('websocket connection already handled')
+
+
+@app.after_request
+def suppress_websocket_http_response(response):
+    if (
+        str(request.path or '').startswith('/ws/')
+        and 'websocket' in str(request.headers.get('Upgrade') or '').lower()
+        and request.environ.get('werkzeug.socket') is not None
+    ):
+        return _WebSocketHandledResponse()
+
+    return response
 
 
 # 切换到正确的工作目录
@@ -2535,6 +2561,7 @@ _BROWSER_WS_CLIENTS = {}
 _BROWSER_WS_LOCK = threading.Lock()
 _PUBLIC_KNOWLEDGE_WS_CLIENTS = {}
 _PUBLIC_KNOWLEDGE_WS_LOCK = threading.Lock()
+_KNOWLEDGE_COLLAB_HUB = KnowledgeCollabHub()
 _NEXORA_MAIL_EVENT_STREAM_LOCK = threading.Lock()
 _NEXORA_MAIL_EVENT_STREAM_STARTED = False
 _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION = 0
@@ -12998,12 +13025,14 @@ def chat_stream():
     else:
         tool_mode = str(raw_tool_mode or '').strip().lower()
         if tool_mode == 'auto':
-            tool_mode = 'auto_select'
+            tool_mode = 'auto_off'
         elif tool_mode in {'auto-off', 'autooff'}:
             tool_mode = 'auto_off'
         elif tool_mode in {'auto-select', 'autoselect'}:
-            tool_mode = 'auto_select'
-        if tool_mode not in {'off', 'auto_off', 'auto_select', 'force'}:
+            tool_mode = 'auto_off'
+        if tool_mode == 'auto_select':
+            tool_mode = 'auto_off'
+        if tool_mode not in {'off', 'auto_off', 'force'}:
             tool_mode = 'auto_off' if enable_tools else 'off'
     if tool_mode == 'off':
         enable_tools = False
@@ -13040,6 +13069,10 @@ def chat_stream():
     )
 
     conversation_id_from_request = bool(str(conversation_id or '').strip())
+    # Stream workers run outside Flask request context, so request-scoped flags
+    # must be captured before the worker starts.
+    workspace_chat_requested = bool(_get_workspace_request_value(data, 'workspace_id', 'workspace', 'workspaces'))
+
     try:
         workspace_chat_context = _resolve_workspace_chat_context(username, data, conversation_id)
     except Exception as workspace_error:
@@ -13401,7 +13434,7 @@ def chat_stream():
                 )
             if debug_mode:
                 workspace_context_debug = {
-                    "requested": bool(_get_workspace_request_value(data, 'workspace_id', 'workspace', 'workspaces')),
+                    "requested": workspace_chat_requested,
                     "resolved": bool(workspace_chat_context),
                     "workspace_id": str(workspace_chat_context.get("workspace_id") or "") if workspace_chat_context else "",
                     "workspace_title": str(workspace_chat_context.get("workspace_title") or "") if workspace_chat_context else "",
@@ -13553,6 +13586,22 @@ def chat_stream():
                 _chat_latency_mark("agent_tools_injected", **_agent_info_latency_summary(current_agent_info))
             else:
                 _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
+
+            try:
+                project_context_injected = _inject_nexoracode_project_context(
+                    model,
+                    username,
+                    str(model.conversation_id or conversation_id or ''),
+                    cancel_checker=is_cancel_requested,
+                )
+                _chat_latency_mark(
+                    "nexoracode_project_context",
+                    injected=bool(project_context_injected),
+                )
+            except StreamCancelled:
+                raise
+            except Exception as project_context_error:
+                print(f"[NexoraCode ProjectContext] inject error={project_context_error}")
 
             if workspace_chat_context:
                 _inject_workspace_memory_tools(model, username, workspace_chat_context)
@@ -13884,6 +13933,160 @@ def submit_client_tool_result_api():
 
 # ==================== NexoraCode 本地 Agent 桥接 ====================
 
+_NEXORACODE_PROJECT_TREE_CACHE: Dict[Any, Dict[str, Any]] = {}
+_NEXORACODE_PROJECT_TREE_CACHE_LOCK = threading.Lock()
+_NEXORACODE_PROJECT_TREE_TTL_SEC = 300
+
+
+def _read_conversation_nexoracode_project(username: str, conversation_id: str) -> Dict[str, Any]:
+    """读取会话绑定的 NexoraCode 项目 metadata；未绑定返回空 dict。"""
+    cid = str(conversation_id or '').strip()
+
+    if not cid:
+        return {}
+
+    try:
+        manager = ConversationManager(username)
+        convo = manager.get_conversation(cid)
+        metadata = convo.get('metadata') if isinstance(convo, dict) else None
+        project = metadata.get('nexoracode_project') if isinstance(metadata, dict) else None
+
+        if isinstance(project, dict) and str(project.get('path') or '').strip():
+            return project
+    except Exception:
+        pass
+
+    return {}
+
+
+def _format_nexoracode_tree_result(result: Any) -> str:
+    """把 local_file_search_tree 的返回格式化为缩进树文本；失败返回空串。"""
+    if not isinstance(result, dict):
+        return ""
+
+    payload = result.get('result') if isinstance(result.get('result'), dict) else result
+
+    if not isinstance(payload, dict) or payload.get('success') is not True:
+        return ""
+
+    entries = payload.get('entries')
+
+    if not isinstance(entries, list) or not entries:
+        return ""
+
+    lines = []
+
+    for entry in sorted(entries, key=lambda item: str((item or {}).get('relative_path') or '')):
+        if not isinstance(entry, dict):
+            continue
+
+        relative_path = str(entry.get('relative_path') or '').strip()
+
+        if not relative_path:
+            continue
+
+        depth = entry.get('depth')
+        indent_level = max(0, int(depth) - 1) if isinstance(depth, int) else max(0, relative_path.count('/'))
+        name = str(entry.get('name') or relative_path.rsplit('/', 1)[-1])
+        suffix = '/' if str(entry.get('type') or '') == 'dir' else ''
+        lines.append(f"{'  ' * indent_level}{name}{suffix}")
+
+    if payload.get('truncated'):
+        lines.append('...（目录条目已截断）')
+
+    return "\n".join(lines)
+
+
+def _fetch_nexoracode_project_tree_text(username: str, project_path: str, cancel_checker=None) -> str:
+    """经 NexoraCode WSS 通道拉取项目目录树文本，带 TTL 缓存。"""
+    from agent_tunnel import call_local_tool_sync
+
+    cache_key = (str(username or ''), str(project_path or ''))
+    now = time.time()
+
+    with _NEXORACODE_PROJECT_TREE_CACHE_LOCK:
+        cached = _NEXORACODE_PROJECT_TREE_CACHE.get(cache_key)
+
+        if cached and (now - float(cached.get('ts') or 0)) < _NEXORACODE_PROJECT_TREE_TTL_SEC:
+            return str(cached.get('text') or '')
+
+    result = call_local_tool_sync(
+        username,
+        'local_file_search_tree',
+        {
+            'path': project_path,
+            'max_depth': 3,
+            'max_entries': 400,
+            'include_hidden': False,
+        },
+        timeout_sec=12,
+        cancel_checker=cancel_checker,
+    )
+    tree_text = _format_nexoracode_tree_result(result)
+
+    with _NEXORACODE_PROJECT_TREE_CACHE_LOCK:
+        _NEXORACODE_PROJECT_TREE_CACHE[cache_key] = {'ts': now, 'text': tree_text}
+
+    if not tree_text:
+        try:
+            error_text = ''
+
+            if isinstance(result, dict):
+                detail = result.get('result') if isinstance(result.get('result'), dict) else result
+                error_text = str(result.get('error') or detail.get('error') or detail.get('message') or '')
+
+            print(f"[NexoraCode ProjectContext] tree unavailable path={project_path} error={error_text[:200]}")
+        except Exception:
+            pass
+
+    return tree_text
+
+
+def _inject_nexoracode_project_context(model, username: str, conversation_id: str, cancel_checker=None):
+    """将会话绑定的 NexoraCode 项目信息与目录树注入系统提示。"""
+    project = _read_conversation_nexoracode_project(username, conversation_id)
+
+    if not project:
+        return False
+
+    project_name = str(project.get('name') or '').strip() or '未命名项目'
+    project_path = str(project.get('path') or '').strip()
+    lines = [
+        '## NexoraCode 项目上下文',
+        f'当前对话绑定本地项目：{project_name}',
+        f'项目根路径：{project_path}',
+        '涉及该项目的文件读写、搜索、命令执行请使用 local_* 工具，并保持在项目根路径内。',
+    ]
+
+    tree_text = ''
+
+    if is_agent_online(username):
+        tree_text = _fetch_nexoracode_project_tree_text(username, project_path, cancel_checker=cancel_checker)
+
+    if tree_text:
+        lines.extend([
+            '',
+            '项目目录结构（最多 3 层，自动扫描）：',
+            '```',
+            tree_text,
+            '```',
+        ])
+    else:
+        lines.extend([
+            '',
+            '目录结构暂不可用（NexoraCode 离线，或该路径尚未在本地 allowed_dirs 中授权）。'
+            '需要浏览项目文件时先调用 local_file_search_tree。',
+        ])
+
+    section = "\n".join(lines)
+    # 写入 runtime block 而非直接覆盖 system_prompt：chat_stream 内部每次请求都会
+    # 用 _build_effective_system_prompt 重建 system_prompt，直接覆盖会被冲掉，
+    # 且 debug window 展示的是重建后的 request_system_prompt（原先看不到本段）。
+    model._runtime_project_context_block = section
+    model.system_prompt = f"{str(model.system_prompt or '').rstrip()}\n\n{section}"
+    return True
+
+
 def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
     """将本地 Agent 工具注入到 model 实例（工具定义 + 执行处理器）
 
@@ -13999,6 +14202,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                 from agent_tunnel import is_agent_online, call_local_tool_sync
 
                 _raise_if_cancelled()
+                conversation_id = str(getattr(model, "conversation_id", "") or "").strip()
                 
                 if is_agent_online(uname):
                     try:
@@ -14007,7 +14211,11 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                             name,
                             args,
                             timeout_sec=120,
-                            cancel_checker=cancel_checker
+                            cancel_checker=cancel_checker,
+                            context={
+                                "conversation_id": conversation_id,
+                                "username": username,
+                            }
                         )
                         _raise_if_cancelled()
                         if result and str(result.get("error") or "") == "stream_cancelled":
@@ -14368,11 +14576,13 @@ def knowledge():
 
 
 def _get_workspace_request_value(data: Optional[Dict[str, Any]], *names: str) -> str:
-    for name in names:
-        value = request.args.get(name)
+    """Read workspace selector from the active request first, then JSON data."""
+    if has_request_context():
+        for name in names:
+            value = request.args.get(name)
 
-        if value is not None:
-            return str(value or '').strip()
+            if value is not None:
+                return str(value or '').strip()
 
     if isinstance(data, dict):
         for name in names:
@@ -16399,6 +16609,85 @@ def public_knowledge_socket(ws, username, share_id):
         _drop_public_knowledge_ws_client(room, client_id)
 
 
+@sock.route('/ws/knowledge/collab/<username>/<share_id>')
+def knowledge_collab_socket(ws, username, share_id):
+    user, title, meta, err = _resolve_public_collab_basis(username, share_id)
+
+    if err is not None:
+        try:
+            ws.send(json.dumps({'type': 'error', 'message': 'Forbidden'}, ensure_ascii=False))
+        except Exception:
+            pass
+
+        return
+
+    owner = str(user.user or username or '').strip()
+    safe_share_id = str(share_id or '').strip()
+    role = str(request.args.get('role') or 'public').strip().lower()
+    display_name = str(request.args.get('display_name') or '').strip()
+
+    if role not in {'owner', 'public'}:
+        role = 'public'
+
+    if role == 'owner':
+        session_username = str(session.get('username') or '').strip()
+
+        if session_username != owner:
+            role = 'public'
+
+    if role == 'public' and not display_name:
+        display_name = '匿名协作者'
+
+    if role == 'owner' and not display_name:
+        display_name = owner
+
+    content = user.getBasisContent(title)
+
+    def save_collab_content(next_content: str) -> Dict[str, Any]:
+        save_user = User(owner)
+        success, msg = save_user.updateBasisContent(
+            title,
+            next_content,
+            timeline_actor=display_name or role or 'knowledge_collab',
+        )
+
+        if not success:
+            print(
+                "[KnowledgeCollab] flush failed "
+                f"owner={owner} share_id={safe_share_id} title={title} message={msg}"
+            )
+            return {'success': False, 'message': str(msg or '保存失败')}
+
+        payload = _knowledge_update_response_payload(title, msg, next_content, save_user)
+        _publish_knowledge_changed_event(
+            owner,
+            title,
+            payload,
+            source='knowledge_collab_flush',
+            actor_username=display_name or role or 'knowledge_collab',
+            share_id=safe_share_id,
+            content=next_content,
+        )
+        return payload
+
+    try:
+        _KNOWLEDGE_COLLAB_HUB.attach_client(
+            ws,
+            owner_username=owner,
+            share_id=safe_share_id,
+            title=title,
+            content=content,
+            role=role,
+            display_name=display_name,
+            save_callback=save_collab_content,
+        )
+    except Exception as e:
+        print(
+            "[KnowledgeCollab] socket disconnected "
+            f"owner={owner} share_id={safe_share_id} title={title}: {e}"
+        )
+
+
 @sock.route('/ws/browser')
 def browser_sync_socket(ws):
     username = str(session.get('username') or '').strip()
@@ -16613,6 +16902,10 @@ app.register_blueprint(workspace_bp)
 from api.notification import configure_notification_realtime, notification_bp
 configure_notification_realtime(_send_browser_event_to_user)
 app.register_blueprint(notification_bp)
+from api.agent_permissions import agent_permissions_bp
+app.register_blueprint(agent_permissions_bp)
+from api.global_search import global_search_bp
+app.register_blueprint(global_search_bp)
 from api.testapi import create_testapi_blueprint
 app.register_blueprint(create_testapi_blueprint(require_admin))
 

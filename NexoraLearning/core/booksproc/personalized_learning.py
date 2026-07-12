@@ -23,7 +23,7 @@ NXL_LAB_FENCE_START_PATTERN = re.compile(r"^```nxl-lab[ \t]*$", re.IGNORECASE)
 NXL_LAB_FENCE_END_PATTERN = re.compile(r"^```[ \t]*$")
 NXL_LAB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 NXL_LAB_EXPRESSION_PATTERN = re.compile(r"^[0-9A-Za-z_+\-*/%^().,\s]+$")
-NXL_LAB_ALLOWED_TYPES = {"canvas_scene", "formula_simulation", "code_trace"}
+NXL_LAB_ALLOWED_TYPES = {"canvas_scene", "formula_simulation", "code_trace", "sandbox_component"}
 NXL_LAB_ALLOWED_ELEMENT_TYPES = {
     "rect",
     "circle",
@@ -35,6 +35,39 @@ NXL_LAB_ALLOWED_ELEMENT_TYPES = {
     "plot",
 }
 NXL_LAB_ALLOWED_FORMULA_KEYS = {"ideal_gas"}
+NXL_LAB_PLOT_AXIS_NAME = "x"
+NXL_LAB_SANDBOX_MAX_HTML_CHARS = 12000
+NXL_LAB_SANDBOX_MAX_CSS_CHARS = 12000
+NXL_LAB_SANDBOX_MAX_JS_CHARS = 24000
+NXL_LAB_SANDBOX_MAX_TOTAL_CHARS = 36000
+NXL_LAB_SANDBOX_FORBIDDEN_URL_PATTERN = re.compile(r"(?i)\b(?:https?:)?//")
+NXL_LAB_SANDBOX_FORBIDDEN_HTML_PATTERN = re.compile(
+    r"(?is)<\s*(?:script|iframe|object|embed|form|base|link|meta|style)\b|"
+    r"\b(?:src|href|srcdoc)\s*="
+)
+NXL_LAB_SANDBOX_FORBIDDEN_CSS_PATTERN = re.compile(r"(?i)@import\b|url\s*\(")
+NXL_LAB_SANDBOX_FORBIDDEN_JS_PATTERNS = (
+    (re.compile(r"\bfetch\s*\("), "fetch"),
+    (re.compile(r"\bXMLHttpRequest\b"), "XMLHttpRequest"),
+    (re.compile(r"\bWebSocket\b"), "WebSocket"),
+    (re.compile(r"\bEventSource\b"), "EventSource"),
+    (re.compile(r"\bsendBeacon\s*\("), "sendBeacon"),
+    (re.compile(r"\bimportScripts\s*\("), "importScripts"),
+    (re.compile(r"\bimport\s*\("), "dynamic import"),
+    (re.compile(r"\bWorker\s*\("), "Worker"),
+    (re.compile(r"\bSharedWorker\s*\("), "SharedWorker"),
+    (re.compile(r"\bServiceWorker\b"), "ServiceWorker"),
+    (re.compile(r"\blocalStorage\b"), "localStorage"),
+    (re.compile(r"\bsessionStorage\b"), "sessionStorage"),
+    (re.compile(r"\bindexedDB\b"), "indexedDB"),
+    (re.compile(r"\bdocument\s*\.\s*cookie\b"), "document.cookie"),
+    (re.compile(r"\b(?:window\s*\.\s*)?parent\b"), "parent"),
+    (re.compile(r"\b(?:window\s*\.\s*)?top\b"), "top"),
+    (re.compile(r"\b(?:window\s*\.\s*)?opener\b"), "opener"),
+    (re.compile(r"\b(?:window\s*\.\s*)?location\b"), "location"),
+    (re.compile(r"\beval\s*\("), "eval"),
+    (re.compile(r"\bFunction\s*\("), "Function"),
+)
 NXL_LAB_MATH_NAMES = {
     "abs",
     "sqrt",
@@ -669,6 +702,21 @@ def _validate_nxl_lab_text(value: Any, path: str, *, required: bool = False) -> 
     return text
 
 
+def _validate_nxl_lab_limited_text(
+    value: Any,
+    path: str,
+    *,
+    required: bool,
+    max_chars: int,
+) -> str:
+    text = _validate_nxl_lab_text(value, path, required=required)
+
+    if len(text) > max_chars:
+        raise ValueError(f"{path} 超过长度限制：最多 {max_chars} 字符。")
+
+    return text
+
+
 def _validate_nxl_lab_number(value: Any, path: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
         raise ValueError(f"{path} 必须是有效数字。")
@@ -690,6 +738,10 @@ def _validate_nxl_lab_expression(expression: str, path: str, allowed_names: Set[
 
     if unknown_names:
         raise ValueError(f"{path} 表达式使用了未注册变量：{', '.join(unknown_names)}。")
+
+
+def _nxl_lab_expression_names(expression: str) -> Set[str]:
+    return set(NXL_LAB_NAME_PATTERN.findall(str(expression or "")))
 
 
 def _validate_nxl_lab_number_or_expression(value: Any, path: str, allowed_names: Set[str]) -> None:
@@ -879,13 +931,18 @@ def _validate_nxl_lab_plot(element: Mapping[str, Any], path: str, allowed_names:
         raise ValueError(f"{path}.curves 至少需要 1 条曲线。")
 
     plot_names = set(allowed_names)
-    plot_names.add("x")
+    plot_names.add(NXL_LAB_PLOT_AXIS_NAME)
+    has_axis_curve = False
 
     for idx, raw_curve in enumerate(curves):
         curve_path = f"{path}.curves[{idx}]"
         curve = _require_nxl_lab_object(raw_curve, curve_path)
         expression = _validate_nxl_lab_text(curve.get("expression"), f"{curve_path}.expression", required=True)
         _validate_nxl_lab_expression(expression, f"{curve_path}.expression", plot_names)
+
+        if NXL_LAB_PLOT_AXIS_NAME in _nxl_lab_expression_names(expression):
+            has_axis_curve = True
+
         _validate_nxl_lab_text(curve.get("color"), f"{curve_path}.color")
         _validate_nxl_lab_number_fields(
             curve,
@@ -894,6 +951,9 @@ def _validate_nxl_lab_plot(element: Mapping[str, Any], path: str, allowed_names:
             allowed_names,
             required=False,
         )
+
+    if not has_axis_curve:
+        raise ValueError(f"{path}.curves 至少需要 1 条曲线表达式使用 x 作为横轴变量。")
 
 
 def _validate_nxl_lab_canvas_element(element: Mapping[str, Any], path: str, allowed_names: Set[str]) -> None:
@@ -1039,8 +1099,50 @@ def _validate_nxl_lab_code_trace(config: Mapping[str, Any], path: str) -> None:
         _validate_nxl_lab_text(step.get("output"), f"{step_path}.output")
 
 
+def _validate_nxl_lab_sandbox_component(config: Mapping[str, Any], path: str) -> None:
+    _validate_nxl_lab_parameters(config.get("parameters"), f"{path}.parameters", required=False)
+    component = _require_nxl_lab_object(config.get("component"), f"{path}.component")
+    html = _validate_nxl_lab_limited_text(
+        component.get("html"),
+        f"{path}.component.html",
+        required=True,
+        max_chars=NXL_LAB_SANDBOX_MAX_HTML_CHARS,
+    )
+    css = _validate_nxl_lab_limited_text(
+        component.get("css"),
+        f"{path}.component.css",
+        required=False,
+        max_chars=NXL_LAB_SANDBOX_MAX_CSS_CHARS,
+    )
+    js = _validate_nxl_lab_limited_text(
+        component.get("js"),
+        f"{path}.component.js",
+        required=True,
+        max_chars=NXL_LAB_SANDBOX_MAX_JS_CHARS,
+    )
+    total_chars = len(html) + len(css) + len(js)
+
+    if total_chars > NXL_LAB_SANDBOX_MAX_TOTAL_CHARS:
+        raise ValueError(f"{path}.component 超过总长度限制：最多 {NXL_LAB_SANDBOX_MAX_TOTAL_CHARS} 字符。")
+
+    for field_name, source in (("html", html), ("css", css), ("js", js)):
+
+        if NXL_LAB_SANDBOX_FORBIDDEN_URL_PATTERN.search(source):
+            raise ValueError(f"{path}.component.{field_name} 不能引用外部 URL。")
+
+    if NXL_LAB_SANDBOX_FORBIDDEN_HTML_PATTERN.search(html):
+        raise ValueError(f"{path}.component.html 不能包含脚本、框架、表单、外链资源或内嵌样式标签。")
+
+    if NXL_LAB_SANDBOX_FORBIDDEN_CSS_PATTERN.search(css):
+        raise ValueError(f"{path}.component.css 不能使用 @import 或 url()。")
+
+    for pattern, label in NXL_LAB_SANDBOX_FORBIDDEN_JS_PATTERNS:
+
+        if pattern.search(js):
+            raise ValueError(f"{path}.component.js 不能使用 {label}。")
+
+
 def _validate_nxl_lab_config(config: Mapping[str, Any], path: str) -> None:
-    _validate_nxl_lab_no_html(config, path)
     lab_type = _validate_nxl_lab_text(config.get("type"), f"{path}.type", required=True)
 
     if lab_type not in NXL_LAB_ALLOWED_TYPES:
@@ -1048,6 +1150,9 @@ def _validate_nxl_lab_config(config: Mapping[str, Any], path: str) -> None:
 
     _validate_nxl_lab_text(config.get("title"), f"{path}.title", required=True)
     _validate_nxl_lab_text(config.get("description"), f"{path}.description")
+
+    if lab_type != "sandbox_component":
+        _validate_nxl_lab_no_html(config, path)
 
     if lab_type == "formula_simulation":
         _validate_nxl_lab_formula(config, path)
@@ -1059,6 +1164,10 @@ def _validate_nxl_lab_config(config: Mapping[str, Any], path: str) -> None:
 
     if lab_type == "code_trace":
         _validate_nxl_lab_code_trace(config, path)
+        return
+
+    if lab_type == "sandbox_component":
+        _validate_nxl_lab_sandbox_component(config, path)
 
 
 def validate_nxl_lab_blocks(markdown: str) -> int:

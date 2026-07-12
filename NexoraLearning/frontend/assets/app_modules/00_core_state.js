@@ -59,6 +59,7 @@
     userProfileDimensions: document.getElementById("userProfileDimensions"),
     userProfileCard: document.getElementById("userProfileCard"),
     profileAdminSettingsBtn: document.getElementById("profileAdminSettingsBtn"),
+    profileAgentsBtn: document.getElementById("profileAgentsBtn"),
     materialsHeadKicker: document.querySelector("#materialsMainHeader .panel-kicker"),
     materialsLayout: document.getElementById("materialsLayout"),
     lectureList: document.getElementById("lectureList"),

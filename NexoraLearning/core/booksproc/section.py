@@ -64,35 +64,6 @@ def _parse_model_range(value: str, chapter_start: int, chapter_end: int) -> Tupl
     return max(0, left), max(0, right)
 
 
-def _extract_detail_chapters(bookdetail_xml: str) -> List[Dict[str, Any]]:
-    text = str(bookdetail_xml or "")
-    if not text.strip():
-        return []
-    blocks = re.findall(r"<book_detail>\s*.*?\s*</book_detail>", text, flags=re.IGNORECASE | re.DOTALL)
-    rows: List[Dict[str, Any]] = []
-    for block in blocks:
-        name_match = re.search(r"<chapter_name>\s*(.*?)\s*</chapter_name>", block, flags=re.IGNORECASE | re.DOTALL)
-        range_match = re.search(r"<chapter_range>\s*(.*?)\s*</chapter_range>", block, flags=re.IGNORECASE | re.DOTALL)
-        if not name_match or not range_match:
-            continue
-        chapter_name = str(name_match.group(1) or "").strip()
-        chapter_range = str(range_match.group(1) or "").strip()
-        start, length = _parse_range(chapter_range)
-        if not chapter_name or length <= 0:
-            continue
-        rows.append(
-            {
-                "chapter_name": chapter_name,
-                "chapter_range": f"{start}:{length}",
-                "chapter_detail_xml": str(block or "").strip(),
-                "start": start,
-                "length": length,
-            }
-        )
-    rows.sort(key=lambda item: int(item.get("start") or 0))
-    return rows
-
-
 def _extract_coarse_chapters(bookinfo_xml: str) -> List[Dict[str, Any]]:
     text = str(bookinfo_xml or "")
     if not text.strip():
@@ -100,6 +71,7 @@ def _extract_coarse_chapters(bookinfo_xml: str) -> List[Dict[str, Any]]:
     pattern = re.compile(
         r"<chapter_name>\s*(.*?)\s*</chapter_name>\s*"
         r"<chapter_range>\s*(.*?)\s*</chapter_range>\s*"
+        r"(?:<chapter_status>\s*(.*?)\s*</chapter_status>\s*)?"
         r"<chapter_summary>\s*(.*?)\s*</chapter_summary>",
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -107,7 +79,7 @@ def _extract_coarse_chapters(bookinfo_xml: str) -> List[Dict[str, Any]]:
     for match in pattern.finditer(text):
         chapter_name = str(match.group(1) or "").strip()
         chapter_range = str(match.group(2) or "").strip()
-        chapter_summary = str(match.group(3) or "").strip()
+        chapter_summary = str(match.group(4) or "").strip()
         start, length = _parse_range(chapter_range)
         if not chapter_name or length <= 0:
             continue
@@ -125,6 +97,121 @@ def _extract_coarse_chapters(bookinfo_xml: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _validate_canonical_chapters(rows: List[Dict[str, Any]], *, total_chars: int) -> List[Dict[str, Any]]:
+    if not rows:
+        raise ValueError("bookinfo.xml 中没有可用于分节的章节目录，必须先完成有效的粗读章节提取。")
+
+    issues: List[str] = []
+    normalized: List[Dict[str, Any]] = []
+    previous_end = 0
+    seen_ranges = set()
+    text_length = max(0, int(total_chars or 0))
+
+    for idx, row in enumerate(rows, start=1):
+        chapter_name = str(row.get("chapter_name") or "").strip()
+        start = int(row.get("start") or 0)
+        length = int(row.get("length") or 0)
+        end = start + length
+        chapter_range = f"{start}:{length}"
+
+        if not chapter_name:
+            issues.append(f"第 {idx} 个章节缺少 chapter_name")
+
+        if length <= 0:
+            issues.append(f"{chapter_name or idx} 的 chapter_range 无效: {row.get('chapter_range')}")
+
+        if start < 0 or end > text_length:
+            issues.append(f"{chapter_name or idx} 超出正文范围: {chapter_range}, text_chars={text_length}")
+
+        if start < previous_end:
+            issues.append(f"{chapter_name or idx} 与前一章节重叠或顺序错误: {chapter_range}")
+
+        if chapter_range in seen_ranges:
+            issues.append(f"{chapter_name or idx} 重复 chapter_range: {chapter_range}")
+
+        seen_ranges.add(chapter_range)
+        previous_end = max(previous_end, end)
+
+        fixed = dict(row)
+        fixed["chapter_name"] = chapter_name
+        fixed["chapter_range"] = chapter_range
+        fixed["start"] = start
+        fixed["length"] = length
+        normalized.append(fixed)
+
+    if issues:
+        preview = "；".join(issues[:8])
+        if len(issues) > 8:
+            preview += f"；另有 {len(issues) - 8} 个问题"
+        raise ValueError(f"bookinfo.xml 章节目录校验失败，已停止分节: {preview}")
+
+    return normalized
+
+
+def _detail_range_candidates(raw_range: str, *, total_chars: int) -> List[str]:
+    text = str(raw_range or "").strip()
+    if ":" not in text:
+        return []
+
+    left_text, right_text = text.split(":", 1)
+
+    try:
+        left = int(str(left_text).strip())
+        right = int(str(right_text).strip())
+    except Exception:
+        return []
+
+    candidates: List[str] = []
+    text_length = max(0, int(total_chars or 0))
+
+    if left >= 0 and right > 0 and left + right <= text_length:
+        candidates.append(f"{left}:{right}")
+
+    if left >= 0 and right > left and right <= text_length:
+        candidates.append(f"{left}:{right - left}")
+
+    return candidates
+
+
+def _extract_detail_blocks_by_range(
+    bookdetail_xml: str,
+    *,
+    canonical_ranges: set,
+    total_chars: int,
+) -> Tuple[Dict[str, str], List[str]]:
+    text = str(bookdetail_xml or "")
+    if not text.strip():
+        return {}, []
+
+    blocks = re.findall(r"<book_detail>\s*.*?\s*</book_detail>", text, flags=re.IGNORECASE | re.DOTALL)
+    detail_by_range: Dict[str, str] = {}
+    issues: List[str] = []
+
+    for block in blocks:
+        name_match = re.search(r"<chapter_name>\s*(.*?)\s*</chapter_name>", block, flags=re.IGNORECASE | re.DOTALL)
+        range_match = re.search(r"<chapter_range>\s*(.*?)\s*</chapter_range>", block, flags=re.IGNORECASE | re.DOTALL)
+        chapter_name = str(name_match.group(1) or "").strip() if name_match else ""
+        raw_range = str(range_match.group(1) or "").strip() if range_match else ""
+
+        matched_range = ""
+        for candidate in _detail_range_candidates(raw_range, total_chars=total_chars):
+            if candidate in canonical_ranges:
+                matched_range = candidate
+                break
+
+        if not matched_range:
+            issues.append(f"{chapter_name or '(无标题)'}:{raw_range or '(无范围)'}")
+            continue
+
+        if matched_range in detail_by_range:
+            issues.append(f"{chapter_name or '(无标题)'}:{raw_range} 重复绑定 {matched_range}")
+            continue
+
+        detail_by_range[matched_range] = str(block or "").strip()
+
+    return detail_by_range, issues
+
+
 def _extract_existing_section_blocks(sections_xml: str) -> List[str]:
     text = str(sections_xml or "")
     if not text.strip():
@@ -136,6 +223,23 @@ def _extract_existing_section_blocks(sections_xml: str) -> List[str]:
 def _extract_section_block_range(block_xml: str) -> str:
     match = re.search(r"<chapter_range>\s*(.*?)\s*</chapter_range>", str(block_xml or ""), flags=re.IGNORECASE | re.DOTALL)
     return str(match.group(1) or "").strip() if match else ""
+
+
+def _filter_section_blocks_by_catalog(blocks: List[str], canonical_ranges: set) -> Tuple[List[str], List[str]]:
+    kept: List[str] = []
+    dropped: List[str] = []
+
+    for block in blocks:
+        block_text = str(block or "").strip()
+        block_range = _extract_section_block_range(block_text)
+
+        if block_range and block_range in canonical_ranges:
+            kept.append(block_text)
+            continue
+
+        dropped.append(block_range or "(missing chapter_range)")
+
+    return kept, dropped
 
 
 def _extract_existing_session_lengths(sections_xml: str) -> List[int]:
@@ -809,23 +913,51 @@ def run_section_generation_once(
     runner = build_split_chapters_runner(resolved_cfg, selected_model)
     bookdetail_xml = str(load_book_detail_xml(resolved_cfg, lecture_key, book_key) or "")
     bookinfo_xml = str(load_book_info_xml(resolved_cfg, lecture_key, book_key) or "")
-    chapter_rows = _extract_detail_chapters(bookdetail_xml)
-    if not chapter_rows:
-        chapter_rows = _extract_coarse_chapters(bookinfo_xml)
-    if not chapter_rows:
-        chapter_rows = [
-            {
-                "chapter_name": str(book.get("title") or "正文"),
-                "chapter_range": f"0:{len(full_text)}",
-                "chapter_detail_xml": "",
-                "start": 0,
-                "length": len(full_text),
-            }
-        ]
+    chapter_rows = _validate_canonical_chapters(
+        _extract_coarse_chapters(bookinfo_xml),
+        total_chars=len(full_text),
+    )
+    canonical_ranges = {str(row.get("chapter_range") or "").strip() for row in chapter_rows}
+    detail_by_range, detail_issues = _extract_detail_blocks_by_range(
+        bookdetail_xml,
+        canonical_ranges=canonical_ranges,
+        total_chars=len(full_text),
+    )
+
+    for row in chapter_rows:
+        row["chapter_detail_xml"] = detail_by_range.get(str(row.get("chapter_range") or "").strip(), "")
+
+    if detail_issues:
+        log_event(
+            "section_detail_catalog_mismatch",
+            "分节忽略不属于粗读目录的精读详情",
+            payload={
+                "lecture_id": lecture_key,
+                "book_id": book_key,
+                "ignored_count": len(detail_issues),
+                "samples": detail_issues[:8],
+            },
+        )
 
     existing_xml = str(load_book_sections_xml(resolved_cfg, lecture_key, book_key) or "")
-    existing_blocks = _extract_existing_section_blocks(existing_xml)
-    historical_lengths = _extract_existing_session_lengths(existing_xml)
+    existing_blocks, dropped_existing_ranges = _filter_section_blocks_by_catalog(
+        _extract_existing_section_blocks(existing_xml),
+        canonical_ranges,
+    )
+
+    if dropped_existing_ranges:
+        log_event(
+            "section_existing_catalog_mismatch",
+            "分节移除不属于粗读目录的历史 Session 块",
+            payload={
+                "lecture_id": lecture_key,
+                "book_id": book_key,
+                "dropped_count": len(dropped_existing_ranges),
+                "samples": dropped_existing_ranges[:8],
+            },
+        )
+
+    historical_lengths = _extract_existing_session_lengths(_render_sections_root(existing_blocks))
     total = len(chapter_rows)
     request_text = (
         "请把当前精读章节拆成若干学习 Session。"

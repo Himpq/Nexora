@@ -8,7 +8,7 @@ import urllib.parse
 from collections import deque
 from typing import Any, Deque, Dict, Optional, Tuple
 
-from flask import Blueprint, Response, jsonify, request, send_file, session, stream_with_context
+from flask import Blueprint, Response, jsonify, render_template, request, send_file, session, stream_with_context
 
 from api.datastorage import get_path_lock, safe_read_json, safe_write_json
 from api.file_sandbox import UserFileSandbox
@@ -28,7 +28,7 @@ TRANSFER_CODE_LENGTH = TRANSFER_CODE_GROUP_SIZE * TRANSFER_CODE_GROUPS
 TRANSFER_EXPIRE_MINUTES_DEFAULT = 30
 TRANSFER_EXPIRE_MINUTES_MIN = 1
 TRANSFER_EXPIRE_MINUTES_MAX = 24 * 60
-TRANSFER_MAX_DOWNLOADS_DEFAULT = 1
+TRANSFER_MAX_DOWNLOADS_DEFAULT = 5
 TRANSFER_MAX_DOWNLOADS_MIN = 1
 TRANSFER_MAX_DOWNLOADS_MAX = 50
 LIVE_TRANSFER_HEARTBEAT_TIMEOUT_SECONDS = 15
@@ -763,9 +763,12 @@ class FileTransferStore:
                 raise FileNotFoundError("读取码不存在或已过期")
 
             self._assert_record_active(record, current_time)
-            record["download_count"] = int(record.get("download_count") or 0) + 1
+            is_live_transfer = str(record.get("transfer_type") or "").strip() == "live"
 
-            if str(record.get("transfer_type") or "").strip() == "live":
+            if not is_live_transfer:
+                record["download_count"] = int(record.get("download_count") or 0) + 1
+
+            if is_live_transfer:
                 safe_download_id = normalize_live_download_id(live_download_id)
                 events = record.get("download_events")
 
@@ -793,6 +796,26 @@ class FileTransferStore:
             self._save_index(data)
 
             return dict(record)
+
+    def mark_live_download_complete(self, *, code_hash: str) -> None:
+        safe_code_hash = str(code_hash or "").strip()
+
+        if not safe_code_hash:
+            return
+
+        with self.lock:
+            data = self._load_index()
+            transfers = data["transfers"]
+            record = transfers.get(safe_code_hash)
+
+            if not isinstance(record, dict):
+                return
+
+            if str(record.get("transfer_type") or "").strip() != "live":
+                return
+
+            record["download_count"] = int(record.get("download_count") or 0) + 1
+            self._save_index(data)
 
     def _get_active_record(self, code: str) -> Dict[str, Any]:
         code_hash = hash_transfer_code(code)
@@ -963,6 +986,35 @@ def get_live_transfer_request_file_size() -> int:
     )
 
 
+def build_transfer_download_headers(record: Dict[str, Any], download_name: str = "") -> Dict[str, str]:
+    safe_download_name = safe_filename(
+        download_name or record.get("file_name") or record.get("original_name") or record.get("alias") or "download.bin",
+        default="download.bin",
+        max_len=180,
+    )
+    size = int(record.get("size") or 0)
+    headers = {
+        "Content-Disposition": build_attachment_content_disposition(safe_download_name),
+        "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
+    }
+
+    if size >= 0:
+        headers["Content-Length"] = str(size)
+
+    return headers
+
+
+def build_transfer_head_response(record: Dict[str, Any]) -> Response:
+    download_name = safe_filename(
+        record.get("file_name") or record.get("original_name") or record.get("alias") or "download.bin",
+        default="download.bin",
+        max_len=180,
+    )
+    mimetype = str(record.get("mime_type") or "").strip() or mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+    return Response(headers=build_transfer_download_headers(record, download_name), mimetype=mimetype)
+
+
 def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTransferDownloadSession) -> Response:
     code_hash = str(record.get("code_hash") or session_item.code_hash or "").strip()
     download_name = safe_filename(
@@ -991,6 +1043,7 @@ def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTran
                 download_id=session_item.download_id,
                 bytes_transferred=session_item.bytes_sent,
             )
+            transfer_store.mark_live_download_complete(code_hash=code_hash)
         except GeneratorExit:
             session_item.fail("接收端已断开")
             transfer_store.append_live_transfer_event(
@@ -1018,13 +1071,11 @@ def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTran
             else:
                 live_transfer_runtime.close_download_session(session_item.download_id, "下载会话已结束")
 
-    headers = {
-        "Content-Disposition": build_attachment_content_disposition(download_name),
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-    }
-
-    return Response(stream_with_context(generate()), headers=headers, mimetype=mimetype)
+    return Response(
+        stream_with_context(generate()),
+        headers=build_transfer_download_headers(record, download_name),
+        mimetype=mimetype,
+    )
 
 
 @files_bp.route("/api/files/transfer/create", methods=["POST"])
@@ -1292,6 +1343,12 @@ def get_file_transfer(code):
         return json_error(f"读取传输信息失败: {str(exc)}", 500)
 
 
+@files_bp.route("/share", methods=["GET"])
+def share_download_page():
+    """公开读取码下载页，不要求登录。"""
+    return render_template("share.html")
+
+
 @files_bp.route("/api/files/transfer/<path:code>", methods=["DELETE"])
 def revoke_file_transfer(code):
     try:
@@ -1319,6 +1376,10 @@ def download_file_transfer(code):
     session_item = None
 
     try:
+        if request.method == "HEAD":
+            record = transfer_store.get_public_record(code)
+            return build_transfer_head_response(record)
+
         code_hash = hash_transfer_code(code)
         session_item = live_transfer_runtime.create_download_session(code_hash=code_hash)
         record = transfer_store.claim_download(

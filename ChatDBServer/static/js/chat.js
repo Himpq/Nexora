@@ -464,6 +464,10 @@ let currentConversationId = null;
 let currentAbortController = null;
 let isGenerating = false;
 let lastAgentOnline = false;
+// NexoraCode 本地项目（仅本地计算节点在线时可见）
+let nexoraCodeProjectRecords = [];
+let activeNexoraCodeProjectId = '';
+let nexoraCodeProjectsLoadedForUser = null;
 const chatMessageWindowApi = getNexoraChatMessageWindow();
 const chatMessageVersionsApi = getNexoraChatMessageVersions();
 const conversationMessageWindowState = chatMessageWindowApi.state;
@@ -1222,7 +1226,11 @@ const conversationListController = getNexoraChatConversations().createConversati
     closeKnowledgeView,
     markConversationStreamRead,
     loadConversation,
-    deleteConversation
+    deleteConversation,
+    isNexoraCodeProjectSidebarEnabled,
+    getNexoraCodeProjects,
+    requestNexoraCodeProjectCreate,
+    requestNexoraCodeConversationCreate
 });
 const conversationNavigationController = getNexoraChatConversations().createConversationNavigationController({
     getKnowledgeViewerElement: () => document.getElementById('knowledgeViewer'),
@@ -2047,6 +2055,7 @@ function getLearningSidebarMessages() {
                         .map((btn) => String((btn.dataset && btn.dataset.choiceValue) || btn.textContent || '').trim())
                         .filter(Boolean);
                     const allowOther = !!item.querySelector('.question-other-input');
+                    const permissionRequest = getQuestionCardPermissionRequest(item);
                     const resolved = (
                         String(item.dataset.resolved || '').trim().toLowerCase() === 'true'
                         || !!(questionBody && questionBody.classList.contains('answered'))
@@ -2069,6 +2078,7 @@ function getLearningSidebarMessages() {
                             question_content: questionContent,
                             choices,
                             allow_other: allowOther,
+                            permission_request: permissionRequest || undefined,
                             resolved,
                             answer: answerText
                         }
@@ -3703,6 +3713,65 @@ function appendDebugContextPre(parent, text, className = '') {
     parent.appendChild(pre);
 }
 
+function parseDebugContextJsonPayload(text) {
+    const raw = String(text || '').trim();
+
+    if (!raw || raw[0] !== '{') return null;
+
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function appendDebugContextRenderedFunctionOutput(parent, text) {
+    const payload = parseDebugContextJsonPayload(text);
+
+    if (!payload || String(payload.type || '').trim() !== 'function_call_output') {
+        appendDebugContextPre(parent, text);
+        return;
+    }
+
+    const output = String(payload.output || '').trim();
+
+    if (!output) {
+        appendDebugContextPre(parent, text);
+        return;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'debug-context-tool-output';
+
+    const head = document.createElement('div');
+    head.className = 'debug-context-tool-output-head';
+
+    const typeEl = document.createElement('span');
+    typeEl.textContent = 'function_call_output';
+    head.appendChild(typeEl);
+
+    const callId = String(payload.call_id || '').trim();
+
+    if (callId) {
+        const callEl = document.createElement('span');
+        callEl.textContent = callId;
+        head.appendChild(callEl);
+    }
+
+    wrap.appendChild(head);
+
+    const rendered = document.createElement('div');
+    rendered.className = 'debug-context-tool-output-rendered';
+    rendered.innerHTML = renderMarkdownWithNewTabLinks(output);
+    renderMathSafe(rendered);
+    highlightCode(rendered);
+    wrap.appendChild(rendered);
+
+    appendDebugContextPre(wrap, text, 'raw-json');
+    parent.appendChild(wrap);
+}
+
 function buildDebugContextManagerPayloadElement(payload) {
     const wrapper = document.createElement('div');
     wrapper.className = 'debug-context-flow';
@@ -3737,7 +3806,7 @@ function buildDebugContextManagerPayloadElement(payload) {
         head.appendChild(kindEl);
 
         card.appendChild(head);
-        appendDebugContextPre(card, content);
+        appendDebugContextRenderedFunctionOutput(card, content);
         appendDebugContextPre(card, metaText, 'meta');
         wrapper.appendChild(card);
     });
@@ -4554,17 +4623,285 @@ function focusMessageInputFromGesture(options = {}) {
 }
 
 function setDesktopAgentIndicatorState(online, titleSuffix = '') {
+    const previousOnline = !!lastAgentOnline;
     lastAgentOnline = !!online;
     const indicator = document.getElementById('desktopAgentIndicator');
-    if (!indicator) return;
 
-    if (online) {
-        indicator.style.backgroundColor = '#4caf50';
-        indicator.title = `NexoraCode (本地计算节点) - 在线${titleSuffix}`;
-    } else {
-        indicator.style.backgroundColor = '#9e9e9e';
-        indicator.title = `NexoraCode (本地计算节点) - 离线${titleSuffix}`;
+    if (indicator) {
+        if (online) {
+            indicator.style.backgroundColor = '#4caf50';
+            indicator.title = `NexoraCode (本地计算节点) - 在线${titleSuffix}`;
+        } else {
+            indicator.style.backgroundColor = '#9e9e9e';
+            indicator.title = `NexoraCode (本地计算节点) - 离线${titleSuffix}`;
+        }
     }
+
+    if (previousOnline !== lastAgentOnline) {
+        // 本地计算节点上/下线会改变项目侧边栏与欢迎页项目区的可见性；
+        // 项目 UI 刷新失败不允许影响指示点本身
+        try {
+            if (lastAgentOnline) {
+                loadNexoraCodeProjectsFromStorage();
+            }
+            refreshNexoraCodeProjectUi();
+        } catch (err) {
+            console.warn('[NexoraCode] 项目 UI 刷新失败', err);
+        }
+    }
+}
+
+// ===== NexoraCode 本地项目状态 =====
+function getNexoraCodeProjectStorageKey() {
+    const uid = String(currentUsername || '').trim();
+    if (!uid) return '';
+    return `nexoracode_projects:${encodeURIComponent(uid)}`;
+}
+
+function isNexoraCodeProjectSidebarEnabled() {
+    return !!lastAgentOnline;
+}
+
+function normalizeNexoraCodeProjectRecord(project) {
+    const source = (project && typeof project === 'object') ? project : {};
+    const path = String(source.path || source.root || '').trim();
+    const name = String(source.name || source.title || '').trim()
+        || readNexoraCodeProjectNameFromPath(path);
+    const projectId = String(source.project_id || source.id || path || name || '').trim();
+
+    if (!projectId) return null;
+
+    return {
+        project_id: projectId,
+        name: name || 'NexoraCode Project',
+        path,
+        subtitle: String(source.subtitle || path || '本地项目').trim(),
+        tree_scanned_at: String(source.tree_scanned_at || '').trim()
+    };
+}
+
+function readNexoraCodeProjectNameFromPath(path) {
+    const text = String(path || '').trim();
+    if (!text) return '';
+    const parts = text.replace(/\\/g, '/').split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : text;
+}
+
+function getNexoraCodeProjects() {
+    ensureNexoraCodeProjectsLoaded();
+    return Array.isArray(nexoraCodeProjectRecords) ? nexoraCodeProjectRecords.slice() : [];
+}
+
+function getActiveNexoraCodeProject() {
+    const activeId = String(activeNexoraCodeProjectId || '').trim();
+    if (!activeId) return null;
+    return getNexoraCodeProjects().find((project) => project.project_id === activeId) || null;
+}
+
+function setActiveNexoraCodeProject(projectId) {
+    activeNexoraCodeProjectId = String(projectId || '').trim();
+}
+
+function loadNexoraCodeProjectsFromStorage() {
+    const key = getNexoraCodeProjectStorageKey();
+    nexoraCodeProjectsLoadedForUser = String(currentUsername || '').trim();
+
+    if (!key) {
+        nexoraCodeProjectRecords = [];
+        return;
+    }
+
+    try {
+        const raw = localStorage.getItem(key);
+        const parsed = raw ? JSON.parse(raw) : [];
+        const list = Array.isArray(parsed) ? parsed : [];
+        const seen = new Set();
+        nexoraCodeProjectRecords = list
+            .map((item) => normalizeNexoraCodeProjectRecord(item))
+            .filter((item) => {
+                if (!item || seen.has(item.project_id)) return false;
+                seen.add(item.project_id);
+                return true;
+            });
+    } catch (err) {
+        console.warn('[NexoraCode] 读取本地项目失败', err);
+        nexoraCodeProjectRecords = [];
+    }
+}
+
+function persistNexoraCodeProjects() {
+    const key = getNexoraCodeProjectStorageKey();
+    if (!key) return;
+
+    try {
+        localStorage.setItem(key, JSON.stringify(getNexoraCodeProjects()));
+    } catch (err) {
+        console.warn('[NexoraCode] 保存本地项目失败', err);
+    }
+}
+
+function ensureNexoraCodeProjectsLoaded() {
+    if (nexoraCodeProjectsLoadedForUser !== String(currentUsername || '').trim()) {
+        loadNexoraCodeProjectsFromStorage();
+    }
+}
+
+function upsertNexoraCodeProject(project) {
+    const normalized = normalizeNexoraCodeProjectRecord(project);
+    if (!normalized) return null;
+
+    ensureNexoraCodeProjectsLoaded();
+    const index = nexoraCodeProjectRecords.findIndex((item) => item.project_id === normalized.project_id);
+
+    if (index >= 0) {
+        nexoraCodeProjectRecords[index] = { ...nexoraCodeProjectRecords[index], ...normalized };
+    } else {
+        nexoraCodeProjectRecords.push(normalized);
+    }
+
+    persistNexoraCodeProjects();
+    return normalized;
+}
+
+function refreshNexoraCodeProjectUi() {
+    if (typeof resetConversationListRenderSignature === 'function') {
+        resetConversationListRenderSignature();
+    }
+
+    if (typeof renderConversationList === 'function') {
+        renderConversationList(conversationListCache);
+    }
+
+    // 欢迎页仍在展示时同步刷新项目选择区
+    if (!String(currentConversationId || '').trim()) {
+        void renderWelcomeScreen();
+    }
+}
+
+async function requestNexoraCodeProjectCreate() {
+    ensureNexoraCodeProjectsLoaded();
+
+    if (!isNexoraCodeProjectSidebarEnabled()) {
+        showToast('NexoraCode 本地计算节点未在线');
+        return null;
+    }
+
+    const path = await promptNexoraCodeProjectPath();
+    if (!path) return null;
+
+    const record = upsertNexoraCodeProject({ path });
+
+    if (!record) {
+        showToast('项目路径无效');
+        return null;
+    }
+
+    showToast(`已添加项目：${record.name}（待 NexoraCode 授权扫描）`);
+    setActiveNexoraCodeProject(record.project_id);
+    refreshNexoraCodeProjectUi();
+    return record;
+}
+
+// 统一解析桥/HTTP 端点返回的文件夹选择结果
+function parseNexoraCodeFolderResult(result) {
+    if (result && result.success && result.path) {
+        return { path: String(result.path).trim() };
+    }
+    if (result && result.cancelled) {
+        return { cancelled: true };
+    }
+    return { error: String((result && result.message) || '文件夹选择失败') };
+}
+
+// 定位 pywebview 桥：顶层 shell 直接注入；持久外壳模式下 /chat 位于同源 iframe，
+// 桥挂在顶层 shell 上，可经 parent/top 访问（同源才不会抛跨源异常）
+function resolveNexoraCodeDesktopBridge() {
+    try {
+        if (window.pywebview && window.pywebview.api) return window.pywebview.api;
+    } catch (_) { /* ignore */ }
+
+    const frameContexts = [];
+    try {
+        if (window.parent && window.parent !== window) frameContexts.push(window.parent);
+    } catch (_) { /* 跨源 parent 访问会抛异常 */ }
+    try {
+        if (window.top && window.top !== window && window.top !== window.parent) frameContexts.push(window.top);
+    } catch (_) { /* 跨源 top 访问会抛异常 */ }
+
+    for (const ctx of frameContexts) {
+        try {
+            if (ctx.pywebview && ctx.pywebview.api) return ctx.pywebview.api;
+        } catch (_) { /* 跨源桥不可读，继续尝试下一个 */ }
+    }
+    return null;
+}
+
+async function promptNexoraCodeProjectPath() {
+    // 1) 优先 pywebview 桥（顶层 shell 或同源 iframe 的父级桥）
+    const bridgeApi = resolveNexoraCodeDesktopBridge();
+
+    if (bridgeApi && typeof bridgeApi.select_project_folder === 'function') {
+        try {
+            console.log('[NexoraCode] 通过 pywebview 桥打开原生文件夹选择框');
+            const parsed = parseNexoraCodeFolderResult(await bridgeApi.select_project_folder());
+
+            if (parsed.path) return parsed.path;
+            if (parsed.cancelled) return '';
+
+            console.warn('[NexoraCode] pywebview 桥返回未成功:', parsed.error);
+            showToast(parsed.error);
+            return '';
+        } catch (err) {
+            // 桥调用异常（注入不完整等）时不直接失败，转 HTTP 兜底
+            console.warn('[NexoraCode] pywebview 桥调用失败，改用同源 HTTP 兜底端点', err);
+        }
+    } else {
+        console.log('[NexoraCode] 未检测到 pywebview 桥（iframe 内属正常），改用同源 HTTP 兜底端点');
+    }
+
+    // 2) 同源 HTTP 兜底：桌面壳本地代理提供 /nc/api/select-folder，不依赖桥注入时机
+    try {
+        const res = await fetch('/nc/api/select-folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+        });
+        const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+
+        // 线上服务器无此路由，会返回 HTML/404；据此判定当前非本地桌面壳环境
+        if (!res.ok || !contentType.includes('application/json')) {
+            console.warn('[NexoraCode] HTTP 兜底端点不可用', 'status=' + res.status, 'type=' + contentType);
+            showToast('请在 NexoraCode 桌面端窗口内选择项目文件夹');
+            return '';
+        }
+
+        console.log('[NexoraCode] 通过同源 HTTP 端点打开原生文件夹选择框');
+        const parsed = parseNexoraCodeFolderResult(await res.json());
+
+        if (parsed.path) return parsed.path;
+        if (parsed.cancelled) return '';
+
+        console.warn('[NexoraCode] HTTP 兜底返回未成功:', parsed.error);
+        showToast(parsed.error);
+        return '';
+    } catch (err) {
+        console.warn('[NexoraCode] HTTP 兜底端点调用失败', err);
+        showToast('文件夹选择失败，请确认 NexoraCode 桌面端正在运行');
+        return '';
+    }
+}
+
+async function requestNexoraCodeConversationCreate(project) {
+    const normalized = normalizeNexoraCodeProjectRecord(project);
+
+    if (!normalized) {
+        showToast('项目信息无效');
+        return;
+    }
+
+    upsertNexoraCodeProject(normalized);
+    setActiveNexoraCodeProject(normalized.project_id);
+    await createNewConversation(false, 'chat');
 }
 
 function getBrowserSyncWsUrl() {
@@ -4756,6 +5093,7 @@ function handleBrowserSyncMessage(payload) {
     }
 
     if (msgType === 'agent_status') {
+        lastAgentStatusWsReceivedAt = Date.now();
         setDesktopAgentIndicatorState(!!payload.online);
         return;
     }
@@ -4826,10 +5164,15 @@ function clearBrowserSyncTimers() {
 function scheduleBrowserSyncReconnect() {
     if (browserSyncManuallyClosed || browserSyncReconnectTimer) return;
 
+    // 连接持续失败（如本地代理不支持 WSS）时指数退避，避免重连风暴刷屏
+    const attempts = Math.min(browserSyncReconnectAttempts, 5);
+    const delay = Math.min(BROWSER_SYNC_RECONNECT_MS * Math.pow(2, attempts), BROWSER_SYNC_RECONNECT_MAX_MS);
+    browserSyncReconnectAttempts += 1;
+
     browserSyncReconnectTimer = setTimeout(() => {
         browserSyncReconnectTimer = null;
         startAgentStatusPolling();
-    }, BROWSER_SYNC_RECONNECT_MS);
+    }, delay);
 }
 
 function startBrowserSyncPing() {
@@ -4847,6 +5190,53 @@ function startBrowserSyncPing() {
 
 // === Browser WSS Sync ===
 let agentStatusPollTimer = null;
+let agentStatusHttpFallbackTimer = null;
+let lastAgentStatusWsReceivedAt = 0;
+let lastAgentStatusHttpOnlineAt = 0;
+let browserSyncReconnectAttempts = 0;
+const AGENT_STATUS_HTTP_POLL_MS = 20000;
+const AGENT_STATUS_WS_FRESH_MS = 90000;
+const BROWSER_SYNC_RECONNECT_MAX_MS = 60000;
+
+// HTTP 轮询兜底：本地代理（NexoraCode iframe）无法升级 /ws/browser 到 WebSocket，
+// 状态通道恒失败，此处用普通 GET /api/agent/status 同步本地节点在线状态
+function startAgentStatusHttpFallback() {
+    if (agentStatusHttpFallbackTimer) return;
+
+    const poll = async () => {
+        const wsOpen = !!(browserSyncSocket && browserSyncSocket.readyState === WebSocket.OPEN);
+        const wsFresh = (Date.now() - lastAgentStatusWsReceivedAt) < AGENT_STATUS_WS_FRESH_MS;
+
+        // WSS 正常推送时以 WSS 为准，不重复请求
+        if (wsOpen && wsFresh) return;
+
+        try {
+            const res = await fetch('/api/agent/status', { credentials: 'include' });
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok && data && typeof data.online === 'boolean') {
+                if (data.online) {
+                    lastAgentStatusHttpOnlineAt = Date.now();
+                }
+
+                setDesktopAgentIndicatorState(!!data.online, wsOpen ? '' : ' (HTTP)');
+            }
+        } catch (_) {
+            // 网络失败时保持现状，等待下一轮
+        }
+    };
+
+    void poll();
+    agentStatusHttpFallbackTimer = setInterval(() => { void poll(); }, AGENT_STATUS_HTTP_POLL_MS);
+}
+
+function stopAgentStatusHttpFallback() {
+    if (agentStatusHttpFallbackTimer) {
+        clearInterval(agentStatusHttpFallbackTimer);
+        agentStatusHttpFallbackTimer = null;
+    }
+}
+
 function startAgentStatusPolling() {
     if (browserSyncSocket && (
         browserSyncSocket.readyState === WebSocket.CONNECTING ||
@@ -4871,6 +5261,7 @@ function startAgentStatusPolling() {
     socket.addEventListener('open', () => {
         if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
 
+        browserSyncReconnectAttempts = 0;
         syncBrowserCurrentConversation();
         startBrowserSyncPing();
         startBrowserModelConfigSyncTimer();
@@ -4883,6 +5274,7 @@ function startAgentStatusPolling() {
         try {
             handleBrowserSyncMessage(JSON.parse(event.data || '{}'));
         } catch (e) {
+            console.warn('[Browser WSS] message handling failed', e);
         }
     });
 
@@ -4891,20 +5283,27 @@ function startAgentStatusPolling() {
 
         browserSyncSocket = null;
         clearBrowserSyncTimers();
-        setDesktopAgentIndicatorState(false, ' (状态通道断开)');
+        // 本地代理环境无法建立 WSS，此处不强制置离线，
+        // 若 HTTP 兜底近期已确认在线则保留在线状态，避免指示点与项目 UI 闪烁
+        if ((Date.now() - lastAgentStatusHttpOnlineAt) >= AGENT_STATUS_WS_FRESH_MS) {
+            setDesktopAgentIndicatorState(false, ' (状态通道断开)');
+        }
         scheduleBrowserSyncReconnect();
     });
 
     socket.addEventListener('error', () => {
         if (socket !== browserSyncSocket || socketSerial !== browserSyncSocketSerial) return;
 
-        setDesktopAgentIndicatorState(false, ' (状态通道异常)');
+        if ((Date.now() - lastAgentStatusHttpOnlineAt) >= AGENT_STATUS_WS_FRESH_MS) {
+            setDesktopAgentIndicatorState(false, ' (状态通道异常)');
+        }
     });
 }
 
 function stopBrowserSyncSocket() {
     browserSyncManuallyClosed = true;
     clearBrowserSyncTimers();
+    stopAgentStatusHttpFallback();
 
     if (agentStatusPollTimer) {
         clearInterval(agentStatusPollTimer);
@@ -8120,6 +8519,19 @@ async function renderWelcomeScreen() {
     if (!isLearningConversationView()) {
         clearLearningWelcomeState();
         learningWelcomeMounted = false;
+
+        // NexoraCode 本地节点在线时，欢迎页替换为项目选择视图
+        if (isNexoraCodeProjectSidebarEnabled()) {
+            els.messagesContainer.innerHTML = `
+                <div class="welcome-screen nexoracode-welcome">
+                    <h1 class="nexoracode-welcome-heading">选择一个项目开始编码</h1>
+                    <p class="nexoracode-welcome-sub">项目会话会自动注入目录结构与本地工具上下文；选择 None 则进行普通对话。</p>
+                </div>
+            `;
+            renderNexoraCodeWelcomeProjectSelector(els.messagesContainer.querySelector('.welcome-screen'));
+            return;
+        }
+
         els.messagesContainer.innerHTML = `
             <div class="welcome-screen">
                 <h1>Hello.</h1>
@@ -8162,6 +8574,91 @@ async function renderWelcomeScreen() {
             </div>
         `;
     }
+}
+
+// 仅 NexoraCode 本地节点在线时，在欢迎页展示项目选择区
+function renderNexoraCodeWelcomeProjectSelector(welcomeEl) {
+    if (!welcomeEl || !isNexoraCodeProjectSidebarEnabled()) return;
+
+    ensureNexoraCodeProjectsLoaded();
+
+    const projects = getNexoraCodeProjects();
+    const activeProject = getActiveNexoraCodeProject();
+
+    const panel = document.createElement('div');
+    panel.className = 'nexoracode-welcome-project';
+
+    // 平铺卡片列表：无下拉浮层，点击即选中
+    const list = document.createElement('div');
+    list.className = 'nexoracode-welcome-project-list';
+
+    const buildOption = ({ title, subtitle, icon, onClick, active, extraClass }) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = `nexoracode-welcome-project-option${active ? ' is-active' : ''}${extraClass ? ` ${extraClass}` : ''}`;
+        option.innerHTML = `
+            <i class="fa-solid ${icon || 'fa-folder'} nexoracode-welcome-project-option-icon" aria-hidden="true"></i>
+            <span class="nexoracode-welcome-project-option-main">
+                <span class="nexoracode-welcome-project-option-title">${escapeHtml(title)}</span>
+                ${subtitle ? `<span class="nexoracode-welcome-project-option-sub">${escapeHtml(subtitle)}</span>` : ''}
+            </span>
+            ${active ? '<i class="fa-solid fa-check nexoracode-welcome-project-option-check" aria-hidden="true"></i>' : ''}
+        `;
+        option.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onClick();
+        });
+        return option;
+    };
+
+    // “添加新项目”固定第一位
+    list.appendChild(buildOption({
+        title: '添加新项目',
+        subtitle: '浏览并选择本地文件夹',
+        icon: 'fa-plus',
+        active: false,
+        extraClass: 'nexoracode-welcome-project-add',
+        onClick: () => { void requestNexoraCodeProjectCreate(); }
+    }));
+
+    projects.forEach((project) => {
+        list.appendChild(buildOption({
+            title: project.name,
+            subtitle: project.subtitle || project.path,
+            icon: 'fa-folder',
+            active: !!activeProject && activeProject.project_id === project.project_id,
+            onClick: () => {
+                setActiveNexoraCodeProject(project.project_id);
+                renderWelcomeProjectSelectorUpdate();
+            }
+        }));
+    });
+
+    list.appendChild(buildOption({
+        title: 'None',
+        subtitle: '无项目上下文，普通对话',
+        icon: 'fa-comment',
+        active: !activeProject,
+        onClick: () => {
+            setActiveNexoraCodeProject('');
+            renderWelcomeProjectSelectorUpdate();
+        }
+    }));
+
+    panel.appendChild(list);
+    welcomeEl.appendChild(panel);
+}
+
+function renderWelcomeProjectSelectorUpdate() {
+    if (String(currentConversationId || '').trim()) return;
+    const welcomeEl = els.messagesContainer
+        ? els.messagesContainer.querySelector('.welcome-screen')
+        : null;
+    if (!welcomeEl) return;
+
+    const existing = welcomeEl.querySelector('.nexoracode-welcome-project');
+    if (existing) existing.remove();
+    renderNexoraCodeWelcomeProjectSelector(welcomeEl);
 }
 
 async function applyLearningMode(enabled, options = {}) {
@@ -12087,6 +12584,7 @@ function initUI() {
         }
         startClientToolPolling();
         startAgentStatusPolling(); // Agent WSS
+        startAgentStatusHttpFallback(); // WSS 不可用时的 HTTP 兜底
     }, 1500);
 
     window.addEventListener('beforeunload', () => {
@@ -12521,6 +13019,7 @@ function initUI() {
         els.newChatBtn.addEventListener('click', () => {
             const inLearningSidebar = String(learningSidebarMode || '').trim().toLowerCase() === 'learning';
             const targetMode = (learningModeEnabled && inLearningSidebar) ? 'learning' : 'chat';
+            setActiveNexoraCodeProject('');
             createNewConversation(false, targetMode);
         });
     }
@@ -14823,13 +15322,119 @@ function buildQuestionCardId(payload, options = {}) {
     return `question_${buildQuestionIdentityHash(identityParts.join('\n---\n'))}`;
 }
 
+function normalizeQuestionPermissionRequest(value) {
+    if (!value || typeof value !== 'object') return null;
+
+    const path = String(value.path || '').trim();
+    const operation = String(value.operation || value.access || '').trim().toLowerCase();
+    const scope = String(value.scope || '').trim().toLowerCase();
+    const reason = String(value.reason || '').trim();
+
+    if (!path || !reason) return null;
+    if (!['read', 'write', 'read_write'].includes(operation)) return null;
+    if (!['file', 'dir'].includes(scope)) return null;
+
+    return {
+        path,
+        operation,
+        scope,
+        reason,
+        sensitive: !!value.sensitive
+    };
+}
+
+function getQuestionCardPermissionRequest(questionCard) {
+    if (!questionCard) return null;
+
+    const raw = String((questionCard.dataset && questionCard.dataset.permissionRequest) || '').trim();
+    if (!raw) return null;
+
+    try {
+        return normalizeQuestionPermissionRequest(JSON.parse(raw));
+    } catch (err) {
+        console.warn('[QuestionTool] invalid permission request payload', err);
+        return null;
+    }
+}
+
+function isPermissionDenyAnswer(answerText) {
+    const text = String(answerText || '').trim();
+    return text.includes('拒绝') || /^deny\b/i.test(text);
+}
+
+function isPermissionAllowAnswer(answerText) {
+    const text = String(answerText || '').trim();
+    return text.includes('允许') || text.includes('同意') || /^allow\b/i.test(text);
+}
+
+async function resolvePermissionQuestionSubmission(questionCard, answerText) {
+    const permissionRequest = getQuestionCardPermissionRequest(questionCard);
+
+    if (!permissionRequest) {
+        return { success: true, answer: String(answerText || '').trim() };
+    }
+
+    if (isPermissionDenyAnswer(answerText)) {
+        return { success: true, answer: '已拒绝本次访问权限' };
+    }
+
+    if (!isPermissionAllowAnswer(answerText)) {
+        return { success: false, message: '请选择允许或拒绝访问' };
+    }
+
+    const conversationId = String(currentConversationId || '').trim();
+
+    if (!conversationId) {
+        return { success: false, message: '当前对话 ID 为空，无法写入临时授权' };
+    }
+
+    try {
+        const res = await fetch('/api/agent/permission/grant', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversation_id: conversationId,
+                permission_request: permissionRequest
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data || data.success === false) {
+            return {
+                success: false,
+                message: String((data && data.message) || '写入临时授权失败').trim()
+            };
+        }
+
+        if (typeof showToast === 'function') {
+            showToast(String(data.message || '已允许本次对话临时访问该路径'));
+        }
+
+        return {
+            success: true,
+            answer: `已允许本次对话临时访问：${permissionRequest.path}`
+        };
+    } catch (err) {
+        return {
+            success: false,
+            message: String((err && err.message) || err || '写入临时授权失败')
+        };
+    }
+}
+
 function createQuestionCardNode(question, options = {}) {
     const payload = (question && typeof question === 'object') ? question : {};
     const wrap = document.createElement('div');
     wrap.className = 'question-tool-card';
-    wrap.dataset.toolName = 'question';
     wrap.dataset.pending = 'true';
     wrap.dataset.resolved = 'false';
+    const permissionRequest = normalizeQuestionPermissionRequest(payload.permission_request);
+    const isPermissionCard = !!permissionRequest;
+    wrap.dataset.toolName = isPermissionCard ? 'ask_for_permission' : 'question';
+    if (permissionRequest) {
+        wrap.dataset.permissionRequest = JSON.stringify(permissionRequest);
+    }
     const title = escapeHtml(String(payload.question_title || 'Question').trim());
     const content = escapeHtml(String(payload.question_content || '').trim());
     const choices = Array.isArray(payload.choices) ? payload.choices : [];
@@ -14849,8 +15454,8 @@ function createQuestionCardNode(question, options = {}) {
     wrap.innerHTML = `
         <div class="question-card-body" data-question-card-id="${cardIdAttr}"${persistentQuestionAttr}>
             <div class="question-card-topline">
-                <div class="question-card-kicker">QUESTION</div>
-                <div class="question-card-pill">Awaiting answer</div>
+                <div class="question-card-kicker">${isPermissionCard ? 'PERMISSION' : 'QUESTION'}</div>
+                <div class="question-card-pill">${isPermissionCard ? 'Awaiting permission' : 'Awaiting answer'}</div>
             </div>
             <div class="question-card-title">${title}</div>
             <div class="question-card-content">${content}</div>
@@ -14957,17 +15562,32 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
             .map((btn) => String((btn.dataset && btn.dataset.choiceValue) || btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
-    if (payload.question_card_id) {
-        rememberLockedQuestion(payload.question_card_id, finalAnswer);
+    const permissionSubmission = await resolvePermissionQuestionSubmission(questionCard, finalAnswer);
+
+    if (!permissionSubmission.success) {
+        if (questionCard) {
+            questionCard.dataset.submitting = 'false';
+        }
+
+        if (typeof showToast === 'function') {
+            showToast(permissionSubmission.message || '权限授权失败');
+        }
+
+        return;
     }
-    if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
+
+    const answerForMessage = String(permissionSubmission.answer || finalAnswer).trim();
+    if (payload.question_card_id) {
+        rememberLockedQuestion(payload.question_card_id, answerForMessage);
+    }
+    if (questionCard) applyQuestionAnswer(questionCard, answerForMessage);
     if (els.messageInput) {
-        els.messageInput.value = finalAnswer;
+        els.messageInput.value = answerForMessage;
         resizeMessageInput();
     }
     await sendMessage({
-        displayContentOverride: finalAnswer,
-        textOverride: finalAnswer
+        displayContentOverride: answerForMessage,
+        textOverride: answerForMessage
     });
 }
 
@@ -15116,6 +15736,23 @@ async function ensureConversationExistsForStreaming(seedText = '', conversationM
     const title = titleSeed ? titleSeed.slice(0, 48) : '新对话';
     const normalizedConversationMode = String(conversationMode || '').trim().toLowerCase();
     const learningConversation = learningModeEnabled && normalizedConversationMode === 'learning';
+    const boundProject = (!learningConversation && isNexoraCodeProjectSidebarEnabled())
+        ? getActiveNexoraCodeProject()
+        : null;
+    let conversationMetadata = {};
+    if (learningConversation) {
+        conversationMetadata = { learning: true };
+    } else if (boundProject) {
+        conversationMetadata = {
+            nexoracode_project: {
+                project_id: boundProject.project_id,
+                name: boundProject.name,
+                path: boundProject.path,
+                subtitle: boundProject.subtitle || boundProject.path || '本地项目',
+                tree_scanned_at: boundProject.tree_scanned_at || ''
+            }
+        };
+    }
     try {
         const res = await fetch('/api/conversations', {
             method: 'POST',
@@ -15124,7 +15761,7 @@ async function ensureConversationExistsForStreaming(seedText = '', conversationM
                 title,
                 conversation_mode: learningConversation ? 'learning' : 'chat',
                 tags: learningConversation ? ['learning'] : [],
-                metadata: learningConversation ? { learning: true } : {}
+                metadata: conversationMetadata
             })
         });
         const data = await res.json().catch(() => ({}));
@@ -15135,6 +15772,10 @@ async function ensureConversationExistsForStreaming(seedText = '', conversationM
         syncBrowserCurrentConversation();
         if (learningConversation) {
             currentConversationMode = 'learning';
+        }
+        if (boundProject) {
+            // 绑定完成后清空欢迎页待选项目，保证下一个新对话默认 None
+            setActiveNexoraCodeProject('');
         }
         syncNotesForConversation(convId);
         noteTokenMiniConversationId(convId);
@@ -15777,8 +16418,7 @@ async function findAssistantIndexAfterEditedUserFromServer(conversationId, prefe
 function normalizeToolsMode(raw) {
     const m = String(raw || '').trim().toLowerCase();
     if (m === 'off' || m === 'force') return m;
-    if (m === 'auto') return 'auto_select';
-    if (m === 'auto_select' || m === 'auto-select' || m === 'autoselect') return 'auto_select';
+    if (m === 'auto' || m === 'auto_select' || m === 'auto-select' || m === 'autoselect') return 'auto_off';
     if (m === 'auto_off' || m === 'auto-off' || m === 'autooff') return 'auto_off';
     return 'auto_off';
 }
@@ -15787,7 +16427,6 @@ function formatToolsModeLabel(mode) {
     const m = normalizeToolsMode(mode);
     if (m === 'off') return 'Off';
     if (m === 'force') return 'Force';
-    if (m === 'auto_select') return isChatMobileLayout() ? 'Auto(Sel)' : 'Auto(Select tools)';
     return 'Auto(OFF)';
 }
 
@@ -16992,6 +17631,9 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk);
+                            if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'learning_card' || toolName === 'puzzle') {
+                                continue;
+                            }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'delta', rawCallId, toolIndex);
@@ -17015,7 +17657,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
+                            if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -17050,7 +17692,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
+                            if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -19158,6 +19800,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         appendSearchMeta(messageDiv, data);
     } else if (data.type === 'function_call_delta') {
         const toolName = resolveToolNameFromEvent(data);
+        if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'learning_card' || toolName === 'puzzle') return;
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'delta', rawCallId, toolIndex);
@@ -19170,7 +19813,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         });
     } else if (data.type === 'function_call') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'learning_card' || toolName === 'puzzle') return;
+        if (toolName === 'ask_for_permission' || toolName === 'learning_card' || toolName === 'puzzle') return;
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'call', rawCallId, toolIndex);
@@ -19180,7 +19823,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         updateToolCallRunning(messageDiv, data);
     } else if (data.type === 'function_result') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'question' || toolName === 'puzzle') return;
+        if (toolName === 'question' || toolName === 'ask_for_permission' || toolName === 'puzzle') return;
         if (toolName === 'learning_card') {
             const cardPayload = extractLearningCardPayload(data.result);
             if (cardPayload) {

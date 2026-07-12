@@ -3994,6 +3994,20 @@
   display: block;
 }
 
+.lp-lab-sandbox-stage {
+  min-height: 320px;
+  background: #ffffff;
+}
+
+.lp-lab-sandbox-frame {
+  width: 100%;
+  height: 320px;
+  min-height: 260px;
+  display: block;
+  border: 0;
+  background: #ffffff;
+}
+
 .lp-lab-trace-actions {
   display: inline-flex;
   align-items: center;
@@ -4166,7 +4180,8 @@
   }
 
   .lp-lab-stage,
-  .lp-lab-canvas {
+  .lp-lab-canvas,
+  .lp-lab-sandbox-frame {
     min-height: 220px;
   }
 }

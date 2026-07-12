@@ -1,5 +1,12 @@
 """Frontend shell and dashboard routes."""
 
+import json as _json
+import queue as _queue
+
+from flask import Response as _Response, stream_with_context as _stream_with_context
+
+from core import runlog as _runlog
+
 from api import routes as _routes
 
 # The first split keeps common helpers in api.routes while route handlers move by domain.
@@ -34,6 +41,93 @@ def frontend_index():
 @bp.route("/frontend/puzzle", methods=["GET"])
 def frontend_puzzle():
     return _send_frontend_html("puzzle.html")
+
+@bp.route("/sample/agents", methods=["GET"])
+def sample_agents():
+    """多智能体协作可视化面板(实时 runlog 事件 + 演示回放)。"""
+    return _send_frontend_html("agents_sample.html")
+
+
+def _agents_sse_frame(row):
+    seq = int((row or {}).get("seq") or 0)
+    return "id: " + str(seq) + "\nevent: runlog\ndata: " + _json.dumps(row, ensure_ascii=False) + "\n\n"
+
+
+# 首次回放时在服务端过滤请求级噪音事件(与面板前端 NOISE_RE 对齐),避免占满回放窗口。
+_AGENTS_BACKLOG_NOISE_PREFIXES = (
+    "frontend_session_user_lookup",
+    "frontend_context_",
+    "runtime_user_resolution",
+    "request_performance",
+    "frontend_materials_slow",
+    "learning_progress_user_resolution",
+    "server_start",
+    "frontend_video_search",
+    "video_api_",
+)
+
+
+@bp.route("/sample/agents/events", methods=["GET"])
+def sample_agents_events():
+    """协作面板事件轮询接口:返回 since 之后的结构化 runlog 事件。"""
+    try:
+        since = int(request.args.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    rows = _runlog.recent_events(since_seq=since, limit=300)
+    last_seq = int(rows[-1].get("seq") or 0) if rows else since
+    return jsonify({"success": True, "events": rows, "last_seq": last_seq})
+
+
+@bp.route("/sample/agents/stream", methods=["GET"])
+def sample_agents_stream():
+    """协作面板 SSE:首次连接回放服务启动以来的日志尾部,再实时推送;Last-Event-ID/since 断点续传。"""
+    try:
+        since = int(request.headers.get("Last-Event-ID") or request.args.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    # 服务重启后 seq 回卷,客户端携带的旧 seq 会吞掉新事件,此时从头回放。
+    if since > _runlog.current_event_seq():
+        since = 0
+
+    def event_stream(start_seq: int):
+        sub = _runlog.subscribe_events()
+        try:
+            last = start_seq
+            if start_seq <= 0:
+                # 首次连接:从当前运行的结构化日志尾部一次性回放(自服务器启动起记录)。
+                backlog = _runlog.recent_file_events(
+                    limit=80,
+                    exclude_event_prefixes=_AGENTS_BACKLOG_NOISE_PREFIXES,
+                )
+            else:
+                backlog = _runlog.recent_events(since_seq=start_seq, limit=300)
+            for row in backlog:
+                last = max(last, int(row.get("seq") or 0))
+                yield _agents_sse_frame(row)
+            yield "event: ready\ndata: {\"last_seq\": " + str(last) + "}\n\n"
+            while True:
+                try:
+                    row = sub.get(timeout=15)
+                except _queue.Empty:
+                    yield "event: ping\ndata: {}\n\n"
+                    continue
+                seq = int((row or {}).get("seq") or 0)
+                if seq <= last:
+                    continue
+                last = seq
+                yield _agents_sse_frame(row)
+        finally:
+            _runlog.unsubscribe_events(sub)
+
+    return _Response(
+        _stream_with_context(event_stream(since)),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @bp.route("/frontend/assets/<path:filename>", methods=["GET"])
 def frontend_assets(filename: str):

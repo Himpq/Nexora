@@ -101,7 +101,7 @@ def get_agent_prompt(username: str) -> str:
             return agent.get("prompt", "")
         return ""
 
-def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30, cancel_checker=None) -> dict:
+def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30, cancel_checker=None, context: dict | None = None) -> dict:
     started_at = time.perf_counter()
 
     with _AGENT_LOCK:
@@ -120,6 +120,7 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
         "task_id": task_id,
         "tool_name": tool_name,
         "args": args,
+        "context": context if isinstance(context, dict) else {},
         "sent_at": time.time(),
     }
     cancel_sent = False

@@ -507,9 +507,15 @@ class ChatContextManager:
             if not isinstance(normalized, list) or not normalized:
                 return None
 
-            return normalized
+            stripped_normalized = self._strip_system_injection_from_content(normalized)
 
-        return self._normalize_history_content(content)
+            if isinstance(stripped_normalized, list) and not stripped_normalized:
+                return None
+
+            return stripped_normalized
+
+        stripped_content = self._strip_system_injection_from_content(content)
+        return self._normalize_history_content(stripped_content)
 
     def _add_protocol_message_to_context(self, context: ChatContext, message: Dict[str, Any]) -> None:
         if not isinstance(message, dict):
@@ -529,14 +535,24 @@ class ChatContextManager:
         context.add_raw(message)
 
     def _strip_system_injection_from_content(self, content: Any) -> Any:
-        """剥离历史去重口径中的运行时 system 注入块。"""
+        """剥离历史内容中的运行时 system 注入块。"""
         if isinstance(content, str):
             return self._strip_system_injection_text(content)
+
+        text_item_types = {"text", "input_text", "output_text"}
 
         if isinstance(content, list):
             stripped_items: List[Any] = []
 
             for item in content:
+                if isinstance(item, str):
+                    stripped_text = self._strip_system_injection_text(item)
+
+                    if stripped_text.strip():
+                        stripped_items.append(stripped_text)
+
+                    continue
+
                 if not isinstance(item, dict):
                     stripped_items.append(item)
                     continue
@@ -544,8 +560,17 @@ class ChatContextManager:
                 item_copy = dict(item)
                 item_type = str(item_copy.get("type", "") or "").strip().lower()
 
-                if item_type in {"text", "input_text"} and isinstance(item_copy.get("text"), str):
+                if isinstance(item_copy.get("text"), str):
                     item_copy["text"] = self._strip_system_injection_text(item_copy.get("text", ""))
+
+                if isinstance(item_copy.get("content"), str):
+                    item_copy["content"] = self._strip_system_injection_text(item_copy.get("content", ""))
+
+                if (
+                    (item_type in text_item_types or self._is_text_only_payload(item_copy))
+                    and not self._has_visible_text_payload(item_copy)
+                ):
+                    continue
 
                 stripped_items.append(item_copy)
 
@@ -553,6 +578,7 @@ class ChatContextManager:
 
         if isinstance(content, dict):
             item_copy = dict(content)
+            item_type = str(item_copy.get("type", "") or "").strip().lower()
 
             if isinstance(item_copy.get("text"), str):
                 item_copy["text"] = self._strip_system_injection_text(item_copy.get("text", ""))
@@ -560,9 +586,32 @@ class ChatContextManager:
             if isinstance(item_copy.get("content"), str):
                 item_copy["content"] = self._strip_system_injection_text(item_copy.get("content", ""))
 
+            if (
+                (item_type in text_item_types or self._is_text_only_payload(item_copy))
+                and not self._has_visible_text_payload(item_copy)
+            ):
+                return None
+
             return item_copy
 
         return content
+
+    def _has_visible_text_payload(self, item: Dict[str, Any]) -> bool:
+        """判断文本协议节点剥离系统注入后是否仍有可见文本。"""
+        for key in ("text", "content"):
+            value = item.get(key)
+
+            if isinstance(value, str) and value.strip():
+                return True
+
+        return False
+
+    def _is_text_only_payload(self, item: Dict[str, Any]) -> bool:
+        """识别没有显式 type 但只承载 text/content 的历史节点。"""
+        if not any(key in item for key in ("text", "content")):
+            return False
+
+        return all(key in {"type", "text", "content"} for key in item.keys())
 
     def _normalize_current_turn_dedupe_content(self, content: Any) -> Any:
         """统一当前用户消息与已持久化历史消息的去重口径。"""
@@ -589,6 +638,7 @@ class ChatContextManager:
             "## Workspace Resource Index",
             "## Current Turn Memory Check",
             "## Sandbox Files",
+            "## Longdoc Skill Catalog",
             "[可按需读取的 Longdoc Skill]",
         )
 
@@ -653,7 +703,8 @@ class ChatContextManager:
             )
             messages.extend(protocol_messages)
 
-        normalized_final = self._normalize_history_content(final_content)
+        stripped_final = self._strip_system_injection_from_content(final_content)
+        normalized_final = self._normalize_history_content(stripped_final)
 
         if normalized_final is not None:
             normalized_final = model._compact_context_content(normalized_final, context_compact_mode)
@@ -966,6 +1017,18 @@ class ChatContextManager:
 
         if isinstance(content, str):
             if not content.strip():
+                return None
+
+            return content
+
+        if isinstance(content, list):
+            if not content:
+                return None
+
+            return content
+
+        if isinstance(content, dict):
+            if not content:
                 return None
 
             return content

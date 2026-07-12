@@ -66,6 +66,7 @@
     }
 
     const FILE_CENTER_LIVE_TRANSFER_CHUNK_SIZE = 1024 * 1024;
+    const FILE_CENTER_LIVE_TRANSFER_MAX_DOWNLOADS = 5;
 
     function requireFileDependency(deps, name) {
         const source = deps && typeof deps === 'object' ? deps : null;
@@ -954,7 +955,7 @@
                         file_size: Number(files[0].size || 0),
                         mime_type: files[0].type || 'application/octet-stream',
                         expires_in_minutes: 30,
-                        max_downloads: 1
+                        max_downloads: FILE_CENTER_LIVE_TRANSFER_MAX_DOWNLOADS
                     })
                 });
                 const data = await res.json();
@@ -1088,7 +1089,7 @@
                 throw new Error('缺少接收端连接 ID');
             }
         
-            if (fileCenterUploadDialogState.transferUploadActive || fileCenterUploadDialogState.transferUploadDone) {
+            if (fileCenterUploadDialogState.transferUploadActive) {
                 return;
             }
         

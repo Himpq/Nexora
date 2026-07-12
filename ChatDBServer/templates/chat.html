@@ -19,16 +19,18 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260708_header_toolbar_align_01">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260710_nexoracode_projects_06">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260624_stream_breaks_01">
+    <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
     <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260616_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
     <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_live_transfer_stream_01">
+    <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
 </head>
 <body>
     <div class="app-container">
@@ -262,7 +264,6 @@
                                         <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
                                             <button type="button" class="tool-mode-item" data-mode="off" role="option">Off</button>
                                             <button type="button" class="tool-mode-item active" data-mode="auto_off" role="option" aria-selected="true">Auto(OFF)</button>
-                                            <button type="button" class="tool-mode-item" data-mode="auto_select" role="option">Auto(Select tools)</button>
                                             <button type="button" class="tool-mode-item" data-mode="force" role="option">Force</button>
                                         </div>
                                     </div>
@@ -720,7 +721,8 @@
     {% endif %}
     <script src="/static/js/chat_message_window.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_message_versions.js?v=20260706_feature_split_09"></script>
-    <script src="/static/js/chat_knowledge.js?v=20260708_knowledge_sync_conflict_01"></script>
+    <script src="/static/js/knowledge_collab_client.js?v=20260708_06"></script>
+    <script src="/static/js/chat_knowledge.js?v=20260708_collab_cursor_05"></script>
     <script src="/static/js/chat_tools.js?v=20260707_tools_result_canvas_hook_01"></script>
     <script src="/static/js/chat_tool_canvas.js?v=20260707_tool_canvas_split_02"></script>
     <script src="/static/js/chat_messages.js?v=20260708_console_gate_01"></script>
@@ -728,12 +730,13 @@
     <script src="/static/js/chat_streaming.js?v=20260706_feature_split_11_stream_status_sync_01"></script>
     <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
     <script src="/static/js/chat_stream_reconnect.js?v=20260707_stream_reconnect_split_01"></script>
-    <script src="/static/js/chat_conversations.js?v=20260706_feature_split_18_conversation_detail_stream_01"></script>
+    <script src="/static/js/chat_conversations.js?v=20260710_nexoracode_projects_06"></script>
     <script src="/static/js/chat_admin_system.js?v=20260707_admin_system_split_01"></script>
     <script src="/static/js/chat_admin.js?v=20260707_admin_tabs_split_02"></script>
     <script src="/static/js/chat_markdown.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_files.js?v=20260707_file_upload_error_feedback_01"></script>
-    <script src="/static/js/chat.js?v=20260708_knowledge_sync_conflict_01"></script>
+    <script src="/static/js/chat.js?v=20260710_nexoracode_projects_06"></script>
+    <script src="/static/js/global_search.js?v=20260711_global_search_04"></script>
     <script src="/static/js/workspace.js?v=20260708_workspace_knowledge_return_01"></script>
     <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
     <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>

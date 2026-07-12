@@ -1781,7 +1781,17 @@
                         const knowledgeMetaCache = getKnowledgeMetaCache();
 
                         if (knowledgeMetaCache[oldTitle]) {
+                            knowledgeMetaCache[oldTitle].public = isPublic;
+                            knowledgeMetaCache[oldTitle].collaborative = isCollaborative;
                             knowledgeMetaCache[oldTitle].model_readonly = isModelReadonly;
+                        }
+
+                        const liveMeta = knowledgeMetaCache[oldTitle] || {};
+
+                        if (isPublic && isCollaborative) {
+                            startOwnerKnowledgeCollab(oldTitle, liveMeta);
+                        } else {
+                            stopKnowledgeCollab();
                         }
                     }
 
@@ -1909,6 +1919,11 @@
             pendingLocalSaves: Object.create(null),
             savingTitles: Object.create(null),
             queuedSaveTitles: Object.create(null),
+            collabClient: null,
+            collabTitle: '',
+            collabApplyingRemote: false,
+            collabCursorOverlay: null,
+            collabOfflineMask: null,
             workspaceReturnContext: null,
             pendingHighlightData: null,
             scroll: {
@@ -2032,6 +2047,301 @@
             return state.currentVersion;
         }
 
+        function escapeKnowledgeCollabHtml(value) {
+            return String(value || '').replace(/[&<>"']/g, (ch) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[ch]));
+        }
+
+        function stopKnowledgeCollab() {
+            if (state.collabClient) {
+                state.collabClient.stop();
+            }
+
+            clearOwnerKnowledgeCollabCursorMarkers();
+
+            if (state.collabOfflineMask) {
+                state.collabOfflineMask.hide();
+            }
+
+            state.collabClient = null;
+            state.collabTitle = '';
+            state.collabApplyingRemote = false;
+
+            const members = document.getElementById('ownerKnowledgeCollabMembers');
+
+            if (members) {
+                members.innerHTML = '';
+            }
+        }
+
+        function clearOwnerKnowledgeCollabCursorMarkers() {
+            if (state.collabCursorOverlay) {
+                state.collabCursorOverlay.clear();
+            }
+        }
+
+        function getOwnerKnowledgeCollabCursorColor(clientId) {
+            const palette = ['#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#0891b2', '#ea580c', '#be123c'];
+            const key = String(clientId || '');
+            let hash = 0;
+
+            for (let i = 0; i < key.length; i += 1) {
+                hash = ((hash * 31) + key.charCodeAt(i)) >>> 0;
+            }
+
+            return palette[hash % palette.length];
+        }
+
+        function getOwnerKnowledgeCollabOfflineMask() {
+            if (
+                !state.collabOfflineMask
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createOfflineMask === 'function'
+            ) {
+                state.collabOfflineMask = window.NexoraKnowledgeCollab.createOfflineMask(() => (
+                    document.querySelector('#knowledgeEditor .toastui-editor-md-container')
+                    || document.getElementById('knowledgeEditor')
+                ));
+            }
+
+            return state.collabOfflineMask;
+        }
+
+        function getOwnerKnowledgeCollabCursorOverlay() {
+            if (
+                !state.collabCursorOverlay
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createToastCursorOverlay === 'function'
+            ) {
+                state.collabCursorOverlay = window.NexoraKnowledgeCollab.createToastCursorOverlay({
+                    getEditor: () => {
+                        const editor = getEditor();
+                        return editor && editor.__editor ? editor.__editor : null;
+                    },
+                    getHost: () => (
+                        document.querySelector('#knowledgeEditor .toastui-editor-md-container')
+                        || document.getElementById('knowledgeEditor')
+                    ),
+                    getColor: getOwnerKnowledgeCollabCursorColor,
+                    getName: (member) => (
+                        String(member.display_name || (member.role === 'owner' ? getCurrentUsername() : '匿名协作者')).trim() || '协作者'
+                    ),
+                });
+            }
+
+            return state.collabCursorOverlay;
+        }
+
+        function renderOwnerKnowledgeCollabCursors(members, selfClientId) {
+            const overlay = getOwnerKnowledgeCollabCursorOverlay();
+
+            if (overlay) {
+                overlay.render(members, selfClientId);
+            }
+        }
+
+        function renderOwnerKnowledgeCollabMembers(members, selfClientId) {
+            const host = document.getElementById('ownerKnowledgeCollabMembers');
+
+            if (!host) return;
+
+            const list = Array.isArray(members) ? members : [];
+
+            host.innerHTML = list.map((member) => {
+                const name = String(member.display_name || (member.role === 'owner' ? getCurrentUsername() : '匿名协作者')).trim();
+                const cursor = member.cursor && typeof member.cursor === 'object' ? member.cursor : null;
+                const cursorText = cursor ? `L${Number(cursor.line || 0) + 1}:C${Number(cursor.col || 0) + 1}` : '在线';
+                const isSelf = String(member.client_id || '') === String(selfClientId || '');
+
+                return [
+                    '<span class="knowledge-collab-member',
+                    isSelf ? ' is-self' : '',
+                    '"><span class="knowledge-collab-dot"></span><span class="knowledge-collab-name">',
+                    escapeKnowledgeCollabHtml(name),
+                    '</span><span class="knowledge-collab-cursor">',
+                    escapeKnowledgeCollabHtml(cursorText),
+                    '</span></span>'
+                ].join('');
+            }).join('');
+        }
+
+        function getOwnerEditorCursorOffset() {
+            const editor = getEditor();
+            const rawEditor = editor && editor.__editor ? editor.__editor : null;
+
+            if (
+                rawEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(rawEditor).head;
+            }
+
+            return 0;
+        }
+
+        function getOwnerEditorCursorAnchor() {
+            const editor = getEditor();
+            const rawEditor = editor && editor.__editor ? editor.__editor : null;
+
+            if (
+                rawEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(rawEditor).anchor;
+            }
+
+            return 0;
+        }
+
+        function setOwnerEditorCursorOffset(cursor) {
+            const editor = getEditor();
+            const rawEditor = editor && editor.__editor ? editor.__editor : null;
+            const data = cursor && typeof cursor === 'object' ? cursor : {};
+
+            if (
+                rawEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.setToastCursorOffset === 'function'
+                && window.NexoraKnowledgeCollab.setToastCursorOffset(rawEditor, Number(data.offset || 0))
+            ) {
+                return;
+            }
+
+            if (!editor || !editor.codemirror || typeof editor.codemirror.setCursor !== 'function') {
+                return;
+            }
+
+            editor.codemirror.setCursor(Number(data.line || 0), Number(data.col || 0));
+        }
+
+        function getOwnerKnowledgeCollabWsUrl(meta = {}) {
+            const shareId = String(meta.share_id || '').trim();
+            const owner = getActiveKnowledgeShareUsername();
+
+            if (!owner || !shareId) {
+                return '';
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const params = new URLSearchParams();
+            params.set('role', 'owner');
+            params.set('display_name', getCurrentUsername() || owner);
+            return `${protocol}//${window.location.host}/ws/knowledge/collab/${encodeURIComponent(owner)}/${encodeURIComponent(shareId)}?${params.toString()}`;
+        }
+
+        function startOwnerKnowledgeCollab(title, metadata = {}) {
+            const safeTitle = String(title || '').trim();
+            const meta = metadata && typeof metadata === 'object' ? metadata : {};
+            const shareId = String(meta.share_id || '').trim();
+
+            stopKnowledgeCollab();
+
+            if (!window.NexoraKnowledgeCollab || !safeTitle || !shareId || !meta.public || !meta.collaborative) {
+                return;
+            }
+
+            const editor = getEditor();
+
+            if (!editor) {
+                return;
+            }
+
+            state.collabTitle = safeTitle;
+            state.collabClient = window.NexoraKnowledgeCollab.createClient({
+                wsUrl: getOwnerKnowledgeCollabWsUrl(meta),
+                getText: () => {
+                    const liveEditor = getEditor();
+                    return liveEditor ? String(liveEditor.value() || '') : '';
+                },
+                setText: (value, meta = {}) => {
+                    const liveEditor = getEditor();
+
+                    if (!liveEditor || state.collabTitle !== String(state.currentTitle || '').trim()) {
+                        return false;
+                    }
+
+                    const snapshot = captureEditorViewportSnapshot();
+                    state.collabApplyingRemote = true;
+
+                    let incremental = false;
+
+                    if (typeof liveEditor.applyTextOperation === 'function') {
+                        incremental = liveEditor.applyTextOperation(meta.operation, String(value || '')) === true;
+                    } else {
+                        liveEditor.value(String(value || ''));
+                    }
+
+                    setCurrentVersion({ title: safeTitle }, String(value || ''));
+
+                    if (!incremental) {
+                        knowledgeSyncLogger.debug('[KnowledgeCollab] incremental apply fell back to full replace', {
+                            title: safeTitle,
+                            operation: meta.operation || null,
+                        });
+                        restoreEditorViewportSnapshot(snapshot);
+                    }
+
+                    setTimeout(() => {
+                        state.collabApplyingRemote = false;
+                    }, 120);
+                    return incremental;
+                },
+                getCursorOffset: getOwnerEditorCursorOffset,
+                getCursorAnchor: getOwnerEditorCursorAnchor,
+                setCursorOffset: setOwnerEditorCursorOffset,
+                notifyPresence: (member, action) => {
+                    const name = String(
+                        (member && member.display_name)
+                        || (member && member.role === 'owner' ? getCurrentUsername() : '匿名协作者')
+                    ).trim() || '协作者';
+                    showToast(action === 'join' ? `${name} 加入了协作` : `${name} 离开了协作`);
+                },
+                onConnectionChange: (connected) => {
+                    const mask = getOwnerKnowledgeCollabOfflineMask();
+
+                    if (!mask) {
+                        return;
+                    }
+
+                    if (connected) {
+                        mask.hide();
+                    } else {
+                        mask.show('实时协作已断开，正在重连…');
+                    }
+                },
+                setStatus: (kind, text) => {
+                    const label = String(text || '').trim();
+
+                    if (label && kind === 'error') {
+                        showToast(label);
+                    }
+                },
+                renderMembers: renderOwnerKnowledgeCollabMembers,
+                renderCursors: renderOwnerKnowledgeCollabCursors,
+            });
+            state.collabClient.start();
+
+            const viewer = getViewerEl();
+
+            if (viewer && viewer.dataset.knowledgeCollabCursorBound !== '1') {
+                viewer.dataset.knowledgeCollabCursorBound = '1';
+                ['keyup', 'mouseup', 'touchend'].forEach((eventName) => {
+                    viewer.addEventListener(eventName, () => {
+                        if (state.collabClient && state.collabClient.isActive()) {
+                            state.collabClient.scheduleCursorSend();
+                        }
+                    }, true);
+                });
+            }
+        }
+
         function updateKnowledgeMetaFromVersion(title, payload = {}) {
             const safeTitle = String(title || state.currentTitle || '').trim();
             const data = payload && typeof payload === 'object' ? payload : {};
@@ -2141,6 +2451,7 @@
             };
 
             restoreScrollPosition(!!data.isPreview, data);
+            applyExactScroll();
 
             [0, 80, 240].forEach((delay) => {
                 setTimeout(() => {
@@ -2299,6 +2610,8 @@
         function destroyEditor() {
             const editor = getEditor();
 
+            stopKnowledgeCollab();
+
             if (editor && typeof editor.__cleanupPreviewBridge === 'function') {
                 try {
                     editor.__cleanupPreviewBridge();
@@ -2324,9 +2637,15 @@
         }
 
         function setCurrentTitle(title) {
+            const nextTitle = String(title || '').trim();
+
+            if (state.currentTitle && String(state.currentTitle || '').trim() !== nextTitle) {
+                stopKnowledgeCollab();
+            }
+
             state.currentTitle = title;
             state.currentVersion = null;
-            state.scroll.activeTitle = String(title || '').trim();
+            state.scroll.activeTitle = nextTitle;
         }
 
         function setActiveScrollTitle(title) {
@@ -2342,6 +2661,7 @@
         }
 
         function clearCurrentTitle() {
+            stopKnowledgeCollab();
             state.currentTitle = null;
             state.currentVersion = null;
             state.scroll.activeTitle = '';
@@ -3633,6 +3953,17 @@
                 } catch (_) {}
                 return null;
             };
+            const offsetToCodeMirrorPos = (text, offset) => {
+                const source = String(text || '');
+                const safeOffset = Math.max(0, Math.min(source.length, Number(offset || 0)));
+                const before = source.slice(0, safeOffset);
+                const lines = before.split('\n');
+
+                return {
+                    line: Math.max(0, lines.length - 1),
+                    ch: Math.max(0, String(lines[lines.length - 1] || '').length)
+                };
+            };
             const getToastUiRoot = () => host.querySelector('.toastui-editor-defaultUI');
             const getToastEditorContainer = () => host.querySelector('.toastui-editor-md-container');
             const getToastVerticalPane = () => (
@@ -4324,7 +4655,17 @@
             setViewMode('preview');
             try {
                 if (typeof editor.on === 'function') {
-                    const onEditorChange = () => queueToastPreviewRender(true);
+                    const onEditorChange = () => {
+                        queueToastPreviewRender(true);
+
+                        if (
+                            state.collabClient
+                            && state.collabClient.isActive()
+                            && !state.collabApplyingRemote
+                        ) {
+                            state.collabClient.notifyLocalChange();
+                        }
+                    };
                     editor.on('change', onEditorChange);
                 }
             } catch (_) {}
@@ -4460,6 +4801,39 @@
                     scroller.scrollTop = Math.max(0, Number(y || 0));
                 },
                 getScrollerElement: () => getToastEditorScroller(),
+                setBookmark: (pos, options) => {
+                    const cm = getToastCodeMirror();
+                    if (cm && typeof cm.setBookmark === 'function') {
+                        return cm.setBookmark(pos, options);
+                    }
+
+                    return null;
+                },
+                posFromIndex: (index) => {
+                    const cm = getToastCodeMirror();
+                    if (cm && typeof cm.posFromIndex === 'function') {
+                        return cm.posFromIndex(index);
+                    }
+
+                    return offsetToCodeMirrorPos(String(editor.getMarkdown() || ''), index);
+                },
+                cursorCoords: (pos, mode) => {
+                    const cm = getToastCodeMirror();
+                    if (cm && typeof cm.cursorCoords === 'function') {
+                        return cm.cursorCoords(pos, mode);
+                    }
+
+                    const line = Math.max(0, Number((pos && pos.line) || 0));
+                    const ch = Math.max(0, Number((pos && pos.ch) || 0));
+                    const textHeight = 22;
+
+                    return {
+                        left: ch * 8,
+                        right: ch * 8,
+                        top: line * textHeight,
+                        bottom: (line + 1) * textHeight
+                    };
+                },
                 setCursor: (line, ch) => {
                     const cm = getToastCodeMirror();
                     if (cm && typeof cm.setCursor === 'function') {
@@ -4499,6 +4873,44 @@
                     editor.setMarkdown(String(nextValue || ''), false);
                     renderToastPreview(false);
                     return String(nextValue || '');
+                },
+                applyTextOperation(operation, nextValue) {
+                    const nextText = String(nextValue || '');
+                    const op = operation && typeof operation === 'object' ? operation : null;
+
+                    if (
+                        op
+                        && window.NexoraKnowledgeCollab
+                        && typeof window.NexoraKnowledgeCollab.applyToastOperation === 'function'
+                        && window.NexoraKnowledgeCollab.applyToastOperation(editor, op, nextText)
+                    ) {
+                        lastRenderedPreviewMarkdown = null;
+                        // preserveScroll=true：预览重绘不能把滚动打回顶部
+                        renderToastPreview(true);
+                        return true;
+                    }
+
+                    const cm = getToastCodeMirror();
+
+                    if (op && cm && typeof cm.replaceRange === 'function') {
+                        const current = String(editor.getMarkdown() || '');
+                        const start = Math.max(0, Math.min(current.length, Number(op.start || 0)));
+                        const deleteCount = Math.max(0, Number(op.delete_count || 0));
+                        const end = Math.max(start, Math.min(current.length, start + deleteCount));
+                        const from = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(start) : offsetToCodeMirrorPos(current, start);
+                        const to = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(end) : offsetToCodeMirrorPos(current, end);
+
+                        lastRenderedPreviewMarkdown = null;
+                        cm.replaceRange(String(op.insert_text || ''), from, to, '+remote');
+                        renderToastPreview(false);
+
+                        if (String(editor.getMarkdown() || '') === nextText) {
+                            return true;
+                        }
+                    }
+
+                    this.value(nextText);
+                    return false;
                 },
                 isPreviewActive() {
                     return viewMode !== 'edit';
@@ -4644,6 +5056,7 @@
 
             // 2. Fetch Content
             let content = '';
+            let knowledgeMetadata = {};
             try {
                 const contentUrl = appendWorkspaceKnowledgeQuery(
                     `/api/knowledge/basis/${encodeURIComponent(title)}`,
@@ -4657,6 +5070,7 @@
 
                     if (data.knowledge && data.knowledge.metadata && typeof data.knowledge.metadata === 'object') {
                         getKnowledgeMetaCache()[title] = data.knowledge.metadata;
+                        knowledgeMetadata = data.knowledge.metadata;
                     }
                 }
             } catch(e) { console.error(e); }
@@ -4710,6 +5124,13 @@
             `;
             applyDesktopHeaderTools(headerRight);
 
+            if (headerRight) {
+                const collabBar = document.createElement('div');
+                collabBar.className = 'knowledge-collab-strip knowledge-collab-owner-bar';
+                collabBar.innerHTML = '<div id="ownerKnowledgeCollabMembers" class="knowledge-collab-members"></div>';
+                headerRight.prepend(collabBar);
+            }
+
             // 5. Initialize Editor (Toast UI)
             if (!state.editor || state.editor.__editorType !== 'toastui' || !document.getElementById('knowledgeEditor')) {
                 destroyEditor();
@@ -4738,6 +5159,7 @@
             const headerHeight = 60;
 
             state.editor.value(content || '');
+            startOwnerKnowledgeCollab(title, knowledgeMetadata);
             try {
                 if (state.editor && state.editor.codemirror) {
                     state.editor.codemirror.scrollTo(null, 0);
@@ -5062,6 +5484,16 @@
             const safeTitle = String(title || state.currentTitle || '').trim();
 
             if (!safeTitle) return;
+
+            if (
+                state.collabClient
+                && state.collabClient.isActive()
+                && state.collabTitle === safeTitle
+            ) {
+                state.collabClient.flushNow();
+                showToast('已请求实时同步');
+                return;
+            }
 
             if (getPendingImageUploadCount() > 0) {
                 showToast('仍有图片上传中，请稍候再保存');

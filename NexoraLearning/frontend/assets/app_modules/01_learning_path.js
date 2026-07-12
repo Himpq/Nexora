@@ -1225,7 +1225,44 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         return renderCodeTraceLab(config, blockIndex);
     }
 
+    if (type === "sandbox_component") {
+        return renderSandboxComponentLab(config, blockIndex);
+    }
+
     return renderLearningLabError("未知实验组件类型", `当前类型：${type || "未填写"}`);
+  }
+
+  function renderLearningLabControls(parameters, emptyText, resultText) {
+    const rows = parameters.length ? parameters.map((param) => {
+        const key = String(param && param.key || "").trim();
+        const label = String(param && param.label || key || "参数").trim();
+        const min = Number(param && param.min);
+        const max = Number(param && param.max);
+        const step = Number(param && param.step) || 1;
+        const value = Number(param && param.value);
+        const unit = String(param && param.unit || "").trim();
+
+        if (!key || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
+            return "";
+        }
+
+        return `
+          <label class="lp-lab-control">
+            <span>
+              <strong>${escapeHtml(label)}</strong>
+              <em data-lab-value="${escapeHtml(key)}">${escapeHtml(String(value))}${unit ? ` ${escapeHtml(unit)}` : ""}</em>
+            </span>
+            <input type="range" min="${escapeHtml(String(min))}" max="${escapeHtml(String(max))}" step="${escapeHtml(String(step))}" value="${escapeHtml(String(value))}" data-lab-param="${escapeHtml(key)}">
+          </label>
+        `;
+    }).join("") : `<div class="lp-lab-scene-note">${escapeHtml(emptyText || "该实验没有可调参数。")}</div>`;
+
+    return `
+      <div class="lp-lab-controls">
+        ${rows}
+        <div class="lp-lab-result" data-lab-result>${escapeHtml(resultText || "等待参数变化")}</div>
+      </div>
+    `;
   }
 
   // 公式实验第一版先支持理想气体模型，后续可按 formula_key 扩展更多受控渲染器。
@@ -1251,32 +1288,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
           ${formula ? `<div class="lp-lab-formula-badge">${escapeHtml(formula)}</div>` : ""}
         </div>
         <div class="lp-lab-formula-grid">
-          <div class="lp-lab-controls">
-            ${parameters.map((param) => {
-                const key = String(param && param.key || "").trim();
-                const label = String(param && param.label || key || "参数").trim();
-                const min = Number(param && param.min);
-                const max = Number(param && param.max);
-                const step = Number(param && param.step) || 1;
-                const value = Number(param && param.value);
-                const unit = String(param && param.unit || "").trim();
-
-                if (!key || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
-                    return "";
-                }
-
-                return `
-                  <label class="lp-lab-control">
-                    <span>
-                      <strong>${escapeHtml(label)}</strong>
-                      <em data-lab-value="${escapeHtml(key)}">${escapeHtml(String(value))}${unit ? ` ${escapeHtml(unit)}` : ""}</em>
-                    </span>
-                    <input type="range" min="${escapeHtml(String(min))}" max="${escapeHtml(String(max))}" step="${escapeHtml(String(step))}" value="${escapeHtml(String(value))}" data-lab-param="${escapeHtml(key)}">
-                  </label>
-                `;
-            }).join("")}
-            <div class="lp-lab-result" data-lab-result>等待参数变化</div>
-          </div>
+          ${renderLearningLabControls(parameters, "公式实验缺少可调参数。", "等待参数变化")}
           <div class="lp-lab-stage">
             <canvas class="lp-lab-canvas" data-lab-canvas></canvas>
           </div>
@@ -1285,12 +1297,42 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     `;
   }
 
+  function labExpressionUsesName(expression, name) {
+    const names = String(expression || "").match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    return names.includes(String(name || ""));
+  }
+
+  function findCanvasScenePlotConfigError(config) {
+    const scene = config && typeof config.scene === "object" ? config.scene : null;
+    const elements = scene && Array.isArray(scene.elements) ? scene.elements : [];
+
+    for (const element of elements) {
+      if (!element || String(element.type || "") !== "plot") {
+        continue;
+      }
+
+      const curves = Array.isArray(element.curves) ? element.curves : [];
+      const hasAxisCurve = curves.some((curve) => labExpressionUsesName(curve && curve.expression, "x"));
+
+      if (!hasAxisCurve) {
+        return "plot 曲线至少需要 1 条表达式使用 x 作为横轴变量。";
+      }
+    }
+
+    return "";
+  }
+
   // 通用 canvas_scene 由模型组合基础图元，前端只执行受控绘制指令。
   function renderCanvasSceneLab(config, blockIndex) {
     const title = String(config.title || "Canvas 实验").trim();
     const description = String(config.description || "").trim();
     const parameters = Array.isArray(config.parameters) ? config.parameters : [];
     const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+    const plotConfigError = findCanvasScenePlotConfigError(config);
+
+    if (plotConfigError) {
+      return renderLearningLabError("实验组件配置无效", plotConfigError);
+    }
 
     return `
       <section class="lp-lab lp-lab-canvas-scene" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
@@ -1302,34 +1344,40 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
           </div>
         </div>
         <div class="lp-lab-formula-grid">
-          <div class="lp-lab-controls">
-            ${parameters.length ? parameters.map((param) => {
-                const key = String(param && param.key || "").trim();
-                const label = String(param && param.label || key || "参数").trim();
-                const min = Number(param && param.min);
-                const max = Number(param && param.max);
-                const step = Number(param && param.step) || 1;
-                const value = Number(param && param.value);
-                const unit = String(param && param.unit || "").trim();
-
-                if (!key || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
-                    return "";
-                }
-
-                return `
-                  <label class="lp-lab-control">
-                    <span>
-                      <strong>${escapeHtml(label)}</strong>
-                      <em data-lab-value="${escapeHtml(key)}">${escapeHtml(String(value))}${unit ? ` ${escapeHtml(unit)}` : ""}</em>
-                    </span>
-                    <input type="range" min="${escapeHtml(String(min))}" max="${escapeHtml(String(max))}" step="${escapeHtml(String(step))}" value="${escapeHtml(String(value))}" data-lab-param="${escapeHtml(key)}">
-                  </label>
-                `;
-            }).join("") : '<div class="lp-lab-scene-note">该场景没有可调参数。</div>'}
-            <div class="lp-lab-result" data-lab-result>拖动参数观察画布变化</div>
-          </div>
+          ${renderLearningLabControls(parameters, "该场景没有可调参数。", "拖动参数观察画布变化")}
           <div class="lp-lab-stage">
             <canvas class="lp-lab-canvas" data-lab-canvas></canvas>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  // 沙箱组件允许模型生成小型交互实验，但只运行在无同源权限的 iframe 内。
+  function renderSandboxComponentLab(config, blockIndex) {
+    const title = String(config.title || "沙箱实验").trim();
+    const description = String(config.description || "").trim();
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const component = config.component && typeof config.component === "object" ? config.component : null;
+    const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+
+    if (!component || !String(component.html || "").trim() || !String(component.js || "").trim()) {
+      return renderLearningLabError("沙箱实验缺少组件代码", "component.html 和 component.js 都需要由模型生成。");
+    }
+
+    return `
+      <section class="lp-lab lp-lab-sandbox" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">Sandbox Lab</div>
+            <h3>${escapeHtml(title)}</h3>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+        </div>
+        <div class="lp-lab-formula-grid lp-lab-sandbox-grid">
+          ${renderLearningLabControls(parameters, "该沙箱实验没有可调参数。", "沙箱等待加载")}
+          <div class="lp-lab-stage lp-lab-sandbox-stage">
+            <iframe class="lp-lab-sandbox-frame" data-sandbox-frame sandbox="allow-scripts" referrerpolicy="no-referrer" title="${escapeHtml(title)}"></iframe>
           </div>
         </div>
       </section>
@@ -1451,6 +1499,179 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
             label.textContent = `${values[key]}${unit ? ` ${unit}` : ""}`;
         }
     });
+  }
+
+  function encodeLearningLabPayload(value) {
+    const bytes = new TextEncoder().encode(String(value || ""));
+    const chunkSize = 8192;
+    let binary = "";
+
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.slice(index, index + chunkSize);
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+
+    return window.btoa(binary);
+  }
+
+  function buildSandboxComponentSrcdoc(config, values) {
+    const component = config.component && typeof config.component === "object" ? config.component : {};
+    const payload = {
+      title: String(config.title || "Sandbox Lab"),
+      html: String(component.html || ""),
+      css: String(component.css || ""),
+      js: String(component.js || ""),
+      params: values && typeof values === "object" ? values : {},
+    };
+    const encodedPayload = encodeLearningLabPayload(JSON.stringify(payload));
+
+    return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Sandbox Lab</title>
+  <style>
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: #f8fafc;
+      color: #111827;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    #nxlRoot {
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <main id="nxlRoot"></main>
+  <script>
+    (function () {
+      "use strict";
+
+      var SOURCE = "nxl-sandbox-component";
+      var PARENT_SOURCE = "nxl-sandbox-parent";
+      var payloadBytes = Uint8Array.from(window.atob("${encodedPayload}"), function (char) {
+        return char.charCodeAt(0);
+      });
+      var payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+      var root = document.getElementById("nxlRoot");
+      var params = Object.assign({}, payload.params || {});
+      var cleanup = null;
+      var mounted = false;
+
+      function post(type, detail) {
+        window.parent.postMessage({
+          source: SOURCE,
+          type: type,
+          detail: detail || {},
+        }, "*");
+      }
+
+      function getContext() {
+        return {
+          root: root,
+          params: params,
+          width: window.innerWidth || root.clientWidth || 640,
+          height: window.innerHeight || root.clientHeight || 360,
+          setStatus: function (text) {
+            post("status", { text: String(text || "") });
+          },
+          postEvent: function (eventType, detail) {
+            post("event", {
+              eventType: String(eventType || ""),
+              detail: detail || {},
+            });
+          },
+        };
+      }
+
+      function reportError(error) {
+        post("error", {
+          message: String(error && error.message ? error.message : error || "sandbox error"),
+        });
+      }
+
+      function runMount() {
+        if (typeof cleanup === "function") {
+          cleanup();
+          cleanup = null;
+        }
+
+        if (typeof window.mount !== "function") {
+          throw new Error("sandbox_component.js 必须定义 function mount(ctx)");
+        }
+
+        cleanup = window.mount(getContext());
+        mounted = true;
+        post("ready", {});
+      }
+
+      function runUpdate() {
+        if (!mounted) {
+          runMount();
+          return;
+        }
+
+        if (typeof window.update === "function") {
+          window.update(getContext());
+        }
+      }
+
+      window.addEventListener("error", function (event) {
+        reportError(event.error || event.message);
+      });
+
+      window.addEventListener("unhandledrejection", function (event) {
+        reportError(event.reason);
+      });
+
+      window.addEventListener("message", function (event) {
+        var data = event && event.data ? event.data : {};
+
+        if (!data || data.source !== PARENT_SOURCE) {
+          return;
+        }
+
+        if (data.type === "params") {
+          params = Object.assign({}, params, data.params || {});
+
+          try {
+            runUpdate();
+          } catch (error) {
+            reportError(error);
+          }
+        }
+      });
+
+      try {
+        var style = document.createElement("style");
+        style.textContent = String(payload.css || "");
+        document.head.appendChild(style);
+        root.innerHTML = String(payload.html || "");
+
+        var script = document.createElement("script");
+        script.textContent = String(payload.js || "") + "\\n//# sourceURL=nxl-sandbox-component.js";
+        document.body.appendChild(script);
+        runMount();
+
+        var observer = new ResizeObserver(function () {
+          var height = Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 320);
+          post("height", { height: height });
+        });
+        observer.observe(document.documentElement);
+      } catch (error) {
+        reportError(error);
+      }
+    }());
+  </script>
+</body>
+</html>`;
   }
 
   function resizeLabCanvas(canvas) {
@@ -2057,6 +2278,93 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     });
   }
 
+  function bindSandboxComponentLab(node) {
+    const config = decodeLearningLabConfig(node);
+    const frame = node.querySelector("[data-sandbox-frame]");
+    const resultNode = node.querySelector("[data-lab-result]");
+
+    if (!(frame instanceof HTMLIFrameElement)) {
+      return;
+    }
+
+    let values = getFormulaLabValues(node, config);
+
+    const setResult = (text) => {
+      if (resultNode) {
+        resultNode.textContent = String(text || "");
+      }
+    };
+
+    const postParams = () => {
+      if (!frame.contentWindow) {
+        return;
+      }
+
+      frame.contentWindow.postMessage({
+        source: "nxl-sandbox-parent",
+        type: "params",
+        params: values,
+      }, "*");
+    };
+
+    const sync = () => {
+      values = getFormulaLabValues(node, config);
+      syncFormulaLabLabels(node, config, values);
+      postParams();
+    };
+
+    const handleMessage = (event) => {
+      if (event.source !== frame.contentWindow) {
+        return;
+      }
+
+      const data = event && event.data ? event.data : {};
+
+      if (!data || data.source !== "nxl-sandbox-component") {
+        return;
+      }
+
+      const detail = data.detail && typeof data.detail === "object" ? data.detail : {};
+
+      if (data.type === "ready") {
+        setResult("沙箱组件已渲染");
+        postParams();
+        return;
+      }
+
+      if (data.type === "status") {
+        setResult(detail.text || "沙箱组件已更新");
+        return;
+      }
+
+      if (data.type === "height") {
+        const height = Math.max(260, Math.min(720, Number(detail.height) || 320));
+        frame.style.height = `${height}px`;
+        return;
+      }
+
+      if (data.type === "error") {
+        setResult(`沙箱组件错误：${detail.message || "未知错误"}`);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    frame.addEventListener("load", postParams);
+    node.querySelectorAll("[data-lab-param]").forEach((input) => {
+      input.addEventListener("input", sync);
+    });
+
+    syncFormulaLabLabels(node, config, values);
+    setResult("沙箱组件加载中");
+    frame.srcdoc = buildSandboxComponentSrcdoc(config, values);
+
+    state.lpLabCleanups.push(() => {
+      window.removeEventListener("message", handleMessage);
+      frame.removeEventListener("load", postParams);
+      frame.removeAttribute("srcdoc");
+    });
+  }
+
   function renderTraceStep(node, config, index) {
     const steps = Array.isArray(config.steps) ? config.steps : [];
     const step = steps[Math.max(0, Math.min(index, steps.length - 1))] || {};
@@ -2164,6 +2472,12 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         if (node.dataset.labBound === "1") return;
         node.dataset.labBound = "1";
         bindCodeTraceLab(node);
+    });
+
+    root.querySelectorAll(".lp-lab-sandbox").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindSandboxComponentLab(node);
     });
   }
 

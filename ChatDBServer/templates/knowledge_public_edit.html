@@ -9,9 +9,11 @@
     <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_13">
+    <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
     <script src="/static/vendor/marked/marked.min.js"></script>
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
     <script src="/static/js/secure_render.js"></script>
+    <script src="/static/js/knowledge_collab_client.js?v=20260708_06"></script>
     <style>
         :root {
             --bg: #f3f4f6;
@@ -198,7 +200,13 @@
                 <h1 class="public-edit-title">{{ title | e }}</h1>
                 <div class="public-edit-meta">由 @{{ username | e }} 开启协作 · `Ctrl+S` 可立即同步</div>
             </div>
-            <div id="saveStatus" class="status-badge status-ok">已同步</div>
+            <div>
+                <div id="saveStatus" class="status-badge status-ok">已同步</div>
+                <div class="knowledge-collab-strip public-edit-collab">
+                    <input id="publicCollabNameInput" class="knowledge-collab-name-input" type="text" maxlength="24" placeholder="匿名协作者">
+                    <div id="publicCollabMembers" class="knowledge-collab-members"></div>
+                </div>
+            </div>
         </header>
         <section class="public-editor-wrap">
             <div id="knowledgeViewer">
@@ -325,6 +333,10 @@
         let publicKnowledgeReconnectTimer = null;
         let publicKnowledgePingTimer = null;
         let publicKnowledgeSocketClosedByServer = false;
+        let publicKnowledgeCollab = null;
+        let publicKnowledgeCursorOverlay = null;
+        let publicCollabOfflineMask = null;
+        let publicPresenceToastTimer = 0;
         const PUBLIC_KNOWLEDGE_RECONNECT_MS = 1800;
         const PUBLIC_KNOWLEDGE_PING_MS = 25000;
         const PUBLIC_KNOWLEDGE_AUTOSAVE_MS = 800;
@@ -490,9 +502,125 @@
                 window.scrollTo(Number(data.windowX || 0), Number(data.windowY || 0));
             };
 
-            [0, 80, 240].forEach((delay) => {
+            apply();
+
+            [0, 80].forEach((delay) => {
                 setTimeout(() => requestAnimationFrame(apply), delay);
             });
+        }
+
+        function getPublicToastCodeMirror() {
+            try {
+                if (toastEditor && toastEditor.mdEditor && toastEditor.mdEditor.cm) {
+                    return toastEditor.mdEditor.cm;
+                }
+            } catch (_) {}
+
+            try {
+                if (toastEditor && typeof toastEditor.getCurrentModeEditor === 'function') {
+                    const modeEditor = toastEditor.getCurrentModeEditor();
+
+                    if (modeEditor && modeEditor.cm) {
+                        return modeEditor.cm;
+                    }
+                }
+            } catch (_) {}
+
+            return null;
+        }
+
+        function publicOffsetToCodeMirrorPos(text, offset) {
+            const source = String(text || '');
+            const safeOffset = Math.max(0, Math.min(source.length, Number(offset || 0)));
+            const before = source.slice(0, safeOffset);
+            const lines = before.split('\n');
+
+            return {
+                line: Math.max(0, lines.length - 1),
+                ch: Math.max(0, String(lines[lines.length - 1] || '').length)
+            };
+        }
+
+        function applyPublicCollabText(value, operation) {
+            const nextValue = String(value || '');
+            const op = operation && typeof operation === 'object' ? operation : null;
+
+            if (
+                op
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.applyToastOperation === 'function'
+                && window.NexoraKnowledgeCollab.applyToastOperation(toastEditor, op, nextValue)
+            ) {
+                return true;
+            }
+
+            const cm = getPublicToastCodeMirror();
+
+            if (op && cm && typeof cm.replaceRange === 'function') {
+                const current = toastEditor ? String(toastEditor.getMarkdown() || '') : '';
+                const start = Math.max(0, Math.min(current.length, Number(op.start || 0)));
+                const deleteCount = Math.max(0, Number(op.delete_count || 0));
+                const end = Math.max(start, Math.min(current.length, start + deleteCount));
+                const from = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(start) : publicOffsetToCodeMirrorPos(current, start);
+                const to = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(end) : publicOffsetToCodeMirrorPos(current, end);
+
+                cm.replaceRange(String(op.insert_text || ''), from, to, '+remote');
+
+                if (String(toastEditor.getMarkdown() || '') === nextValue) {
+                    return true;
+                }
+            }
+
+            toastEditor.setMarkdown(nextValue);
+            return false;
+        }
+
+        function clearPublicCollabCursorMarkers() {
+            if (publicKnowledgeCursorOverlay) {
+                publicKnowledgeCursorOverlay.clear();
+            }
+        }
+
+        function getPublicCollabCursorColor(clientId) {
+            const palette = ['#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#0891b2', '#ea580c', '#be123c'];
+            const key = String(clientId || '');
+            let hash = 0;
+
+            for (let i = 0; i < key.length; i += 1) {
+                hash = ((hash * 31) + key.charCodeAt(i)) >>> 0;
+            }
+
+            return palette[hash % palette.length];
+        }
+
+        function getPublicCollabCursorOverlay() {
+            if (
+                !publicKnowledgeCursorOverlay
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createToastCursorOverlay === 'function'
+            ) {
+                publicKnowledgeCursorOverlay = window.NexoraKnowledgeCollab.createToastCursorOverlay({
+                    getEditor: () => toastEditor,
+                    getHost: () => (
+                        document.querySelector('#editor .toastui-editor-md-container')
+                        || document.querySelector('#editor')
+                    ),
+                    getColor: getPublicCollabCursorColor,
+                    getName: (member) => (
+                        String(member.display_name || (member.role === 'owner' ? 'Owner' : '匿名协作者')).trim() || '协作者'
+                    ),
+                });
+            }
+
+            return publicKnowledgeCursorOverlay;
+        }
+
+        function renderPublicCollabCursors(members, selfClientId) {
+            const overlay = getPublicCollabCursorOverlay();
+
+            if (overlay) {
+                overlay.render(members, selfClientId);
+            }
         }
 
         function applyRemoteKnowledgePayload(payload, statusText = '已同步（远端更新）') {
@@ -753,23 +881,10 @@
         // ── 光标位置辅助 ──
         function getEditorLineCol() {
             try {
-                if (!toastEditor) return null;
+                if (!toastEditor || !window.NexoraKnowledgeCollab) return null;
                 const md = toastEditor.getMarkdown();
-                let offset = null;
-                // 优先 ToastUI getSelection
-                if (typeof toastEditor.getSelection === 'function') {
-                    const sel = toastEditor.getSelection();
-                    if (Array.isArray(sel) && typeof sel[0] === 'number') offset = sel[0];
-                }
-                // fallback: ProseMirror view
-                if (offset == null) {
-                    const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
-                    if (view && view.state) offset = view.state.selection.from;
-                }
-                if (offset == null) return null;
-                const before = md.slice(0, offset);
-                const lines = before.split('\n');
-                return { line: lines.length - 1, col: (lines[lines.length - 1] || '').length };
+                const offset = window.NexoraKnowledgeCollab.getToastCursorOffset(toastEditor);
+                return window.NexoraKnowledgeCollab.offsetToLineCol(md, offset);
             } catch (_) { return null; }
         }
 
@@ -783,19 +898,15 @@
                 for (let i = 0; i < line; i++) offset += allLines[i].length + 1;
                 offset += Math.min(lc.col, (allLines[line] || '').length);
 
-                // ProseMirror view（ToastUI markdown 模式的底层编辑器）
-                const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
-                if (view && view.state) {
-                    const docSize = view.state.doc.content.size;
-                    const pos = Math.min(Math.max(1, offset + 1), docSize);
-                    try {
-                        const $pos = view.state.doc.resolve(pos);
-                        const sel = view.state.selection.constructor.near($pos);
-                        view.dispatch(view.state.tr.setSelection(sel));
-                        view.focus();
-                        return;
-                    } catch (_) {}
+                // ProseMirror view（ToastUI markdown 模式的底层编辑器），不聚焦、不滚动
+                if (
+                    window.NexoraKnowledgeCollab
+                    && typeof window.NexoraKnowledgeCollab.setToastCursorOffset === 'function'
+                    && window.NexoraKnowledgeCollab.setToastCursorOffset(toastEditor, offset)
+                ) {
+                    return;
                 }
+
                 // fallback: ToastUI API
                 if (typeof toastEditor.setSelection === 'function') {
                     toastEditor.setSelection(offset, offset);
@@ -803,8 +914,238 @@
             } catch (_) {}
         }
 
+        function getPublicEditorCursorOffset() {
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(toastEditor).head;
+            }
+
+            return 0;
+        }
+
+        function getPublicEditorCursorAnchor() {
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(toastEditor).anchor;
+            }
+
+            return 0;
+        }
+
+        function getPublicCollabOfflineMask() {
+            if (
+                !publicCollabOfflineMask
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createOfflineMask === 'function'
+            ) {
+                publicCollabOfflineMask = window.NexoraKnowledgeCollab.createOfflineMask(() => (
+                    document.querySelector('#editor .toastui-editor-md-container')
+                    || document.querySelector('#editor')
+                ));
+            }
+
+            return publicCollabOfflineMask;
+        }
+
+        function showPublicPresenceToast(text) {
+            let toast = document.querySelector('.knowledge-collab-presence-toast');
+
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.className = 'knowledge-collab-presence-toast';
+                document.body.appendChild(toast);
+            }
+
+            toast.textContent = String(text || '');
+            toast.classList.add('is-visible');
+
+            if (publicPresenceToastTimer) {
+                clearTimeout(publicPresenceToastTimer);
+            }
+
+            publicPresenceToastTimer = setTimeout(() => {
+                toast.classList.remove('is-visible');
+            }, 2600);
+        }
+
+        function setPublicEditorCursorOffset(cursor) {
+            const data = cursor && typeof cursor === 'object' ? cursor : {};
+
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.setToastCursorOffset === 'function'
+                && window.NexoraKnowledgeCollab.setToastCursorOffset(toastEditor, Number(data.offset || 0))
+            ) {
+                return;
+            }
+
+            restoreEditorLineCol({
+                line: Number(data.line || 0),
+                col: Number(data.col || 0)
+            });
+        }
+
+        function getPublicCollabDisplayName() {
+            const input = document.getElementById('publicCollabNameInput');
+            const value = String((input && input.value) || '').trim();
+
+            return value || '匿名协作者';
+        }
+
+        function bindPublicCollabNameInput() {
+            const input = document.getElementById('publicCollabNameInput');
+
+            if (!input || input.dataset.bound === '1') return;
+
+            input.dataset.bound = '1';
+
+            try {
+                const savedName = String(window.localStorage.getItem('nexora.publicKnowledgeCollabName') || '').trim();
+
+                if (savedName) {
+                    input.value = savedName;
+                }
+            } catch (_) {}
+
+            input.addEventListener('change', () => {
+                try {
+                    window.localStorage.setItem('nexora.publicKnowledgeCollabName', getPublicCollabDisplayName());
+                } catch (_) {}
+
+                if (publicKnowledgeCollab) {
+                    publicKnowledgeCollab.stop();
+                    publicKnowledgeCollab = null;
+                    clearPublicCollabCursorMarkers();
+                    startPublicKnowledgeCollab();
+                }
+            });
+        }
+
+        function renderPublicCollabMembers(members, selfClientId) {
+            const host = document.getElementById('publicCollabMembers');
+
+            if (!host) return;
+
+            const list = Array.isArray(members) ? members : [];
+
+            host.innerHTML = list.map((member) => {
+                const name = String(member.display_name || (member.role === 'owner' ? 'Owner' : '匿名协作者')).trim();
+                const cursor = member.cursor && typeof member.cursor === 'object' ? member.cursor : null;
+                const cursorText = cursor ? `L${Number(cursor.line || 0) + 1}:C${Number(cursor.col || 0) + 1}` : '在线';
+                const isSelf = String(member.client_id || '') === String(selfClientId || '');
+
+                return [
+                    '<span class="knowledge-collab-member',
+                    isSelf ? ' is-self' : '',
+                    '"><span class="knowledge-collab-dot"></span><span class="knowledge-collab-name">',
+                    name.replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
+                    '</span><span class="knowledge-collab-cursor">',
+                    cursorText,
+                    '</span></span>'
+                ].join('');
+            }).join('');
+        }
+
+        function getPublicKnowledgeCollabWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const params = new URLSearchParams();
+            params.set('role', 'public');
+            params.set('display_name', getPublicCollabDisplayName());
+            return `${protocol}//${window.location.host}/ws/knowledge/collab/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}?${params.toString()}`;
+        }
+
+        function startPublicKnowledgeCollab() {
+            if (!window.NexoraKnowledgeCollab || !toastEditor) {
+                setSaveStatus('error', '协作客户端未加载');
+                return;
+            }
+
+            bindPublicCollabNameInput();
+
+            if (publicKnowledgeSocket) {
+                publicKnowledgeSocketClosedByServer = true;
+                clearPublicKnowledgeSocketTimers();
+                publicKnowledgeSocket.close();
+                publicKnowledgeSocket = null;
+            }
+
+            publicKnowledgeCollab = window.NexoraKnowledgeCollab.createClient({
+                wsUrl: getPublicKnowledgeCollabWsUrl(),
+                getText: () => toastEditor ? toastEditor.getMarkdown() : '',
+                setText: (value, meta = {}) => {
+                    if (!toastEditor) return false;
+                    const snapshot = capturePublicEditorViewportSnapshot();
+                    applyingRemoteUpdate = true;
+                    const incremental = applyPublicCollabText(value, meta.operation) === true;
+                    lastValue = String(value || '');
+                    lastSyncedValue = String(value || '');
+                    if (!incremental) {
+                        logPublicKnowledgeSync('collab incremental apply fell back to full replace', {
+                            operation: meta.operation || null
+                        });
+                        restorePublicEditorViewportSnapshot(snapshot);
+                    }
+                    setTimeout(() => {
+                        applyingRemoteUpdate = false;
+                    }, 120);
+                    return incremental;
+                },
+                getCursorOffset: getPublicEditorCursorOffset,
+                getCursorAnchor: getPublicEditorCursorAnchor,
+                setCursorOffset: setPublicEditorCursorOffset,
+                notifyPresence: (member, action) => {
+                    const name = String(
+                        (member && member.display_name)
+                        || (member && member.role === 'owner' ? 'Owner' : '匿名协作者')
+                    ).trim() || '协作者';
+                    showPublicPresenceToast(action === 'join' ? `${name} 加入了协作` : `${name} 离开了协作`);
+                },
+                onConnectionChange: (connected) => {
+                    const mask = getPublicCollabOfflineMask();
+
+                    if (!mask) return;
+
+                    if (connected) {
+                        mask.hide();
+                    } else {
+                        mask.show('实时协作已断开，正在重连…');
+                    }
+                },
+                setStatus: setSaveStatus,
+                renderMembers: renderPublicCollabMembers,
+                renderCursors: renderPublicCollabCursors,
+            });
+            publicKnowledgeCollab.start();
+
+            const editorHost = document.querySelector('#editor');
+
+            if (editorHost && editorHost.dataset.collabCursorBound !== '1') {
+                editorHost.dataset.collabCursorBound = '1';
+                ['keyup', 'mouseup', 'touchend'].forEach((eventName) => {
+                    editorHost.addEventListener(eventName, () => {
+                        if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                            publicKnowledgeCollab.scheduleCursorSend();
+                        }
+                    }, true);
+                });
+            }
+        }
+
         async function saveData(force = false) {
             if (!toastEditor) return;
+
+            if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                publicKnowledgeCollab.flushNow();
+                setSaveStatus('ok', force ? '已请求立即同步' : '实时协作中');
+                return;
+            }
 
             if (savingNow) {
                 queuedSaveAfterCurrent = true;
@@ -1017,7 +1358,20 @@
             toastEditor.on('change', () => {
                 if (applyingRemoteUpdate) return;
 
+                if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                    publicKnowledgeCollab.notifyLocalChange();
+                    return;
+                }
+
                 schedulePublicKnowledgeSave();
+            });
+
+            ['keyup', 'mouseup', 'touchend'].forEach((eventName) => {
+                document.getElementById('editor')?.addEventListener(eventName, () => {
+                    if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                        publicKnowledgeCollab.scheduleCursorSend();
+                    }
+                }, true);
             });
         }
 
@@ -1031,7 +1385,7 @@
         }, true);
 
         initEditor();
-        startPublicKnowledgeSocket();
+        startPublicKnowledgeCollab();
     </script>
 </body>
 </html>

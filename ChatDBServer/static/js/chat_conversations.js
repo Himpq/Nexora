@@ -66,6 +66,47 @@
         return Number.isFinite(timestamp) ? timestamp : 0;
     }
 
+    function readConversationNexoraCodeProject(item) {
+        const source = item && typeof item === 'object' ? item : {};
+        const project = (source.nexoracode_project && typeof source.nexoracode_project === 'object')
+            ? source.nexoracode_project
+            : ((source.metadata && source.metadata.nexoracode_project && typeof source.metadata.nexoracode_project === 'object')
+                ? source.metadata.nexoracode_project
+                : null);
+
+        if (!project) {
+            return null;
+        }
+
+        const path = String(project.path || '').trim();
+        const name = String(project.name || '').trim() || readProjectNameFromPath(path);
+        const projectId = String(project.project_id || project.id || path || name || '').trim();
+
+        if (!projectId) {
+            return null;
+        }
+
+        return {
+            project_id: projectId,
+            name: name || 'NexoraCode Project',
+            path,
+            subtitle: String(project.subtitle || path || '本地项目').trim(),
+            tree_scanned_at: String(project.tree_scanned_at || '').trim()
+        };
+    }
+
+    function readProjectNameFromPath(path) {
+        const text = String(path || '').trim();
+
+        if (!text) {
+            return '';
+        }
+
+        const parts = text.replace(/\\/g, '/').split('/').filter(Boolean);
+
+        return parts.length ? parts[parts.length - 1] : text;
+    }
+
     function sortConversationListForDisplay(conversations) {
         const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
 
@@ -81,6 +122,45 @@
         });
 
         return orderedConversations;
+    }
+
+    function normalizeNexoraCodeProject(project) {
+        const source = project && typeof project === 'object' ? project : {};
+        const path = String(source.path || source.root || '').trim();
+        const name = String(source.name || source.title || '').trim() || readProjectNameFromPath(path);
+        const projectId = String(source.project_id || source.id || path || name || '').trim();
+
+        if (!projectId) {
+            return null;
+        }
+
+        return {
+            project_id: projectId,
+            name: name || 'NexoraCode Project',
+            path,
+            subtitle: String(source.subtitle || path || '本地项目').trim(),
+            tree_scanned_at: String(source.tree_scanned_at || '').trim()
+        };
+    }
+
+    function mergeNexoraCodeProjects(explicitProjects, projectConversationMap) {
+        const merged = new Map();
+        const addProject = (project) => {
+            const normalized = normalizeNexoraCodeProject(project);
+
+            if (!normalized) {
+                return;
+            }
+
+            if (!merged.has(normalized.project_id)) {
+                merged.set(normalized.project_id, normalized);
+            }
+        };
+
+        (Array.isArray(explicitProjects) ? explicitProjects : []).forEach(addProject);
+        projectConversationMap.forEach((entry) => addProject(entry.project));
+
+        return Array.from(merged.values());
     }
 
     function createConversationNavigationController(deps = {}) {
@@ -388,14 +468,56 @@
         const markConversationStreamRead = requireConversationDependency(deps, 'markConversationStreamRead');
         const loadConversation = requireConversationDependency(deps, 'loadConversation');
         const deleteConversation = requireConversationDependency(deps, 'deleteConversation');
+        const isNexoraCodeProjectSidebarEnabled = typeof deps.isNexoraCodeProjectSidebarEnabled === 'function'
+            ? deps.isNexoraCodeProjectSidebarEnabled
+            : () => false;
+        const getNexoraCodeProjects = typeof deps.getNexoraCodeProjects === 'function'
+            ? deps.getNexoraCodeProjects
+            : () => [];
+        const requestNexoraCodeProjectCreate = typeof deps.requestNexoraCodeProjectCreate === 'function'
+            ? deps.requestNexoraCodeProjectCreate
+            : () => showToast('NexoraCode 项目接入未就绪');
+        const requestNexoraCodeConversationCreate = typeof deps.requestNexoraCodeConversationCreate === 'function'
+            ? deps.requestNexoraCodeConversationCreate
+            : () => showToast('NexoraCode 项目对话接入未就绪');
 
         let requestSeq = 0;
         let renderSignature = '';
+        let nexoraCodeProjectPanelCollapsed = false;
+        const nexoraCodeProjectCollapseState = new Map();
         let conversationRenameState = {
             conversationId: '',
             initialTitle: '',
             saving: false
         };
+
+        function isNexoraCodeProjectPanelCollapsed() {
+            return nexoraCodeProjectPanelCollapsed;
+        }
+
+        function setNexoraCodeProjectPanelCollapsed(collapsed) {
+            nexoraCodeProjectPanelCollapsed = !!collapsed;
+        }
+
+        function isNexoraCodeProjectCollapsed(projectId) {
+            const key = String(projectId || '').trim();
+
+            if (!key) {
+                return true;
+            }
+
+            return nexoraCodeProjectCollapseState.get(key) !== false;
+        }
+
+        function setNexoraCodeProjectCollapsed(projectId, collapsed) {
+            const key = String(projectId || '').trim();
+
+            if (!key) {
+                return;
+            }
+
+            nexoraCodeProjectCollapseState.set(key, !!collapsed);
+        }
 
         async function loadConversations() {
             const currentRequestSeq = requestSeq + 1;
@@ -720,13 +842,22 @@
         function buildConversationListSignature(conversations) {
             const currentId = String(getCurrentConversationId() || '').trim();
             const orderedConversations = sortConversationListForDisplay(conversations);
+            const projectEnabled = !!isNexoraCodeProjectSidebarEnabled();
+            const explicitProjects = projectEnabled ? getNexoraCodeProjects() : [];
 
             return JSON.stringify({
                 currentId,
+                nexoracode_projects: {
+                    enabled: projectEnabled,
+                    panel_collapsed: isNexoraCodeProjectPanelCollapsed(),
+                    collapse_state: Array.from(nexoraCodeProjectCollapseState.entries()),
+                    projects: (Array.isArray(explicitProjects) ? explicitProjects : []).map((project) => normalizeNexoraCodeProject(project)).filter(Boolean)
+                },
                 items: orderedConversations.map((item) => {
                     const src = (item && typeof item === 'object') ? item : {};
                     const cid = readConversationId(src);
                     const streamState = getConversationStreamState(cid);
+                    const nexoraCodeProject = readConversationNexoraCodeProject(src);
 
                     return {
                         conversation_id: cid,
@@ -740,6 +871,7 @@
                         message_count: Number(src.message_count || 0),
                         tags: Array.isArray(src.tags) ? src.tags.map((tag) => String(tag || '').trim().toLowerCase()) : [],
                         preview: String(src.preview || ''),
+                        nexoracode_project: nexoraCodeProject,
                         stream_status: String(streamState && streamState.status || ''),
                         stream_unread: !!(streamState && streamState.unread),
                     };
@@ -769,10 +901,234 @@
             listEl.innerHTML = '';
 
             const orderedConversations = sortConversationListForDisplay(conversations);
+            const renderContext = buildNexoraCodeProjectRenderContext(orderedConversations);
+
+            if (renderContext.enabled) {
+                renderNexoraCodeProjectPanel(listEl, renderContext);
+            }
+
+            renderContext.regularConversations.forEach((conversation) => {
+                listEl.appendChild(buildConversationListItem(conversation, {}));
+            });
+        }
+
+        function buildNexoraCodeProjectRenderContext(orderedConversations) {
+            const enabled = !!isNexoraCodeProjectSidebarEnabled();
+            const regularConversations = [];
+            const projectConversationMap = new Map();
+
+            if (!enabled) {
+                return {
+                    enabled: false,
+                    projects: [],
+                    projectConversationMap,
+                    regularConversations: orderedConversations
+                };
+            }
 
             orderedConversations.forEach((conversation) => {
-                listEl.appendChild(buildConversationListItem(conversation));
+                const project = readConversationNexoraCodeProject(conversation);
+
+                if (!project) {
+                    regularConversations.push(conversation);
+                    return;
+                }
+
+                if (!projectConversationMap.has(project.project_id)) {
+                    projectConversationMap.set(project.project_id, {
+                        project,
+                        conversations: []
+                    });
+                }
+
+                projectConversationMap.get(project.project_id).conversations.push(conversation);
             });
+
+            const projects = mergeNexoraCodeProjects(getNexoraCodeProjects(), projectConversationMap);
+
+            return {
+                enabled: true,
+                projects,
+                projectConversationMap,
+                regularConversations
+            };
+        }
+
+        function renderNexoraCodeProjectPanel(listEl, context) {
+            const projects = Array.isArray(context.projects) ? context.projects : [];
+            const collapsed = isNexoraCodeProjectPanelCollapsed();
+            const section = document.createElement('section');
+            section.className = `nexoracode-sidebar-section${collapsed ? ' is-collapsed' : ''}`;
+
+            const headerRow = document.createElement('div');
+            headerRow.className = 'nexoracode-sidebar-projects-subtitle';
+
+            const main = document.createElement('button');
+            main.type = 'button';
+            main.className = 'nexoracode-sidebar-projects-main';
+            main.innerHTML = '<span class="nexoracode-sidebar-projects-title">Projects</span>';
+
+            // 原地切换折叠状态，保留 CSS 过渡动画，不触发列表全量重渲染
+            const togglePanel = () => {
+                const nextCollapsed = !isNexoraCodeProjectPanelCollapsed();
+                setNexoraCodeProjectPanelCollapsed(nextCollapsed);
+                section.classList.toggle('is-collapsed', nextCollapsed);
+            };
+
+            main.addEventListener('click', togglePanel);
+
+            const actions = document.createElement('span');
+            actions.className = 'nexoracode-sidebar-actions';
+            actions.appendChild(buildNexoraCodeProjectActionButton({
+                icon: 'fa-plus',
+                title: '添加新项目',
+                onClick: () => requestNexoraCodeProjectCreate()
+            }));
+
+            const panelCaret = buildNexoraCodeProjectActionButton({
+                icon: 'fa-chevron-down',
+                title: '展开 / 折叠项目',
+                onClick: togglePanel
+            });
+            panelCaret.classList.add('nexoracode-sidebar-caret-btn');
+            actions.appendChild(panelCaret);
+
+            headerRow.appendChild(main);
+            headerRow.appendChild(actions);
+            section.appendChild(headerRow);
+
+            const projectList = document.createElement('div');
+            projectList.className = 'nexoracode-sidebar-project-list';
+
+            const projectListInner = document.createElement('div');
+            projectListInner.className = 'nexoracode-sidebar-project-list-inner';
+
+            if (!projects.length) {
+                const empty = document.createElement('div');
+                empty.className = 'nexoracode-sidebar-project-empty';
+                empty.textContent = 'NexoraCode 未返回已授权项目';
+                projectListInner.appendChild(empty);
+            }
+
+            projects.forEach((project) => {
+                const entry = context.projectConversationMap.get(project.project_id) || { conversations: [] };
+                projectListInner.appendChild(buildNexoraCodeProjectRow(project, entry.conversations));
+            });
+
+            projectList.appendChild(projectListInner);
+            section.appendChild(projectList);
+            listEl.appendChild(section);
+        }
+
+        function buildNexoraCodeProjectActionButton({ icon, title, onClick }) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'nexoracode-sidebar-icon-btn';
+            button.title = title;
+            button.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i>`;
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (typeof onClick === 'function') {
+                    onClick();
+                }
+            });
+
+            return button;
+        }
+
+        function buildNexoraCodeProjectRow(project, conversations) {
+            const projectConversations = Array.isArray(conversations) ? conversations : [];
+            const currentId = String(getCurrentConversationId() || '').trim();
+            const containsCurrent = !!currentId && projectConversations.some(
+                (conversation) => readConversationId(conversation) === currentId
+            );
+            // 用户未手动折叠过时，包含当前会话的项目默认展开
+            const collapsed = nexoraCodeProjectCollapseState.has(project.project_id)
+                ? isNexoraCodeProjectCollapsed(project.project_id)
+                : !containsCurrent;
+            const wrap = document.createElement('div');
+            wrap.className = `nexoracode-sidebar-project${collapsed ? ' is-collapsed' : ''}`;
+
+            const row = document.createElement('div');
+            row.className = 'nexoracode-sidebar-project-row';
+
+            const main = document.createElement('button');
+            main.type = 'button';
+            main.className = 'nexoracode-sidebar-project-main';
+            main.title = String(project.path || project.name || '');
+
+            const folderIcon = document.createElement('i');
+            folderIcon.className = 'fa-solid fa-folder nexoracode-sidebar-project-icon';
+            folderIcon.setAttribute('aria-hidden', 'true');
+            main.appendChild(folderIcon);
+
+            const nameEl = document.createElement('span');
+            nameEl.className = 'nexoracode-sidebar-project-name';
+            nameEl.textContent = String(project.name || '');
+            main.appendChild(nameEl);
+
+            if (projectConversations.length) {
+                const countBadge = document.createElement('span');
+                countBadge.className = 'nexoracode-sidebar-project-count';
+                countBadge.textContent = String(projectConversations.length);
+                main.appendChild(countBadge);
+            }
+
+            // 原地切换折叠状态，保留 CSS 过渡动画
+            const toggleProject = () => {
+                const nextCollapsed = !wrap.classList.contains('is-collapsed');
+                setNexoraCodeProjectCollapsed(project.project_id, nextCollapsed);
+                wrap.classList.toggle('is-collapsed', nextCollapsed);
+            };
+
+            main.addEventListener('click', toggleProject);
+
+            const actions = document.createElement('span');
+            actions.className = 'nexoracode-sidebar-actions';
+            actions.appendChild(buildNexoraCodeProjectActionButton({
+                icon: 'fa-message',
+                title: '添加新对话',
+                onClick: () => requestNexoraCodeConversationCreate(project)
+            }));
+
+            const projectCaret = buildNexoraCodeProjectActionButton({
+                icon: 'fa-chevron-down',
+                title: '展开 / 折叠项目对话',
+                onClick: toggleProject
+            });
+            projectCaret.classList.add('nexoracode-sidebar-caret-btn');
+            actions.appendChild(projectCaret);
+
+            row.appendChild(main);
+            row.appendChild(actions);
+            wrap.appendChild(row);
+
+            const childList = document.createElement('div');
+            childList.className = 'nexoracode-sidebar-project-conversations';
+
+            const childListInner = document.createElement('div');
+            childListInner.className = 'nexoracode-sidebar-project-conversations-inner';
+
+            if (!projectConversations.length) {
+                const empty = document.createElement('div');
+                empty.className = 'nexoracode-sidebar-project-conversation-empty';
+                empty.textContent = '暂无项目对话';
+                childListInner.appendChild(empty);
+            }
+
+            projectConversations.forEach((conversation) => {
+                childListInner.appendChild(buildConversationListItem(conversation, {
+                    className: 'nexoracode-project-conversation-item',
+                    suppressPinIcon: true
+                }));
+            });
+
+            childList.appendChild(childListInner);
+            wrap.appendChild(childList);
+
+            return wrap;
         }
 
         function bindConversationItemMobileLongPress(itemEl, getPayload) {
@@ -857,8 +1213,9 @@
             }, { passive: true });
         }
 
-        function buildConversationListItem(conversation) {
+        function buildConversationListItem(conversation, options = {}) {
             const row = document.createElement('div');
+            const itemOptions = options && typeof options === 'object' ? options : {};
             const source = conversation && typeof conversation === 'object' ? conversation : {};
             const cid = String(source.conversation_id || source.id || '').trim();
             const currentId = String(getCurrentConversationId() || '').trim();
@@ -872,7 +1229,7 @@
             const isLearningConversation = tags.includes('learning') || String(source.conversation_mode || '').trim() === 'learning';
             const conversationTitle = String(source.title || source.preview || `Conversation ${cid}`);
 
-            row.className = `conversation-item ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
+            row.className = `conversation-item ${itemOptions.className || ''} ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
             row.dataset.conversationId = String(cid || '');
             row.dataset.pin = isPinned ? '1' : '0';
 
@@ -895,7 +1252,7 @@
                 titleSpan.appendChild(modeIcon);
             }
 
-            if (isPinned) {
+            if (isPinned && !itemOptions.suppressPinIcon) {
                 const pinIcon = document.createElement('i');
                 pinIcon.className = 'fa-solid fa-thumbtack conversation-pin-icon';
                 pinIcon.setAttribute('aria-hidden', 'true');

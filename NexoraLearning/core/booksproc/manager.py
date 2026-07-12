@@ -908,7 +908,39 @@ def _check_and_trigger_outline(lecture_id: str) -> None:
         )
 
 
+_JOB_TYPE_AGENT = {
+    "coarse": "rough_reading",
+    "intensive": "intensive_reading",
+    "question": "question_generation",
+}
+
+
 def _run_job(job: Dict[str, Any]) -> None:
+    """执行单个教材提炼任务（带执行时间线 run 上下文）。"""
+    from core import runlog as _rl
+
+    job_data = job if isinstance(job, dict) else {}
+    job_type = str(job_data.get("job_type") or "coarse").strip().lower() or "coarse"
+    run_id = _rl.begin_run(f"book_{job_type}", meta={
+        "job_id": str(job_data.get("job_id") or ""),
+        "lecture_id": str(job_data.get("lecture_id") or ""),
+        "book_id": str(job_data.get("book_id") or ""),
+        "model_name": str(job_data.get("model_name") or ""),
+    })
+    _rl.set_agent(_JOB_TYPE_AGENT.get(job_type, job_type))
+
+    try:
+        _run_job_impl(job)
+    except Exception as exc:
+        _rl.end_run(run_id, status="error", meta={"error": str(exc)})
+        raise
+    else:
+        _rl.end_run(run_id, status="ok")
+    finally:
+        _rl.set_agent("")
+
+
+def _run_job_impl(job: Dict[str, Any]) -> None:
     """执行单个教材提炼任务。"""
     lecture_id = str(job.get("lecture_id") or "").strip()
     book_id = str(job.get("book_id") or "").strip()

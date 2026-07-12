@@ -34,10 +34,12 @@ class ToolExecutor:
     def __init__(self, model):
         self.model = model
         self.handlers: Dict[str, Callable[[Dict[str, Any]], str]] = {
-            "runtime_tool_select": self._runtime_tool_select,
+            # Select Tools 已下线，不再注册 runtime_tool_select。
+            # "runtime_tool_select": self._runtime_tool_select,
             "runtime_tool_enable": self._runtime_tool_enable,
             "skill": self._skill,
             "question": self._question,
+            "ask_for_permission": self._ask_for_permission,
             "knowledge_list": self._get_knowledge_list,
             "memory_short_add": self._add_short,
             # "queryShortMemory": self._query_short_memory,  # short-memory tools disabled
@@ -362,6 +364,69 @@ class ToolExecutor:
         }
         return json.dumps(payload, ensure_ascii=False)
 
+    def _ask_for_permission(self, args: Dict[str, Any]) -> str:
+        safe_args = args if isinstance(args, dict) else {}
+        path = str(safe_args.get("path") or "").strip()
+        operation = str(safe_args.get("operation") or "read").strip().lower()
+        scope = str(safe_args.get("scope") or "file").strip().lower()
+        reason = str(safe_args.get("reason") or "").strip()
+        sensitive = bool(safe_args.get("sensitive", False))
+
+        if not path:
+            return "错误：path 为必填"
+
+        if operation not in {"read", "write", "read_write"}:
+            return "错误：operation 必须是 read、write 或 read_write"
+
+        if scope not in {"file", "dir"}:
+            return "错误：scope 必须是 file 或 dir"
+
+        if not reason:
+            return "错误：reason 为必填"
+
+        operation_text = {
+            "read": "读取",
+            "write": "写入",
+            "read_write": "读取和写入",
+        }.get(operation, operation)
+        scope_text = "目录" if scope == "dir" else "文件"
+        content_lines = [
+            f"模型需要临时{operation_text}这个本地{scope_text}:",
+            path,
+            "",
+            f"原因: {reason}",
+        ]
+
+        if sensitive:
+            content_lines.extend([
+                "",
+                "这个路径可能包含密钥、令牌、Cookie 或其他隐私信息。请确认你真的允许本次对话访问。",
+            ])
+
+        payload = {
+            "success": True,
+            "question": {
+                "track_answer": True,
+                "question_id": f"permission_{abs(hash((path, operation, scope, reason))) & 0xffffffff:x}",
+                "question_title": "请求本次对话临时访问权限",
+                "question_content": "\n".join(content_lines),
+                "choices": [
+                    f"允许本次对话访问此{scope_text}",
+                    "拒绝访问",
+                ],
+                "allow_other": False,
+                "permission_request": {
+                    "path": path,
+                    "operation": operation,
+                    "scope": scope,
+                    "reason": reason,
+                    "sensitive": sensitive,
+                },
+            },
+            "await": True,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _is_learning_runtime_tool(self, function_name: str) -> bool:
         if str(getattr(self.model, "_runtime_conversation_mode", "") or "").strip().lower() != "learning":
             return False
@@ -545,70 +610,19 @@ class ToolExecutor:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    def _collect_runtime_tool_names_from_args(self, args: Dict[str, Any]):
-        names = []
-        for key in ("tools", "tool_names", "toolNames", "selected_tools", "selectedTools", "names", "name_text"):
-            if key in args:
-                names.extend(self._normalize_tool_names(args.get(key)))
-        if not names and "selection" in args:
-            names.extend(self._normalize_tool_names(args.get("selection")))
+    # Select Tools 已下线：旧精确工具名解析与选择执行链路保留为注释。
+    # def _collect_runtime_tool_names_from_args(self, args: Dict[str, Any]):
+    #     ...
+    #
+    # def _runtime_catalog_names(self):
+    #     ...
+    #
+    # def _apply_runtime_tool_selection(self, args: Dict[str, Any], *, allow_enable_all: bool = False) -> str:
+    #     ...
 
-        uniq_names = []
-        seen_names = set()
-        for name in names:
-            token = canonicalize_tool_name(name)
-            if not token:
-                continue
-            key = token.lower()
-            if key in seen_names:
-                continue
-            seen_names.add(key)
-            uniq_names.append(token)
-        return uniq_names
-
-    def _runtime_catalog_names(self):
-        catalog = list(getattr(self.model, "_runtime_tool_catalog", []) or [])
-        out = []
-        seen = set()
-        for item in catalog:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "") or "").strip()
-            cname = canonicalize_tool_name(name)
-            if not name or cname in {"runtime_tool_select", "runtime_tool_enable"}:
-                continue
-            key = (cname or name).lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(cname or name)
-        return out
-
-    def _apply_runtime_tool_selection(self, args: Dict[str, Any], *, allow_enable_all: bool = False) -> str:
-        applier_by_names = getattr(self.model, "_apply_runtime_tool_selection_by_names", None)
-        if not callable(applier_by_names):
-            return json.dumps(
-                {"success": False, "message": "runtime tool selection is unavailable"},
-                ensure_ascii=False
-            )
-
-        uniq_names = self._collect_runtime_tool_names_from_args(args if isinstance(args, dict) else {})
-        if (not uniq_names) and allow_enable_all:
-            uniq_names = self._runtime_catalog_names()
-
-        if uniq_names:
-            result = applier_by_names(uniq_names)
-            if not isinstance(result, dict):
-                result = {"success": False, "message": "invalid runtime selection result"}
-            return json.dumps(result, ensure_ascii=False)
-
-        return json.dumps(
-            {"success": False, "message": "未提供有效工具名（请传入 tools/tool_names/name_text）"},
-            ensure_ascii=False
-        )
-
-    def _runtime_tool_select(self, args: Dict[str, Any]) -> str:
-        return self._apply_runtime_tool_selection(args, allow_enable_all=False)
+    # Select Tools 已下线，旧 runtime_tool_select 入口保留为注释。
+    # def _runtime_tool_select(self, args: Dict[str, Any]) -> str:
+    #     return self._apply_runtime_tool_selection(args, allow_enable_all=False)
 
     def _runtime_tool_enable(self, args: Dict[str, Any]) -> str:
         enabler = getattr(self.model, "_enable_runtime_tools_for_current_reply", None)
@@ -621,10 +635,6 @@ class ToolExecutor:
         if not isinstance(result, dict):
             result = {"success": False, "message": "invalid enable-tools result"}
 
-        requested_names = self._collect_runtime_tool_names_from_args(args if isinstance(args, dict) else {})
-        if requested_names:
-            result["requested_tool_names"] = requested_names
-            result["note"] = "runtime_tool_enable 在 Auto(OFF) 中会切换到 Force（忽略精确工具列表）"
         return json.dumps(result, ensure_ascii=False)
 
     def _resolve_longdoc_public_base_url(self) -> str:

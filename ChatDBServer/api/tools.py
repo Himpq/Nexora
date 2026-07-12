@@ -1,6 +1,7 @@
 ﻿TOOL_NAME_ALIASES = {
-    "selectTools": "runtime_tool_select",
-    "select_tools": "runtime_tool_select",
+    # Select Tools 已下线，旧别名不再映射到可调用工具。
+    # "selectTools": "runtime_tool_select",
+    # "select_tools": "runtime_tool_select",
     "EnableTools": "runtime_tool_enable",
     "enable_tools": "runtime_tool_enable",
     "skill_read": "skill",
@@ -207,6 +208,41 @@ TOOLS = [
                     }
                 },
                 "required": ["question_title", "question_content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_for_permission",
+            "description": (
+                "Ask the user for explicit temporary permission before accessing a local file or directory outside "
+                "the current NexoraCode allowed_dirs. Use this when a local tool returns permission_required."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The exact local path requiring access."},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["read", "write", "read_write"],
+                        "default": "read",
+                        "description": "Requested access type.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["file", "dir"],
+                        "default": "file",
+                        "description": "Whether the request is for one file or a directory.",
+                    },
+                    "reason": {"type": "string", "description": "Why this path is needed."},
+                    "sensitive": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set true when the path may contain secrets or private data.",
+                    },
+                },
+                "required": ["path", "operation", "scope", "reason"],
             }
         }
     },
@@ -707,59 +743,27 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "runtime_tool_select",
-            "description": "可选：在 Auto 模式下按工具名请求当前轮更具体的工具子集。调用后立即生效，仅影响当前回复。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tools": {
-                        "type": "array",
-                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"knowledge_search_vector\"]。",
-                        "items": {"type": "string"}
-                    },
-                    "tool_names": {
-                        "type": "array",
-                        "description": "可选，和 tools 等价。",
-                        "items": {"type": "string"}
-                    },
-                    "name_text": {
-                        "type": "string",
-                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,knowledge_search_vector\"。"
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "可选，简要说明选择理由。"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
+    # Select Tools 已下线：保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "runtime_tool_select",
+    #         "description": "已下线：旧 Auto(Select tools) 精确选工具入口。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {},
+    #             "required": []
+    #         }
+    #     }
+    # },
     {
         "type": "function",
         "function": {
             "name": "runtime_tool_enable",
-            "description": "仅用于 Auto(OFF) 模式：调用后当前回复后续轮次立即进入 Force（开放全部业务工具）。本工具不做精确工具选择。",
+            "description": "仅用于 Auto(OFF) 模式：调用后当前回复后续轮次立即进入 Force，开放全部业务工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "tools": {
-                        "type": "array",
-                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。",
-                        "items": {"type": "string"}
-                    },
-                    "tool_names": {
-                        "type": "array",
-                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。",
-                        "items": {"type": "string"}
-                    },
-                    "name_text": {
-                        "type": "string",
-                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。"
-                    },
                     "reason": {
                         "type": "string",
                         "description": "可选，简要说明启用理由。"

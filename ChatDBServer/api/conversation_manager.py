@@ -254,7 +254,20 @@ class ConversationManager:
         if not isinstance(tags, list):
             tags = []
 
-        return {
+        metadata = conversation_data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        nexoracode_project = metadata.get("nexoracode_project")
+        nexoracode_project_payload = {}
+        if isinstance(nexoracode_project, dict):
+            for key in ("project_id", "name", "path", "subtitle", "tree_scanned_at"):
+                value = str(nexoracode_project.get(key) or "").strip()
+
+                if value:
+                    nexoracode_project_payload[key] = value
+
+        item = {
             "conversation_id": str(conversation_id),
             "title": str(conversation_data.get("title", "未命名对话") or "未命名对话"),
             "created_at": conversation_data.get("created_at"),
@@ -268,6 +281,11 @@ class ConversationManager:
             "longterm_step": str(longterm.get("step", "") or ""),
             "preview": preview,
         }
+
+        if nexoracode_project_payload:
+            item["nexoracode_project"] = nexoracode_project_payload
+
+        return item
 
     def _write_conversation_index(self, index_data):
         safe_write_json(self.index_path, index_data, indent=2)

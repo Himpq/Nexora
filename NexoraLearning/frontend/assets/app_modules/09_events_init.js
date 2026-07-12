@@ -979,6 +979,13 @@
       });
     }
 
+    if (el.profileAgentsBtn) {
+      el.profileAgentsBtn.addEventListener("click", () => {
+        const opened = window.open("/api/sample/agents", "_blank", "noopener");
+        if (opened) opened.opener = null;
+      });
+    }
+
     el.openCoursePickerBtn.addEventListener("click", () => {
       renderCoursePicker("");
     });

@@ -343,6 +343,8 @@ class Model:
             _CLIENT_CACHE[cache_key] = self.client
         
         # 系统提示词模板（支持 {{var}} 模板变量），按请求期开关动态拼接。
+        # NexoraCode 项目上下文由 server 层写入此 runtime block，随每次请求重建拼接。
+        self._runtime_project_context_block = ""
         self.system_prompt_template = str(system_prompt or "").strip() if system_prompt else self._get_default_system_prompt_template()
         self.system_prompt = self._build_effective_system_prompt()
 
@@ -379,17 +381,18 @@ class Model:
         self.tool_result_presenter = ToolResultPresenter()
         self._external_tool_definitions: List[Dict[str, Any]] = []
         self._external_tool_names: Set[str] = set()
-        self._runtime_selector_enabled = False
         self._runtime_tool_catalog = []
-        self._runtime_tool_catalog_by_id = {}
-        self._runtime_tool_catalog_by_name = {}
-        self._runtime_tool_selector_hint = ""
         self._runtime_selected_tool_names = set()
-        self._runtime_selected_tool_ids = []
-        self._runtime_tool_selection_changed = False
-        self._runtime_hints_injected_in_request = False
         self._runtime_tool_mode = "force"
-        self._runtime_bootstrap_tool_name = "runtime_tool_select"
+        self._runtime_bootstrap_tool_name = "runtime_tool_enable"
+        # Select Tools 已下线：以下旧状态字段保留注释，避免误以为仍有精确选工具链路。
+        # self._runtime_selector_enabled = False
+        # self._runtime_tool_catalog_by_id = {}
+        # self._runtime_tool_catalog_by_name = {}
+        # self._runtime_tool_selector_hint = ""
+        # self._runtime_selected_tool_ids = []
+        # self._runtime_tool_selection_changed = False
+        # self._runtime_hints_injected_in_request = False
         self._longdoc_skill_catalog: List[Dict[str, Any]] = []
         self._temp_context_store = None
         self._temp_context_scope_id = ""
@@ -495,6 +498,11 @@ class Model:
         profile_block = self._build_user_profile_memory_prompt_block()
         if profile_block:
             rendered = f"{rendered}\n\n{profile_block}"
+        # NexoraCode 项目上下文经 runtime block 注入：chat_stream 每次请求都会重建
+        # system prompt，外部直接改 self.system_prompt 会被覆盖，必须在这里拼接
+        project_context_block = str(getattr(self, "_runtime_project_context_block", "") or "").strip()
+        if project_context_block:
+            rendered = f"{rendered}\n\n{project_context_block}"
         return rendered
 
     def _get_user_profile_memory_text(self) -> str:
@@ -519,6 +527,99 @@ class Model:
             recent_dialogue=recent_dialogue_text,
             user_knowledge=user_knowledge_text,
         )
+
+    def _agent_has_registered_tool(self, tools: Any, tool_name: str) -> bool:
+        target = str(tool_name or "").strip()
+
+        if not target:
+            return False
+
+        if not isinstance(tools, list):
+            return False
+
+        for item in tools:
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name") or "").strip()
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+
+            if not name:
+                name = str(function.get("name") or "").strip()
+
+            if name == target:
+                return True
+
+        return False
+
+    def _build_local_permission_state_prompt_block(self) -> str:
+        conversation_id = str(getattr(self, "conversation_id", "") or "").strip()
+        username = str(getattr(self, "username", "") or "").strip()
+
+        if not conversation_id or not username:
+            return ""
+
+        try:
+            from agent_tunnel import call_local_tool_sync, get_agent_tools, is_agent_online
+
+            if not is_agent_online(username):
+                return ""
+
+            tools = get_agent_tools(username)
+
+            if not self._agent_has_registered_tool(tools, "local_permission_list"):
+                return ""
+
+            result = call_local_tool_sync(
+                username,
+                "local_permission_list",
+                {"conversation_id": conversation_id},
+                timeout_sec=5,
+                context={
+                    "conversation_id": conversation_id,
+                    "username": username,
+                },
+            )
+        except Exception as exc:
+            print(f"[LOCAL_PERMISSION_HINT] failed to read temporary permissions: {exc}")
+            return ""
+
+        if not isinstance(result, dict):
+            return ""
+
+        local_result = result.get("result", result)
+
+        if not isinstance(local_result, dict) or not bool(local_result.get("success", False)):
+            return ""
+
+        permissions = local_result.get("permissions")
+
+        if not isinstance(permissions, list) or not permissions:
+            return ""
+
+        lines = [
+            "## NexoraCode 本次对话临时授权",
+            "以下路径已由用户在本次对话中临时允许访问。该信息只用于减少重复询问，真实准入仍由 NexoraCode 工具层校验。",
+        ]
+
+        for item in permissions[:20]:
+            if not isinstance(item, dict):
+                continue
+
+            path = str(item.get("path") or "").strip()
+
+            if not path:
+                continue
+
+            scope = str(item.get("scope") or "file").strip() or "file"
+            access = str(item.get("access") or "read").strip() or "read"
+            sensitive = "yes" if bool(item.get("sensitive", False)) else "no"
+            lines.append(f"- path={path} | scope={scope} | access={access} | sensitive={sensitive}")
+
+        if len(lines) <= 2:
+            return ""
+
+        return "\n".join(lines)
 
     def _get_recent_dialogue_memory_count(self) -> int:
         raw = self.config.get("recent_dialogue_memory_count", 3)
@@ -807,10 +908,10 @@ class Model:
         if mode in {"force", "all", "full"}:
             return "force"
         if mode in {"auto", "selector", "select", "auto_select", "auto-select", "autoselect"}:
-            return "auto_select"
+            return "auto_off"
         if mode in {"auto_off", "auto-off", "autooff"}:
             return "auto_off"
-        return "auto_select" if bool(enable_tools) else "off"
+        return "auto_off" if bool(enable_tools) else "off"
 
     def _adapter_flag(
         self,
@@ -2492,30 +2593,31 @@ class Model:
                 "description": spec.get("description", "")
             })
         self._runtime_tool_catalog = catalog
-        self._runtime_tool_catalog_by_id = {int(x["id"]): x for x in catalog}
-        self._runtime_tool_catalog_by_name = {str(x["name"]): x for x in catalog}
+        # Select Tools 已下线，不再维护 id/name 精确选择索引。
+        # self._runtime_tool_catalog_by_id = {int(x["id"]): x for x in catalog}
+        # self._runtime_tool_catalog_by_name = {str(x["name"]): x for x in catalog}
 
-    def _build_runtime_tool_selector_hint(self) -> str:
-        if not self._runtime_selector_enabled:
-            return ""
-        catalog_prompt = prompts.build_select_tools_catalog_prompt(self._runtime_tool_catalog)
-        return prompts.build_runtime_tool_selector_hint(catalog_prompt)
+    # Select Tools 已下线，不再生成工具选择提示。
+    # def _build_runtime_tool_selector_hint(self) -> str:
+    #     return ""
 
     def _runtime_control_tool_names(self) -> Set[str]:
-        return {"runtime_tool_select", "runtime_tool_enable"}
+        # Select Tools 已下线：runtime_tool_select 不再作为可下发控制工具。
+        return {"runtime_tool_enable"}
 
     def _init_runtime_tool_selection(self, enable_tools: bool, tool_mode: str = "force") -> None:
         normalized_mode = self._normalize_tool_mode(tool_mode, enable_tools)
         self._runtime_tool_mode = normalized_mode
-        self._runtime_bootstrap_tool_name = "runtime_tool_select"
-        self._runtime_selector_enabled = False
+        self._runtime_bootstrap_tool_name = "runtime_tool_enable"
         self._runtime_tool_catalog = []
-        self._runtime_tool_catalog_by_id = {}
-        self._runtime_tool_catalog_by_name = {}
-        self._runtime_tool_selector_hint = ""
         self._runtime_selected_tool_names = set()
-        self._runtime_selected_tool_ids = []
-        self._runtime_tool_selection_changed = False
+        # Select Tools 已下线，旧状态字段不再初始化。
+        # self._runtime_selector_enabled = False
+        # self._runtime_tool_catalog_by_id = {}
+        # self._runtime_tool_catalog_by_name = {}
+        # self._runtime_tool_selector_hint = ""
+        # self._runtime_selected_tool_ids = []
+        # self._runtime_tool_selection_changed = False
 
         if (not enable_tools) or normalized_mode == "off":
             return
@@ -2526,52 +2628,28 @@ class Model:
             if spec and spec.get("name"):
                 all_function_names.add(spec["name"])
 
-        if normalized_mode == "auto_off":
-            self._runtime_bootstrap_tool_name = "runtime_tool_enable"
-        else:
-            self._runtime_bootstrap_tool_name = "runtime_tool_select"
-
-        self._runtime_selector_enabled = self._runtime_bootstrap_tool_name in all_function_names
         self._build_runtime_tool_catalog()
 
         if normalized_mode == "force":
             control_names = self._runtime_control_tool_names()
             forced_names = {name for name in all_function_names if name and name not in control_names}
-            forced_ids = []
-            for item in (self._runtime_tool_catalog or []):
-                name = str(item.get("name", "") or "").strip()
-                if name in forced_names:
-                    try:
-                        forced_ids.append(int(item.get("id")))
-                    except Exception:
-                        pass
-            self._runtime_selector_enabled = False
             self._runtime_selected_tool_names = forced_names
-            self._runtime_selected_tool_ids = forced_ids
-            self._runtime_tool_selector_hint = ""
             return
 
-        if self._runtime_selector_enabled:
-            # 预选择阶段：仅暴露控制工具（由 _runtime_function_tool_names_for_request 控制）。
-            self._runtime_selected_tool_names = set()
-            self._runtime_selected_tool_ids = []
-            self._runtime_tool_selector_hint = self._build_runtime_tool_selector_hint()
-        else:
-            control_names = self._runtime_control_tool_names()
-            self._runtime_selected_tool_names = {name for name in all_function_names if name not in control_names}
-            self._runtime_tool_selector_hint = ""
+        self._runtime_selected_tool_names = set()
 
     def _clear_runtime_tool_selection(self) -> None:
-        self._runtime_selector_enabled = False
         self._runtime_tool_catalog = []
-        self._runtime_tool_catalog_by_id = {}
-        self._runtime_tool_catalog_by_name = {}
-        self._runtime_tool_selector_hint = ""
         self._runtime_selected_tool_names = set()
-        self._runtime_selected_tool_ids = []
-        self._runtime_tool_selection_changed = False
         self._runtime_tool_mode = "force"
-        self._runtime_bootstrap_tool_name = "runtime_tool_select"
+        self._runtime_bootstrap_tool_name = "runtime_tool_enable"
+        # Select Tools 已下线，旧状态字段只保留注释。
+        # self._runtime_selector_enabled = False
+        # self._runtime_tool_catalog_by_id = {}
+        # self._runtime_tool_catalog_by_name = {}
+        # self._runtime_tool_selector_hint = ""
+        # self._runtime_selected_tool_ids = []
+        # self._runtime_tool_selection_changed = False
 
     def _current_runtime_function_tool_names(self) -> Set[str]:
         if self._runtime_selected_tool_names:
@@ -2585,97 +2663,30 @@ class Model:
                     out.add(name)
         return out
 
-    def _runtime_has_user_tool_selection(self) -> bool:
-        selected_names = set(getattr(self, "_runtime_selected_tool_names", set()) or set())
-        return len(selected_names) > 0
-
     def _runtime_function_tool_names_for_request(self) -> Set[str]:
         """
         运行时工具白名单（用于本轮请求下发）：
-        - 未启用 selector：返回全部函数工具
-        - 启用 selector 且尚未完成选择：仅下发控制工具
-        - 启用 selector 且已选择：仅下发已选工具（不再重复下发控制工具）
+        - Off：不下发函数工具
+        - Auto(OFF)：仅下发 runtime_tool_enable
+        - Force：下发全部已启用业务工具
         """
-        if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
+        mode = str(getattr(self, "_runtime_tool_mode", "force")).strip().lower()
+        if mode == "off":
             return set()
-        if not bool(getattr(self, "_runtime_selector_enabled", False)):
-            return self._current_runtime_function_tool_names()
-        if not self._runtime_has_user_tool_selection():
-            return {str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")}
+        if mode == "auto_off":
+            return {str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_enable") or "runtime_tool_enable")}
         return self._current_runtime_function_tool_names()
 
-    def _should_attach_runtime_tool_selector_hint(self) -> bool:
-        """
-        仅在“尚未完成 select_tools 选择”阶段注入目录提示，避免后续轮次持续消耗 token。
-        """
-        # 已弃用：工具选择目录改为写入 runtime_tool_select 的工具描述中，避免向 system message 注入长协议文本。
-        return False
-
-    def _build_runtime_select_tools_catalog_suffix(self, max_items: int = 128) -> str:
-        catalog = list(getattr(self, "_runtime_tool_catalog", []) or [])
-        control_names = self._runtime_control_tool_names()
-        names: List[str] = []
-        for item in catalog:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "") or "").strip()
-            if not name or name in control_names:
-                continue
-            names.append(name)
-        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
-        return prompts.build_select_tools_catalog_suffix(
-            names,
-            max_items=max_items,
-            selector_tool=bootstrap
-        )
-
-    def _decorate_select_tools_description(
-        self,
-        tools_payload: List[Dict[str, Any]],
-        selected_function_names: Set[str]
-    ) -> List[Dict[str, Any]]:
-        payload = list(tools_payload or [])
-        selected = {str(x).strip() for x in (selected_function_names or set()) if str(x).strip()}
-        # 目录后缀仅用于 runtime_tool_select；runtime_tool_enable 语义是“直接切 force”，不做精确选择。
-        target_controls = {"runtime_tool_select"} if "runtime_tool_select" in selected else set()
-        if not target_controls:
-            return payload
-
-        suffix = self._build_runtime_select_tools_catalog_suffix()
-        if not suffix:
-            return payload
-
-        out: List[Dict[str, Any]] = []
-        for tool in payload:
-            if not isinstance(tool, dict):
-                out.append(tool)
-                continue
-            t = dict(tool)
-            t_type = str(t.get("type", "") or "").strip()
-            if t_type == "function" and isinstance(t.get("function"), dict):
-                f = dict(t.get("function") or {})
-                name = str(f.get("name", "") or "").strip()
-                if name in target_controls:
-                    desc = prompts.strip_select_tools_catalog_suffix(f.get("description", ""))
-                    if desc:
-                        desc = f"{desc}\n{suffix}"
-                    else:
-                        desc = suffix
-                    f["description"] = desc
-                    t["function"] = f
-                    out.append(t)
-                    continue
-            # 兼容非标准 function 格式
-            name = str(t.get("name", "") or "").strip()
-            if t_type == "function" and name in target_controls:
-                desc = prompts.strip_select_tools_catalog_suffix(t.get("description", ""))
-                if desc:
-                    desc = f"{desc}\n{suffix}"
-                else:
-                    desc = suffix
-                t["description"] = desc
-            out.append(t)
-        return out
+    # Select Tools 已下线，不再注入运行时工具选择提示或改写工具描述。
+    # def _should_attach_runtime_tool_selector_hint(self) -> bool:
+    #     return False
+    #
+    # def _decorate_select_tools_description(
+    #     self,
+    #     tools_payload: List[Dict[str, Any]],
+    #     selected_function_names: Set[str]
+    # ) -> List[Dict[str, Any]]:
+    #     return list(tools_payload or [])
 
     def _is_runtime_function_call_allowed(self, function_name: str) -> bool:
         """
@@ -2687,16 +2698,14 @@ class Model:
             return False
         if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return False
-        if not bool(getattr(self, "_runtime_selector_enabled", False)):
-            selected = {canonicalize_tool_name(x) for x in (getattr(self, "_runtime_selected_tool_names", set()) or set()) if str(x).strip()}
-            if selected:
-                return fn in selected
-            return True
-        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
-        if fn == bootstrap:
-            return True
-        allowed = self._current_runtime_function_tool_names()
-        return fn in allowed
+        if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "auto_off":
+            bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_enable") or "runtime_tool_enable")
+            return fn == bootstrap
+
+        selected = {canonicalize_tool_name(x) for x in (getattr(self, "_runtime_selected_tool_names", set()) or set()) if str(x).strip()}
+        if selected:
+            return fn in selected
+        return True
 
     def _filter_tools_by_runtime_selection(
         self,
@@ -2715,103 +2724,19 @@ class Model:
                 out.append(tool)
         return out
 
+    # Select Tools 已下线：保留旧精确选择入口的禁用响应，便于排查旧客户端调用。
     def _apply_runtime_tool_selection_by_names(self, names: List[Any]) -> Dict[str, Any]:
-        if not self._runtime_selector_enabled:
-            bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
-            return {
-                "success": False,
-                "message": f"{bootstrap} 未启用或当前模型不支持运行时工具切换"
-            }
-
-        normalized_names = []
-        invalid_names = []
-        seen_keys = set()
-        for raw in (names or []):
-            token = canonicalize_tool_name(raw)
-            if not token:
-                continue
-            key = token.lower()
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-
-            item = self._runtime_tool_catalog_by_name.get(token)
-            if not item:
-                for n, v in (self._runtime_tool_catalog_by_name or {}).items():
-                    if str(n).strip().lower() == key:
-                        item = v
-                        break
-            if not item:
-                invalid_names.append(raw)
-                continue
-            canonical_name = str(item.get("name", "") or "").strip()
-            if canonical_name:
-                normalized_names.append(canonical_name)
-
-        if not normalized_names:
-            return {
-                "success": False,
-                "message": "未提供有效工具名",
-                "invalid_tool_names": invalid_names,
-                "catalog_size": len(self._runtime_tool_catalog),
-            }
-
-        selected_names = []
-        selected_ids = []
-        for name in normalized_names:
-            item = self._runtime_tool_catalog_by_name.get(name, {})
-            selected_names.append(name)
-            try:
-                sid = int(item.get("id"))
-                selected_ids.append(sid)
-            except Exception:
-                pass
-
-        next_selected_set = set(selected_names)
-        changed = next_selected_set != set(self._runtime_selected_tool_names or set())
-        self._runtime_selected_tool_names = next_selected_set
-        self._runtime_selected_tool_ids = list(selected_ids)
-        if changed:
-            self._runtime_tool_selection_changed = True
-
         return {
-            "success": True,
-            "message": "工具选择已更新，当前回复后续轮次已生效",
-            "selected_tool_names": selected_names,
-            "always_enabled": [str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")],
-            "invalid_tool_names": invalid_names,
+            "success": False,
+            "message": "runtime_tool_select 已下线，请使用 runtime_tool_enable 或 Force 模式。"
         }
 
     def _apply_runtime_tool_selection_by_ids(self, ids: List[Any]) -> Dict[str, Any]:
-        normalized_names = []
-        invalid_ids = []
-        seen = set()
-        for raw in (ids or []):
-            try:
-                idx = int(raw)
-            except Exception:
-                invalid_ids.append(raw)
-                continue
-            if idx in seen:
-                continue
-            seen.add(idx)
-            item = self._runtime_tool_catalog_by_id.get(idx)
-            if not item:
-                invalid_ids.append(raw)
-                continue
-            name = str(item.get("name", "") or "").strip()
-            if name:
-                normalized_names.append(name)
-
-        result = self._apply_runtime_tool_selection_by_names(normalized_names)
-        if isinstance(result, dict):
-            result["invalid_ids"] = invalid_ids
-        return result
+        return self._apply_runtime_tool_selection_by_names([])
 
     def _enable_runtime_tools_for_current_reply(self) -> Dict[str, Any]:
         """
-        Auto(OFF) 下由 enable_tools 调用：
-        立即将当前回复后续轮次切到 force（全部业务工具可用）。
+        Auto(OFF) 下由 runtime_tool_enable 调用：立即将当前回复后续轮次切到 Force。
         """
         if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return {
@@ -2829,32 +2754,13 @@ class Model:
         enabled_names = sorted([n for n in all_function_names if n and n not in control_names])
         enabled_set = set(enabled_names)
 
-        selected_ids = []
-        for item in (self._runtime_tool_catalog or []):
-            name = str((item or {}).get("name", "") or "").strip()
-            if name in enabled_set:
-                try:
-                    selected_ids.append(int((item or {}).get("id")))
-                except Exception:
-                    pass
-
-        changed = (
-            str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() != "force"
-            or bool(getattr(self, "_runtime_selector_enabled", False))
-            or set(getattr(self, "_runtime_selected_tool_names", set()) or set()) != enabled_set
-        )
         self._runtime_tool_mode = "force"
-        self._runtime_selector_enabled = False
         self._runtime_selected_tool_names = enabled_set
-        self._runtime_selected_tool_ids = list(selected_ids)
-        if changed:
-            self._runtime_tool_selection_changed = True
 
         return {
             "success": True,
             "message": "runtime_tool_enable 已启用：当前回复后续轮次进入 Force 模式",
             "effective_mode": "force",
-            "enabled_tool_names": enabled_names,
             "enabled_count": len(enabled_names),
         }
     
@@ -2876,7 +2782,7 @@ class Model:
         try:
             if not self._is_runtime_function_call_allowed(function_name):
                 allowed_names = sorted(list(self._runtime_function_tool_names_for_request()))
-                control_tool = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
+                control_tool = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_enable") or "runtime_tool_enable")
                 if control_tool in allowed_names:
                     msg = prompts.build_runtime_tool_not_enabled_message(
                         function_name or original_function_name,
@@ -3426,6 +3332,7 @@ class Model:
             "vectorSearch",
             "puzzle",
             "question",
+            "ask_for_permission",
             "learning_card",
             "read_learning_memory",
             "append_learning_memory",
@@ -3607,6 +3514,7 @@ class Model:
             "vectorSearch",
             "puzzle",
             "question",
+            "ask_for_permission",
             "learning_card",
             "read_learning_memory",
             "append_learning_memory",
@@ -4990,7 +4898,8 @@ class Model:
                 enable_tools=effective_enable_tools,
                 tool_mode=normalized_tool_mode
             )
-            self._runtime_hints_injected_in_request = False
+            # Select Tools 运行时提示已下线。
+            # self._runtime_hints_injected_in_request = False
 
             image_inputs: List[Dict[str, Any]] = []
             if isinstance(file_ids, list):
@@ -5166,10 +5075,10 @@ class Model:
                 current_turn_system_injections.append(workspace_resource_hint)
 
             if effective_enable_tools:
-                memory_update_hint = prompts.build_memory_update_check_prompt(workspace_context)
+                memory_write_policy_hint = prompts.build_memory_write_policy_prompt(workspace_context)
 
-                if memory_update_hint:
-                    current_turn_system_injections.append(memory_update_hint)
+                if memory_write_policy_hint:
+                    current_turn_system_injections.append(memory_write_policy_hint)
 
             sandbox_path_list = self._build_sandbox_path_list_for_prompt(
                 sandbox_paths,
@@ -5185,6 +5094,11 @@ class Model:
                 )
                 sandbox_hint = prompts.build_cloud_file_sandbox_paths_prompt(sandbox_path_list)
                 current_turn_system_injections.append(sandbox_hint)
+
+            local_permission_hint = self._build_local_permission_state_prompt_block()
+
+            if local_permission_hint:
+                current_turn_system_injections.append(local_permission_hint)
 
             # Check Context Cache (provider-decided)
             last_response_id = None
@@ -6249,12 +6163,6 @@ class Model:
                             first_round_input_chars = int(max(0, round_input_chars))
                             first_round_tools_count = int(max(0, tools_count))
                             first_round_tools_chars = int(max(0, tools_chars))
-                        if bool(getattr(self, "_runtime_selector_enabled", False)):
-                            print(
-                                f"[ROUND_TOOLS] round={round_num + 1} selected_ids={list(getattr(self, '_runtime_selected_tool_ids', []) or [])} "
-                                f"selected_names={sorted(list(getattr(self, '_runtime_selected_tool_names', set()) or []))} "
-                                f"payload_function_tools={tools_fn_names}"
-                            )
                     except Exception:
                         pass
 
@@ -7143,7 +7051,7 @@ class Model:
                             if "index" in func_call:
                                 step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)
-                            if func_name == "question":
+                            if func_name in {"question", "ask_for_permission"}:
                                 question_payload = None
                                 try:
                                     parsed_question = json.loads(result) if isinstance(result, str) else result
@@ -7946,7 +7854,8 @@ class Model:
             yield {"type": "error", "content": error_msg}
         finally:
             self._clear_runtime_tool_selection()
-            self._runtime_hints_injected_in_request = False
+            # Select Tools 运行时提示已下线。
+            # self._runtime_hints_injected_in_request = False
             self._clear_temp_context_store_for_reply()
 
     def _log_token_usage_safe(
@@ -8481,18 +8390,11 @@ class Model:
                 is_longterm = str(getattr(self, "_runtime_conversation_mode", "")).lower() == "longterm"
                 tools_payload = [t for t in tools_payload if (t.get("function", {}).get("name", "") not in {"longterm_plan", "longterm_update"}) or is_longterm]
                 
-                if (
-                    bool(getattr(self, "_runtime_selector_enabled", False))
-                    or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
-                ):
+                if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force":
                     tools_payload = self._filter_tools_by_runtime_selection(
                         tools_payload,
                         runtime_tool_names
                     )
-                tools_payload = self._decorate_select_tools_description(
-                    tools_payload,
-                    runtime_tool_names
-                )
 
             # Responses API 下允许“仅联网搜索开关”生效（即使 enable_tools=false）
             if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
@@ -8567,18 +8469,11 @@ class Model:
                         else:
                             filtered_tools.append(t)
                     tools_payload = filtered_tools
-                    if (
-                        bool(getattr(self, "_runtime_selector_enabled", False))
-                        or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
-                    ):
+                    if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force":
                         tools_payload = self._filter_tools_by_runtime_selection(
                             tools_payload,
                             runtime_tool_names
                         )
-                    tools_payload = self._decorate_select_tools_description(
-                        tools_payload,
-                        runtime_tool_names
-                    )
                     params["tools"] = tools_payload
                     # provider 级 native tools（来自 model_adapters）
                     native_tools = list(getattr(self, "native_search_tools", []) or [])

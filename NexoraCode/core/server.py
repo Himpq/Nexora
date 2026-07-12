@@ -15,12 +15,25 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from flask import Flask, request, jsonify, Response, stream_with_context
 
+try:
+    from flask_sock import Sock as _FlaskSock
+except Exception as _flask_sock_import_error:
+    _FlaskSock = None
+    print(f"[NexoraProxy] flask-sock 不可用，WebSocket 转发已禁用: {_flask_sock_import_error}")
+
+try:
+    import websocket as _ws_client_lib
+except Exception as _ws_client_import_error:
+    _ws_client_lib = None
+    print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
+
 from core.tool_registry import ToolRegistry
 from core.config import config
 
 LOCAL_PORT = 27700
 
 app = Flask(__name__, static_folder=None)
+sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
 registry = ToolRegistry()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
@@ -601,6 +614,135 @@ def nc_vendor_asset(asset_path: str):
         return resp
     except Exception:
         return Response(status=502)
+
+
+if sock is not None:
+    @sock.route("/ws/<path:ws_path>")
+    def ws_bridge(client_ws, ws_path: str):
+        """将浏览器侧 WebSocket 透明转发到远端 ChatDBServer。
+
+        本地代理原本只能转发普通 HTTP，/ws/browser 等升级请求会被以 400 拒绝，
+        导致 iframe 内页面收不到 agent_status / knowledge_changed 等实时事件。
+        """
+        remote_base = _remote_base_url()
+        parts = urlsplit(remote_base)
+        ws_scheme = "wss" if parts.scheme == "https" else "ws"
+        query = request.query_string.decode("utf-8", errors="ignore")
+        safe_path = str(ws_path or "").lstrip("/")
+        remote_ws_url = urlunsplit((ws_scheme, parts.netloc, f"/ws/{safe_path}", query, ""))
+        remote_origin = f"{parts.scheme}://{parts.netloc}"
+
+        # 与 _proxy_request 相同的 cookie 语义：代理捕获的 HttpOnly 会话 cookie
+        # 打底，浏览器可见 cookie 覆盖，保证远端 Flask session 鉴权可用。
+        merged_cookies = {}
+        with _UPSTREAM_SESSION_LOCK:
+            for item in _UPSTREAM_SESSION.cookies:
+                merged_cookies[str(item.name)] = str(item.value or "")
+        for key, value in request.cookies.items():
+            merged_cookies[str(key)] = str(value)
+        cookie_header = "; ".join(f"{k}={v}" for k, v in merged_cookies.items())
+        handshake_headers = [f"Cookie: {cookie_header}"] if cookie_header else []
+
+        try:
+            remote_ws = _ws_client_lib.create_connection(
+                remote_ws_url,
+                timeout=10,
+                header=handshake_headers,
+                origin=remote_origin,
+                enable_multithread=True,
+            )
+        except Exception as e:
+            print(f"[NexoraProxy] WS 转发连接失败 path=/ws/{safe_path} error={e}")
+            return
+
+        remote_ws.settimeout(None)
+        print(f"[NexoraProxy] WS 转发已建立 path=/ws/{safe_path}")
+        closed = threading.Event()
+
+        def _close_both():
+            if closed.is_set():
+                return
+
+            closed.set()
+
+            try:
+                remote_ws.close()
+            except Exception:
+                pass
+
+            try:
+                client_ws.close()
+            except Exception:
+                pass
+
+        def _pump_remote_to_client():
+            try:
+                while not closed.is_set():
+                    frame = remote_ws.recv()
+
+                    if frame is None or frame == "":
+                        break
+
+                    client_ws.send(frame)
+            except Exception:
+                pass
+            finally:
+                _close_both()
+
+        pump_thread = threading.Thread(
+            target=_pump_remote_to_client,
+            daemon=True,
+            name=f"nc-ws-bridge-{safe_path}",
+        )
+        pump_thread.start()
+
+        try:
+            while not closed.is_set():
+                data = client_ws.receive()
+
+                if data is None:
+                    break
+
+                if isinstance(data, bytes):
+                    remote_ws.send_binary(data)
+                else:
+                    remote_ws.send(data)
+        except Exception:
+            pass
+        finally:
+            _close_both()
+            print(f"[NexoraProxy] WS 转发已关闭 path=/ws/{safe_path}")
+
+
+@app.route("/nc/api/select-folder", methods=["POST"])
+def nc_select_folder():
+    """弹出原生文件夹选择对话框（同源页面直接调用，不依赖 pywebview 注入桥）。"""
+    try:
+        import webview as _webview
+
+        win = _webview.windows[0] if _webview.windows else None
+
+        if win is None:
+            return jsonify({"success": False, "message": "主窗口未就绪"})
+
+        result = win.create_file_dialog(_webview.FOLDER_DIALOG)
+        path = ""
+
+        if isinstance(result, (list, tuple)) and result:
+            path = str(result[0] or "")
+        elif isinstance(result, str):
+            path = result
+
+        path = path.strip()
+
+        if not path:
+            return jsonify({"success": False, "cancelled": True})
+
+        print(f"[NexoraCode] project folder selected: {path}")
+        return jsonify({"success": True, "path": path})
+    except Exception as e:
+        print(f"[NexoraCode] select folder failed: {e}")
+        return jsonify({"success": False, "message": str(e)})
 
 
 @app.route("/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
