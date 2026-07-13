@@ -11,7 +11,11 @@ TOOL_CATALOG = [
         "module": "shell",
         "name": "local_shell_exec",
         "handler": "shell_exec",
-        "description": "在用户本地计算机上执行 shell 命令并返回输出结果（NexoraCode 本地工具）。仅在用户明确授权后使用。",
+        "description": (
+            "执行能在指定 timeout 内完成的一次性短命令，并分别返回 stdout、stderr 和退出码。"
+            "不要用于启动服务器、监听器、开发服务或其他持续运行任务；这些任务必须使用 local_terminal。"
+            "仅在用户明确授权后使用。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -23,25 +27,38 @@ TOOL_CATALOG = [
         },
     },
 
+    # local_shell_session 的旧实现暂时保留在 tools/shell.py，
+    # 但不再向模型注册，避免与 local_terminal 的长任务职责重叠。
+
     {
-        "module": "shell",
-        "name": "local_shell_session",
-        "handler": "handle_shell_session",
+        "module": "terminal",
+        "name": "local_terminal",
+        "handler": "local_terminal",
         "description": (
-            "创建持久化交互式终端会话，支持连续交互、cd 保持目录、长任务、分段输出。"
-            "action 取值：create | exec | status | close"
+            "统一运行本地命令，尤其用于服务器、监听器、开发服务和其他持续时间不确定的任务。"
+            "run 默认观察 10 秒；观察窗口结束时返回已有输出并保留进程。"
+            "之后使用 terminal_id 通过 read 读取新增输出，或通过 terminate 终止进程。"
+            "action 取值：run | read | terminate。"
+            "本工具不支持向 stdin 写入内容。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "动作：create(创建) | exec(执行命令) | status(查询状态) | close(关闭)",
-                    "enum": ["create", "exec", "status", "close"]
+                    "enum": ["run", "read", "terminate"],
+                    "description": "run(运行命令) | read(读取当前输出) | terminate(终止进程并读取最终输出)",
                 },
-                "session_id": {"type": "string", "description": "会话ID（exec/status/close必须传）"},
-                "command": {"type": "string", "description": "要执行的命令（仅exec）"},
-                "cwd": {"type": "string", "description": "工作目录（仅create）"},
+                "command": {"type": "string", "description": "要运行的命令，仅 run 使用"},
+                "terminal_id": {"type": "string", "description": "read/terminate 必须传入"},
+                "cwd": {"type": "string", "description": "工作目录，仅 run 使用"},
+                "wait_seconds": {
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 0,
+                    "maximum": 86400,
+                    "description": "run 在返回前观察命令的秒数，默认 10；窗口结束不会终止进程",
+                },
             },
             "required": ["action"],
         },
@@ -536,6 +553,25 @@ TOOL_CATALOG = [
         "parameters": {
             "type": "object",
             "properties": {},
+        },
+    },
+
+    {
+        "module": "code_scan",
+        "name": "local_code_scan",
+        "handler": "code_scan",
+        "description": (
+            "扫描本地项目代码结构（NexoraCode 本地工具）：按文件类型提取类、函数、方法符号列表，"
+            "返回符号名与行号构成的代码地图。支持 Python/JS/TS/C/C++/Java/C#/Go/Rust。"
+            "用于接手项目时快速了解代码结构，再用 local_file_read 按行号精读目标位置，避免盲目通读文件。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要扫描的文件或目录路径（目录会递归，自动跳过依赖/构建目录）。"},
+                "max_files": {"type": "integer", "default": 200, "description": "最多扫描的代码文件数，上限 1000。"},
+            },
+            "required": ["path"],
         },
     },
 ]

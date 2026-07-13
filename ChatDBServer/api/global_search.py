@@ -177,7 +177,7 @@ def _search_knowledge(username: str, keyword: str) -> List[Dict[str, Any]]:
 def _search_files(username: str, keyword: str) -> List[Dict[str, Any]]:
     """按文件名（别名/原始名/沙箱路径）搜索云盘文件。"""
 
-    listing = FileSandbox(username).list_files(query=keyword, limit=FILE_RESULT_LIMIT)
+    listing = UserFileSandbox(username).list_files(query=keyword, limit=FILE_RESULT_LIMIT)
     files = listing.get("files")
 
     if not isinstance(files, list):

@@ -14,6 +14,7 @@ try:
     from tools import catalog as _tool_catalog  # noqa: F401
     from tools import path_guard as _tool_path_guard  # noqa: F401
     from tools import shell as _tool_shell  # noqa: F401
+    from tools import terminal as _tool_terminal  # noqa: F401
     from tools import file_ops as _tool_file_ops  # noqa: F401
     from tools import local_permissions as _tool_local_permissions  # noqa: F401
     from tools import local_search as _tool_local_search  # noqa: F401

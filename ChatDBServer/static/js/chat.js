@@ -13701,7 +13701,7 @@ function showTokenBudgetTooltip(target, text, clientX = null, clientY = null) {
     const nextText = String(text || '').trim();
     if (!el || !nextText) return;
     const limit = normalizeContextWindow(tokenBudgetState.contextWindow);
-    const used = safeTokenInt(tokenBudgetState.roundInput);
+    const used = computeContextWindowUsedTokens();
     const remain = limit > 0 ? Math.max(0, limit - used) : 0;
     const ratioRaw = limit > 0 ? (used / limit) : 0;
     const tipModel = buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain);
@@ -13773,6 +13773,27 @@ function bindTokenBudgetTooltipTriggers() {
     }
 }
 
+/**
+ * 计算本轮实际传给模型的 input token（上下文窗口真实占用）。
+ *
+ * responses 续接类 provider（如 volcengine previous_response_id）的 usage 是增量口径，
+ * 只包含新增消息部分；完整请求的 input 物理上不可能小于 system+tools 固定部分，
+ * 检测到这种口径时补全固定部分，否则直接使用 usage 上报值。
+ */
+function computeContextWindowUsedTokens() {
+    const round = safeTokenInt(tokenBudgetState.roundInput);
+    const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
+    const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
+    const toolTokens = toolExact > 0 ? toolExact : safeTokenInt(tokenBudgetState.toolInputEstimate);
+    const fixedTokens = systemTokens + toolTokens;
+
+    if (round > 0 && fixedTokens > 0 && round < fixedTokens) {
+        return round + fixedTokens;
+    }
+
+    return round;
+}
+
 function renderTokenBudgetUi() {
     const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
     const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
@@ -13783,7 +13804,7 @@ function renderTokenBudgetUi() {
     const configuredLimit = normalizeContextWindow(tokenBudgetState.contextWindow);
     const hasContextWindow = configuredLimit > 0;
     const limit = hasContextWindow ? configuredLimit : 0;
-    const used = safeTokenInt(tokenBudgetState.roundInput);
+    const used = computeContextWindowUsedTokens();
     const ratioRaw = hasContextWindow ? (used / limit) : 0;
     const ratio = Math.max(0, Math.min(1, ratioRaw));
     const angle = Math.round(ratio * 360);
@@ -15302,6 +15323,12 @@ function buildQuestionCardId(payload, options = {}) {
         return explicitCardId;
     }
 
+    const requestCardId = String((payload && payload.question_card_id) || '').trim();
+
+    if (requestCardId) {
+        return requestCardId;
+    }
+
     const persistentQuestionId = String((payload && payload.question_id) || '').trim();
 
     if (persistentQuestionId) {
@@ -15341,6 +15368,84 @@ function normalizeQuestionPermissionRequest(value) {
         reason,
         sensitive: !!value.sensitive
     };
+}
+
+const MAX_PENDING_PERMISSION_CARDS = 1;
+
+function buildPermissionRequestIdentity(permissionRequest) {
+    const request = normalizeQuestionPermissionRequest(permissionRequest);
+    if (!request) return '';
+
+    const rawPath = String(request.path || '').trim();
+    let normalizedPath = rawPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/\/$/, '');
+    if (/^[a-z]:\//i.test(normalizedPath) || rawPath.startsWith('\\\\')) {
+        normalizedPath = normalizedPath.toLocaleLowerCase('en-US');
+    }
+
+    const identity = [normalizedPath, request.operation, request.scope].join('\n');
+    return `permission_${buildQuestionIdentityHash(identity)}`;
+}
+
+function readQuestionCardGroupKey(questionCard) {
+    if (!questionCard) return '';
+
+    const stored = String((questionCard.dataset && questionCard.dataset.questionGroupKey) || '').trim();
+    if (stored) return stored;
+
+    const body = questionCard.querySelector('.question-card-body');
+    const cardId = String((body && body.dataset && body.dataset.questionCardId) || '').trim();
+    return cardId ? `question_${cardId}` : '';
+}
+
+function findQuestionCardsByGroupKey(groupKey) {
+    const key = String(groupKey || '').trim();
+    if (!key || !els.messagesContainer) return [];
+
+    return Array.from(els.messagesContainer.querySelectorAll('.question-tool-card')).filter((card) => (
+        readQuestionCardGroupKey(card) === key
+    ));
+}
+
+function setQuestionCardGroupSubmitting(questionCard, submitting) {
+    const groupKey = readQuestionCardGroupKey(questionCard);
+    const cards = groupKey ? findQuestionCardsByGroupKey(groupKey) : [questionCard].filter(Boolean);
+
+    cards.forEach((card) => {
+        const resolved = String(card.dataset.resolved || '').trim().toLowerCase() === 'true';
+        card.dataset.submitting = submitting ? 'true' : 'false';
+        card.querySelectorAll('button, input, textarea').forEach((control) => {
+            control.disabled = !!submitting || resolved;
+        });
+
+        const pill = card.querySelector('.question-card-pill');
+        if (pill && !resolved) {
+            const isPermissionCard = String(card.dataset.toolName || '') === 'ask_for_permission';
+            pill.textContent = submitting
+                ? 'Submitting...'
+                : (isPermissionCard ? 'Awaiting permission' : 'Awaiting answer');
+        }
+    });
+}
+
+function removeOtherPendingPermissionCards(activeGroupKey) {
+    if (!els.messagesContainer) return;
+
+    const pendingCards = Array.from(els.messagesContainer.querySelectorAll('.question-tool-card')).filter((card) => {
+        const isPermissionCard = String(card.dataset.toolName || '') === 'ask_for_permission';
+        const isPending = String(card.dataset.pending || '').trim().toLowerCase() === 'true';
+        const isResolved = String(card.dataset.resolved || '').trim().toLowerCase() === 'true';
+        return isPermissionCard && isPending && !isResolved;
+    });
+    const keepCount = Math.max(0, MAX_PENDING_PERMISSION_CARDS - 1);
+    const removable = pendingCards.filter((card) => readQuestionCardGroupKey(card) !== activeGroupKey);
+
+    removable.slice(0, Math.max(0, removable.length - keepCount)).forEach((card) => {
+        console.warn('[QuestionTool] removing stale pending permission card', {
+            removed_group_key: readQuestionCardGroupKey(card),
+            active_group_key: activeGroupKey,
+        });
+        card.remove();
+    });
 }
 
 function getQuestionCardPermissionRequest(questionCard) {
@@ -15441,9 +15546,15 @@ function createQuestionCardNode(question, options = {}) {
     const allowOther = payload.allow_other !== false;
     const persistentQuestionId = String(payload.question_id || '').trim();
     const cardId = buildQuestionCardId(payload, options);
+    const questionGroupKey = `question_${cardId}`;
+    const permissionIdentity = buildPermissionRequestIdentity(permissionRequest);
     const cardIdAttr = escapeHtml(cardId);
     const persistentQuestionAttr = persistentQuestionId ? ` data-question-id="${escapeHtml(persistentQuestionId)}"` : '';
     wrap.dataset.questionCardId = cardId;
+    wrap.dataset.questionGroupKey = questionGroupKey;
+    if (permissionIdentity) {
+        wrap.dataset.permissionIdentity = permissionIdentity;
+    }
     if (persistentQuestionId) {
         wrap.dataset.questionId = persistentQuestionId;
     }
@@ -15544,11 +15655,16 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
     if (questionCard) {
-        const cardState = String(questionCard.dataset.resolved || '').trim().toLowerCase();
-        const submitState = String(questionCard.dataset.submitting || '').trim().toLowerCase();
-        const answered = !!questionCard.querySelector('.question-card-body.answered');
-        if (cardState === 'true' || submitState === 'true' || answered) return;
-        questionCard.dataset.submitting = 'true';
+        const groupKey = readQuestionCardGroupKey(questionCard);
+        const groupCards = groupKey ? findQuestionCardsByGroupKey(groupKey) : [questionCard];
+        const groupBusy = groupCards.some((card) => {
+            const cardState = String(card.dataset.resolved || '').trim().toLowerCase();
+            const submitState = String(card.dataset.submitting || '').trim().toLowerCase();
+            const answered = !!card.querySelector('.question-card-body.answered');
+            return cardState === 'true' || submitState === 'true' || answered;
+        });
+        if (groupBusy) return;
+        setQuestionCardGroupSubmitting(questionCard, true);
     }
     const body = questionCard ? questionCard.querySelector('.question-card-body') : null;
     const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || '').trim();
@@ -15562,12 +15678,20 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
             .map((btn) => String((btn.dataset && btn.dataset.choiceValue) || btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
+    const streamReady = await waitForQuestionResponseStreamIdle(currentConversationId);
+
+    if (!streamReady) {
+        if (questionCard) setQuestionCardGroupSubmitting(questionCard, false);
+        if (typeof showToast === 'function') {
+            showToast('上一条回复仍在收尾，请稍后重试');
+        }
+        return;
+    }
+
     const permissionSubmission = await resolvePermissionQuestionSubmission(questionCard, finalAnswer);
 
     if (!permissionSubmission.success) {
-        if (questionCard) {
-            questionCard.dataset.submitting = 'false';
-        }
+        if (questionCard) setQuestionCardGroupSubmitting(questionCard, false);
 
         if (typeof showToast === 'function') {
             showToast(permissionSubmission.message || '权限授权失败');
@@ -15580,14 +15704,19 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     if (payload.question_card_id) {
         rememberLockedQuestion(payload.question_card_id, answerForMessage);
     }
-    if (questionCard) applyQuestionAnswer(questionCard, answerForMessage);
+    if (questionCard) {
+        const groupKey = readQuestionCardGroupKey(questionCard);
+        const groupCards = groupKey ? findQuestionCardsByGroupKey(groupKey) : [questionCard];
+        groupCards.forEach((card) => applyQuestionAnswer(card, answerForMessage));
+    }
     if (els.messageInput) {
         els.messageInput.value = answerForMessage;
         resizeMessageInput();
     }
     await sendMessage({
         displayContentOverride: answerForMessage,
-        textOverride: answerForMessage
+        textOverride: answerForMessage,
+        questionResponse: true,
     });
 }
 
@@ -15603,12 +15732,32 @@ function appendQuestionStep(messageDiv, step) {
     const content = messageDiv.querySelector('.message-content');
     if (!content) return;
     const payload = (step.question && typeof step.question === 'object') ? step.question : step;
-    const node = createQuestionCardNode(payload);
+    const stepCardId = String(step.call_id || step.callId || payload.question_card_id || '').trim();
+    const node = createQuestionCardNode(payload, { cardId: stepCardId });
     if (!node) return;
     const body = node.querySelector('.question-card-body');
     const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || payload.question_id || '').trim();
+    const questionGroupKey = readQuestionCardGroupKey(node);
     const payloadAnswer = String(payload.answer || '').trim();
     const rememberedAnswer = payloadAnswer || getLockedQuestionAnswer(questionCardId);
+    const existingCards = questionGroupKey ? findQuestionCardsByGroupKey(questionGroupKey) : [];
+
+    if (existingCards.length) {
+        if (rememberedAnswer) {
+            existingCards.forEach((card) => applyQuestionAnswer(card, rememberedAnswer));
+        }
+        console.info('[QuestionTool] merged duplicate question card', {
+            question_group_key: questionGroupKey,
+            question_id: String(payload.question_id || ''),
+        });
+        placeInteractiveCardsBelowToolChain(messageDiv);
+        return;
+    }
+
+    if (String(node.dataset.toolName || '') === 'ask_for_permission') {
+        removeOtherPendingPermissionCards(questionGroupKey);
+    }
+
     if (rememberedAnswer) {
         applyQuestionAnswer(node, rememberedAnswer);
     }
@@ -16036,6 +16185,34 @@ async function waitForStreamServerFinalized(streamId, conversationId, options = 
         stream_id: sid,
         conversation_id: cid,
         max_wait_ms: maxWaitMs
+    });
+    return false;
+}
+
+async function waitForQuestionResponseStreamIdle(conversationId, options = {}) {
+    const cid = String(conversationId || '').trim();
+    if (!cid || !isConversationStreamRunning(cid)) return true;
+
+    const opts = (options && typeof options === 'object') ? options : {};
+    const maxWaitMs = Number.isFinite(Number(opts.maxWaitMs)) ? Math.max(0, Number(opts.maxWaitMs)) : 8000;
+    const intervalMs = Number.isFinite(Number(opts.intervalMs)) ? Math.max(100, Number(opts.intervalMs)) : 150;
+    const startedAt = Date.now();
+
+    while ((Date.now() - startedAt) <= maxWaitMs) {
+        await syncStoredConversationStreamStatus({ conversationIds: [cid] });
+
+        if (!isConversationStreamRunning(cid)) {
+            return true;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    const state = getConversationStreamState(cid);
+    console.error('[QuestionTool] previous stream did not finish before answer submission', {
+        conversation_id: cid,
+        stream_id: String((state && state.stream_id) || ''),
+        max_wait_ms: maxWaitMs,
     });
     return false;
 }
@@ -16722,7 +16899,7 @@ function buildContextCompressionPreflightInfo(modelId, forceRequested = false) {
     const contextWindow = normalizeContextWindow(ctx.limit);
     const rawInput = Math.max(
         0,
-        safeTokenInt(tokenBudgetState.roundInput),
+        computeContextWindowUsedTokens(),
         safeTokenInt(tokenBudgetState.latestRawInputTokens),
         safeTokenInt(tokenBudgetState.latestInputTokens)
     );
@@ -16764,6 +16941,7 @@ async function maybeConfirmContextCompressionBeforeSend(modelId, forceRequested 
 
 async function sendMessage(options = {}) {
     const isAutoContinue = !!(options && options.autoContinue);
+    const isQuestionResponse = !!(options && options.questionResponse);
     const useExistingUserMessage = !!(options && options.useExistingUserMessage);
     const autoContinueKind = String(options && options.autoContinueKind ? options.autoContinueKind : '').trim();
     const isConfirmationAutoContinue = autoContinueKind === 'confirm';
@@ -16846,6 +17024,12 @@ async function sendMessage(options = {}) {
     
 // 说明
     syncGenerationStateForCurrentConversation();
+    if (isQuestionResponse && isConversationStreamRunning(currentConversationId)) {
+        showToast('上一条回复仍在收尾，请稍后重试');
+        latencyProbe.flush('question_response_blocked_by_generation', { force: true });
+        return;
+    }
+
     if (workspaceRequestWorkspaceId && isGenerating) {
         showToast('当前仍有回复生成中，请稍候');
         latencyProbe.flush('workspace_send_blocked_by_generation', { force: true });

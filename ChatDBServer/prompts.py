@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, List
 
 
 KB_CITATION_RULES = """知识库引用规则：
-- 只有当你的回答结论实际依赖 knowledge_basis_read、knowledge_search_keyword、knowledge_search_vector 等知识库工具返回的内容时，才添加 [kb] 引用标记。
+- 只有当你的回答结论实际依赖 knowledge_basis_read、search 等知识库工具返回的内容时，才添加 [kb] 引用标记。
 - 禁止为了演示引用格式、测试引用能力或随机举例而主动读取用户知识库；用户只问引用格式时，用普通文字或代码块说明格式，不要输出真实 [kb] 引用。
 - 每个 [kb] 引用必须紧跟在它支撑的句子后面，格式为：[kb]知识标题或basis_id,原文连续片段[/kb]。
 - 原文连续片段必须是工具返回内容里的真实连续子串，不能改写、不能拼接、不能跨越不连续位置；优先选择 6 到 80 个字的短片段。

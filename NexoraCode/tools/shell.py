@@ -19,7 +19,8 @@ TOOL_MANIFEST = [
         "name": "local_shell_exec",
         "handler": "shell_exec",
         "description": (
-            "在用户本地计算机上执行 shell 命令并返回输出结果（NexoraCode 本地工具）。"
+            "执行能在指定 timeout 内完成的一次性短命令，并分别返回 stdout、stderr 和退出码。"
+            "不要用于服务器、监听器、开发服务或其他持续运行任务；这些任务必须使用 local_terminal。"
             "仅在用户明确授权后使用。"
             "注意：Python 命令会自动注入 -u 参数以关闭缓冲，确保输出不被丢失。"
         ),
@@ -33,30 +34,7 @@ TOOL_MANIFEST = [
             "required": ["command"],
         },
     },
-
-        # ===================== 新增：交互式连续终端 =====================
-    {
-        "name": "local_shell_session",
-        "handler": "handle_shell_session",
-        "description": (
-            "创建持久化交互式终端会话，支持连续交互、cd 保持目录、长任务、分段输出。"
-            "action 取值：create | exec | status | close"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "动作：create(创建) | exec(执行命令) | status(查询状态) | close(关闭)",
-                    "enum": ["create", "exec", "status", "close"]
-                },
-                "session_id": {"type": "string", "description": "会话ID（exec/status/close必须传）"},
-                "command": {"type": "string", "description": "要执行的命令（仅exec）"},
-                "cwd": {"type": "string", "description": "工作目录（仅create）"},
-            },
-            "required": ["action"],
-        },
-    },
+    # local_shell_session 的旧实现保留在本模块，但不再发布给模型。
 ]
 
 def handle_shell_session(action: str, session_id: str = None, command: str = None, cwd: str = None):

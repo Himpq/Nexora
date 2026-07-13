@@ -8,6 +8,9 @@
     "readSkill": "skill",
     "vectorSearch": "knowledge_search_vector",
     "vector_search": "knowledge_search_vector",
+    # 已下线的两个联网搜索工具统一映射到 search，历史会话调用旧名可平滑迁移
+    "server_web_search": "search",
+    "relay_web_search": "search",
     "arxivSearch": "arxiv_search",
     "getKnowledgeList": "knowledge_list",
     "get_knowledge_list": "knowledge_list",
@@ -249,14 +252,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_web_search",
-            "description": "进行系统级互联网搜索引擎实时检索。当你需要搜集网络资讯（如国内某物近况等）或者用户要求联网查询时使用。",
+            "name": "search",
+            "description": (
+                "统一搜索工具：一次查询用户的知识库（标题+内容关键词，向量库启用时自动融合语义命中）、"
+                "云盘文件（文件名匹配）与互联网（NexoraSearch 启用时）。"
+                "返回按来源分组的结果；某来源未启用时会在 notes 中说明。需要查找任何资料时优先使用本工具。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键词"
+                        "description": "搜索关键词。要求具体、可检索，避免过宽泛。"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["all", "knowledge", "files", "web"],
+                        "description": "搜索范围：all=全部来源（默认），knowledge=知识库，files=云盘文件，web=互联网"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "每个来源最多返回的条数，默认 8，上限 20"
                     }
                 },
                 "required": ["query"]
@@ -776,56 +792,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "knowledge_search_vector",
-            "description": "在向量库中做语义检索，仅能检索知识库的内容。" + prompts.knowledge_citation_tool_hint,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索文本"
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "返回条数，默认5"
-                    },
-                    "library": {
-                        "type": "string",
-                        "description": "可选，向量库命名空间。默认 knowledge。"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_file_search_semantic",
-            "description": "在用户云端文件向量库 temp_file 中做语义检索；不传 file_alias 时检索当前用户全部云端文件。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "语义检索问题"
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "返回条数，默认5，范围1-20"
-                    },
-                    "file_alias": {
-                        "type": "string",
-                        "description": "可选，单文件筛选参数（支持 user/files/xxx、alias、原始文件名）。不传则默认全文件库检索。"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "arxiv_search",
             "description": "在 arXiv 中搜索论文，返回标题、作者、摘要、时间和 PDF 链接。",
             "parameters": {
@@ -1181,26 +1147,7 @@ TOOLS = [
             }
         }
     },
-    
-    {
-        "type": "function",
-        "function": {
-            "name": "relay_web_search",
-            "description": "本地中转联网搜索工具（relay）。仅在当前模型缺少原生联网搜索能力或本地知识不足时使用。必须返回可验证来源，严禁编造URL/日期/来源。",
 
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索关键词或问题描述。要求具体、可检索，避免过宽泛。"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    
     # {
     #     "type": "function",
     #     "function": {
@@ -1418,30 +1365,7 @@ TOOLS = [
     #             "required": ["offset", "keyword"]
     #         }
     #     }
-    # },        
-    {
-        "type": "function",
-        "function": {
-            "name": "knowledge_search_keyword",
-            "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。" + prompts.knowledge_citation_tool_hint,
-
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": "要搜索的关键词"
-                    },
-                    "range": {
-                        "type": "integer",
-                        "description": "关键词前后返回的字符数，默认10"
-                    }
-                },
-                "required": ["keyword"]
-            }
-        }
-    },
-
+    # },
     {
         "type": "function",
         "function": {

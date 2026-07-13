@@ -10,6 +10,7 @@ from urllib import request as urllib_request, parse as urllib_parse, error as ur
 from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 import ssl
+import uuid
 
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
@@ -23,6 +24,7 @@ from learning_runtime import LearningRuntimeExecutor, get_learning_tools
 from longdoc_skills import read_longdoc_skill
 from map.baidu import BaiduMapToolService
 from map.tianditu import create_map_tool_service
+from permission_requests import build_permission_question_id, normalize_project_permission_request
 
 
 class ToolExecutor:
@@ -50,7 +52,7 @@ class ToolExecutor:
             "knowledge_basis_read": self._get_basis_content,
             "longterm_plan": self._longterm_plan,
             "longterm_update": self._longterm_update,
-            "server_web_search": self._server_web_search,
+            "search": self._unified_search,
             "server_render_page": self._server_render_page,
             "generate_image": self._generate_image,
             "knowledge_search_keyword": self._search_keyword,
@@ -75,7 +77,6 @@ class ToolExecutor:
             "conversation_context_length": self._get_context_length,
             "conversation_context_read": self._get_context,
             "conversation_context_search": self._get_context_find_keyword,
-            "relay_web_search": self._relay_web_search,
             "send_email": self._send_email,
             "get_email_list": self._get_email_list,
             "get_email": self._get_email,
@@ -384,6 +385,22 @@ class ToolExecutor:
         if not reason:
             return "错误：reason 为必填"
 
+        requested_path = path
+        project_root = str(getattr(self.model, "_runtime_nexoracode_project_path", "") or "").strip()
+        path, operation, scope, project_scoped = normalize_project_permission_request(
+            path=path,
+            operation=operation,
+            scope=scope,
+            project_root=project_root,
+            sensitive=sensitive,
+        )
+
+        if project_scoped:
+            print(
+                "[LOCAL_PERMISSION_REQUEST] normalized Project permission "
+                f"requested_path={requested_path} project_root={path} access={operation} scope={scope}"
+            )
+
         operation_text = {
             "read": "读取",
             "write": "写入",
@@ -407,7 +424,8 @@ class ToolExecutor:
             "success": True,
             "question": {
                 "track_answer": True,
-                "question_id": f"permission_{abs(hash((path, operation, scope, reason))) & 0xffffffff:x}",
+                "question_id": build_permission_question_id(path, operation, scope),
+                "question_card_id": f"permission_request_{uuid.uuid4().hex}",
                 "question_title": "请求本次对话临时访问权限",
                 "question_content": "\n".join(content_lines),
                 "choices": [
@@ -1513,17 +1531,6 @@ class ToolExecutor:
             conversation_id=self.model.conversation_id,
         )
 
-    def _relay_web_search(self, args: Dict[str, Any]) -> str:
-        query = args.get("query", "")
-        print(f"[SEARCH] 执行中转联网搜索: {query}")
-        if not str(query or "").strip():
-            return "联网搜索执行失败: query 不能为空"
-        try:
-            return self.model._execute_local_web_search_relay(query, args)
-        except Exception as e:
-            print(f"[SEARCH][RELAY] 失败: {e}")
-            return f"联网搜索执行失败: {str(e)}"
-
     def _send_email(self, args: Dict[str, Any]) -> str:
         return self.model._tool_send_email(args)
 
@@ -1798,76 +1805,200 @@ class ToolExecutor:
 
 
 
-    def _server_web_search(self, args: Dict[str, Any]) -> str:
+    def _unified_search(self, args: Dict[str, Any]) -> str:
+        """统一搜索工具：知识库（关键词+可用时的向量语义）、云盘文件、互联网一次查询。
+
+        某来源后端未启用时跳过该来源并写入 notes，而不是让整次搜索失败。
+        """
+
         query = str(args.get("query", "")).strip()
+
         if not query:
-            return "Error: Missing query parameter."
-            
+            return json.dumps({"success": False, "message": "query is required"}, ensure_ascii=False)
+
+        scope = str(args.get("scope") or "all").strip().lower()
+
+        if scope not in {"all", "knowledge", "files", "web"}:
+            scope = "all"
+
+        limit = max(1, min(int(args.get("limit") or 8), 20))
+        results: Dict[str, Any] = {}
+        notes = []
+
+        if scope in {"all", "knowledge"}:
+            results["knowledge"] = self._unified_search_knowledge(query, limit, notes)
+
+        if scope in {"all", "files"}:
+            results["files"] = self._unified_search_files(query, limit, notes)
+
+        if scope in {"all", "web"}:
+            results["web"] = self._unified_search_web(query, limit, notes)
+
+        return json.dumps({
+            "success": True,
+            "query": query,
+            "scope": scope,
+            "results": results,
+            "notes": notes,
+        }, ensure_ascii=False)
+
+    def _unified_search_knowledge(self, query: str, limit: int, notes: list) -> list:
+        """知识库来源：关键词命中（标题+内容）为主，向量库启用时融合语义命中并按标题去重。"""
+
+        items = []
+        seen_titles = set()
+
+        try:
+            payload = json.loads(self.model.user.search_keyword(query, range_size=60))
+            matches = payload.get("matches") if isinstance(payload, dict) else []
+
+            for match in matches if isinstance(matches, list) else []:
+                if not isinstance(match, dict):
+                    continue
+
+                title = str(match.get("title") or match.get("article") or "").strip()
+
+                if not title or title in seen_titles:
+                    continue
+
+                seen_titles.add(title)
+                items.append({
+                    "title": title,
+                    "snippet": str(match.get("snippet") or "").replace("\n", " ").strip()[:200],
+                    "matched_by": "keyword",
+                })
+
+                if len(items) >= limit:
+                    break
+        except Exception as e:
+            notes.append(f"knowledge keyword search failed: {e}")
+
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+        rag_cfg = cfg.get("rag_database", {}) if isinstance(cfg, dict) else {}
+
+        if not rag_cfg.get("rag_database_enabled", False):
+            notes.append("vector db disabled, knowledge results are keyword-only")
+            return items
+
+        try:
+            store = ChromaStore(rag_cfg)
+            result = store.query_text(self.model.username, query, top_k=limit, library="knowledge")
+            metas = result.get("metadatas", [[]])[0] if isinstance(result.get("metadatas"), list) else []
+            docs = result.get("documents", [[]])[0] if isinstance(result.get("documents"), list) else []
+
+            for meta, doc in zip(metas, docs):
+                if len(items) >= limit:
+                    break
+
+                meta = meta if isinstance(meta, dict) else {}
+                title = str(meta.get("title") or "").strip()
+
+                if not title or title in seen_titles:
+                    continue
+
+                seen_titles.add(title)
+                items.append({
+                    "title": title,
+                    "snippet": str(doc or "").replace("\n", " ").strip()[:200],
+                    "matched_by": "semantic",
+                })
+        except Exception as e:
+            notes.append(f"knowledge semantic search failed: {e}")
+
+        return items
+
+    def _unified_search_files(self, query: str, limit: int, notes: list) -> list:
+        """云盘文件来源：按文件别名/原始名/路径模糊匹配。"""
+
+        try:
+            listing = self._file_sandbox.list_files(query=query, limit=limit)
+            files = listing.get("files") if isinstance(listing, dict) else []
+        except Exception as e:
+            notes.append(f"file search failed: {e}")
+            return []
+
+        items = []
+
+        for entry in files if isinstance(files, list) else []:
+            if not isinstance(entry, dict):
+                continue
+
+            alias = str(entry.get("alias") or "").strip()
+
+            if not alias:
+                continue
+
+            items.append({
+                "alias": alias,
+                "name": str(entry.get("original_name") or alias),
+            })
+
+        return items
+
+    def _unified_search_web(self, query: str, limit: int, notes: list) -> list:
+        """互联网来源：NexoraSearch 启用时查询，三引擎结果合并、按 URL 去重、瘦身输出。"""
+
         cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
         search_cfg = cfg.get("nexora_search", {}) if isinstance(cfg, dict) else {}
-        
+
         if not search_cfg.get("nexora_search_enabled", False):
-            return "NexoraSearch is currently disabled."
-            
+            notes.append("web search unavailable: NexoraSearch is disabled")
+            return []
+
         url = str(search_cfg.get("service_url", "http://127.0.0.1:8080")).strip('/')
         api_key = str(search_cfg.get("api_key", ""))
         timeout = search_cfg.get("timeout", 15)
-        
         target_url = f"{url}/api/search/render?query={urllib_parse.quote(query)}"
         req = urllib_request.Request(target_url, headers={
             "Authorization": f"Bearer {api_key}" if api_key else ""
         })
-        
+
         try:
             with urllib_request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read().decode('utf-8')
-                result = json.loads(data)
-                
-                if result.get("success"):
-                    payload = result.get("results", {})
-                    if isinstance(payload, dict) and "results" in payload and isinstance(payload.get("results"), dict):
-                        items = payload.get("results", {})
-                        meta = payload.get("meta", {}) if isinstance(payload.get("meta", {}), dict) else {}
-                    else:
-                        items = payload if isinstance(payload, dict) else {}
-                        meta = {}
-
-                    engines_meta = meta.get("engines", {}) if isinstance(meta.get("engines", {}), dict) else {}
-                    total_results = meta.get("total_results", None)
-
-                    output = [f"Search Results for '{query}':"]
-                    if total_results is not None:
-                        output.append(f"Summary: total_results={total_results}, engines={len(items)}")
-                    else:
-                        output.append(f"Summary: engines={len(items)}")
-
-                    # Render all search engine results with counts and errors.
-                    for engine in ("bing", "baidu", "sogou"):
-                        engine_results = items.get(engine, []) if isinstance(items, dict) else []
-                        engine_meta = engines_meta.get(engine, {}) if isinstance(engines_meta, dict) else {}
-                        result_count = engine_meta.get("result_count", len(engine_results))
-                        status = engine_meta.get("status", "ok" if engine_results else "empty")
-                        content_length = engine_meta.get("content_length", 0)
-                        source = engine_meta.get("source", "trafilatura")
-                        output.append(f"--- {engine.upper()} ---")
-                        output.append(f"count: {result_count}, status: {status}, source: {source}, content_length: {content_length}")
-                        if engine_meta.get("error"):
-                            output.append(f"error: {engine_meta.get('error')}")
-                        if engine_results:
-                            for idx, item in enumerate(engine_results[:5], 1): # Max 5 per engine
-                                output.append(f"{idx}. [{item.get('title', '')}]({item.get('url', '')})\n   {item.get('snippet', '')}")
-                        else:
-                            output.append("(no parsed results)")
-                    
-                    final_text = "\n".join(output)
-                    return final_text[:12000] # Safeguard context
-                else:
-                    return f"Search Request Failed: {result.get('error', 'Unknown Error')}"
-        except urllib_error.HTTPError as e:
-            msg = e.read().decode('utf-8') if e.fp else str(e)
-            return f"HTTP Error {e.code}: {msg}"
+                result = json.loads(resp.read().decode('utf-8'))
         except Exception as e:
-            return f"Search Internal Error: {str(e)}"
+            notes.append(f"web search failed: {e}")
+            return []
+
+        if not result.get("success"):
+            notes.append(f"web search failed: {result.get('error', 'unknown error')}")
+            return []
+
+        payload = result.get("results", {})
+
+        if isinstance(payload, dict) and isinstance(payload.get("results"), dict):
+            engine_map = payload.get("results", {})
+        else:
+            engine_map = payload if isinstance(payload, dict) else {}
+
+        items = []
+        seen_urls = set()
+
+        for engine, engine_results in engine_map.items():
+            if not isinstance(engine_results, list):
+                continue
+
+            for entry in engine_results:
+                if not isinstance(entry, dict):
+                    continue
+
+                link = str(entry.get("url") or "").strip()
+
+                if not link or link in seen_urls:
+                    continue
+
+                seen_urls.add(link)
+                items.append({
+                    "title": str(entry.get("title") or "").strip(),
+                    "url": link,
+                    "snippet": str(entry.get("snippet") or "").replace("\n", " ").strip()[:200],
+                    "engine": str(engine),
+                })
+
+                if len(items) >= limit:
+                    return items
+
+        return items
 
     def _server_render_page(self, args: Dict[str, Any]) -> str:
         url = str(args.get("url", "")).strip()

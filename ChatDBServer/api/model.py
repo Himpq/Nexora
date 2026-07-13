@@ -170,10 +170,9 @@ STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
 }
 LEARNING_ALLOWED_BASE_TOOL_NAMES = {
     "question",
-    "knowledge_search_vector",
+    "search",
     "knowledge_list",
     "knowledge_basis_read",
-    "knowledge_search_keyword",
 }
 
 def _ensure_json_serializable(obj):
@@ -345,6 +344,7 @@ class Model:
         # 系统提示词模板（支持 {{var}} 模板变量），按请求期开关动态拼接。
         # NexoraCode 项目上下文由 server 层写入此 runtime block，随每次请求重建拼接。
         self._runtime_project_context_block = ""
+        self._runtime_nexoracode_project_path = ""
         self.system_prompt_template = str(system_prompt or "").strip() if system_prompt else self._get_default_system_prompt_template()
         self.system_prompt = self._build_effective_system_prompt()
 
@@ -2391,13 +2391,15 @@ class Model:
         use_responses_api = self._provider_use_responses_api(provider)
         disabled_injected_tool_names = {
             "knowledge_graph_read",
-            "server_web_search",
             "server_render_page",
-            "relay_web_search",
             "arxiv_search",
             "conversation_context_length",
             "conversation_context_read",
             "conversation_context_search",
+            # 知识库/文件语义检索已统一进 search 工具，不再单独注入（executor 保留以兼容历史调用）
+            "knowledge_search_keyword",
+            "knowledge_search_vector",
+            "cloud_file_search_semantic",
         }
 
         # 1) 优先注入 provider 级 native tools（由 model_adapters.json 驱动）
@@ -2423,23 +2425,13 @@ class Model:
 
                 if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
                     continue
-                if func_def.get("name") in ["knowledge_search_vector", "cloud_file_search_semantic"] and not rag_enabled:
-                    continue
                 if canonical_func_name in MAIL_TOOL_NAMES and not mail_tools_enabled:
                     continue
-                if func_def.get("name") in ["server_web_search", "server_render_page"] and not nexora_search_enabled:
+                if func_def.get("name") == "server_render_page" and not nexora_search_enabled:
                     continue
                 if func_def.get("name") == "generate_image" and not gen_image_enabled:
                     continue
-                                 
-                # provider 已具备可直连的 native 搜索能力时，隐藏本地中转 relay_web_search/searchOnline。
-                # 使用 provider adapter 能力判定，不再硬编码 provider 名。
-                if (
-                    func_def["name"] in ["searchOnline", "relay_web_search"]
-                    and bool(getattr(self, "native_web_search_enabled", False))
-                ):
-                     continue
-                
+
                 if use_responses_api:
                     # Responses API 使用扁平结构
                     parsed_tools.append({
@@ -3199,7 +3191,7 @@ class Model:
         if not isinstance(raw, dict):
             raw = {}
         enabled = bool(raw.get("enabled", True))
-        trigger_chars = max(128, int(raw.get("trigger_chars", 1000) or 1000))
+        trigger_chars = max(128, int(raw.get("trigger_chars", 12000) or 12000))
         expire_seconds = max(0, int(raw.get("expire_seconds", 0) or 0))
         storage = str(raw.get("storage", "memory") or "memory").strip().lower()
         if storage not in {"memory", "file"}:
@@ -3268,6 +3260,7 @@ class Model:
             "local_file_patch",
             "local_shell_exec",
             "local_shell_session",
+            "local_terminal",
             "image_search",
             "browser_page_open",
             "browser_page_read",
@@ -3349,7 +3342,7 @@ class Model:
         if not bool(settings.get("enabled", False)):
             return None
         text = str(result or "")
-        trigger_chars = max(128, int(settings.get("trigger_chars", 1000) or 1000))
+        trigger_chars = max(128, int(settings.get("trigger_chars", 12000) or 12000))
         if len(text) < trigger_chars:
             return None
         store = self._temp_context_store
@@ -3430,6 +3423,7 @@ class Model:
         no_truncate_tools = {
             "knowledge_basis_read",
             "knowledge_list",
+            "search",
             "memory_profile_read",
             "memory_short_update",
             "memory_short_add",
@@ -3477,6 +3471,7 @@ class Model:
             "local_file_patch",
             "local_shell_exec",
             "local_shell_session",
+            "local_terminal",
             "image_search",
             "browser_page_open",
             "browser_page_read",
@@ -4427,34 +4422,40 @@ class Model:
             tool_loop_guard_elapsed_seconds = 0.0
             tool_loop_guard_consecutive_rounds = 0
             tool_loop_guard_repeat_count = 0
+            # 默认 0 = 不限制连续工具轮次（Project 编码多步任务不被打断）；
+            # 如需重新启用闸门，把该配置设为正整数即可。
             tool_loop_max_consecutive_rounds = _get_runtime_int_config(
                 "tool_loop_max_consecutive_tool_rounds",
-                6,
-                min_value=1,
+                0,
+                min_value=0,
                 max_value=64
             )
             tool_loop_repeat_signature_limit = _get_runtime_int_config(
                 "tool_loop_repeat_signature_limit",
-                2,
+                6,
                 min_value=1,
                 max_value=16
             )
+            # 默认 0 = 不限制单轮工具循环总耗时。
             tool_loop_timeout_seconds = _get_runtime_float_config(
                 "tool_loop_timeout_seconds",
-                90.0,
-                min_value=15.0,
+                0.0,
+                min_value=0.0,
                 max_value=600.0
             )
             if normalized_conversation_mode == "longterm":
-                tool_loop_max_consecutive_rounds = max(
-                    tool_loop_max_consecutive_rounds,
-                    _get_runtime_int_config(
-                        "tool_loop_max_consecutive_tool_rounds_longterm",
-                        10,
-                        min_value=1,
-                        max_value=96
+                # longterm 更需要长链工具循环：仅当基础配置已启用轮次闸门（>0）时才取较大值，
+                # 基础为 0（不限制）则保持不限制，不被 max() 拉回有限值。
+                if tool_loop_max_consecutive_rounds > 0:
+                    tool_loop_max_consecutive_rounds = max(
+                        tool_loop_max_consecutive_rounds,
+                        _get_runtime_int_config(
+                            "tool_loop_max_consecutive_tool_rounds_longterm",
+                            10,
+                            min_value=1,
+                            max_value=96
+                        )
                     )
-                )
                 tool_loop_repeat_signature_limit = max(
                     tool_loop_repeat_signature_limit,
                     _get_runtime_int_config(
@@ -4464,15 +4465,16 @@ class Model:
                         max_value=32
                     )
                 )
-                tool_loop_timeout_seconds = max(
-                    tool_loop_timeout_seconds,
-                    _get_runtime_float_config(
-                        "tool_loop_timeout_seconds_longterm",
-                        150.0,
-                        min_value=15.0,
-                        max_value=1200.0
+                if tool_loop_timeout_seconds > 0:
+                    tool_loop_timeout_seconds = max(
+                        tool_loop_timeout_seconds,
+                        _get_runtime_float_config(
+                            "tool_loop_timeout_seconds_longterm",
+                            150.0,
+                            min_value=15.0,
+                            max_value=1200.0
+                        )
                     )
-                )
 
             def _debug_preview_text(value, max_len=12000):
                 text = str(value or "")
@@ -7177,11 +7179,14 @@ class Model:
                             tool_loop_last_signature = tool_signature
 
                         guard_reason = ""
-                        if tool_loop_consecutive_tool_rounds >= tool_loop_max_consecutive_rounds:
+                        # 连续工具轮次与单轮耗时默认不设限（配置值 <= 0 表示关闭该闸门），
+                        # 让 Project 编码这类"跑命令→看结果→改文件→再跑"的多步任务不被打断；
+                        # 仅保留"重复相同工具调用"这一真正的死循环信号，避免无限空转。
+                        if tool_loop_max_consecutive_rounds > 0 and tool_loop_consecutive_tool_rounds >= tool_loop_max_consecutive_rounds:
                             guard_reason = "tool_only_limit"
                         elif tool_loop_repeat_signature_count >= tool_loop_repeat_signature_limit:
                             guard_reason = "repeat_signature"
-                        elif tool_round_elapsed_seconds >= tool_loop_timeout_seconds:
+                        elif tool_loop_timeout_seconds > 0 and tool_round_elapsed_seconds >= tool_loop_timeout_seconds:
                             guard_reason = "timeout"
 
                         if guard_reason:

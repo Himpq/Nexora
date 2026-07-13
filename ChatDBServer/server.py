@@ -14056,6 +14056,8 @@ def _inject_nexoracode_project_context(model, username: str, conversation_id: st
         f'当前对话绑定本地项目：{project_name}',
         f'项目根路径：{project_path}',
         '涉及该项目的文件读写、搜索、命令执行请使用 local_* 工具，并保持在项目根路径内。',
+        '项目内非敏感路径需要授权时，只申请一次项目根目录的 read_write/dir 权限，不要逐文件重复申请。',
+        '敏感文件仍必须按实际敏感路径单独申请权限。',
     ]
 
     tree_text = ''
@@ -14083,6 +14085,7 @@ def _inject_nexoracode_project_context(model, username: str, conversation_id: st
     # 用 _build_effective_system_prompt 重建 system_prompt，直接覆盖会被冲掉，
     # 且 debug window 展示的是重建后的 request_system_prompt（原先看不到本段）。
     model._runtime_project_context_block = section
+    model._runtime_nexoracode_project_path = project_path
     model.system_prompt = f"{str(model.system_prompt or '').rstrip()}\n\n{section}"
     return True
 

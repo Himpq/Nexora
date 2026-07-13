@@ -34,6 +34,7 @@ class ToolResultPresenter:
             "local_file_patch": self._render_file_patch,
             "local_shell_exec": self._render_shell_exec,
             "local_shell_session": self._render_shell_session,
+            "local_terminal": self._render_terminal,
             "image_search": self._render_image_search,
             "browser_page_open": self._render_browser_page_result,
             "browser_page_read": self._render_browser_page_result,
@@ -52,6 +53,7 @@ class ToolResultPresenter:
             "map_geocode": self._render_map_result,
             "map_poi_search": self._render_map_result,
             "arxiv_search": self._render_arxiv_search,
+            "search": self._render_unified_search,
             "js_execute": self._render_js_execute,
             "client_js_exec": self._render_js_execute,
             "cloud_file_search_semantic": self._render_file_semantic_search,
@@ -1253,6 +1255,78 @@ class ToolResultPresenter:
 
         if content:
             lines.extend(["", "### Output", "", self._fenced_text(content, language="text", limit=10000)])
+        return "\n".join(lines).strip()
+
+    def _render_terminal(self, args: Dict[str, Any], result: Any) -> str:
+        """将终端结构化结果压缩成模型和前端共用的 Markdown。"""
+        payload = self._load_payload_unwrapped(result)
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload("local_terminal", payload)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        action = str(args.get("action") or "").strip().lower()
+        success = payload.get("success", True) is not False and not payload.get("error")
+        status = str(payload.get("status") or "").strip().lower()
+        wait_expired = bool(payload.get("wait_expired"))
+        returncode = payload.get("returncode")
+
+        if not success:
+            title = "## Terminal Failed"
+        elif action == "terminate":
+            title = "## Terminal Terminated" if status == "terminated" else "## Terminal Exited"
+        elif wait_expired and status == "running":
+            title = "## Terminal Still Running"
+        elif returncode not in (0, "0", None):
+            title = "## Terminal Command Failed"
+        elif status == "running":
+            title = "## Terminal Running"
+        else:
+            title = "## Terminal Completed"
+
+        lines = [
+            title,
+            "",
+            f"- Action: `{action or '(unknown)'}`",
+        ]
+
+        terminal_id = str(payload.get("terminal_id") or args.get("terminal_id") or "").strip()
+
+        if terminal_id:
+            lines.append(f"- Terminal: `{terminal_id}`")
+
+        if status:
+            lines.append(f"- Status: `{status}`")
+
+        if returncode is not None:
+            lines.append(f"- Exit Code: `{returncode}`")
+
+        if wait_expired:
+            lines.append("- Wait Window Ended: yes")
+
+        if payload.get("has_more"):
+            lines.append("- More Output Available: yes")
+
+        if payload.get("truncated"):
+            lines.append("- Output Truncated: yes")
+
+        if not success:
+            reason = str(payload.get("error") or payload.get("message") or "unknown error").strip()
+            lines.extend(["", f"- Reason: {reason}"])
+
+        output = str(payload.get("output") or "")
+
+        if output:
+            output_title = "### New Output" if action in {"read", "terminate"} else "### Output"
+            lines.extend([
+                "",
+                output_title,
+                "",
+                self._fenced_text(output, language="text", limit=8000),
+            ])
+
         return "\n".join(lines).strip()
 
     def _render_image_search(self, args: Dict[str, Any], result: Any) -> str:
@@ -2710,38 +2784,113 @@ class ToolResultPresenter:
             f"- Articles: {len(articles)}",
         ])
 
-        if articles:
-            lines.extend([
-                "",
-                "### Articles",
-                "",
-                "| Article | Hits |",
-                "| --- | --- |",
-            ])
-            for item in articles[:20]:
-                if isinstance(item, dict):
-                    lines.append(f"| {self._escape_table_cell(item.get('article'))} | {item.get('hits', '')} |")
-
+        # 按条目（article）合并命中：同一知识条目下的多个命中聚成一段，
+        # 只列条目名 + 命中数 + 去重后的若干片段，避免逐命中重复整块 snippet。
         if matches:
-            lines.extend(["", "### Matches"])
-            for match in matches[:20]:
+            grouped = {}
+            order = []
+
+            for match in matches:
                 if not isinstance(match, dict):
                     continue
-                lines.extend([
-                    "",
-                    f"#### {match.get('source_type', 'match')}: {match.get('article', '')}",
-                    "",
-                ])
-                if match.get("basis_id"):
-                    lines.append(f"- Basis ID: `{match.get('basis_id', '')}`")
-                lines.extend([
-                    f"- Position: {match.get('start', '')}:{match.get('end', '')} (line {match.get('line', '')}, col {match.get('col', '')})",
-                    f"- Match: `{match.get('match', '')}`",
-                    "",
-                    self._fenced_text(match.get("snippet", ""), language="markdown", limit=2500),
-                ])
-            if len(matches) > 20:
-                lines.extend(["", f"... omitted {len(matches) - 20} more matches ..."])
+
+                article = str(match.get("article") or "")
+
+                if article not in grouped:
+                    grouped[article] = {
+                        "source_type": match.get("source_type", "match"),
+                        "basis_id": match.get("basis_id", ""),
+                        "snippets": [],
+                        "count": 0,
+                    }
+                    order.append(article)
+
+                entry = grouped[article]
+                entry["count"] += 1
+                snippet = str(match.get("snippet") or "").replace("\n", " ").strip()
+
+                if snippet and snippet not in entry["snippets"] and len(entry["snippets"]) < 3:
+                    entry["snippets"].append(snippet)
+
+            lines.extend(["", "### Matches"])
+
+            for article in order[:20]:
+                entry = grouped[article]
+                lines.extend(["", f"#### {entry['source_type']}: {article} ({entry['count']} hits)"])
+
+                if entry["basis_id"]:
+                    lines.append(f"- Basis ID: `{entry['basis_id']}`")
+
+                for snippet in entry["snippets"]:
+                    lines.append(f"- …{snippet}…")
+
+            if len(order) > 20:
+                lines.extend(["", f"... omitted {len(order) - 20} more articles ..."])
+
+        return "\n".join(lines).strip()
+
+    def _render_unified_search(self, args: Dict[str, Any], result: Any) -> str:
+        """统一 search 工具的结果渲染：按来源分组，空来源跳过，notes 汇总说明。"""
+
+        payload = self._load_payload(result)
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload("search", payload)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False
+        lines = [
+            self._status_title(success, "## Search", "## Search Failed"),
+            "",
+            f"- Query: `{payload.get('query') or args.get('query') or ''}`",
+            f"- Scope: {payload.get('scope') or 'all'}",
+        ]
+
+        if not success:
+            lines.extend(["", f"- Reason: {payload.get('message') or 'unknown error'}"])
+            return "\n".join(lines).strip()
+
+        results = payload.get("results") if isinstance(payload.get("results"), dict) else {}
+
+        knowledge = results.get("knowledge") if isinstance(results.get("knowledge"), list) else []
+        if knowledge:
+            lines.extend(["", f"### Knowledge ({len(knowledge)})"])
+            for item in knowledge:
+                if not isinstance(item, dict):
+                    continue
+                snippet = str(item.get("snippet") or "").strip()
+                matched_by = str(item.get("matched_by") or "keyword")
+                lines.append(f"- **{item.get('title', '')}** ({matched_by})" + (f" — {snippet}" if snippet else ""))
+
+        files = results.get("files") if isinstance(results.get("files"), list) else []
+        if files:
+            lines.extend(["", f"### Files ({len(files)})"])
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                alias = str(item.get("alias") or "")
+                lines.append(f"- {name}" + (f" (`{alias}`)" if alias and alias != name else ""))
+
+        web = results.get("web") if isinstance(results.get("web"), list) else []
+        if web:
+            lines.extend(["", f"### Web ({len(web)})"])
+            for item in web:
+                if not isinstance(item, dict):
+                    continue
+                snippet = str(item.get("snippet") or "").strip()
+                lines.append(f"- [{item.get('title', '')}]({item.get('url', '')})" + (f" — {snippet}" if snippet else ""))
+
+        if not knowledge and not files and not web:
+            lines.extend(["", "- No results found in any enabled source."])
+
+        notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
+        if notes:
+            lines.extend(["", "### Notes"])
+            for note in notes:
+                lines.append(f"- {note}")
 
         return "\n".join(lines).strip()
 

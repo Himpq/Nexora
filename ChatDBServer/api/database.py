@@ -1981,10 +1981,12 @@ class User:
 
         matches = []
         article_stats = {}
+        key_lower = key.lower()
 
         for short_id, short_title in db.get("data_short", {}).items():
             text = str(short_title or "")
-            pos = text.find(key)
+            text_lower = text.lower()
+            pos = text_lower.find(key_lower)
             while pos != -1:
                 s = pos
                 e = pos + len(key)
@@ -2004,14 +2006,15 @@ class User:
                     "snippet": text[left:right],
                 })
                 article_stats[article_name] = article_stats.get(article_name, 0) + 1
-                pos = text.find(key, pos + max(1, len(key)))
+                pos = text_lower.find(key_lower, pos + max(1, len(key)))
 
         for basis_title, basis_info in db.get("data_basis", {}).items():
             meta = basis_info if isinstance(basis_info, dict) else {}
             basis_id = str(meta.get("basis_id") or "").strip()
 
             title_text = str(basis_title or "")
-            title_pos = title_text.find(key)
+            title_text_lower = title_text.lower()
+            title_pos = title_text_lower.find(key_lower)
             while title_pos != -1:
                 s = title_pos
                 e = s + len(key)
@@ -2031,7 +2034,7 @@ class User:
                     "snippet": title_text[left:right],
                 })
                 article_stats[str(basis_title)] = article_stats.get(str(basis_title), 0) + 1
-                title_pos = title_text.find(key, title_pos + max(1, len(key)))
+                title_pos = title_text_lower.find(key_lower, title_pos + max(1, len(key)))
 
             try:
                 content = safe_read_text(meta.get("src", ""))
@@ -2042,8 +2045,9 @@ class User:
 
             start = 0
             count = 0
+            content_lower = content.lower()
             while count < 20:
-                pos = content.find(key, start)
+                pos = content_lower.find(key_lower, start)
                 if pos == -1:
                     break
                 s = pos
