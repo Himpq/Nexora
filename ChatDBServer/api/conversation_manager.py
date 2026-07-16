@@ -639,6 +639,49 @@ class ConversationManager:
 
         return saved_index
 
+    def update_message_metadata(self, conversation_id, message_index, metadata_patch):
+        """原子合并单条消息元数据，不改写消息内容或版本。"""
+        try:
+            index = int(message_index)
+        except Exception as error:
+            raise ValueError(f"消息索引无效: index={message_index}") from error
+
+        patch = metadata_patch if isinstance(metadata_patch, dict) else {}
+
+        if not patch:
+            raise ValueError("消息元数据补丁不能为空")
+
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            messages = conversation_data.get("messages", [])
+
+            if not isinstance(messages, list):
+                raise ValueError(f"对话内容格式无效: {conversation_id}")
+
+            if index < 0 or index >= len(messages):
+                raise ValueError(
+                    f"消息索引越界: index={index}, message_count={len(messages)}"
+                )
+
+            message = messages[index]
+
+            if not isinstance(message, dict):
+                raise ValueError(f"消息格式无效: index={index}")
+
+            metadata = message.get("metadata", {})
+
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            next_metadata = dict(metadata)
+            next_metadata.update(patch)
+            message["metadata"] = next_metadata
+            messages[index] = message
+            conversation_data["messages"] = messages
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
+
+        return next_metadata
+
     def validate_regenerate_target(self, conversation_id, message_index):
         """
         校验重答目标，确保覆盖点一定是 assistant，且前一条是触发它的 user。

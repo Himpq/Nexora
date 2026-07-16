@@ -200,7 +200,8 @@ class Model:
         system_prompt: Optional[str] = None,
         conversation_id: Optional[str] = None,
         auto_create: bool = True,
-        persist_conversation: bool = True
+        persist_conversation: bool = True,
+        include_profile_context: bool = True
     ):
         """
         初始化Model
@@ -215,6 +216,7 @@ class Model:
         self.username = username
         self.user = User(username)
         self.persist_conversation = bool(persist_conversation)
+        self._include_profile_context = bool(include_profile_context)
         self._runtime_conversation_mode = "chat"
         self._runtime_conversation_mode_payload = {}
         self._runtime_longterm_prompt_block = ""
@@ -381,6 +383,11 @@ class Model:
         self.tool_result_presenter = ToolResultPresenter()
         self._external_tool_definitions: List[Dict[str, Any]] = []
         self._external_tool_names: Set[str] = set()
+        self._exclusive_external_tool_names: Set[str] = set()
+        self._require_function_tool_call = False
+        self._usage_action_type = "chat"
+        self._usage_metadata: Dict[str, Any] = {}
+        self._usage_observer = None
         self._runtime_tool_catalog = []
         self._runtime_selected_tool_names = set()
         self._runtime_tool_mode = "force"
@@ -495,7 +502,7 @@ class Model:
                 self._runtime_learning_prompt_block = prompts.build_learning_mode_default_prompt()
                 combined_template = f"{combined_template}\n\n{self._runtime_learning_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
-        profile_block = self._build_user_profile_memory_prompt_block()
+        profile_block = self._build_user_profile_memory_prompt_block() if self._include_profile_context else ""
         if profile_block:
             rendered = f"{rendered}\n\n{profile_block}"
         # NexoraCode 项目上下文经 runtime block 注入：chat_stream 每次请求都会重建
@@ -2475,7 +2482,11 @@ class Model:
                     })
         return parsed_tools
 
-    def register_external_function_tool(self, tool: Dict[str, Any]) -> str:
+    def register_external_function_tool(
+        self,
+        tool: Dict[str, Any],
+        handler: Optional[Any] = None
+    ) -> str:
         """登记运行时注入的外部 function 工具，并立即加入当前工具列表。"""
         spec = self._extract_function_tool_spec(tool)
 
@@ -2511,7 +2522,24 @@ class Model:
         ]
         self.tools.insert(0, tool)
 
+        if callable(handler):
+            self.tool_executor.handlers[name] = handler
+
         return name
+
+    def configure_external_tool_execution(
+        self,
+        *,
+        exclusive: bool = False,
+        require_tool_call: bool = False
+    ) -> None:
+        """限制临时模型任务只使用已注册的外部工具。"""
+        self._exclusive_external_tool_names = (
+            set(self._external_tool_names)
+            if exclusive
+            else set()
+        )
+        self._require_function_tool_call = bool(require_tool_call)
 
     def _restore_external_function_tools(self) -> List[str]:
         """在 sendMessage 重建基础工具列表后恢复 NexoraCode 等外部工具。"""
@@ -4042,6 +4070,8 @@ class Model:
             }
             return
 
+        response_trace_id = uuid.uuid4().hex
+
         try:
             quota_gate = get_generation_quota_gate(provider_name=self.provider, model_name=self.model_name)
         except Exception:
@@ -4411,6 +4441,16 @@ class Model:
 
             if restored_external_tools:
                 print(f"[NexoraCode ToolsRestore] count={len(restored_external_tools)} tools={restored_external_tools}")
+
+            exclusive_external_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
+
+            if exclusive_external_names:
+                self.tools = [
+                    tool
+                    for tool in (self.tools or [])
+                    if str((self._extract_function_tool_spec(tool) or {}).get("name") or "").strip()
+                    in exclusive_external_names
+                ]
 
             tool_loop_started_at = time.time()
             tool_loop_consecutive_tool_rounds = 0
@@ -6807,7 +6847,8 @@ class Model:
                                 "duration_ms": round_duration_ms,
                                 "ttft_ms": round_ttft_ms,
                                 "output_tps": round_output_tps
-                            }
+                            },
+                            response_trace_id=response_trace_id
                         )
                     else:
                         # 某些 Provider 不返回 usage，使用估算值，避免 token 全为 0
@@ -6840,7 +6881,7 @@ class Model:
                         request_last_round_input_tokens_raw = max(0, int(est_input or 0))
                         request_last_round_input_tokens_cached = 0
                         has_text_output = bool(str(round_content or "").strip())
-                        est_action = "chat"
+                        est_action = str(getattr(self, "_usage_action_type", "chat") or "chat").strip() or "chat"
                         primary_tool = ""
                         if function_calls:
                             primary_tool = str(function_calls[0].get('name', '') or '')
@@ -6849,6 +6890,29 @@ class Model:
                         round_output_tps = 0.0
                         if round_duration_ms > 0:
                             round_output_tps = round(est_output * 1000.0 / round_duration_ms, 3)
+                        estimated_usage_metadata = {
+                            "provider": self.provider,
+                            "model": self.model_name,
+                            "token_details": {
+                                "estimated": True,
+                                "estimate_method": "cjk0.8+ascii/4",
+                                "prompt_chars": len(prompt_snapshot),
+                                "output_chars": len(round_content or accumulated_content or ""),
+                                "reasoning_chars": len(accumulated_reasoning or ""),
+                                "tool_args_chars": len(tool_args_text or "")
+                            },
+                            "has_web_search": has_web_search,
+                            "tool_call_count": len(function_calls or []),
+                            "round_kind": "chat" if has_text_output else "tool_assisted",
+                            "primary_tool": primary_tool,
+                            "has_text_output": has_text_output,
+                            "duration_ms": round_duration_ms,
+                            "ttft_ms": round_ttft_ms,
+                            "output_tps": round_output_tps
+                        }
+                        estimated_usage_metadata["response_trace_id"] = response_trace_id
+                        estimated_usage_metadata.update(dict(getattr(self, "_usage_metadata", {}) or {}))
+
                         self.user.log_token_usage(
                             self.conversation_id or "unknown",
                             fallback_title or "新对话",
@@ -6856,26 +6920,14 @@ class Model:
                             est_input,
                             est_output,
                             total_tokens=est_total,
-                            metadata={
-                                "provider": self.provider,
-                                "model": self.model_name,
-                                "token_details": {
-                                    "estimated": True,
-                                    "estimate_method": "cjk0.8+ascii/4",
-                                    "prompt_chars": len(prompt_snapshot),
-                                    "output_chars": len(round_content or accumulated_content or ""),
-                                    "reasoning_chars": len(accumulated_reasoning or ""),
-                                    "tool_args_chars": len(tool_args_text or "")
-                                },
-                                "has_web_search": has_web_search,
-                                "tool_call_count": len(function_calls or []),
-                                "round_kind": "chat" if has_text_output else "tool_assisted",
-                                "primary_tool": primary_tool,
-                                "has_text_output": has_text_output,
-                                "duration_ms": round_duration_ms,
-                                "ttft_ms": round_ttft_ms,
-                                "output_tps": round_output_tps
-                            }
+                            metadata=estimated_usage_metadata
+                        )
+                        self._notify_usage_observer(
+                            input_tokens=est_input,
+                            output_tokens=est_output,
+                            raw_input_tokens=est_input,
+                            cached_input_tokens=0,
+                            estimated=True
                         )
                         print(
                             f"[ROUND_USAGE_EST] round={round_num + 1} input_est={est_input} "
@@ -6920,6 +6972,15 @@ class Model:
 
                     # 本轮文本内容作为步骤加入
                     if round_reasoning:
+                        # 上游若返回单行 thinking，前端没有可渲染的换行；记录来源事实便于定位。
+                        if len(round_reasoning) >= 200 and "\n" not in round_reasoning:
+                            print(
+                                "[REASONING_FORMAT] upstream reasoning is single-line "
+                                f"conversation_id={self.conversation_id} provider={self.provider} "
+                                f"model={self.model_name} round={int(round_num) + 1} "
+                                f"chars={len(round_reasoning)} newlines=0"
+                            )
+
                         process_steps.append({
                             "type": "reasoning_content",
                             "content": round_reasoning,
@@ -7383,6 +7444,7 @@ class Model:
                     metadata = {
                         "process_steps": process_steps,
                         "model_name": self.model_name,
+                        "token_response_trace_id": response_trace_id,
                         "conversation_mode": normalized_conversation_mode,
                         "search_enabled": badge_search_enabled,
                         "request_debug": {
@@ -7863,6 +7925,28 @@ class Model:
             # self._runtime_hints_injected_in_request = False
             self._clear_temp_context_store_for_reply()
 
+    def _notify_usage_observer(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        raw_input_tokens: int,
+        cached_input_tokens: int,
+        estimated: bool
+    ) -> None:
+        observer = getattr(self, "_usage_observer", None)
+
+        if not callable(observer):
+            return
+
+        observer({
+            "input": int(max(0, input_tokens or 0)),
+            "output": int(max(0, output_tokens or 0)),
+            "raw_input": int(max(0, raw_input_tokens or 0)),
+            "cached_input": int(max(0, cached_input_tokens or 0)),
+            "estimated": bool(estimated)
+        })
+
     def _log_token_usage_safe(
         self,
         usage,
@@ -7871,7 +7955,8 @@ class Model:
         process_steps,
         user_message=None,
         round_content=None,
-        timing_meta=None
+        timing_meta=None,
+        response_trace_id=""
     ):
         """安全记录Token日志（不影响主流程）"""
         try:
@@ -7971,7 +8056,7 @@ class Model:
                 return 0, ""
 
             has_text_output = bool(str(round_content or "").strip())
-            action_type = "chat"
+            action_type = str(getattr(self, "_usage_action_type", "chat") or "chat").strip() or "chat"
             primary_tool = ""
             if function_calls:
                 primary_tool = str(function_calls[0].get('name', '') or '')
@@ -8051,6 +8136,22 @@ class Model:
             ttft_ms = _safe_int(timing.get("ttft_ms", 0), 0)
             output_tps = float(timing.get("output_tps", 0.0) or 0.0)
 
+            usage_metadata = {
+                "provider": self.provider,
+                "model": self.model_name,
+                "token_details": token_details,
+                "has_web_search": has_web_search,
+                "tool_call_count": len(function_calls or []),
+                "round_kind": "chat" if has_text_output else "tool_assisted",
+                "primary_tool": primary_tool,
+                "has_text_output": has_text_output,
+                "duration_ms": duration_ms,
+                "ttft_ms": ttft_ms,
+                "output_tps": output_tps
+            }
+            usage_metadata["response_trace_id"] = str(response_trace_id or "")
+            usage_metadata.update(dict(getattr(self, "_usage_metadata", {}) or {}))
+
             self.user.log_token_usage(
                 self.conversation_id or ("transient" if not self.persist_conversation else "unknown"),
                 conv_title,
@@ -8058,19 +8159,14 @@ class Model:
                 input_tokens_int,
                 output_tokens_int,
                 total_tokens=total_tokens,
-                metadata={
-                    "provider": self.provider,
-                    "model": self.model_name,
-                    "token_details": token_details,
-                    "has_web_search": has_web_search,
-                    "tool_call_count": len(function_calls or []),
-                    "round_kind": "chat" if has_text_output else "tool_assisted",
-                    "primary_tool": primary_tool,
-                    "has_text_output": has_text_output,
-                    "duration_ms": duration_ms,
-                    "ttft_ms": ttft_ms,
-                    "output_tps": output_tps
-                }
+                metadata=usage_metadata
+            )
+            self._notify_usage_observer(
+                input_tokens=input_tokens_int,
+                output_tokens=output_tokens_int,
+                raw_input_tokens=input_tokens_int_raw,
+                cached_input_tokens=cached_tokens_int,
+                estimated=False
             )
         except Exception as e:
             print(f"[WARNING] 记录 Token 日志失败: {e}")
@@ -8500,6 +8596,9 @@ class Model:
                 previous_response_id=previous_response_id,
                 current_function_outputs=current_function_outputs
             )
+
+        if bool(getattr(self, "_require_function_tool_call", False)) and params.get("tools"):
+            params["tool_choice"] = "required"
 
         params = provider_adapter.apply_request_options(
             params,

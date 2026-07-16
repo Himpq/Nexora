@@ -143,12 +143,23 @@
         };
     }
 
-    function mergeNexoraCodeProjects(explicitProjects, projectConversationMap) {
+    function normalizeNexoraCodeProjectIdSet(projectIds) {
+        if (!projectIds || typeof projectIds[Symbol.iterator] !== 'function') {
+            return new Set();
+        }
+
+        return new Set(
+            Array.from(projectIds).map((item) => String(item || '').trim()).filter(Boolean)
+        );
+    }
+
+    function mergeNexoraCodeProjects(explicitProjects, projectConversationMap, hiddenProjectIds = null) {
         const merged = new Map();
+        const hiddenIds = normalizeNexoraCodeProjectIdSet(hiddenProjectIds);
         const addProject = (project) => {
             const normalized = normalizeNexoraCodeProject(project);
 
-            if (!normalized) {
+            if (!normalized || hiddenIds.has(normalized.project_id)) {
                 return;
             }
 
@@ -161,6 +172,35 @@
         projectConversationMap.forEach((entry) => addProject(entry.project));
 
         return Array.from(merged.values());
+    }
+
+    function partitionConversationsByNexoraCodeProject(conversations, hiddenProjectIds = null) {
+        const regularConversations = [];
+        const projectConversationMap = new Map();
+        const hiddenIds = normalizeNexoraCodeProjectIdSet(hiddenProjectIds);
+
+        (Array.isArray(conversations) ? conversations : []).forEach((conversation) => {
+            const project = readConversationNexoraCodeProject(conversation);
+
+            if (!project || hiddenIds.has(project.project_id)) {
+                regularConversations.push(conversation);
+                return;
+            }
+
+            if (!projectConversationMap.has(project.project_id)) {
+                projectConversationMap.set(project.project_id, {
+                    project,
+                    conversations: []
+                });
+            }
+
+            projectConversationMap.get(project.project_id).conversations.push(conversation);
+        });
+
+        return {
+            regularConversations,
+            projectConversationMap
+        };
     }
 
     function createConversationNavigationController(deps = {}) {
@@ -474,6 +514,9 @@
         const getNexoraCodeProjects = typeof deps.getNexoraCodeProjects === 'function'
             ? deps.getNexoraCodeProjects
             : () => [];
+        const getNexoraCodeHiddenProjectIds = typeof deps.getNexoraCodeHiddenProjectIds === 'function'
+            ? deps.getNexoraCodeHiddenProjectIds
+            : () => new Set();
         const requestNexoraCodeProjectCreate = typeof deps.requestNexoraCodeProjectCreate === 'function'
             ? deps.requestNexoraCodeProjectCreate
             : () => showToast('NexoraCode 项目接入未就绪');
@@ -844,6 +887,7 @@
             const orderedConversations = sortConversationListForDisplay(conversations);
             const projectEnabled = !!isNexoraCodeProjectSidebarEnabled();
             const explicitProjects = projectEnabled ? getNexoraCodeProjects() : [];
+            const hiddenProjectIds = projectEnabled ? getNexoraCodeHiddenProjectIds() : new Set();
 
             return JSON.stringify({
                 currentId,
@@ -851,6 +895,7 @@
                     enabled: projectEnabled,
                     panel_collapsed: isNexoraCodeProjectPanelCollapsed(),
                     collapse_state: Array.from(nexoraCodeProjectCollapseState.entries()),
+                    hidden_project_ids: Array.from(hiddenProjectIds),
                     projects: (Array.isArray(explicitProjects) ? explicitProjects : []).map((project) => normalizeNexoraCodeProject(project)).filter(Boolean)
                 },
                 items: orderedConversations.map((item) => {
@@ -914,37 +959,26 @@
 
         function buildNexoraCodeProjectRenderContext(orderedConversations) {
             const enabled = !!isNexoraCodeProjectSidebarEnabled();
-            const regularConversations = [];
-            const projectConversationMap = new Map();
+            const hiddenProjectIds = getNexoraCodeHiddenProjectIds();
+            const {
+                regularConversations,
+                projectConversationMap
+            } = partitionConversationsByNexoraCodeProject(orderedConversations, hiddenProjectIds);
 
             if (!enabled) {
                 return {
                     enabled: false,
                     projects: [],
                     projectConversationMap,
-                    regularConversations: orderedConversations
+                    regularConversations
                 };
             }
 
-            orderedConversations.forEach((conversation) => {
-                const project = readConversationNexoraCodeProject(conversation);
-
-                if (!project) {
-                    regularConversations.push(conversation);
-                    return;
-                }
-
-                if (!projectConversationMap.has(project.project_id)) {
-                    projectConversationMap.set(project.project_id, {
-                        project,
-                        conversations: []
-                    });
-                }
-
-                projectConversationMap.get(project.project_id).conversations.push(conversation);
-            });
-
-            const projects = mergeNexoraCodeProjects(getNexoraCodeProjects(), projectConversationMap);
+            const projects = mergeNexoraCodeProjects(
+                getNexoraCodeProjects(),
+                projectConversationMap,
+                hiddenProjectIds
+            );
 
             return {
                 enabled: true,
@@ -1084,6 +1118,15 @@
             };
 
             main.addEventListener('click', toggleProject);
+            main.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                showPinContextMenu(event.clientX, event.clientY, {
+                    targetType: 'nexoracode_project',
+                    projectId: String(project.project_id || ''),
+                    projectTitle: String(project.name || '')
+                });
+            });
 
             const actions = document.createElement('span');
             actions.className = 'nexoracode-sidebar-actions';
@@ -1121,7 +1164,7 @@
             projectConversations.forEach((conversation) => {
                 childListInner.appendChild(buildConversationListItem(conversation, {
                     className: 'nexoracode-project-conversation-item',
-                    suppressPinIcon: true
+                    allowWorkspaceMark: false
                 }));
             });
 
@@ -1299,7 +1342,8 @@
                     targetType: 'conversation',
                     conversationId: String(cid || ''),
                     conversationTitle,
-                    pinned: isPinned
+                    pinned: isPinned,
+                    allowWorkspaceMark: itemOptions.allowWorkspaceMark !== false
                 });
             });
 
@@ -1307,7 +1351,8 @@
                 targetType: 'conversation',
                 conversationId: String(cid || ''),
                 conversationTitle,
-                pinned: row.dataset.pin === '1'
+                pinned: row.dataset.pin === '1',
+                allowWorkspaceMark: itemOptions.allowWorkspaceMark !== false
             }));
 
             const deleteButton = document.createElement('button');
@@ -1346,5 +1391,6 @@
         createConversationNavigationController,
         getDirectConversationUrlTarget,
         hasConversationUrlTarget,
+        partitionConversationsByNexoraCodeProject,
     });
 })();

@@ -417,6 +417,8 @@ function insertReasoningThinkingBlock(messageDiv, container, thinkingBlock) {
 function resolveReasoningThinkingBlockForAppend(messageDiv, container) {
     if (!messageDiv) return null;
 
+    getNexoraChatTools().collapseResolvedToolUsages(messageDiv);
+
     const canReuseActiveSegment = !!messageDiv.__reasoningSegmentOpen;
     let thinkingBlock = canReuseActiveSegment ? messageDiv.__activeReasoningThinkingBlock : null;
 
@@ -468,6 +470,7 @@ let lastAgentOnline = false;
 let nexoraCodeProjectRecords = [];
 let activeNexoraCodeProjectId = '';
 let nexoraCodeProjectsLoadedForUser = null;
+let nexoraCodeHiddenProjectIds = new Set();
 const chatMessageWindowApi = getNexoraChatMessageWindow();
 const chatMessageVersionsApi = getNexoraChatMessageVersions();
 const conversationMessageWindowState = chatMessageWindowApi.state;
@@ -495,6 +498,7 @@ let learningMainMounted = false;
 let learningModeAssetsPromise = null;
 let learningEmbedLayoutMode = 'default';
 let pendingLearningModeValue = false;
+let learningModePreferenceSaving = false;
 let pendingAvatarDataUrl = '';
 let adminUserTokenSelectorState = {
     users: [],
@@ -924,7 +928,7 @@ const toolResultController = getNexoraChatTools().createToolResultController({
     renameToolUsageRow: (...args) => toolEventController.renameToolUsageRow(...args),
     setToolUsageStatus: (...args) => toolEventController.setToolUsageStatus(...args),
     scrollToolOutputToBottom: (...args) => toolEventController.scrollToolOutputToBottom(...args),
-    scheduleToolAutoCollapse: (...args) => toolEventController.scheduleToolAutoCollapse(...args),
+    scrollToolOutputToTop: (...args) => toolEventController.scrollToolOutputToTop(...args),
     maybeRenderCanvasFromJsExecuteResult,
 });
 const messagesController = getNexoraChatMessages().createMessagesController({
@@ -983,6 +987,7 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     appendSearchMeta,
     resolveToolNameFromEvent,
     appendAddBasisView,
+    collapseResolvedToolUsages: (...args) => getNexoraChatTools().collapseResolvedToolUsages(...args),
     allocateToolCallId,
     rememberJsExecuteCanvasCall,
     finalizeToolCallBadge,
@@ -998,6 +1003,7 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     appendQuestionStep,
     appendPuzzleStep,
     readMessageIoTokens,
+    readMessageMemoryIoTokens,
     safeTokenInt,
     buildVersionNavigation,
     rememberVisibleMessageInWindow,
@@ -1167,7 +1173,6 @@ const streamReconnectController = getNexoraChatStreamReconnect().createStreamRec
     syncStreamingModelBadgeEstimate,
     finalizeMessageRenderForIndex,
     collapseReasoningBlocksForMessage,
-    collapseModelBadgeForMessage,
     applyLongtermPlanFromText,
     normalizeLongtermState,
     renderLongtermPlanPanel,
@@ -1229,6 +1234,7 @@ const conversationListController = getNexoraChatConversations().createConversati
     deleteConversation,
     isNexoraCodeProjectSidebarEnabled,
     getNexoraCodeProjects,
+    getNexoraCodeHiddenProjectIds,
     requestNexoraCodeProjectCreate,
     requestNexoraCodeConversationCreate
 });
@@ -2707,6 +2713,14 @@ function getNexoraChatKnowledge() {
     return getNexoraChatSharedModule('knowledge');
 }
 
+function getNexoraChatMemorySettings() {
+    return getNexoraChatSharedModule('memorySettings');
+}
+
+function getNexoraChatModelSelect() {
+    return getNexoraChatSharedModule('modelSelect');
+}
+
 function getNexoraChatFiles() {
     return getNexoraChatSharedModule('files');
 }
@@ -2733,6 +2747,8 @@ function getChatMarkdownRenderDeps() {
         captureLatexRenderDebug,
         streamMathFindOpenTailInfo,
         streamMathBuildProvisionalClosedTail,
+        streamMarkdownFindOpenFence: (...args) => getNexoraChatStreaming().streamMarkdownFindOpenFence(...args),
+        streamMarkdownBuildProvisionalClosedFence: (...args) => getNexoraChatStreaming().streamMarkdownBuildProvisionalClosedFence(...args),
         protectMathSegmentsForMarkdown,
         restoreMathSegmentsFromHtml,
     };
@@ -4658,6 +4674,11 @@ function getNexoraCodeProjectStorageKey() {
     return `nexoracode_projects:${encodeURIComponent(uid)}`;
 }
 
+function getNexoraCodeHiddenProjectStorageKey() {
+    const key = getNexoraCodeProjectStorageKey();
+    return key ? `${key}:hidden` : '';
+}
+
 function isNexoraCodeProjectSidebarEnabled() {
     return !!lastAgentOnline;
 }
@@ -4687,9 +4708,20 @@ function readNexoraCodeProjectNameFromPath(path) {
     return parts.length ? parts[parts.length - 1] : text;
 }
 
-function getNexoraCodeProjects() {
+function getNexoraCodeProjects(options = {}) {
     ensureNexoraCodeProjectsLoaded();
-    return Array.isArray(nexoraCodeProjectRecords) ? nexoraCodeProjectRecords.slice() : [];
+    const records = Array.isArray(nexoraCodeProjectRecords) ? nexoraCodeProjectRecords.slice() : [];
+
+    if (options && options.includeHidden === true) {
+        return records;
+    }
+
+    return records.filter((project) => !nexoraCodeHiddenProjectIds.has(project.project_id));
+}
+
+function getNexoraCodeHiddenProjectIds() {
+    ensureNexoraCodeProjectsLoaded();
+    return new Set(nexoraCodeHiddenProjectIds);
 }
 
 function getActiveNexoraCodeProject() {
@@ -4704,7 +4736,9 @@ function setActiveNexoraCodeProject(projectId) {
 
 function loadNexoraCodeProjectsFromStorage() {
     const key = getNexoraCodeProjectStorageKey();
+    const hiddenKey = getNexoraCodeHiddenProjectStorageKey();
     nexoraCodeProjectsLoadedForUser = String(currentUsername || '').trim();
+    nexoraCodeHiddenProjectIds = new Set();
 
     if (!key) {
         nexoraCodeProjectRecords = [];
@@ -4712,6 +4746,15 @@ function loadNexoraCodeProjectsFromStorage() {
     }
 
     try {
+        const hiddenRaw = hiddenKey ? localStorage.getItem(hiddenKey) : '';
+        const hiddenList = hiddenRaw ? JSON.parse(hiddenRaw) : [];
+
+        if (Array.isArray(hiddenList)) {
+            nexoraCodeHiddenProjectIds = new Set(
+                hiddenList.map((item) => String(item || '').trim()).filter(Boolean)
+            );
+        }
+
         const raw = localStorage.getItem(key);
         const parsed = raw ? JSON.parse(raw) : [];
         const list = Array.isArray(parsed) ? parsed : [];
@@ -4734,9 +4777,23 @@ function persistNexoraCodeProjects() {
     if (!key) return;
 
     try {
-        localStorage.setItem(key, JSON.stringify(getNexoraCodeProjects()));
+        localStorage.setItem(key, JSON.stringify(getNexoraCodeProjects({ includeHidden: true })));
     } catch (err) {
         console.warn('[NexoraCode] 保存本地项目失败', err);
+    }
+}
+
+function persistNexoraCodeHiddenProjectIds() {
+    const key = getNexoraCodeHiddenProjectStorageKey();
+
+    if (!key) {
+        return;
+    }
+
+    try {
+        localStorage.setItem(key, JSON.stringify(Array.from(nexoraCodeHiddenProjectIds)));
+    } catch (err) {
+        console.warn('[NexoraCode] 项目隐藏状态保存失败', err);
     }
 }
 
@@ -4759,8 +4816,31 @@ function upsertNexoraCodeProject(project) {
         nexoraCodeProjectRecords.push(normalized);
     }
 
+    if (nexoraCodeHiddenProjectIds.delete(normalized.project_id)) {
+        persistNexoraCodeHiddenProjectIds();
+    }
+
     persistNexoraCodeProjects();
     return normalized;
+}
+
+function hideNexoraCodeProject(projectId) {
+    const key = String(projectId || '').trim();
+
+    if (!key) {
+        return false;
+    }
+
+    ensureNexoraCodeProjectsLoaded();
+    nexoraCodeHiddenProjectIds.add(key);
+
+    if (activeNexoraCodeProjectId === key) {
+        activeNexoraCodeProjectId = '';
+    }
+
+    persistNexoraCodeHiddenProjectIds();
+    refreshNexoraCodeProjectUi();
+    return true;
 }
 
 function refreshNexoraCodeProjectUi() {
@@ -5134,6 +5214,37 @@ function handleBrowserSyncMessage(payload) {
 
     if (msgType === 'client_tool_request') {
         enqueueClientToolWssRequest(payload.request, payload.conversation_id);
+        return;
+    }
+
+    if (msgType === 'memory_analysis_completed') {
+        const eventConversationId = String(payload.conversation_id || '').trim();
+        const assistantIndex = Number(payload.assistant_index);
+
+        if (
+            eventConversationId
+            && eventConversationId === String(currentConversationId || '').trim()
+            && Number.isFinite(assistantIndex)
+        ) {
+            const messageDiv = getMessageElementByIndex(assistantIndex, 'assistant');
+            const memoryIo = readMessageMemoryIoTokens({
+                memory_io_tokens: payload.memory_io_tokens
+            });
+
+            if (messageDiv) {
+                const currentState = (
+                    messageDiv.__modelBadgeState
+                    && typeof messageDiv.__modelBadgeState === 'object'
+                ) ? messageDiv.__modelBadgeState : {};
+                updateMessageModelBadge(messageDiv, {
+                    ...currentState,
+                    memoryInputTokens: memoryIo.input,
+                    memoryOutputTokens: memoryIo.output,
+                    memoryReady: memoryIo.ready
+                });
+            }
+        }
+
         return;
     }
 
@@ -7521,9 +7632,7 @@ const els = {
     createBlankBasisBtn: document.getElementById('createBlankBasisBtn'),
     bulkVectorizeBtn: document.getElementById('bulkVectorizeBtn'),
     panelBasisList: document.getElementById('panelBasisKnowledgeList'),
-    panelShortList: document.getElementById('panelShortMemoryList'),
     panelBasisCount: document.getElementById('panelBasisCount'),
-    panelShortCount: document.getElementById('panelShortCount'),
     cloudFileSearchInput: document.getElementById('cloudFileSearchInput'),
     cloudFileSearchBtn: document.getElementById('cloudFileSearchBtn'),
     cloudFileCount: document.getElementById('cloudFileCount'),
@@ -7589,6 +7698,7 @@ const els = {
     pinContextMenu: document.getElementById('pinContextMenu'),
     pinContextMenuAction: document.getElementById('pinContextMenuAction'),
     pinContextMenuRename: document.getElementById('pinContextMenuRename'),
+    pinContextMenuProjectDelete: document.getElementById('pinContextMenuProjectDelete'),
     pinContextMenuWorkspaceWrap: document.getElementById('pinContextMenuWorkspaceWrap'),
     pinContextMenuWorkspaceList: document.getElementById('pinContextMenuWorkspaceList'),
     conversationRenameModal: document.getElementById('conversationRenameModal'),
@@ -8741,10 +8851,6 @@ function getLearningModeOnBtn() {
     return document.getElementById('set-learning-mode-on');
 }
 
-function getSaveLearningModeBtn() {
-    return document.getElementById('saveLearningModeBtn');
-}
-
 function setLearningModeToggleUi(enabled) {
     if (!learningRuntimeEnabled) {
         enabled = false;
@@ -8756,53 +8862,58 @@ function setLearningModeToggleUi(enabled) {
     if (offBtn) {
         offBtn.classList.toggle('active', !pendingLearningModeValue);
         offBtn.setAttribute('aria-pressed', !pendingLearningModeValue ? 'true' : 'false');
+        offBtn.disabled = learningModePreferenceSaving;
     }
     if (onBtn) {
         onBtn.classList.toggle('active', pendingLearningModeValue);
         onBtn.setAttribute('aria-pressed', pendingLearningModeValue ? 'true' : 'false');
-        onBtn.disabled = !learningRuntimeEnabled;
+        onBtn.disabled = learningModePreferenceSaving || !learningRuntimeEnabled;
     }
 }
 
-async function saveLearningModePreference() {
-    const enabled = !!pendingLearningModeValue;
+async function saveLearningModePreference(enabled) {
+    const nextEnabled = !!enabled;
 
-    if (enabled && !learningRuntimeEnabled) {
+    if (nextEnabled && !learningRuntimeEnabled) {
         setLearningModeToggleUi(false);
         showToast('NexoraLearning 未启用');
         return;
     }
 
-    const saveBtn = getSaveLearningModeBtn();
+    if (learningModePreferenceSaving) {
+        return;
+    }
+
+    const previousEnabled = !!(currentUserPreferences && currentUserPreferences.learning_mode);
+    learningModePreferenceSaving = true;
+    setLearningModeToggleUi(nextEnabled);
+
     try {
-        if (saveBtn) {
-            saveBtn.disabled = true;
-            saveBtn.textContent = '保存中...';
-        }
         const res = await fetch('/api/user/preferences', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ learning_mode: enabled }),
+            body: JSON.stringify({ learning_mode: nextEnabled }),
         });
         const data = await res.json();
-        if (!data.success) {
-            showToast(data.message || '保存学习模式失败');
-            return;
+
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || `HTTP ${res.status}`);
         }
+
         currentUserPreferences = data.preferences || currentUserPreferences || {};
         setLearningModeToggleUi(!!currentUserPreferences.learning_mode);
         await applyLearningMode(!!currentUserPreferences.learning_mode);
-        if (!(enabled && !learningModeEnabled)) {
-            showToast(enabled ? '学习模式已开启' : '学习模式已关闭');
+
+        if (!(nextEnabled && !learningModeEnabled)) {
+            showToast(nextEnabled ? '学习模式已开启' : '学习模式已关闭');
         }
     } catch (err) {
         console.error('保存学习模式失败:', err);
-        showToast('保存学习模式失败');
+        setLearningModeToggleUi(previousEnabled);
+        showToast(`保存学习模式失败: ${String((err && err.message) || 'unknown')}`);
     } finally {
-        if (saveBtn) {
-            saveBtn.disabled = false;
-            saveBtn.textContent = '保存';
-        }
+        learningModePreferenceSaving = false;
+        setLearningModeToggleUi(!!(currentUserPreferences && currentUserPreferences.learning_mode));
     }
 }
 
@@ -10758,18 +10869,22 @@ function hidePinContextMenu() {
     pinContextMenuBusy = false;
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (actionBtn) actionBtn.disabled = false;
     if (renameBtn) renameBtn.disabled = false;
+    if (projectDeleteBtn) projectDeleteBtn.disabled = false;
     if (workspaceList) workspaceList.innerHTML = '';
 }
 
 function updatePinContextMenuAction(state) {
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceWrap = els.pinContextMenuWorkspaceWrap || document.getElementById('pinContextMenuWorkspaceWrap');
     if (!actionBtn) return;
     const targetType = String((state && state.targetType) || '').trim();
+    const isProject = targetType === 'nexoracode_project';
     const pinned = !!(state && state.pinned);
     const label = pinned ? '解除置顶' : '置顶';
     actionBtn.title = label;
@@ -10777,11 +10892,16 @@ function updatePinContextMenuAction(state) {
     if (span) span.textContent = label;
     const icon = actionBtn.querySelector('i');
     if (icon) icon.className = 'fa-solid fa-thumbtack';
+    actionBtn.style.display = isProject ? 'none' : '';
     if (renameBtn) {
-        renameBtn.style.display = targetType === 'conversation' ? '' : 'none';
+        renameBtn.style.display = !isProject && targetType === 'conversation' ? '' : 'none';
+    }
+    if (projectDeleteBtn) {
+        projectDeleteBtn.style.display = isProject ? '' : 'none';
     }
     if (workspaceWrap) {
-        const supportsWorkspaceMark = targetType === 'conversation' || targetType === 'knowledge_basis';
+        const supportsWorkspaceMark = state.allowWorkspaceMark !== false
+            && (targetType === 'conversation' || targetType === 'knowledge_basis');
         workspaceWrap.style.display = supportsWorkspaceMark ? '' : 'none';
     }
 }
@@ -11190,10 +11310,39 @@ async function applyPinContextMenuAction() {
     }
 }
 
+async function deleteNexoraCodeProjectFromContextMenu() {
+    const state = { ...(pinContextMenuState || {}) };
+    const projectId = String(state.projectId || '').trim();
+    const projectTitle = String(state.projectTitle || '该项目').trim() || '该项目';
+    hidePinContextMenu();
+
+    if (String(state.targetType || '').trim() !== 'nexoracode_project' || !projectId) {
+        return;
+    }
+
+    const confirmed = await confirmModalAsync(
+        '移除项目',
+        `确定从项目列表移除“${projectTitle}”吗？项目内对话会保留，重新添加同一路径后会自动恢复归组。`,
+        'danger'
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    if (!hideNexoraCodeProject(projectId)) {
+        showToast('项目移除失败');
+        return;
+    }
+
+    showToast(`已移除项目：${projectTitle}`);
+}
+
 function bindPinContextMenu() {
     const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (!menu || !actionBtn) return;
     if (menu.dataset.bindDone === '1') return;
@@ -11216,6 +11365,15 @@ function bindPinContextMenu() {
             if (!cid) return;
             const title = String(state.conversationTitle || getConversationTitleFromCache(cid) || '').trim();
             openConversationRenameModal(cid, title);
+        });
+    }
+    if (projectDeleteBtn) {
+        projectDeleteBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            projectDeleteBtn.disabled = true;
+            await deleteNexoraCodeProjectFromContextMenu();
+            projectDeleteBtn.disabled = false;
         });
     }
     if (workspaceList) {
@@ -12667,12 +12825,8 @@ function initUI() {
         const modeBtn = target.closest('[data-learning-mode]');
         if (modeBtn) {
             const mode = String(modeBtn.getAttribute('data-learning-mode') || '').trim().toLowerCase();
-            setLearningModeToggleUi(mode === 'on');
+            void saveLearningModePreference(mode === 'on');
             return;
-        }
-        const saveBtn = target.closest('#saveLearningModeBtn');
-        if (saveBtn) {
-            void saveLearningModePreference();
         }
     });
     if (els.longtermPlanToggle) {
@@ -13467,6 +13621,20 @@ function readMessageIoTokens(metadata, preferWindow = true) {
     return cumulative;
 }
 
+function readMessageMemoryIoTokens(metadata) {
+    const md = (metadata && typeof metadata === 'object') ? metadata : {};
+    const source = (
+        md.memory_io_tokens
+        && typeof md.memory_io_tokens === 'object'
+    ) ? md.memory_io_tokens : null;
+
+    return {
+        ready: !!source,
+        input: safeTokenInt(source && source.input),
+        output: safeTokenInt(source && source.output)
+    };
+}
+
 function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
     const arr = Array.isArray(messages) ? messages : [];
     let latestInput = 0;
@@ -13930,12 +14098,23 @@ function applyTokenBudgetFromConversationMessages(messages) {
     renderTokenBudgetUi();
 }
 
-function buildModelBadgeText(modelName, searchFlag, inputTokens, outputTokens) {
+function buildModelBadgeText(
+    modelName,
+    searchFlag,
+    inputTokens,
+    outputTokens,
+    memoryInputTokens,
+    memoryOutputTokens,
+    memoryReady
+) {
     const model = String(modelName || '-').trim() || '-';
     const search = (typeof searchFlag === 'boolean') ? String(searchFlag) : String(searchFlag || 'unknown');
     const input = safeTokenInt(inputTokens).toLocaleString();
     const output = safeTokenInt(outputTokens).toLocaleString();
-    return `${model} - search: ${search} - I/O: ${input}/${output}`;
+    const memoryText = memoryReady
+        ? ` - mem I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`
+        : '';
+    return `${model} - search: ${search} - I/O: ${input}/${output}${memoryText}`;
 }
 
 function ensureMessageModelBadge(messageDiv) {
@@ -13946,6 +14125,7 @@ function ensureMessageModelBadge(messageDiv) {
     if (!badge) {
         badge = document.createElement('div');
         badge.className = 'model-badge';
+        badge.dataset.expanded = '1';
         content.appendChild(badge);
     }
     if (badge.dataset.boundToggle !== '1') {
@@ -13969,7 +14149,10 @@ function renderMessageModelBadgeText(messageDiv) {
             modelName: '',
             searchFlag: 'unknown',
             inputTokens: 0,
-            outputTokens: 0
+            outputTokens: 0,
+            memoryInputTokens: 0,
+            memoryOutputTokens: 0,
+            memoryReady: false
         };
     const expanded = badge.dataset.expanded === '1';
     const compactText = String(state.modelName || '-').trim() || '-';
@@ -13977,7 +14160,10 @@ function renderMessageModelBadgeText(messageDiv) {
         state.modelName,
         state.searchFlag,
         state.inputTokens,
-        state.outputTokens
+        state.outputTokens,
+        state.memoryInputTokens,
+        state.memoryOutputTokens,
+        state.memoryReady
     );
     badge.textContent = expanded ? fullText : compactText;
     badge.title = expanded ? '点击折叠模型信息' : fullText;
@@ -13997,6 +14183,9 @@ function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = 
         modelName: String((state && state.modelName) || getStreamingModelBadgeName(fallbackName)),
         searchFlag: (state && Object.prototype.hasOwnProperty.call(state, 'searchFlag')) ? state.searchFlag : 'unknown',
         inputTokens: safeTokenInt(state && state.inputTokens),
+        memoryInputTokens: safeTokenInt(state && state.memoryInputTokens),
+        memoryOutputTokens: safeTokenInt(state && state.memoryOutputTokens),
+        memoryReady: !!(state && state.memoryReady),
         outputTokens: Math.max(
             safeTokenInt(state && state.outputTokens),
             safeTokenInt(tokenMiniState.streamOutput),
@@ -14006,14 +14195,6 @@ function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = 
     updateMessageModelBadge(messageDiv, nextState);
 }
 
-function collapseModelBadgeForMessage(messageDiv) {
-    const badge = ensureMessageModelBadge(messageDiv);
-    if (!badge) return;
-    if (badge.dataset.userPinned === '1') return;
-    badge.dataset.expanded = '0';
-    renderMessageModelBadgeText(messageDiv);
-}
-
 function updateMessageModelBadge(messageDiv, state = {}) {
     if (!messageDiv) return;
     if (!ensureMessageModelBadge(messageDiv)) return;
@@ -14021,7 +14202,10 @@ function updateMessageModelBadge(messageDiv, state = {}) {
         modelName: String((state && state.modelName) || ''),
         searchFlag: (state && Object.prototype.hasOwnProperty.call(state, 'searchFlag')) ? state.searchFlag : 'unknown',
         inputTokens: safeTokenInt(state && state.inputTokens),
-        outputTokens: safeTokenInt(state && state.outputTokens)
+        outputTokens: safeTokenInt(state && state.outputTokens),
+        memoryInputTokens: safeTokenInt(state && state.memoryInputTokens),
+        memoryOutputTokens: safeTokenInt(state && state.memoryOutputTokens),
+        memoryReady: !!(state && state.memoryReady)
     };
     messageDiv.__modelBadgeState = nextState;
     renderMessageModelBadgeText(messageDiv);
@@ -14222,31 +14406,7 @@ async function openTokenModal() {
             // 渲染历史日志
             const logsTableBody = document.getElementById('tokenLogsTableBody');
             if (logsTableBody && data.history) {
-                logsTableBody.innerHTML = data.history.map(log => {
-                    const inTokens = Number(log.input_tokens || 0);
-                    const outTokens = Number(log.output_tokens || 0);
-                    const total = Number(log.total_tokens ?? (inTokens + outTokens));
-                    const timeStr = log.timestamp ? log.timestamp.split(' ')[1] || log.timestamp : '-';
-                    const dateStr = log.timestamp ? log.timestamp.split(' ')[0] : '-';
-                    return `
-                        <tr>
-                            <td title="${log.timestamp}">
-                                <div style="font-size: 11px; white-space: nowrap;">${dateStr}</div>
-                                <div style="font-weight: bold; font-family: 'JetBrains Mono'; color: #64748b;">${timeStr}</div>
-                            </td>
-                            <td class="title-cell" title="${log.conversation_title || ''}">
-                                <div class="text-truncate">${log.conversation_title || 'Chat Operation'}</div>
-                            </td>
-                            <td>
-                                <span class="action-badge ${log.action}">${(log.action || 'chat').toUpperCase()}</span>
-                            </td>
-                            <td class="num">
-                                <div style="font-size: 10px; color: #94a3b8;">${inTokens}+${outTokens}</div>
-                                <div style="font-weight: 800; font-family: 'JetBrains Mono';">${total.toLocaleString()}</div>
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
+                window.NexoraTokenUsageDetails.renderHistory(logsTableBody, data.history);
             }
         }
     } catch(e) { console.error("Error loading token stats", e); }
@@ -17961,8 +18121,8 @@ async function sendMessage(options = {}) {
                 streamCompleted = true;
                 aiMsgDiv.dataset.localOnly = '0';
                 finalizeStreamingContentRender();
+                getNexoraChatTools().collapseResolvedToolUsages(aiMsgDiv);
                 setTimeout(() => collapseReasoningBlocksForMessage(aiMsgDiv), 420);
-                setTimeout(() => collapseModelBadgeForMessage(aiMsgDiv), 520);
                 break;
              }
         }
@@ -18240,9 +18400,11 @@ function appendSearchMeta(aiMsgDiv, meta, isHistory = false) {
         outDiv.textContent = lines.join('\n').trim() || 'No search metadata';
         if (outDiv.textContent.trim()) {
             row.classList.add('has-output');
-            row.classList.remove('expanded');
-            scrollToolOutputToBottom(outDiv);
-            scheduleToolAutoCollapse(row, 900);
+
+            if (row.dataset.userToggled !== 'true') {
+                row.classList.add('expanded');
+                scrollToolOutputToTop(outDiv);
+            }
         }
     }
     row.dataset.pending = 'false';
@@ -18293,10 +18455,6 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
 
 function bindToolUsageToggle(toolEl) {
     return toolEventController.bindToolUsageToggle(toolEl);
-}
-
-function scheduleToolAutoCollapse(toolEl, delay = 260) {
-    return toolEventController.scheduleToolAutoCollapse(toolEl, delay);
 }
 
 function findToolUsage(...args) {
@@ -18389,6 +18547,10 @@ async function yieldToolStreamPaintForChunk(messageDiv, data, force = false) {
 
 function scrollToolOutputToBottom(outputEl) {
     return toolEventController.scrollToolOutputToBottom(outputEl);
+}
+
+function scrollToolOutputToTop(outputEl) {
+    return toolEventController.scrollToolOutputToTop(outputEl);
 }
 
 function findPendingToolUsageFallback(...args) {
@@ -19841,6 +20003,7 @@ const streamMessageDomController = getNexoraChatStreaming().createStreamMessageD
     updateThinkingBlockSummary,
     finishReasoningThinkingBlock,
     renderCompletedStreamMath,
+    collapseResolvedToolUsages: (...args) => getNexoraChatTools().collapseResolvedToolUsages(...args),
     pinMessagesToBottomFor,
     scheduleLearningSidebarBridgeNotify,
     getShouldAutoScroll: () => shouldAutoScroll
@@ -20172,10 +20335,6 @@ async function loadKnowledge(cid) {
 
 async function createBlankBasisKnowledge() {
     return knowledgeSidebarController.createBlankBasisKnowledge();
-}
-
-function bindShortTermSectionToggle() {
-    return knowledgeSidebarController.bindShortTermSectionToggle();
 }
 
 async function attachKnowledgeToComposer(title, type = 'basis', shortContent = '') {
@@ -21917,9 +22076,6 @@ function renderCustomModelSelect(models, defaultModel) {
     
     // Clear
     els.modelOptions.innerHTML = '';
-    const modelOptionsScroll = document.createElement('div');
-    modelOptionsScroll.className = 'model-options-scroll';
-    els.modelOptions.appendChild(modelOptionsScroll);
     
     if (models.length === 0) {
         selectedModelId = null;
@@ -21934,85 +22090,42 @@ function renderCustomModelSelect(models, defaultModel) {
     
     selectedModelId = (isValidStored ? stored : (isValidDefault ? defaultModel : models[0].id));
 
-    const statusLabelMap = {
-        good: '良好',
-        normal: '正常',
-        fast: '快速',
-        slow: '缓慢',
-        error: '错误'
-    };
-    const normalizeStatus = (status) => String(status || 'normal').toLowerCase();
-
-    // Group by provider
-    const groups = new Map();
-    models.forEach((m) => {
-        const key = normalizeModelProviderKey(m.provider);
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(m);
-    });
-
-    // Render grouped chips
-    const sortedProviders = Array.from(groups.keys()).sort(compareModelProviderKeys);
-
-    sortedProviders.forEach((providerKey) => {
-        const section = document.createElement('div');
-        section.className = 'model-group';
-        const providerApiType = getChatProviderApiType(providerKey);
-
-        const title = document.createElement('div');
-        title.className = 'model-group-title';
-        const providerText = getModelProviderLabel(providerKey);
-        title.innerHTML = `
-            <span class="provider-title-main">
+    getNexoraChatModelSelect().render({
+        root: els.modelOptions,
+        models,
+        selectedModelId,
+        normalizeProvider: normalizeModelProviderKey,
+        compareProviders: compareModelProviderKeys,
+        getModelLabel: (model) => getModelDisplayLabel(getModelSourceLabel(model)),
+        getModelTitle: getModelSourceLabel,
+        getModelStatus: (model) => String((model && model.status) || 'normal').toLowerCase(),
+        renderProviderTitle: (target, providerKey) => {
+            const providerText = getModelProviderLabel(providerKey);
+            target.innerHTML = `
                 ${renderProviderIconHtml(providerKey, { className: 'provider-logo provider-logo-sm', label: providerText })}
                 <span class="label">${escapeHtml(providerText)}</span>
-            </span>
-        `;
-        section.appendChild(title);
-
-        const chips = document.createElement('div');
-        chips.className = 'model-chip-wrap';
-
-        groups.get(providerKey).forEach((m) => {
-            const rawName = getModelSourceLabel(m);
-            const displayName = getModelDisplayLabel(rawName);
-            const statusKey = normalizeStatus(m.status);
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'model-chip';
-            chip.dataset.modelId = m.id;
-
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'model-chip-name';
-            nameSpan.textContent = displayName;
-            nameSpan.title = rawName;
-
-            const statusSpan = document.createElement('span');
-            statusSpan.className = `model-chip-status model-status-${statusKey}`;
-            statusSpan.textContent = statusLabelMap[statusKey] || statusKey.toUpperCase();
-            chip.appendChild(nameSpan);
-            chip.appendChild(statusSpan);
-
-            if (providerApiType === 'ollama') {
-                const statusDot = document.createElement('span');
-                const circleClass = getChatModelOllamaCircleClass(m, providerKey);
-                const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : (circleClass === 'status-loading' ? '加载中' : '不在线'));
-                statusDot.className = `model-chip-ollama-dot ${circleClass}`;
-                statusDot.title = statusText;
-                statusDot.setAttribute('aria-label', statusText);
-                chip.appendChild(statusDot);
+            `;
+        },
+        decorateChip: (chip, model, providerKey) => {
+            if (getChatProviderApiType(providerKey) !== 'ollama') {
+                return;
             }
 
-            if (m.id === selectedModelId) chip.classList.add('same-as-selected');
-            chip.addEventListener('click', (e) => {
-                e.stopPropagation();
-                selectModel(m.id, m.name);
-            });
-            chips.appendChild(chip);
-        });
-
-        section.appendChild(chips);
-        modelOptionsScroll.appendChild(section);
+            const statusDot = document.createElement('span');
+            const circleClass = getChatModelOllamaCircleClass(model, providerKey);
+            const statusText = circleClass === 'status-success'
+                ? '在线'
+                : (circleClass === 'status-danger'
+                    ? '未安装'
+                    : (circleClass === 'status-loading' ? '加载中' : '不在线'));
+            statusDot.className = `model-chip-ollama-dot ${circleClass}`;
+            statusDot.title = statusText;
+            statusDot.setAttribute('aria-label', statusText);
+            chip.appendChild(statusDot);
+        },
+        onSelect: (modelId, model) => {
+            void selectModel(modelId, model && model.name);
+        }
     });
     
     // Set initial display
@@ -27298,12 +27411,21 @@ async function loadUserSettings() {
             const prefs = prefsData.preferences;
             currentUserPreferences = prefs || currentUserPreferences || {};
             // 填充偏好设置
-            document.getElementById('set-defmodel').textContent = prefs.default_model || '自动选择';
-            document.getElementById('set-theme').textContent = prefs.theme === 'dark' ? '暗色主题' : '亮色主题';
-            document.getElementById('set-stream').textContent = prefs.streaming ? '流式输出 (开启)' : '完整输出 (关闭)';
-            document.getElementById('set-lang').textContent = prefs.language === 'zh' ? '简体中文' : 'English';
+            const themeField = document.getElementById('set-theme');
+
+            if (themeField) {
+                themeField.textContent = '亮色主题';
+            }
+
             setLearningModeToggleUi(!!prefs.learning_mode);
         }
+
+        const memorySettings = getNexoraChatMemorySettings();
+        memorySettings.bind();
+        await Promise.all([
+            memorySettings.loadProfile(),
+            memorySettings.loadModelSelector(currentUserPreferences || {})
+        ]);
     } catch (e) {
         console.error('加载用户设置失败:', e);
     }

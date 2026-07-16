@@ -74,6 +74,7 @@
         const appendSearchMeta = requireMessagesDependency(deps, 'appendSearchMeta');
         const resolveToolNameFromEvent = requireMessagesDependency(deps, 'resolveToolNameFromEvent');
         const appendAddBasisView = requireMessagesDependency(deps, 'appendAddBasisView');
+        const collapseResolvedToolUsages = requireMessagesDependency(deps, 'collapseResolvedToolUsages');
         const allocateToolCallId = requireMessagesDependency(deps, 'allocateToolCallId');
         const rememberJsExecuteCanvasCall = requireMessagesDependency(deps, 'rememberJsExecuteCanvasCall');
         const finalizeToolCallBadge = requireMessagesDependency(deps, 'finalizeToolCallBadge');
@@ -89,6 +90,7 @@
         const appendQuestionStep = requireMessagesDependency(deps, 'appendQuestionStep');
         const appendPuzzleStep = requireMessagesDependency(deps, 'appendPuzzleStep');
         const readMessageIoTokens = requireMessagesDependency(deps, 'readMessageIoTokens');
+        const readMessageMemoryIoTokens = requireMessagesDependency(deps, 'readMessageMemoryIoTokens');
         const safeTokenInt = requireMessagesDependency(deps, 'safeTokenInt');
         const buildVersionNavigation = requireMessagesDependency(deps, 'buildVersionNavigation');
         const rememberVisibleMessageInWindow = requireMessagesDependency(deps, 'rememberVisibleMessageInWindow');
@@ -105,6 +107,7 @@
         }
 
         function createContentSpan(parentMsgDiv, options = {}) {
+            collapseResolvedToolUsages(parentMsgDiv);
             const parent = parentMsgDiv.querySelector('.message-content') || parentMsgDiv;
             const span = document.createElement('div');
             span.className = 'content-body fade-in';
@@ -361,6 +364,7 @@
                         } else if (step.type === 'error') {
                             appendErrorEvent(div, step.content || step.message || 'Unknown error', true);
                         } else if (step.type === 'content') {
+                            collapseResolvedToolUsages(div);
                             const planInfo = applyLongtermPlanFromText(step.content, {
                                 source: 'history-step',
                                 messageDiv: div
@@ -368,7 +372,9 @@
                             const cleanedStepContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : step.content || '');
                             const body = document.createElement('div');
                             body.className = 'content-body';
-                            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedStepContent);
+                            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedStepContent, {
+                                autoCloseCodeFence: true
+                            });
                             bindSourceMarkdown(body, cleanedStepContent);
                             renderMathSafe(body);
                             highlightCode(body);
@@ -391,6 +397,7 @@
                     if (standaloneErr) {
                         appendErrorEvent(div, standaloneErr, true);
                     } else {
+                        collapseResolvedToolUsages(div);
                         const planInfo = applyLongtermPlanFromText(message.content, {
                             source: 'history-main',
                             messageDiv: div
@@ -398,7 +405,9 @@
                         const cleanedMsgContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : message.content || '');
                         const body = document.createElement('div');
                         body.className = 'content-body';
-                        body.innerHTML = renderMarkdownWithNewTabLinks(cleanedMsgContent);
+                        body.innerHTML = renderMarkdownWithNewTabLinks(cleanedMsgContent, {
+                            autoCloseCodeFence: true
+                        });
                         bindSourceMarkdown(body, cleanedMsgContent);
                         renderMathSafe(body);
                         highlightCode(body);
@@ -438,13 +447,17 @@
 
                 if (modelName) {
                     const ioMeta = readMessageIoTokens(message.metadata || {}, false);
+                    const memoryIoMeta = readMessageMemoryIoTokens(message.metadata || {});
                     updateMessageModelBadge(div, {
                         modelName,
                         searchFlag: (message.metadata && typeof message.metadata.search_enabled === 'boolean')
                             ? message.metadata.search_enabled
                             : 'unknown',
                         inputTokens: safeTokenInt(ioMeta.input),
-                        outputTokens: safeTokenInt(ioMeta.output)
+                        outputTokens: safeTokenInt(ioMeta.output),
+                        memoryInputTokens: safeTokenInt(memoryIoMeta.input),
+                        memoryOutputTokens: safeTokenInt(memoryIoMeta.output),
+                        memoryReady: !!memoryIoMeta.ready
                     });
                 }
 
@@ -763,6 +776,7 @@
         }
 
         function resolveContentBodyForFullTextUpdate(messageDiv, displayText) {
+            collapseResolvedToolUsages(messageDiv);
             const contentRoot = messageDiv.querySelector('.message-content') || messageDiv;
             const generatedAnchor = (
                 messageDiv.__generatedImageResultAnchor

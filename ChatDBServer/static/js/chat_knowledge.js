@@ -463,14 +463,6 @@
                     els.panelBasisCount.textContent = basisItems.length;
                 }
 
-                const memories = Array.isArray(data.memories) ? data.memories : [];
-                renderKnowledgeList(els.panelShortList, memories, 'short');
-
-                if (els.panelShortCount) {
-                    els.panelShortCount.textContent = memories.length;
-                }
-
-                bindShortTermSectionToggle();
             } catch (e) {
                 setKnowledgeVectorizationEnabled(false);
                 syncBulkVectorizeButtonVisibility();
@@ -532,26 +524,6 @@
             } finally {
                 els.createBlankBasisBtn.disabled = false;
             }
-        }
-
-        function bindShortTermSectionToggle() {
-            const els = readElements();
-            const list = els.panelShortList || document.getElementById('panelShortMemoryList');
-
-            if (!list) return;
-
-            const section = list.closest('.k-section');
-            const title = section ? section.querySelector('.k-section-title') : null;
-
-            if (!section || !title) return;
-            if (title.dataset.shortToggleBound === '1') return;
-
-            title.dataset.shortToggleBound = '1';
-            title.classList.add('short-term-toggle');
-            title.addEventListener('click', (e) => {
-                if (e.target && e.target.closest && e.target.closest('button,input,textarea,a')) return;
-                section.classList.toggle('short-collapsed');
-            });
         }
 
         async function attachKnowledgeToComposer(title, type = 'basis', shortContent = '') {
@@ -973,7 +945,6 @@
             syncBulkVectorizeButtonVisibility,
             loadKnowledge,
             createBlankBasisKnowledge,
-            bindShortTermSectionToggle,
             attachKnowledgeToComposer,
             renderKnowledgeList,
             confirmDeleteKnowledge,
@@ -1948,7 +1919,8 @@
                 runToken: 0,
                 lastRunAt: 0,
                 busy: false,
-                lastInputAt: 0
+                lastInputAt: 0,
+                scrollMap: null
             }
         };
     }
@@ -2789,6 +2761,7 @@
                 }
             });
             state.align.widgets = [];
+            state.align.scrollMap = null;
         }
 
         function addAlignWidget(widget) {
@@ -3287,16 +3260,190 @@
             return false;
         }
 
-        function buildKnowledgeAnchorPairs(cmAnchors, previewAnchors) {
-            const pairs = [];
-            const pairCount = Math.min(cmAnchors.length, previewAnchors.length);
-            for (let i = 0; i < pairCount; i++) {
-                pairs.push({
-                    cmAnchor: cmAnchors[i],
-                    previewAnchor: previewAnchors[i]
-                });
+        function scoreKnowledgeAnchorPair(cmAnchor, previewAnchor) {
+            if (!areKnowledgeAnchorsCompatible(cmAnchor, previewAnchor)) return -1;
+
+            let score = 10;
+            const cmType = String((cmAnchor && cmAnchor.type) || '');
+            const previewType = String((previewAnchor && previewAnchor.type) || '');
+            const cmText = String((cmAnchor && cmAnchor.textNorm) || '');
+            const previewText = String((previewAnchor && previewAnchor.textNorm) || '');
+
+            if (cmType === previewType) score += 20;
+            if (cmType === 'heading' && Number(cmAnchor.level || 0) === Number(previewAnchor.level || 0)) score += 20;
+            if (cmText && previewText) {
+                if (cmText === previewText) score += 100;
+                else if (cmText.includes(previewText) || previewText.includes(cmText)) score += 60;
             }
+
+            return score;
+        }
+
+        function buildKnowledgeSemanticAnchorPairs(cmAnchors, previewAnchors) {
+            const pairs = [];
+            let cmIndex = 0;
+            let previewIndex = 0;
+            const lookahead = 16;
+
+            while (cmIndex < cmAnchors.length && previewIndex < previewAnchors.length) {
+                const directScore = scoreKnowledgeAnchorPair(cmAnchors[cmIndex], previewAnchors[previewIndex]);
+
+                if (directScore >= 0) {
+                    pairs.push({cmAnchor: cmAnchors[cmIndex], previewAnchor: previewAnchors[previewIndex]});
+                    cmIndex += 1;
+                    previewIndex += 1;
+                    continue;
+                }
+
+                let nextPreviewIndex = -1;
+                let nextPreviewScore = -1;
+                for (let index = previewIndex + 1; index < Math.min(previewAnchors.length, previewIndex + lookahead); index += 1) {
+                    const score = scoreKnowledgeAnchorPair(cmAnchors[cmIndex], previewAnchors[index]);
+                    if (score >= 40 && score > nextPreviewScore) {
+                        nextPreviewIndex = index;
+                        nextPreviewScore = score;
+                    }
+                }
+
+                let nextCmIndex = -1;
+                let nextCmScore = -1;
+                for (let index = cmIndex + 1; index < Math.min(cmAnchors.length, cmIndex + lookahead); index += 1) {
+                    const score = scoreKnowledgeAnchorPair(cmAnchors[index], previewAnchors[previewIndex]);
+                    if (score >= 40 && score > nextCmScore) {
+                        nextCmIndex = index;
+                        nextCmScore = score;
+                    }
+                }
+
+                if (nextPreviewIndex >= 0 && (nextCmIndex < 0 || (nextPreviewIndex - previewIndex) <= (nextCmIndex - cmIndex))) {
+                    previewIndex = nextPreviewIndex;
+                    continue;
+                }
+
+                if (nextCmIndex >= 0) {
+                    cmIndex = nextCmIndex;
+                    continue;
+                }
+
+                cmIndex += 1;
+                previewIndex += 1;
+            }
+
             return pairs;
+        }
+
+        function buildKnowledgeScrollAnchorMap(preview, cm) {
+            if (!preview || !cm || typeof cm.getScrollInfo !== 'function') return null;
+
+            const cmAnchors = collectKnowledgeEditorMarkdownAnchors(cm);
+            const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
+            const anchorPairs = buildKnowledgeSemanticAnchorPairs(cmAnchors, previewAnchors);
+
+            if (!anchorPairs.length) return null;
+
+            const cmInfo = cm.getScrollInfo();
+            const editorMax = Math.max(0, Number((cmInfo.height || 0) - (cmInfo.clientHeight || 0)));
+            const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
+            const points = [{editorTop: 0, previewTop: 0, type: 'start'}];
+            let semanticPointCount = 0;
+
+            anchorPairs.forEach((pair) => {
+                const cmLine = Number(pair.cmAnchor && pair.cmAnchor.line);
+                const previewNode = pair.previewAnchor && pair.previewAnchor.el;
+
+                if (!Number.isFinite(cmLine) || !previewNode) return;
+
+                const editorTop = Math.max(0, Math.min(editorMax, Number(cm.heightAtLine(cmLine, 'local') || 0)));
+                const previewTop = Math.max(0, Math.min(previewMax, Number(previewNode.offsetTop || 0)));
+                const previous = points[points.length - 1];
+                semanticPointCount += 1;
+
+                if (editorTop < previous.editorTop || previewTop < previous.previewTop) return;
+                if (editorTop === previous.editorTop && previewTop === previous.previewTop) return;
+
+                points.push({
+                    editorTop,
+                    previewTop,
+                    type: String((pair.cmAnchor && pair.cmAnchor.type) || 'block')
+                });
+            });
+
+            const last = points[points.length - 1];
+
+            if (last.editorTop !== editorMax || last.previewTop !== previewMax) {
+                points.push({editorTop: editorMax, previewTop: previewMax, type: 'end'});
+            }
+
+            if (!semanticPointCount || points.length < 2) return null;
+
+            return {
+                points,
+                pairCount: anchorPairs.length,
+                editorMax,
+                previewMax
+            };
+        }
+
+        function getKnowledgeScrollAnchorMap(preview, cm) {
+            if (state.align.scrollMap) {
+                return state.align.scrollMap;
+            }
+
+            state.align.scrollMap = buildKnowledgeScrollAnchorMap(preview, cm);
+
+            return state.align.scrollMap;
+        }
+
+        function projectKnowledgeScrollTop(anchorMap, sourceKey, targetKey, sourceTop) {
+            const points = anchorMap && Array.isArray(anchorMap.points) ? anchorMap.points : [];
+
+            if (points.length < 2) return null;
+
+            const sourceValue = Math.max(0, Number(sourceTop || 0));
+            let lower = points[0];
+            let upper = points[points.length - 1];
+
+            for (let index = 1; index < points.length; index += 1) {
+                const candidate = points[index];
+
+                if (sourceValue <= Number(candidate[sourceKey] || 0)) {
+                    upper = candidate;
+                    break;
+                }
+
+                lower = candidate;
+            }
+
+            const sourceStart = Number(lower[sourceKey] || 0);
+            const sourceEnd = Number(upper[sourceKey] || 0);
+            const targetStart = Number(lower[targetKey] || 0);
+            const targetEnd = Number(upper[targetKey] || 0);
+            const segmentSize = sourceEnd - sourceStart;
+            const segmentProgress = segmentSize > 0
+                ? Math.max(0, Math.min(1, (sourceValue - sourceStart) / segmentSize))
+                : 0;
+
+            return Math.round(targetStart + ((targetEnd - targetStart) * segmentProgress));
+        }
+
+        function clearKnowledgeAlignmentStyles(preview) {
+            const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
+
+            previewAnchors.forEach(({ el }) => {
+                if (!el || !el.dataset) return;
+
+                if (el.dataset.nexoraAlignBound === '1') {
+                    el.style.marginTop = '';
+                    delete el.dataset.nexoraAlignBound;
+                }
+
+                if (el.dataset.nexoraAlignMarginBottom === '1') {
+                    el.style.marginBottom = '';
+                    delete el.dataset.nexoraAlignMarginBottom;
+                }
+            });
+
+            preview.style.paddingBottom = '';
         }
 
         function alignBlocks(mode = 'full') {
@@ -3309,205 +3456,43 @@
             const cm = getEditorCodeMirror();
 
             resetAlignWidgets();
-
-            const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
-            previewAnchors.forEach(({ el }) => {
-                if (!el || !el.dataset) return;
-                if (el.dataset.nexoraAlignBound === '1') {
-                    el.style.marginTop = '';
-                    delete el.dataset.nexoraAlignBound;
-                }
-                if (el.dataset.nexoraAlignMarginBottom === '1') {
-                    el.style.marginBottom = '';
-                    delete el.dataset.nexoraAlignMarginBottom;
-                }
-            });
-            preview.style.paddingBottom = '';
-
+            clearKnowledgeAlignmentStyles(preview);
+            state.align.scrollMap = null;
             const cmAnchors = collectKnowledgeEditorMarkdownAnchors(cm);
-            const anchorPairs = buildKnowledgeAnchorPairs(cmAnchors, previewAnchors);
-            const cmTotalBefore = getKnowledgeEditorEffectiveCmBottom(cm);
-            const cmOffsets = anchorPairs.map((pair) => cm.heightAtLine(Number(pair.cmAnchor && pair.cmAnchor.line), "local"));
-            cmOffsets.push(cmTotalBefore);
-            const useLightMode = mode === 'light';
-            const debugAlign = !useLightMode && isAlignDebugEnabled();
-            const pairDebugRows = debugAlign ? [] : null;
-            let rangeStart = 0;
-            let rangeEnd = Math.max(0, anchorPairs.length - 1);
-            if (useLightMode && anchorPairs.length > 0) {
-                const cmInfo = cm.getScrollInfo();
-                const viewStart = Math.max(0, Number((cmInfo && cmInfo.top) || 0) - 600);
-                const viewEnd = Math.max(viewStart, Number((cmInfo && cmInfo.top) || 0) + Number((cmInfo && cmInfo.clientHeight) || 0) + 800);
+            const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
+            const semanticPairs = buildKnowledgeSemanticAnchorPairs(cmAnchors, previewAnchors);
+            state.align.scrollMap = buildKnowledgeScrollAnchorMap(preview, cm);
 
-                while (rangeStart < anchorPairs.length - 1 && Number(cmOffsets[rangeStart + 1] || 0) < viewStart) {
-                    rangeStart += 1;
-                }
-                rangeEnd = rangeStart;
-                while (rangeEnd < anchorPairs.length - 1 && Number(cmOffsets[rangeEnd] || 0) <= viewEnd) {
-                    rangeEnd += 1;
-                }
-                rangeStart = Math.max(0, rangeStart - 6);
-                rangeEnd = Math.min(anchorPairs.length - 1, rangeEnd + 8);
-            }
-
-            const previewOffsets = useLightMode
-                ? null
-                : anchorPairs.map((pair) => Number((pair.previewAnchor && pair.previewAnchor.el && pair.previewAnchor.el.offsetTop) || 0));
-            if (previewOffsets) {
-                previewOffsets.push(Math.max(preview.scrollHeight, previewOffsets.length ? previewOffsets[previewOffsets.length - 1] : 0));
-            }
-            const previewOffsetCache = new Map();
-            const readPreviewOffset = (index) => {
-                if (index >= anchorPairs.length) return Math.max(preview.scrollHeight, 0);
-                if (previewOffsets) return Number(previewOffsets[index] || 0);
-                if (previewOffsetCache.has(index)) return Number(previewOffsetCache.get(index) || 0);
-                const node = anchorPairs[index] && anchorPairs[index].previewAnchor && anchorPairs[index].previewAnchor.el;
-                const value = Number((node && node.offsetTop) || 0);
-                previewOffsetCache.set(index, value);
-                return value;
-            };
-            let previewAdded = 0;
-            let editorAdded = 0;
-
-            for (let i = rangeStart; i <= rangeEnd; i++) {
-                const cmLine = Number(anchorPairs[i].cmAnchor && anchorPairs[i].cmAnchor.line);
-                const prNode = anchorPairs[i].previewAnchor && anchorPairs[i].previewAnchor.el;
-                if (!prNode || !Number.isFinite(cmLine)) continue;
-
-                const nextCmLine = i + 1 < anchorPairs.length
-                    ? Number(anchorPairs[i + 1].cmAnchor && anchorPairs[i + 1].cmAnchor.line)
-                    : null;
-
-                const cmStart = Number(cmOffsets[i] || 0);
-                const cmEnd = Number(cmOffsets[i + 1] || cmTotalBefore);
-                const editHeight = Math.max(0, Math.round(cmEnd - cmStart));
-
-                const previewStart = readPreviewOffset(i);
-                const previewEnd = readPreviewOffset(i + 1);
-                const previewHeight = Math.max(0, Math.round(previewEnd - previewStart));
-
-                const targetHeight = Math.max(editHeight, previewHeight);
-                const editPad = Math.max(0, targetHeight - editHeight);
-                const previewPad = Math.max(0, targetHeight - previewHeight);
-
-                if (debugAlign) {
-                    const style = window.getComputedStyle(prNode);
-                    pairDebugRows.push({
-                        i,
-                        cmLine,
-                        previewTag: String(prNode.tagName || '').toLowerCase(),
-                        previewText: String(prNode.textContent || '').trim().slice(0, 80),
-                        previewFontSize: (style.fontSize || ''),
-                        previewLineHeight: (style.lineHeight || ''),
-                        editHeight,
-                        previewHeight,
-                        targetHeight,
-                        editPad,
-                        previewPad
-                    });
-                }
-
-                if (previewPad > 1) {
-                    const currentMb = parseFloat(window.getComputedStyle(prNode).marginBottom) || 0;
-                    prNode.style.marginBottom = `${Math.round(currentMb + previewPad)}px`;
-                    prNode.dataset.nexoraAlignMarginBottom = '1';
-                    previewAdded += previewPad;
-                }
-
-                if (editPad > 1) {
-                    const div = document.createElement("div");
-                    div.style.height = `${Math.round(editPad)}px`;
-                    div.style.pointerEvents = "none";
-                    const insertLine = Number.isFinite(nextCmLine) ? nextCmLine : Math.max(0, cm.lineCount() - 1);
-                    const widget = cm.addLineWidget(insertLine, div, {
-                        coverGutter: false,
-                        noHScroll: true,
-                        above: Number.isFinite(nextCmLine)
-                    });
-                    addAlignWidget(widget);
-                    editorAdded += editPad;
-                }
-            }
-
-            if (!useLightMode && previewAnchors.length > anchorPairs.length) {
-                const firstExtra = previewAnchors[anchorPairs.length];
-                const firstExtraNode = firstExtra && firstExtra.el;
-                if (firstExtraNode) {
-                    const extraPreviewHeight = Math.max(0, Math.round(preview.scrollHeight - Number(firstExtraNode.offsetTop || 0)));
-                    if (extraPreviewHeight > 1) {
-                        const div = document.createElement("div");
-                        div.style.height = `${extraPreviewHeight}px`;
-                        div.style.pointerEvents = "none";
-                        const widget = cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {
-                            coverGutter: false,
-                            noHScroll: true
-                        });
-                        addAlignWidget(widget);
-                        editorAdded += extraPreviewHeight;
-                    }
-                }
-            } else if (!useLightMode && cmAnchors.length > anchorPairs.length) {
-                const firstExtraCm = cmAnchors[anchorPairs.length];
-                if (firstExtraCm && Number.isFinite(firstExtraCm.line)) {
-                    const extraCmStart = cm.heightAtLine(firstExtraCm.line, "local");
-                    const extraCmHeight = Math.max(0, Math.round(cmTotalBefore - extraCmStart));
-                    if (extraCmHeight > 1) {
-                        preview.style.paddingBottom = `${extraCmHeight}px`;
-                        previewAdded += extraCmHeight;
-                    }
-                }
-            }
-
-            if (debugAlign) {
-                try {
-                    knowledgeAlignLogger.info('[KnowledgeAlign] summary', {
-                        anchorPairs: anchorPairs.length,
-                        previewAnchors: previewAnchors.length,
-                        cmAnchors: cmAnchors.length,
-                        previewAdded,
-                        editorAdded
-                    });
-                    knowledgeAlignLogger.table(pairDebugRows.slice(0, 120));
-                } catch (_) {}
-            }
-
-            if (!useLightMode) {
-                // Synchronize bottom space
-                setTimeout(() => {
-                    const cmScroll = cm.getScrollInfo();
-                    const cmMax = Math.max(0, cmScroll.height - cmScroll.clientHeight);
-                    const prevMax = Math.max(0, preview.scrollHeight - preview.clientHeight);
-                    const diff = Math.round(cmMax - prevMax);
-
-                    if (diff > 1) {
-                        preview.style.paddingBottom = `${Math.max(0, diff)}px`;
-                    } else if (diff < -1) {
-                        const div = document.createElement("div");
-                        div.style.height = `${Math.round(Math.abs(diff))}px`;
-                        div.style.pointerEvents = "none";
-                        addAlignWidget(cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {coverGutter: false, noHScroll: true}));
-                    }
-                }, 40);
-
-                const pendingImages = Array.from(preview.querySelectorAll('img')).filter((img) => !img.complete);
-                pendingImages.forEach((img) => {
-                    if (img.dataset.nexoraAlignLoadBound === '1') return;
-                    img.dataset.nexoraAlignLoadBound = '1';
-                    const onDone = () => {
-                        delete img.dataset.nexoraAlignLoadBound;
-                        if (isSideBySideActive()) {
-                            scheduleAlignment('image');
-                        }
-                    };
-                    img.addEventListener('load', onDone, { once: true });
-                    img.addEventListener('error', onDone, { once: true });
+            if (isAlignDebugEnabled()) {
+                logDebug('alignAnchors', {
+                    mode,
+                    cmAnchors: cmAnchors.length,
+                    previewAnchors: previewAnchors.length,
+                    semanticPairs: semanticPairs.length,
+                    scrollMapPoints: state.align.scrollMap ? state.align.scrollMap.points.length : 0,
+                    layoutPaddingRemoved: true
                 });
             }
+
+            const pendingImages = Array.from(preview.querySelectorAll('img')).filter((img) => !img.complete);
+            pendingImages.forEach((img) => {
+                if (img.dataset.nexoraAlignLoadBound === '1') return;
+                img.dataset.nexoraAlignLoadBound = '1';
+                const onDone = () => {
+                    delete img.dataset.nexoraAlignLoadBound;
+                    if (isSideBySideActive()) {
+                        scheduleAlignment('image');
+                    }
+                };
+                img.addEventListener('load', onDone, { once: true });
+                img.addEventListener('error', onDone, { once: true });
+            });
         }
 
         function scheduleAlignment(reason = 'typing') {
             if (isToastUiEditor()) return;
             if (!isSideBySideActive()) return;
+            state.align.scrollMap = null;
             cancelAlignRetries();
             const runToken = nextAlignRunToken();
             const now = Date.now();
@@ -3691,51 +3676,46 @@
 
             requestAnimationFrame(() => {
                 try {
+                    const anchorMap = getKnowledgeScrollAnchorMap(preview, editor.codemirror);
+
+                    if (!anchorMap) {
+                        logDebug('mirrorScroll:skip', {
+                            fromPreview,
+                            reason: 'no_semantic_anchor_map'
+                        });
+                        return;
+                    }
+
                     if (fromPreview) {
                         const previewProgress = readScrollableProgress(preview);
-                        let cmInfo = null;
-                        let targetTop = 0;
+                        const targetTop = projectKnowledgeScrollTop(
+                            anchorMap,
+                            'previewTop',
+                            'editorTop',
+                            previewProgress.top
+                        );
 
-                        if (editor && editor.__editorType === 'toastui') {
-                            const editorProgress = readScrollableProgress(scroller);
-                            const editorMax = Math.max(0, Number((scroller.scrollHeight || 0) - (scroller.clientHeight || 0)));
-                            targetTop = editorMax > 0
-                                ? Math.round(editorMax * Number(previewProgress.ratio || 0))
-                                : Math.max(0, Number(previewProgress.top || 0));
-                            scroller.scrollTop = targetTop;
-                            cmInfo = {
-                                top: editorProgress.top,
-                                height: Number(scroller.scrollHeight || 0),
-                                clientHeight: Number(scroller.clientHeight || 0)
-                            };
-                        } else {
-                            cmInfo = editor.codemirror.getScrollInfo ? editor.codemirror.getScrollInfo() : null;
-                            const cmMax = Math.max(0, Number(((cmInfo && cmInfo.height) || 0) - ((cmInfo && cmInfo.clientHeight) || 0)));
-                            targetTop = cmMax > 0
-                                ? Math.round(cmMax * Number(previewProgress.ratio || 0))
-                                : Math.max(0, Number(previewProgress.top || 0));
-                            editor.codemirror.scrollTo(null, targetTop);
-                        }
+                        editor.codemirror.scrollTo(null, targetTop);
 
                         logDebug('mirrorScroll:applyToEditor', {
                             previewProgress,
-                            cmInfo,
-                            targetTop
+                            targetTop,
+                            anchorPairs: anchorMap.pairCount
                         });
                     } else {
-                        const cmProgress = (editor && editor.__editorType === 'toastui')
-                            ? readScrollableProgress(scroller)
-                            : readCodeMirrorProgress();
-                        const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
-                        const targetTop = previewMax > 0
-                            ? Math.round(previewMax * Number(cmProgress.ratio || 0))
-                            : Math.max(0, Number(cmProgress.top || 0));
+                        const cmProgress = readCodeMirrorProgress();
+                        const targetTop = projectKnowledgeScrollTop(
+                            anchorMap,
+                            'editorTop',
+                            'previewTop',
+                            cmProgress.top
+                        );
 
                         preview.scrollTop = targetTop;
                         logDebug('mirrorScroll:applyToPreview', {
                             cmProgress,
-                            previewMax,
-                            targetTop
+                            targetTop,
+                            anchorPairs: anchorMap.pairCount
                         });
                     }
                 } finally {

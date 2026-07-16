@@ -1194,14 +1194,10 @@ class ChatContextManager:
             f"profile_chars={len(str(profile_text or ''))} "
             f"recent_chars={len(str(recent_dialogue_text or ''))}"
         )
-        update_short_text = str(prompts.context_compression_update_short_instruction or "")
-        add_short_text = str(prompts.context_compression_add_short_instruction or "")
         prompt_text = prompts.build_context_compression_prompt(
             history_text,
             profile_text=profile_text,
             recent_dialogue=recent_dialogue_text,
-            update_short=update_short_text,
-            add_short=add_short_text,
             max_chars=safe_max_chars,
         )
         history_truncated = ("...[历史过长，已截断中段]..." in history_text)
@@ -1212,8 +1208,6 @@ class ChatContextManager:
             "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
             "profile_text": str(profile_text or ""),
             "recent_dialogue": str(recent_dialogue_text or ""),
-            "update_short": update_short_text,
-            "add_short": add_short_text,
             "history_text": str(history_text or ""),
             "model_reply": "",
             "error": "",

@@ -299,8 +299,24 @@
         const rewriteHtmlFragmentLinksToNewTab = requireRenderDependency(deps, 'rewriteHtmlFragmentLinksToNewTab');
         const captureLatexRenderDebug = requireRenderDependency(deps, 'captureLatexRenderDebug');
         const markedParser = getMarkedParser(deps);
+        const shouldCloseOpenFence = (
+            opts.autoCloseCodeFence === true
+            || opts.streamingFenceProvisional === true
+            || opts.streamingMathProvisional === true
+        );
+        let openFenceInfo = null;
 
-        if (opts.streamingMathProvisional) {
+        if (shouldCloseOpenFence) {
+            const findOpenFence = requireRenderDependency(deps, 'streamMarkdownFindOpenFence');
+            const buildClosedFence = requireRenderDependency(deps, 'streamMarkdownBuildProvisionalClosedFence');
+            openFenceInfo = findOpenFence(raw);
+
+            if (openFenceInfo) {
+                raw = buildClosedFence(raw);
+            }
+        }
+
+        if (opts.streamingMathProvisional && !openFenceInfo) {
             const streamMathFindOpenTailInfo = requireRenderDependency(deps, 'streamMathFindOpenTailInfo');
             const streamMathBuildProvisionalClosedTail = requireRenderDependency(deps, 'streamMathBuildProvisionalClosedTail');
             const openInfo = streamMathFindOpenTailInfo(raw);
@@ -352,6 +368,7 @@
         return renderMarkdownWithNewTabLinks(text, {
             ...opts,
             breaks: opts.breaks !== false,
+            streamingFenceProvisional: opts.streamingFenceProvisional !== false,
         }, deps);
     }
 
@@ -360,6 +377,10 @@
 
         if (!Object.prototype.hasOwnProperty.call(opts, 'breaks')) {
             opts.breaks = shouldUseStreamingMarkdownBreaks(root);
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(opts, 'streamingFenceProvisional')) {
+            opts.streamingFenceProvisional = true;
         }
 
         return renderMarkdownWithNewTabLinks(text, opts, deps);

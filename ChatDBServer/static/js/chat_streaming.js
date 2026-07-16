@@ -96,8 +96,112 @@
         return count;
     }
 
+    // 围栏必须从行首开始；流式快照补齐只影响渲染，绝不能写回模型原文。
+    function streamMarkdownReadFence(line) {
+        const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(String(line || '').replace(/\r$/, ''));
+
+        if (!match) {
+            return null;
+        }
+
+        const marker = String(match[2] || '');
+        const trailing = String(match[3] || '');
+        const markerChar = marker[0] || '';
+
+        if (markerChar === '`' && trailing.includes('`')) {
+            return null;
+        }
+
+        return {
+            char: markerChar,
+            length: marker.length,
+            trailing
+        };
+    }
+
+    function streamMarkdownFindOpenFence(text) {
+        const lines = String(text || '').split('\n');
+        let openFence = null;
+
+        for (let index = 0; index < lines.length; index += 1) {
+            const fence = streamMarkdownReadFence(lines[index]);
+
+            if (!fence) {
+                continue;
+            }
+
+            if (!openFence) {
+                openFence = {
+                    char: fence.char,
+                    length: fence.length,
+                    line: index
+                };
+                continue;
+            }
+
+            const isClosingFence = (
+                fence.char === openFence.char
+                && fence.length >= openFence.length
+                && !String(fence.trailing || '').trim()
+            );
+
+            if (isClosingFence) {
+                openFence = null;
+            }
+        }
+
+        return openFence;
+    }
+
+    function streamMarkdownMaskFencedBlocks(text) {
+        const lines = String(text || '').split('\n');
+        let openFence = null;
+
+        return lines.map((line, index) => {
+            const fence = streamMarkdownReadFence(line);
+
+            if (!openFence && fence) {
+                openFence = {
+                    char: fence.char,
+                    length: fence.length,
+                    line: index
+                };
+
+                return '';
+            }
+
+            if (!openFence) {
+                return line;
+            }
+
+            if (
+                fence
+                && fence.char === openFence.char
+                && fence.length >= openFence.length
+                && !String(fence.trailing || '').trim()
+            ) {
+                openFence = null;
+            }
+
+            return '';
+        }).join('\n');
+    }
+
+    function streamMarkdownBuildProvisionalClosedFence(text) {
+        const source = String(text || '');
+        const openFence = streamMarkdownFindOpenFence(source);
+
+        if (!openFence) {
+            return source;
+        }
+
+        const separator = source.endsWith('\n') ? '' : '\n';
+
+        return `${source}${separator}${openFence.char.repeat(openFence.length)}`;
+    }
+
     function hasLikelyUnbalancedMarkdownInline(text) {
-        const src = String(text || '');
+        const src = streamMarkdownMaskFencedBlocks(text);
 
         if (!src) {
             return false;
@@ -769,8 +873,9 @@
             }
 
             const sourceText = rewriteCitationRefsMarkdown(raw, citationMap || {});
+            const openFence = streamMarkdownFindOpenFence(sourceText);
             const hasUnbalancedInlineMd = hasLikelyUnbalancedMarkdownInline(sourceText);
-            const hasMath = hasLikelyMathDelimiter(sourceText);
+            const hasMath = !openFence && hasLikelyMathDelimiter(sourceText);
             const openTailInfo = hasMath ? streamMathFindOpenTailInfo(sourceText) : { index: -1, type: '' };
             const openTailStart = Number(openTailInfo.index);
             const hasOpenMath = openTailStart >= 0;
@@ -785,6 +890,25 @@
             };
 
             block.__streamSourceMarkdown = rewriteCitationRefsMarkdown(String(block.dataset.streamRaw || ''), citationMap || {});
+
+            if (openFence) {
+                clearLiveMathRenderSchedule(state);
+                state.liveEl.classList.remove('stream-live-raw');
+                state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
+                bindSourceMarkdown(state.liveEl, sourceText);
+                highlightCode(state.liveEl);
+                state.lastRenderedSource = sourceText;
+                state.lastRenderedMode = 'markdown_open_fence';
+                state.lastStablePrefix = '';
+                state.liveRawTailEl = null;
+                pushDebug('tail_markdown_open_fence', state, {
+                    srcLen: sourceText.length,
+                    fenceChar: openFence.char,
+                    fenceLength: openFence.length,
+                    fenceLine: openFence.line
+                });
+                return;
+            }
 
             if (hasUnbalancedInlineMd) {
                 clearLiveMathRenderSchedule(state);
@@ -1010,7 +1134,9 @@
                     const raw = String(block.dataset.streamRaw || '');
                     const sourceText = rewriteCitationRefsMarkdown(raw, citationMap);
                     block.dataset.streamLive = '0';
-                    block.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
+                    block.innerHTML = renderMarkdownWithNewTabLinks(sourceText, {
+                        autoCloseCodeFence: true
+                    });
                     bindSourceMarkdown(block, sourceText);
                     renderCompletedStreamMath(block);
                     highlightCode(block);
@@ -1033,7 +1159,10 @@
 
                     if (raw) {
                         const sourceText = rewriteCitationRefsMarkdown(raw, citationMap);
-                        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
+                        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, {
+                            breaks: true,
+                            autoCloseCodeFence: true
+                        });
                         bindSourceMarkdown(contentDiv, sourceText);
                         renderCompletedStreamMath(contentDiv);
                         highlightCode(contentDiv);
@@ -1096,6 +1225,7 @@
         const updateThinkingBlockSummary = requireStreamingDependency(deps, 'updateThinkingBlockSummary');
         const finishReasoningThinkingBlock = requireStreamingDependency(deps, 'finishReasoningThinkingBlock');
         const renderCompletedStreamMath = requireStreamingDependency(deps, 'renderCompletedStreamMath');
+        const collapseResolvedToolUsages = requireStreamingDependency(deps, 'collapseResolvedToolUsages');
         const pinMessagesToBottomFor = requireStreamingDependency(deps, 'pinMessagesToBottomFor');
         const scheduleLearningSidebarBridgeNotify = requireStreamingDependency(deps, 'scheduleLearningSidebarBridgeNotify');
         const getShouldAutoScroll = requireStreamingDependency(deps, 'getShouldAutoScroll');
@@ -1210,7 +1340,9 @@
                 );
 
                 body.dataset.streamLive = '0';
-                body.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
+                body.innerHTML = renderMarkdownWithNewTabLinks(sourceText, {
+                    autoCloseCodeFence: true
+                });
                 bindSourceMarkdown(body, sourceText);
                 renderCompletedStreamMath(body);
                 highlightCode(body);
@@ -1239,11 +1371,16 @@
                 );
 
                 finishReasoningThinkingBlock(block, sourceText);
-                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
+                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, {
+                    breaks: true,
+                    autoCloseCodeFence: true
+                });
                 bindSourceMarkdown(contentDiv, sourceText);
                 renderCompletedStreamMath(contentDiv);
                 highlightCode(contentDiv);
             });
+
+            collapseResolvedToolUsages(messageDiv);
 
             if (getShouldAutoScroll()) {
                 pinMessagesToBottomFor(900);
@@ -2521,6 +2658,8 @@
         hasLikelyMathDelimiter,
         hasLikelyMathForThinkingStream,
         hasLikelyUnbalancedMarkdownInline,
+        streamMarkdownFindOpenFence,
+        streamMarkdownBuildProvisionalClosedFence,
         streamMathIsEscapedAt,
         countEscapedMathDelimiter,
         countLatexEnvironmentBoundary,

@@ -31,6 +31,7 @@ class ToolResultPresenter:
             "local_file_write": self._render_file_write,
             "local_file_probe": self._render_local_file_probe,
             "local_file_list": self._render_local_file_list,
+            "local_file_search_tree": self._render_local_file_search_tree,
             "local_file_patch": self._render_file_patch,
             "local_shell_exec": self._render_shell_exec,
             "local_shell_session": self._render_shell_session,
@@ -1011,6 +1012,70 @@ class ToolResultPresenter:
             lines.extend(["", f"... omitted {len(entries) - 120} more entries ..."])
         return "\n".join(lines).strip()
 
+    def _render_local_file_search_tree(self, args: Dict[str, Any], result: Any) -> str:
+        """Render local_file_search_tree as a readable Markdown directory tree."""
+        payload = self._load_payload_unwrapped(result)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        directory = str(payload.get("path") or args.get("path") or "(unknown)")
+        entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+        lines = [
+            self._status_title(success, "## Local File Tree", "## Local File Tree Failed"),
+            "",
+            f"- Root: `{directory}`",
+            f"- Max Depth: `{payload.get('max_depth', args.get('max_depth', ''))}`",
+            f"- Pattern: `{payload.get('pattern') or args.get('pattern') or '*'}`",
+        ]
+
+        if not success:
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            return "\n".join(lines).strip()
+
+        lines.append(f"- Entries: {payload.get('entry_count', len(entries))}")
+
+        skipped = payload.get("skipped") if isinstance(payload.get("skipped"), dict) else {}
+
+        if skipped:
+            skipped_bits = [f"{key}={value}" for key, value in skipped.items() if value]
+
+            if skipped_bits:
+                lines.append(f"- Skipped: {', '.join(skipped_bits)}")
+
+        tree_lines = []
+
+        for entry in sorted(
+            (item for item in entries if isinstance(item, dict)),
+            key=lambda item: str(item.get("relative_path") or item.get("name") or "")
+        ):
+            relative_path = str(entry.get("relative_path") or entry.get("name") or "").strip()
+
+            if not relative_path:
+                continue
+
+            depth = entry.get("depth")
+
+            try:
+                indent_level = max(0, int(depth) - 1)
+            except (TypeError, ValueError):
+                indent_level = max(0, relative_path.count("/"))
+
+            name = str(entry.get("name") or relative_path.rsplit("/", 1)[-1])
+            suffix = "/" if str(entry.get("type") or "") == "dir" else ""
+            tree_lines.append(f"{'  ' * indent_level}{name}{suffix}")
+
+        if tree_lines:
+            lines.extend(["", "### Tree", "", self._fenced_text("\n".join(tree_lines), language="text", limit=24000)])
+        else:
+            lines.extend(["", "(empty)"])
+
+        if payload.get("truncated"):
+            lines.extend(["", "> The directory result was truncated by the configured entry limit."])
+
+        return "\n".join(lines).strip()
+
     def _render_file_remove(self, args: Dict[str, Any], result: Any) -> str:
         payload = self._load_payload(result)
 
@@ -1116,7 +1181,9 @@ class ToolResultPresenter:
         if payload.get("hunk_count") is not None:
             lines.append(f"- Hunks: {payload.get('hunk_count')}")
 
-        if payload.get("added_lines") is not None or payload.get("removed_lines") is not None:
+        if not payload.get("dry_run") and (
+            payload.get("added_lines") is not None or payload.get("removed_lines") is not None
+        ):
             lines.append(f"- Lines: +{payload.get('added_lines', 0)} / -{payload.get('removed_lines', 0)}")
 
         if payload.get("old_sha256") or payload.get("new_sha256"):
@@ -2485,7 +2552,9 @@ class ToolResultPresenter:
         if stats.get("hunk_count") is not None:
             lines.append(f"- Hunks: {stats.get('hunk_count')}")
 
-        if stats.get("added_lines") is not None or stats.get("removed_lines") is not None:
+        if not payload.get("dry_run") and (
+            stats.get("added_lines") is not None or stats.get("removed_lines") is not None
+        ):
             lines.append(f"- Lines: +{stats.get('added_lines', 0)} / -{stats.get('removed_lines', 0)}")
 
         if not success:
@@ -2592,7 +2661,9 @@ class ToolResultPresenter:
             if payload.get("hunk_count") is not None:
                 lines.append(f"- Hunks: {payload.get('hunk_count')}")
 
-            if payload.get("added_lines") is not None or payload.get("removed_lines") is not None:
+            if not payload.get("dry_run") and (
+                payload.get("added_lines") is not None or payload.get("removed_lines") is not None
+            ):
                 lines.append(f"- Lines: +{payload.get('added_lines', 0)} / -{payload.get('removed_lines', 0)}")
 
             if payload.get("old_sha256") or payload.get("new_sha256"):

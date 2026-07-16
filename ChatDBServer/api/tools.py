@@ -122,6 +122,14 @@ MAP_TOOL_NAMES = {
 }
 
 
+# 用户画像已直接注入 system prompt，写入由回复后的 MEMORY 队列独占处理。
+MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES = {
+    "memory_profile_read",
+    "memory_short_update",
+    "memory_short_add",
+}
+
+
 def _function_tool_name(tool):
     if not isinstance(tool, dict):
         return ""
@@ -162,14 +170,12 @@ def is_map_service_configured(config):
 
 
 def get_tools_for_config(config):
-    if is_map_service_configured(config):
-        return list(TOOLS)
+    excluded_names = set(MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES)
 
-    return [
-        tool
-        for tool in TOOLS
-        if _function_tool_name(tool) not in MAP_TOOL_NAMES
-    ]
+    if not is_map_service_configured(config):
+        excluded_names.update(MAP_TOOL_NAMES)
+
+    return [tool for tool in TOOLS if _function_tool_name(tool) not in excluded_names]
 
 
 import prompts
@@ -851,18 +857,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_list",
-            "description": "Read knowledge info: _type=0 returns current user profile short-memory; _type=1 returns basis entries with title and basis_id.",
+            "description": "列出当前用户的基础知识库条目，返回标题、basis_id 和共享状态。",
 
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "_type": {
-                        "type": "integer",
-                        "description": "知识类型：0=用户画像短期记忆，1=基础知识库。",
-                        "enum": [0, 1]
-                    }
-                },
-                "required": ["_type"]
+                "properties": {},
+                "required": []
             }
         }
     },

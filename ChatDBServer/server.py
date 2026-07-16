@@ -50,6 +50,8 @@ import conversation_asset_store
 import prompts
 from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
 from learning_runtime import get_learning_runtime_local_config
+from memory_analysis import get_memory_analysis_queue
+from token_usage_details import TokenUsageDetailPresenter
 from longdoc_skills import load_longdoc_skill_catalog
 from system_settings_runtime import SystemSettingsRuntimeSyncer
 from server_quota import (
@@ -8514,6 +8516,20 @@ def _get_learning_runtime_for_user_preferences() -> Dict[str, Any]:
     return get_learning_runtime_local_config()
 
 
+def _get_user_model_blacklist(username: str) -> List[str]:
+    blacklist_path = './data/model_permissions.json'
+
+    if not os.path.exists(blacklist_path):
+        return []
+
+    with open(blacklist_path, 'r', encoding='utf-8') as file:
+        permission_config = json.load(file)
+
+    user_blacklists = permission_config.get('user_blacklists', {})
+    blacklist = user_blacklists.get(username, permission_config.get('default_blacklist', []))
+    return [str(model_id) for model_id in blacklist if str(model_id).strip()]
+
+
 @app.route('/api/user/preferences', methods=['GET', 'PUT'])
 def get_user_preferences():
     """获取当前用户的偏好设置"""
@@ -8527,9 +8543,20 @@ def get_user_preferences():
         if request.method == 'PUT':
             payload = request.get_json(silent=True) or {}
             updates: Dict[str, Any] = {}
-            for key in ('default_model', 'theme', 'streaming', 'language', 'learning_mode'):
+            for key in ('default_model', 'theme', 'streaming', 'language', 'learning_mode', 'memory_update_model'):
                 if key in payload:
                     updates[key] = payload.get(key)
+
+            memory_update_model = str(updates.get('memory_update_model') or '').strip()
+
+            if memory_update_model:
+                models = get_config_all().get('models', {})
+
+                if memory_update_model not in models:
+                    return jsonify({'success': False, 'message': '记忆更新模型不存在'}), 400
+
+                if memory_update_model in _get_user_model_blacklist(username):
+                    return jsonify({'success': False, 'message': '当前用户不可使用该记忆更新模型'}), 403
 
             quota_payload = payload.get('quota')
             if isinstance(quota_payload, dict):
@@ -10591,13 +10618,7 @@ def get_config():
                     return n
             return None
 
-        blacklist_path = './data/model_permissions.json'
-        blacklist = []
-        if os.path.exists(blacklist_path):
-            with open(blacklist_path, 'r', encoding='utf-8') as f:
-                perm_config = json.load(f)
-                user_blacklists = perm_config.get('user_blacklists', {})
-                blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
+        blacklist = _get_user_model_blacklist(username)
 
         config = get_config_all()
         context_refresh_mode = _normalize_context_refresh_mode(request.args.get('context_refresh', 'async'))
@@ -13587,6 +13608,8 @@ def chat_stream():
             else:
                 _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
 
+            project_context_injected = False
+
             try:
                 project_context_injected = _inject_nexoracode_project_context(
                     model,
@@ -13659,6 +13682,8 @@ def chat_stream():
             _chat_latency_mark("before_model_send_message")
             set_stage("waiting_model_stream", f"model={model_name or model.model_name or ''}")
             first_model_chunk_seen = False
+            memory_analysis_done_seen = False
+            memory_analysis_error_seen = False
 
             for chunk in model.sendMessage(
                 effective_message,
@@ -13698,8 +13723,77 @@ def chat_stream():
                     )
                     _chat_latency_flush("model_first_chunk")
 
+                if isinstance(chunk, dict):
+                    chunk_type = str(chunk.get("type") or "").strip()
+
+                    if chunk_type == "done":
+                        memory_analysis_done_seen = True
+
+                    elif chunk_type == "error":
+                        memory_analysis_error_seen = True
+
                 _push_model_stream_chunk(chunk, source="yield")
             set_stage("model_stream_exhausted")
+
+            project_bound_for_memory = False
+
+            try:
+                project_bound_for_memory = bool(
+                    _read_conversation_nexoracode_project(
+                        username,
+                        str(model.conversation_id or conversation_id or "").strip()
+                    )
+                )
+            except Exception as project_memory_check_error:
+                print(
+                    "[MEMORY_ANALYSIS] project binding check failed "
+                    f"conversation_id={model.conversation_id} error={project_memory_check_error}"
+                )
+
+            memory_analysis_eligible = bool(
+                memory_analysis_done_seen
+                and not memory_analysis_error_seen
+                and not is_regenerate
+                and not is_cancel_requested()
+                and str(raw_conversation_mode or "chat").strip().lower() == "chat"
+                and not workspace_chat_context
+                and not project_bound_for_memory
+                and stream_assistant_index is not None
+                and str(model.conversation_id or "").strip()
+            )
+
+            if memory_analysis_eligible:
+                try:
+                    memory_enqueue_result = get_memory_analysis_queue().enqueue(
+                        username=username,
+                        conversation_id=str(model.conversation_id or "").strip(),
+                        assistant_index=int(stream_assistant_index),
+                        model_name=str(model.model_name or model_name or "").strip(),
+                        completion_callback=(
+                            lambda payload,
+                            event_username=str(username or "").strip(),
+                            event_conversation_id=str(model.conversation_id or "").strip():
+                            _send_browser_event_to_conversation(
+                                event_username,
+                                event_conversation_id,
+                                "memory_analysis_completed",
+                                payload
+                            )
+                        )
+                    )
+                    print(
+                        "[MEMORY_ANALYSIS] queued "
+                        f"conversation_id={model.conversation_id} "
+                        f"assistant_index={stream_assistant_index} "
+                        f"job_id={memory_enqueue_result.get('job_id')}"
+                    )
+                except Exception as memory_enqueue_error:
+                    print(
+                        "[MEMORY_ANALYSIS] enqueue failed "
+                        f"conversation_id={model.conversation_id} "
+                        f"assistant_index={stream_assistant_index} "
+                        f"error={memory_enqueue_error}"
+                    )
         except Exception as e:
             if is_stream_cancelled_error(e):
                 set_stage("worker_cancelled", "user_abort")
@@ -14501,7 +14595,7 @@ def get_token_stats():
                 'today_input': today_input_tokens,
                 'today_output': today_output_tokens,
                 'today': today_tokens,
-                'history': logs[:20]
+                'history': TokenUsageDetailPresenter(username).decorate_history(logs, limit=20)
             }
 
         # conversation_id 模式直接从对话消息 metadata.io_tokens 聚合，避免每次流结束后扫描全量 token_usage.json。
@@ -14566,6 +14660,32 @@ def get_token_stats():
         return jsonify(_build_stats_from_logs(logs))
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/tokens/detail', methods=['GET'])
+@require_login
+def get_token_detail():
+    """按稳定日志引用读取当前用户的 Token 调用详情。"""
+    username = session['username']
+    detail_ref = str(request.args.get('ref') or '').strip()
+
+    if not detail_ref or len(detail_ref) > 128:
+        return jsonify({'success': False, 'message': 'Token 详情引用无效'}), 400
+
+    try:
+        user = User(username)
+        presenter = TokenUsageDetailPresenter(username)
+        detail = presenter.present(user.get_token_logs(), detail_ref)
+
+        return jsonify({'success': True, 'detail': detail})
+    except LookupError as error:
+        return jsonify({'success': False, 'message': str(error)}), 404
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    except Exception:
+        app.logger.exception('[TOKEN_DETAIL] load failed user=%s ref=%s', username, detail_ref[:24])
+
+        return jsonify({'success': False, 'message': 'Token 详情读取失败'}), 500
 
 
 # ==================== 知识库相关 ====================

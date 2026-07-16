@@ -546,22 +546,24 @@ class ToolExecutor:
         return json.dumps(plan_json, ensure_ascii=False)
 
     def _get_knowledge_list(self, args: Dict[str, Any]) -> str:
-        k_type = args.get("_type", 0)
-        try:
-            k_type = int(k_type)
-        except Exception:
-            k_type = 0
-        if k_type == 0:
-            permission_hint = self._resolve_user_permission_hint()
-            profile = self.model.user.get_user_profile_memory(
-                user_permission=permission_hint,
-                max_chars=0
-            )
-            return f"[用户画像短期记忆]\n{str(profile or '').strip()}"
-        result = self.model.user.getKnowledgeList(k_type)
+        if "_type" in args:
+            try:
+                requested_type = int(args.get("_type"))
+            except (TypeError, ValueError):
+                return json.dumps({
+                    "success": False,
+                    "error": "knowledge_list _type 必须为 1。"
+                }, ensure_ascii=False)
+
+            if requested_type != 1:
+                return json.dumps({
+                    "success": False,
+                    "error": "knowledge_list 不再提供用户画像读取，只支持基础知识库。"
+                }, ensure_ascii=False)
+
+        result = self.model.user.getKnowledgeList(1)
+
         if isinstance(result, dict):
-            if k_type == 0:
-                return "\n".join([f"{k}: {v}" for k, v in result.items()]) or "(空)"
             items = []
             for title, meta in result.items():
                 safe_meta = meta if isinstance(meta, dict) else {}

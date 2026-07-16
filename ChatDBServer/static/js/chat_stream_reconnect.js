@@ -93,7 +93,6 @@
         const syncStreamingModelBadgeEstimate = requireReconnectDependency(deps, 'syncStreamingModelBadgeEstimate');
         const finalizeMessageRenderForIndex = requireReconnectDependency(deps, 'finalizeMessageRenderForIndex');
         const collapseReasoningBlocksForMessage = requireReconnectDependency(deps, 'collapseReasoningBlocksForMessage');
-        const collapseModelBadgeForMessage = requireReconnectDependency(deps, 'collapseModelBadgeForMessage');
         const applyLongtermPlanFromText = requireReconnectDependency(deps, 'applyLongtermPlanFromText');
         const normalizeLongtermState = requireReconnectDependency(deps, 'normalizeLongtermState');
         const renderLongtermPlanPanel = requireReconnectDependency(deps, 'renderLongtermPlanPanel');
@@ -964,7 +963,6 @@
                 if (streamCompleted) {
                     finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
                     collapseReasoningBlocksForMessage(assistantDiv);
-                    collapseModelBadgeForMessage(assistantDiv);
                 }
 
                 if (streamEndedTerminally) {

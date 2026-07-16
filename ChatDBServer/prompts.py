@@ -59,6 +59,28 @@ USER_PROFILE_MEMORY_TEMPLATE = """## 用户画像上下文
 {{profile_blocks}}
 """
 
+
+MEMORY_ANALYSIS_SYSTEM_PROMPT = """你负责判断一轮普通对话是否产生了值得保存的用户记忆。
+
+你必须且只能调用一次工具，不得输出普通文本。
+
+可保存：
+- 用户明确表达、未来多次对话仍有价值的沟通偏好、长期习惯和长期背景。
+- 对接下来数轮对话有帮助的最新状态、近期计划、最近关注点和当前阶段变化。记录这类近期信息时必须保留明确的时间语义，例如“最近”“目前”“本周”或用户给出的日期，不能把它写成永久事实。
+- 已有近期信息发生变化、完成、取消或过期时，应更新或移除旧信息，避免画像长期保留失效状态。
+
+不可保存：
+- 纯一次性操作步骤、项目或 Workspace 内可直接读取的事实、工具输出、日志、推测、密钥和敏感隐私。
+- 助手提出但用户没有确认的信息。
+- 仅对当前回答有用、对后续对话没有帮助的临时细节。
+
+工具选择：
+- 没有新增或需要修改的记忆：调用 memory_keep，reason 必须简短说明不记录的原因，不得复述敏感内容。
+- 新增独立且不冲突的长期或近期记忆：调用 memory_append。
+- 新信息会修正、替换、移除或重组已有记忆：调用 memory_overwrite，content 必须是完整的新用户画像。
+
+不要解释决定，不要在工具调用之外输出任何内容。"""
+
 def _current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -432,11 +454,7 @@ conversation_title_prompt_template = """根据以下对话内容，生成一个�
 context_compression_prompt_template = """## Context Compression Task
 你需要把给定历史对话压缩为后续回复仍可直接复用的稳定上下文记忆。
 
-任务步骤：
-1. 先更新用户短期记忆。
-2. 再输出压缩后的上下文摘要。
-
-注意：最终输出只能是压缩后的上下文摘要，不要输出短期记忆更新过程、工具执行结果或解释过程。
+注意：最终输出只能是压缩后的上下文摘要，不要输出解释过程。
 <CONVERSATION_HISTORY> 是上下文摘要的主体；用户画像和近期摘要只能作为辅助参考，不能替代 <CONVERSATION_HISTORY>。
 
 输入信息：
@@ -445,14 +463,6 @@ context_compression_prompt_template = """## Context Compression Task
 <CONVERSATION_HISTORY>
 {{history_text}}
 </CONVERSATION_HISTORY>
-
-{{tool_instruction_blocks}}
-
-短期记忆要求：
-1. 保留用户长期稳定信息，如兴趣、偏好、背景等。
-2. 删除短期临时信息，如近期情绪、近期事项等。
-3. 保留关键数据与已确认约束。
-4. 简短但完整，不要只写笼统总结。
 
 上下文压缩输出要求：
 1. 只输出压缩结果，不要解释过程。
@@ -475,10 +485,6 @@ context_compression_prompt_template = """## Context Compression Task
 """
 
 context_compression_system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
-
-context_compression_update_short_instruction = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
-
-context_compression_add_short_instruction = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
 
 knowledge_graph_analysis_prompt_template = """分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
 1. 分类方案：将知识点归纳到3-5个主要领域。
@@ -911,8 +917,6 @@ def build_context_compression_prompt(
     *,
     profile_text: str = "",
     recent_dialogue: str = "",
-    update_short: str = "",
-    add_short: str = "",
     max_chars: int = 6000
 ) -> str:
     limit = max(600, min(120000, int(max_chars or 6000)))
@@ -921,18 +925,9 @@ def build_context_compression_prompt(
         _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
     ]
     auxiliary_context = "\n\n".join([block for block in auxiliary_blocks if block]).strip()
-    tool_blocks = [
-        _render_xml_text_block("SHORT_MEMORY_UPDATE_TOOL", update_short),
-        _render_xml_text_block("SHORT_MEMORY_ADD_TOOL", add_short),
-    ]
-    tool_instruction_text = "\n\n".join([block for block in tool_blocks if block]).strip()
-
-    if tool_instruction_text:
-        tool_instruction_text = f"可用短期记忆工具说明：\n{tool_instruction_text}"
 
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
     out = out.replace("{{auxiliary_context_blocks}}", auxiliary_context)
-    out = out.replace("{{tool_instruction_blocks}}", tool_instruction_text)
     out = out.replace("{{max_chars}}", str(limit))
     return out
 

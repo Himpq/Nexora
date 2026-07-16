@@ -3,6 +3,7 @@ import json
 import time
 import re
 import hashlib
+import uuid
 from timeline import record_knowledge_change
 from datastorage import (
     get_user_lock,
@@ -76,7 +77,16 @@ class User:
             max_len = 0
 
         normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-        normalized = re.sub(r"\s+", " ", normalized).strip()
+        normalized_lines = []
+
+        for raw_line in normalized.split("\n"):
+            line = re.sub(r"[\t\f\v ]+", " ", raw_line).strip()
+
+            if line:
+                normalized_lines.append(line)
+
+        normalized = "\n".join(normalized_lines).strip()
+
         if not normalized:
             normalized = self._default_user_profile_text(user_permission=user_permission)
 
@@ -1265,6 +1275,7 @@ class User:
 
         # 添加新日志
         log_entry = {
+            "log_id": uuid.uuid4().hex,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "conversation_id": conversation_id,
             "conversation_title": conversation_title,
@@ -1279,7 +1290,12 @@ class User:
             "tool_call_count": int(metadata.get("tool_call_count", 0) or 0),
             "duration_ms": int(metadata.get("duration_ms", 0) or 0),
             "ttft_ms": int(metadata.get("ttft_ms", 0) or 0),
-            "output_tps": float(metadata.get("output_tps", 0.0) or 0.0)
+            "output_tps": float(metadata.get("output_tps", 0.0) or 0.0),
+            "memory_analysis": bool(metadata.get("memory_analysis", False)),
+            "memory_job_id": str(metadata.get("memory_job_id") or ""),
+            "memory_action": str(metadata.get("memory_action") or ""),
+            "source_assistant_index": int(metadata.get("source_assistant_index", -1) or -1),
+            "response_trace_id": str(metadata.get("response_trace_id") or "")
         }
 
         append_usage_log_record(log_file, log_entry)
@@ -1315,6 +1331,7 @@ class User:
             "streaming": True,
             "language": "zh",
             "learning_mode": False,
+            "memory_update_model": "",
             "quota": {
                 "enabled": False,
                 "remaining_tokens": 0,
@@ -1380,6 +1397,8 @@ class User:
             prefs["streaming"] = bool(raw.get("streaming"))
         if "learning_mode" in raw:
             prefs["learning_mode"] = bool(raw.get("learning_mode"))
+        if "memory_update_model" in raw:
+            prefs["memory_update_model"] = str(raw.get("memory_update_model") or "").strip()
 
         quota_raw = raw.get("quota", {}) if isinstance(raw.get("quota"), dict) else {}
         legacy_quota_map = {
@@ -1412,6 +1431,7 @@ class User:
         payload["language"] = str(payload.get("language") or "zh").strip() or "zh"
         payload["streaming"] = bool(payload.get("streaming", True))
         payload["learning_mode"] = bool(payload.get("learning_mode", False))
+        payload["memory_update_model"] = str(payload.get("memory_update_model") or "").strip()
         safe_write_json(self._preferences_file(), payload, indent=2)
         return payload
 
@@ -1436,6 +1456,8 @@ class User:
                 prefs["streaming"] = bool(updates.get("streaming"))
             if "learning_mode" in updates:
                 prefs["learning_mode"] = bool(updates.get("learning_mode"))
+            if "memory_update_model" in updates:
+                prefs["memory_update_model"] = str(updates.get("memory_update_model") or "").strip()
 
             quota_updates = updates.get("quota") if isinstance(updates.get("quota"), dict) else {}
             if quota_updates:

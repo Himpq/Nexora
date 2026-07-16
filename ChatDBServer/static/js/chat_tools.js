@@ -1511,6 +1511,59 @@
     
     }
     
+    function readPatchLineStats(markdownText) {
+        const linesValue = extractMarkdownField(markdownText, 'Lines');
+        const match = String(linesValue || '').match(/^\+(\d+)\s*\/\s*-(\d+)$/);
+
+        if (!match) {
+            return null;
+        }
+
+        return {
+            added: Number(match[1]),
+            removed: Number(match[2])
+        };
+    }
+
+    function renderToolUsageChangeStats(row, markdownText) {
+        if (!row) return;
+
+        const statusEl = row.querySelector('.tool-status');
+
+        if (!statusEl) return;
+
+        const stats = readPatchLineStats(markdownText);
+        statusEl.classList.toggle('has-change-stats', !!stats);
+
+        if (!stats) {
+            statusEl.textContent = '完成';
+            statusEl.title = '完成';
+            return;
+        }
+
+        const documentRef = row.ownerDocument;
+        const addedEl = documentRef.createElement('span');
+        const removedEl = documentRef.createElement('span');
+        addedEl.className = 'tool-change-count is-added';
+        removedEl.className = 'tool-change-count is-removed';
+        addedEl.textContent = `+${stats.added}`;
+        removedEl.textContent = `-${stats.removed}`;
+        statusEl.replaceChildren(addedEl, removedEl);
+        statusEl.title = `新增 ${stats.added} 行，删除 ${stats.removed} 行`;
+    }
+
+    function collapseResolvedToolUsages(root, exceptRow = null) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+
+        root.querySelectorAll('.tool-usage.execution-flow-item.expanded').forEach((row) => {
+            if (row === exceptRow) return;
+            if (row.dataset.resolved !== 'true') return;
+            if (row.dataset.userToggled === 'true') return;
+            if (row.classList.contains('is-running')) return;
+            row.classList.remove('expanded');
+        });
+    }
+
     function buildToolResultSummaryFromMarkdown(toolName, markdownText) {
     
         const title = extractMarkdownTitle(markdownText);
@@ -1593,17 +1646,7 @@
     
     
     
-        const statusEl = row.querySelector('.tool-status');
-    
-        if (!statusEl) return;
-    
-    
-    
-        const summary = '完成';
-    
-        statusEl.textContent = summary;
-    
-        statusEl.title = summary;
+        renderToolUsageChangeStats(row, markdownText);
     
     }
 
@@ -2001,6 +2044,7 @@
                 div = findToolUsage(parent, toolName, callId, true);
             }
             if (!div) {
+                collapseResolvedToolUsages(parent);
                 div = document.createElement('div');
                 div.className = 'tool-usage execution-flow-item';
                 parent.appendChild(div);
@@ -2012,7 +2056,6 @@
             div.dataset.pending = pending ? 'true' : 'false';
             if (pending) div.dataset.resolved = 'false';
             div.dataset.userToggled = 'false';
-            div.dataset.autoLock = '0';
             if (pending) {
                 div.classList.add('is-running');
             }
@@ -2052,30 +2095,11 @@
             const badge = toolEl.querySelector('.tool-badge');
             if (!badge) return;
             badge.addEventListener('click', () => {
-                if (toolEl.dataset.autoLock === '1') return;
                 if (!toolEl.classList.contains('has-output')) return;
-                if (toolEl.__autoCollapseTimer) {
-                    clearTimeout(toolEl.__autoCollapseTimer);
-                    toolEl.__autoCollapseTimer = null;
-                }
                 toolEl.dataset.userToggled = 'true';
                 toolEl.classList.toggle('expanded');
             });
             toolEl.dataset.toggleBound = '1';
-        }
-
-        function scheduleToolAutoCollapse(toolEl, delay = 260) {
-            if (!toolEl) return;
-            if (toolEl.__autoCollapseTimer) {
-                clearTimeout(toolEl.__autoCollapseTimer);
-            }
-            toolEl.__autoCollapseTimer = setTimeout(() => {
-                toolEl.__autoCollapseTimer = null;
-                toolEl.dataset.autoLock = '0';
-                if (!toolEl.isConnected) return;
-                if (toolEl.dataset.userToggled === 'true') return;
-                toolEl.classList.remove('expanded');
-            }, Math.max(0, Number(delay) || 0));
         }
 
         function formatToolArgsForOutput(argsRaw) {
@@ -2234,6 +2258,15 @@
             requestAnimationFrame(doScroll);
         }
 
+        function scrollToolOutputToTop(outputEl) {
+            if (!outputEl) return;
+            const doScroll = () => {
+                outputEl.scrollTop = 0;
+            };
+            doScroll();
+            requestAnimationFrame(doScroll);
+        }
+
         function ensureToolUsageForDelta(aiMsgDiv, name, callId, toolIndex = null) {
             const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
             const safeName = String(name || '').trim() || 'tool';
@@ -2302,9 +2335,11 @@
                     : formatToolArgsForOutput(nextRaw);
                 if (outDiv.textContent) {
                     row.classList.add('has-output');
-                    row.classList.add('expanded');
-                    row.dataset.autoLock = '0';
-                    row.dataset.userToggled = 'false';
+
+                    if (row.dataset.userToggled !== 'true') {
+                        row.classList.add('expanded');
+                    }
+
                     scrollToolOutputToBottom(outDiv);
                 }
             }
@@ -2359,18 +2394,13 @@
                 row.classList.toggle('has-output', !!outDiv.textContent.trim());
                 if (autoExpand) {
                     row.classList.add('is-running');
-                    row.classList.toggle('expanded', !!outDiv.textContent.trim());
-                    row.dataset.autoLock = '0';
-                    row.dataset.userToggled = 'false';
-                } else {
-                    row.dataset.autoLock = '0';
+
+                    if (row.dataset.userToggled !== 'true') {
+                        row.classList.toggle('expanded', !!outDiv.textContent.trim());
+                    }
                 }
                 if (outDiv.textContent.trim()) {
                     scrollToolOutputToBottom(outDiv);
-
-                    if (!fileRunningDisplay) {
-                        scheduleToolAutoCollapse(row, 260);
-                    }
                 }
             }
         }
@@ -2441,7 +2471,6 @@
 
                 if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
                     row.classList.add('expanded');
-                    row.dataset.autoLock = '0';
                     scrollToolOutputToBottom(outDiv);
                 }
             } else if (outDiv && row.dataset.argsRaw) {
@@ -2450,7 +2479,6 @@
 
                 if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
                     row.classList.add('expanded');
-                    row.dataset.autoLock = '0';
                     scrollToolOutputToBottom(outDiv);
                 }
             }
@@ -2459,7 +2487,6 @@
         return {
             appendToolEvent,
             bindToolUsageToggle,
-            scheduleToolAutoCollapse,
             formatToolArgsForOutput,
             isCompleteJsonText,
             shouldSplitToolArgsStream,
@@ -2472,6 +2499,7 @@
             shouldYieldToolStreamPaintForChunk,
             yieldToolStreamPaintForChunk,
             scrollToolOutputToBottom,
+            scrollToolOutputToTop,
             ensureToolUsageForDelta,
             appendToolCallDelta,
             finalizeToolCallBadge,
@@ -2491,7 +2519,7 @@
             'renameToolUsageRow',
             'setToolUsageStatus',
             'scrollToolOutputToBottom',
-            'scheduleToolAutoCollapse',
+            'scrollToolOutputToTop',
             'maybeRenderCanvasFromJsExecuteResult'
         ];
 
@@ -2983,21 +3011,17 @@
 
                 if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
                     target.classList.add('has-output');
-                    target.dataset.autoLock = renderedGenerateImage ? '0' : '1';
-                    target.dataset.userToggled = renderedGenerateImage ? 'true' : 'false';
-                    if (renderedGenerateImage) {
+
+                    if (target.dataset.userToggled !== 'true') {
                         target.classList.add('expanded');
+                        deps.scrollToolOutputToTop(outDiv);
                     }
-                    deps.scrollToolOutputToBottom(outDiv);
                 }
 
                 if (!renderedGenerateImage) {
                     updateToolUsageResultSummary(target, safeName, result, outputMarkdown, resultText);
                 }
 
-                if (!renderedGenerateImage) {
-                    deps.scheduleToolAutoCollapse(target, 320);
-                }
             }
 
             deps.maybeRenderCanvasFromJsExecuteResult(aiMsgDiv, safeName, result, safeCallId, toolIndex);
@@ -3052,6 +3076,9 @@
         cleanExecutionFlowMarkdownValue,
         extractMarkdownField,
         extractMarkdownTitle,
+        readPatchLineStats,
+        renderToolUsageChangeStats,
+        collapseResolvedToolUsages,
         buildToolResultSummaryFromMarkdown,
         updateToolUsageResultSummary,
         findToolUsage,

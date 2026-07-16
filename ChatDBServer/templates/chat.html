@@ -19,11 +19,13 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260710_nexoracode_projects_06">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260715_project_ui_02">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
-    <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260624_stream_breaks_01">
+    <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260714_tool_flow_01">
+    <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260714_memory_model_compact_02">
+    <link rel="stylesheet" href="/static/css/chat_token_details.css?v=20260715_token_detail_01">
     <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
@@ -352,17 +354,6 @@
                     <div id="panelBasisKnowledgeList" class="k-list"></div>
                 </div>
 
-                <div class="k-section">
-                    <div class="k-section-title">
-                        <div style="display:flex; align-items:center; justify-content: space-between;">
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <span>SHORT-TERM</span>
-                                <span class="badge" id="panelShortCount">0</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="panelShortMemoryList" class="k-list"></div>
-                </div>
             </div>
         </aside>
 
@@ -450,6 +441,30 @@
                             </table>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tokenUsageDetailModal" class="modal-backdrop token-usage-detail-backdrop" aria-hidden="true">
+            <div class="modal token-usage-detail-modal" role="dialog" aria-modal="true" aria-labelledby="tokenUsageDetailTitle">
+                <div class="modal-head token-usage-detail-head">
+                    <div class="head-title">
+                        <h3 id="tokenUsageDetailTitle">Token 调用详情</h3>
+                        <div id="tokenUsageDetailMeta" class="token-usage-detail-meta"></div>
+                    </div>
+                    <button id="closeTokenUsageDetailBtn" class="btn-close-circle" type="button" aria-label="关闭 Token 调用详情">
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div id="tokenUsageDetailBody" class="modal-body token-usage-detail-body">
+                    <section class="token-usage-detail-section" aria-labelledby="tokenUsageUserTitle">
+                        <h4 id="tokenUsageUserTitle">用户提问</h4>
+                        <div id="tokenUsageUserContent" class="token-usage-markdown markdown-content"></div>
+                    </section>
+                    <section class="token-usage-detail-section" aria-labelledby="tokenUsageResponseTitle">
+                        <h4 id="tokenUsageResponseTitle">模型响应</h4>
+                        <div id="tokenUsageResponseContent" class="token-usage-markdown markdown-content"></div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -621,6 +636,10 @@
                 <i class="fa-solid fa-pen"></i>
                 <span>修改标题</span>
             </button>
+            <button id="pinContextMenuProjectDelete" class="pin-context-danger" type="button">
+                <i class="fa-solid fa-folder-minus"></i>
+                <span>删除项目</span>
+            </button>
             <div id="pinContextMenuWorkspaceWrap" class="pin-context-submenu-wrap">
                 <button id="pinContextMenuWorkspace" type="button">
                     <i class="fa-regular fa-folder-open"></i>
@@ -722,20 +741,23 @@
     <script src="/static/js/chat_message_window.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_message_versions.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/knowledge_collab_client.js?v=20260708_06"></script>
-    <script src="/static/js/chat_knowledge.js?v=20260708_collab_cursor_05"></script>
-    <script src="/static/js/chat_tools.js?v=20260707_tools_result_canvas_hook_01"></script>
+    <script src="/static/js/chat_knowledge.js?v=20260715_anchor_scroll_02"></script>
+    <script src="/static/js/chat_model_select.js?v=20260714_shared_model_select_01"></script>
+    <script src="/static/js/chat_memory_settings.js?v=20260714_memory_model_compact_01"></script>
+    <script src="/static/js/chat_tools.js?v=20260715_tool_scroll_01"></script>
     <script src="/static/js/chat_tool_canvas.js?v=20260707_tool_canvas_split_02"></script>
-    <script src="/static/js/chat_messages.js?v=20260708_console_gate_01"></script>
+    <script src="/static/js/chat_messages.js?v=20260715_stream_fence_01"></script>
     <script src="/static/js/chat_latex.js?v=20260708_console_gate_02"></script>
-    <script src="/static/js/chat_streaming.js?v=20260706_feature_split_11_stream_status_sync_01"></script>
+    <script src="/static/js/chat_streaming.js?v=20260715_stream_fence_01"></script>
     <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
-    <script src="/static/js/chat_stream_reconnect.js?v=20260707_stream_reconnect_split_01"></script>
-    <script src="/static/js/chat_conversations.js?v=20260710_nexoracode_projects_06"></script>
+    <script src="/static/js/chat_stream_reconnect.js?v=20260714_memory_badge_01"></script>
+    <script src="/static/js/chat_conversations.js?v=20260715_project_ui_02"></script>
     <script src="/static/js/chat_admin_system.js?v=20260707_admin_system_split_01"></script>
     <script src="/static/js/chat_admin.js?v=20260707_admin_tabs_split_02"></script>
-    <script src="/static/js/chat_markdown.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_markdown.js?v=20260715_stream_fence_01"></script>
     <script src="/static/js/chat_files.js?v=20260707_file_upload_error_feedback_01"></script>
-    <script src="/static/js/chat.js?v=20260712_ctx_usage_01"></script>
+    <script src="/static/js/chat.js?v=20260715_project_ui_02"></script>
+    <script src="/static/js/chat_token_details.js?v=20260715_token_detail_01"></script>
     <script src="/static/js/global_search.js?v=20260711_global_search_04"></script>
     <script src="/static/js/workspace.js?v=20260708_workspace_knowledge_return_01"></script>
     <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
@@ -1175,10 +1197,7 @@
                         <div id="settings-preferences-tab" class="admin-tab-content">
                             <div class="settings-placeholder">偏好设置</div>
                             <div class="settings-preferences-grid">
-                                <div class="form-group"><label>默认模型</label><div id="set-defmodel" class="settings-field">-</div></div>
                                 <div class="form-group"><label>主题</label><div id="set-theme" class="settings-field">-</div></div>
-                                <div class="form-group"><label>流式输出</label><div id="set-stream" class="settings-field">-</div></div>
-                                <div class="form-group"><label>语言</label><div id="set-lang" class="settings-field">-</div></div>
                                 <div class="form-group settings-pref-card settings-pref-card-wide">
                                     <label>学习模式</label>
                                     <div class="settings-pref-inline">
@@ -1186,11 +1205,28 @@
                                             <button id="set-learning-mode-off" class="settings-mode-toggle-btn active" type="button" data-learning-mode="off">Nexora</button>
                                             <button id="set-learning-mode-on" class="settings-mode-toggle-btn" type="button" data-learning-mode="on">Learning</button>
                                         </div>
-                                        <button id="saveLearningModeBtn" class="btn-primary btn-compact" type="button">保存</button>
                                     </div>
                                     <div id="set-learning-mode-desc" class="settings-help-text">开启后默认进入 Learning 侧边栏；点击侧边栏里的 New Chat 可打开 NexoraLearning 学习界面。</div>
                                 </div>
                             </div>
+                            <section class="settings-memory-profile" aria-labelledby="settingsMemoryProfileTitle">
+                                <div class="settings-memory-profile-head">
+                                    <label id="settingsMemoryProfileTitle" for="settingsMemoryProfile">用户记忆</label>
+                                    <button id="refreshMemoryProfileBtn" class="settings-memory-refresh-button" type="button" title="刷新用户记忆" aria-label="刷新用户记忆">
+                                        <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <textarea id="settingsMemoryProfile" class="settings-memory-profile-textarea" rows="9" readonly></textarea>
+                                <div id="settingsMemoryProfileStatus" class="settings-memory-profile-status" aria-live="polite"></div>
+                                <div class="settings-memory-model-field">
+                                    <div id="settingsMemoryModelLabel" class="settings-memory-model-label">记忆更新模型</div>
+                                    <div id="memoryModelSelectContainer" class="custom-select-container settings-memory-model-select">
+                                        <button id="memoryModelSelected" class="select-selected settings-memory-model-selected" type="button" aria-label="选择记忆更新模型" aria-describedby="settingsMemoryModelStatus" aria-haspopup="listbox" aria-expanded="false">使用当前对话模型</button>
+                                        <div id="memoryModelOptions" class="select-items select-hide settings-memory-model-options" role="listbox"></div>
+                                    </div>
+                                    <div id="settingsMemoryModelStatus" class="settings-memory-model-status" aria-live="polite"></div>
+                                </div>
+                            </section>
                         </div>
                         <div id="settings-skills-tab" class="admin-tab-content">
                             <div id="settingsSkillList" class="settings-skill-list">
