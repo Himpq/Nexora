@@ -95,6 +95,7 @@
         const buildVersionNavigation = requireMessagesDependency(deps, 'buildVersionNavigation');
         const rememberVisibleMessageInWindow = requireMessagesDependency(deps, 'rememberVisibleMessageInWindow');
         const appendTurnIndicatorLine = requireMessagesDependency(deps, 'appendTurnIndicatorLine');
+        const forkConversationFromMessage = requireMessagesDependency(deps, 'forkConversationFromMessage');
 
         function requireMessagesContainer() {
             const container = getMessagesContainer();
@@ -495,10 +496,30 @@
             <button class="btn-action" onclick="confirmRegenerate(${index})" title="重新回答">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"></path></svg>
             </button>
+            ${message.pending ? '' : `
+            <button class="btn-action" data-action="fork-conversation" type="button" title="从这里创建分支">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="6" cy="4" r="2"></circle>
+                    <circle cx="18" cy="8" r="2"></circle>
+                    <circle cx="6" cy="20" r="2"></circle>
+                    <path d="M6 6v12"></path>
+                    <path d="M8 10h4a6 6 0 0 0 6-6"></path>
+                </svg>
+            </button>
+            `}
             <button class="btn-action btn-del" onclick="confirmDelete(${index})" title="删除">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
             </button>
         `;
+
+                const forkButton = actions.querySelector('[data-action="fork-conversation"]');
+
+                if (forkButton) {
+                    forkButton.addEventListener('click', () => {
+                        void forkConversationFromMessage(index);
+                    });
+                }
+
                 content.appendChild(actions);
             }
 

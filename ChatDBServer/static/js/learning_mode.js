@@ -5,7 +5,9 @@
     let sidebarReaderOpened = false;
     let sidebarContainerRef = null;
     let sidebarOptionsRef = {};
+    let sidebarConversationRenderSignature = '';
     const sidebarFoldState = new Map();
+    const learningCourseCollapseState = new Map();
     let currentFrontendUrl = '';
     let currentRuntimeUsername = '';
     let activePuzzleFullscreen = null;
@@ -30,6 +32,357 @@
         }
 
         return chatBridge;
+    }
+
+    function readConversationCreatedAt(item) {
+        const timestamp = Date.parse(String(item && item.created_at || ''));
+        return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+
+    function sortLearningConversations(conversations, bridge) {
+        return (Array.isArray(conversations) ? conversations : [])
+            .filter((conversation) => bridge.isLearningConversation(conversation))
+            .sort((left, right) => {
+                const leftPinned = left && left.pin ? 1 : 0;
+                const rightPinned = right && right.pin ? 1 : 0;
+
+                if (leftPinned !== rightPinned) {
+                    return rightPinned - leftPinned;
+                }
+
+                const createdAtDifference = readConversationCreatedAt(right) - readConversationCreatedAt(left);
+
+                if (createdAtDifference !== 0) {
+                    return createdAtDifference;
+                }
+
+                const leftId = String(left && (left.conversation_id || left.id) || '').trim();
+                const rightId = String(right && (right.conversation_id || right.id) || '').trim();
+                return rightId.localeCompare(leftId, undefined, { numeric: true, sensitivity: 'base' });
+            });
+    }
+
+    function normalizeLearningConversationTitle(value) {
+        return String(value || '')
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+            .slice(0, 120);
+    }
+
+    function readLearningCourseId(item) {
+        const source = item && typeof item === 'object' ? item : {};
+        const metadata = source.metadata && typeof source.metadata === 'object' ? source.metadata : {};
+        const learning = metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {};
+        const candidates = [
+            source.learning_course_id,
+            source.course_id,
+            source.lecture_id,
+            metadata.learning_course_id,
+            metadata.course_id,
+            metadata.lecture_id,
+            learning.learning_course_id,
+            learning.course_id,
+            learning.lecture_id,
+        ];
+
+        for (const candidate of candidates) {
+            const value = String(candidate || '').trim();
+
+            if (value) {
+                return value;
+            }
+        }
+
+        return 'unknown';
+    }
+
+    function readLearningCourseTitle(item) {
+        const source = item && typeof item === 'object' ? item : {};
+        const metadata = source.metadata && typeof source.metadata === 'object' ? source.metadata : {};
+        const learning = metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {};
+        const candidates = [
+            source.learning_course_title,
+            source.course_title,
+            source.lecture_title,
+            metadata.learning_course_title,
+            metadata.course_title,
+            metadata.lecture_title,
+            learning.learning_course_title,
+            learning.course_title,
+            learning.lecture_title,
+        ];
+
+        for (const candidate of candidates) {
+            const value = String(candidate || '').trim();
+
+            if (value) {
+                return value;
+            }
+        }
+
+        return '';
+    }
+
+    function groupLearningConversations(conversations, bridge) {
+        const groups = new Map();
+
+        sortLearningConversations(conversations, bridge).forEach((conversation) => {
+            const courseId = readLearningCourseId(conversation);
+            const courseTitle = readLearningCourseTitle(conversation);
+            const group = groups.get(courseId) || {
+                courseId,
+                courseTitle: '',
+                conversations: [],
+                latestCreatedAt: 0,
+            };
+            const createdAt = readConversationCreatedAt(conversation);
+
+            group.conversations.push(conversation);
+            if (courseTitle) group.courseTitle = courseTitle;
+            group.latestCreatedAt = Math.max(group.latestCreatedAt, createdAt);
+            groups.set(courseId, group);
+        });
+
+        return Array.from(groups.values()).sort((left, right) => {
+            if (left.courseId === 'unknown') return 1;
+            if (right.courseId === 'unknown') return -1;
+            return right.latestCreatedAt - left.latestCreatedAt;
+        });
+    }
+
+    function ensureLearningSidebarLayout(container) {
+        if (!container) return null;
+
+        let layout = container.querySelector('.learning-sidebar-layout');
+
+        if (!layout) {
+            container.innerHTML = `
+                <div class="learning-sidebar-layout">
+                    <section class="learning-sidebar-conversation-section" aria-label="Learning 对话列表">
+                        <div class="learning-sidebar-conversation-header">
+                            <span class="learning-sidebar-conversation-title">Learning 对话</span>
+                            <span class="learning-sidebar-conversation-count" data-role="count">0</span>
+                        </div>
+                        <div class="learning-sidebar-conversation-list" data-role="conversation-list"></div>
+                    </section>
+                    <section class="learning-sidebar-chat-host" data-role="chat-host"></section>
+                </div>
+            `;
+            layout = container.querySelector('.learning-sidebar-layout');
+            sidebarConversationRenderSignature = '';
+        }
+
+        return layout;
+    }
+
+    function renderLearningConversationList(container) {
+        const bridge = window.NexoraLearningSidebarBridge;
+        const layout = ensureLearningSidebarLayout(container);
+        const list = layout ? layout.querySelector('[data-role="conversation-list"]') : null;
+        const count = layout ? layout.querySelector('[data-role="count"]') : null;
+
+        if (!list || !bridge) return;
+
+        const conversationRows = bridge.getConversations?.();
+        const conversations = Array.isArray(conversationRows) ? conversationRows : [];
+        const groups = groupLearningConversations(conversations, bridge);
+        const currentId = String(bridge.getCurrentConversationId?.() || '').trim();
+        const signature = JSON.stringify({
+            currentId,
+            groups: groups.map((group) => ({
+                courseId: group.courseId,
+                courseTitle: group.courseTitle,
+                conversations: group.conversations.map((conversation) => {
+                    const source = conversation && typeof conversation === 'object' ? conversation : {};
+                    const conversationId = String(source.conversation_id || source.id || '').trim();
+                    const streamState = bridge.getConversationStreamState?.(conversationId) || {};
+
+                    return {
+                        conversationId,
+                        title: normalizeLearningConversationTitle(source.title || source.preview),
+                        pin: !!source.pin,
+                        streamStatus: String(streamState.status || '').trim(),
+                        streamUnread: !!streamState.unread,
+                    };
+                }),
+            })),
+        });
+
+        if (signature === sidebarConversationRenderSignature) return;
+
+        sidebarConversationRenderSignature = signature;
+
+        if (count) {
+            count.textContent = String(conversations.length);
+        }
+
+        list.replaceChildren();
+
+        if (!conversations.length) {
+            const empty = document.createElement('div');
+            empty.className = 'learning-sidebar-conversation-empty';
+            empty.textContent = '暂无 Learning 对话';
+            list.appendChild(empty);
+            return;
+        }
+
+        const buildConversationItem = (conversation) => {
+            const source = conversation && typeof conversation === 'object' ? conversation : {};
+            const conversationId = String(source.conversation_id || source.id || '').trim();
+            const title = normalizeLearningConversationTitle(source.title || source.preview) || `Conversation ${conversationId}`;
+            const streamState = bridge.getConversationStreamState?.(conversationId) || {};
+            const isRunning = String(streamState.status || '').trim() === 'running';
+            const isUnread = !!streamState.unread && String(streamState.status || '').trim() === 'done';
+            const row = document.createElement('div');
+            row.className = `conversation-item learning-sidebar-conversation-item${conversationId === currentId ? ' active' : ''}${isRunning ? ' is-streaming' : ''}${isUnread ? ' has-stream-unread' : ''}`;
+            row.dataset.conversationId = conversationId;
+            row.dataset.pin = source.pin ? '1' : '0';
+            row.tabIndex = 0;
+
+            const titleEl = document.createElement('span');
+            titleEl.className = 'title';
+
+            if (source.pin) {
+                const pin = document.createElement('i');
+                pin.className = 'fa-solid fa-thumbtack conversation-pin-icon';
+                pin.setAttribute('aria-hidden', 'true');
+                pin.title = '已置顶';
+                titleEl.appendChild(pin);
+            }
+
+            titleEl.appendChild(document.createTextNode(title));
+            row.appendChild(titleEl);
+
+            const statusEl = document.createElement('span');
+            statusEl.className = 'conversation-item-right';
+
+            if (isRunning || isUnread) {
+                const indicator = document.createElement('span');
+                indicator.className = isRunning
+                    ? 'conversation-stream-indicator is-loading'
+                    : 'conversation-stream-indicator is-unread';
+                indicator.setAttribute('aria-hidden', 'true');
+                indicator.title = isRunning ? '模型正在回复' : '有未读回复';
+
+                if (isRunning) {
+                    indicator.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>';
+                }
+
+                statusEl.appendChild(indicator);
+            }
+
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'btn-icon-small delete-chat';
+            deleteButton.setAttribute('aria-label', '删除 Learning 对话');
+            deleteButton.title = '删除对话';
+            deleteButton.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+            deleteButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void bridge.deleteConversation?.(conversationId);
+            });
+            statusEl.appendChild(deleteButton);
+            row.appendChild(statusEl);
+
+            const openConversation = () => {
+                if (!conversationId) return;
+                bridge.setSidebarView?.('conversation');
+                bridge.markConversationStreamRead?.(conversationId);
+                void bridge.loadConversation?.(conversationId);
+            };
+
+            row.addEventListener('click', openConversation);
+            row.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                bridge.showPinContextMenu?.(event.clientX, event.clientY, {
+                    targetType: 'conversation',
+                    conversationId,
+                    conversationTitle: title,
+                    pinned: !!source.pin,
+                    allowWorkspaceMark: false,
+                });
+            });
+            row.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                openConversation();
+            });
+            return row;
+        };
+
+        groups.forEach((group) => {
+            const collapsed = learningCourseCollapseState.get(group.courseId) === true;
+            const groupWrap = document.createElement('div');
+            groupWrap.className = `nexoracode-sidebar-project learning-sidebar-course-group${collapsed ? ' is-collapsed' : ''}`;
+
+            const groupRow = document.createElement('div');
+            groupRow.className = 'nexoracode-sidebar-project-row';
+
+            const groupMain = document.createElement('button');
+            groupMain.type = 'button';
+            groupMain.className = 'nexoracode-sidebar-project-main';
+            const courseDisplayTitle = group.courseId === 'unknown'
+                ? 'unknown'
+                : (group.courseTitle || '未命名课程');
+            groupMain.title = group.courseId === 'unknown'
+                ? '未识别课程'
+                : courseDisplayTitle;
+
+            const courseIcon = document.createElement('i');
+            courseIcon.className = 'fa-solid fa-folder nexoracode-sidebar-project-icon';
+            courseIcon.setAttribute('aria-hidden', 'true');
+            groupMain.appendChild(courseIcon);
+
+            const groupName = document.createElement('span');
+            groupName.className = 'nexoracode-sidebar-project-name';
+            groupName.textContent = courseDisplayTitle;
+            groupMain.appendChild(groupName);
+
+            const groupCount = document.createElement('span');
+            groupCount.className = 'nexoracode-sidebar-project-count';
+            groupCount.textContent = String(group.conversations.length);
+            groupMain.appendChild(groupCount);
+
+            const toggleGroup = () => {
+                const nextCollapsed = !groupWrap.classList.contains('is-collapsed');
+                learningCourseCollapseState.set(group.courseId, nextCollapsed);
+                groupWrap.classList.toggle('is-collapsed', nextCollapsed);
+            };
+
+            groupMain.addEventListener('click', toggleGroup);
+
+            const groupActions = document.createElement('span');
+            groupActions.className = 'nexoracode-sidebar-actions';
+            const groupCaret = document.createElement('button');
+            groupCaret.type = 'button';
+            groupCaret.className = 'nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn';
+            groupCaret.title = '展开 / 折叠课程对话';
+            groupCaret.innerHTML = '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>';
+            groupCaret.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleGroup();
+            });
+            groupActions.appendChild(groupCaret);
+
+            groupRow.appendChild(groupMain);
+            groupRow.appendChild(groupActions);
+            groupWrap.appendChild(groupRow);
+
+            const childList = document.createElement('div');
+            childList.className = 'nexoracode-sidebar-project-conversations';
+            const childListInner = document.createElement('div');
+            childListInner.className = 'nexoracode-sidebar-project-conversations-inner';
+            group.conversations.forEach((conversation) => {
+                childListInner.appendChild(buildConversationItem(conversation));
+            });
+            childList.appendChild(childListInner);
+            groupWrap.appendChild(childList);
+            list.appendChild(groupWrap);
+        });
     }
 
     function escapeHtml(value) {
@@ -1105,15 +1458,20 @@
     }
 
     function renderSidebarChat(container) {
+        const layout = ensureLearningSidebarLayout(container);
+        const chatHost = layout ? layout.querySelector('[data-role="chat-host"]') : null;
         const bridge = window.NexoraLearningSidebarBridge;
+
+        if (!chatHost) return;
+
         if (!bridge) {
-            container.innerHTML = '<div class="learning-mode-welcome-loading">学习侧栏桥接未就绪。</div>';
+            chatHost.innerHTML = '<div class="learning-mode-welcome-loading">学习侧栏桥接未就绪。</div>';
             return;
         }
 
-        let shell = container.querySelector('.learning-sidebar-chat');
+        let shell = chatHost.querySelector('.learning-sidebar-chat');
         if (!shell) {
-            container.innerHTML = `
+            chatHost.innerHTML = `
                 <div class="learning-sidebar-chat">
                     <div class="learning-sidebar-chat-log"></div>
                     <div class="learning-sidebar-chat-compose">
@@ -1124,13 +1482,23 @@
                     </div>
                 </div>
             `;
-            shell = container.querySelector('.learning-sidebar-chat');
+            shell = chatHost.querySelector('.learning-sidebar-chat');
         }
 
         const log = shell ? shell.querySelector('.learning-sidebar-chat-log') : null;
         const input = shell ? shell.querySelector('.learning-sidebar-chat-input') : null;
         const sendBtn = shell ? shell.querySelector('.learning-sidebar-chat-send') : null;
         if (!shell || !log || !input || !sendBtn) return;
+
+        const currentConversationId = String(bridge.getCurrentConversationId?.() || '').trim();
+        const forceBottom = shell.dataset.forceBottom === '1';
+        const conversationChanged = forceBottom || shell.dataset.conversationId !== currentConversationId;
+
+        if (conversationChanged) {
+            shell.dataset.conversationId = currentConversationId;
+            shell.dataset.forceBottom = '0';
+            log.dataset.atBottom = 'true';
+        }
 
         if (!input.dataset.bound) {
             input.dataset.bound = 'true';
@@ -1245,8 +1613,8 @@
         // replaceChildren 之前测量旧滚动位置
         const oldScrollTop = log.scrollTop;
         const oldMaxScroll = log.scrollHeight - log.clientHeight;
-        const wasAtBottom = log.dataset.atBottom !== 'false' &&
-            (oldMaxScroll <= 0 || log.scrollTop >= oldMaxScroll - 45);
+        const wasAtBottom = conversationChanged || (log.dataset.atBottom !== 'false' &&
+            (oldMaxScroll <= 0 || log.scrollTop >= oldMaxScroll - 45));
 
         log.replaceChildren();
         if (!messages.length) {
@@ -1328,11 +1696,46 @@
         }
         const sidebarMode = String((sidebarOptionsRef || {}).sidebarMode || '').trim().toLowerCase();
         if (sidebarMode === 'learning') {
-            renderSidebarChat(sidebarContainerRef);
+            const layout = ensureLearningSidebarLayout(sidebarContainerRef);
+            const conversationSection = layout
+                ? layout.querySelector('.learning-sidebar-conversation-section')
+                : null;
+            const chatHost = layout ? layout.querySelector('[data-role="chat-host"]') : null;
+            const sidebarView = String((sidebarOptionsRef || {}).sidebarView || '').trim().toLowerCase() === 'conversation'
+                ? 'conversation'
+                : 'list';
+
+            layout?.classList.toggle('is-list', sidebarView === 'list');
+            layout?.classList.toggle('is-conversation', sidebarView === 'conversation');
+            sidebarContainerRef.classList.toggle('is-list-mode', sidebarView === 'list');
+            sidebarContainerRef.classList.toggle('is-conversation-mode', sidebarView === 'conversation');
+
+            if (sidebarView === 'conversation') {
+                if (conversationSection) conversationSection.hidden = true;
+                if (chatHost) chatHost.hidden = false;
+                renderSidebarChat(sidebarContainerRef);
+            } else {
+                if (conversationSection) conversationSection.hidden = false;
+                if (chatHost) {
+                    chatHost.hidden = true;
+                    const shell = chatHost.querySelector('.learning-sidebar-chat');
+
+                    if (shell) {
+                        shell.dataset.forceBottom = '1';
+                    }
+                }
+                renderLearningConversationList(sidebarContainerRef);
+            }
+
             const bridge = window.NexoraLearningSidebarBridge;
             if (bridge && typeof bridge.subscribe === 'function') {
                 sidebarUnmount = bridge.subscribe(() => {
-                    renderSidebarChat(sidebarContainerRef);
+                    if (sidebarView === 'conversation') {
+                        renderSidebarChat(sidebarContainerRef);
+                        return;
+                    }
+
+                    renderLearningConversationList(sidebarContainerRef);
                 });
             }
             return;
@@ -1459,6 +1862,7 @@
             sidebarUnmount = null;
         }
         sidebarContainerRef = null;
+        sidebarConversationRenderSignature = '';
     }
 
     window.addEventListener('message', (event) => {

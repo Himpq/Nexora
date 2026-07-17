@@ -9,6 +9,7 @@
 
     const BODY_WORKSPACE_CLASS = 'learning-workspace-active';
     const BODY_COURSE_CLASS = 'learning-course-workspace-active';
+    const BODY_COURSE_CONTEXT_CLASS = 'learning-course-context-active';
     const HOST_WORKSPACE_CLASS = 'learning-workspace-host-active';
     const HOST_COURSE_CLASS = 'learning-course-workspace-host-active';
     const SIDEBAR_WORKSPACE_CLASS = 'learning-workspace-sidebar-active';
@@ -191,6 +192,36 @@
         });
     }
 
+    function captureLearningSidebarState(elements) {
+        const bridge = window.NexoraLearningSidebarBridge;
+        const view = bridge && typeof bridge.getSidebarView === 'function'
+            ? String(bridge.getSidebarView() || '').trim().toLowerCase()
+            : 'list';
+        const conversationId = bridge && typeof bridge.getCurrentConversationId === 'function'
+            ? String(bridge.getCurrentConversationId() || '').trim()
+            : '';
+
+        return {
+            view: view === 'conversation' ? 'conversation' : 'list',
+            conversationId,
+            scrollTop: elements.learningSidebarPanel
+                ? Math.max(0, Number(elements.learningSidebarPanel.scrollTop || 0))
+                : 0,
+        };
+    }
+
+    function restoreLearningSidebarScroll(elements, state) {
+        if (!elements.learningSidebarPanel || !state || state.view !== 'list') return;
+
+        const scrollTop = Math.max(0, Number(state.scrollTop || 0));
+
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+                elements.learningSidebarPanel.scrollTop = scrollTop;
+            });
+        });
+    }
+
     function captureLayout(elements) {
         // 进入课程 Workspace 前记录当前聊天页布局，退出时按原状态恢复。
         return {
@@ -203,6 +234,7 @@
             courseWorkspacePanel: captureElementState(elements.courseWorkspacePanel),
             messagesContainer: captureElementState(elements.messagesContainer),
             learningMainPanel: captureElementState(elements.learningMainPanel),
+            learningSidebarState: captureLearningSidebarState(elements),
             nexoraTab: captureTabState(elements.nexoraTab),
             learningTab: captureTabState(elements.learningTab),
             workspaceTab: captureTabState(elements.workspaceTab),
@@ -235,6 +267,7 @@
         restoreElementDisplay(elements.courseWorkspacePanel, restoreSnapshot.courseWorkspacePanel);
         restoreElementDisplay(elements.messagesContainer, restoreSnapshot.messagesContainer);
         restoreElementDisplay(elements.learningMainPanel, restoreSnapshot.learningMainPanel);
+        restoreLearningSidebarScroll(elements, restoreSnapshot.learningSidebarState);
 
         restoreTabState(elements.nexoraTab, restoreSnapshot.nexoraTab);
         restoreTabState(elements.learningTab, restoreSnapshot.learningTab);
@@ -518,6 +551,7 @@
 
         workspaceSelected = false;
         courseAvailable = false;
+        document.body.classList.remove(BODY_COURSE_CONTEXT_CLASS);
         workspaceSuppressed = false;
         userLeftWorkspace = false;
         currentState = {};
@@ -534,6 +568,7 @@
         }
 
         courseAvailable = true;
+        document.body.classList.add(BODY_COURSE_CONTEXT_CLASS);
         currentState = nextState;
 
         const elements = resolveElements();
@@ -584,14 +619,6 @@
 
         if (target.closest('#sidebarBrandWorkspaceTab')) return;
 
-        if (target.closest('#newChatBtn')) {
-            if (courseAvailable) {
-                workspaceSuppressed = true;
-                leaveWorkspaceSelection({ restore: false });
-            }
-            return;
-        }
-
         if (target.closest('#sidebarBrandNexoraTab')) {
             if (courseAvailable) {
                 workspaceSuppressed = true;
@@ -641,6 +668,19 @@
         close: closeCourseWorkspace,
         isAvailable: () => courseAvailable,
         isActive: () => workspaceSelected,
+        getLectureId: () => String(currentState.lectureId || '').trim(),
+        getCourseTitle: () => String(currentState.title || '').trim(),
+        getLearningSidebarRestoreState: () => {
+            const state = restoreSnapshot && restoreSnapshot.learningSidebarState;
+
+            if (!state) return null;
+
+            return {
+                view: state.view,
+                conversationId: state.conversationId,
+                scrollTop: state.scrollTop,
+            };
+        },
     };
 
     if (document.readyState === 'loading') {

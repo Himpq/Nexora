@@ -3544,32 +3544,33 @@ def _trash_clear_entries(username: str) -> int:
 
 def _restore_conversation_from_trash(username: str, payload: Dict[str, Any], title_hint: str = '') -> Tuple[bool, str, Dict[str, Any]]:
     src = payload if isinstance(payload, dict) else {}
-    messages = src.get('messages', [])
-    if not isinstance(messages, list):
-        messages = []
     restored_title = str(title_hint or src.get('title') or '恢复的对话').strip() or '恢复的对话'
+    original_conversation_id = str(src.get('conversation_id') or '').strip()
+
+    if not original_conversation_id:
+        return False, '回收站对话缺少原 conversation_id，无法恢复关系', {}
+
     manager = ConversationManager(username)
-    new_conv_id = manager.create_conversation(title=restored_title)
-    conv_path = os.path.join(manager.base_path, f"{new_conv_id}.json")
-    now_iso = datetime.now().isoformat()
-    conversation_data = {
-        "conversation_id": str(new_conv_id),
-        "title": restored_title,
-        "created_at": str(src.get('created_at') or now_iso),
-        "updated_at": now_iso,
-        "pin": bool(src.get('pin', False)),
-        "messages": messages
-    }
-    if isinstance(src.get('context_compressions'), list):
-        conversation_data["context_compressions"] = src.get('context_compressions')
-    if src.get('last_volc_response_id'):
-        conversation_data["last_volc_response_id"] = src.get('last_volc_response_id')
-    if src.get('last_model_used'):
-        conversation_data["last_model_used"] = src.get('last_model_used')
+
     try:
-        manager._save_json_atomic(conv_path, conversation_data)
-        return True, '', {"conversation_id": str(new_conv_id), "title": restored_title}
+        restored_conversation_id = manager.restore_conversation(
+            src,
+            original_conversation_id,
+            title=restored_title,
+        )
+        app.logger.info(
+            'conversation restored with original relationship id username=%s conversation_id=%s',
+            username,
+            restored_conversation_id,
+        )
+        return True, '', {"conversation_id": restored_conversation_id, "title": restored_title}
     except Exception as e:
+        app.logger.error(
+            'conversation restore failed username=%s original_conversation_id=%s error=%s',
+            username,
+            original_conversation_id,
+            e,
+        )
         return False, str(e), {}
 
 
@@ -10023,6 +10024,97 @@ def create_conversation_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/conversations/<conv_id>/fork', methods=['POST'])
+@require_login
+def fork_conversation_api(conv_id):
+    """从已完成的 assistant 回答节点创建独立会话分支。"""
+    username = session['username']
+    source_conversation_id = str(conv_id or '').strip()
+    data = request.get_json(silent=True) or {}
+
+    if 'message_index' not in data:
+        return jsonify({'success': False, 'message': 'message_index 不能为空'}), 400
+
+    running_sessions = list_stream_sessions(
+        username=username,
+        conversation_ids=[source_conversation_id],
+        include_done=False,
+    )
+
+    if running_sessions:
+        return jsonify({'success': False, 'message': '当前会话仍在生成，完成后才能创建分支'}), 409
+
+    manager = ConversationManager(username)
+    branch_result = None
+    target_conversation_id = ''
+
+    def rollback_branch() -> None:
+        if not target_conversation_id:
+            return
+
+        from api.map.baidu import remove_map_records
+
+        _remove_conversation_assets_dir(username, target_conversation_id)
+        remove_map_records(username, target_conversation_id)
+        manager.delete_conversation(target_conversation_id)
+
+    try:
+        branch_result = manager.fork_conversation(
+            source_conversation_id,
+            data.get('message_index'),
+            title=str(data.get('title') or '').strip(),
+        )
+        target_conversation_id = str(branch_result.get('conversation_id') or '').strip()
+        branch_conversation = manager.get_conversation(target_conversation_id)
+        branch_conversation = conversation_asset_store.clone_referenced_assets(
+            username,
+            source_conversation_id,
+            target_conversation_id,
+            branch_conversation,
+        )
+
+        from api.map.baidu import (
+            clone_map_records,
+            rewrite_map_conversation_references,
+        )
+
+        branch_conversation = rewrite_map_conversation_references(
+            branch_conversation,
+            source_conversation_id,
+            target_conversation_id,
+        )
+        manager.update_conversation_fields(target_conversation_id, {
+            'messages': branch_conversation.get('messages', []),
+        })
+        clone_map_records(username, source_conversation_id, target_conversation_id)
+
+        workspace_id = str(data.get('workspace_id') or '').strip()
+
+        if workspace_id:
+            from api.workspace.storage import find_store_for_visible_workspace, validate_workspace_id
+
+            validated_workspace_id = validate_workspace_id(workspace_id)
+            workspace_store = find_store_for_visible_workspace(username, validated_workspace_id)
+            workspace_store.add_conversation(validated_workspace_id, target_conversation_id, username)
+
+        return jsonify({
+            'success': True,
+            'conversation_id': target_conversation_id,
+            'title': str(branch_result.get('title') or ''),
+            'branch': branch_result.get('branch', {}),
+            'workspace_id': workspace_id,
+        })
+    except (ValueError, FileNotFoundError, PermissionError) as error:
+        status_code = 403 if isinstance(error, PermissionError) else 400
+        rollback_branch()
+
+        return jsonify({'success': False, 'message': str(error)}), status_code
+    except Exception as error:
+        rollback_branch()
+
+        return jsonify({'success': False, 'message': str(error)}), 500
+
+
 @app.route('/api/conversations/<conv_id>/pin', methods=['PUT'])
 @app.route('/api/conversations/<conv_id>/pin', methods=['POST'])
 @require_login
@@ -13481,6 +13573,9 @@ def chat_stream():
             )
             set_stage("request_normalized", f"mode={raw_conversation_mode or 'chat'} chars={len(effective_message)}")
 
+            learning_course_id = ''
+            learning_course_title = ''
+
             if raw_conversation_mode == 'learning':
                 set_stage("building_learning_context")
                 try:
@@ -13510,9 +13605,14 @@ def chat_stream():
                         else:
                             merged_payload[key] = value
                     lecture_id = str(merged_payload.get('lecture_id') or '').strip()
+                    lecture_title = str(merged_payload.get('lecture_title') or '').strip()
                     if not lecture_id:
                         lecture_id = str(((merged_payload.get('meta') or {}) if isinstance(merged_payload.get('meta'), dict) else {}).get('lecture_id') or '').strip()
+                    if not lecture_title:
+                        lecture_title = str(((merged_payload.get('meta') or {}) if isinstance(merged_payload.get('meta'), dict) else {}).get('lecture_title') or '').strip()
                     if lecture_id:
+                        learning_course_id = lecture_id
+                        learning_course_title = lecture_title
                         memory_blocks = build_learning_memory_blocks(username, lecture_id)
                         if memory_blocks:
                             existing_blocks = merged_payload.get('context_blocks', [])
@@ -13523,6 +13623,8 @@ def chat_stream():
                         if not isinstance(current_meta, dict):
                             current_meta = {}
                         current_meta['lecture_id'] = lecture_id
+                        if lecture_title:
+                            current_meta['lecture_title'] = lecture_title
                         merged_payload['meta'] = current_meta
                     raw_conversation_mode_payload = merged_payload
                     merged_active_skills = raw_conversation_mode_payload.get('active_tool_skills', [])
@@ -13575,6 +13677,18 @@ def chat_stream():
                 conversation_id=conversation_id,
                 auto_create=(not bool(str(conversation_id or '').strip()))
             )
+
+            if raw_conversation_mode == 'learning' and learning_course_id and model.conversation_id:
+                ConversationManager(username).update_conversation_fields(
+                    model.conversation_id,
+                    {
+                        'metadata': {
+                            'learning': True,
+                            'lecture_id': learning_course_id,
+                            **({'lecture_title': learning_course_title} if learning_course_title else {}),
+                        }
+                    },
+                )
 
             stream_log_model_name = model_name or getattr(model, "model_name", "")
 

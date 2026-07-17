@@ -492,6 +492,14 @@ let currentUserPreferences = null;
 let learningModeEnabled = false;
 let learningRuntimeEnabled = true;
 let learningSidebarMode = 'nexora';
+const learningNavigationStateApi = window.NexoraLearningNavigationState;
+
+if (!learningNavigationStateApi || typeof learningNavigationStateApi.create !== 'function') {
+    throw new Error('NexoraLearningNavigationState 未初始化，无法启动 Learning 导航');
+}
+
+const learningNavigationState = learningNavigationStateApi.create();
+let currentConversationSidebarScope = 'nexora';
 let learningHeaderMode = 'chat';
 let learningWelcomeMounted = false;
 let learningMainMounted = false;
@@ -538,8 +546,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260620_01';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260708_console_gate_01';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260717_learning_sidebar_hierarchy_17';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260717_learning_sidebar_hierarchy_16';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
 const BROWSER_SYNC_PING_MS = 20000;
@@ -931,6 +939,20 @@ const toolResultController = getNexoraChatTools().createToolResultController({
     scrollToolOutputToTop: (...args) => toolEventController.scrollToolOutputToTop(...args),
     maybeRenderCanvasFromJsExecuteResult,
 });
+const conversationBranchController = getNexoraChatConversationBranches().createConversationBranchController({
+    getCurrentConversationId: () => currentConversationId,
+    isConversationStreamRunning,
+    getActiveWorkspaceConversationContext: () => {
+        if (typeof window.getActiveWorkspaceConversationContext !== 'function') {
+            throw new Error('Workspace 会话上下文接口未初始化');
+        }
+
+        return window.getActiveWorkspaceConversationContext();
+    },
+    loadConversation,
+    loadConversations,
+    showToast,
+});
 const messagesController = getNexoraChatMessages().createMessagesController({
     getMessagesContainer: () => els.messagesContainer,
     getCurrentConversationId: () => currentConversationId,
@@ -1008,6 +1030,7 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     buildVersionNavigation,
     rememberVisibleMessageInWindow,
     appendTurnIndicatorLine,
+    forkConversationFromMessage: (...args) => conversationBranchController.forkFromMessage(...args),
 });
 const messageActionsController = getNexoraChatMessages().createMessageActionsController({
     getCurrentConversationId: () => currentConversationId,
@@ -1232,6 +1255,7 @@ const conversationListController = getNexoraChatConversations().createConversati
     markConversationStreamRead,
     loadConversation,
     deleteConversation,
+    notifyLearningSidebar: () => scheduleLearningSidebarBridgeNotify(0),
     isNexoraCodeProjectSidebarEnabled,
     getNexoraCodeProjects,
     getNexoraCodeHiddenProjectIds,
@@ -1241,7 +1265,6 @@ const conversationListController = getNexoraChatConversations().createConversati
 const conversationNavigationController = getNexoraChatConversations().createConversationNavigationController({
     getKnowledgeViewerElement: () => document.getElementById('knowledgeViewer'),
     resetWorkspaceReadonlyConversationStateForConversationLoad,
-    closeLearningReaderFromHost,
     closeKnowledgeView,
     exitLearningFeedComposeMode,
     setCurrentConversationHasImageHistory: (value) => {
@@ -1667,7 +1690,6 @@ function clearHoverProxyMessage() {
 
 let learningSidebarListeners = [];
 let learningReaderContextSnapshot = null;
-let learningReaderOpened = false;
 let learningSidebarNotifyTimer = null;
 let learningSidebarSendInFlight = false;
 let learningSidebarDraftValue = '';
@@ -2167,6 +2189,41 @@ function normalizeLearningReaderContextPayload(raw) {
     };
 }
 
+function getActiveLearningCourseContext() {
+    const courseWorkspace = window.NexoraLearningCourseWorkspace;
+
+    if (courseWorkspace
+        && typeof courseWorkspace.isAvailable === 'function'
+        && courseWorkspace.isAvailable()) {
+        if (typeof courseWorkspace.getLectureId !== 'function'
+            || typeof courseWorkspace.getCourseTitle !== 'function') {
+            throw new Error('课程 Workspace 缺少课程上下文接口');
+        }
+
+        return {
+            lectureId: String(courseWorkspace.getLectureId() || '').trim(),
+            courseTitle: String(courseWorkspace.getCourseTitle() || '').trim(),
+        };
+    }
+
+    return {
+        lectureId: String(
+            learningReaderContextSnapshot
+            && learningReaderContextSnapshot.lecture_id
+            || ''
+        ).trim(),
+        courseTitle: String(
+            learningReaderContextSnapshot
+            && learningReaderContextSnapshot.lecture_title
+            || ''
+        ).trim(),
+    };
+}
+
+function getActiveLearningCourseId() {
+    return getActiveLearningCourseContext().lectureId;
+}
+
 function normalizeLearningReaderLongContext(value, maxLen) {
     const text = String(value || '').replace(/\r\n?/g, '\n').trim();
     const limit = Math.max(0, Number(maxLen) || 0);
@@ -2297,6 +2354,27 @@ async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
 }
 
 window.NexoraLearningSidebarBridge = {
+    getConversations: () => (Array.isArray(conversationListCache) ? conversationListCache : []),
+    getCurrentConversationId: () => String(currentConversationId || '').trim(),
+    getSidebarView: () => getLearningSidebarView(),
+    setSidebarView: (view) => {
+        const normalizedView = normalizeLearningSidebarView(view);
+        const nextView = normalizedView === 'conversation'
+            ? enterLearningSidebarConversationView()
+            : setLearningSidebarView(normalizedView);
+
+        if (learningSidebarMode === 'learning') {
+            applyLearningSidebarMode('learning');
+        }
+
+        return nextView;
+    },
+    getConversationStreamState,
+    loadConversation,
+    deleteConversation,
+    markConversationStreamRead,
+    showPinContextMenu,
+    isLearningConversation: (item) => getNexoraChatConversations().isLearningConversation(item),
     getMessages: () => getLearningSidebarMessages(),
     getInputValue: () => String(learningSidebarDraftValue || ''),
     setInputValue: (value) => {
@@ -2675,6 +2753,10 @@ function getNexoraChatStreamLifecycle() {
 
 function getNexoraChatConversations() {
     return getNexoraChatSharedModule('conversations');
+}
+
+function getNexoraChatConversationBranches() {
+    return getNexoraChatSharedModule('conversationBranches');
 }
 
 function getNexoraChatAdmin() {
@@ -5453,7 +5535,8 @@ function logRightSidebarPanelDebug(action, details = {}) {
         const err = new Error();
         console.warn('[RightSidebar]', action, {
             ...details,
-            learningReaderOpened: !!learningReaderOpened,
+            learningReaderOpened: learningNavigationState.isReaderOpened(),
+            learningReaderSuspended: learningNavigationState.isReaderSuspended(),
             learningEmbedLayoutMode: String(learningEmbedLayoutMode || ''),
             bodyClass: document.body ? String(document.body.className || '') : '',
             target: describeRightSidebarDebugTarget(),
@@ -5547,7 +5630,7 @@ function isLearningReaderClassActive() {
 function isLearningReaderRightSidebarLocked() {
     // Learning 主面板也会使用 immersive 承载布局，右侧栏只在真实阅读器状态下锁定。
     return !!(
-        learningReaderOpened
+        isLearningReaderHostActive()
         || isLearningReaderClassActive()
     );
 }
@@ -7698,6 +7781,7 @@ const els = {
     pinContextMenu: document.getElementById('pinContextMenu'),
     pinContextMenuAction: document.getElementById('pinContextMenuAction'),
     pinContextMenuRename: document.getElementById('pinContextMenuRename'),
+    pinContextMenuBranch: document.getElementById('pinContextMenuBranch'),
     pinContextMenuProjectDelete: document.getElementById('pinContextMenuProjectDelete'),
     pinContextMenuWorkspaceWrap: document.getElementById('pinContextMenuWorkspaceWrap'),
     pinContextMenuWorkspaceList: document.getElementById('pinContextMenuWorkspaceList'),
@@ -8120,7 +8204,7 @@ function registerLearningModeChatBridge() {
 }
 
 function shouldForceLearningSidebarMode() {
-    return !!(learningModeEnabled && learningReaderOpened);
+    return !!(learningModeEnabled && isLearningReaderHostActive());
 }
 
 function resolveLearningSidebarModeForConversation(modeHint = null) {
@@ -8132,6 +8216,318 @@ function resolveLearningSidebarModeForConversation(modeHint = null) {
 
 function isLearningWorkspaceActive() {
     return !!(learningModeEnabled && String(learningSidebarMode || '').trim().toLowerCase() === 'learning');
+}
+
+function normalizeLearningSidebarView(view) {
+    return String(view || '').trim().toLowerCase() === 'conversation' ? 'conversation' : 'list';
+}
+
+function getLearningSidebarView() {
+    return learningNavigationState.getSidebarView();
+}
+
+function setLearningSidebarView(view) {
+    return learningNavigationState.setSidebarView(normalizeLearningSidebarView(view));
+}
+
+function captureLearningSidebarListScrollPosition() {
+    if (!els.learningSidebarPanel || getLearningSidebarView() !== 'list') {
+        return learningNavigationState.getLearningListScroll();
+    }
+
+    return learningNavigationState.captureLearningListScroll(els.learningSidebarPanel.scrollTop);
+}
+
+function enterLearningSidebarConversationView() {
+    captureLearningSidebarListScrollPosition();
+    return setLearningSidebarView('conversation');
+}
+
+function restoreLearningSidebarListScrollPosition() {
+    queueLearningSidebarListScrollRestore(learningNavigationState.getLearningListScroll());
+}
+
+// 返回列表是一次明确导航，不能继续保留“下次重进最后会话”的意图。
+function returnToLearningConversationList() {
+    learningNavigationState.clearRememberedConversation('learning');
+    setLearningSidebarView('list');
+    applyLearningSidebarMode('learning');
+    restoreLearningSidebarListScrollPosition();
+    logLearningNavigationTransition('return-to-list');
+}
+
+function rememberSidebarConversationSelection(mode, conversationId) {
+    learningNavigationState.rememberConversation(mode, conversationId);
+}
+
+function resolveConversationSidebarScope(conversation) {
+    return learningModeEnabled && getNexoraChatConversations().isLearningConversation(conversation)
+        ? 'learning'
+        : 'nexora';
+}
+
+function findCachedConversationById(conversationId) {
+    const normalizedId = String(conversationId || '').trim();
+
+    if (!normalizedId || !Array.isArray(conversationListCache)) return null;
+
+    return conversationListCache.find((item) => {
+        const source = item && typeof item === 'object' ? item : {};
+        return String(source.conversation_id || source.id || '').trim() === normalizedId;
+    }) || null;
+}
+
+function isNexoraConversationSelection(conversationId) {
+    const conversation = findCachedConversationById(conversationId);
+    return !!conversation && !getNexoraChatConversations().isLearningConversation(conversation);
+}
+
+function isLearningConversationSelection(conversationId) {
+    const conversation = findCachedConversationById(conversationId);
+    return !!conversation && getNexoraChatConversations().isLearningConversation(conversation);
+}
+
+function isLearningReaderHostActive() {
+    return learningNavigationState.isReaderHostActive();
+}
+
+function logLearningNavigationTransition(action, details = {}) {
+    console.info('[LearningNavigation]', String(action || '').trim(), {
+        sidebarMode: String(learningSidebarMode || ''),
+        sidebarView: getLearningSidebarView(),
+        conversationId: String(currentConversationId || ''),
+        conversationScope: String(currentConversationSidebarScope || ''),
+        readerOpened: learningNavigationState.isReaderOpened(),
+        readerSuspended: learningNavigationState.isReaderSuspended(),
+        listScrollTop: learningNavigationState.getLearningListScroll(),
+        ...details,
+    });
+}
+
+function suspendLearningReaderForNexora() {
+    const suspended = learningNavigationState.suspendReader();
+
+    if (suspended) {
+        logLearningNavigationTransition('suspend-reader');
+    }
+
+    return suspended;
+}
+
+function resumeLearningReaderForSidebar() {
+    const resumed = learningNavigationState.resumeReader();
+
+    if (resumed) {
+        logLearningNavigationTransition('resume-reader');
+    }
+
+    return resumed;
+}
+
+function prepareLearningReaderForConversationNavigation(conversationId) {
+    if (!learningNavigationState.isReaderOpened()) return;
+
+    if (isLearningConversationSelection(conversationId)) {
+        resumeLearningReaderForSidebar();
+        return;
+    }
+
+    suspendLearningReaderForNexora();
+}
+
+function syncLearningReaderForConversationScope(scope) {
+    if (!learningNavigationState.isReaderOpened()) return;
+
+    if (String(scope || '').trim().toLowerCase() === 'learning') {
+        resumeLearningReaderForSidebar();
+        return;
+    }
+
+    suspendLearningReaderForNexora();
+}
+
+function replaceConversationHistory(conversationId = '') {
+    if (!window.history.replaceState) return;
+
+    const normalizedId = String(conversationId || '').trim();
+    const url = normalizedId ? `/chat?cid=${encodeURIComponent(normalizedId)}` : '/chat';
+    window.history.replaceState({}, '', url);
+}
+
+function queueLearningSidebarListScrollRestore(scrollTop) {
+    const targetScrollTop = Math.max(0, Number(scrollTop || 0));
+
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            if (!els.learningSidebarPanel || getLearningSidebarView() !== 'list') return;
+            els.learningSidebarPanel.scrollTop = targetScrollTop;
+        });
+    });
+}
+
+async function switchToNexoraSidebar() {
+    captureLearningSidebarListScrollPosition();
+    suspendLearningReaderForNexora();
+    learningHeaderMode = 'chat';
+
+    const leavingLearningConversation = currentConversationSidebarScope === 'learning';
+
+    if (!leavingLearningConversation) {
+        applyLearningSidebarMode('nexora');
+        await syncLearningHeaderMode();
+        return;
+    }
+
+    const rememberedNexoraConversationId = learningNavigationState.getRememberedConversation('nexora');
+    const restoreConversationId = isNexoraConversationSelection(rememberedNexoraConversationId)
+        ? rememberedNexoraConversationId
+        : '';
+
+    if (!restoreConversationId) {
+        learningNavigationState.clearRememberedConversation('nexora');
+    }
+
+    // 两套 sidebar 不共享当前 cid：先解除 Learning 会话，再恢复 Nexora 原选择。
+    await createNewConversation(false, 'chat', { pushHistory: false });
+    replaceConversationHistory();
+
+    if (!restoreConversationId) {
+        return;
+    }
+
+    await loadConversation(restoreConversationId, { pushHistory: false });
+
+    if (String(currentConversationId || '').trim() === restoreConversationId
+        && currentConversationSidebarScope === 'nexora') {
+        replaceConversationHistory(restoreConversationId);
+    }
+}
+
+async function switchToLearningSidebar() {
+    closeKnowledgeViewBeforeLearningSwitch();
+    resumeLearningReaderForSidebar();
+
+    const courseWorkspace = window.NexoraLearningCourseWorkspace;
+    const returningFromCourseWorkspace = !!(
+        courseWorkspace
+        && typeof courseWorkspace.isActive === 'function'
+        && courseWorkspace.isActive()
+    );
+    const workspaceRestoreState = returningFromCourseWorkspace
+        && typeof courseWorkspace.getLearningSidebarRestoreState === 'function'
+        ? courseWorkspace.getLearningSidebarRestoreState()
+        : null;
+
+    if (workspaceRestoreState) {
+        const restoreView = String(workspaceRestoreState.view || '').trim().toLowerCase() === 'conversation'
+            ? 'conversation'
+            : 'list';
+        const restoreConversationId = String(workspaceRestoreState.conversationId || '').trim();
+
+        if (restoreView === 'list') {
+            learningNavigationState.clearRememberedConversation('learning');
+
+            if (currentConversationSidebarScope !== 'learning') {
+                await conversationNavigationController.createNewConversation(false, 'learning', { pushHistory: false });
+                replaceConversationHistory();
+            }
+
+            setLearningSidebarView('list');
+            learningHeaderMode = 'learning';
+            applyLearningSidebarMode('learning');
+            await syncLearningHeaderMode();
+            learningNavigationState.captureLearningListScroll(workspaceRestoreState.scrollTop);
+            queueLearningSidebarListScrollRestore(workspaceRestoreState.scrollTop);
+            return;
+        }
+
+        if (isLearningConversationSelection(restoreConversationId)) {
+            if (String(currentConversationId || '').trim() !== restoreConversationId
+                || currentConversationSidebarScope !== 'learning') {
+                await loadConversation(restoreConversationId, { pushHistory: false });
+                replaceConversationHistory(restoreConversationId);
+            } else {
+                setLearningSidebarView('conversation');
+                learningHeaderMode = 'learning';
+                applyLearningSidebarMode('learning');
+                await syncLearningHeaderMode();
+            }
+
+            return;
+        }
+
+        learningNavigationState.clearRememberedConversation('learning');
+        setLearningSidebarView('list');
+        learningHeaderMode = 'learning';
+        applyLearningSidebarMode('learning');
+        await syncLearningHeaderMode();
+        learningNavigationState.captureLearningListScroll(workspaceRestoreState.scrollTop);
+        queueLearningSidebarListScrollRestore(workspaceRestoreState.scrollTop);
+        return;
+    }
+
+    if (currentConversationSidebarScope === 'learning') {
+        learningHeaderMode = 'learning';
+        applyLearningSidebarMode('learning');
+        await syncLearningHeaderMode();
+
+        if (getLearningSidebarView() === 'list') {
+            restoreLearningSidebarListScrollPosition();
+        }
+
+        return;
+    }
+
+    rememberSidebarConversationSelection('nexora', currentConversationId);
+
+    const rememberedLearningConversationId = learningNavigationState.getRememberedConversation('learning');
+    const shouldRestoreConversation = getLearningSidebarView() === 'conversation';
+    const restoreConversationId = shouldRestoreConversation
+        && isLearningConversationSelection(rememberedLearningConversationId)
+        ? rememberedLearningConversationId
+        : '';
+
+    if (!restoreConversationId) {
+        learningNavigationState.clearRememberedConversation('learning');
+        // 仅清理 conversation 上下文，保留 NexoraLearning iframe 当前课程详情。
+        await conversationNavigationController.createNewConversation(false, 'learning', { pushHistory: false });
+        replaceConversationHistory();
+        setLearningSidebarView('list');
+        learningHeaderMode = 'learning';
+        applyLearningSidebarMode('learning');
+        await syncLearningHeaderMode();
+        restoreLearningSidebarListScrollPosition();
+        return;
+    }
+
+    await loadConversation(restoreConversationId, { pushHistory: false });
+
+    if (String(currentConversationId || '').trim() === restoreConversationId
+        && currentConversationSidebarScope === 'learning') {
+        replaceConversationHistory(restoreConversationId);
+    }
+}
+
+async function startNewLearningConversation() {
+    learningNavigationState.clearRememberedConversation('learning');
+    enterLearningSidebarConversationView();
+
+    // New Learning 只重置 Learning conversation，不触碰当前课程主页和 Workspace 上下文。
+    await conversationNavigationController.createNewConversation(false, 'learning');
+}
+
+function updateLearningSidebarPrimaryAction() {
+    if (!els || !els.newChatBtn) return;
+
+    const inLearningConversation = learningSidebarMode === 'learning'
+        && getLearningSidebarView() === 'conversation';
+
+    els.newChatBtn.innerHTML = inLearningConversation
+        ? '<i class="fa-solid fa-arrow-left" aria-hidden="true"></i><span>返回上一级</span>'
+        : (learningSidebarMode === 'learning'
+            ? '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Learning</span>'
+            : '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Chat</span>');
+    els.newChatBtn.dataset.learningPrimaryAction = inLearningConversation ? 'back' : 'new';
 }
 
 // 学习模式偏好异步加载完成后，按当前会话状态恢复侧栏，避免覆盖 cid 导航结果。
@@ -8155,8 +8551,9 @@ function syncLearningWorkspaceLayout() {
     return window.NexoraLearningWorkspaceLayout.sync({
         enabled: learningModeEnabled,
         sidebarMode: learningSidebarMode,
-        readerOpened: learningReaderOpened,
+        readerOpened: isLearningReaderHostActive(),
         layoutMode: learningEmbedLayoutMode,
+        sidebarView: getLearningSidebarView(),
         elements: {
             sidebar: els.sidebar,
             mainContent: els.mainContent,
@@ -8179,42 +8576,11 @@ function normalizeLearningReaderHostTarget(target) {
     return String(target || '').trim().toLowerCase() === 'learning' ? 'learning' : 'nexora';
 }
 
-function syncLearningReaderClosedByHost(targetSidebarMode) {
-    const normalizedTarget = normalizeLearningReaderHostTarget(targetSidebarMode);
-    learningReaderOpened = false;
-    learningReaderContextSnapshot = null;
-    learningHeaderMode = normalizedTarget === 'learning' ? 'learning' : 'chat';
-    setLearningEmbedLayoutMode('default', { hideInputDock: false });
-    applyLearningSidebarMode(normalizedTarget);
-    void syncLearningHeaderMode();
-}
-
-function closeLearningReaderFromHost(reason, targetSidebarMode = 'nexora') {
-    if (!learningReaderOpened) return false;
-
-    const normalizedTarget = normalizeLearningReaderHostTarget(targetSidebarMode);
-    const api = window.NexoraLearningMode;
-
-    if (api && typeof api.closeReaderFromHost === 'function') {
-        api.closeReaderFromHost({
-            closeReason: String(reason || 'host_reader_close').trim(),
-            closeTarget: normalizedTarget,
-        });
-    } else {
-        console.error('NexoraLearning Reader 关闭命令发送失败：NexoraLearningMode.closeReaderFromHost 未就绪', {
-            reason: String(reason || ''),
-            targetSidebarMode: normalizedTarget,
-        });
-    }
-
-    syncLearningReaderClosedByHost(normalizedTarget);
-    return true;
-}
-
 function applyLearningSidebarMode(mode) {
     const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
     learningSidebarMode = normalized;
     const visible = normalized === 'learning';
+
     if (!visible && !String(currentConversationId || '').trim() && currentConversationMode === 'learning') {
         currentConversationMode = 'chat';
         learningHeaderMode = 'chat';
@@ -8228,6 +8594,8 @@ function applyLearningSidebarMode(mode) {
             role: currentUserRole,
             enabled: learningModeEnabled,
             sidebarMode: normalized,
+            sidebarView: getLearningSidebarView(),
+            conversationMode: currentConversationMode,
         });
     };
     if (els.sidebarBrandLearningTab) {
@@ -8244,9 +8612,7 @@ function applyLearningSidebarMode(mode) {
     }
     if (els.newChatBtn) {
         els.newChatBtn.style.display = '';
-        els.newChatBtn.innerHTML = visible
-            ? '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Learning</span>'
-            : '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Chat</span>';
+        updateLearningSidebarPrimaryAction();
     }
 
     if (els.workspacesBtn) {
@@ -8285,17 +8651,16 @@ function applyLearningSidebarMode(mode) {
 
 function shouldPreserveLearningReaderImmersiveLayout() {
     const mode = String(currentConversationMode || '').trim().toLowerCase();
-    return !!(learningModeEnabled && learningReaderOpened && mode === 'learning');
+    return !!(learningModeEnabled && isLearningReaderHostActive() && mode === 'learning');
 }
 
 function isLearningMainPanelRendered() {
     return !!(els.learningMainPanel && els.learningMainPanel.querySelector('.learning-mode-frame'));
 }
 
-function shouldPreserveLearningMainPanelForNewConversation(resolvedMode) {
-    const mode = String(resolvedMode || '').trim().toLowerCase();
-    // Learning 侧栏新建对话只切换聊天上下文，主 iframe 保持当前位置。
-    return !!(mode === 'learning' && isLearningWorkspaceActive() && isLearningMainPanelRendered());
+function shouldPreserveLearningMainPanelForNewConversation(_resolvedMode) {
+    // 对话上下文与 NexoraLearning iframe 生命周期彼此独立，Sidebar 切换只能隐藏已挂载 iframe。
+    return !!(learningModeEnabled && isLearningMainPanelRendered());
 }
 
 function clearLearningWelcomeState(options = {}) {
@@ -8316,7 +8681,7 @@ function clearLearningWelcomeState(options = {}) {
 function shouldHonorLearningHostLayoutRequest() {
     if (!learningModeEnabled) return false;
 
-    if (learningReaderOpened || isLearningWorkspaceActive()) {
+    if (isLearningReaderHostActive() || isLearningWorkspaceActive()) {
         return true;
     }
 
@@ -8415,9 +8780,16 @@ function handleLearningHostMessage(payload) {
             return true;
         }
 
-        const wasReaderOpened = !!learningReaderOpened;
-        learningReaderOpened = !!payload.opened;
-        if (learningReaderOpened) {
+        const wasReaderOpened = learningNavigationState.isReaderOpened();
+        const wasReaderSuspended = learningNavigationState.isReaderSuspended();
+        learningNavigationState.setReaderOpened(!!payload.opened);
+
+        if (learningNavigationState.isReaderOpened()) {
+            if (learningNavigationState.isReaderSuspended()) {
+                logLearningNavigationTransition('reader-opened-while-suspended');
+                return true;
+            }
+
             closeReaderBlockedRightSidebars();
             closeLearningCourseWorkspaceForReader();
             learningHeaderMode = 'learning';
@@ -8427,6 +8799,13 @@ function handleLearningHostMessage(payload) {
         }
         if (wasReaderOpened) {
             learningReaderContextSnapshot = null;
+
+            if (wasReaderSuspended) {
+                learningHeaderMode = 'chat';
+                logLearningNavigationTransition('reader-closed-while-suspended');
+                return true;
+            }
+
             const closeReason = String(payload.close_reason || payload.reason || '').trim().toLowerCase();
             const closeTarget = String(payload.close_target || payload.target || '').trim().toLowerCase();
             const restoredSidebarMode = closeTarget
@@ -8553,7 +8932,7 @@ async function syncLearningHeaderMode() {
             workspaceActive
             ||
             (String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && !hasConversation)
-            || learningReaderOpened
+            || isLearningReaderHostActive()
         )
     );
     let showChatMain = !showLearningMain && !viewerOpen;
@@ -8781,7 +9160,7 @@ async function applyLearningMode(enabled, options = {}) {
 
     learningModeEnabled = !!enabled;
     if (!learningModeEnabled) {
-        learningReaderOpened = false;
+        learningNavigationState.setReaderOpened(false);
     }
     document.body.classList.toggle('learning-mode-enabled', learningModeEnabled);
     if (learningModeEnabled) {
@@ -8801,18 +9180,21 @@ async function applyLearningMode(enabled, options = {}) {
         if (currentConversationMode === 'learning') currentConversationMode = 'chat';
         if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
     }
-    applyLearningSidebarMode(learningSidebarMode);
-
     if (learningModeEnabled && !String(currentConversationId || '').trim() && !suppressAutoLearningOpen) {
-        currentConversationMode = 'learning';
+        // Learning 首次进入只展示课程对话列表和 NexoraLearning 主页面，
+        // 不把“尚未选择对话”伪装成一个新的 Learning 会话。
+        setLearningSidebarView('list');
+        currentConversationMode = 'chat';
         learningHeaderMode = 'learning';
     } else if (suppressAutoLearningOpen && !String(currentConversationId || '').trim()) {
         currentConversationMode = 'chat';
         learningHeaderMode = 'chat';
     }
 
+    applyLearningSidebarMode(learningSidebarMode);
     await syncLearningHeaderMode();
-    if (!currentConversationId) {
+
+    if (!currentConversationId && !isLearningWorkspaceActive()) {
         await renderWelcomeScreen();
     }
     _syncTurnIndicatorVisibility();
@@ -10869,10 +11251,15 @@ function hidePinContextMenu() {
     pinContextMenuBusy = false;
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const branchBtn = els.pinContextMenuBranch || document.getElementById('pinContextMenuBranch');
     const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (actionBtn) actionBtn.disabled = false;
     if (renameBtn) renameBtn.disabled = false;
+    if (branchBtn) {
+        branchBtn.disabled = false;
+        branchBtn.style.display = 'none';
+    }
     if (projectDeleteBtn) projectDeleteBtn.disabled = false;
     if (workspaceList) workspaceList.innerHTML = '';
 }
@@ -10880,6 +11267,7 @@ function hidePinContextMenu() {
 function updatePinContextMenuAction(state) {
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const branchBtn = els.pinContextMenuBranch || document.getElementById('pinContextMenuBranch');
     const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceWrap = els.pinContextMenuWorkspaceWrap || document.getElementById('pinContextMenuWorkspaceWrap');
     if (!actionBtn) return;
@@ -10896,6 +11284,9 @@ function updatePinContextMenuAction(state) {
     if (renameBtn) {
         renameBtn.style.display = !isProject && targetType === 'conversation' ? '' : 'none';
     }
+    if (branchBtn) {
+        branchBtn.style.display = targetType === 'conversation' && !!(state && state.branch) ? '' : 'none';
+    }
     if (projectDeleteBtn) {
         projectDeleteBtn.style.display = isProject ? '' : 'none';
     }
@@ -10904,6 +11295,40 @@ function updatePinContextMenuAction(state) {
             && (targetType === 'conversation' || targetType === 'knowledge_basis');
         workspaceWrap.style.display = supportsWorkspaceMark ? '' : 'none';
     }
+}
+
+async function viewConversationBranchSourceFromContextMenu() {
+    const state = { ...(pinContextMenuState || {}) };
+    const branch = state.branch && typeof state.branch === 'object' ? state.branch : null;
+    const parentConversationId = String(branch && branch.parent_conversation_id || '').trim();
+    const parentMessageIndex = Number(branch && branch.parent_message_index);
+    hidePinContextMenu();
+
+    if (String(state.targetType || '').trim() !== 'conversation' || !branch || !parentConversationId) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/conversations/${encodeURIComponent(parentConversationId)}?message_limit=1`, {
+            method: 'GET',
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || !data || !data.success || !data.conversation) {
+            showToast('父分支不存在或已删除');
+            return;
+        }
+    } catch (error) {
+        console.error('view conversation branch source failed', error);
+        showToast('父分支不存在或已删除');
+        return;
+    }
+
+    await jumpToChatSource({
+        conversationId: parentConversationId,
+        messageIndex: parentMessageIndex,
+    });
 }
 
 function buildSafeNextPathForAuthRedirect() {
@@ -11342,6 +11767,7 @@ function bindPinContextMenu() {
     const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const branchBtn = els.pinContextMenuBranch || document.getElementById('pinContextMenuBranch');
     const projectDeleteBtn = els.pinContextMenuProjectDelete || document.getElementById('pinContextMenuProjectDelete');
     const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (!menu || !actionBtn) return;
@@ -11365,6 +11791,15 @@ function bindPinContextMenu() {
             if (!cid) return;
             const title = String(state.conversationTitle || getConversationTitleFromCache(cid) || '').trim();
             openConversationRenameModal(cid, title);
+        });
+    }
+    if (branchBtn) {
+        branchBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            branchBtn.disabled = true;
+            await viewConversationBranchSourceFromContextMenu();
+            branchBtn.disabled = false;
         });
     }
     if (projectDeleteBtn) {
@@ -12686,17 +13121,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             await learningPromise;
 
-            if (learningModeEnabled && !hasConversationTargetInUrl) {
-                await createNewConversation(false, 'learning');
-                await renderWelcomeScreen();
-                startStoredStreamSessionMonitors({
-                    skipConversationId: String(currentConversationId || '').trim()
-                });
-                startConversationStreamStatusSync();
-                syncGenerationStateForCurrentConversation();
-                return;
-            }
-
             loadConversations();
             applyTokenMiniDisplay(0, 0);
             tokenBudgetState.roundInput = 0;
@@ -12798,20 +13222,13 @@ function initUI() {
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
     if (els.sidebarBrandNexoraTab) {
         els.sidebarBrandNexoraTab.addEventListener('click', () => {
-            closeLearningReaderFromHost('host_nexora_sidebar', 'nexora');
-            learningHeaderMode = 'chat';
-            applyLearningSidebarMode('nexora');
-            void syncLearningHeaderMode();
+            void switchToNexoraSidebar();
         });
     }
     if (els.sidebarBrandLearningTab) {
         els.sidebarBrandLearningTab.addEventListener('click', () => {
             if (!learningModeEnabled) return;
-
-            closeKnowledgeViewBeforeLearningSwitch();
-            learningHeaderMode = 'learning';
-            applyLearningSidebarMode('learning');
-            void syncLearningHeaderMode();
+            void switchToLearningSidebar();
         });
     }
     document.addEventListener('click', (event) => {
@@ -12819,7 +13236,7 @@ function initUI() {
         if (!(target instanceof Element)) return;
         const learningActionBtn = target.closest('[data-learning-action="new-learning"]');
         if (learningActionBtn) {
-            void createNewConversation(false, learningModeEnabled ? 'learning' : 'chat');
+            void startNewLearningConversation();
             return;
         }
         const modeBtn = target.closest('[data-learning-mode]');
@@ -13172,7 +13589,17 @@ function initUI() {
     if (els.newChatBtn) {
         els.newChatBtn.addEventListener('click', () => {
             const inLearningSidebar = String(learningSidebarMode || '').trim().toLowerCase() === 'learning';
+
+            if (inLearningSidebar && getLearningSidebarView() === 'conversation') {
+                returnToLearningConversationList();
+                return;
+            }
+
             const targetMode = (learningModeEnabled && inLearningSidebar) ? 'learning' : 'chat';
+            if (targetMode === 'learning') {
+                void startNewLearningConversation();
+                return;
+            }
             setActiveNexoraCodeProject('');
             createNewConversation(false, targetMode);
         });
@@ -13206,6 +13633,13 @@ function initUI() {
         }
 
         const inLearningSidebar = String(learningSidebarMode || '').trim().toLowerCase() === 'learning';
+
+        if (learningModeEnabled && inLearningSidebar) {
+            returnToLearningConversationList();
+            loadConversations();
+            return;
+        }
+
         const targetMode = (learningModeEnabled && inLearningSidebar) ? 'learning' : 'chat';
         void createNewConversation(false, targetMode, { pushHistory: false });
     });
@@ -14740,9 +15174,10 @@ function applyLongtermPlanFromText(rawText, source = {}) {
 function syncConversationModeFromConversation(conversation) {
     const conv = (conversation && typeof conversation === 'object') ? conversation : {};
     const mode = String(conv.conversation_mode || 'chat').trim().toLowerCase();
+    currentConversationSidebarScope = resolveConversationSidebarScope(conv);
     currentConversationMode = mode === 'longterm'
         ? 'longterm'
-        : ((learningModeEnabled && mode === 'learning') ? 'learning' : 'chat');
+        : (currentConversationSidebarScope === 'learning' ? 'learning' : 'chat');
     currentConversationLongtermState = normalizeLongtermState(conv.longterm);
     currentConversationLongtermAutoContinueKind = '';
     currentConversationLongtermConfirmationInFlight = false;
@@ -14958,7 +15393,9 @@ function resetCurrentConversationLongtermStateForNewConversation(resolvedMode) {
 }
 
 function resetLearningStateForNewConversation(resolvedMode, preserveLearningMainPanel) {
-    learningHeaderMode = String(resolvedMode || '').trim() === 'learning' ? 'learning' : 'chat';
+    const normalizedMode = String(resolvedMode || '').trim().toLowerCase();
+    currentConversationSidebarScope = normalizedMode === 'learning' ? 'learning' : 'nexora';
+    learningHeaderMode = normalizedMode === 'learning' ? 'learning' : 'chat';
     learningWelcomeMounted = false;
 
     if (!preserveLearningMainPanel) {
@@ -15032,7 +15469,7 @@ function resetKnowledgeNavigationForConversationLoad() {
 }
 
 function setLearningHeaderModeForConversationLoad() {
-    learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
+    learningHeaderMode = isLearningReaderHostActive() ? 'learning' : 'chat';
 }
 
 function resetTurnIndicatorForConversationLoad() {
@@ -15073,10 +15510,18 @@ function pushConversationHistory(conversationId) {
 }
 
 async function createNewConversation(silent = false, targetMode = null, options = {}) {
+    const normalizedTargetMode = String(targetMode || '').trim().toLowerCase();
+
+    if (!silent && (normalizedTargetMode === 'learning'
+        || (!normalizedTargetMode && learningSidebarMode === 'learning'))) {
+        enterLearningSidebarConversationView();
+    }
+
     return conversationNavigationController.createNewConversation(silent, targetMode, options);
 }
 
 async function loadConversation(id, options = {}) {
+    prepareLearningReaderForConversationNavigation(id);
     const preparedLoad = conversationNavigationController.prepareConversationLoad(id, options);
 
     if (!preparedLoad || preparedLoad.useCurrentRunningPanel) {
@@ -15100,7 +15545,12 @@ async function loadConversation(id, options = {}) {
                 ? data.conversation.puzzle_states : {};
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             const loadedConversationMode = syncConversationModeFromConversation(data.conversation);
-            const loadedSidebarMode = resolveLearningSidebarModeForConversation(loadedConversationMode);
+            syncLearningReaderForConversationScope(currentConversationSidebarScope);
+            rememberSidebarConversationSelection(currentConversationSidebarScope, targetConversationId);
+            const loadedSidebarMode = currentConversationSidebarScope === 'learning'
+                ? 'learning'
+                : resolveLearningSidebarModeForConversation(loadedConversationMode);
+            setLearningSidebarView(loadedSidebarMode === 'learning' ? 'conversation' : 'list');
             applyLearningSidebarMode(loadedSidebarMode);
             learningHeaderMode = loadedSidebarMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();
@@ -15152,6 +15602,7 @@ async function loadConversation(id, options = {}) {
             currentConversationLongtermConfirmationInFlight = false;
             renderLongtermPlanPanel();
             console.error("Failed to load conversation:", data.message);
+            syncLearningReaderForConversationScope('nexora');
             applyLearningSidebarMode('nexora');
             void syncLearningHeaderMode();
             await refreshTokenMiniForConversation(null);
@@ -15185,6 +15636,7 @@ async function loadConversation(id, options = {}) {
         currentConversationLongtermConfirmationInFlight = false;
         renderLongtermPlanPanel();
         console.error("Error loading chat", e);
+        syncLearningReaderForConversationScope('nexora');
         applyLearningSidebarMode('nexora');
         void syncLearningHeaderMode();
         await refreshTokenMiniForConversation(null);
@@ -16050,7 +16502,18 @@ async function ensureConversationExistsForStreaming(seedText = '', conversationM
         : null;
     let conversationMetadata = {};
     if (learningConversation) {
-        conversationMetadata = { learning: true };
+        const learningCourseContext = getActiveLearningCourseContext();
+        conversationMetadata = {
+            learning: true,
+        };
+
+        if (learningCourseContext.lectureId) {
+            conversationMetadata.lecture_id = learningCourseContext.lectureId;
+        }
+
+        if (learningCourseContext.courseTitle) {
+            conversationMetadata.lecture_title = learningCourseContext.courseTitle;
+        }
     } else if (boundProject) {
         conversationMetadata = {
             nexoracode_project: {
@@ -17140,7 +17603,7 @@ async function sendMessage(options = {}) {
     let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue)
         ? 'longterm'
         : ((learningModeEnabled && isLearningWorkspaceActive()) ? 'learning' : 'chat');
-    if (learningModeEnabled && learningReaderOpened && nextConversationMode !== 'longterm') {
+    if (learningModeEnabled && isLearningReaderHostActive() && nextConversationMode !== 'longterm') {
         nextConversationMode = 'learning';
         currentConversationMode = 'learning';
         learningHeaderMode = 'learning';
@@ -17151,7 +17614,7 @@ async function sendMessage(options = {}) {
         learningHeaderMode = 'learning';
     } else if (nextConversationMode === 'chat') {
         currentConversationMode = 'chat';
-        if (!learningReaderOpened) learningHeaderMode = 'chat';
+        if (!isLearningReaderHostActive()) learningHeaderMode = 'chat';
     }
     let longtermTaskText = '';
     if (isAutoContinue && !text) {
@@ -17371,6 +17834,9 @@ async function sendMessage(options = {}) {
         : [];
     const longtermContextText = String(currentConversationLongtermState.context || '').trim();
     const learningReaderContextBlocks = buildLearningReaderContextBlocks(nextConversationMode);
+    const learningCourseContext = nextConversationMode === 'learning'
+        ? getActiveLearningCourseContext()
+        : { lectureId: '', courseTitle: '' };
     const payload = {
         message: finalMessage,
         model_name: model,
@@ -17386,7 +17852,8 @@ async function sendMessage(options = {}) {
             done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
         } : (nextConversationMode === 'learning' ? {
             learning: true,
-            lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
+            lecture_id: learningCourseContext.lectureId,
+            lecture_title: learningCourseContext.courseTitle,
             interview: !!window.__nexoraInterviewPending,
             system_prompt: '',
             context_blocks: learningReaderContextBlocks,

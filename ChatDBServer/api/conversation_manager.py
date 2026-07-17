@@ -5,6 +5,7 @@ import os
 import json
 import shutil
 import threading
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -12,6 +13,8 @@ from conversation_repair import recover_conversation_bytes
 from history_sanitizer import sanitize_assistant_visible_content
 from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
 from datastorage import get_path_lock, safe_write_json
+
+CONVERSATION_INDEX_VERSION = 3
 
 class ConversationManager:
     """对话记录管理类"""
@@ -258,6 +261,9 @@ class ConversationManager:
         if not isinstance(metadata, dict):
             metadata = {}
 
+        learning_course_id = self._extract_learning_course_id(metadata)
+        learning_course_title = self._extract_learning_course_title(metadata)
+
         nexoracode_project = metadata.get("nexoracode_project")
         nexoracode_project_payload = {}
         if isinstance(nexoracode_project, dict):
@@ -282,10 +288,74 @@ class ConversationManager:
             "preview": preview,
         }
 
+        if learning_course_id:
+            item["learning_course_id"] = learning_course_id
+
+        if learning_course_title:
+            item["learning_course_title"] = learning_course_title
+
+        branch = conversation_data.get("branch", {})
+
+        if isinstance(branch, dict):
+            parent_conversation_id = str(branch.get("parent_conversation_id") or "").strip()
+            root_conversation_id = str(branch.get("root_conversation_id") or "").strip()
+
+            if parent_conversation_id and root_conversation_id:
+                item["branch"] = {
+                    "root_conversation_id": root_conversation_id,
+                    "parent_conversation_id": parent_conversation_id,
+                    "parent_message_index": int(branch.get("parent_message_index") or 0),
+                    "created_at": str(branch.get("created_at") or "").strip(),
+                }
+
         if nexoracode_project_payload:
             item["nexoracode_project"] = nexoracode_project_payload
 
         return item
+
+    @staticmethod
+    def _extract_learning_course_id(metadata):
+        """从学习会话元数据中提取稳定的课程 ID，供侧栏分组使用。"""
+        source = metadata if isinstance(metadata, dict) else {}
+        nested_learning = source.get("learning") if isinstance(source.get("learning"), dict) else {}
+        candidates = (
+            source.get("learning_course_id"),
+            source.get("course_id"),
+            source.get("lecture_id"),
+            nested_learning.get("learning_course_id"),
+            nested_learning.get("course_id"),
+            nested_learning.get("lecture_id"),
+        )
+
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+
+            if value:
+                return value
+
+        return ""
+
+    @staticmethod
+    def _extract_learning_course_title(metadata):
+        """从学习会话元数据中提取课程名称，课程 ID 仅用于稳定分组。"""
+        source = metadata if isinstance(metadata, dict) else {}
+        nested_learning = source.get("learning") if isinstance(source.get("learning"), dict) else {}
+        candidates = (
+            source.get("learning_course_title"),
+            source.get("course_title"),
+            source.get("lecture_title"),
+            nested_learning.get("learning_course_title"),
+            nested_learning.get("course_title"),
+            nested_learning.get("lecture_title"),
+        )
+
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+
+            if value:
+                return value
+
+        return ""
 
     def _write_conversation_index(self, index_data):
         safe_write_json(self.index_path, index_data, indent=2)
@@ -312,7 +382,7 @@ class ConversationManager:
                 conversations[conversation_id] = self._build_conversation_index_item(conversation_id, data)
 
         index_data = {
-            "version": 1,
+            "version": CONVERSATION_INDEX_VERSION,
             "updated_at": datetime.now().isoformat(),
             "conversations": conversations,
         }
@@ -321,8 +391,10 @@ class ConversationManager:
 
     def _ensure_conversation_index(self):
         index_data = self._load_conversation_index()
-        if isinstance(index_data, dict):
+
+        if isinstance(index_data, dict) and int(index_data.get("version") or 0) >= CONVERSATION_INDEX_VERSION:
             return index_data
+
         return self._rebuild_conversation_index()
 
     def _sync_conversation_index_from_file(self, file_path, payload):
@@ -335,7 +407,7 @@ class ConversationManager:
         index_data = self._load_conversation_index()
         if not isinstance(index_data, dict):
             index_data = {
-                "version": 1,
+                "version": CONVERSATION_INDEX_VERSION,
                 "updated_at": datetime.now().isoformat(),
                 "conversations": {},
             }
@@ -345,10 +417,81 @@ class ConversationManager:
             conversations = {}
 
         conversations[conversation_id] = self._build_conversation_index_item(conversation_id, payload)
-        index_data["version"] = 1
+        index_data["version"] = CONVERSATION_INDEX_VERSION
         index_data["updated_at"] = datetime.now().isoformat()
         index_data["conversations"] = conversations
         self._write_conversation_index(index_data)
+
+    def _collect_reserved_numeric_conversation_ids(self):
+        """收集活跃会话和回收站会话占用的数字 ID，防止删除后被新会话复用。"""
+        reserved_ids = set()
+
+        if os.path.exists(self.base_path):
+            for filename in os.listdir(self.base_path):
+
+                if not filename.endswith('.json') or filename == os.path.basename(self.index_path):
+                    continue
+
+                try:
+                    reserved_ids.add(int(filename[:-5]))
+                except ValueError:
+                    continue
+
+        trash_path = os.path.join(os.path.dirname(self.base_path), "trash")
+
+        if not os.path.isdir(trash_path):
+            return reserved_ids
+
+        for filename in os.listdir(trash_path):
+
+            if not filename.endswith('.json'):
+                continue
+
+            entry = self._load_json_data(os.path.join(trash_path, filename), default=None)
+
+            if not isinstance(entry, dict) or str(entry.get("type") or "").strip() != "conversation":
+                continue
+
+            payload = entry.get("payload", {})
+            payload = payload if isinstance(payload, dict) else {}
+            conversation_id = str(entry.get("conversation_id") or payload.get("conversation_id") or "").strip()
+
+            try:
+                reserved_ids.add(int(conversation_id))
+            except ValueError:
+                continue
+
+        return reserved_ids
+
+    def restore_conversation(self, conversation_data, conversation_id, title=None):
+        """使用原 ID 原样恢复回收站会话，使仍保留关系的子分支自动重新归属。"""
+        if not isinstance(conversation_data, dict):
+            raise ValueError("恢复的对话内容格式无效")
+
+        restored_conversation_id = str(conversation_id or "").strip()
+
+        if not restored_conversation_id:
+            raise ValueError("恢复的对话缺少原 conversation_id")
+
+        conversation_path = os.path.join(self.base_path, f"{restored_conversation_id}.json")
+
+        with get_path_lock(self.base_path):
+
+            if os.path.exists(conversation_path):
+                raise ValueError(f"原 conversation_id 已被占用: {restored_conversation_id}")
+
+            restored_data = deepcopy(conversation_data)
+            restored_data["conversation_id"] = restored_conversation_id
+            restored_data["title"] = str(title or restored_data.get("title") or "恢复的对话").strip() or "恢复的对话"
+            restored_data["created_at"] = str(restored_data.get("created_at") or datetime.now().isoformat())
+            restored_data["updated_at"] = datetime.now().isoformat()
+
+            if not isinstance(restored_data.get("messages"), list):
+                restored_data["messages"] = []
+
+            self._save_json_atomic(conversation_path, restored_data)
+
+        return restored_conversation_id
     
     def create_conversation(
         self,
@@ -370,15 +513,8 @@ class ConversationManager:
         """
         with get_path_lock(self.base_path):
             if conversation_id is None:
-                existing_ids = []
-                if os.path.exists(self.base_path):
-                    for filename in os.listdir(self.base_path):
-                        if filename.endswith('.json'):
-                            try:
-                                existing_ids.append(int(filename[:-5]))
-                            except ValueError:
-                                pass
-                conversation_id = str(max(existing_ids) + 1) if existing_ids else "1"
+                reserved_ids = self._collect_reserved_numeric_conversation_ids()
+                conversation_id = str(max(reserved_ids) + 1) if reserved_ids else "1"
 
             conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
             normalized_mode = str(conversation_mode or "chat").strip() or "chat"
@@ -406,6 +542,144 @@ class ConversationManager:
             }
             self._save_json_atomic(conversation_path, conversation_data)
             return conversation_id
+
+    def _build_branch_title(self, source_conversation_id, source_title):
+        """根据直接父会话生成稳定、可区分的分支标题。"""
+        parent_id = str(source_conversation_id or "").strip()
+        base_title = str(source_title or "未命名对话").strip() or "未命名对话"
+        index_data = self._ensure_conversation_index()
+        conversations = index_data.get("conversations", {}) if isinstance(index_data, dict) else {}
+        branch_count = 0
+
+        if isinstance(conversations, dict):
+
+            for item in conversations.values():
+                branch = item.get("branch", {}) if isinstance(item, dict) else {}
+
+                if not isinstance(branch, dict):
+                    continue
+
+                if str(branch.get("parent_conversation_id") or "").strip() == parent_id:
+                    branch_count += 1
+
+        suffix = f" · 分支 {branch_count + 1}"
+        title_limit = 120
+        safe_base = base_title[:max(1, title_limit - len(suffix))].rstrip()
+        return f"{safe_base}{suffix}"
+
+    def _collect_puzzle_ids(self, value, result):
+        """递归收集已复制消息中真正出现的 puzzle_id。"""
+        if isinstance(value, dict):
+            puzzle_id = str(value.get("puzzle_id") or "").strip()
+
+            if puzzle_id:
+                result.add(puzzle_id)
+
+            for nested in value.values():
+                self._collect_puzzle_ids(nested, result)
+
+        elif isinstance(value, list):
+
+            for nested in value:
+                self._collect_puzzle_ids(nested, result)
+
+    def _copy_branch_puzzle_states(self, source_conversation, messages):
+        """只复制分支历史中仍可见的 Puzzle 状态，避免带入未来节点。"""
+        puzzle_ids = set()
+        self._collect_puzzle_ids(messages, puzzle_ids)
+
+        if not puzzle_ids:
+            return {}
+
+        source_states = source_conversation.get("puzzle_states", {})
+
+        if not isinstance(source_states, dict):
+            return {}
+
+        return {
+            puzzle_id: deepcopy(source_states[puzzle_id])
+            for puzzle_id in puzzle_ids
+            if puzzle_id in source_states
+        }
+
+    def fork_conversation(self, source_conversation_id, message_index, title=""):
+        """从一个已落库的 assistant 回答节点创建独立会话快照。"""
+        source_id = str(source_conversation_id or "").strip()
+
+        if not source_id:
+            raise ValueError("source_conversation_id 不能为空")
+
+        try:
+            target_index = int(message_index)
+        except Exception as error:
+            raise ValueError("message_index 必须是整数") from error
+
+        source = self.get_conversation(source_id)
+        messages = source.get("messages", [])
+
+        if not isinstance(messages, list):
+            raise ValueError(f"对话内容格式无效: {source_id}")
+
+        if target_index < 0 or target_index >= len(messages):
+            raise ValueError("分支节点已过期，请刷新会话后重试")
+
+        target_message = messages[target_index] if isinstance(messages[target_index], dict) else {}
+
+        if str(target_message.get("role") or "").strip() != "assistant":
+            raise ValueError("当前仅支持从 assistant 回答创建分支")
+
+        copied_messages = deepcopy(messages[:target_index + 1])
+        source_branch = source.get("branch", {}) if isinstance(source.get("branch"), dict) else {}
+        root_conversation_id = str(source_branch.get("root_conversation_id") or source_id).strip()
+        created_at = datetime.now().isoformat()
+        branch_title = str(title or "").strip()
+
+        if not branch_title:
+            branch_title = self._build_branch_title(source_id, source.get("title"))
+
+        branch_title = branch_title[:120]
+        metadata = deepcopy(source.get("metadata", {})) if isinstance(source.get("metadata"), dict) else {}
+        tags = deepcopy(source.get("tags", [])) if isinstance(source.get("tags"), list) else []
+        conversation_mode = str(source.get("conversation_mode") or "chat").strip() or "chat"
+        new_conversation_id = self.create_conversation(
+            title=branch_title,
+            conversation_mode=conversation_mode,
+            tags=tags,
+            metadata=metadata,
+        )
+
+        try:
+            with self._conversation_update_session(new_conversation_id) as (conversation_path, conversation_data):
+                conversation_data["messages"] = copied_messages
+                conversation_data["branch"] = {
+                    "root_conversation_id": root_conversation_id,
+                    "parent_conversation_id": source_id,
+                    "parent_message_index": target_index,
+                    "created_at": created_at,
+                }
+                conversation_data["schema_version"] = int(source.get("schema_version") or 2)
+                puzzle_states = self._copy_branch_puzzle_states(source, copied_messages)
+
+                if puzzle_states:
+                    conversation_data["puzzle_states"] = puzzle_states
+
+                conversation_data["updated_at"] = created_at
+                self._invalidate_resume_cache_fields(conversation_data)
+                self._save_json_atomic(conversation_path, conversation_data)
+        except Exception:
+            self.delete_conversation(new_conversation_id)
+            raise
+
+        return {
+            "conversation_id": str(new_conversation_id),
+            "title": branch_title,
+            "branch": {
+                "root_conversation_id": root_conversation_id,
+                "parent_conversation_id": source_id,
+                "parent_message_index": target_index,
+                "created_at": created_at,
+            },
+        }
     
     def update_title(self, conversation_id, title):
         """

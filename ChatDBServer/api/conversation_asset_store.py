@@ -24,6 +24,7 @@ IMAGE_MIME_TO_EXT = {
 }
 
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+ASSET_URL_PATTERN = re.compile(r"/api/conversations/([^/\s]+)/assets/([A-Za-z0-9_-]+)")
 
 
 def conversation_asset_root(username: str) -> str:
@@ -180,6 +181,25 @@ def persist_conversation_image_asset(username: str, conversation_id: str, file_i
 def collect_referenced_asset_ids(conversation_data: Dict[str, Any]) -> set:
     out = set()
 
+    def collect_from_value(value: Any) -> None:
+        if isinstance(value, str):
+
+            for match in ASSET_URL_PATTERN.finditer(value):
+                asset_id = str(match.group(2) or "").strip()
+
+                if asset_id:
+                    out.add(asset_id)
+
+        elif isinstance(value, dict):
+
+            for nested in value.values():
+                collect_from_value(nested)
+
+        elif isinstance(value, list):
+
+            for nested in value:
+                collect_from_value(nested)
+
     if not isinstance(conversation_data, dict):
         return out
 
@@ -195,25 +215,108 @@ def collect_referenced_asset_ids(conversation_data: Dict[str, Any]) -> set:
 
         meta = msg.get("metadata", {})
 
-        if not isinstance(meta, dict):
-            continue
+        attachments = meta.get("attachments", []) if isinstance(meta, dict) else []
 
-        attachments = meta.get("attachments", [])
+        if isinstance(attachments, list):
 
-        if not isinstance(attachments, list):
-            continue
+            for att in attachments:
 
-        for att in attachments:
+                if not isinstance(att, dict):
+                    continue
 
-            if not isinstance(att, dict):
-                continue
+                aid = str(att.get("asset_id") or "").strip()
 
-            aid = str(att.get("asset_id") or "").strip()
+                if aid:
+                    out.add(aid)
 
-            if aid:
-                out.add(aid)
+        collect_from_value(msg)
 
     return out
+
+
+def rewrite_conversation_asset_urls(value: Any, source_conversation_id: str, target_conversation_id: str) -> Any:
+    """将会话快照中的附件 URL 改写到新会话资源目录。"""
+    source_id = str(source_conversation_id or "").strip()
+    target_id = str(target_conversation_id or "").strip()
+
+    if not source_id or not target_id:
+        raise ValueError("source_conversation_id and target_conversation_id are required")
+
+    source_prefix = f"/api/conversations/{source_id}/assets/"
+    target_prefix = f"/api/conversations/{target_id}/assets/"
+
+    if isinstance(value, str):
+        return value.replace(source_prefix, target_prefix)
+
+    if isinstance(value, list):
+        return [
+            rewrite_conversation_asset_urls(item, source_id, target_id)
+            for item in value
+        ]
+
+    if isinstance(value, dict):
+        return {
+            key: rewrite_conversation_asset_urls(item, source_id, target_id)
+            for key, item in value.items()
+        }
+
+    return value
+
+
+def clone_referenced_assets(
+    username: str,
+    source_conversation_id: str,
+    target_conversation_id: str,
+    conversation_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """复制分支历史真正引用的图片，并返回已改写 URL 的会话快照。"""
+    source_id = str(source_conversation_id or "").strip()
+    target_id = str(target_conversation_id or "").strip()
+
+    if not source_id or not target_id:
+        raise ValueError("source_conversation_id and target_conversation_id are required")
+
+    snapshot = conversation_data if isinstance(conversation_data, dict) else {}
+    referenced_ids = collect_referenced_asset_ids(snapshot)
+    rewritten_snapshot = rewrite_conversation_asset_urls(snapshot, source_id, target_id)
+
+    if not referenced_ids:
+        return rewritten_snapshot
+
+    source_index = load_conversation_asset_index(username, source_id)
+    source_assets = source_index.get("assets", {}) if isinstance(source_index.get("assets"), dict) else {}
+    target_dir = conversation_asset_dir(username, target_id)
+    os.makedirs(target_dir, exist_ok=True)
+    target_assets = {}
+
+    try:
+
+        for asset_id in sorted(referenced_ids):
+            metadata = source_assets.get(asset_id)
+
+            if not isinstance(metadata, dict):
+                raise FileNotFoundError(f"分支引用的附件索引不存在: {asset_id}")
+
+            file_name = str(metadata.get("file_name") or "").strip()
+
+            if not file_name:
+                raise FileNotFoundError(f"分支引用的附件文件名为空: {asset_id}")
+
+            source_path = safe_join_path(conversation_asset_dir(username, source_id), file_name)
+            target_path = safe_join_path(target_dir, file_name)
+
+            if not os.path.isfile(source_path):
+                raise FileNotFoundError(f"分支引用的附件文件不存在: {asset_id}")
+
+            shutil.copy2(source_path, target_path)
+            target_assets[asset_id] = dict(metadata)
+
+        save_conversation_asset_index(username, target_id, {"assets": target_assets})
+    except Exception:
+        remove_conversation_assets_dir(username, target_id)
+        raise
+
+    return rewritten_snapshot
 
 
 def cleanup_conversation_assets(username: str, conversation_id: str, keep_asset_ids: Optional[set] = None) -> None:

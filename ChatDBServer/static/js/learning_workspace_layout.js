@@ -2,6 +2,7 @@
     const BODY_ACTIVE_CLASS = 'learning-workspace-active';
     const HOST_ACTIVE_CLASS = 'learning-workspace-host-active';
     const SIDEBAR_ACTIVE_CLASS = 'learning-workspace-sidebar-active';
+    const SIDEBAR_CONVERSATION_CLASS = 'learning-sidebar-conversation-active';
     const PANEL_ACTIVE_CLASS = 'learning-workspace-panel-active';
     const INPUT_HIDDEN_CLASS = 'learning-mode-hidden';
     const READER_ACTIVE_CLASS = 'learning-reader-active';
@@ -33,9 +34,13 @@
         const elements = resolveElements(src.elements);
         active = isLearningWorkspaceState(src);
         const readerActive = !!src.readerOpened;
+        const sidebarView = String(src.sidebarView || '').trim().toLowerCase() === 'conversation'
+            ? 'conversation'
+            : 'list';
 
         document.body.classList.toggle(BODY_ACTIVE_CLASS, active);
         document.body.classList.toggle(READER_ACTIVE_CLASS, readerActive);
+        document.body.classList.toggle(SIDEBAR_CONVERSATION_CLASS, active && sidebarView === 'conversation');
 
         if (elements.mainContent) {
             elements.mainContent.classList.toggle(HOST_ACTIVE_CLASS, active);

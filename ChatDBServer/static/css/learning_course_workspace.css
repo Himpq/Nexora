@@ -51,6 +51,10 @@ body.learning-course-workspace-active .sidebar {
     border-right-color: var(--learning-sidebar-border, #e1e5ea);
 }
 
+body.learning-workspace-active.learning-course-context-active .sidebar {
+    width: var(--sidebar-width-learning);
+}
+
 body.learning-course-workspace-active #newChatBtn {
     display: none !important;
 }
@@ -423,7 +427,8 @@ body.learning-course-workspace-active #learningMainPanel.learning-main-panel {
 }
 
 @media (max-width: 768px) {
-    body.learning-course-workspace-active .sidebar {
+    body.learning-course-workspace-active .sidebar,
+    body.learning-workspace-active.learning-course-context-active .sidebar {
         width: min(88vw, 420px);
     }
 

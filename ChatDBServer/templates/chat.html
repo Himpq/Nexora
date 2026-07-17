@@ -26,10 +26,11 @@
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260714_tool_flow_01">
     <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260714_memory_model_compact_02">
     <link rel="stylesheet" href="/static/css/chat_token_details.css?v=20260715_token_detail_01">
+    <link rel="stylesheet" href="/static/css/chat_conversation_branches.css?v=20260716_conversation_branches_01">
     <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
-    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260616_01">
+    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260717_course_sidebar_state_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
     <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_live_transfer_stream_01">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
@@ -636,6 +637,10 @@
                 <i class="fa-solid fa-pen"></i>
                 <span>修改标题</span>
             </button>
+            <button id="pinContextMenuBranch" type="button">
+                <i class="fa-solid fa-code-branch"></i>
+                <span>查看分支处</span>
+            </button>
             <button id="pinContextMenuProjectDelete" class="pin-context-danger" type="button">
                 <i class="fa-solid fa-folder-minus"></i>
                 <span>删除项目</span>
@@ -732,7 +737,8 @@
     <script>
         window.NEXORA_MAIL_ENABLED = {{ nexora_mail_enabled | tojson }};
     </script>
-    <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
+    <script src="/static/js/learning_navigation_state.js?v=20260717_learning_navigation_state_01"></script>
+    <script src="/static/js/learning_workspace_layout.js?v=20260717_learning_sidebar_hierarchy_05"></script>
     <script src="/static/js/chat_shared.js?v=20260706_feature_split_09"></script>
     <script src="/static/js/chat_admin_users.js?v=20260707_admin_users_split_01"></script>
     {% if nexora_mail_enabled %}
@@ -746,20 +752,21 @@
     <script src="/static/js/chat_memory_settings.js?v=20260714_memory_model_compact_01"></script>
     <script src="/static/js/chat_tools.js?v=20260715_tool_scroll_01"></script>
     <script src="/static/js/chat_tool_canvas.js?v=20260707_tool_canvas_split_02"></script>
-    <script src="/static/js/chat_messages.js?v=20260715_stream_fence_01"></script>
+    <script src="/static/js/chat_conversation_branches.js?v=20260716_conversation_branches_01"></script>
+    <script src="/static/js/chat_messages.js?v=20260716_conversation_branches_01"></script>
     <script src="/static/js/chat_latex.js?v=20260708_console_gate_02"></script>
     <script src="/static/js/chat_streaming.js?v=20260715_stream_fence_01"></script>
     <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
     <script src="/static/js/chat_stream_reconnect.js?v=20260714_memory_badge_01"></script>
-    <script src="/static/js/chat_conversations.js?v=20260715_project_ui_02"></script>
+    <script src="/static/js/chat_conversations.js?v=20260717_learning_conversations_03"></script>
     <script src="/static/js/chat_admin_system.js?v=20260707_admin_system_split_01"></script>
     <script src="/static/js/chat_admin.js?v=20260707_admin_tabs_split_02"></script>
     <script src="/static/js/chat_markdown.js?v=20260715_stream_fence_01"></script>
     <script src="/static/js/chat_files.js?v=20260707_file_upload_error_feedback_01"></script>
-    <script src="/static/js/chat.js?v=20260715_project_ui_02"></script>
+    <script src="/static/js/chat.js?v=20260717_learning_sidebar_restore_01"></script>
     <script src="/static/js/chat_token_details.js?v=20260715_token_detail_01"></script>
     <script src="/static/js/global_search.js?v=20260711_global_search_04"></script>
-    <script src="/static/js/workspace.js?v=20260708_workspace_knowledge_return_01"></script>
+    <script src="/static/js/workspace.js?v=20260716_conversation_branches_01"></script>
     <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
     <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>
     <script>
@@ -767,7 +774,7 @@
     </script>
     <script src="/static/js/nexora_map_renderer.js?v=20260626_tianditu_tile_fix_01"></script>
     <script src="/static/js/admin_map_settings.js?v=20260628_admin_controls_04"></script>
-    <script src="/static/js/learning_course_workspace.js?v=20260616_03"></script>
+    <script src="/static/js/learning_course_workspace.js?v=20260717_course_sidebar_state_02"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

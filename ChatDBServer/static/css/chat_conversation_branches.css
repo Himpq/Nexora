@@ -1,0 +1,41 @@
+.conversation-item.conversation-branch-item {
+    position: relative;
+    padding-left: calc(12px + var(--conversation-branch-offset, 0px));
+}
+
+.conversation-item.conversation-branch-item::before {
+    content: '';
+    position: absolute;
+    left: calc(6px + var(--conversation-branch-offset, 0px));
+    top: 0;
+    bottom: 50%;
+    width: 8px;
+    border-left: 1px solid rgba(148, 163, 184, 0.38);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.38);
+    border-bottom-left-radius: 5px;
+    pointer-events: none;
+}
+
+.conversation-item.conversation-branch-orphan::before {
+    border-left-style: dashed;
+    border-bottom-style: dashed;
+}
+
+.conversation-branch-icon {
+    margin-right: 6px;
+    color: #94a3b8;
+    font-size: 11px;
+}
+
+.conversation-item:hover .conversation-branch-icon,
+.conversation-item.active .conversation-branch-icon {
+    color: currentColor;
+}
+
+.conversation-item.nexoracode-project-conversation-item.conversation-branch-item {
+    padding-left: calc(8px + var(--conversation-branch-offset, 0px));
+}
+
+.conversation-item.nexoracode-project-conversation-item.conversation-branch-item::before {
+    left: calc(3px + var(--conversation-branch-offset, 0px));
+}

@@ -5865,5 +5865,6 @@ Object.assign(window, {
     restoreWorkspaceDetailInputContainer,
     normalizeWorkspaceConversationHeaderContext,
     renderWorkspaceConversationHierarchy,
+    getActiveWorkspaceConversationContext,
     selectWorkspaceProject,
 });

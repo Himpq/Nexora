@@ -59,6 +59,52 @@
         return String(source.title || source.preview || '').trim();
     }
 
+    function isLearningConversation(item) {
+        const source = item && typeof item === 'object' ? item : {};
+        const tags = Array.isArray(source.tags)
+            ? source.tags.map((tag) => String(tag || '').trim().toLowerCase())
+            : [];
+        const metadata = source.metadata && typeof source.metadata === 'object' ? source.metadata : {};
+        const learningMetadata = metadata.learning;
+        const metadataMarksLearning = learningMetadata === true
+            || (learningMetadata && typeof learningMetadata === 'object')
+            || !!String(metadata.lecture_id || metadata.learning_course_id || '').trim();
+        const indexedCourseMarksLearning = !!String(source.learning_course_id || source.lecture_id || '').trim();
+
+        return tags.includes('learning')
+            || String(source.conversation_mode || '').trim().toLowerCase() === 'learning'
+            || metadataMarksLearning
+            || indexedCourseMarksLearning;
+    }
+
+    function filterConversationsForNexora(conversations) {
+        return (Array.isArray(conversations) ? conversations : []).filter((conversation) => !isLearningConversation(conversation));
+    }
+
+    function readConversationBranch(item) {
+        const source = item && typeof item === 'object' ? item : {};
+        const branch = source.branch && typeof source.branch === 'object' ? source.branch : null;
+
+        if (!branch) {
+            return null;
+        }
+
+        const rootConversationId = String(branch.root_conversation_id || '').trim();
+        const parentConversationId = String(branch.parent_conversation_id || '').trim();
+        const parentMessageIndex = Number(branch.parent_message_index);
+
+        if (!rootConversationId || !parentConversationId || !Number.isInteger(parentMessageIndex)) {
+            return null;
+        }
+
+        return {
+            root_conversation_id: rootConversationId,
+            parent_conversation_id: parentConversationId,
+            parent_message_index: parentMessageIndex,
+            created_at: String(branch.created_at || '').trim(),
+        };
+    }
+
     function readConversationUpdatedTimestamp(item) {
         const source = item && typeof item === 'object' ? item : {};
         const timestamp = Date.parse(String(source.updated_at || ''));
@@ -122,6 +168,75 @@
         });
 
         return orderedConversations;
+    }
+
+    function arrangeConversationBranchRows(conversations) {
+        const ordered = Array.isArray(conversations) ? conversations : [];
+        const byId = new Map();
+        const childrenByParent = new Map();
+        const roots = [];
+
+        ordered.forEach((conversation) => {
+            const conversationId = readConversationId(conversation);
+
+            if (conversationId) {
+                byId.set(conversationId, conversation);
+            }
+        });
+
+        ordered.forEach((conversation) => {
+            const branch = readConversationBranch(conversation);
+
+            if (!branch || !byId.has(branch.parent_conversation_id)) {
+                roots.push({
+                    conversation,
+                    orphan: !!branch,
+                });
+                return;
+            }
+
+            const siblings = childrenByParent.get(branch.parent_conversation_id) || [];
+            siblings.push(conversation);
+            childrenByParent.set(branch.parent_conversation_id, siblings);
+        });
+
+        const rows = [];
+        const visited = new Set();
+
+        function appendConversation(conversation, depth, orphan) {
+            const conversationId = readConversationId(conversation);
+
+            if (!conversationId || visited.has(conversationId)) {
+                return;
+            }
+
+            visited.add(conversationId);
+            rows.push({
+                conversation,
+                depth,
+                orphan: !!orphan,
+            });
+
+            const children = childrenByParent.get(conversationId) || [];
+
+            children.forEach((child) => {
+                appendConversation(child, Math.min(depth + 1, 6), false);
+            });
+        }
+
+        roots.forEach((row) => {
+            appendConversation(row.conversation, 0, row.orphan);
+        });
+
+        ordered.forEach((conversation) => {
+            const conversationId = readConversationId(conversation);
+
+            if (conversationId && !visited.has(conversationId)) {
+                appendConversation(conversation, 0, true);
+            }
+        });
+
+        return rows;
     }
 
     function normalizeNexoraCodeProject(project) {
@@ -206,7 +321,6 @@
     function createConversationNavigationController(deps = {}) {
         const getKnowledgeViewerElement = requireConversationDependency(deps, 'getKnowledgeViewerElement');
         const resetWorkspaceReadonlyConversationStateForConversationLoad = requireConversationDependency(deps, 'resetWorkspaceReadonlyConversationStateForConversationLoad');
-        const closeLearningReaderFromHost = requireConversationDependency(deps, 'closeLearningReaderFromHost');
         const closeKnowledgeView = requireConversationDependency(deps, 'closeKnowledgeView');
         const exitLearningFeedComposeMode = requireConversationDependency(deps, 'exitLearningFeedComposeMode');
         const setCurrentConversationHasImageHistory = requireConversationDependency(deps, 'setCurrentConversationHasImageHistory');
@@ -282,7 +396,6 @@
             }
 
             resetWorkspaceReadonlyConversationStateForConversationLoad();
-            closeLearningReaderFromHost('host_conversation_navigation', 'nexora');
             closeVisibleKnowledgeView();
             syncWorkspaceHeaderForConversationLoad(opts);
 
@@ -508,6 +621,9 @@
         const markConversationStreamRead = requireConversationDependency(deps, 'markConversationStreamRead');
         const loadConversation = requireConversationDependency(deps, 'loadConversation');
         const deleteConversation = requireConversationDependency(deps, 'deleteConversation');
+        const notifyLearningSidebar = typeof deps.notifyLearningSidebar === 'function'
+            ? deps.notifyLearningSidebar
+            : () => {};
         const isNexoraCodeProjectSidebarEnabled = typeof deps.isNexoraCodeProjectSidebarEnabled === 'function'
             ? deps.isNexoraCodeProjectSidebarEnabled
             : () => false;
@@ -579,6 +695,7 @@
 
                 setConversationListCache(nextList);
                 renderConversationList(nextList);
+                notifyLearningSidebar();
             } catch (error) {
                 console.error('Failed to load conversations', error);
             }
@@ -656,6 +773,7 @@
 
             setConversationListCache(nextList);
             renderConversationList(nextList);
+            notifyLearningSidebar();
 
             return true;
         }
@@ -917,6 +1035,7 @@
                         tags: Array.isArray(src.tags) ? src.tags.map((tag) => String(tag || '').trim().toLowerCase()) : [],
                         preview: String(src.preview || ''),
                         nexoracode_project: nexoraCodeProject,
+                        branch: readConversationBranch(src),
                         stream_status: String(streamState && streamState.status || ''),
                         stream_unread: !!(streamState && streamState.unread),
                     };
@@ -945,15 +1064,18 @@
             renderSignature = signature;
             listEl.innerHTML = '';
 
-            const orderedConversations = sortConversationListForDisplay(conversations);
+            const orderedConversations = sortConversationListForDisplay(filterConversationsForNexora(conversations));
             const renderContext = buildNexoraCodeProjectRenderContext(orderedConversations);
 
             if (renderContext.enabled) {
                 renderNexoraCodeProjectPanel(listEl, renderContext);
             }
 
-            renderContext.regularConversations.forEach((conversation) => {
-                listEl.appendChild(buildConversationListItem(conversation, {}));
+            arrangeConversationBranchRows(renderContext.regularConversations).forEach((row) => {
+                listEl.appendChild(buildConversationListItem(row.conversation, {
+                    branchDepth: row.depth,
+                    branchOrphan: row.orphan,
+                }));
             });
         }
 
@@ -1161,10 +1283,12 @@
                 childListInner.appendChild(empty);
             }
 
-            projectConversations.forEach((conversation) => {
-                childListInner.appendChild(buildConversationListItem(conversation, {
+            arrangeConversationBranchRows(projectConversations).forEach((branchRow) => {
+                childListInner.appendChild(buildConversationListItem(branchRow.conversation, {
                     className: 'nexoracode-project-conversation-item',
-                    allowWorkspaceMark: false
+                    allowWorkspaceMark: false,
+                    branchDepth: branchRow.depth,
+                    branchOrphan: branchRow.orphan,
                 }));
             });
 
@@ -1268,23 +1392,29 @@
             const isPinned = !!source.pin;
             const isLongterm = String(source.conversation_mode || '').trim() === 'longterm' || !!source.longterm_active;
             const isLongtermActive = !!source.longterm_active;
-            const tags = Array.isArray(source.tags) ? source.tags.map((item) => String(item || '').trim().toLowerCase()) : [];
-            const isLearningConversation = tags.includes('learning') || String(source.conversation_mode || '').trim() === 'learning';
             const conversationTitle = String(source.title || source.preview || `Conversation ${cid}`);
+            const branch = readConversationBranch(source);
+            const branchDepth = Math.max(0, Math.min(6, Number(itemOptions.branchDepth || 0)));
+            const branchOrphan = !!itemOptions.branchOrphan;
+            const visibleBranch = branch && !branchOrphan;
 
-            row.className = `conversation-item ${itemOptions.className || ''} ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
+            row.className = `conversation-item ${itemOptions.className || ''} ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}${visibleBranch ? ' conversation-branch-item' : ''}`;
             row.dataset.conversationId = String(cid || '');
             row.dataset.pin = isPinned ? '1' : '0';
+
+            if (visibleBranch) {
+                row.style.setProperty('--conversation-branch-offset', `${Math.max(1, branchDepth) * 14}px`);
+                row.title = `分支自会话 ${branch.parent_conversation_id} 的第 ${branch.parent_message_index + 1} 条消息`;
+            }
 
             const titleSpan = document.createElement('span');
             titleSpan.className = 'title';
 
-            if (isLearningConversation) {
-                const learningIcon = document.createElement('i');
-                learningIcon.className = 'fa-solid fa-book-open conversation-mode-icon';
-                learningIcon.setAttribute('aria-hidden', 'true');
-                learningIcon.title = 'Learning 对话';
-                titleSpan.appendChild(learningIcon);
+            if (visibleBranch) {
+                const branchIcon = document.createElement('i');
+                branchIcon.className = 'fa-solid fa-code-branch conversation-branch-icon';
+                branchIcon.setAttribute('aria-hidden', 'true');
+                titleSpan.appendChild(branchIcon);
             }
 
             if (isLongterm) {
@@ -1342,6 +1472,7 @@
                     targetType: 'conversation',
                     conversationId: String(cid || ''),
                     conversationTitle,
+                    branch,
                     pinned: isPinned,
                     allowWorkspaceMark: itemOptions.allowWorkspaceMark !== false
                 });
@@ -1351,6 +1482,7 @@
                 targetType: 'conversation',
                 conversationId: String(cid || ''),
                 conversationTitle,
+                branch,
                 pinned: row.dataset.pin === '1',
                 allowWorkspaceMark: itemOptions.allowWorkspaceMark !== false
             }));
@@ -1383,6 +1515,8 @@
             openConversationRenameModal,
             submitConversationRename,
             bindConversationRenameModal,
+            isLearningConversation,
+            filterConversationsForNexora,
         };
     }
 
@@ -1392,5 +1526,6 @@
         getDirectConversationUrlTarget,
         hasConversationUrlTarget,
         partitionConversationsByNexoraCodeProject,
+        isLearningConversation,
     });
 })();
