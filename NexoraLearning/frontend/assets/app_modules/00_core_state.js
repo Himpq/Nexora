@@ -43,7 +43,13 @@
     timePieChart: document.getElementById("timePieChart"),
     dashboardSidePanelTitle: document.getElementById("dashboardSidePanelTitle"),
     learningFeedPanel: document.getElementById("learningFeedPanel"),
+    learningFeedComposeShell: document.getElementById("learningFeedComposeShell"),
+    learningFeedComposer: document.getElementById("learningFeedComposer"),
     learningFeedComposeBtn: document.getElementById("learningFeedComposeBtn"),
+    learningFeedPostInput: document.getElementById("learningFeedPostInput"),
+    learningFeedPostMentionMenu: document.getElementById("learningFeedPostMentionMenu"),
+    learningFeedComposeChannel: document.getElementById("learningFeedComposeChannel"),
+    learningFeedPostSubmitBtn: document.getElementById("learningFeedPostSubmitBtn"),
     feedLayout: document.getElementById("feedLayout"),
     feedChannelSidebar: document.getElementById("feedChannelSidebar"),
     feedChannelList: document.getElementById("feedChannelList"),
@@ -317,6 +323,8 @@
     readerBookDetailXml: "",
     readerGuidePromptedKey: "",
     dynamicPosting: false,
+    feedPostDraft: "",
+    feedPostSubmitting: false,
     confirmAction: null,
     readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
     readerSectionsData: {},     // { chapterName: { range, sessions: [{name, range, summary}] } }
@@ -608,6 +616,7 @@
       menuEl.innerHTML = buildFeedMentionMenuHtml(feedId, mentionState);
       syncFeedMentionMenuVisibility(menuEl, true);
     });
+    syncLearningFeedPostMentionMenu();
   }
 
   function syncFeedMentionMenuVisibility(menuEl, visible) {
@@ -758,7 +767,7 @@
     if (!(inputEl instanceof Element)) return "";
     const feedId = String(inputEl.getAttribute("data-feed-comment-input") || "").trim();
     if (feedId) return `comment:${feedId}`;
-    if (inputEl.id === "messageInput") return "dynamic-post";
+    if (inputEl.id === "learningFeedPostInput") return "dynamic-post";
     return "";
   }
 

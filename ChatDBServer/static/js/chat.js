@@ -546,8 +546,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260717_learning_sidebar_hierarchy_17';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260717_learning_sidebar_hierarchy_16';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260717_learning_unknown_root_02';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260717_learning_unknown_root_02';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
 const BROWSER_SYNC_PING_MS = 20000;
@@ -8260,6 +8260,15 @@ function rememberSidebarConversationSelection(mode, conversationId) {
     learningNavigationState.rememberConversation(mode, conversationId);
 }
 
+// Learning Sidebar 的返回视图只能由 Learning 会话加载修改，Nexora 加载不得跨域覆盖。
+function syncLearningSidebarViewForLoadedConversation(scope) {
+    if (String(scope || '').trim().toLowerCase() !== 'learning') {
+        return getLearningSidebarView();
+    }
+
+    return enterLearningSidebarConversationView();
+}
+
 function resolveConversationSidebarScope(conversation) {
     return learningModeEnabled && getNexoraChatConversations().isLearningConversation(conversation)
         ? 'learning'
@@ -15550,7 +15559,7 @@ async function loadConversation(id, options = {}) {
             const loadedSidebarMode = currentConversationSidebarScope === 'learning'
                 ? 'learning'
                 : resolveLearningSidebarModeForConversation(loadedConversationMode);
-            setLearningSidebarView(loadedSidebarMode === 'learning' ? 'conversation' : 'list');
+            syncLearningSidebarViewForLoadedConversation(currentConversationSidebarScope);
             applyLearningSidebarMode(loadedSidebarMode);
             learningHeaderMode = loadedSidebarMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();

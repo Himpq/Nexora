@@ -314,6 +314,19 @@
         };
 
         groups.forEach((group) => {
+            // 未识别课程的对话没有课程层级，放在所有课程分组之后直接显示为根级条目。
+            if (group.courseId === 'unknown') {
+                const rootList = document.createElement('div');
+                rootList.className = 'nexoracode-sidebar-project-conversations-inner learning-sidebar-root-conversations';
+
+                group.conversations.forEach((conversation) => {
+                    rootList.appendChild(buildConversationItem(conversation));
+                });
+
+                list.appendChild(rootList);
+                return;
+            }
+
             const collapsed = learningCourseCollapseState.get(group.courseId) === true;
             const groupWrap = document.createElement('div');
             groupWrap.className = `nexoracode-sidebar-project learning-sidebar-course-group${collapsed ? ' is-collapsed' : ''}`;
@@ -324,12 +337,8 @@
             const groupMain = document.createElement('button');
             groupMain.type = 'button';
             groupMain.className = 'nexoracode-sidebar-project-main';
-            const courseDisplayTitle = group.courseId === 'unknown'
-                ? 'unknown'
-                : (group.courseTitle || '未命名课程');
-            groupMain.title = group.courseId === 'unknown'
-                ? '未识别课程'
-                : courseDisplayTitle;
+            const courseDisplayTitle = group.courseTitle || '未命名课程';
+            groupMain.title = courseDisplayTitle;
 
             const courseIcon = document.createElement('i');
             courseIcon.className = 'fa-solid fa-folder nexoracode-sidebar-project-icon';

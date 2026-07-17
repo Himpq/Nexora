@@ -59,11 +59,15 @@
       if (el.learningPushPanel) el.learningPushPanel.hidden = state.dashboardSideTab !== "push";
       if (el.questionBankPanel) el.questionBankPanel.hidden = state.dashboardSideTab !== "questionBank";
       if (el.feedLayout) el.feedLayout.hidden = state.dashboardSideTab !== "feed";
-      if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
+      if (el.learningFeedComposeShell) el.learningFeedComposeShell.hidden = state.dashboardSideTab !== "feed";
 
-      if (state.dashboardSideTab !== "feed") return;
+      if (state.dashboardSideTab !== "feed") {
+          if (state.dynamicPosting) exitLearningFeedComposeMode();
+          return;
+      }
 
       renderFeedChannelList();
+      syncLearningFeedComposer();
 
       const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
       if (!rows.length) {
@@ -515,26 +519,18 @@
     `;
   }
 
-  function sendHostMessage(payload) {
-    const data = Object.assign({ source: "nexora-learning" }, payload || {});
-    try {
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage(data, "*");
-      }
-    } catch (_err) {}
-    try {
-      window.dispatchEvent(new CustomEvent(String(data.type || "nexora:unknown"), { detail: data }));
-    } catch (_err) {}
-  }
-
   function enterFeedComposeMode() {
     state.dynamicPosting = true;
-    sendHostMessage({ type: "nexora:feed-compose:toggle", active: true });
+    resetFeedMentionState();
+    syncFeedMentionMenus();
+    syncLearningFeedComposer({ focus: true });
   }
 
   function exitFeedComposeMode() {
     state.dynamicPosting = false;
-    sendHostMessage({ type: "nexora:feed-compose:toggle", active: false });
+    resetFeedMentionState();
+    syncFeedMentionMenus();
+    syncLearningFeedComposer();
   }
 
   async function postLearningFeed(content) {

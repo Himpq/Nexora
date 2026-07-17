@@ -6,6 +6,7 @@
     "app_modules/01_learning_path.js",
     "app_modules/02_reader_dashboard.js",
     "app_modules/03_feed_profile.js",
+    "app_modules/03_feed_composer.js",
     "app_modules/04_settings.js",
     "app_modules/05_materials.js",
     "app_modules/06_reader_core.js",

@@ -363,6 +363,19 @@ body.learning-workspace-active.learning-sidebar-conversation-active .sidebar {
   width: 100%;
 }
 
+.learning-sidebar-panel .learning-sidebar-root-conversations {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: 2px;
+  overflow: visible;
+}
+
+.learning-sidebar-panel .learning-sidebar-root-conversations > .learning-sidebar-conversation-item {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
 .learning-sidebar-panel .nexoracode-sidebar-project.is-collapsed .nexoracode-sidebar-project-conversations {
   border-left-color: transparent;
 }

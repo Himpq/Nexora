@@ -296,11 +296,7 @@
         }
       });
     }
-    if (el.learningFeedComposeBtn) {
-      el.learningFeedComposeBtn.addEventListener("click", () => {
-        enterFeedComposeMode();
-      });
-    }
+    bindLearningFeedComposerEvents();
     if (el.dashboardFocusPanel) {
       el.dashboardFocusPanel.addEventListener("click", (event) => {
         const target = event.target;
