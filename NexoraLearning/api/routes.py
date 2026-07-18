@@ -238,6 +238,7 @@ _ROUTE_MODULES = (
     "frontend",
     "video",
     "knowledge",
+    "cognition",
     "settings",
     "nexora",
     "courses",

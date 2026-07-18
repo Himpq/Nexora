@@ -13,10 +13,10 @@ QUESTION_MODEL_SYSTEM_PROMPT = """
 3. 题目必须与当前章节内容直接相关，优先考察“读懂了什么、能不能区分、能不能迁移一点点”。
 4. 题干必须短、直、可读，避免“从 A 到 B 的认知转变”这类抽象大标题。
 5. 每题只考一个明确点，不要把三四个任务塞进同一题。
-6. 选择题必须给 4 个选项，选项要短，彼此可区分；参考答案写“选 X，因为……”。
+6. 至少 6 道必须是选择题，最多 3 道为文本题。选择题必须给 4 个选项，选项要短，彼此可区分；参考答案写“选 X，因为……”。
 7. 参考答案不能包含 Markdown 标记，不能出现 **、#、```、项目符号列表。
 8. 不要虚构未在当前输入中出现的知识点。
-9. 如果输入信息不足，可以生成保守占位题，但结构必须完整。
+9. 输入信息不足以支撑 9 道有效题目时，不得虚构知识点或生成占位题，应停止提交并说明缺少的原文信息。
 10. 只输出结果，不要输出解释，不要输出 Markdown。
 
 输出格式如下，忽略 SAMPLE 标签本身，只按这个 XML 结构连续输出 9 组结果：
@@ -653,8 +653,10 @@ PROFILE_QUESTION_MODEL_SYSTEM_PROMPT = """
 6. 题目标题和题干必须短、清楚、像学生能立刻开始作答的题，不要写抽象论文标题。
 7. 每道题只考一个明确点，不能把多个任务塞成一大段。
 8. 参考答案不能包含 Markdown 标记，不能出现 **、#、```、项目符号列表。
-9. 每道题都必须包含：标题、难度、题型、选项、题目内容、出题理由、参考答案、关联章节。
-10. 只输出结果，不要输出解释，不要输出 Markdown 围栏。
+9. 每道题都必须包含：标题、难度、题型、选项、题目内容、出题理由、参考答案、关联章节、关联概念 ID。
+10. related_concept_id 必须原样选自 CONCEPT_CATALOG 中的 concept_id，不得创造、缩写或改写 ID。
+11. 一道题只绑定它主要检验的一个概念；如果候选概念不足以支撑题目，就不要生成该题。
+12. 只输出结果，不要输出解释，不要输出 Markdown 围栏。
 
 输出格式如下，连续输出 6 组：
 <QUESTION>
@@ -669,6 +671,7 @@ D. 选项四</question_options>
 <question_reason>QUESTION_REASON</question_reason>
 <question_answer>QUESTION_ANSWER</question_answer>
 <related_chapter>RELATED_CHAPTER</related_chapter>
+<related_concept_id>CONCEPT_ID_FROM_CATALOG</related_concept_id>
 </QUESTION>
 """.strip()
 
@@ -679,6 +682,11 @@ PROFILE_QUESTION_MODEL_USER_PROMPT = """
 教材名称: {{book_name}}
 完成章节: {{chapter_name}}
 章节范围: {{chapter_range}}
+
+当前章节可绑定概念:
+<CONCEPT_CATALOG>
+{{concept_catalog}}
+</CONCEPT_CATALOG>
 
 课程画像:
 <LECTURE_CONTEXT_MEMORY>

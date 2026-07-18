@@ -102,6 +102,12 @@
           await openQuestionBankGroupPractice(groupId);
           return;
         }
+        if (action === "open-group-review") {
+          const groupId = String(actionNode.getAttribute("data-group-id") || "").trim();
+          if (!groupId) return;
+          await openQuestionBankGroupReview(groupId);
+          return;
+        }
         if (action === "open-mistakes") {
           state.questionBankFilter.answerState = "needs_review";
           state.questionBankPage = 1;
@@ -158,6 +164,21 @@
           }
         }
       });
+      el.questionBankPanel.addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const card = target.closest('.question-exam-set-card[data-qb-action="open-group"]');
+        if (!card || !el.questionBankPanel.contains(card)) return;
+
+        const groupId = String(card.getAttribute("data-group-id") || "").trim();
+        if (!groupId) return;
+
+        event.preventDefault();
+        await openQuestionBankGroupPractice(groupId);
+      });
     }
     if (el.backFromQuestionPracticeBtn) {
       el.backFromQuestionPracticeBtn.addEventListener("click", () => {
@@ -177,6 +198,22 @@
         const actionNode = target.closest("[data-qb-action]");
         if (!actionNode) return;
         const action = String(actionNode.getAttribute("data-qb-action") || "").trim();
+        if (action === "exam-jump") {
+          setQuestionExamIndex(actionNode.getAttribute("data-exam-index"));
+          return;
+        }
+        if (action === "exam-prev") {
+          setQuestionExamIndex(ensureQuestionExamState().currentIndex - 1);
+          return;
+        }
+        if (action === "exam-next") {
+          setQuestionExamIndex(ensureQuestionExamState().currentIndex + 1);
+          return;
+        }
+        if (action === "exam-exit-review") {
+          closeQuestionBankPracticePage();
+          return;
+        }
         if (action === "paper-submit") {
           await submitQuestionBankPaper(actionNode);
           return;
@@ -195,6 +232,27 @@
           if (!lectureId) return;
           setView("materials");
           openLectureHome(lectureId, { returnTarget: "dashboard" });
+        }
+      });
+      el.questionPracticeContent.addEventListener("input", (event) => {
+        captureQuestionExamDraft(event.target);
+      });
+    }
+    if (el.questionPracticeHeaderMeta) {
+      el.questionPracticeHeaderMeta.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const actionNode = target.closest("[data-qb-action]");
+        if (!actionNode) return;
+        const action = String(actionNode.getAttribute("data-qb-action") || "").trim();
+
+        if (action === "paper-submit") {
+          await submitQuestionBankPaper(actionNode);
+          return;
+        }
+
+        if (action === "exam-exit-review") {
+          closeQuestionBankPracticePage();
         }
       });
     }

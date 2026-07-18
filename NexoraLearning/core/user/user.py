@@ -286,6 +286,7 @@ def append_learning_record(
 ) -> Dict[str, Any]:
     ensure_user_files(cfg, user_id)
     payload = dict(record or {})
+    payload.setdefault("completion_id", f"qc_{uuid.uuid4().hex[:20]}")
     payload.setdefault("timestamp", int(time.time()))
     _append_jsonl(_learning_jsonl_path(cfg, user_id), payload)
     return payload

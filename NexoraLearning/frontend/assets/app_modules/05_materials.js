@@ -483,6 +483,16 @@
         '</div>';
     }
 
+    if (effectiveTab === "cognition") {
+      return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="cognition">' +
+        '<div class="learning-panel-section-body">' +
+        '<div class="cognition-twin-shell" id="courseCognitionTwinContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+        '<div class="cognition-twin-loading">正在读取认知状态...</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+
     // outline pane
     return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="outline">' +
       '<div class="learning-panel-split-grid">' +
@@ -533,6 +543,10 @@
 
     if (effectiveTabName === "report") {
       loadCourseLearningReport(effectiveLectureId);
+    }
+
+    if (effectiveTabName === "cognition") {
+      loadCourseCognitionTwin(effectiveLectureId);
     }
   }
 
@@ -743,14 +757,13 @@
     return data;
   }
 
-  function renderLearningReportMetric(label, value, subText = "", tone = "") {
+  function renderLearningReportMetric(label, value, tone = "") {
     const toneClass = tone ? ` is-${tone}` : "";
 
     return `
       <div class="learning-report-metric${toneClass}">
         <div class="learning-report-metric-label">${escapeHtml(label)}</div>
         <div class="learning-report-metric-value">${escapeHtml(value)}</div>
-        ${subText ? `<div class="learning-report-metric-sub">${escapeHtml(subText)}</div>` : ""}
       </div>
     `;
   }
@@ -789,12 +802,11 @@
     };
   }
 
-  function renderLearningReportEvidence(label, value, detail = "") {
+  function renderLearningReportEvidence(label, value) {
     return `
       <div class="learning-report-evidence">
         <div class="learning-report-evidence-label">${escapeHtml(label)}</div>
         <div class="learning-report-evidence-value">${escapeHtml(value)}</div>
-        ${detail ? `<div class="learning-report-evidence-detail">${escapeHtml(detail)}</div>` : ""}
       </div>
     `;
   }
@@ -865,7 +877,6 @@
     const profile = payload.profile && typeof payload.profile === "object" ? payload.profile : {};
     const progress = payload.progress && typeof payload.progress === "object" ? payload.progress : {};
     const compact = !!options.compact;
-    const title = compact ? "学习报告" : `${String(payload.lecture_title || "课程").trim()} 学习报告`;
     const progressPercent = Math.max(0, Math.min(100, Number(summary.progress_percent || 0)));
     const accuracy = summary.accuracy === null || summary.accuracy === undefined
       ? "未判定"
@@ -884,18 +895,17 @@
 
     return `
       <section class="learning-report${compact ? " is-compact" : ""}">
-        <header class="learning-report-head">
-          <div class="learning-report-title-wrap">
-            <div class="learning-report-kicker">LEARNING REPORT</div>
-            <h3 class="learning-report-title">${escapeHtml(title)}</h3>
-            <div class="learning-report-subtitle">基于阅读、测验、画像和学习记录生成</div>
-          </div>
-          <div class="learning-report-generated">${escapeHtml(formatTs(Number(payload.generated_at || 0)))}</div>
-        </header>
+        <div class="learning-report-updated">更新于 ${escapeHtml(formatTs(Number(payload.generated_at || 0)))}</div>
 
-        <section class="learning-report-hero">
+        <section class="learning-report-section learning-report-overview-section">
+          <header class="learning-report-section-head">
+            <div>
+              <span>整体进展</span>
+              <h3>${escapeHtml(reportStatus.label)}</h3>
+            </div>
+            <strong>${escapeHtml(String(progressPercent))}%</strong>
+          </header>
           <div class="learning-report-hero-main">
-            <div class="learning-report-hero-label">${escapeHtml(reportStatus.label)}</div>
             <div class="learning-report-hero-detail">${escapeHtml(reportStatus.detail)}</div>
             <div class="learning-report-progress">
               <div class="learning-report-progress-top">
@@ -906,22 +916,26 @@
               <div class="learning-report-progress-next">${escapeHtml(actionText)}</div>
             </div>
           </div>
-
-          <div class="learning-report-hero-side">
-            ${renderLearningReportEvidence("章节", `${summary.completed_chapters || 0}/${summary.total_chapters || 0}`, "已完成")}
-            ${renderLearningReportEvidence("小节", `${summary.completed_sessions || 0}/${summary.total_sessions || 0}`, "学习颗粒度")}
-            ${renderLearningReportEvidence("正确率", accuracy, `${summary.reviewed_questions || 0} 题可判定`)}
+          <div class="learning-report-hero-side" aria-label="进展证据">
+            ${renderLearningReportEvidence("章节", `${summary.completed_chapters || 0}/${summary.total_chapters || 0}`)}
+            ${renderLearningReportEvidence("小节", `${summary.completed_sessions || 0}/${summary.total_sessions || 0}`)}
+            ${renderLearningReportEvidence("正确率", accuracy)}
           </div>
         </section>
 
-        <section class="learning-report-metrics">
-          ${renderLearningReportMetric("学习时长", formatLearningReportNumber(summary.study_hours || 0, "h"), "课程累计", "time")}
-          ${renderLearningReportMetric("阅读深度", `${reading.deep_read_chapters || 0}`, "达到深读的章节", "reading")}
-          ${renderLearningReportMetric("测验提交", String(summary.submitted_questions || 0), "已提交题目", "quiz")}
-          ${renderLearningReportMetric("画像完整度", formatLearningReportPercent(summary.profile_completion_rate || 0), "维度完成", "profile")}
+        <section class="learning-report-section">
+          <header class="learning-report-section-head"><h2>学习概览</h2></header>
+          <div class="learning-report-metrics">
+          ${renderLearningReportMetric("学习时长", formatLearningReportNumber(summary.study_hours || 0, "h"), "time")}
+          ${renderLearningReportMetric("阅读深度", `${reading.deep_read_chapters || 0}`, "reading")}
+          ${renderLearningReportMetric("测验提交", String(summary.submitted_questions || 0), "quiz")}
+          ${renderLearningReportMetric("画像完整度", formatLearningReportPercent(summary.profile_completion_rate || 0), "profile")}
+          </div>
         </section>
 
-        <section class="learning-report-grid learning-report-action-grid">
+        <section class="learning-report-section">
+          <header class="learning-report-section-head"><h2>需要巩固</h2></header>
+          <div class="learning-report-grid learning-report-action-grid">
           <article class="learning-report-block learning-report-block-primary">
             <div class="learning-report-block-title">薄弱点</div>
             ${renderLearningReportInsightList(payload.weaknesses, "暂无显性薄弱点", "weak")}
@@ -931,15 +945,18 @@
             <div class="learning-report-block-title">下一步建议</div>
             ${renderLearningReportInsightList(payload.recommendations, "暂无建议", "next")}
           </article>
+          </div>
         </section>
 
-        <section class="learning-report-grid">
+        <section class="learning-report-section">
+          <header class="learning-report-section-head"><h2>学习证据</h2></header>
+          <div class="learning-report-grid">
           <article class="learning-report-block">
-            <div class="learning-report-block-title">学习行为证据</div>
+            <div class="learning-report-block-title">学习行为</div>
             <div class="learning-report-evidence-grid">
-              ${renderLearningReportEvidence("阅读事件", String(reading.total_events || 0), `累计 ${formatLearningReportNumber(reading.total_reading_minutes || 0, " 分钟")}`)}
-              ${renderLearningReportEvidence("文本选择", String(reading.selection_count || 0), "可用于识别重点")}
-              ${renderLearningReportEvidence("批注提问", String(reading.annotation_ask_count || 0), `查看 ${reading.annotation_view_count || 0} 次`)}
+              ${renderLearningReportEvidence("阅读事件", String(reading.total_events || 0))}
+              ${renderLearningReportEvidence("文本选择", String(reading.selection_count || 0))}
+              ${renderLearningReportEvidence("批注提问", String(reading.annotation_ask_count || 0))}
             </div>
           </article>
 
@@ -948,9 +965,12 @@
             <div class="learning-report-line">提交 ${escapeHtml(String(quiz.submitted || 0))} 题 · 可判定 ${escapeHtml(String(quiz.reviewed || 0))} 题 · 正确 ${escapeHtml(String(quiz.correct || 0))} 题</div>
             ${renderLearningReportPills(difficultyRows, "暂无难度分布")}
           </article>
+          </div>
         </section>
 
-        <section class="learning-report-grid learning-report-grid-bottom">
+        <section class="learning-report-section">
+          <header class="learning-report-section-head"><h2>画像变化</h2></header>
+          <div class="learning-report-grid learning-report-grid-bottom">
           <article class="learning-report-block">
             <div class="learning-report-block-title">画像依据</div>
             ${renderLearningReportPills(filledDimensions, "暂无已填写画像维度")}
@@ -960,11 +980,14 @@
             <div class="learning-report-block-title">画像变化</div>
             ${renderLearningReportPills(profileProgressRows, "暂无画像时间线")}
           </article>
+          </div>
         </section>
 
-        <section class="learning-report-block learning-report-record-block">
-          <div class="learning-report-block-title">最近学习记录</div>
-          ${renderLearningReportRecords(payload.recent_records)}
+        <section class="learning-report-section learning-report-record-section">
+          <header class="learning-report-section-head"><h2>最近学习记录</h2></header>
+          <div class="learning-report-record-block">
+            ${renderLearningReportRecords(payload.recent_records)}
+          </div>
         </section>
       </section>
     `;
@@ -2016,6 +2039,7 @@
       { key: "outline", label: "学习大纲" },
       { key: "mindmap", label: "思维导图" },
       { key: "report", label: "学习报告" },
+      { key: "cognition", label: "认知孪生" },
     ];
     if (compactLayout) {
       tabDefs.splice(1, 0, { key: "videos", label: "推荐视频" });

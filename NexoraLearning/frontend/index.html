@@ -8,6 +8,11 @@
   <link rel="stylesheet" href="/api/frontend/assets/learning_feed_composer.css?v=20260717_feed_composer_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_push.css?v=20260618_06">
   <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260620_lab03">
+  <link rel="stylesheet" href="/api/frontend/assets/question_exam.css?v=20260718_exam_05">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_stream.css?v=20260718_stream_08">
+  <link rel="stylesheet" href="/api/frontend/assets/feed_navigation.css?v=20260718_feed_nav_01">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_report_redesign.css?v=20260718_report_02">
+  <link rel="stylesheet" href="/api/frontend/assets/cognition_twin.css?v=20260719_cognition_twin_01">
   <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css?v=20260615_01">
   <link rel="stylesheet" href="/api/frontend/assets/settings_agents.css?v=20260709_agents_panel_01">
 </head>
@@ -20,7 +25,7 @@
             <div class="panel-kicker-switch panel-kicker-switch-progress">
               <button id="dashboardProgressTabBtn" class="kicker-tab is-active" type="button">课程进度</button>
               <button id="dashboardPushTabBtn" class="kicker-tab" type="button">学习资源</button>
-              <button id="dashboardQuestionBankTabBtn" class="kicker-tab" type="button">题库中心</button>
+              <button id="dashboardQuestionBankTabBtn" class="kicker-tab" type="button">模拟练习</button>
               <button id="dashboardProgressFeedTabBtn" class="kicker-tab" type="button">动态中心</button>
             </div>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
@@ -85,14 +90,17 @@
 
     <section id="questionPracticeView" class="view-pane">
       <article class="panel-card question-practice-page">
-        <header class="panel-head materials-head reader-head">
+        <header class="panel-head materials-head reader-head question-exam-page-head">
           <div class="materials-head-left">
-            <button id="backFromQuestionPracticeBtn" class="nxl-icon-btn" type="button" aria-label="返回题库中心" title="返回题库中心">←</button>
+            <button id="backFromQuestionPracticeBtn" class="nxl-icon-btn" type="button" aria-label="返回题库中心" title="返回题库中心">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5"></path><path d="m11 18-6-6 6-6"></path></svg>
+            </button>
             <div class="reader-head-text">
               <div id="questionPracticeTitle" class="reader-title">题组作答</div>
               <div id="questionPracticeSubtitle" class="reader-subtitle">Question Practice</div>
             </div>
           </div>
+          <div id="questionPracticeHeaderMeta" class="question-exam-header-meta"></div>
         </header>
         <section id="questionPracticeContent" class="question-practice-content"></section>
       </article>
@@ -500,10 +508,10 @@
   <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/knowledge_graph.js?v=20260615_01"></script>
-  <script src="/api/frontend/assets/learning_push.js?v=20260618_03"></script>
+  <script src="/api/frontend/assets/learning_push.js?v=20260718_stream_08"></script>
   <script src="/api/frontend/assets/learning_resource_studio.js?v=20260618_04"></script>
   <script src="/api/frontend/assets/learning_video_studio.js?v=20260706_runtime_user_header_01"></script>
-  <script src="/api/frontend/assets/app.js?v=20260717_feed_composer_02"></script>
+  <script src="/api/frontend/assets/app.js?v=20260719_cognition_twin_01"></script>
   <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260621_reader_workspace"></script>
 </body>
 </html>

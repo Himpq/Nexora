@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
 from core.booksproc.modeling import build_profile_question_runner, get_profile_question_settings
+from core.booksproc.question import validate_question_distribution
+from core.cognition.question_binding import (
+    load_chapter_concept_candidates,
+    serialize_concept_candidates,
+    validate_question_concept_bindings,
+)
 from core.lectures import (
     get_book,
     get_lecture,
@@ -466,6 +472,7 @@ def _parse_profile_question_blocks(content: str) -> List[Dict[str, str]]:
             "question_reason": _xml_value(block, "question_reason"),
             "question_answer": _xml_value(block, "question_answer"),
             "related_chapter": _xml_value(block, "related_chapter"),
+            "related_concept_id": _xml_value(block, "related_concept_id"),
         }
 
         if row["question_title"] or row["question_content"]:
@@ -502,6 +509,8 @@ def _generate_profile_question_bank_questions(
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
 
     settings = dict(get_profile_question_settings(cfg) or {})
+    concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)
+    concept_catalog = serialize_concept_candidates(concept_candidates)
     runner = build_profile_question_runner(cfg, _safe_text(settings.get("model_name")))
     loaded_chapter_context = _safe_text(chapter_context)
 
@@ -556,6 +565,7 @@ def _generate_profile_question_bank_questions(
             "chapter_detail_xml": loaded_chapter_detail_xml,
             "chapter_context": loaded_chapter_context[:12000],
             "coarse_bookinfo": str(load_book_info_xml(dict(cfg or {}), lecture_id, book_id) or ""),
+            "concept_catalog": concept_catalog,
         },
         model_name=_safe_text(settings.get("model_name")) or None,
         username=user_id,
@@ -569,6 +579,43 @@ def _generate_profile_question_bank_questions(
         },
     )
     rows = _parse_profile_question_blocks(content)
+    validation_error = validate_question_distribution(
+        rows,
+        expected_count=6,
+        minimum_choice_count=4,
+        maximum_text_count=2,
+    )
+
+    if validation_error:
+        log_event(
+            "chapter_quiz_profile_generate_rejected",
+            "章节小测画像题结果未通过结构校验",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": validation_error,
+            },
+        )
+        raise ValueError(f"章节小测题目未通过结构校验：{validation_error}")
+
+    concept_validation_error = validate_question_concept_bindings(rows, concept_candidates)
+
+    if concept_validation_error:
+        log_event(
+            "chapter_quiz_profile_generate_rejected",
+            "章节小测题目缺少有效知识概念绑定",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": concept_validation_error,
+            },
+        )
+        raise ValueError(f"章节小测题目未通过概念绑定校验：{concept_validation_error}")
+
     selected: List[Dict[str, Any]] = []
     question_group_raw = "|".join(
         [
@@ -600,6 +647,7 @@ def _generate_profile_question_bank_questions(
                 "visibility": "public",
                 "owner_user_id": user_id,
                 "generation_mode": "chapter_quiz_sync",
+                "concept_id": row["related_concept_id"],
                 "question": row,
             },
         )

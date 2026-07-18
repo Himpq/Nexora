@@ -10,6 +10,8 @@
       const selectedId = String(state.selectedFeedChannelId || "public_all");
 
       const editIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+      const allIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>`;
+      const channelIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v11H9l-4 3Z"></path></svg>`;
 
       const seenChannelIds = new Set();
       const channelItems = [
@@ -30,7 +32,7 @@
           return rows;
       }, []);
 
-      el.feedChannelList.innerHTML = channelItems.map((row) => {
+      const channelRows = channelItems.map((row) => {
           const channelId = String((row && row.id) || "").trim();
           const channelTitle = String((row && row.title) || "").trim();
           const isActive = channelId === selectedId;
@@ -39,6 +41,7 @@
           return `
               <div class="feed-channel-item${isActive ? " is-active" : ""}" data-channel-id="${escapeHtml(channelId)}">
                   <button class="feed-channel-select-btn" type="button" data-feed-channel-select data-channel-id="${escapeHtml(channelId)}" aria-current="${isActive ? "true" : "false"}">
+                      <span class="feed-channel-item-icon">${isBuiltin ? allIcon : channelIcon}</span>
                       <span class="feed-channel-item-name">${escapeHtml(channelTitle)}</span>
                   </button>
                   ${!isBuiltin ? `
@@ -47,6 +50,16 @@
               </div>
           `;
       }).join("");
+
+      el.feedChannelList.innerHTML = `
+          <div class="feed-channel-rail-head">
+              <span>频道</span>
+              <strong>${channelItems.length}</strong>
+          </div>
+          <nav class="feed-channel-rail" aria-label="动态频道">
+              ${channelRows}
+          </nav>
+      `;
   }
 
   /**
@@ -217,6 +230,11 @@
       ? state.dashboardSideTab
       : "progress";
     state.dashboardSideTab = activeTab;
+    const surfacePanel = el.progressList ? el.progressList.closest(".progress-panel") : null;
+
+    if (surfacePanel) {
+      surfacePanel.setAttribute("data-dashboard-surface", activeTab);
+    }
     const isProgress = activeTab === "progress";
     const isPush = activeTab === "push";
     const isQuestionBank = activeTab === "questionBank";

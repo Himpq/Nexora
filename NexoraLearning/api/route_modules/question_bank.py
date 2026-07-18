@@ -1,6 +1,7 @@
 """Question bank routes."""
 
 from api import routes as _routes
+from core.cognition import QuestionCognitionBridge
 
 # The first split keeps common helpers in api.routes while route handlers move by domain.
 _routes._export_route_context(globals())
@@ -171,6 +172,7 @@ def frontend_question_bank_submit():
 
     saved = user_store.append_question_completion(_cfg, username, record)
     answer_state = "needs_review" if saved.get("is_correct") is False else "submitted"
+    cognition = QuestionCognitionBridge(_cfg).record_submission(username, source_row, saved)
     log_event(
         "question_bank_answer_submitted",
         "题库中心作答已提交",
@@ -180,6 +182,15 @@ def frontend_question_bank_submit():
             "lecture_id": saved.get("lecture_id"),
             "book_id": saved.get("book_id"),
             "answer_state": answer_state,
+            "cognition_recorded": bool(cognition.get("recorded")),
+            "cognition_reason": cognition.get("reason"),
         },
     )
-    return jsonify({"success": True, "record": saved, "answer_state": answer_state})
+    return jsonify(
+        {
+            "success": True,
+            "record": saved,
+            "answer_state": answer_state,
+            "cognition": cognition,
+        }
+    )
