@@ -525,7 +525,7 @@ let adminPublicApiAuthState = null;
 let adminPublicApiActionMode = 'generate';
 let adminSelectedPublicApiKeyId = '';
 let adminPublicApiModalCompleted = false;
-let adminPublicApiDeleteTargetKey = null;
+let adminPublicApiDialogController = null;
 const ADMIN_QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit';
 const ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY = 'chatdb.admin.quota_adjust_mode';
 let adminModelConfigCache = { models: {}, providers: {} };
@@ -546,7 +546,7 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260717_learning_unknown_root_02';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260719_learning_sidebar_collapse_03';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260717_learning_unknown_root_02';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
@@ -893,6 +893,8 @@ const knowledgeSettingsController = getNexoraChatKnowledge().createKnowledgeSett
     setVectorStatus,
     getVectorizeTitle: () => knowledgeVectorController.getVectorizeTitle(),
     setVectorizeTitle: (title) => knowledgeVectorController.setVectorizeTitle(title),
+    startOwnerKnowledgeCollab: (...args) => knowledgeEditorController.startOwnerKnowledgeCollab(...args),
+    stopKnowledgeCollab: () => knowledgeEditorController.stopKnowledgeCollab(),
 });
 const clientToolController = getNexoraChatToolCanvas().createClientToolController({
     getCurrentConversationId: () => currentConversationId,
@@ -1357,9 +1359,12 @@ if (mailsModuleForRuntime) {
     mailsModuleForRuntime.setAdminUsersRuntime(adminUsersController);
 }
 
+const settingsManagementController = getNexoraSettingsManagement();
+
 const adminSettingsTabsController = getNexoraChatAdmin().createAdminSettingsTabsController({
     closeQuotaAdjustPopover: () => _closeQuotaAdjustPopover(),
     getSettingsModal: () => document.getElementById('settingsModal'),
+    syncSettingsManagementPanel: (tabName) => settingsManagementController.activate(tabName),
     resetAdminUserFilter: () => {
         resetAdminUserFilterKeyword();
         const filterInput = document.getElementById('adminUserFilterInput');
@@ -1426,6 +1431,7 @@ const adminSettingsEventsController = getNexoraChatAdmin().createAdminSettingsEv
     openAdminPublicApiKeyModal(mode) {
         return window.openAdminPublicApiKeyModal(mode);
     },
+    initAdminPublicApiModal,
     revokeAdminPublicApiKey,
     saveAdminPublicApiSettings,
     saveAdminPublicApiGlobalSettings,
@@ -1434,6 +1440,7 @@ const adminSettingsEventsController = getNexoraChatAdmin().createAdminSettingsEv
     closeAdminPublicApiKeyModal() {
         return window.closeAdminPublicApiKeyModal();
     },
+    copyAdminPublicApiModalKey,
     submitAdminPublicApiKeyAction,
     closeAdminTextConfirmModal() {
         return window.closeAdminTextConfirmModal();
@@ -2761,6 +2768,16 @@ function getNexoraChatConversationBranches() {
 
 function getNexoraChatAdmin() {
     return getNexoraChatSharedModule('admin');
+}
+
+function getNexoraSettingsManagement() {
+    const module = window.NexoraSettingsManagement;
+
+    if (!module || typeof module.init !== 'function' || typeof module.activate !== 'function') {
+        throw new Error('NexoraSettingsManagement 模块未初始化');
+    }
+
+    return module;
 }
 
 function getNexoraChatAdminUsers() {
@@ -13766,20 +13783,6 @@ function initUI() {
             if (!e || e.key !== 'Escape') return;
             const settingsModal = document.getElementById('settingsModal');
             if (!settingsModal || !settingsModal.classList.contains('active')) return;
-            const publicApiModal = document.getElementById('adminPublicApiKeyModal');
-            if (publicApiModal && publicApiModal.classList.contains('active')) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeAdminPublicApiKeyModal();
-                return;
-            }
-            const publicApiDeleteModal = document.getElementById('adminPublicApiDeleteModal');
-            if (publicApiDeleteModal && publicApiDeleteModal.classList.contains('active')) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeAdminPublicApiDeleteModal();
-                return;
-            }
             const blockerIds = [
                 'confirmBackdrop',
                 'addUserModal',
@@ -13789,7 +13792,8 @@ function initUI() {
                 'adminConfigModal',
                 'skillEditorModal',
                 'adminPublicApiKeyModal',
-                'adminPublicApiDeleteModal'
+                'papiKeyConfirmModal',
+                'userPapiKeyModal'
             ];
             for (const bid of blockerIds) {
                 const node = document.getElementById(bid);
@@ -24798,6 +24802,16 @@ function formatAdminPublicApiDateTime(value) {
     return `${yyyy}年${mm}月${dd}日 ${hh}:${mi}:${ss}`;
 }
 
+function getAdminPapiScopeModule() {
+    const module = window.NexoraAdminPapiScope;
+
+    if (!module || typeof module.init !== 'function') {
+        throw new Error('NexoraAdminPapiScope 模块未初始化');
+    }
+
+    return module;
+}
+
 function ensureAdminPublicApiLayout() {
     const tab = document.getElementById('settings-admin-auth-tab');
     if (!tab) return;
@@ -24827,6 +24841,8 @@ function ensureAdminPublicApiLayout() {
         });
         const nameGroup = document.getElementById('adminPublicApiNameInput')?.closest('.form-group');
         const keyPreviewGroup = document.getElementById('adminPublicApiKeyPreview')?.closest('.form-group');
+        const scopeGroup = document.getElementById('adminPublicApiScopeSegment')?.closest('.form-group');
+        const ownerGroup = document.getElementById('adminPublicApiOwnerInput')?.closest('.form-group');
         const createdGroup = document.getElementById('adminPublicApiCreatedAt')?.closest('.form-group');
         const expiresGroup = document.getElementById('adminPublicApiExpiresAt')?.closest('.form-group');
         const remainingGroup = document.getElementById('adminPublicApiRemaining')?.closest('.form-group');
@@ -24848,7 +24864,7 @@ function ensureAdminPublicApiLayout() {
             if (permGroup) detail.insertBefore(infoGrid, permGroup);
             else detail.insertBefore(infoGrid, detail.firstChild);
         }
-        [nameGroup, keyPreviewGroup, createdGroup, expiresGroup, remainingGroup, createdByGroup].forEach((group) => {
+        [nameGroup, keyPreviewGroup, scopeGroup, ownerGroup, createdGroup, expiresGroup, remainingGroup, createdByGroup].forEach((group) => {
             if (group && group.parentElement !== infoGrid) infoGrid.appendChild(group);
         });
         if (createdByEl) createdByEl.id = 'adminPublicApiCreatedBy';
@@ -24881,17 +24897,18 @@ function ensureAdminPublicApiLayout() {
             let targetWrap = permGrid.querySelector(`label[data-key="${id}"]`);
             if (!targetWrap) {
                 targetWrap = document.createElement('label');
-                targetWrap.className = 'admin-public-api-check-item';
                 targetWrap.dataset.key = id;
                 permGrid.appendChild(targetWrap);
             }
-            if (input.parentElement !== targetWrap) targetWrap.appendChild(input);
-            let span = targetWrap.querySelector('span');
-            if (!span) {
-                span = document.createElement('span');
-                targetWrap.appendChild(span);
-            }
-            span.textContent = labelText;
+            targetWrap.className = 'settings-toggle-item';
+            input.className = 'settings-toggle-input';
+            const label = document.createElement('span');
+            label.className = 'settings-toggle-label';
+            label.textContent = labelText;
+            const track = document.createElement('span');
+            track.className = 'settings-toggle-track';
+            track.setAttribute('aria-hidden', 'true');
+            targetWrap.replaceChildren(input, label, track);
             if (oldWrap && oldWrap !== targetWrap && oldWrap.parentElement) oldWrap.remove();
         });
     }
@@ -24917,6 +24934,17 @@ function ensureAdminPublicApiLayout() {
         deleteBtn.classList.remove('btn-danger-solid');
         deleteBtn.classList.add('btn-danger-small');
     }
+
+    getAdminPapiScopeModule().init({
+        onFilterChanged() {
+            const payload = adminPublicApiAuthState && typeof adminPublicApiAuthState === 'object'
+                ? adminPublicApiAuthState
+                : { keys: [] };
+            const visibleKeys = getAdminPapiScopeModule().filterKeys(payload.keys);
+            adminSelectedPublicApiKeyId = String(visibleKeys[0]?.id || '');
+            renderAdminPublicApiAuth(payload, { keepLatest: true });
+        },
+    });
 }
 
 function getSelectedAdminPublicApiKey(auth = adminPublicApiAuthState, options = {}) {
@@ -24940,12 +24968,13 @@ function getSelectedAdminPublicApiKey(auth = adminPublicApiAuthState, options = 
 function renderAdminPublicApiKeyList(payload) {
     const listEl = document.getElementById('adminPublicApiKeyList');
     if (!listEl) return;
-    const keys = Array.isArray(payload?.keys) ? payload.keys : [];
+    const allKeys = Array.isArray(payload?.keys) ? payload.keys : [];
+    const keys = getAdminPapiScopeModule().filterKeys(allKeys);
     if (!keys.length) {
-        listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">暂无 Key，点击上方“生成 Public API Key”。</div>';
+        listEl.innerHTML = `<div class="admin-user-detail-empty" style="padding:12px;">${allKeys.length ? '当前筛选没有匹配的 Key。' : '暂无 Key，点击上方“生成 Public API Key”。'}</div>`;
         return;
     }
-    const selected = getSelectedAdminPublicApiKey(payload);
+    const selected = keys.find((item) => String(item?.id || '') === adminSelectedPublicApiKeyId) || null;
     const selectedId = String(selected?.id || '');
     listEl.innerHTML = keys.map((item) => {
         const id = String(item?.id || '');
@@ -24964,6 +24993,7 @@ function renderAdminPublicApiKeyList(payload) {
                     <div class="admin-user-name">${name}</div>
                     <div class="admin-user-meta mono">${preview}</div>
                     <div class="admin-user-meta">${escapeHtml(statusText)}</div>
+                    <div class="papi-key-meta-row">${getAdminPapiScopeModule().describeKey(item)}</div>
                 </div>
             </div>
         `;
@@ -24984,6 +25014,7 @@ function renderAdminPublicApiAuth(auth, options = {}) {
     adminPublicApiAuthState = payload;
     ensureAdminPublicApiLayout();
     const keys = Array.isArray(payload.keys) ? payload.keys : [];
+    getAdminPapiScopeModule().setKeys(keys);
     if (!keys.length) adminSelectedPublicApiKeyId = '';
     if (options.selectedKeyId) {
         adminSelectedPublicApiKeyId = String(options.selectedKeyId || '').trim();
@@ -25023,6 +25054,7 @@ function renderAdminPublicApiAuth(auth, options = {}) {
     if (expiresEl) expiresEl.textContent = selected ? formatAdminPublicApiDateTime(selected.expires_at || '') : '-';
     if (remainingEl) remainingEl.textContent = formatAdminPublicApiRemaining(selected);
     if (createdByEl) createdByEl.textContent = selected ? (String(selected.created_by || '').trim() || '-') : '-';
+    getAdminPapiScopeModule().renderSelection(selected);
     applyAdminPublicApiPermissionsToUi(selected?.permissions || {});
     renderAdminPublicApiKeyList(payload);
 }
@@ -25050,13 +25082,15 @@ async function saveAdminPublicApiSettings() {
     try {
         const permissions = collectAdminPublicApiPermissionsFromUi();
         const keyName = String(document.getElementById('adminPublicApiNameInput')?.value || '').trim();
+        const scopeSettings = getAdminPapiScopeModule().collectSettings();
         const res = await fetch('/api/admin/auth/public-api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 key_id: String(selected.id || ''),
                 permissions,
-                name: keyName
+                name: keyName,
+                ...scopeSettings,
             })
         });
         const data = await res.json();
@@ -25089,36 +25123,94 @@ async function saveAdminPublicApiGlobalSettings() {
     }
 }
 
-window.closeAdminPublicApiKeyModal = function() {
-    const modal = document.getElementById('adminPublicApiKeyModal');
+function getPapiModalModule() {
+    const module = window.NexoraSettingsDialog;
+
+    if (
+        !module
+        || typeof module.confirm !== 'function'
+        || typeof module.copyText !== 'function'
+        || typeof module.createDialogController !== 'function'
+        || typeof module.getExpiryValue !== 'function'
+        || typeof module.localizePublicApiExpiryOptions !== 'function'
+        || typeof module.renderExpirySlider !== 'function'
+        || typeof module.setExpiryDisabled !== 'function'
+    ) {
+        throw new Error('NexoraSettingsDialog 模块未初始化');
+    }
+
+    return module;
+}
+
+function getAdminPublicApiExpireOptions() {
+    const options = adminPublicApiAuthState?.expire_options;
+
+    if (!Array.isArray(options)) {
+        throw new Error('认证管理未返回有效期选项');
+    }
+
+    return options;
+}
+
+function resetAdminPublicApiKeyModal() {
+    const form = document.getElementById('adminPublicApiKeyModalForm');
     const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
     const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
     const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    const cancelBtn = document.getElementById('adminPublicApiKeyModalCancelBtn');
     const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
-    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
     adminPublicApiModalCompleted = false;
-    if (latestKeyGroup) latestKeyGroup.style.display = 'none';
+    if (form) form.hidden = false;
+    if (latestKeyGroup) latestKeyGroup.hidden = true;
     if (latestKeyEl) latestKeyEl.textContent = '';
     if (confirmBtn) confirmBtn.textContent = '确认';
+    if (cancelBtn) cancelBtn.hidden = false;
     if (keyNameInput) keyNameInput.disabled = false;
-    if (expireInput) expireInput.disabled = false;
-    if (modal) modal.classList.remove('active');
+    getPapiModalModule().setExpiryDisabled(
+        document.getElementById('adminPublicApiExpireModalSlider'),
+        false,
+    );
+}
+
+function ensureAdminPublicApiDialogController() {
+    if (adminPublicApiDialogController) {
+        return adminPublicApiDialogController;
+    }
+
+    adminPublicApiDialogController = getPapiModalModule().createDialogController({
+        dialogId: 'adminPublicApiKeyModal',
+        onClose: resetAdminPublicApiKeyModal,
+    });
+
+    return adminPublicApiDialogController;
+}
+
+function initAdminPublicApiModal() {
+    ensureAdminPublicApiDialogController();
+}
+
+window.closeAdminPublicApiKeyModal = function() {
+    ensureAdminPublicApiDialogController().close('action');
 };
 
 window.openAdminPublicApiKeyModal = function(mode = 'generate') {
-    adminPublicApiActionMode = mode === 'regenerate' ? 'regenerate' : 'generate';
+    if (mode !== 'generate' && mode !== 'regenerate') {
+        throw new Error(`不支持的 API Key 操作：${mode}`);
+    }
+
+    adminPublicApiActionMode = mode;
     adminPublicApiModalCompleted = false;
     const selected = getSelectedAdminPublicApiKey();
     if (adminPublicApiActionMode === 'regenerate' && !selected) {
         showToast('请先在左侧选择一个 Key');
         return;
     }
-    const modal = document.getElementById('adminPublicApiKeyModal');
     const title = document.getElementById('adminPublicApiKeyModalTitle');
     const desc = document.getElementById('adminPublicApiKeyModalDesc');
+    const form = document.getElementById('adminPublicApiKeyModalForm');
     const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
-    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
     const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    const cancelBtn = document.getElementById('adminPublicApiKeyModalCancelBtn');
     const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
     const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
     if (title) title.textContent = adminPublicApiActionMode === 'regenerate' ? '重新生成 Public API Key' : '生成 Public API Key';
@@ -25126,16 +25218,34 @@ window.openAdminPublicApiKeyModal = function(mode = 'generate') {
         ? '将为当前选中的 Key 重新生成明文 key，旧 key 会立即失效。'
         : '创建新的 Public API Key（明文仅展示一次）。';
     if (keyNameInput) keyNameInput.value = selected ? String(selected.name || '') : '';
-    if (expireInput) {
-        const preset = String(selected?.expire_option || '').trim() || '7d';
-        expireInput.value = preset;
+    try {
+        const preset = adminPublicApiActionMode === 'regenerate'
+            ? String(selected.expire_option || '').trim()
+            : '7d';
+        getPapiModalModule().renderExpirySlider(
+            document.getElementById('adminPublicApiExpireModalSlider'),
+            getPapiModalModule().localizePublicApiExpiryOptions(getAdminPublicApiExpireOptions()),
+            preset,
+        );
+        if (keyNameInput) keyNameInput.disabled = false;
+        getPapiModalModule().setExpiryDisabled(
+            document.getElementById('adminPublicApiExpireModalSlider'),
+            false,
+        );
+        if (confirmBtn) confirmBtn.textContent = '确认';
+        if (cancelBtn) cancelBtn.hidden = false;
+        if (form) form.hidden = false;
+        if (latestKeyGroup) latestKeyGroup.hidden = true;
+        if (latestKeyEl) latestKeyEl.textContent = '';
+        getAdminPapiScopeModule().prepareModal(
+            adminPublicApiActionMode,
+            adminPublicApiActionMode === 'regenerate' ? selected : null,
+        );
+        ensureAdminPublicApiDialogController().open({ initialFocus: keyNameInput });
+    } catch (err) {
+        console.error('[Admin PAPI Modal] 打开弹窗失败', err);
+        showToast(err.message || '打开 API Key 弹窗失败');
     }
-    if (keyNameInput) keyNameInput.disabled = false;
-    if (expireInput) expireInput.disabled = false;
-    if (confirmBtn) confirmBtn.textContent = '确认';
-    if (latestKeyGroup) latestKeyGroup.style.display = 'none';
-    if (latestKeyEl) latestKeyEl.textContent = '';
-    if (modal) modal.classList.add('active');
 };
 
 async function submitAdminPublicApiKeyAction() {
@@ -25144,16 +25254,24 @@ async function submitAdminPublicApiKeyAction() {
         return;
     }
     const selected = getSelectedAdminPublicApiKey();
-    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
     const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
     const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
     const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
     const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
-    const expire = String(expireInput?.value || '').trim() || 'forever';
-    const keyName = String(keyNameInput?.value || '').trim();
-    const permissions = collectAdminPublicApiPermissionsFromUi();
-    const action = adminPublicApiActionMode === 'regenerate' ? 'regenerate' : 'generate';
+    const cancelBtn = document.getElementById('adminPublicApiKeyModalCancelBtn');
+    if (confirmBtn) confirmBtn.disabled = true;
+
     try {
+        if (adminPublicApiActionMode !== 'generate' && adminPublicApiActionMode !== 'regenerate') {
+            throw new Error(`不支持的 API Key 操作：${adminPublicApiActionMode}`);
+        }
+
+        const expire = getPapiModalModule().getExpiryValue(
+            document.getElementById('adminPublicApiExpireModalSlider'),
+        );
+        const keyName = String(keyNameInput?.value || '').trim();
+        const permissions = collectAdminPublicApiPermissionsFromUi();
+        const action = adminPublicApiActionMode;
         const body = {
             expire,
             permissions,
@@ -25164,6 +25282,8 @@ async function submitAdminPublicApiKeyAction() {
                 throw new Error('请先选择要重新生成的 Key');
             }
             body.key_id = String(selected.id);
+        } else {
+            Object.assign(body, getAdminPapiScopeModule().collectCreateFields());
         }
         const res = await fetch(`/api/admin/auth/public-api/${action}`, {
             method: 'POST',
@@ -25174,83 +25294,72 @@ async function submitAdminPublicApiKeyAction() {
         if (!data.success) {
             throw new Error(data.message || '操作失败');
         }
+        const plainKey = String(data.public_api_key || '').trim();
+        if (!plainKey) {
+            throw new Error('接口未返回新 API Key');
+        }
         renderAdminPublicApiAuth(data.auth || {}, {
             keepLatest: true,
             selectedKeyId: action === 'regenerate'
                 ? String(selected?.id || '')
                 : String((data.auth || {}).selected_key_id || '')
         });
-        if (latestKeyEl) latestKeyEl.textContent = String(data.public_api_key || '').trim() || '-';
-        if (latestKeyGroup) latestKeyGroup.style.display = '';
+        if (latestKeyEl) latestKeyEl.textContent = plainKey;
+        if (latestKeyGroup) latestKeyGroup.hidden = false;
+        const form = document.getElementById('adminPublicApiKeyModalForm');
+        if (form) form.hidden = true;
         if (keyNameInput) keyNameInput.disabled = true;
-        if (expireInput) expireInput.disabled = true;
+        getPapiModalModule().setExpiryDisabled(
+            document.getElementById('adminPublicApiExpireModalSlider'),
+            true,
+        );
         adminPublicApiModalCompleted = true;
         if (confirmBtn) confirmBtn.textContent = '关闭';
+        if (cancelBtn) cancelBtn.hidden = true;
         showToast(action === 'regenerate' ? '当前 Key 已重新生成，旧 key 已失效' : 'Public API key 已生成');
     } catch (err) {
         showToast(err.message || '操作失败');
+    } finally {
+        if (confirmBtn) confirmBtn.disabled = false;
     }
 }
 
-function ensureAdminPublicApiDeleteModal() {
-    let modal = document.getElementById('adminPublicApiDeleteModal');
-    if (modal) return modal;
-    modal = document.createElement('div');
-    modal.id = 'adminPublicApiDeleteModal';
-    modal.className = 'modal-backdrop';
-    modal.innerHTML = `
-        <div class="modal" style="width: 420px; padding: 0;">
-            <div class="modal-head">
-                <h3>删除 API Key</h3>
-                <button class="btn-modal-close" type="button" id="adminPublicApiDeleteModalCloseBtn" title="Close">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
-            </div>
-            <div class="modal-body" style="padding: 16px 20px;">
-                <p id="adminPublicApiDeleteModalDesc" style="margin: 0 0 12px;">确认删除当前 API Key 吗？此操作不可撤销。</p>
-                <div class="modal-footer admin-public-api-delete-footer">
-                    <button id="adminPublicApiDeleteModalCancelBtn" class="btn-cancel" type="button">取消</button>
-                    <button id="adminPublicApiDeleteModalConfirmBtn" class="btn-danger-solid" type="button">删除</button>
-                </div>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(modal);
-    registerModalBackdropStacking(modal);
-    bindBackdropSafeClose(modal, closeAdminPublicApiDeleteModal);
-    modal.querySelector('#adminPublicApiDeleteModalCloseBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
-    modal.querySelector('#adminPublicApiDeleteModalCancelBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
-    modal.querySelector('#adminPublicApiDeleteModalConfirmBtn')?.addEventListener('click', async () => {
-        await confirmAdminPublicApiDeleteModal();
-    });
-    return modal;
-}
+async function copyAdminPublicApiModalKey() {
+    const plainKey = String(document.getElementById('adminPublicApiModalLatestKey')?.textContent || '').trim();
 
-window.closeAdminPublicApiDeleteModal = function() {
-    const modal = document.getElementById('adminPublicApiDeleteModal');
-    if (modal) modal.classList.remove('active');
-    adminPublicApiDeleteTargetKey = null;
-};
-
-function openAdminPublicApiDeleteModal(selected) {
-    const modal = ensureAdminPublicApiDeleteModal();
-    adminPublicApiDeleteTargetKey = selected || null;
-    const desc = document.getElementById('adminPublicApiDeleteModalDesc');
-    if (desc) {
-        const keyName = String(selected?.name || selected?.id || '当前 API Key');
-        desc.textContent = `确认删除 “${keyName}” 吗？此操作不可撤销。`;
-    }
-    modal.classList.add('active');
-    handleBackdropStackingChange(modal);
-}
-
-async function confirmAdminPublicApiDeleteModal() {
-    const selected = adminPublicApiDeleteTargetKey;
-    if (!selected || !selected.id) {
-        closeAdminPublicApiDeleteModal();
-        showToast('未找到要删除的 API Key');
+    if (!plainKey) {
+        showToast('当前没有可复制的 Key');
         return;
     }
+
+    try {
+        await getPapiModalModule().copyText(plainKey);
+        showToast('API Key 已复制');
+    } catch (err) {
+        showToast(`复制失败: ${err.message || err}`);
+    }
+}
+
+async function revokeAdminPublicApiKey() {
+    const selected = getSelectedAdminPublicApiKey();
+    if (!selected || !selected.id) {
+        showToast('请先在左侧选择一个 Key');
+        return;
+    }
+
+    const keyName = String(selected.name || selected.id);
+    const confirmed = await getPapiModalModule().confirm({
+        confirmLabel: '删除',
+        message: `确认删除“${keyName}”吗？此操作不可撤销。`,
+        dialogId: 'papiKeyConfirmModal',
+        title: '删除 API Key',
+        tone: 'danger',
+    });
+
+    if (!confirmed) {
+        return;
+    }
+
     try {
         const res = await fetch(`/api/admin/auth/public-api/keys/${encodeURIComponent(String(selected.id))}`, {
             method: 'DELETE'
@@ -25261,20 +25370,10 @@ async function confirmAdminPublicApiDeleteModal() {
         }
         adminSelectedPublicApiKeyId = '';
         renderAdminPublicApiAuth(data.auth || {}, { keepLatest: false });
-        closeAdminPublicApiDeleteModal();
         showToast('Key 已删除');
     } catch (err) {
         showToast(err.message || '删除失败');
     }
-}
-
-async function revokeAdminPublicApiKey() {
-    const selected = getSelectedAdminPublicApiKey();
-    if (!selected || !selected.id) {
-        showToast('请先在左侧选择一个 Key');
-        return;
-    }
-    openAdminPublicApiDeleteModal(selected);
 }
 
 function applyAdminGenImageApiPayload(data) {
@@ -27327,6 +27426,11 @@ async function openSettingsModal() {
         // 初始化标签页事件
         initSettingsTabs();
 
+        // 初始化 Skill 市场子标签
+        if (window.NexoraSkillMarket) {
+            window.NexoraSkillMarket.initSkillMarketModule();
+        }
+
         // 默认切换到个人资料
         switchSettingsTab('profile');
         pendingAvatarDataUrl = '';
@@ -27364,6 +27468,7 @@ function closeSettingsModal() {
 }
 
 function initSettingsTabs() {
+    settingsManagementController.init();
     adminSettingsTabsController.initSettingsTabs();
 }
 
@@ -27550,6 +27655,9 @@ function findSkillById(skillId) {
     return arr.find((item) => String(item && item.id ? item.id : '').trim() === sid) || null;
 }
 
+// 暴露给 Skill 市场模块使用
+window.getSkillById = findSkillById;
+
 function closeSkillEditorModal() {
     const modal = els.skillEditorModal || document.getElementById('skillEditorModal');
     if (modal) modal.classList.remove('active');
@@ -27639,6 +27747,8 @@ function renderSkillList() {
         const preview = buildSkillPreviewText(item && item.main_content ? item.main_content : '');
         const mode = normalizeSkillModeValue(modeMap[sid] || item.mode || 'off');
         const icon = resolveSkillCardIcon(item);
+        const origin = String(item && item.origin ? item.origin : 'global').trim();
+        const isPersonal = (origin === 'self' || origin === 'market');
         const requiredTools = Array.isArray(item && item.required_tools)
             ? item.required_tools.map((x) => String(x || '').trim()).filter(Boolean)
             : [];
@@ -27646,12 +27756,29 @@ function renderSkillList() {
             ? (requiredTools.length > 1 ? `${requiredTools[0]} +${requiredTools.length - 1}` : requiredTools[0])
             : '无工具约束';
         const modeText = formatSkillModeShortLabel(mode);
+
+        // 来源标记
+        const originLabel = origin === 'market' ? '市场' : (origin === 'self' ? '自建' : '全局');
+        const originBadge = `<span class="settings-skill-origin" data-origin="${escapeHtml(origin)}">${escapeHtml(originLabel)}</span>`;
+
+        // 操作按钮：个人 Skill 显示编辑/删除，全局 Skill 仅管理员可编辑
+        let actionsHtml = '';
+        if (isPersonal) {
+            actionsHtml = `
+                <div class="settings-skill-actions">
+                    <button type="button" class="btn-skill-small" data-action="edit-personal-skill" data-skill-id="${escapeHtml(sid)}">编辑</button>
+                    <button type="button" class="btn-skill-small danger" data-action="delete-personal-skill" data-skill-id="${escapeHtml(sid)}">删除</button>
+                </div>`;
+        } else if (canEditCatalog) {
+            actionsHtml = `<button type="button" class="settings-skill-edit-dot" data-action="open-skill-editor" data-skill-id="${escapeHtml(sid)}" title="编辑 Skill">⋯</button>`;
+        }
+
         return `
             <div class="settings-skill-card" data-skill-id="${escapeHtml(sid)}">
                 <div class="settings-skill-top">
                     <div class="settings-skill-icon" aria-hidden="true">${escapeHtml(icon)}</div>
-                    <div class="settings-skill-main" data-action="open-skill-editor" data-skill-id="${escapeHtml(sid)}" role="button" tabindex="0">
-                        <div class="settings-skill-title">${escapeHtml(title)}</div>
+                    <div class="settings-skill-main" data-action="${isPersonal ? 'edit-personal-skill' : 'open-skill-editor'}" data-skill-id="${escapeHtml(sid)}" role="button" tabindex="0">
+                        <div class="settings-skill-title">${escapeHtml(title)} ${originBadge}</div>
                         <div class="settings-skill-preview">${escapeHtml(preview)}</div>
                     </div>
                     <div class="settings-skill-controls">
@@ -27674,12 +27801,13 @@ function renderSkillList() {
                 <div class="settings-skill-divider"></div>
                 <div class="settings-skill-footer">
                     <span class="settings-skill-badge" title="${escapeHtml(requiredTools.join(', '))}">${escapeHtml(badgeText)}</span>
-                    <button type="button" class="settings-skill-edit-dot" data-action="open-skill-editor" data-skill-id="${escapeHtml(sid)}" title="${canEditCatalog ? '编辑 Skill' : '查看 Skill'}">⋯</button>
+                    ${actionsHtml}
                 </div>
             </div>
         `;
     }).join('');
 
+    // Mode 下拉菜单
     listEl.querySelectorAll('[data-action="toggle-skill-mode-menu"]').forEach((btn) => {
         btn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -27690,6 +27818,7 @@ function renderSkillList() {
         });
     });
 
+    // 全局 Skill 编辑器（管理员）
     listEl.querySelectorAll('[data-action="open-skill-editor"]').forEach((btn) => {
         btn.addEventListener('click', async () => {
             const sid = String(btn.dataset.skillId || '').trim();
@@ -27702,6 +27831,37 @@ function renderSkillList() {
             const sid = String(btn.dataset.skillId || '').trim();
             if (!sid) return;
             openSkillEditorModal(sid);
+        });
+    });
+
+    // 个人 Skill 编辑
+    listEl.querySelectorAll('[data-action="edit-personal-skill"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            if (window.NexoraSkillMarket) {
+                window.NexoraSkillMarket.openPersonalSkillEditor(sid);
+            }
+        });
+        btn.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            if (window.NexoraSkillMarket) {
+                window.NexoraSkillMarket.openPersonalSkillEditor(sid);
+            }
+        });
+    });
+
+    // 个人 Skill 删除
+    listEl.querySelectorAll('[data-action="delete-personal-skill"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            if (window.NexoraSkillMarket) {
+                window.NexoraSkillMarket.deletePersonalSkill(sid);
+            }
         });
     });
 
@@ -28936,6 +29096,77 @@ function clampAvatarCropOffset() {
     avatarCropState.offsetX = Math.max(minDrawX - centeredX, Math.min(maxDrawX - centeredX, avatarCropState.offsetX));
     avatarCropState.offsetY = Math.max(minDrawY - centeredY, Math.min(maxDrawY - centeredY, avatarCropState.offsetY));
 }
+
+// ─── ESM 兼容：跨模块裸引用的状态变量必须 live-binding ───
+// 经典 script 时代顶层 let 处于全局词法作用域，其他文件可裸引用实时读写；
+// 模块化后为模块作用域，window.X = X 只会固化当时的值，必须用 getter/setter 桥接
+function exposeLiveState(prop, get, set) {
+    Object.defineProperty(window, prop, { get, set, configurable: true });
+}
+exposeLiveState('currentConversationId', () => currentConversationId, (v) => { currentConversationId = v; });
+exposeLiveState('currentUsername', () => currentUsername, (v) => { currentUsername = v; });
+exposeLiveState('shouldAutoScroll', () => shouldAutoScroll, (v) => { shouldAutoScroll = v; });
+exposeLiveState('isUploadingFiles', () => isUploadingFiles, (v) => { isUploadingFiles = v; });
+
+// ─── ESM 兼容：跨模块裸引用 + 内联 onclick 引用的函数必须显式挂载到 window ───
+// 被 chat_mails.js / workspace.js / global_search.js / chat_token_details.js / chat_knowledge.js 裸调用
+window.confirmModalAsync = confirmModalAsync;
+window.escapeHtml = escapeHtml;
+window.getDefaultAvatarDataUrl = getDefaultAvatarDataUrl;
+window.rewriteHtmlDocumentLinksToNewTab = rewriteHtmlDocumentLinksToNewTab;
+window.showToast = showToast;
+window.closeKnowledgeView = closeKnowledgeView;
+window.bindSourceMarkdown = bindSourceMarkdown;
+window.highlightCode = highlightCode;
+window.renderMarkdownWithNewTabLinks = renderMarkdownWithNewTabLinks;
+window.renderMathSafe = renderMathSafe;
+window.createNewConversation = createNewConversation;
+window.jumpToChatSource = jumpToChatSource;
+window.loadConversation = loadConversation;
+window.loadFileCenterFiles = loadFileCenterFiles;
+window.openFileCenterFileDetail = openFileCenterFileDetail;
+window.viewKnowledge = viewKnowledge;
+window._syncTurnIndicatorVisibility = _syncTurnIndicatorVisibility;
+window.applyDesktopHeaderTools = applyDesktopHeaderTools;
+window.bindBackdropSafeClose = bindBackdropSafeClose;
+window.formatFileSize = formatFileSize;
+window.getCloudFileDisplayName = getCloudFileDisplayName;
+window.getCloudFileExtension = getCloudFileExtension;
+window.handleBackdropStackingChange = handleBackdropStackingChange;
+window.hideNotesContextMenu = hideNotesContextMenu;
+window.hidePinContextMenu = hidePinContextMenu;
+window.isCloudFileImage = isCloudFileImage;
+window.loadCloudFiles = loadCloudFiles;
+window.registerModalBackdropStacking = registerModalBackdropStacking;
+window.renderCloudFileCardMedia = renderCloudFileCardMedia;
+window.renderMessages = renderMessages;
+window.setFileUploadProgress = setFileUploadProgress;
+window.setInputContainerCollapsed = setInputContainerCollapsed;
+window.updateSendButtonState = updateSendButtonState;
+window.uploadSingleFileWithProgress = uploadSingleFileWithProgress;
+window.closeKnowledgeSearchResultView = closeKnowledgeSearchResultView;
+window.confirmDeleteKnowledge = confirmDeleteKnowledge;
+window.exportKnowledgeToWord = exportKnowledgeToWord;
+window.openKnowledgeSettingsModal = openKnowledgeSettingsModal;
+window.saveKnowledge = saveKnowledge;
+window.getActiveKnowledgeShareUsername = getActiveKnowledgeShareUsername;
+window.closeWorkspaceKnowledgeView = closeWorkspaceKnowledgeView;
+// 被其他模块通过 window.xxx + typeof 守卫调用（此前静默失效）
+window.isSidebarOverlayLayout = isSidebarOverlayLayout;
+window.closeMobileHeaderMenu = closeMobileHeaderMenu;
+window.loadSkillSettings = loadSkillSettings;
+window.renderLearningMainPanel = renderLearningMainPanel;
+// 内联 onclick 引用
+window.closeKnowledgeSearchModal = closeKnowledgeSearchModal;
+window.closeKnowledgeSettingsModal = closeKnowledgeSettingsModal;
+window.applyKnowledgeSettings = applyKnowledgeSettings;
+window.copyShareUrl = copyShareUrl;
+window.updateVectorInSettings = updateVectorInSettings;
+window.deleteVectorInSettings = deleteVectorInSettings;
+window.searchChroma = searchChroma;
+window.closeSettingsModal = closeSettingsModal;
+window.closeSkillEditorModal = closeSkillEditorModal;
+window.saveSkillEditorModal = saveSkillEditorModal;
 
 function drawAvatarCropCanvas() {
     const { canvas, ctx, img, zoom, baseScale, circleX, circleY, circleR } = avatarCropState;

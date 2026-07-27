@@ -84,6 +84,9 @@ def frontend_settings_refinement():
                 "section_status": str(book.get("section_status") or ""),
                 "summary_status": str(book.get("summary_status") or ""),
                 "annotation_status": str(book.get("annotation_status") or ""),
+                "video_status": str(book.get("video_status") or ""),
+                "pipeline_status": str(book.get("pipeline_status") or ""),
+                "pipeline_error": str(book.get("pipeline_error") or ""),
                 "outline_status": outline_status_cache.get(lecture_id, ""),
                 "outline_error": outline_error_cache.get(lecture_id, ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
@@ -103,6 +106,8 @@ def frontend_settings_refinement():
                 "section_job_status": running_by_book.get(f"{key}::section", ""),
                 "summary_job_status": running_by_book.get(f"{key}::summary", ""),
                 "annotation_job_status": running_by_book.get(f"{key}::annotation", ""),
+                "video_job_status": running_by_book.get(f"{key}::video", ""),
+                "pipeline_job_status": running_by_book.get(f"{key}::pipeline", ""),
                 "progress_text": get_book_progress_text(lecture_id, book_id),
                 "progress_steps": get_book_progress_steps(lecture_id, book_id),
                 "updated_at": int(book.get("updated_at") or 0),
@@ -132,6 +137,27 @@ def frontend_settings_refinement_start():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+
+
+@bp.route("/frontend/settings/refinement/pipeline", methods=["POST"])
+def frontend_settings_refinement_pipeline():
+    """设置页：启动教材自动处理流水线。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start the material pipeline."}), 403
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    force = _as_bool(data.get("force"), default=False)
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    try:
+        result = enqueue_book_pipeline(_cfg, lecture_id, book_id, actor=actor, force=force)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
 
 @bp.route("/frontend/settings/refinement/intensive", methods=["POST"])
 def frontend_settings_refinement_intensive():

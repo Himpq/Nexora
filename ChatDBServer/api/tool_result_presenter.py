@@ -22,7 +22,6 @@ class ToolResultPresenter:
             "cloud_file_create": self._render_file_create,
             "cloud_file_write": self._render_file_write,
             "cloud_doc_write": self._render_doc_write,
-            "cloud_file_patch": self._render_file_patch,
             "cloud_file_apply_diff": self._render_file_patch,
             "cloud_file_edit": self._render_file_patch,
             "cloud_file_find": self._render_file_find,
@@ -67,7 +66,6 @@ class ToolResultPresenter:
             "knowledge_list": self._render_knowledge_list,
             "memory_profile_read": self._render_user_profile_memory,
             "memory_short_update": self._render_user_profile_update,
-            "workspace_mem_patch": self._render_workspace_memory_update,
             "workspace_mem_apply_diff": self._render_workspace_memory_update,
             "workspace_mem_edit": self._render_workspace_memory_update,
             "workspace_mem_add": self._render_workspace_memory_update,
@@ -1140,7 +1138,7 @@ class ToolResultPresenter:
         payload = self._load_payload_unwrapped(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload(str(args.get("_tool_name") or "cloud_file_patch"), payload)
+            return self._render_cached_payload(str(args.get("_tool_name") or "cloud_file_edit"), payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -2498,7 +2496,6 @@ class ToolResultPresenter:
             return self._render_cached_payload(tool_name or "workspace_mem", payload)
 
         title_map = {
-            "workspace_mem_patch": ("## Workspace Memory Patched", "## Workspace Memory Patch Failed"),
             "workspace_mem_apply_diff": ("## Workspace Memory Diff Applied", "## Workspace Memory Diff Failed"),
             "workspace_mem_edit": ("## Workspace Memory Edited", "## Workspace Memory Edit Failed"),
             "workspace_mem_add": ("## Workspace Memory Appended", "## Workspace Memory Append Failed"),

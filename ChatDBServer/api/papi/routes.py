@@ -38,6 +38,11 @@ from .token_logger import (
     record_papi_image_generation,
     record_papi_token_usage,
 )
+from .scope import (
+    deny_papi_owner_scope,
+    require_papi_owner_match,
+    resolve_papi_request_username,
+)
 from api.database import User
 from api.conversation_manager import ConversationManager
 from api.server_quota import get_generation_quota_gate
@@ -134,6 +139,7 @@ def load_users_meta() -> Dict[str, Any]:
 
 @papi_bp.route('/api/papi/knowledge/list/<username>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_list_knowledge(username):
     """获取指定用户的知识库列表"""
     try:
@@ -150,6 +156,7 @@ def papi_list_knowledge(username):
 
 @papi_bp.route('/api/papi/user/info/<username>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_user_info(username):
     """PAPI: lightweight user profile/meta query"""
     try:
@@ -179,6 +186,7 @@ def papi_user_info(username):
 
 @papi_bp.route('/api/papi/user/search', methods=['GET'])
 @require_papi_key
+@deny_papi_owner_scope('user search')
 def papi_user_search():
     """PAPI: lightweight user search for mention/autocomplete"""
     try:
@@ -251,6 +259,7 @@ def papi_user_search():
 
 @papi_bp.route('/api/papi/knowledge/basis/<username>/<path:title>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_get_knowledge(username, title):
     """获取指定用户的某个知识内容"""
     try:
@@ -269,6 +278,7 @@ def papi_get_knowledge(username, title):
 
 @papi_bp.route('/api/papi/tokens/stats/<username>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_token_stats(username):
     """获取指定用户的 Token 消耗记录"""
     try:
@@ -480,6 +490,7 @@ def papi_generate_image():
 
 @papi_bp.route('/api/papi/conversations/<username>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_list_conversations(username):
     """获取指定用户的对话列表"""
     try:
@@ -495,6 +506,7 @@ def papi_list_conversations(username):
 
 @papi_bp.route('/api/papi/conversations/<username>/<conv_id>', methods=['GET'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_get_conversation(username, conv_id):
     """获取指定用户的详细对话记录"""
     try:
@@ -510,6 +522,7 @@ def papi_get_conversation(username, conv_id):
 
 @papi_bp.route('/api/papi/knowledge/query/<username>', methods=['POST'])
 @require_papi_key
+@require_papi_owner_match()
 def papi_query_vectors(username):
     """PAPI: vector query"""
     data = request.get_json() or {}
@@ -618,7 +631,20 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
     """PAPI 主处理逻辑，可供普通 completions 与学习对话入口复用。"""
     data = data if isinstance(data, dict) else {}
     config = get_config_all()
-    request_username = str(username or data.get('username') or '').strip()
+    route_username = str(username or '').strip()
+    body_username = str(data.get('username') or '').strip()
+    request_username = route_username or body_username
+    request_username, username_error = resolve_papi_request_username(request_username)
+
+    if username_error:
+        return jsonify({'success': False, 'message': username_error}), 403
+
+    if route_username and body_username and route_username != body_username:
+        _body_owner, body_username_error = resolve_papi_request_username(body_username)
+
+        if body_username_error:
+            return jsonify({'success': False, 'message': body_username_error}), 403
+
     request_path = str(request_path or '').strip().lower()
     token_log_context = build_papi_token_log_context(
         request,
@@ -1224,7 +1250,20 @@ def papi_learning_chat():
     """Learning 主控对话入口：由外部提供 prompt/tools/context，Nexora 管理历史与执行。"""
     data = request.get_json(silent=True) or {}
     metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
-    username = str(data.get('username') or metadata.get('username') or '').strip()
+    body_username = str(data.get('username') or '').strip()
+    metadata_username = str(metadata.get('username') or '').strip()
+    username = body_username or metadata_username
+    username, username_error = resolve_papi_request_username(username)
+
+    if username_error:
+        return jsonify({'success': False, 'message': username_error}), 403
+
+    if body_username and metadata_username and body_username != metadata_username:
+        _metadata_owner, metadata_username_error = resolve_papi_request_username(metadata_username)
+
+        if metadata_username_error:
+            return jsonify({'success': False, 'message': metadata_username_error}), 403
+
     if not username:
         auth = request.environ.get('papi.auth') if isinstance(request.environ.get('papi.auth'), dict) else {}
         key_state = auth.get('key') if isinstance(auth.get('key'), dict) else {}

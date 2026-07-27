@@ -19,12 +19,13 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260715_project_ui_02">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260726_papi_modal_04">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260714_tool_flow_01">
     <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260714_memory_model_compact_02">
+    <link rel="stylesheet" href="/static/css/chat_skill_market.css?v=20260725_skill_market_01">
     <link rel="stylesheet" href="/static/css/chat_token_details.css?v=20260715_token_detail_01">
     <link rel="stylesheet" href="/static/css/chat_conversation_branches.css?v=20260716_conversation_branches_01">
     <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
@@ -33,6 +34,9 @@
     <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260717_course_sidebar_state_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
     <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_live_transfer_stream_01">
+    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260726_papi_slider_06">
+    <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260726_settings_dialog_04">
+    <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260726_settings_management_02">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
 </head>
 <body>
@@ -732,49 +736,54 @@
         </div>
     </div>
     
-    <!-- Scripts -->
-    <script src="/static/js/chat_logger.js?v=20260708_console_gate_01"></script>
+    <!-- Scripts (ESM modules, 按文档顺序 deferred 执行) -->
+    <script type="module" src="/static/js/chat_logger.js?v=20260726_esm_01"></script>
     <script>
         window.NEXORA_MAIL_ENABLED = {{ nexora_mail_enabled | tojson }};
     </script>
-    <script src="/static/js/learning_navigation_state.js?v=20260717_learning_navigation_state_01"></script>
-    <script src="/static/js/learning_workspace_layout.js?v=20260717_learning_sidebar_hierarchy_05"></script>
-    <script src="/static/js/chat_shared.js?v=20260706_feature_split_09"></script>
-    <script src="/static/js/chat_admin_users.js?v=20260707_admin_users_split_01"></script>
+    <script type="module" src="/static/js/learning_navigation_state.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/learning_workspace_layout.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_shared.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin_users.js?v=20260726_esm_01"></script>
     {% if nexora_mail_enabled %}
-    <script src="/static/js/chat_mails.js?v=20260708_admin_mail_runtime_02"></script>
+    <script type="module" src="/static/js/chat_mails.js?v=20260726_esm_01"></script>
     {% endif %}
-    <script src="/static/js/chat_message_window.js?v=20260706_feature_split_09"></script>
-    <script src="/static/js/chat_message_versions.js?v=20260706_feature_split_09"></script>
-    <script src="/static/js/knowledge_collab_client.js?v=20260708_06"></script>
-    <script src="/static/js/chat_knowledge.js?v=20260715_anchor_scroll_02"></script>
-    <script src="/static/js/chat_model_select.js?v=20260714_shared_model_select_01"></script>
-    <script src="/static/js/chat_memory_settings.js?v=20260714_memory_model_compact_01"></script>
-    <script src="/static/js/chat_tools.js?v=20260715_tool_scroll_01"></script>
-    <script src="/static/js/chat_tool_canvas.js?v=20260707_tool_canvas_split_02"></script>
-    <script src="/static/js/chat_conversation_branches.js?v=20260716_conversation_branches_01"></script>
-    <script src="/static/js/chat_messages.js?v=20260716_conversation_branches_01"></script>
-    <script src="/static/js/chat_latex.js?v=20260708_console_gate_02"></script>
-    <script src="/static/js/chat_streaming.js?v=20260715_stream_fence_01"></script>
-    <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
-    <script src="/static/js/chat_stream_reconnect.js?v=20260714_memory_badge_01"></script>
-    <script src="/static/js/chat_conversations.js?v=20260717_learning_conversations_03"></script>
-    <script src="/static/js/chat_admin_system.js?v=20260707_admin_system_split_01"></script>
-    <script src="/static/js/chat_admin.js?v=20260707_admin_tabs_split_02"></script>
-    <script src="/static/js/chat_markdown.js?v=20260715_stream_fence_01"></script>
-    <script src="/static/js/chat_files.js?v=20260707_file_upload_error_feedback_01"></script>
-    <script src="/static/js/chat.js?v=20260717_learning_sidebar_restore_04"></script>
-    <script src="/static/js/chat_token_details.js?v=20260715_token_detail_01"></script>
-    <script src="/static/js/global_search.js?v=20260711_global_search_04"></script>
-    <script src="/static/js/workspace.js?v=20260716_conversation_branches_01"></script>
-    <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
-    <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>
+    <script type="module" src="/static/js/chat_message_window.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_message_versions.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/knowledge_collab_client.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_knowledge.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_model_select.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_memory_settings.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_tools.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_tool_canvas.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_conversation_branches.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_messages.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_latex.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_streaming.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_stream_lifecycle.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_stream_reconnect.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_conversations.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin_system.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_settings_management.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_skill_market.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_markdown.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_files.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_settings_dialog.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/workspace.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/notification.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/message_avatar.js?v=20260726_esm_01"></script>
     <script>
         window.NEXORA_MAP_RENDERER_CONFIG = {{ map_renderer_config | tojson }};
     </script>
-    <script src="/static/js/nexora_map_renderer.js?v=20260626_tianditu_tile_fix_01"></script>
-    <script src="/static/js/admin_map_settings.js?v=20260628_admin_controls_04"></script>
-    <script src="/static/js/learning_course_workspace.js?v=20260717_course_sidebar_state_02"></script>
+    <script type="module" src="/static/js/nexora_map_renderer.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/admin_map_settings.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/learning_course_workspace.js?v=20260726_esm_01"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -986,36 +995,89 @@
         </div>
     </div>
 
-    <div id="adminPublicApiKeyModal" class="modal-backdrop">
-        <div class="modal" style="width: 480px; padding: 0;">
-            <div class="modal-head">
+    <div id="adminPublicApiKeyModal" class="modal-backdrop settings-dialog-backdrop" aria-hidden="true">
+        <div class="modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby="adminPublicApiKeyModalTitle" aria-describedby="adminPublicApiKeyModalDesc">
+            <div class="modal-head settings-dialog-head">
                 <h3 id="adminPublicApiKeyModalTitle">生成 Public API Key</h3>
-                <button class="btn-modal-close" onclick="closeAdminPublicApiKeyModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+                <button id="adminPublicApiKeyModalCloseBtn" class="btn-close-circle settings-dialog-close" type="button" data-settings-dialog-close title="关闭" aria-label="关闭">×</button>
             </div>
-            <div class="modal-body" style="padding: 16px 20px;">
-                <p id="adminPublicApiKeyModalDesc" style="margin: 0 0 10px;">请选择 Key 过期时间。</p>
-                <div class="form-group" style="margin-bottom: 10px;">
-                    <label>Key Name</label>
-                    <input id="adminPublicApiKeyNameInput" class="input-modern" placeholder="例如：NexoraLearning / OpenCode / OpenClaw">
+            <div class="modal-body settings-dialog-body">
+                <div id="adminPublicApiKeyModalForm" class="papi-modal-form">
+                    <p id="adminPublicApiKeyModalDesc" class="settings-dialog-description">请选择 Key 过期时间。</p>
+                    <div class="form-group">
+                        <label>Key 名称</label>
+                        <input id="adminPublicApiKeyNameInput" class="input-modern" placeholder="例如：NexoraLearning / OpenCode / OpenClaw">
+                    </div>
+                    <div class="form-group">
+                        <label for="adminPublicApiExpireModalSliderInput">有效期</label>
+                        <div id="adminPublicApiExpireModalSlider" aria-label="有效期"></div>
+                    </div>
+                    <div id="adminPublicApiModalScopeFields" class="papi-scope-form">
+                        <div class="form-group">
+                            <label>访问范围</label>
+                            <div id="adminPublicApiModalScopeSegment" class="papi-segment" role="group" aria-label="访问范围">
+                                <button class="papi-segment-button" type="button" data-papi-scope="owner">用户私有</button>
+                                <button class="papi-segment-button active" type="button" data-papi-scope="global">全局访问</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="adminPublicApiModalOwnerInput">所属用户</label>
+                            <div id="adminPublicApiModalOwnerSelector" class="admin-user-token-selector papi-owner-selector">
+                                <input id="adminPublicApiModalOwnerInput" class="input-modern" placeholder="选择用户" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                <div id="adminPublicApiModalOwnerMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-group" style="margin-bottom: 10px;">
-                    <label>Expire</label>
-                    <select id="adminPublicApiExpireModalInput" class="input-modern">
-                        <option value="1d">1d</option>
-                        <option value="7d">7d</option>
-                        <option value="1m">1m</option>
-                        <option value="3m">3m</option>
-                        <option value="forever" selected>forever</option>
-                    </select>
+                <div id="adminPublicApiModalLatestKeyGroup" class="papi-plain-result" hidden>
+                    <div class="papi-plain-result-label">新 API Key（仅显示一次）</div>
+                    <div id="adminPublicApiModalLatestKey" class="papi-plain-result-value"></div>
+                    <button id="adminPublicApiModalCopyBtn" class="btn-primary-outline" type="button">
+                        <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        <span>复制 Key</span>
+                    </button>
                 </div>
-                <div id="adminPublicApiModalLatestKeyGroup" class="form-group" style="display:none; margin-bottom: 0;">
-                    <label>New API Key (show once)</label>
-                    <div id="adminPublicApiModalLatestKey" class="admin-info-text mono" style="font-size: 12px; word-break: break-all;"></div>
+            </div>
+            <div class="modal-footer settings-dialog-footer">
+                <button id="adminPublicApiKeyModalCancelBtn" class="btn-cancel" type="button" data-settings-dialog-close>取消</button>
+                <button id="adminPublicApiKeyModalConfirmBtn" class="btn-confirm" type="button">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="userPapiKeyModal" class="modal-backdrop settings-dialog-backdrop" aria-hidden="true">
+        <div class="modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby="userPapiKeyModalTitle">
+            <div class="modal-head settings-dialog-head">
+                <h3 id="userPapiKeyModalTitle">新建 API Key</h3>
+                <button id="userPapiKeyModalCloseBtn" class="btn-close-circle settings-dialog-close" type="button" data-settings-dialog-close title="关闭" aria-label="关闭">×</button>
+            </div>
+            <div class="modal-body settings-dialog-body">
+                <div id="userPapiKeyModalForm" class="papi-modal-form">
+                    <div class="form-group">
+                        <label for="userPapiKeyModalNameInput">Key 名称</label>
+                        <input id="userPapiKeyModalNameInput" class="input-modern" placeholder="例如：个人脚本">
+                    </div>
+                    <div class="form-group">
+                        <label for="userPapiKeyModalExpireSliderInput">有效期</label>
+                        <div id="userPapiKeyModalExpireSlider" aria-label="有效期"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>权限</label>
+                        <div id="userPapiKeyModalPermissions" class="settings-toggle-grid"></div>
+                    </div>
                 </div>
-                <div class="modal-footer" style="margin-top: 14px;">
-                    <button id="adminPublicApiKeyModalCancelBtn" class="btn-cancel" type="button" onclick="closeAdminPublicApiKeyModal()">取消</button>
-                    <button id="adminPublicApiKeyModalConfirmBtn" class="btn-confirm" type="button">确认</button>
+                <div id="userPapiKeyPlainResult" class="papi-plain-result" hidden>
+                    <div class="papi-plain-result-label">新 API Key</div>
+                    <div id="userPapiKeyPlainValue" class="papi-plain-result-value"></div>
+                    <button id="userPapiKeyCopyBtn" class="btn-primary-outline" type="button">
+                        <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        <span>复制 Key</span>
+                    </button>
                 </div>
+            </div>
+            <div class="modal-footer settings-dialog-footer">
+                <button id="userPapiKeyModalCancelBtn" class="btn-cancel" type="button" data-settings-dialog-close>取消</button>
+                <button id="userPapiKeyModalConfirmBtn" class="btn-confirm" type="button">创建</button>
             </div>
         </div>
     </div>
@@ -1161,6 +1223,7 @@
                         <button type="button" class="admin-tab" data-tab="preferences">偏好设置</button>
                         <button type="button" class="admin-tab" data-tab="skills">Skill</button>
                         <button type="button" class="admin-tab" data-tab="statistics">使用统计</button>
+                        <button type="button" class="admin-tab" data-tab="user-api-keys">我的 API Key</button>
                         <div id="settingsAdminGap" class="settings-nav-gap" style="display:none;"></div>
                         <button type="button" id="settingsAdminSystemBtn" class="admin-tab settings-admin-entry" data-tab="admin-system" style="display:none;">系统设置</button>
                         <button type="button" id="settingsAdminUsersBtn" class="admin-tab settings-admin-entry" data-tab="admin-users" style="display:none;">用户管理</button>
@@ -1236,8 +1299,41 @@
                             </section>
                         </div>
                         <div id="settings-skills-tab" class="admin-tab-content">
-                            <div id="settingsSkillList" class="settings-skill-list">
-                                <div class="settings-skill-empty">加载中...</div>
+                            <div class="skill-subtabs">
+                                <button type="button" class="skill-subtab active" data-skill-subtab="my">我的 Skill</button>
+                                <button type="button" class="skill-subtab" data-skill-subtab="market">Skill 市场</button>
+                            </div>
+                            <div id="skill-subtab-my" class="skill-subtab-content active">
+                                <div class="skill-my-toolbar">
+                                    <button type="button" class="btn-skill-create" id="btnUploadPersonalSkill">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        上传 Skill
+                                    </button>
+                                    <input type="file" id="skillUploadFileInput" accept=".skill,.txt,.md,.markdown,.json,.yaml,.yml,.prompt" style="display:none;">
+                                    <button type="button" class="btn-skill-create" id="btnCreatePersonalSkill">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                        新建 Skill
+                                    </button>
+                                </div>
+                                <div id="settingsSkillList" class="settings-skill-list">
+                                    <div class="settings-skill-empty">加载中...</div>
+                                </div>
+                            </div>
+                            <div id="skill-subtab-market" class="skill-subtab-content">
+                                <div class="skill-market-toolbar">
+                                    <div class="skill-market-search">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                        <input type="text" id="skillMarketSearchInput" placeholder="搜索 Skill..." autocomplete="off">
+                                    </div>
+                                    <select id="skillMarketSortSelect" class="skill-market-sort">
+                                        <option value="installs">最热</option>
+                                        <option value="newest">最新</option>
+                                        <option value="name">名称</option>
+                                    </select>
+                                </div>
+                                <div id="skillMarketList" class="skill-market-list">
+                                    <div class="settings-skill-empty">加载中...</div>
+                                </div>
                             </div>
                         </div>
                         <div id="settings-statistics-tab" class="admin-tab-content">
@@ -1252,8 +1348,69 @@
                                 <div id="modelUsageStats" class="settings-field" style="min-height: 120px;">-</div>
                             </div>
                         </div>
-                        <div id="settings-admin-system-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar admin-system-toolbar-row">
+                        <div id="settings-user-api-keys-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button id="userPapiKeyCreateBtn" class="btn-primary" type="button" disabled>
+                                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                                    <span>新建 Key</span>
+                                </button>
+                                <button id="userPapiKeyRefreshBtn" class="btn-primary-outline btn-compact settings-management-icon-button" type="button" title="刷新 Key 列表" aria-label="刷新 Key 列表">
+                                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="userPapiKeyList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty settings-management-list-state" role="status">正在加载 API Key...</div>
+                                </div>
+                                <div id="userPapiKeyDetail" class="admin-user-detail settings-management-detail">
+                                    <div id="userPapiKeyEmpty" class="admin-user-detail-empty">请选择左侧 Key 查看详情</div>
+                                    <div id="userPapiKeyDetailContent" hidden>
+                                        <div class="admin-user-detail-grid">
+                                            <div class="form-group">
+                                                <label for="userPapiKeyNameInput">Key Name</label>
+                                                <input id="userPapiKeyNameInput" class="input-modern" placeholder="Key Name">
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Key 预览</label>
+                                                <div id="userPapiKeyPreview" class="admin-info-text mono">-</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>创建时间</label>
+                                                <div id="userPapiKeyCreatedAt" class="admin-info-text mono">-</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>过期时间</label>
+                                                <div id="userPapiKeyExpiresAt" class="admin-info-text mono">-</div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group papi-expire-field">
+                                            <label for="userPapiKeyExpireSliderInput">有效期</label>
+                                            <div id="userPapiKeyExpireSlider" aria-label="有效期"></div>
+                                        </div>
+                                        <div class="form-group papi-permission-field">
+                                            <label>权限</label>
+                                            <div id="userPapiKeyPermissions" class="settings-toggle-grid"></div>
+                                        </div>
+                                        <div class="papi-action-row">
+                                            <button id="userPapiKeySaveBtn" class="btn-primary-outline" type="button">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存设置</span>
+                                            </button>
+                                            <button id="userPapiKeyRotateBtn" class="btn-primary-outline" type="button">
+                                                <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                                                <span>轮换 Key</span>
+                                            </button>
+                                            <button id="userPapiKeyDeleteBtn" class="btn-danger-small" type="button">
+                                                <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                                                <span>删除 Key</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-system-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar admin-system-toolbar-row settings-management-toolbar">
                                 <div class="admin-system-toolbar-actions">
                                     <button id="adminSystemReloadBtn" class="btn-primary-outline" type="button">
                                         <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
@@ -1263,8 +1420,8 @@
                                 <div id="adminSystemStatus" class="settings-field">-</div>
                             </div>
 
-                            <div class="admin-users-layout admin-system-layout">
-                                <div id="adminSystemModuleList" class="admin-users-list admin-system-module-list">
+                            <div class="admin-users-layout admin-system-layout settings-management-layout">
+                                <div id="adminSystemModuleList" class="admin-users-list admin-system-module-list settings-management-list">
                                     <div class="admin-user-item admin-system-module-item active" data-admin-system-module="runtime">
                                         <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i></span>
                                         <div>
@@ -1308,7 +1465,7 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div id="adminSystemDetail" class="admin-user-detail admin-system-detail">
+                                <div id="adminSystemDetail" class="admin-user-detail admin-system-detail settings-management-detail">
                                     <div class="admin-system-grid">
                                 <section class="admin-system-section active" data-admin-system-section="runtime">
                                     <div class="admin-system-section-head">
@@ -1575,28 +1732,28 @@
                                 </div>
                             </div>
                         </div>
-                        <div id="settings-admin-users-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-users-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
                                 <button class="btn-primary" id="openAddUserForm">+ 添加新用户</button>
                                 <input id="adminUserFilterInput" class="input-modern" placeholder="筛选用户：用户名 / ID / 角色 / IP">
                             </div>
-                            <div class="admin-users-layout">
-                                <div id="adminUsersList" class="admin-users-list"></div>
-                                <div id="adminUserDetail" class="admin-user-detail">
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminUsersList" class="admin-users-list settings-management-list"></div>
+                                <div id="adminUserDetail" class="admin-user-detail settings-management-detail">
                                     <div class="admin-user-detail-empty">请选择左侧用户查看详情</div>
                                 </div>
                             </div>
                         </div>
                         {% if nexora_mail_enabled %}
-                        <div id="settings-admin-mail-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-mail-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
                                 <button class="btn-primary" id="openAddMailUserForm">+ 添加邮箱用户</button>
                                 <select id="adminMailGroupSelect" class="input-modern" style="max-width: 220px;"></select>
                                 <input id="adminMailUserFilterInput" class="input-modern" placeholder="筛选邮箱用户：用户名 / 权限 / 路径">
                             </div>
-                            <div class="admin-users-layout">
-                                <div id="adminMailUsersList" class="admin-users-list"></div>
-                                <div id="adminMailUserDetail" class="admin-user-detail">
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminMailUsersList" class="admin-users-list settings-management-list"></div>
+                                <div id="adminMailUserDetail" class="admin-user-detail settings-management-detail">
                                     <div class="admin-user-detail-empty">请选择左侧邮箱用户查看详情</div>
                                 </div>
                             </div>
@@ -1705,8 +1862,8 @@
                                 <div id="adminToolTrendTop" class="admin-token-trend-top"></div>
                             </div>
                         </div>
-                        <div id="settings-admin-models-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-models-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar settings-management-toolbar-models">
                                 <button id="btnAddProvider" class="btn-primary" type="button">+ 添加供应商</button>
                                 <button id="btnAddModel" class="btn-primary" type="button">+ 添加模型</button>
                                 <input id="adminModelSearchInput" class="input-modern model-admin-search" placeholder="筛选模型：Provider / BaseURL / 模型ID / 名称 / 状态">
@@ -1721,34 +1878,34 @@
                                     </select>
                                 </div>
                             </div>
-                            <div class="admin-users-layout model-admin-users-layout">
-                                <div id="adminModelProviderList" class="admin-users-list">
+                            <div class="admin-users-layout model-admin-users-layout settings-management-layout">
+                                <div id="adminModelProviderList" class="admin-users-list settings-management-list">
                                     <div class="admin-user-detail-empty">Loading...</div>
                                 </div>
-                                <div id="adminModelConfigList" class="admin-user-detail">
+                                <div id="adminModelConfigList" class="admin-user-detail settings-management-detail">
                                     <div class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
                                 </div>
                             </div>
                         </div>
-                        <div id="settings-admin-gen-image-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-gen-image-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
                                 <button id="btnAddGenImageApi" class="btn-primary-outline" type="button">
                                     <i class="fa-solid fa-plus" aria-hidden="true"></i>
                                     <span>添加接口</span>
                                 </button>
                                 <input id="adminGenImageApiSearchInput" class="input-modern model-admin-search" placeholder="筛选接口：名称 / BaseURL / 模型 / 状态">
                             </div>
-                            <div class="admin-users-layout">
-                                <div id="adminGenImageApiList" class="admin-users-list">
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminGenImageApiList" class="admin-users-list settings-management-list">
                                     <div class="admin-user-detail-empty">Loading...</div>
                                 </div>
-                                <div id="adminGenImageApiDetail" class="admin-user-detail">
+                                <div id="adminGenImageApiDetail" class="admin-user-detail settings-management-detail">
                                     <div class="admin-user-detail-empty">请选择左侧接口查看详情</div>
                                 </div>
                             </div>
                         </div>
-                        <div id="settings-admin-map-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-map-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
                                 <button id="adminMapProviderRefreshBtn" class="btn-primary-outline" type="button">
                                     <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
                                     <span>刷新状态</span>
@@ -1758,32 +1915,36 @@
                                     <option value="tianditu">tianditu</option>
                                 </select>
                             </div>
-                            <div class="admin-users-layout">
-                                <div id="adminMapProviderList" class="admin-users-list">
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminMapProviderList" class="admin-users-list settings-management-list">
                                     <div class="admin-user-detail-empty">Loading...</div>
                                 </div>
-                                <div id="adminMapProviderDetail" class="admin-user-detail">
+                                <div id="adminMapProviderDetail" class="admin-user-detail settings-management-detail">
                                     <div class="admin-user-detail-empty">请选择左侧 Provider 查看详情</div>
                                 </div>
                             </div>
                         </div>
-                        <div id="settings-admin-auth-tab" class="admin-tab-content">
-                            <div class="admin-users-toolbar">
+                        <div id="settings-admin-auth-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
                                 <button id="adminPublicApiGenerateBtn" class="btn-primary-outline" type="button">
                                     <i class="fa-solid fa-key" aria-hidden="true"></i>
                                     <span>生成 Public API Key</span>
                                 </button>
+                                <div id="adminPapiOwnerFilterSelector" class="admin-user-token-selector papi-owner-filter-selector">
+                                    <input id="adminPapiOwnerFilterInput" class="input-modern" placeholder="按用户筛选" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                    <div id="adminPapiOwnerFilterMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                </div>
                                 <label class="admin-public-api-global-toggle" hidden style="display:none !important;">
                                     <input id="adminPublicApiEnabledToggle" type="checkbox">
                                     启用 Public API（总开关）
                                 </label>
                                 <button id="adminPublicApiSaveGlobalBtn" class="btn-primary admin-public-api-global-save" type="button" hidden style="display:none !important;">保存总开关</button>
                             </div>
-                            <div class="admin-users-layout">
-                                <div id="adminPublicApiKeyList" class="admin-users-list">
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminPublicApiKeyList" class="admin-users-list settings-management-list">
                                     <div class="admin-user-detail-empty" style="padding: 12px;">Loading...</div>
                                 </div>
-                                <div class="admin-user-detail" style="padding: 12px 14px;">
+                                <div class="admin-user-detail settings-management-detail" style="padding: 12px 14px;">
                                     <div class="form-group admin-public-api-status-group" style="display:none !important;" hidden>
                                         <label>API 状态</label>
                                         <div id="adminPublicApiStatus" class="settings-field">-</div>
@@ -1795,6 +1956,20 @@
                                     <div class="form-group" style="margin-bottom: 10px;">
                                         <label>Key 预览</label>
                                         <div id="adminPublicApiKeyPreview" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>访问范围</label>
+                                        <div id="adminPublicApiScopeSegment" class="papi-segment" role="group" aria-label="访问范围">
+                                            <button class="papi-segment-button" type="button" data-papi-scope="owner">用户私有</button>
+                                            <button class="papi-segment-button" type="button" data-papi-scope="global">全局访问</button>
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label for="adminPublicApiOwnerInput">所属用户</label>
+                                        <div id="adminPublicApiOwnerSelector" class="admin-user-token-selector papi-owner-selector">
+                                            <input id="adminPublicApiOwnerInput" class="input-modern" placeholder="选择用户" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                            <div id="adminPublicApiOwnerMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                        </div>
                                     </div>
                                     <div class="form-group" style="margin-bottom: 8px;">
                                         <label>创建时间</label>
@@ -1912,6 +2087,72 @@
             <div class="modal-footer" style="padding: 12px 20px; display:flex; justify-content:flex-end; gap:10px;">
                 <button class="btn-cancel" id="cancelSkillEditorBtn" type="button" onclick="closeSkillEditorModal()">取消</button>
                 <button class="btn-confirm" id="saveSkillEditorBtn" type="button" onclick="saveSkillEditorModal()">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- 个人 Skill 编辑器弹窗 -->
+    <div id="personalSkillEditorModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-head">
+                <h3 id="psEditorModalTitle">新建 Skill</h3>
+                <button class="btn-close-circle" type="button" onclick="NexoraSkillMarket && NexoraSkillMarket.openPersonalSkillEditor ? document.getElementById('personalSkillEditorModal').classList.remove('active') : null">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="ps-editor-grid">
+                    <div class="form-group">
+                        <label>标题 *</label>
+                        <input type="text" id="psEditorTitle" placeholder="Skill 名称">
+                    </div>
+                    <div class="form-group">
+                        <label>ID</label>
+                        <input type="text" id="psEditorId" placeholder="留空自动生成">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>描述</label>
+                        <input type="text" id="psEditorDesc" placeholder="一句话描述（市场展示用）">
+                    </div>
+                    <div class="form-group">
+                        <label>标签（逗号分隔）</label>
+                        <input type="text" id="psEditorTags" placeholder="如：开发, 写作">
+                    </div>
+                    <div class="form-group">
+                        <label>绑定工具（逗号分隔）</label>
+                        <input type="text" id="psEditorTools" placeholder="留空为全局 Skill">
+                    </div>
+                    <div class="form-group">
+                        <label>默认模式</label>
+                        <select id="psEditorMode">
+                            <option value="auto">Auto（工具激活时生效）</option>
+                            <option value="force">Force（始终生效）</option>
+                            <option value="off">Off（默认关闭）</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>指令内容</label>
+                    <textarea id="psEditorContent" class="ps-editor-content" placeholder="输入 Skill 指令正文..."></textarea>
+                </div>
+            </div>
+            <div class="ps-editor-footer">
+                <button type="button" class="btn-skill-publish" id="psEditorPublishBtn" style="display:none;">发布到市场</button>
+                <button type="button" class="btn-cancel" id="psEditorCancelBtn">取消</button>
+                <button type="button" class="btn-confirm" id="psEditorSaveBtn">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- 市场 Skill 详情弹窗 -->
+    <div id="skillMarketDetailModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-head">
+                <h3 id="skillDetailTitle">Skill 详情</h3>
+                <button class="btn-close-circle" id="skillDetailCloseBtn" type="button">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div id="skillDetailMeta" class="skill-detail-meta"></div>
+                <textarea id="skillDetailContent" class="skill-detail-content" readonly></textarea>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; display:flex; justify-content:flex-end; gap:10px;">
+                <button type="button" class="btn-skill-install" id="skillDetailInstallBtn">安装</button>
             </div>
         </div>
     </div>

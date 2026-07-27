@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -29,6 +30,16 @@ def _read_json(path: Path) -> Optional[Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def build_outline_source_book_ids(books: List[Mapping[str, Any]]) -> List[str]:
+    """返回参与课程大纲生成的已完成概述教材 ID。"""
+    return sorted(
+        str(book.get("id") or "").strip()
+        for book in books
+        if str(book.get("id") or "").strip()
+        and str(book.get("summary_status") or "").strip().lower() == "done"
+    )
 
 
 def _safe_json_obj(raw: str) -> Dict[str, Any]:
@@ -705,6 +716,8 @@ def generate_outline(
     # 补充元数据
     result_outline["lecture_id"] = safe_lecture_id
     result_outline["lecture_title"] = lecture_title
+    result_outline["source_book_ids"] = build_outline_source_book_ids(books)
+    result_outline["generated_at"] = int(time.time())
     result_outline["total_sections"] = len(sections)
     result_outline["total_estimated_minutes"] = sum(
         int(s.get("estimated_minutes") or 0) for s in sections if isinstance(s, dict)

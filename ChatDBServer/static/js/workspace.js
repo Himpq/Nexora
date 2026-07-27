@@ -5867,4 +5867,14 @@ Object.assign(window, {
     renderWorkspaceConversationHierarchy,
     getActiveWorkspaceConversationContext,
     selectWorkspaceProject,
+    // chat.js 裸调用的 workspace 函数（ESM 兼容）
+    addConversationToWorkspace,
+    addKnowledgeToWorkspace,
+    clearCurrentConversationSelectionForWorkspaceNavigation,
+    getActiveWorkspaceDetailComposeWorkspaceId,
+    loadPinContextWorkspaceItems,
+    positionPinContextSubmenu,
+    registerWorkspaceDetailConversation,
+    resetWorkspaceDetailComposerSelection,
+    clearWorkspaceHierarchySlot,
 });

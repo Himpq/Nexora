@@ -1,0 +1,244 @@
+/* Shared master/detail layout for settings management panels. */
+#settingsModal :is(
+    #settings-user-api-keys-tab,
+    #settings-admin-system-tab,
+    #settings-admin-users-tab,
+    #settings-admin-mail-tab,
+    #settings-admin-models-tab,
+    #settings-admin-gen-image-tab,
+    #settings-admin-map-tab,
+    #settings-admin-auth-tab
+).settings-management-panel.active {
+    display: grid !important;
+    gap: 12px !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding-top: 0 !important;
+}
+
+#settingsModal :is(
+    #settings-user-api-keys-tab,
+    #settings-admin-system-tab,
+    #settings-admin-users-tab,
+    #settings-admin-mail-tab,
+    #settings-admin-models-tab,
+    #settings-admin-gen-image-tab,
+    #settings-admin-map-tab,
+    #settings-admin-auth-tab
+) > .settings-management-toolbar {
+    align-items: center !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 12px !important;
+    margin: 0 !important;
+    min-width: 0 !important;
+    width: 100% !important;
+}
+
+#settingsModal :is(
+    #settings-user-api-keys-tab,
+    #settings-admin-system-tab,
+    #settings-admin-users-tab,
+    #settings-admin-mail-tab,
+    #settings-admin-models-tab,
+    #settings-admin-gen-image-tab,
+    #settings-admin-map-tab,
+    #settings-admin-auth-tab
+) > .settings-management-layout {
+    display: grid !important;
+    gap: 12px !important;
+    grid-template-columns: 280px minmax(0, 1fr) !important;
+    height: 100% !important;
+    margin: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+    width: 100% !important;
+}
+
+#settingsModal :is(
+    #settings-user-api-keys-tab,
+    #settings-admin-system-tab,
+    #settings-admin-users-tab,
+    #settings-admin-mail-tab,
+    #settings-admin-models-tab,
+    #settings-admin-gen-image-tab,
+    #settings-admin-map-tab,
+    #settings-admin-auth-tab
+) > .settings-management-layout > :is(.settings-management-list, .settings-management-detail) {
+    height: auto !important;
+    min-height: 0 !important;
+    min-width: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+}
+
+#settingsModal .settings-management-toolbar > button {
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+    width: auto !important;
+}
+
+#settingsModal .settings-management-toolbar > .input-modern {
+    flex: 1 1 240px;
+    min-width: 220px;
+}
+
+#settingsModal .settings-management-toolbar-models {
+    display: grid !important;
+    grid-template-columns: max-content max-content minmax(180px, 1fr) max-content !important;
+}
+
+#settingsModal .settings-management-toolbar-models .model-admin-search {
+    box-sizing: border-box;
+    height: 36px;
+    min-width: 0 !important;
+    width: 100% !important;
+}
+
+#settingsModal .settings-management-toolbar-models > .btn-primary {
+    box-sizing: border-box;
+    height: 36px;
+}
+
+#settingsModal .settings-management-toolbar-models .model-admin-toolbar-unit {
+    flex: 0 0 auto !important;
+    height: 36px !important;
+    margin-left: 0 !important;
+}
+
+#settingsModal .settings-management-toolbar-models .model-admin-toolbar-unit select {
+    height: 36px !important;
+    min-width: 112px !important;
+}
+
+#settingsModal #settings-admin-models-tab > .settings-management-layout {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+}
+
+#settingsModal .settings-management-icon-button {
+    align-items: center;
+    display: inline-flex;
+    height: 36px !important;
+    justify-content: center;
+    min-width: 36px !important;
+    padding: 0 !important;
+    width: 36px !important;
+}
+
+#settingsModal .settings-management-list-state {
+    padding: 12px;
+}
+
+#settingsModal .settings-management-list-state.is-error {
+    color: #b91c1c;
+}
+
+/* Companion windows are desktop settings surfaces even when DPI reduces CSS pixels. */
+body.settings-companion-mode #settingsModal .modal-body {
+    overflow: hidden !important;
+    padding: 0 !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-shell.settings-shell {
+    display: grid !important;
+    grid-template-columns: 190px minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 1fr) !important;
+    height: 100vh !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-nav.settings-nav {
+    align-items: stretch !important;
+    border-bottom: 0 !important;
+    border-right: 1px solid #e5e7eb !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    padding: 12px 10px !important;
+    white-space: normal !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-nav.settings-nav .admin-tab {
+    flex: 0 0 auto !important;
+    min-height: 38px !important;
+    min-width: 0 !important;
+    text-align: left !important;
+    white-space: nowrap !important;
+    width: 100% !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-content.settings-content {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    padding: 18px !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-content.settings-content > .admin-tab-content {
+    flex: 1 1 auto;
+    min-height: 0 !important;
+}
+
+body.settings-companion-mode #settingsModal .admin-content.settings-content > .admin-tab-content.active {
+    min-height: 0 !important;
+    overflow: auto !important;
+}
+
+@media (max-width: 980px) {
+    body:not(.settings-companion-mode) #settingsModal :is(
+        #settings-user-api-keys-tab,
+        #settings-admin-system-tab,
+        #settings-admin-users-tab,
+        #settings-admin-mail-tab,
+        #settings-admin-models-tab,
+        #settings-admin-gen-image-tab,
+        #settings-admin-map-tab,
+        #settings-admin-auth-tab
+    ) > .settings-management-toolbar {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+
+    body:not(.settings-companion-mode) #settingsModal :is(
+        #settings-user-api-keys-tab,
+        #settings-admin-system-tab,
+        #settings-admin-users-tab,
+        #settings-admin-mail-tab,
+        #settings-admin-models-tab,
+        #settings-admin-gen-image-tab,
+        #settings-admin-map-tab,
+        #settings-admin-auth-tab
+    ) > .settings-management-layout {
+        display: flex !important;
+        gap: 8px !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+
+    body:not(.settings-companion-mode) #settingsModal .settings-management-layout > .settings-management-list {
+        flex: 0 0 280px !important;
+        min-width: 280px !important;
+    }
+
+    body:not(.settings-companion-mode) #settingsModal .settings-management-layout > .settings-management-detail {
+        flex: 1 0 520px !important;
+        min-width: 520px !important;
+    }
+
+    body:not(.settings-companion-mode) #settingsModal .settings-management-toolbar-models {
+        grid-template-columns: max-content max-content minmax(260px, 1fr) max-content !important;
+    }
+}

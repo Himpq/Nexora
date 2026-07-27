@@ -103,11 +103,13 @@ from core.memory.memory_queue import (
 from core.tool_executor import ToolExecutor as LearningToolExecutor
 from core.tools import TOOLS as LEARNING_TOOLS
 from core.booksproc.context import Context, ContextPolicy
+from core.booksproc.compress import build_proxy_llm_compress_func
 from core.booksproc import (
     cancel_book_refinement,
     enqueue_book_intensive,
     enqueue_book_question,
     enqueue_book_refinement,
+    enqueue_book_pipeline,
     enqueue_book_section,
     enqueue_book_annotation,
     enqueue_book_summary,
@@ -222,6 +224,7 @@ _VIDEO_GENERATOR_RUN_LOCK = threading.RLock()
 _VIDEO_GENERATOR_RUNNING_PROJECTS: set[str] = set()
 _LEARNING_RESOURCE_SCAN_LOCK = threading.RLock()
 _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS: Dict[str, threading.Event] = {}
+_LEARNING_RESOURCE_REVIEW_TRANSIENT_CONTEXT_CHARS = 12000
 _LEARNING_RESOURCE_PROCESS_STARTED_AT = int(time.time())
 _LEARNING_RESOURCE_GENERATION_LOCK = threading.RLock()
 _LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS: set[str] = set()
@@ -2610,12 +2613,25 @@ def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, 
 
     lecture = get_learning_lecture(_cfg, lecture_id)
     book = get_lecture_book(_cfg, lecture_id, book_id)
+
+    if lecture is None or book is None:
+        raise ValueError(f"Lecture or book not found: {lecture_id}/{book_id}")
+
     lecture_title = str((lecture or {}).get("title") or "").strip()
     book_title = str((book or {}).get("title") or "").strip()
     bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    started = update_lecture_book(
+        _cfg,
+        lecture_id,
+        book_id,
+        {"video_status": "running", "video_error": ""},
+    )
+
+    if started is None:
+        raise ValueError(f"Book not found while starting video search: {lecture_id}/{book_id}")
 
     try:
-        return search_and_cache_videos(
+        items = search_and_cache_videos(
             _cfg,
             lecture_id,
             book_id,
@@ -2624,6 +2640,12 @@ def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, 
             bookinfo_xml=bookinfo_xml,
         )
     except Exception as exc:
+        update_lecture_book(
+            _cfg,
+            lecture_id,
+            book_id,
+            {"video_status": "error", "video_error": str(exc)},
+        )
         log_event(
             "frontend_video_search_error",
             "前端视频搜索失败",
@@ -2636,6 +2658,18 @@ def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, 
             },
         )
         raise
+
+    completed = update_lecture_book(
+        _cfg,
+        lecture_id,
+        book_id,
+        {"video_status": "done", "video_error": ""},
+    )
+
+    if completed is None:
+        raise ValueError(f"Book not found while completing video search: {lecture_id}/{book_id}")
+
+    return items
 
 
 
@@ -4292,11 +4326,14 @@ def _new_learning_resource_context(
     *,
     flow: str,
     max_chars: int = 28000,
+    policy: ContextPolicy = ContextPolicy.SLIDING_WINDOW,
+    llm_compress_func=None,
 ) -> Context:
     ctx = Context(
         max_chars=max_chars,
         max_messages=48,
-        policy=ContextPolicy.SLIDING_WINDOW,
+        policy=policy,
+        llm_compress_func=llm_compress_func,
         trace_meta={"flow": flow},
     )
     if str(system_prompt or "").strip():
@@ -5027,12 +5064,43 @@ def _prepare_learning_resource_review_context(
     sources: List[Dict[str, Any]],
     cancel_event=None,
 ) -> Context:
-    ctx = _new_learning_resource_context(
-        system_prompt,
-        user_prompt,
-        flow="learning_resource_review",
-        max_chars=32000,
+    """构建持续保留复核材料、自动压缩原文查证轨迹的上下文。"""
+    fixed_review_material = (
+        "[复核基础材料]\n"
+        "以下课程、教材目录、结构化组件和待复核正文是本次复核的完整基础材料。"
+        "这些内容必须在每一轮原文查证和最终判断中持续可见。\n\n"
+        f"{str(user_prompt or '').strip()}"
     )
+    fixed_context_chars = len(str(system_prompt or "")) + len(fixed_review_material)
+    review_trace_meta = {
+        "flow": "learning_resource_review",
+        "fixed_context_chars": fixed_context_chars,
+        "transient_context_chars": _LEARNING_RESOURCE_REVIEW_TRANSIENT_CONTEXT_CHARS,
+        "source_count": len(sources),
+    }
+    llm_compress_func = build_proxy_llm_compress_func(
+        proxy,
+        model,
+        _cfg,
+        username=username,
+        cancel_event=cancel_event,
+        trace_meta=review_trace_meta,
+    )
+    ctx = Context(
+        max_chars=fixed_context_chars + _LEARNING_RESOURCE_REVIEW_TRANSIENT_CONTEXT_CHARS,
+        max_messages=48,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=llm_compress_func,
+        trace_meta=review_trace_meta,
+    )
+    ctx.add("system", str(system_prompt or "").strip())
+    ctx.add("system", fixed_review_material)
+    ctx.add(
+        "user",
+        "请先核对复核基础材料。需要查证正文中的关键事实时，使用原文工具；"
+        "不要仅凭题材名称或常识推断课程与资源不匹配。",
+    )
+
     if not sources:
         ctx.add("user", _learning_resource_prompt_text("LEARNING_RESOURCE_REVIEW_FINAL_JSON_PROMPT"))
         return ctx
@@ -5173,10 +5241,10 @@ def _scan_learning_resource_with_model(resource: Mapping[str, Any], username: st
         "resource_type_label": _learning_resource_type_label(resource_type),
         "lecture_id": lecture_id,
         "lecture_title": lecture_title or "当前课程",
-        "components_json": json.dumps(components, ensure_ascii=False)[:5000],
-        "course_context": context[:9000] if context else "暂无课程上下文。",
+        "components_json": json.dumps(components, ensure_ascii=False),
+        "course_context": context if context else "暂无课程上下文。",
         "source_catalog": _learning_resource_source_catalog(sources),
-        "content": content[:14000],
+        "content": content,
         "username": username,
     }
     system_prompt = _render_learning_resource_prompt(
@@ -5590,6 +5658,7 @@ def _build_personalized_learning_catalog_context(
 
         for chapter_index, chapter in enumerate(chapter_rows):
             catalog_rows.append({
+                "source_id": f"{book_id}:{chapter_index}",
                 "book_id": book_id,
                 "book_title": book_title or book_id,
                 "chapter_index": chapter_index,

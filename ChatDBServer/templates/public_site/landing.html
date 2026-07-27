@@ -23,7 +23,7 @@
                             <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
                             <div class="nav-mega-list">
                                 <span class="nav-mega-link">Nexora</span>
-                                <span class="nav-mega-link">NexoraLearning</span>
+                                <span class="nav-mega-link" onclick="location.href='/nl_introduce';">NexoraLearning</span>
                                 <span class="nav-mega-link">NexoraMail</span>
                                 <span class="nav-mega-link">NexoraVideoGenerator</span>
                                 <span class="nav-mega-link">NexoraDB</span>
@@ -91,13 +91,23 @@
                         <p class="hero-desc">模型、知识库、远程任务，放进一个本地可控的 AI 工作台。</p>
 
                         <div class="hero-actions" aria-label="主要操作">
-                            <a class="primary-button hero-button" href="/login">
-                                <span>开始使用</span>
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M7 17L17 7M9 7H17V15" />
-                                </svg>
-                            </a>
-                            <a class="secondary-button hero-button" href="/status">查看模型榜单</a>
+                            <div class="hero-action-stack">
+                                <a class="primary-button hero-button" href="/login">
+                                    <span>开始使用</span>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M7 17L17 7M9 7H17V15" />
+                                    </svg>
+                                </a>
+                                <a class="secondary-button hero-button learning-button" href="/nl_introduce">
+                                    <span>探索 NexoraLearning</span>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M7 17L17 7M9 7H17V15" />
+                                    </svg>
+                                </a>
+                                
+                                <a class="secondary-button hero-button" href="/status">查看模型榜单</a>
+                            </div>
+                            
                         </div>
                     </div>
 
@@ -149,13 +159,36 @@
                 </div>
             </div>
         </section>
+        
+        <section class="signal-section signal-section-download" aria-labelledby="signal-title">
+            <div class="signal-heading">
+                <p class="eyebrow">NexoraCode</p>
+                <h2 id="signal-title">Nexora平台的桌面端应用</h2>
+                <a class="download-button" href="/static/nexoracode_versions/NexoraCode.exe" download>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3v13" />
+                        <path d="m7 10 5 5 5-5" />
+                        <path d="M4 17h16" />
+                    </svg>
+                    <span>下载 NexoraCode for Windows</span>
+                </a>
+            </div>
+        </section>
 
         <section class="signal-section" aria-labelledby="signal-title">
             <div class="signal-heading">
                 <p class="eyebrow">运行视图</p>
                 <h2 id="signal-title">让系统状态一眼可见</h2>
             </div>
-
+            
+            <div class="signal-metric metric-provider">
+                    <span>Provider</span>
+                    <strong>统一接入</strong>
+                </div>
+        
+        </section>
+        
+        
             <div class="signal-panel" aria-label="运行状态摘要">
                 <div class="signal-streams" aria-hidden="true">
                     <span></span>

@@ -1,0 +1,1702 @@
+#settingsView {
+    --admin-bg: #f7f8fa;
+    --admin-surface: #ffffff;
+    --admin-ink: #111827;
+    --admin-muted: #667085;
+    --admin-line: #e4e7ec;
+    --admin-line-strong: #d0d5dd;
+    --admin-blue: #2563eb;
+    --admin-blue-hover: #1d4ed8;
+    --admin-blue-soft: #eff6ff;
+    --admin-red: #c4322b;
+    --admin-red-soft: #fef3f2;
+    --admin-amber: #9a6700;
+    --admin-amber-soft: #fffaeb;
+    color: var(--admin-ink);
+    background: var(--admin-bg);
+}
+
+.profile-panel .profile-admin-console-entry {
+    top: 14px;
+    right: 86px;
+    bottom: auto;
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    overflow: hidden;
+}
+
+.profile-panel .profile-admin-console-entry svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+}
+
+#settingsView .settings-panel {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--admin-bg);
+    box-shadow: none;
+}
+
+.profile-panel .user-profile-card {
+    padding-right: 128px;
+}
+
+#settingsView .settings-panel > .panel-head {
+    min-height: 64px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--admin-line);
+    background: var(--admin-surface);
+}
+
+#settingsView .materials-head-left {
+    gap: 12px;
+}
+
+#settingsView #backFromSettingsBtn {
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 6px;
+    background: var(--admin-surface);
+    color: var(--admin-ink);
+}
+
+#settingsView #backFromSettingsBtn:hover {
+    border-color: #98a2b3;
+    background: #f9fafb;
+}
+
+#settingsView #backFromSettingsBtn svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+}
+
+.admin-console-heading {
+    display: grid;
+    gap: 2px;
+}
+
+.admin-console-heading h1 {
+    margin: 0;
+    color: var(--admin-ink);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0;
+}
+
+.admin-console-heading p {
+    margin: 0;
+    color: var(--admin-muted);
+    font-size: 11px;
+}
+
+#settingsView .settings-layout {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: 196px minmax(0, 1fr);
+    gap: 0;
+}
+
+#settingsView .settings-nav-pane {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--admin-line);
+    background: var(--admin-surface);
+}
+
+#settingsView .settings-nav-list {
+    min-height: 100%;
+    padding: 14px 10px;
+}
+
+#settingsView .settings-tab-bar {
+    display: grid;
+    gap: 18px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+#settingsView .settings-nav-group {
+    display: grid;
+    gap: 3px;
+}
+
+#settingsView .settings-nav-group-title {
+    padding: 0 9px 6px;
+    color: #98a2b3;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+#settingsView .settings-tab {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 9px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #475467;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+}
+
+#settingsView .settings-tab:hover {
+    color: var(--admin-ink);
+    background: #f2f4f7;
+}
+
+#settingsView .settings-tab.is-active {
+    color: #1d4ed8;
+    background: var(--admin-blue-soft);
+}
+
+#settingsView .settings-tab-icon {
+    width: 17px;
+    height: 17px;
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+}
+
+#settingsView .settings-tab-icon svg {
+    width: 17px;
+    height: 17px;
+}
+
+#settingsView .settings-detail-pane {
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    background: var(--admin-bg);
+}
+
+#settingsView .settings-detail-scroll {
+    height: 100%;
+    padding: 14px;
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    overflow-y: auto;
+}
+
+#settingsView .settings-card,
+#settingsView .settings-inline-card {
+    padding: 16px;
+    border: 1px solid var(--admin-line);
+    border-radius: 7px;
+    background: var(--admin-surface);
+}
+
+#settingsView .settings-title,
+#settingsView .settings-kv-value,
+#settingsView .settings-inline-title {
+    color: var(--admin-ink);
+}
+
+#settingsView .settings-sub,
+#settingsView .settings-kv-label,
+#settingsView .settings-inline-sub {
+    color: var(--admin-muted);
+}
+
+#settingsView .settings-users-summary-grid {
+    margin-top: 12px;
+    gap: 8px;
+}
+
+#settingsView .settings-users-summary-item {
+    padding: 11px;
+    border: 1px solid var(--admin-line);
+    border-radius: 5px;
+    background: #f9fafb;
+}
+
+#settingsView .settings-user-list {
+    overflow: hidden;
+    border: 1px solid var(--admin-line);
+    border-radius: 7px;
+    background: var(--admin-surface);
+}
+
+#settingsView .settings-user-card {
+    margin: 0;
+    padding: 12px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--admin-line);
+    border-radius: 0;
+    background: transparent;
+}
+
+#settingsView .settings-user-card:last-child {
+    border-bottom: 0;
+}
+
+#settingsView .settings-user-avatar {
+    border-radius: 5px;
+    background: #eef2f6;
+    color: #344054;
+}
+
+#settingsView .settings-user-save-btn,
+#settingsView .nxl-icon-btn-dark,
+#settingsView .settings-agents-open-btn {
+    border-color: var(--admin-blue);
+    background: var(--admin-blue);
+    color: #ffffff;
+}
+
+#settingsView .settings-user-save-btn:hover,
+#settingsView .nxl-icon-btn-dark:hover,
+#settingsView .settings-agents-open-btn:hover {
+    border-color: var(--admin-blue-hover);
+    background: var(--admin-blue-hover);
+}
+
+#settingsView .settings-model-form {
+    margin-top: 12px;
+    gap: 8px;
+}
+
+#settingsView .settings-model-row {
+    padding: 9px 0;
+    border-bottom: 1px solid var(--admin-line);
+}
+
+#settingsView .settings-model-row:last-child {
+    border-bottom: 0;
+}
+
+#settingsView .nxl-custom-select-trigger,
+#settingsView .settings-search-input,
+#settingsView .input-lite {
+    border-color: var(--admin-line-strong);
+    border-radius: 5px;
+    background: var(--admin-surface);
+    color: var(--admin-ink);
+}
+
+#settingsView .nxl-custom-select-trigger:hover,
+#settingsView .settings-search-input:focus,
+#settingsView .input-lite:focus {
+    border-color: #84adff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+#settingsView .nxl-custom-select-dropdown {
+    border-color: var(--admin-line-strong);
+    border-radius: 6px;
+    box-shadow: 0 16px 36px rgba(16, 24, 40, 0.14);
+}
+
+#settingsView .nxl-custom-select-option.is-selected,
+#settingsView .settings-filter-btn.is-active {
+    border-color: #bfdbfe;
+    background: var(--admin-blue-soft);
+    color: #1d4ed8;
+}
+
+#settingsView .settings-log-group,
+#settingsView .log-entry {
+    border-color: var(--admin-line);
+}
+
+#settingsView .settings-log-group {
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--admin-surface);
+}
+
+#settingsView .settings-log-group-header,
+#settingsView .log-entry-header {
+    background: var(--admin-surface);
+}
+
+#settingsView .settings-log-group-header:hover,
+#settingsView .log-entry-header:hover {
+    background: #f9fafb;
+}
+
+#settingsView .admin-log-page {
+    grid-template-rows: auto minmax(0, 1fr);
+    align-content: stretch;
+}
+
+#settingsView .admin-log-toolbar {
+    min-height: 48px;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--admin-line);
+    border-radius: 6px;
+    background: var(--admin-surface);
+}
+
+#settingsView .admin-log-filters {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 5px;
+}
+
+#settingsView .admin-log-filters .settings-filter-btn {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-right: 1px solid var(--admin-line);
+    border-radius: 0;
+    background: var(--admin-surface);
+    color: #475467;
+    font-size: 10px;
+}
+
+#settingsView .admin-log-filters .settings-filter-btn:last-child {
+    border-right: 0;
+}
+
+#settingsView .admin-log-filters .settings-filter-btn.is-active {
+    background: var(--admin-blue-soft);
+    color: #1d4ed8;
+}
+
+#settingsView .admin-log-search {
+    min-width: 180px;
+    max-width: 420px;
+    min-height: 32px;
+    margin-left: auto;
+    padding: 0 9px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 5px;
+    background: var(--admin-surface);
+}
+
+#settingsView .admin-log-search:focus-within {
+    border-color: #84adff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+}
+
+#settingsView .admin-log-search svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    color: #98a2b3;
+}
+
+#settingsView .admin-log-search input {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--admin-ink);
+    font-size: 11px;
+}
+
+#settingsView #settingsLogGroupsContainer {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
+#settingsView .channel-settings-layout,
+#settingsView .agent-panel-layout {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--admin-surface);
+}
+
+#settingsView .channel-list-pane,
+#settingsView .agent-panel-sidebar {
+    border-color: var(--admin-line);
+    background: #f9fafb;
+}
+
+#settingsView .channel-list-header,
+#settingsView .channel-edit-actions {
+    border-color: var(--admin-line);
+}
+
+#settingsView .channel-list-item.is-active,
+#settingsView .agent-book-item.is-selected {
+    color: #1d4ed8;
+    background: var(--admin-blue-soft);
+}
+
+#settingsView .settings-refinement-workbench {
+    gap: 10px;
+}
+
+#settingsView .settings-refinement-book-panel,
+#settingsView .settings-refinement-flow-panel {
+    border: 1px solid var(--admin-line);
+    border-radius: 6px;
+    background: var(--admin-surface);
+}
+
+#settingsView .flow-node.is-done .flow-node-icon,
+#settingsView .settings-status-pill.is-done {
+    border-color: #b2ccff;
+    background: var(--admin-blue-soft);
+    color: #1d4ed8;
+}
+
+#settingsView .flow-node.is-running .flow-node-icon,
+#settingsView .settings-status-pill.is-running {
+    border-color: #84adff;
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+#settingsView .flow-node.is-error .flow-node-icon,
+#settingsView .settings-status-pill.is-error {
+    border-color: #fecdca;
+    background: var(--admin-red-soft);
+    color: var(--admin-red);
+}
+
+#settingsView .settings-agents-scroll {
+    gap: 10px;
+}
+
+#settingsView .settings-agents-toolbar {
+    min-height: 60px;
+}
+
+#settingsView .settings-agents-frame-shell {
+    min-height: 0;
+    border-color: var(--admin-line);
+    border-radius: 7px;
+    background: var(--admin-surface);
+}
+
+.admin-course-page {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 250px minmax(0, 1fr);
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--admin-surface);
+}
+
+.admin-course-list-pane {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--admin-line);
+    background: #f9fafb;
+}
+
+.admin-course-list-head {
+    min-height: 58px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--admin-line);
+}
+
+.admin-course-list-head h2,
+.admin-course-main h2,
+.admin-course-section h3,
+.admin-dialog h2 {
+    margin: 0;
+    letter-spacing: 0;
+    color: var(--admin-ink);
+}
+
+.admin-course-list-head h2 {
+    font-size: 14px;
+}
+
+.admin-icon-button {
+    width: 30px;
+    height: 30px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 5px;
+    background: var(--admin-surface);
+    color: var(--admin-ink);
+    cursor: pointer;
+}
+
+.admin-icon-button:hover {
+    border-color: #98a2b3;
+    background: #f2f4f7;
+}
+
+.admin-icon-button svg {
+    width: 15px;
+    height: 15px;
+}
+
+.admin-course-search {
+    margin: 10px;
+    padding: 0 9px;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 5px;
+    background: var(--admin-surface);
+}
+
+.admin-course-search:focus-within {
+    border-color: #84adff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.09);
+}
+
+.admin-course-search svg {
+    width: 14px;
+    height: 14px;
+    color: #98a2b3;
+}
+
+.admin-course-search input {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--admin-ink);
+    font-size: 12px;
+}
+
+.admin-course-list {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    border-top: 1px solid var(--admin-line);
+}
+
+.admin-course-list-item {
+    width: 100%;
+    min-height: 60px;
+    padding: 9px 11px;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: center;
+    gap: 9px;
+    border: 0;
+    border-bottom: 1px solid var(--admin-line);
+    border-left: 3px solid transparent;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.admin-course-list-item:hover {
+    background: var(--admin-surface);
+}
+
+.admin-course-list-item.is-active {
+    border-left-color: var(--admin-blue);
+    background: var(--admin-blue-soft);
+}
+
+.admin-course-list-icon {
+    width: 34px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--admin-line);
+    border-radius: 4px;
+    background: var(--admin-surface);
+    color: #667085;
+}
+
+.admin-course-list-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.admin-course-list-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.admin-course-list-copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+}
+
+.admin-course-list-copy strong,
+.admin-course-list-copy span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-course-list-copy strong {
+    font-size: 12px;
+}
+
+.admin-course-list-copy span {
+    color: var(--admin-muted);
+    font-size: 10px;
+}
+
+.admin-course-main {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    background: var(--admin-surface);
+}
+
+.admin-course-main-inner {
+    width: 100%;
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.admin-course-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.admin-course-header h2 {
+    font-size: 22px;
+    line-height: 1.3;
+}
+
+.admin-course-meta {
+    margin-top: 5px;
+    color: var(--admin-muted);
+    font-size: 12px;
+}
+
+.admin-course-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.admin-button,
+.admin-button-primary,
+.admin-button-danger {
+    min-height: 34px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    line-height: 1;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.admin-button {
+    border: 1px solid var(--admin-line-strong);
+    background: var(--admin-surface);
+    color: var(--admin-ink);
+}
+
+.admin-button:hover {
+    border-color: #98a2b3;
+    background: #f9fafb;
+}
+
+.admin-button-primary {
+    border: 1px solid var(--admin-blue);
+    background: var(--admin-blue);
+    color: #ffffff;
+}
+
+.admin-button-primary:hover {
+    border-color: var(--admin-blue-hover);
+    background: var(--admin-blue-hover);
+}
+
+.admin-button svg,
+.admin-button-primary svg,
+.admin-button-danger svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+}
+
+.admin-button span,
+.admin-button-primary span,
+.admin-button-danger span {
+    display: block;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.admin-course-summary {
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: 1px solid var(--admin-line);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.admin-course-summary-item {
+    min-width: 0;
+    padding: 13px 14px;
+    border-right: 1px solid var(--admin-line);
+}
+
+.admin-course-summary-item:last-child {
+    border-right: 0;
+}
+
+.admin-course-summary-item span {
+    display: block;
+    color: var(--admin-muted);
+    font-size: 10px;
+}
+
+.admin-course-summary-item strong {
+    display: block;
+    margin-top: 5px;
+    overflow: hidden;
+    color: var(--admin-ink);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-course-section {
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--admin-line);
+}
+
+.admin-course-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.admin-course-section-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.admin-course-section h3 {
+    font-size: 15px;
+}
+
+.admin-status {
+    min-height: 24px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 4px;
+    background: #f2f4f7;
+    color: #475467;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.admin-status.is-done {
+    background: var(--admin-blue-soft);
+    color: #1d4ed8;
+}
+
+.admin-status.is-running {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.admin-status.is-error {
+    background: var(--admin-red-soft);
+    color: var(--admin-red);
+}
+
+.admin-course-outline-action {
+    min-height: 34px;
+    padding: 0 12px;
+    gap: 7px;
+    font-size: 11px;
+}
+
+.admin-course-outline-action:hover {
+    border-color: var(--admin-blue-hover);
+    background: var(--admin-blue-hover);
+    color: #ffffff;
+}
+
+.admin-course-outline-action:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.admin-course-outline-action:disabled:hover {
+    border-color: var(--admin-blue);
+    background: var(--admin-blue);
+    color: #ffffff;
+}
+
+.admin-outline-activity {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    overflow: hidden;
+    border: 1px solid var(--admin-line);
+    border-radius: 6px;
+}
+
+.admin-outline-events {
+    max-height: 260px;
+    padding: 12px;
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    overflow-y: auto;
+    border-right: 1px solid var(--admin-line);
+    background: #f9fafb;
+    color: #475467;
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.admin-outline-draft {
+    min-height: 160px;
+    max-height: 260px;
+    margin: 0;
+    padding: 13px;
+    overflow: auto;
+    border: 0;
+    background: var(--admin-surface);
+    color: var(--admin-ink);
+    font: 11px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.admin-course-book-list {
+    margin-top: 10px;
+    overflow: hidden;
+    border: 1px solid var(--admin-line);
+    border-radius: 6px;
+}
+
+.admin-course-book-row {
+    min-height: 56px;
+    padding: 9px 12px;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border-bottom: 1px solid var(--admin-line);
+    border-top: 0;
+    border-left: 0;
+    border-right: 0;
+    background: var(--admin-surface);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.admin-course-book-row:last-child {
+    border-bottom: 0;
+}
+
+.admin-course-book-row:hover {
+    background: var(--admin-blue-soft);
+}
+
+.admin-course-book-icon {
+    width: 32px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--admin-line);
+    border-radius: 4px;
+    background: #f9fafb;
+    color: #667085;
+    overflow: hidden;
+}
+
+.admin-course-book-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.admin-course-book-icon svg {
+    width: 15px;
+    height: 15px;
+}
+
+.admin-course-book-copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+}
+
+.admin-course-book-copy strong,
+.admin-course-book-copy span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-course-book-copy strong {
+    font-size: 12px;
+}
+
+.admin-course-book-copy span {
+    color: var(--admin-muted);
+    font-size: 10px;
+}
+
+.admin-empty {
+    padding: 28px 14px;
+    color: var(--admin-muted);
+    font-size: 11px;
+    text-align: center;
+}
+
+.admin-dialog-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 10040;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+}
+
+.admin-dialog-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: rgba(16, 24, 40, 0.46);
+}
+
+.admin-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(600px, 100%);
+    max-height: min(700px, calc(100dvh - 40px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 7px;
+    background: var(--admin-surface);
+    box-shadow: 0 24px 60px rgba(16, 24, 40, 0.2);
+}
+
+.admin-dialog-head,
+.admin-dialog-foot {
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.admin-dialog-head {
+    min-height: 58px;
+    border-bottom: 1px solid var(--admin-line);
+}
+
+.admin-dialog-head h2 {
+    font-size: 16px;
+}
+
+.admin-dialog-body {
+    min-height: 0;
+    padding: 16px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    overflow-y: auto;
+}
+
+.admin-field {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+}
+
+.admin-field > span,
+.admin-field legend {
+    padding: 0;
+    color: #475467;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.admin-field-wide,
+.admin-status-field {
+    grid-column: 1 / -1;
+}
+
+.admin-status-field {
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.admin-status-options {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: hidden;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 5px;
+}
+
+.admin-status-options button {
+    min-height: 34px;
+    border: 0;
+    border-right: 1px solid var(--admin-line);
+    background: var(--admin-surface);
+    color: #475467;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.admin-status-options button:last-child {
+    border-right: 0;
+}
+
+.admin-status-options button.is-active {
+    background: var(--admin-blue);
+    color: #ffffff;
+    font-weight: 700;
+}
+
+.admin-dialog-foot {
+    min-height: 58px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--admin-line);
+    background: #f9fafb;
+}
+
+.material-flow-shell {
+    padding: 14px;
+    display: grid;
+    grid-template-columns: minmax(340px, 1fr) minmax(280px, 0.8fr);
+    gap: 0 18px;
+    padding-bottom: 44px;
+}
+
+.material-flow-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    grid-column: 1 / -1;
+}
+
+.material-flow-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.material-flow-head-actions .admin-status {
+    flex: 0 0 auto;
+}
+
+.material-flow-pipeline-action {
+    min-height: 30px;
+    padding: 0 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    border: 1px solid var(--admin-blue);
+    border-radius: 5px;
+    background: var(--admin-blue);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.material-flow-pipeline-action:hover {
+    border-color: var(--admin-blue-hover);
+    background: var(--admin-blue-hover);
+}
+
+.material-flow-pipeline-action:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}
+
+@media (max-width: 720px) {
+    .material-flow-head {
+        display: grid;
+    }
+
+    .material-flow-head-actions {
+        justify-content: flex-start;
+    }
+}
+
+.material-flow-pipeline-action svg {
+    display: block;
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+}
+
+.material-flow-title {
+    color: var(--admin-ink);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.material-flow-subtitle {
+    margin-top: 3px;
+    color: var(--admin-muted);
+    font-size: 10px;
+}
+
+.material-flow-steps {
+    margin-top: 14px;
+    display: grid;
+    align-content: start;
+}
+
+.material-flow-step {
+    min-height: 56px;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+}
+
+#settingsView .flow-node.material-flow-step,
+#settingsView .flow-node.material-flow-step.is-done,
+#settingsView .flow-node.material-flow-step.is-running,
+#settingsView .flow-node.material-flow-step.is-error,
+#settingsView .flow-node.material-flow-step.is-pending,
+#settingsView .flow-node.material-flow-step.is-idle {
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    opacity: 1;
+    text-align: left;
+}
+
+.material-flow-rail {
+    position: relative;
+    display: flex;
+    justify-content: center;
+}
+
+.material-flow-marker {
+    position: relative;
+    z-index: 1;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--admin-line-strong);
+    border-radius: 50%;
+    background: var(--admin-surface);
+    color: #667085;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.material-flow-line {
+    position: absolute;
+    top: 24px;
+    bottom: 0;
+    width: 1px;
+    background: var(--admin-line);
+}
+
+.material-flow-step:last-child .material-flow-line {
+    display: none;
+}
+
+.material-flow-content {
+    min-width: 0;
+    padding: 1px 0 15px;
+}
+
+.material-flow-label-row {
+    display: grid;
+    grid-template-columns: 48px 70px;
+    align-items: center;
+    gap: 7px;
+    min-height: 26px;
+}
+
+.material-flow-label {
+    color: var(--admin-ink);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.material-flow-description {
+    margin-top: 4px;
+    color: var(--admin-muted);
+    font-size: 10px;
+}
+
+.material-flow-step.is-done .material-flow-marker {
+    border-color: #93c5fd;
+    background: var(--admin-blue-soft);
+    color: #1d4ed8;
+}
+
+.material-flow-step.is-running .material-flow-marker {
+    border-color: var(--admin-blue);
+    background: var(--admin-blue);
+    color: #ffffff;
+}
+
+.material-flow-step.is-error .material-flow-marker {
+    border-color: #fda29b;
+    background: var(--admin-red-soft);
+    color: var(--admin-red);
+}
+
+#settingsView .flow-log {
+    min-height: 0;
+    max-height: 430px;
+    margin-top: 14px;
+    padding-left: 16px;
+    border-left: 1px solid var(--admin-line);
+    border-color: var(--admin-line);
+    border-radius: 6px;
+}
+
+#settingsView .flow-log-body {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
+#settingsView .agent-panel-layout {
+    grid-template-columns: 250px minmax(0, 1fr);
+    height: 100%;
+}
+
+#settingsView .agent-panel-main {
+    min-height: 0;
+    padding: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    background: var(--admin-bg);
+}
+
+#settingsView .agent-panel-sidebar #agentBookList {
+    scrollbar-gutter: stable;
+}
+
+#settingsView .settings-refinement-workbench {
+    min-height: 100%;
+    height: auto;
+    padding: 14px 14px 58px;
+    display: block;
+}
+
+#settingsView .settings-refinement-book-panel,
+#settingsView .settings-refinement-flow-panel {
+    overflow: visible;
+}
+
+#settingsView .settings-refinement-book-panel {
+    min-height: 0;
+}
+
+#settingsView .settings-refinement-book-summary {
+    min-height: 76px;
+    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
+}
+
+#settingsView .settings-refinement-book-summary-cover {
+    width: 46px;
+    height: 58px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--admin-line);
+    border-radius: 4px;
+    background: #f9fafb;
+}
+
+#settingsView .settings-refinement-book-summary-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#settingsView .settings-refinement-book-summary-cover .settings-refinement-cover-empty span {
+    display: none;
+}
+
+#settingsView .settings-refinement-book-summary-cover .settings-refinement-cover-empty svg {
+    width: 18px;
+    height: 18px;
+}
+
+#settingsView .settings-refinement-book-summary-copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+}
+
+#settingsView .settings-refinement-book-summary-copy .settings-inline-title,
+#settingsView .settings-refinement-book-summary-copy .settings-inline-sub,
+#settingsView .settings-refinement-book-summary-copy .settings-refinement-book-id {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#settingsView .settings-refinement-book-body {
+    min-height: 0;
+    padding: 14px;
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 16px;
+    overflow: visible;
+}
+
+#settingsView .settings-refinement-book-cover-area {
+    display: block;
+}
+
+#settingsView .settings-refinement-book-cover-preview {
+    position: relative;
+    width: 112px;
+    height: 150px;
+    padding: 0;
+    border: 1px solid var(--admin-line);
+    border-radius: 5px;
+    background: #f9fafb;
+    cursor: pointer;
+}
+
+#settingsView .settings-refinement-book-cover-preview:hover {
+    border-color: #84adff;
+}
+
+#settingsView .settings-refinement-cover-change {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    left: 6px;
+    min-height: 24px;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    background: rgba(17, 24, 39, 0.78);
+    color: #ffffff;
+    font-size: 10px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+#settingsView .settings-refinement-book-cover-preview:hover .settings-refinement-cover-change,
+#settingsView .settings-refinement-book-cover-preview:focus-visible .settings-refinement-cover-change {
+    opacity: 1;
+}
+
+#settingsView .settings-refinement-book-fields {
+    min-width: 0;
+    display: grid;
+    gap: 11px;
+}
+
+#settingsView .settings-refinement-book-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+#settingsView .settings-refinement-book-foot .admin-button,
+#settingsView .settings-refinement-book-foot .admin-button-primary {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 0 10px;
+}
+
+#settingsView .settings-refinement-flow-panel {
+    margin-top: 12px;
+}
+
+#settingsView .settings-refinement-flow-body {
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+}
+
+#settingsView .settings-refinement-flow-body .flow-log,
+#settingsView .settings-refinement-flow-body .flow-log-body {
+    min-height: 0;
+}
+
+#settingsView .agent-book-reset {
+    display: none;
+}
+
+.admin-course-main,
+#settingsView .agent-panel-main,
+#settingsView .agent-panel-sidebar #agentBookList,
+#settingsView .flow-log-body,
+#settingsView .settings-detail-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #98a2b3 transparent;
+}
+
+.admin-course-main::-webkit-scrollbar,
+#settingsView .agent-panel-main::-webkit-scrollbar,
+#settingsView .agent-panel-sidebar #agentBookList::-webkit-scrollbar,
+#settingsView .flow-log-body::-webkit-scrollbar,
+#settingsView .settings-detail-scroll::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+}
+
+.admin-course-main::-webkit-scrollbar-track,
+#settingsView .agent-panel-main::-webkit-scrollbar-track,
+#settingsView .agent-panel-sidebar #agentBookList::-webkit-scrollbar-track,
+#settingsView .flow-log-body::-webkit-scrollbar-track,
+#settingsView .settings-detail-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.admin-course-main::-webkit-scrollbar-thumb,
+#settingsView .agent-panel-main::-webkit-scrollbar-thumb,
+#settingsView .agent-panel-sidebar #agentBookList::-webkit-scrollbar-thumb,
+#settingsView .flow-log-body::-webkit-scrollbar-thumb,
+#settingsView .settings-detail-scroll::-webkit-scrollbar-thumb {
+    border-radius: 4px;
+    background: #98a2b3;
+}
+
+@media (max-width: 900px) {
+    #settingsView .settings-layout {
+        grid-template-columns: 60px minmax(0, 1fr);
+    }
+
+    #settingsView .settings-nav-list {
+        padding: 10px 7px;
+    }
+
+    #settingsView .settings-nav-group-title,
+    #settingsView .settings-tab > span:last-child {
+        display: none;
+    }
+
+    #settingsView .settings-tab {
+        justify-content: center;
+        padding: 0;
+    }
+
+    .admin-course-page {
+        grid-template-columns: 210px minmax(0, 1fr);
+    }
+
+    .material-flow-shell {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    #settingsView .flow-log {
+        margin-top: 4px;
+        padding-top: 14px;
+        padding-left: 0;
+        border-top: 1px solid var(--admin-line);
+        border-left: 0;
+    }
+}
+
+@media (max-width: 680px) {
+    #settingsView .settings-panel > .panel-head {
+        min-height: 58px;
+        padding: 0 11px;
+    }
+
+    #settingsView .settings-layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    #settingsView .settings-nav-pane {
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: 0;
+        border-bottom: 1px solid var(--admin-line);
+    }
+
+    #settingsView .settings-nav-list {
+        min-height: 0;
+        padding: 6px;
+    }
+
+    #settingsView .settings-tab-bar,
+    #settingsView .settings-nav-group {
+        display: flex;
+        gap: 4px;
+        width: max-content;
+    }
+
+    #settingsView .settings-tab-bar {
+        gap: 8px;
+    }
+
+    #settingsView .settings-tab {
+        width: 38px;
+        min-height: 36px;
+    }
+
+    #settingsView .settings-detail-pane {
+        padding: 8px;
+    }
+
+    .admin-course-page {
+        display: block;
+        overflow-y: auto;
+    }
+
+    .admin-course-list-pane {
+        max-height: 240px;
+        border-right: 0;
+        border-bottom: 1px solid var(--admin-line);
+    }
+
+    .admin-course-main {
+        overflow: visible;
+    }
+
+    .admin-course-main-inner {
+        padding: 16px 13px 24px;
+    }
+
+    .admin-course-header {
+        display: grid;
+    }
+
+    .admin-course-header-actions {
+        justify-content: flex-start;
+    }
+
+    .admin-course-summary {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-course-summary-item {
+        border-right: 0;
+        border-bottom: 1px solid var(--admin-line);
+    }
+
+    .admin-course-summary-item:last-child {
+        border-bottom: 0;
+    }
+
+    .admin-course-section-head,
+    .admin-outline-activity,
+    .admin-dialog-body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-course-section-head {
+        display: grid;
+    }
+
+    .admin-course-section-actions {
+        justify-content: flex-start;
+    }
+
+    .admin-outline-events {
+        border-right: 0;
+        border-bottom: 1px solid var(--admin-line);
+    }
+
+    #settingsView .settings-refinement-book-body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-field-wide,
+    .admin-status-field {
+        grid-column: auto;
+    }
+
+    #settingsView .admin-log-toolbar {
+        flex-wrap: wrap;
+    }
+
+    #settingsView .admin-log-search {
+        order: 3;
+        width: 100%;
+        max-width: none;
+        margin-left: 0;
+    }
+}

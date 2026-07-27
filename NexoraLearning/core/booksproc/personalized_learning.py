@@ -19,11 +19,69 @@ HTML_TAG_PATTERN = re.compile(
     r"(?is)<\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^>]*)?\s*/?\s*>|"
     r"&lt;\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^&]*?)?/?\s*&gt;"
 )
+HTML_BREAK_TAG_PATTERN = re.compile(r"(?is)<\s*br\s*/?\s*>|&lt;\s*br\s*/?\s*&gt;")
+HTML_BLOCK_TAG_PATTERN = re.compile(
+    r"(?is)<\s*/?\s*(?:p|div|section|article|header|footer|main|aside|nav|"
+    r"blockquote|ul|ol|li|table|thead|tbody|tfoot|tr|h[1-6])\b[^>]*>|"
+    r"&lt;\s*/?\s*(?:p|div|section|article|header|footer|main|aside|nav|"
+    r"blockquote|ul|ol|li|table|thead|tbody|tfoot|tr|h[1-6])\b[^&]*?&gt;"
+)
+MARKDOWN_FENCE_PATTERN = re.compile(r"^\s*(```|~~~)")
 NXL_LAB_FENCE_START_PATTERN = re.compile(r"^```nxl-lab[ \t]*$", re.IGNORECASE)
 NXL_LAB_FENCE_END_PATTERN = re.compile(r"^```[ \t]*$")
 NXL_LAB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 NXL_LAB_EXPRESSION_PATTERN = re.compile(r"^[0-9A-Za-z_+\-*/%^().,\s]+$")
-NXL_LAB_ALLOWED_TYPES = {"canvas_scene", "formula_simulation", "code_trace", "sandbox_component"}
+NXL_LAB_TEMPLATE_NAME_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+NXL_LAB_ALLOWED_TYPES = {
+    "canvas_scene",
+    "step_flow",
+    "chart_experiment",
+    "formula_simulation",
+    "code_trace",
+    "sandbox_component",
+}
+NXL_LAB_CHART_SERIES_TYPES = {
+    "line",
+    "bar",
+    "pie",
+    "scatter",
+    "effectScatter",
+    "radar",
+    "tree",
+    "treemap",
+    "sunburst",
+    "boxplot",
+    "candlestick",
+    "heatmap",
+    "parallel",
+    "lines",
+    "graph",
+    "sankey",
+    "funnel",
+    "gauge",
+    "pictorialBar",
+    "themeRiver",
+}
+NXL_LAB_CHART_SOURCE_TYPES = {"xy", "sequence", "matrix"}
+NXL_LAB_CHART_FORBIDDEN_KEYS = {
+    "__proto__",
+    "prototype",
+    "constructor",
+    "renderItem",
+    "js",
+    "script",
+    "callback",
+    "event",
+    "events",
+    "onClick",
+    "onHover",
+}
+NXL_LAB_CHART_MAX_OPTION_CHARS = 60000
+NXL_LAB_CHART_MAX_DEPTH = 14
+NXL_LAB_CHART_MAX_NODES = 2400
+NXL_LAB_CHART_MAX_SOURCES = 12
+NXL_LAB_CHART_MAX_POINTS = 600
+NXL_LAB_CHART_MAX_MATRIX_CELLS = 1600
 NXL_LAB_ALLOWED_ELEMENT_TYPES = {
     "rect",
     "circle",
@@ -702,6 +760,28 @@ def _validate_nxl_lab_text(value: Any, path: str, *, required: bool = False) -> 
     return text
 
 
+def _validate_nxl_lab_template_text(value: Any, path: str, *, required: bool = False) -> str:
+    """校验只支持 {{parameter}} 插值的画布文本字段。"""
+    text = _validate_nxl_lab_text(value, path, required=required)
+
+    if text.startswith("="):
+        raise ValueError(
+            f"{path} 不支持表达式。流程条件、步骤状态和动态说明请改用 step_flow。"
+        )
+
+    return text
+
+
+def _validate_nxl_lab_literal_text(value: Any, path: str, *, required: bool = False) -> str:
+    """校验画布颜色和类型等必须保持静态的字符串字段。"""
+    text = _validate_nxl_lab_template_text(value, path, required=required)
+
+    if NXL_LAB_TEMPLATE_NAME_PATTERN.search(text):
+        raise ValueError(f"{path} 不支持动态模板，请使用固定值。")
+
+    return text
+
+
 def _validate_nxl_lab_limited_text(
     value: Any,
     path: str,
@@ -742,6 +822,34 @@ def _validate_nxl_lab_expression(expression: str, path: str, allowed_names: Set[
 
 def _nxl_lab_expression_names(expression: str) -> Set[str]:
     return set(NXL_LAB_NAME_PATTERN.findall(str(expression or "")))
+
+
+def _collect_nxl_lab_dynamic_names(value: Any) -> Set[str]:
+    """收集场景表达式和文本模板实际引用的动态变量。"""
+    names: Set[str] = set()
+
+    if isinstance(value, str):
+        text = value.strip()
+
+        if text.startswith("="):
+            names.update(_nxl_lab_expression_names(text[1:]))
+
+        names.update(NXL_LAB_TEMPLATE_NAME_PATTERN.findall(text))
+        return names
+
+    if isinstance(value, list):
+
+        for item in value:
+            names.update(_collect_nxl_lab_dynamic_names(item))
+
+        return names
+
+    if isinstance(value, dict):
+
+        for item in value.values():
+            names.update(_collect_nxl_lab_dynamic_names(item))
+
+    return names
 
 
 def _validate_nxl_lab_number_or_expression(value: Any, path: str, allowed_names: Set[str]) -> None:
@@ -865,11 +973,11 @@ def _validate_nxl_lab_graph(element: Mapping[str, Any], path: str, allowed_names
             raise ValueError(f"{node_path}.id 重复：{node_id}。")
 
         node_ids.add(node_id)
-        _validate_nxl_lab_text(node.get("label"), f"{node_path}.label", required=True)
-        _validate_nxl_lab_text(node.get("shape"), f"{node_path}.shape")
-        _validate_nxl_lab_text(node.get("fill"), f"{node_path}.fill")
-        _validate_nxl_lab_text(node.get("stroke"), f"{node_path}.stroke")
-        _validate_nxl_lab_text(node.get("text_color"), f"{node_path}.text_color")
+        _validate_nxl_lab_template_text(node.get("label"), f"{node_path}.label", required=True)
+        _validate_nxl_lab_literal_text(node.get("shape"), f"{node_path}.shape")
+        _validate_nxl_lab_literal_text(node.get("fill"), f"{node_path}.fill")
+        _validate_nxl_lab_literal_text(node.get("stroke"), f"{node_path}.stroke")
+        _validate_nxl_lab_literal_text(node.get("text_color"), f"{node_path}.text_color")
         _validate_nxl_lab_number_fields(
             node,
             ["x", "y"],
@@ -897,8 +1005,8 @@ def _validate_nxl_lab_graph(element: Mapping[str, Any], path: str, allowed_names
         if to_id not in node_ids:
             raise ValueError(f"{edge_path}.to 未引用已声明节点：{to_id}。")
 
-        _validate_nxl_lab_text(edge.get("color"), f"{edge_path}.color")
-        _validate_nxl_lab_text(edge.get("label"), f"{edge_path}.label")
+        _validate_nxl_lab_literal_text(edge.get("color"), f"{edge_path}.color")
+        _validate_nxl_lab_template_text(edge.get("label"), f"{edge_path}.label")
         _validate_nxl_lab_number_fields(
             edge,
             ["line_width", "head_size"],
@@ -923,7 +1031,7 @@ def _validate_nxl_lab_plot(element: Mapping[str, Any], path: str, allowed_names:
         allowed_names,
         required=False,
     )
-    _validate_nxl_lab_text(element.get("label"), f"{path}.label")
+    _validate_nxl_lab_template_text(element.get("label"), f"{path}.label")
 
     curves = _require_nxl_lab_array(element.get("curves"), f"{path}.curves")
 
@@ -943,7 +1051,7 @@ def _validate_nxl_lab_plot(element: Mapping[str, Any], path: str, allowed_names:
         if NXL_LAB_PLOT_AXIS_NAME in _nxl_lab_expression_names(expression):
             has_axis_curve = True
 
-        _validate_nxl_lab_text(curve.get("color"), f"{curve_path}.color")
+        _validate_nxl_lab_literal_text(curve.get("color"), f"{curve_path}.color")
         _validate_nxl_lab_number_fields(
             curve,
             ["line_width"],
@@ -962,9 +1070,9 @@ def _validate_nxl_lab_canvas_element(element: Mapping[str, Any], path: str, allo
     if element_type not in NXL_LAB_ALLOWED_ELEMENT_TYPES:
         raise ValueError(f"{path}.type 未注册：{element_type}。")
 
-    _validate_nxl_lab_text(element.get("fill"), f"{path}.fill")
-    _validate_nxl_lab_text(element.get("stroke"), f"{path}.stroke")
-    _validate_nxl_lab_text(element.get("color"), f"{path}.color")
+    _validate_nxl_lab_literal_text(element.get("fill"), f"{path}.fill")
+    _validate_nxl_lab_literal_text(element.get("stroke"), f"{path}.stroke")
+    _validate_nxl_lab_literal_text(element.get("color"), f"{path}.color")
 
     if element_type == "rect":
         _validate_nxl_lab_number_fields(
@@ -1006,7 +1114,7 @@ def _validate_nxl_lab_canvas_element(element: Mapping[str, Any], path: str, allo
         return
 
     if element_type == "text":
-        _validate_nxl_lab_text(element.get("text"), f"{path}.text", required=True)
+        _validate_nxl_lab_template_text(element.get("text"), f"{path}.text", required=True)
         _validate_nxl_lab_number_fields(
             element,
             ["x", "y"],
@@ -1046,8 +1154,9 @@ def _validate_nxl_lab_canvas_element(element: Mapping[str, Any], path: str, allo
 def _validate_nxl_lab_canvas_scene(config: Mapping[str, Any], path: str) -> None:
     parameter_names = _validate_nxl_lab_parameters(config.get("parameters"), f"{path}.parameters", required=False)
     allowed_names = set(parameter_names) | NXL_LAB_SCENE_NAMES | NXL_LAB_MATH_NAMES
+    _validate_nxl_lab_template_text(config.get("result_template"), f"{path}.result_template")
     scene = _require_nxl_lab_object(config.get("scene"), f"{path}.scene")
-    _validate_nxl_lab_text(scene.get("background"), f"{path}.scene.background")
+    _validate_nxl_lab_literal_text(scene.get("background"), f"{path}.scene.background")
     _validate_nxl_lab_number_fields(
         scene,
         ["width", "height"],
@@ -1065,6 +1174,15 @@ def _validate_nxl_lab_canvas_scene(config: Mapping[str, Any], path: str) -> None
         element_path = f"{path}.scene.elements[{idx}]"
         element = _require_nxl_lab_object(raw_element, element_path)
         _validate_nxl_lab_canvas_element(element, element_path, allowed_names)
+
+    referenced_names = _collect_nxl_lab_dynamic_names(scene)
+    unused_parameters = sorted(parameter_names - referenced_names)
+
+    if unused_parameters:
+        raise ValueError(
+            f"{path}.parameters 未实际驱动画布：{', '.join(unused_parameters)}。"
+            "请在场景数值表达式或文本模板中使用这些参数。"
+        )
 
 
 def _validate_nxl_lab_code_trace(config: Mapping[str, Any], path: str) -> None:
@@ -1097,6 +1215,380 @@ def _validate_nxl_lab_code_trace(config: Mapping[str, Any], path: str) -> None:
             _require_nxl_lab_object(variables, f"{step_path}.variables")
 
         _validate_nxl_lab_text(step.get("output"), f"{step_path}.output")
+
+
+def _validate_nxl_lab_step_flow(config: Mapping[str, Any], path: str) -> None:
+    """校验语义化流程实验，避免模型用坐标图冒充可交互流程。"""
+    parameter_keys = _validate_nxl_lab_parameters(config.get("parameters"), f"{path}.parameters", required=True)
+    active_parameter = _validate_nxl_lab_text(
+        config.get("active_parameter"),
+        f"{path}.active_parameter",
+        required=True,
+    )
+
+    if active_parameter not in parameter_keys:
+        raise ValueError(f"{path}.active_parameter 未引用已注册参数：{active_parameter}。")
+
+    _validate_nxl_lab_text(config.get("result_template"), f"{path}.result_template")
+    steps = _require_nxl_lab_array(config.get("steps"), f"{path}.steps")
+
+    if len(steps) < 2 or len(steps) > 8:
+        raise ValueError(f"{path}.steps 数量必须位于 2 到 8 之间。")
+
+    step_ids: Set[str] = set()
+
+    for idx, raw_step in enumerate(steps):
+        step_path = f"{path}.steps[{idx}]"
+        step = _require_nxl_lab_object(raw_step, step_path)
+        step_id = _validate_nxl_lab_text(step.get("id"), f"{step_path}.id", required=True)
+
+        if step_id in step_ids:
+            raise ValueError(f"{step_path}.id 重复：{step_id}。")
+
+        step_ids.add(step_id)
+        _validate_nxl_lab_text(step.get("title"), f"{step_path}.title", required=True)
+        _validate_nxl_lab_text(step.get("summary"), f"{step_path}.summary", required=True)
+        _validate_nxl_lab_text(step.get("detail"), f"{step_path}.detail", required=True)
+        _validate_nxl_lab_text(step.get("tag"), f"{step_path}.tag")
+
+
+def _validate_nxl_lab_chart_expression(value: Any, path: str, allowed_names: Set[str]) -> Set[str]:
+    """校验图表数据源表达式，并返回实际引用的变量名。"""
+    expression = _validate_nxl_lab_text(value, path, required=True)
+
+    if not expression.startswith("="):
+        raise ValueError(f"{path} 必须是以 = 开头的安全表达式。")
+
+    source = expression[1:].strip()
+    _validate_nxl_lab_expression(source, path, allowed_names)
+
+    return _nxl_lab_expression_names(source)
+
+
+def _validate_nxl_lab_chart_positive_integer(value: Any, path: str, maximum: int) -> int:
+    number = _validate_nxl_lab_number(value, path)
+
+    if not number.is_integer() or number < 1 or number > maximum:
+        raise ValueError(f"{path} 必须是 1 到 {maximum} 之间的整数。")
+
+    return int(number)
+
+
+def _validate_nxl_lab_chart_source(
+    source: Mapping[str, Any],
+    path: str,
+    parameter_names: Set[str],
+) -> Tuple[str, Set[str]]:
+    """校验通用图表数据源，并返回数据源 ID 与实际引用的参数。"""
+    source_id = _validate_nxl_lab_text(source.get("id"), f"{path}.id", required=True)
+
+    if not NXL_LAB_NAME_PATTERN.fullmatch(source_id):
+        raise ValueError(f"{path}.id 必须是合法变量名。")
+
+    source_type = _validate_nxl_lab_text(source.get("type"), f"{path}.type", required=True)
+
+    if source_type not in NXL_LAB_CHART_SOURCE_TYPES:
+        raise ValueError(f"{path}.type 未注册：{source_type}。")
+
+    fields_by_type = {
+        "xy": {"id", "type", "x_min", "x_max", "step", "y"},
+        "sequence": {"id", "type", "count", "value"},
+        "matrix": {"id", "type", "rows", "columns", "value"},
+    }
+    extra_fields = sorted(set(source.keys()) - fields_by_type[source_type])
+
+    if extra_fields:
+        raise ValueError(f"{path} 包含未定义字段：{', '.join(extra_fields)}。")
+
+    allowed_names = set(parameter_names) | NXL_LAB_MATH_NAMES
+    referenced_names: Set[str] = set()
+
+    if source_type == "xy":
+        x_min = _validate_nxl_lab_number(source.get("x_min"), f"{path}.x_min")
+        x_max = _validate_nxl_lab_number(source.get("x_max"), f"{path}.x_max")
+        step = _validate_nxl_lab_number(source.get("step"), f"{path}.step")
+
+        if x_max <= x_min:
+            raise ValueError(f"{path}.x_max 必须大于 x_min。")
+
+        if step <= 0:
+            raise ValueError(f"{path}.step 必须大于 0。")
+
+        point_count = math.floor((x_max - x_min) / step) + 1
+
+        if point_count > NXL_LAB_CHART_MAX_POINTS:
+            raise ValueError(f"{path} 生成点数超过 {NXL_LAB_CHART_MAX_POINTS}。")
+
+        expression_names = _validate_nxl_lab_chart_expression(
+            source.get("y"),
+            f"{path}.y",
+            allowed_names | {"x", "i"},
+        )
+        referenced_names.update(expression_names & parameter_names)
+
+    if source_type == "sequence":
+        _validate_nxl_lab_chart_positive_integer(
+            source.get("count"),
+            f"{path}.count",
+            NXL_LAB_CHART_MAX_POINTS,
+        )
+        expression_names = _validate_nxl_lab_chart_expression(
+            source.get("value"),
+            f"{path}.value",
+            allowed_names | {"i"},
+        )
+        referenced_names.update(expression_names & parameter_names)
+
+    if source_type == "matrix":
+        rows = _validate_nxl_lab_chart_positive_integer(source.get("rows"), f"{path}.rows", 64)
+        columns = _validate_nxl_lab_chart_positive_integer(source.get("columns"), f"{path}.columns", 64)
+
+        if rows * columns > NXL_LAB_CHART_MAX_MATRIX_CELLS:
+            raise ValueError(f"{path} 生成单元格数量超过 {NXL_LAB_CHART_MAX_MATRIX_CELLS}。")
+
+        expression_names = _validate_nxl_lab_chart_expression(
+            source.get("value"),
+            f"{path}.value",
+            allowed_names | {"i", "j"},
+        )
+        referenced_names.update(expression_names & parameter_names)
+
+    return source_id, referenced_names
+
+
+def _validate_nxl_lab_chart_option_value(
+    value: Any,
+    path: str,
+    allowed_names: Set[str],
+    source_ids: Set[str],
+    referenced_sources: Set[str],
+    referenced_parameters: Set[str],
+    counter: List[int],
+    depth: int = 0,
+) -> None:
+    """递归校验纯 JSON ECharts option，禁止回调、脚本和外部资源。"""
+    if depth > NXL_LAB_CHART_MAX_DEPTH:
+        raise ValueError(f"{path} 嵌套深度超过 {NXL_LAB_CHART_MAX_DEPTH}。")
+
+    counter[0] += 1
+
+    if counter[0] > NXL_LAB_CHART_MAX_NODES:
+        raise ValueError(f"{path} JSON 节点数量超过 {NXL_LAB_CHART_MAX_NODES}。")
+
+    if value is None or isinstance(value, bool):
+        return
+
+    if isinstance(value, (int, float)):
+        _validate_nxl_lab_number(value, path)
+        return
+
+    if isinstance(value, str):
+        text = value.strip()
+
+        if re.search(r"(?i)(?:https?:)?//|\bjavascript\s*:|\bimage\s*://|<\s*script\b", text):
+            raise ValueError(f"{path} 不能引用外部资源或脚本。")
+
+        if text.startswith("="):
+            _validate_nxl_lab_expression(text[1:].strip(), path, allowed_names)
+            referenced_parameters.update(_nxl_lab_expression_names(text[1:]) & allowed_names)
+
+        template_names = set(NXL_LAB_TEMPLATE_NAME_PATTERN.findall(text))
+        unknown_names = sorted(template_names - allowed_names)
+
+        if unknown_names:
+            raise ValueError(f"{path} 使用了未注册模板变量：{', '.join(unknown_names)}。")
+
+        referenced_parameters.update(template_names & allowed_names)
+        return
+
+    if isinstance(value, list):
+
+        for idx, item in enumerate(value):
+            _validate_nxl_lab_chart_option_value(
+                item,
+                f"{path}[{idx}]",
+                allowed_names,
+                source_ids,
+                referenced_sources,
+                referenced_parameters,
+                counter,
+                depth + 1,
+            )
+
+        return
+
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} 必须是合法 JSON 值。")
+
+    if "$source" in value:
+
+        if set(value.keys()) != {"$source"}:
+            raise ValueError(f"{path} 的 $source 引用不能包含其他字段。")
+
+        source_id = _validate_nxl_lab_text(value.get("$source"), f"{path}.$source", required=True)
+
+        if source_id not in source_ids:
+            raise ValueError(f"{path} 引用了未声明数据源：{source_id}。")
+
+        referenced_sources.add(source_id)
+        return
+
+    forbidden_lookup = {key.lower() for key in NXL_LAB_CHART_FORBIDDEN_KEYS}
+    forbidden_keys = sorted(str(key) for key in value if str(key).lower() in forbidden_lookup)
+
+    if forbidden_keys:
+        raise ValueError(f"{path} 包含不允许的回调或脚本字段：{', '.join(forbidden_keys)}。")
+
+    for key, item in value.items():
+        key_text = str(key)
+
+        if not key_text:
+            raise ValueError(f"{path} 不能包含空字段名。")
+
+        _validate_nxl_lab_chart_option_value(
+            item,
+            f"{path}.{key_text}",
+            allowed_names,
+            source_ids,
+            referenced_sources,
+            referenced_parameters,
+            counter,
+            depth + 1,
+        )
+
+
+def _validate_nxl_lab_chart_prediction(config: Mapping[str, Any], path: str) -> None:
+    prediction_fields = {"prediction_prompt", "prediction_options", "correct_prediction"}
+
+    if not any(field in config for field in prediction_fields):
+        return
+
+    _validate_nxl_lab_text(config.get("prediction_prompt"), f"{path}.prediction_prompt", required=True)
+    correct_prediction = _validate_nxl_lab_text(
+        config.get("correct_prediction"),
+        f"{path}.correct_prediction",
+        required=True,
+    )
+    prediction_options = _require_nxl_lab_array(config.get("prediction_options"), f"{path}.prediction_options")
+
+    if len(prediction_options) < 2 or len(prediction_options) > 4:
+        raise ValueError(f"{path}.prediction_options 数量必须位于 2 到 4 之间。")
+
+    prediction_ids: Set[str] = set()
+
+    for idx, raw_option in enumerate(prediction_options):
+        option_path = f"{path}.prediction_options[{idx}]"
+        option = _require_nxl_lab_object(raw_option, option_path)
+        option_id = _validate_nxl_lab_text(option.get("id"), f"{option_path}.id", required=True)
+
+        if option_id in prediction_ids:
+            raise ValueError(f"{option_path}.id 重复：{option_id}。")
+
+        prediction_ids.add(option_id)
+        _validate_nxl_lab_text(option.get("label"), f"{option_path}.label", required=True)
+
+    if correct_prediction not in prediction_ids:
+        raise ValueError(f"{path}.correct_prediction 必须引用 prediction_options 中的 id。")
+
+
+def _validate_nxl_lab_chart_experiment(config: Mapping[str, Any], path: str) -> None:
+    """校验通用纯 JSON ECharts 组件及其安全数据生成规则。"""
+    allowed_fields = {
+        "type",
+        "title",
+        "description",
+        "height",
+        "parameters",
+        "data_sources",
+        "option",
+        "conclusion",
+        "prediction_prompt",
+        "prediction_options",
+        "correct_prediction",
+    }
+    extra_fields = sorted(set(config.keys()) - allowed_fields)
+
+    if extra_fields:
+        raise ValueError(f"{path} 包含通用图表未定义字段：{', '.join(extra_fields)}。")
+
+    parameter_names = _validate_nxl_lab_parameters(
+        config.get("parameters"),
+        f"{path}.parameters",
+        required=False,
+    )
+    _validate_nxl_lab_text(config.get("conclusion"), f"{path}.conclusion", required=True)
+    _validate_nxl_lab_chart_prediction(config, path)
+
+    if "height" in config:
+        height = _validate_nxl_lab_number(config.get("height"), f"{path}.height")
+
+        if height < 320 or height > 720:
+            raise ValueError(f"{path}.height 必须位于 320 到 720 之间。")
+
+    raw_sources = config.get("data_sources")
+    source_rows = [] if raw_sources is None else _require_nxl_lab_array(raw_sources, f"{path}.data_sources")
+
+    if len(source_rows) > NXL_LAB_CHART_MAX_SOURCES:
+        raise ValueError(f"{path}.data_sources 数量不能超过 {NXL_LAB_CHART_MAX_SOURCES}。")
+
+    source_ids: Set[str] = set()
+    referenced_parameters: Set[str] = set()
+
+    for idx, raw_source in enumerate(source_rows):
+        source_path = f"{path}.data_sources[{idx}]"
+        source = _require_nxl_lab_object(raw_source, source_path)
+        source_id, source_parameters = _validate_nxl_lab_chart_source(source, source_path, parameter_names)
+
+        if source_id in source_ids:
+            raise ValueError(f"{source_path}.id 重复：{source_id}。")
+
+        source_ids.add(source_id)
+        referenced_parameters.update(source_parameters)
+
+    option = _require_nxl_lab_object(config.get("option"), f"{path}.option")
+    option_chars = len(json.dumps(option, ensure_ascii=False, separators=(",", ":")))
+
+    if option_chars > NXL_LAB_CHART_MAX_OPTION_CHARS:
+        raise ValueError(f"{path}.option 超过长度限制：最多 {NXL_LAB_CHART_MAX_OPTION_CHARS} 字符。")
+
+    series = _require_nxl_lab_array(option.get("series"), f"{path}.option.series")
+
+    if not series or len(series) > 12:
+        raise ValueError(f"{path}.option.series 数量必须位于 1 到 12 之间。")
+
+    for idx, raw_series in enumerate(series):
+        series_path = f"{path}.option.series[{idx}]"
+        series_item = _require_nxl_lab_object(raw_series, series_path)
+        series_type = _validate_nxl_lab_text(series_item.get("type"), f"{series_path}.type", required=True)
+
+        if series_type not in NXL_LAB_CHART_SERIES_TYPES:
+            raise ValueError(f"{series_path}.type 未注册：{series_type}。")
+
+    referenced_sources: Set[str] = set()
+    option_parameters: Set[str] = set()
+    _validate_nxl_lab_chart_option_value(
+        option,
+        f"{path}.option",
+        parameter_names | NXL_LAB_MATH_NAMES | {"W", "H"},
+        source_ids,
+        referenced_sources,
+        option_parameters,
+        [0],
+    )
+    referenced_parameters.update(option_parameters & parameter_names)
+
+    unused_sources = sorted(source_ids - referenced_sources)
+
+    if unused_sources:
+        raise ValueError(f"{path}.data_sources 未被 option 引用：{', '.join(unused_sources)}。")
+
+    unused_parameters = sorted(parameter_names - referenced_parameters)
+
+    if unused_parameters:
+        raise ValueError(
+            f"{path}.parameters 未实际驱动图表：{', '.join(unused_parameters)}。"
+            "请在 option 表达式、文本模板或 data_sources 表达式中使用这些参数。"
+        )
 
 
 def _validate_nxl_lab_sandbox_component(config: Mapping[str, Any], path: str) -> None:
@@ -1162,6 +1654,14 @@ def _validate_nxl_lab_config(config: Mapping[str, Any], path: str) -> None:
         _validate_nxl_lab_canvas_scene(config, path)
         return
 
+    if lab_type == "step_flow":
+        _validate_nxl_lab_step_flow(config, path)
+        return
+
+    if lab_type == "chart_experiment":
+        _validate_nxl_lab_chart_experiment(config, path)
+        return
+
     if lab_type == "code_trace":
         _validate_nxl_lab_code_trace(config, path)
         return
@@ -1201,7 +1701,15 @@ def save_chapter_content(
     if not safe_uid or not safe_lid:
         raise ValueError("user_id and lecture_id are required.")
 
-    markdown_text = str(markdown or "")
+    raw_markdown = str(markdown or "")
+    markdown_text = _normalize_chapter_markdown_html(raw_markdown)
+
+    if markdown_text != raw_markdown:
+        log_event(
+            "personalized_chapter_html_normalized",
+            "个性化章节正文中的 HTML 排版标签已规范化",
+            payload={"user_id": safe_uid, "lecture_id": safe_lid, "chapter_index": chapter_index},
+        )
 
     try:
         lab_count = validate_nxl_lab_blocks(markdown_text)
@@ -1317,12 +1825,10 @@ def _build_learning_path_tools() -> List[Dict[str, Any]]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "index": {"type": "integer"},
-                                    "name": {"type": "string"},
-                                    "book_id": {"type": "string"},
-                                    "book_title": {"type": "string"},
-                                    "chapter_range": {"type": "string"},
-                                    "chapter_summary": {"type": "string"},
+                                    "source_id": {
+                                        "type": "string",
+                                        "description": "Exact source_id from the provided catalog",
+                                    },
                                     "outline_section_id": {"type": "string"},
                                     "priority": {"type": "integer"},
                                     "status": {
@@ -1332,12 +1838,7 @@ def _build_learning_path_tools() -> List[Dict[str, Any]]:
                                     "reason": {"type": "string"},
                                 },
                                 "required": [
-                                    "index",
-                                    "name",
-                                    "book_id",
-                                    "book_title",
-                                    "chapter_range",
-                                    "chapter_summary",
+                                    "source_id",
                                     "outline_section_id",
                                     "priority",
                                     "status",
@@ -1358,15 +1859,16 @@ def _normalize_catalog_source_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "").strip()).lower()
 
 
-def _build_catalog_source_candidates(catalog_rows: Any) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set]:
+def _build_catalog_source_candidates(catalog_rows: Any) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set]:
     """构建教材目录索引，用于把模型输出校正为真实教材来源。"""
+    by_source_id: Dict[str, Dict[str, Any]] = {}
     by_name: Dict[str, Dict[str, Any]] = {}
     by_range: Dict[str, Dict[str, Any]] = {}
     by_range_length: Dict[str, Dict[str, Any]] = {}
     valid_book_ids = set()
 
     if not isinstance(catalog_rows, list):
-        return by_name, by_range, by_range_length, valid_book_ids
+        return by_source_id, by_name, by_range, by_range_length, valid_book_ids
 
     duplicate_names = set()
     duplicate_ranges = set()
@@ -1383,6 +1885,10 @@ def _build_catalog_source_candidates(catalog_rows: Any) -> Tuple[Dict[str, Dict[
             continue
 
         valid_book_ids.add(book_id)
+
+        source_id = str(row.get("source_id") or "").strip()
+        if source_id:
+            by_source_id[source_id] = row
 
         name_key = _normalize_catalog_source_text(chapter_name)
         if name_key in by_name:
@@ -1409,15 +1915,16 @@ def _build_catalog_source_candidates(catalog_rows: Any) -> Tuple[Dict[str, Dict[
     for key in duplicate_lengths:
         by_range_length.pop(key, None)
 
-    return by_name, by_range, by_range_length, valid_book_ids
+    return by_source_id, by_name, by_range, by_range_length, valid_book_ids
 
 
 def _canonicalize_learning_path_source(
     item: Mapping[str, Any],
-    catalog_index: Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set],
+    catalog_index: Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set],
 ) -> Dict[str, str]:
     """按真实目录修正学习路线来源，避免模型抄错 book_id 或章节范围。"""
-    by_name, by_range, by_range_length, valid_book_ids = catalog_index
+    by_source_id, by_name, by_range, by_range_length, valid_book_ids = catalog_index
+    source_id = str(item.get("source_id") or "").strip()
     name = str(item.get("name") or "").strip()
     book_id = str(item.get("book_id") or "").strip()
     book_title = str(item.get("book_title") or "").strip()
@@ -1425,7 +1932,9 @@ def _canonicalize_learning_path_source(
 
     catalog_row: Optional[Mapping[str, Any]] = None
     name_key = _normalize_catalog_source_text(name)
-    if name_key and name_key in by_name:
+    if source_id and source_id in by_source_id:
+        catalog_row = by_source_id[source_id]
+    elif name_key and name_key in by_name:
         catalog_row = by_name[name_key]
     elif chapter_range in by_range:
         catalog_row = by_range[chapter_range]
@@ -1436,15 +1945,25 @@ def _canonicalize_learning_path_source(
 
     if catalog_row is not None:
         return {
+            "source_id": str(catalog_row.get("source_id") or source_id).strip(),
+            "name": str(catalog_row.get("chapter_name") or name).strip(),
             "book_id": str(catalog_row.get("book_id") or "").strip(),
             "book_title": str(catalog_row.get("book_title") or book_title).strip(),
             "chapter_range": str(catalog_row.get("chapter_range") or "").strip(),
+            "chapter_summary": str(catalog_row.get("chapter_summary") or "").strip(),
         }
 
     if valid_book_ids and book_id not in valid_book_ids:
-        return {"book_id": "", "book_title": book_title, "chapter_range": chapter_range}
+        book_id = ""
 
-    return {"book_id": book_id, "book_title": book_title, "chapter_range": chapter_range}
+    return {
+        "source_id": source_id,
+        "name": name,
+        "book_id": book_id,
+        "book_title": book_title,
+        "chapter_range": chapter_range,
+        "chapter_summary": str(item.get("chapter_summary") or "").strip(),
+    }
 
 
 def _canonicalize_learning_path_data_sources(path_data: Dict[str, Any]) -> bool:
@@ -1468,7 +1987,7 @@ def _canonicalize_learning_path_data_sources(path_data: Dict[str, Any]) -> bool:
         if not source["book_id"] or not source["chapter_range"]:
             continue
 
-        for key in ("book_id", "book_title", "chapter_range"):
+        for key in ("source_id", "name", "book_id", "book_title", "chapter_range", "chapter_summary"):
             if str(chapter.get(key) or "").strip() == source[key]:
                 continue
 
@@ -1489,12 +2008,13 @@ def _normalize_learning_path_chapters(raw_chapters: Any, catalog_rows: Any = Non
         if not isinstance(item, dict):
             continue
 
-        name = str(item.get("name") or "").strip()
         source = _canonicalize_learning_path_source(item, catalog_index)
+        source_id = source["source_id"]
+        name = source["name"]
         book_id = source["book_id"]
         book_title = source["book_title"]
         chapter_range = source["chapter_range"]
-        chapter_summary = str(item.get("chapter_summary") or "").strip()
+        chapter_summary = source["chapter_summary"]
         outline_section_id = str(item.get("outline_section_id") or "").strip()
         status = str(item.get("status") or "pending").strip().lower() or "pending"
         reason = str(item.get("reason") or "").strip()
@@ -1513,6 +2033,7 @@ def _normalize_learning_path_chapters(raw_chapters: Any, catalog_rows: Any = Non
         chapters.append(
             {
                 "index": idx,
+                "source_id": source_id,
                 "name": name,
                 "book_id": book_id,
                 "book_title": book_title,
@@ -1555,6 +2076,7 @@ def generate_learning_path_with_tools(
     request_timeout: int,
     catalog_rows: Any = None,
     on_delta: Optional[Callable[[str], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     safe_user_id = str(user_id or "").strip()
     safe_lecture_id = str(lecture_id or "").strip()
@@ -1566,6 +2088,12 @@ def generate_learning_path_with_tools(
     tool_choice = {"type": "function", "function": {"name": "submit_learning_path"}}
     advice_text = ""
     chapters: List[Dict[str, Any]] = []
+
+    def emit_status(message: str) -> None:
+        text = str(message or "").strip()
+
+        if text and callable(on_status):
+            on_status(text)
 
     log_event(
         "personalized_learning_path_start",
@@ -1579,6 +2107,42 @@ def generate_learning_path_with_tools(
     )
 
     for turn in range(1, 7):
+        emit_status(f"模型第 {turn} 轮正在规划学习路线")
+        log_event(
+            "personalized_learning_path_round_start",
+            "个性化学习路线轮次开始",
+            payload={
+                "user_id": safe_user_id,
+                "lecture_id": safe_lecture_id,
+                "turn": turn,
+                "messages_count": len(messages),
+            },
+        )
+        reasoning_started = False
+        reasoning_chars = 0
+
+        def on_reasoning_delta(delta_text: str) -> None:
+            nonlocal reasoning_chars, reasoning_started
+
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            reasoning_chars += len(piece)
+
+            if not reasoning_started:
+                reasoning_started = True
+                emit_status("模型正在分析课程结构、阅读前回答和学习偏好")
+                log_event(
+                    "personalized_learning_path_reasoning_start",
+                    "个性化学习路线模型开始推理",
+                    payload={
+                        "user_id": safe_user_id,
+                        "lecture_id": safe_lecture_id,
+                        "turn": turn,
+                    },
+                )
+
         response = proxy.chat_completions(
             messages=messages,
             model=model_name or None,
@@ -1593,6 +2157,7 @@ def generate_learning_path_with_tools(
             use_chat_path=False,
             request_timeout=request_timeout,
             on_delta=on_delta,
+            on_reasoning_delta=on_reasoning_delta,
         )
 
         log_event(
@@ -1603,6 +2168,7 @@ def generate_learning_path_with_tools(
                 "lecture_id": safe_lecture_id,
                 "turn": turn,
                 "ok": bool(response.get("ok")),
+                "reasoning_chars": reasoning_chars,
             },
         )
 
@@ -1617,6 +2183,7 @@ def generate_learning_path_with_tools(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list) else []
+        stream_debug = payload.get("_stream_debug") if isinstance(payload.get("_stream_debug"), dict) else {}
 
         log_event(
             "personalized_learning_path_model_output",
@@ -1627,6 +2194,7 @@ def generate_learning_path_with_tools(
                 "turn": turn,
                 "tool_calls": len(tool_calls),
                 "content_len": len(assistant_content),
+                "stream_debug": stream_debug,
             },
             content=assistant_content[:3000],
         )
@@ -1729,6 +2297,7 @@ def generate_learning_path_with_tools(
             )
 
             if tool_name == "submit_learning_path":
+                emit_status("模型已提交学习路线，正在校验章节来源和学习顺序")
                 advice_text = str(args_obj.get("advice") or "").strip()
                 chapters = _normalize_learning_path_chapters(args_obj.get("chapters"), catalog_rows)
                 tool_result = {"ok": bool(advice_text and chapters), "chapters_count": len(chapters)}
@@ -1772,6 +2341,38 @@ def generate_learning_path_with_tools(
     raise RuntimeError("Model failed to submit learning path via tool call")
 
 
+def _normalize_chapter_markdown_html(markdown: str) -> str:
+    """清理正文排版标签，同时完整保留代码围栏和 nxl-lab 配置。"""
+    lines = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    normalized_lines: List[str] = []
+    active_fence = ""
+
+    for line in lines:
+        fence_match = MARKDOWN_FENCE_PATTERN.match(line)
+
+        if fence_match:
+            fence_token = fence_match.group(1)
+
+            if not active_fence:
+                active_fence = fence_token
+            elif line.strip().startswith(active_fence):
+                active_fence = ""
+
+            normalized_lines.append(line)
+            continue
+
+        if active_fence:
+            normalized_lines.append(line)
+            continue
+
+        normalized_line = HTML_BREAK_TAG_PATTERN.sub("\n", line)
+        normalized_line = HTML_BLOCK_TAG_PATTERN.sub("\n", normalized_line)
+        normalized_line = HTML_TAG_PATTERN.sub("", normalized_line)
+        normalized_lines.extend(normalized_line.split("\n"))
+
+    return "\n".join(normalized_lines)
+
+
 def _extract_markdown_after_content_marker(raw_text: str) -> str:
     """提取章节 Markdown 正文，确保模型遵守流式正文起始协议。"""
     text = str(raw_text or "")
@@ -1784,10 +2385,16 @@ def _extract_markdown_after_content_marker(raw_text: str) -> str:
     if not markdown.strip():
         raise ValueError("章节正文起始标记后没有 Markdown 内容")
 
-    if HTML_TAG_PATTERN.search(markdown):
-        raise ValueError("章节正文包含 HTML 标签，请重新生成并只保留 Markdown 原文引用。")
+    normalized_markdown = _normalize_chapter_markdown_html(markdown)
 
-    return markdown
+    if normalized_markdown != markdown:
+        log_event(
+            "personalized_chapter_markdown_normalized",
+            "个性化章节 Markdown 排版标签已规范化",
+            payload={"raw_chars": len(markdown), "normalized_chars": len(normalized_markdown)},
+        )
+
+    return normalized_markdown
 
 
 def generate_chapter_markdown_with_tools(
@@ -1804,7 +2411,7 @@ def generate_chapter_markdown_with_tools(
     request_timeout: int,
     on_delta: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """流式生成章节 Markdown；保留旧函数名以维持路由调用兼容。"""
+    """流式生成章节 Markdown，并在返回前完成实验配置校验与纠错。"""
     safe_user_id = str(user_id or "").strip()
     safe_lecture_id = str(lecture_id or "").strip()
     messages: List[Dict[str, Any]] = [
@@ -1824,65 +2431,112 @@ def generate_chapter_markdown_with_tools(
         },
     )
 
-    response = proxy.chat_completions(
-        messages=messages,
-        model=model_name or None,
-        username=safe_user_id,
-        options={
-            "temperature": 0.4,
-            "max_tokens": 12000,
-            "stream": True,
-        },
-        use_chat_path=False,
-        request_timeout=request_timeout,
-        on_delta=on_delta,
-    )
+    max_attempts = 3
 
-    log_event(
-        "personalized_chapter_response",
-        "个性化章节流式响应",
-        payload={
-            "user_id": safe_user_id,
-            "lecture_id": safe_lecture_id,
-            "chapter_name": chapter_name,
-            "ok": bool(response.get("ok")),
-        },
-    )
+    for attempt in range(1, max_attempts + 1):
+        response = proxy.chat_completions(
+            messages=messages,
+            model=model_name or None,
+            username=safe_user_id,
+            options={
+                "temperature": 0.4 if attempt == 1 else 0.2,
+                "max_tokens": 12000,
+                "stream": attempt == 1,
+            },
+            use_chat_path=False,
+            request_timeout=request_timeout,
+            on_delta=on_delta if attempt == 1 else None,
+        )
 
-    if not bool(response.get("ok")):
-        raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
+        log_event(
+            "personalized_chapter_response",
+            "个性化章节模型响应",
+            payload={
+                "user_id": safe_user_id,
+                "lecture_id": safe_lecture_id,
+                "chapter_name": chapter_name,
+                "attempt": attempt,
+                "ok": bool(response.get("ok")),
+            },
+        )
 
-    payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
-    if not choices:
-        raise RuntimeError("Model returned no choices")
+        if not bool(response.get("ok")):
+            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
 
-    msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
-    assistant_content = str((msg or {}).get("content") or "")
+        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices:
+            raise RuntimeError("Model returned no choices")
 
-    log_event(
-        "personalized_chapter_model_output",
-        "个性化章节模型输出",
-        payload={
-            "user_id": safe_user_id,
-            "lecture_id": safe_lecture_id,
-            "chapter_name": chapter_name,
-            "content_len": len(assistant_content),
-        },
-        content=assistant_content[:3000],
-    )
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        assistant_content = str((msg or {}).get("content") or "")
 
-    markdown_text = _extract_markdown_after_content_marker(assistant_content)
+        log_event(
+            "personalized_chapter_model_output",
+            "个性化章节模型输出",
+            payload={
+                "user_id": safe_user_id,
+                "lecture_id": safe_lecture_id,
+                "chapter_name": chapter_name,
+                "attempt": attempt,
+                "content_len": len(assistant_content),
+            },
+            content=assistant_content[:3000],
+        )
 
-    log_event(
-        "personalized_chapter_done",
-        "个性化章节内容生成完成",
-        payload={
-            "user_id": safe_user_id,
-            "lecture_id": safe_lecture_id,
-            "chapter_name": chapter_name,
-            "chars": len(markdown_text),
-        },
-    )
+        try:
+            markdown_text = _extract_markdown_after_content_marker(assistant_content)
+            lab_count = validate_nxl_lab_blocks(markdown_text)
+        except ValueError as exc:
+            validation_error = str(exc)
+            log_event(
+                "personalized_chapter_validation_retry",
+                "个性化章节生成结果校验失败，要求模型纠正",
+                payload={
+                    "user_id": safe_user_id,
+                    "lecture_id": safe_lecture_id,
+                    "chapter_name": chapter_name,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                },
+                content=validation_error,
+            )
 
-    return markdown_text
+            if attempt >= max_attempts:
+                raise
+
+            messages.extend(
+                [
+                    {"role": "assistant", "content": assistant_content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "你生成的章节未通过保存前校验，请修正后重新输出完整文章。\n"
+                            f"校验错误：{validation_error}\n"
+                            "第一行仍必须是 <!-- NEXORA_CONTENT_START -->。\n"
+                            "不要删除正文，只修正导致错误的部分。\n"
+                            "nxl-lab 数值表达式只允许算术和已注册数学函数，禁止比较、逻辑运算和 ?: 条件表达式。\n"
+                            "canvas_scene 的每个滑块参数必须实际出现在画布表达式或 {{参数名}} 文本模板中；"
+                            "chart_experiment 必须提供纯 JSON option，动态数据通过 data_sources 生成并由 $source 引用。"
+                        ),
+                    },
+                ]
+            )
+            continue
+
+        log_event(
+            "personalized_chapter_validated",
+            "个性化章节内容已通过保存前校验",
+            payload={
+                "user_id": safe_user_id,
+                "lecture_id": safe_lecture_id,
+                "chapter_name": chapter_name,
+                "attempt": attempt,
+                "chars": len(markdown_text),
+                "lab_count": lab_count,
+            },
+        )
+
+        return markdown_text
+
+    raise RuntimeError("章节内容生成未产生可保存结果")

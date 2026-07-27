@@ -107,70 +107,17 @@
   }
 
   function renderInlineMarkdown(ctx, value) {
-    const escapeHtml = ctx.escapeHtml || ((text) => String(text || ""));
-    let text = escapeHtml(String(value || ""));
-    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
-    text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    return text;
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.renderInline !== "function") {
+      throw new Error("NXLMarkdown.renderInline is required.");
+    }
+    return window.NXLMarkdown.renderInline(value);
   }
 
   function renderMarkdown(ctx, markdown) {
-    const lines = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-    const html = [];
-    let paragraph = [];
-    let list = [];
-    const flushParagraph = () => {
-      if (!paragraph.length) return;
-      html.push(`<p>${renderInlineMarkdown(ctx, paragraph.join(" "))}</p>`);
-      paragraph = [];
-    };
-    const flushList = () => {
-      if (!list.length) return;
-      html.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(ctx, item)}</li>`).join("")}</ul>`);
-      list = [];
-    };
-    lines.forEach((line) => {
-      const raw = String(line || "");
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        flushParagraph();
-        flushList();
-        return;
-      }
-      const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
-      if (heading) {
-        flushParagraph();
-        flushList();
-        const level = Math.min(4, heading[1].length + 1);
-        html.push(`<h${level}>${renderInlineMarkdown(ctx, heading[2])}</h${level}>`);
-        return;
-      }
-      const bullet = trimmed.match(/^[-*+]\s+(.+)$/);
-      if (bullet) {
-        flushParagraph();
-        list.push(bullet[1]);
-        return;
-      }
-      const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
-      if (ordered) {
-        flushParagraph();
-        list.push(ordered[1]);
-        return;
-      }
-      if (trimmed.startsWith(">")) {
-        flushParagraph();
-        flushList();
-        html.push(`<blockquote>${renderInlineMarkdown(ctx, trimmed.replace(/^>\s*/, ""))}</blockquote>`);
-        return;
-      }
-      flushList();
-      paragraph.push(trimmed);
-    });
-    flushParagraph();
-    flushList();
-    return html.join("") || "<p></p>";
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.render !== "function") {
+      throw new Error("NXLMarkdown.render is required.");
+    }
+    return window.NXLMarkdown.render(markdown);
   }
 
   function renderBlocks(ctx, blocks, itemId) {

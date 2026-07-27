@@ -832,6 +832,8 @@
 
 // ─────── Reader: Chapter Navigation ───────────────────────────────────
   function openReaderChapter(index, scrollToOffset, guideOptions) {
+    // 每次章节切换都使之前的异步请求失效，防止旧章节响应覆盖当前目标。
+    state.readerRequestToken += 1;
     flushReaderPosition();
     resetReaderSelectionTelemetry();
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
@@ -843,6 +845,11 @@
     }
     const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
     state.readerActiveChapterIndex = idx;
+    logReaderDebug("readerChapter:navigate", {
+      requestedChapterIndex: index,
+      openedChapterIndex: idx,
+      requestToken: state.readerRequestToken,
+    });
 
     // 检查缓存中是否有该章节内容
     if (state.readerChapterCache && state.readerChapterCache[idx]) {

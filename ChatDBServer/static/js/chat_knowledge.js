@@ -1499,6 +1499,8 @@
         const setVectorStatus = requireKnowledgeDependency(deps, 'setVectorStatus');
         const getVectorizeTitle = requireKnowledgeDependency(deps, 'getVectorizeTitle');
         const setVectorizeTitle = requireKnowledgeDependency(deps, 'setVectorizeTitle');
+        const _startOwnerKnowledgeCollab = requireKnowledgeDependency(deps, 'startOwnerKnowledgeCollab');
+        const _stopKnowledgeCollab = requireKnowledgeDependency(deps, 'stopKnowledgeCollab');
 
         let knowledgeSettingsVectorLoadedTitle = '';
 
@@ -1760,9 +1762,9 @@
                         const liveMeta = knowledgeMetaCache[oldTitle] || {};
 
                         if (isPublic && isCollaborative) {
-                            startOwnerKnowledgeCollab(oldTitle, liveMeta);
+                            _startOwnerKnowledgeCollab(oldTitle, liveMeta);
                         } else {
-                            stopKnowledgeCollab();
+                            _stopKnowledgeCollab();
                         }
                     }
 
@@ -1906,7 +1908,17 @@
                 modeSwitchActive: false,
                 restoreTimeouts: [],
                 lastSource: null,
-                resetTimer: null
+                resetTimer: null,
+                // 打开/切换后的稳定窗口截止时间戳。窗口内的非用户滚动会立即吸附回
+                // 目标位置，避免异步预览渲染把预览甩离目标（产生跳底闪烁）
+                settleUntil: 0,
+                // 当前恢复目标，供稳定窗口内滚动监听即时吸附复用
+                targetTop: 0,
+                targetRatio: 0,
+                targetIsPreview: true,
+                // 最近一次用户输入（wheel/touch/pointer/keydown）时间戳，用于区分
+                // 用户滚动与渲染引起的滚动
+                lastUserInputAt: 0
             },
             hooks: {
                 previewInstalled: false,
@@ -1944,7 +1956,6 @@
         const getCurrentUsername = requireKnowledgeDependency(deps, 'getCurrentUsername');
         const loadKnowledge = requireKnowledgeDependency(deps, 'loadKnowledge');
         const showToast = requireKnowledgeDependency(deps, 'showToast');
-        const renderMarkdownForNotes = requireKnowledgeDependency(deps, 'renderMarkdownForNotes');
         const bindSourceMarkdown = requireKnowledgeDependency(deps, 'bindSourceMarkdown');
         const renderMathSafe = requireKnowledgeDependency(deps, 'renderMathSafe');
         const isDebugEnabled = requireKnowledgeDependency(deps, 'isDebugEnabled');
@@ -2505,10 +2516,6 @@
 
             const viewportSnapshot = captureEditorViewportSnapshot();
             editor.value(merged);
-
-            if (editor && typeof editor.__queuePreviewRender === 'function') {
-                editor.__queuePreviewRender(true, 0);
-            }
 
             setCurrentVersion(server, remoteContent);
             updateKnowledgeMetaFromVersion(state.currentTitle, server);
@@ -3619,7 +3626,15 @@
             };
 
             cancelRestores();
-            [0, 40, 140, 320, 680].forEach((delay) => {
+            // 记录当前恢复目标，稳定窗口内滚动监听检测到渲染引起的偏移时立即吸附回该位置
+            state.scroll.targetTop = preferredTop;
+            state.scroll.targetRatio = preferredRatio;
+            state.scroll.targetIsPreview = isPreview;
+            // 恢复档位需覆盖 ToastUI 原生预览异步渲染完成的时机（可能晚于 680ms），
+            // 否则渲染完成后预览被甩到底部时已无恢复动作兜底
+            const restoreTicks = [0, 40, 140, 320, 680, 1200, 2000];
+            state.scroll.settleUntil = Date.now() + restoreTicks[restoreTicks.length - 1] + 300;
+            restoreTicks.forEach((delay) => {
                 state.scroll.restoreTimeouts.push(setTimeout(() => requestAnimationFrame(attemptRestore), delay));
             });
         }
@@ -3650,6 +3665,7 @@
         function syncMirrorScroll(fromPreview) {
             if (state.scroll.modeSwitchActive || state.scroll.syncLock) return;
             if (!isSideBySideActive()) return;
+            if (isToastUiEditor()) return;
 
             const preview = getPreviewEl();
             const scroller = getScrollerEl();
@@ -3744,7 +3760,33 @@
 
             if (preview && preview.dataset.nexoraScrollBound !== '1') {
                 preview.dataset.nexoraScrollBound = '1';
+
+                // 记录用户输入时间戳，供稳定窗口内区分"用户滚动"与"渲染引起的滚动"
+                ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach((eventName) => {
+                    preview.addEventListener(eventName, () => {
+                        state.scroll.lastUserInputAt = Date.now();
+                    }, { passive: true, capture: true });
+                });
+
                 preview.addEventListener('scroll', () => {
+                    // 稳定窗口内（打开/切换刚结束）：
+                    // - 分屏模式有独立的编辑器↔预览滚动同步(syncToastExactScroll)，吸附会
+                    //   与之冲突导致编辑器卡死在顶部，故直接走下方正常逻辑交给同步机制
+                    // - 纯预览模式下，对非用户触发的滚动（ToastUI 异步渲染）立即吸附回目标
+                    //   消除"跳底闪烁"；用户真实滚动走正常逻辑不被干扰
+                    if (Date.now() < state.scroll.settleUntil && !isSideBySideActive()) {
+                        const recentUserInput = Date.now() - (state.scroll.lastUserInputAt || 0) < 150;
+
+                        if (!recentUserInput) {
+                            requestAnimationFrame(() => {
+                                if (Date.now() < state.scroll.settleUntil && state.scroll.targetIsPreview) {
+                                    applyScrollableProgress(preview, state.scroll.targetTop, state.scroll.targetRatio);
+                                }
+                            });
+                            return;
+                        }
+                    }
+
                     cancelRestores();
 
                     if (state.scroll.modeSwitchActive || state.scroll.syncLock) return;
@@ -3773,6 +3815,9 @@
             if (scroller && scroller.dataset.nexoraScrollBound !== '1') {
                 scroller.dataset.nexoraScrollBound = '1';
                 scroller.addEventListener('scroll', () => {
+                    // 稳定窗口内同预览监听器：不取消恢复、不记录瞬时位置
+                    if (Date.now() < state.scroll.settleUntil) return;
+
                     cancelRestores();
 
                     if (state.scroll.modeSwitchActive || state.scroll.syncLock) return;
@@ -3858,19 +3903,6 @@
                     });
                     syncMirrorScroll(false);
                 }, { passive: true });
-
-                const refreshPreviewFromPm = () => {
-                    const liveEditor = getEditor();
-
-                    if (liveEditor && typeof liveEditor.__queuePreviewRender === 'function') {
-                        liveEditor.__queuePreviewRender(true);
-                    }
-                };
-                proseMirror.addEventListener('input', refreshPreviewFromPm);
-                proseMirror.addEventListener('keyup', refreshPreviewFromPm);
-                proseMirror.addEventListener('paste', refreshPreviewFromPm);
-                proseMirror.addEventListener('cut', refreshPreviewFromPm);
-                proseMirror.addEventListener('compositionend', refreshPreviewFromPm);
             }
 
             const viewer = getViewerEl();
@@ -3952,33 +3984,34 @@
             );
             const getToastEditPane = () => host.querySelector('.toastui-editor-md-container');
             const getToastProseMirrorEl = () => host.querySelector('.ProseMirror');
-            const getToastPreviewPane = () => host.querySelector('.toastui-editor-md-container .toastui-editor-md-preview');
+            const getToastPreviewPane = () => {
+                if (typeof editor.getEditorElements !== 'function') return null;
+
+                const elements = editor.getEditorElements();
+
+                return elements && elements.mdPreview ? elements.mdPreview : null;
+            };
             const getToastSplitter = () => host.querySelector('.toastui-editor-md-splitter');
-            const ensureToastCustomPreviewPane = () => {
-                const parent = getToastUiRoot();
-                if (!parent) return null;
-                let pane = parent.querySelector('.nexora-toast-preview');
-                if (!pane) {
-                    pane = document.createElement('div');
-                    pane.className = 'nexora-toast-preview';
-                    pane.innerHTML = '<div class="toastui-editor-contents"></div>';
-                    parent.appendChild(pane);
-                }
+            const getToastNativePreviewPane = () => {
+                const pane = getToastPreviewPane();
+
+                if (!pane) return null;
+
+                pane.classList.add('nexora-toast-preview');
+
                 return pane;
             };
-            const ensureToastCustomSplitter = () => {
-                const parent = getToastUiRoot();
-                if (!parent) return null;
-                let splitter = parent.querySelector('.nexora-toast-splitter');
-                if (!splitter) {
-                    splitter = document.createElement('div');
-                    splitter.className = 'nexora-toast-splitter';
-                    parent.appendChild(splitter);
-                }
+            const getToastNativeSplitter = () => {
+                const splitter = getToastSplitter();
+
+                if (!splitter) return null;
+
+                splitter.classList.add('nexora-toast-splitter');
+
                 return splitter;
             };
             const getToastPreviewContentRoot = () => {
-                const pane = ensureToastCustomPreviewPane();
+                const pane = getToastNativePreviewPane();
                 return pane ? pane.querySelector('.toastui-editor-contents') : null;
             };
             const findBestScrollableDescendant = (root) => {
@@ -4031,10 +4064,241 @@
             let fullscreen = false;
             let previewRenderDebounceTimer = 0;
             let previewBridgeCleanupFns = [];
-            let lastRenderedPreviewMarkdown = null;
+            let toastScrollMapTimer = 0;
+            let toastScrollMapFrame = 0;
+            let toastScrollMap = null;
+            let toastScrollSyncLock = false;
+            let toastScrollSyncReleaseFrame = 0;
             const previewRenderTypingDelay = 180;
 
-            const queueToastPreviewRender = (preserveScroll = false, delay = previewRenderTypingDelay) => {
+            const collectToastPreviewBlockNodes = (previewRoot) => {
+                if (!previewRoot) return [];
+
+                return Array.from(previewRoot.querySelectorAll('[data-nodeid]')).filter((node) => {
+                    const parentBlock = node.parentElement
+                        ? node.parentElement.closest('[data-nodeid]')
+                        : null;
+
+                    return !parentBlock || !previewRoot.contains(parentBlock);
+                });
+            };
+
+            const readToastMarkdownNodeRange = (toastMark, previewNode, editorLineCount) => {
+                const nodeId = Number(previewNode.getAttribute('data-nodeid'));
+
+                if (!Number.isFinite(nodeId)) return null;
+
+                const markdownNode = toastMark.findNodeById(nodeId);
+                const sourcePos = markdownNode && Array.isArray(markdownNode.sourcepos)
+                    ? markdownNode.sourcepos
+                    : null;
+
+                if (!sourcePos || !Array.isArray(sourcePos[0]) || !Array.isArray(sourcePos[1])) return null;
+
+                const startLine = Math.max(0, Math.min(editorLineCount - 1, Number(sourcePos[0][0] || 1) - 1));
+                const endLine = Math.max(startLine, Math.min(editorLineCount - 1, Number(sourcePos[1][0] || 1) - 1));
+
+                return {nodeId, startLine, endLine};
+            };
+
+            const readToastNodeScrollTop = (node, scroller) => {
+                const nodeRect = node.getBoundingClientRect();
+                const scrollerRect = scroller.getBoundingClientRect();
+
+                return Math.max(
+                    0,
+                    Number(scroller.scrollTop || 0)
+                        + Number(nodeRect.top || 0)
+                        - Number(scrollerRect.top || 0)
+                );
+            };
+
+            const projectToastScrollTop = (points, sourceKey, targetKey, sourceTop) => {
+                if (!Array.isArray(points) || points.length < 2) return null;
+
+                const sourceValue = Math.max(0, Number(sourceTop || 0));
+                let lower = points[0];
+                let upper = points[points.length - 1];
+
+                for (let index = 1; index < points.length; index += 1) {
+                    const point = points[index];
+
+                    if (sourceValue <= Number(point[sourceKey] || 0)) {
+                        upper = point;
+                        break;
+                    }
+
+                    lower = point;
+                }
+
+                const sourceStart = Number(lower[sourceKey] || 0);
+                const sourceEnd = Number(upper[sourceKey] || 0);
+                const targetStart = Number(lower[targetKey] || 0);
+                const targetEnd = Number(upper[targetKey] || 0);
+                const sourceLength = sourceEnd - sourceStart;
+                const progress = sourceLength > 0
+                    ? Math.max(0, Math.min(1, (sourceValue - sourceStart) / sourceLength))
+                    : 0;
+
+                return Math.round(targetStart + ((targetEnd - targetStart) * progress));
+            };
+
+            const rebuildToastExactScrollMap = (reason = 'render') => {
+                const previewPane = getToastNativePreviewPane();
+                const previewRoot = getToastPreviewContentRoot();
+                const proseMirror = getToastProseMirrorEl();
+                const markdownEditor = editor && editor.mdEditor;
+                const markdownView = markdownEditor && markdownEditor.view;
+                const toastMark = markdownEditor && typeof markdownEditor.getToastMark === 'function'
+                    ? markdownEditor.getToastMark()
+                    : null;
+
+                toastScrollMap = null;
+
+                if (!previewPane || !previewRoot || !proseMirror || !markdownView || !toastMark) {
+                    console.error('[KnowledgeEditor] 精确滚动映射初始化失败', {
+                        reason,
+                        previewPane: !!previewPane,
+                        previewRoot: !!previewRoot,
+                        proseMirror: !!proseMirror,
+                        markdownView: !!markdownView,
+                        toastMark: !!toastMark
+                    });
+                    return null;
+                }
+
+                const editorLines = Array.from(markdownView.dom.children || []);
+                const previewBlocks = collectToastPreviewBlockNodes(previewRoot);
+                const editorMax = Math.max(0, Number(proseMirror.scrollHeight || 0) - Number(proseMirror.clientHeight || 0));
+                const previewMax = Math.max(0, Number(previewPane.scrollHeight || 0) - Number(previewPane.clientHeight || 0));
+                const points = [{editorTop: 0, previewTop: 0, nodeId: 0}];
+
+                previewBlocks.forEach((previewNode) => {
+                    const range = readToastMarkdownNodeRange(toastMark, previewNode, editorLines.length);
+
+                    if (!range) return;
+
+                    const editorNode = editorLines[range.startLine];
+
+                    if (!editorNode) return;
+
+                    const editorTop = Math.max(0, Math.min(editorMax, Number(editorNode.offsetTop || 0)));
+                    const previewTop = Math.max(0, Math.min(previewMax, readToastNodeScrollTop(previewNode, previewPane)));
+                    const previous = points[points.length - 1];
+
+                    if (editorTop < previous.editorTop || previewTop < previous.previewTop) return;
+                    if (editorTop === previous.editorTop && previewTop === previous.previewTop) return;
+
+                    points.push({editorTop, previewTop, nodeId: range.nodeId});
+                });
+
+                const lastPoint = points[points.length - 1];
+
+                if (lastPoint.editorTop !== editorMax || lastPoint.previewTop !== previewMax) {
+                    points.push({editorTop: editorMax, previewTop: previewMax, nodeId: -1});
+                }
+
+                if (points.length < 2) {
+                    console.error('[KnowledgeEditor] 精确滚动映射没有生成有效锚点', {
+                        reason,
+                        editorLines: editorLines.length,
+                        previewBlocks: previewBlocks.length,
+                        editorMax,
+                        previewMax
+                    });
+                    return null;
+                }
+
+                toastScrollMap = {points, editorMax, previewMax};
+                window.__nexoraKnowledgeBlockSyncStats = {
+                    reason,
+                    editorLines: editorLines.length,
+                    previewBlocks: previewBlocks.length,
+                    scrollPoints: points.length,
+                    editorMax,
+                    previewMax
+                };
+
+                return toastScrollMap;
+            };
+
+            const releaseToastScrollSyncLock = () => {
+                if (toastScrollSyncReleaseFrame) cancelAnimationFrame(toastScrollSyncReleaseFrame);
+
+                toastScrollSyncReleaseFrame = requestAnimationFrame(() => {
+                    toastScrollSyncReleaseFrame = 0;
+                    toastScrollSyncLock = false;
+                });
+            };
+
+            const syncToastExactScroll = (fromPreview) => {
+                if (viewMode !== 'split' || toastScrollSyncLock) return;
+
+                const previewPane = getToastNativePreviewPane();
+                const proseMirror = getToastProseMirrorEl();
+                const editorMax = proseMirror
+                    ? Math.max(0, Number(proseMirror.scrollHeight || 0) - Number(proseMirror.clientHeight || 0))
+                    : 0;
+                const previewMax = previewPane
+                    ? Math.max(0, Number(previewPane.scrollHeight || 0) - Number(previewPane.clientHeight || 0))
+                    : 0;
+                const map = !toastScrollMap
+                    || Math.abs(Number(toastScrollMap.editorMax || 0) - editorMax) > 2
+                    || Math.abs(Number(toastScrollMap.previewMax || 0) - previewMax) > 2
+                    ? rebuildToastExactScrollMap('scroll-range-change')
+                    : toastScrollMap;
+
+                if (!previewPane || !proseMirror || !map) return;
+
+                toastScrollSyncLock = true;
+
+                if (fromPreview) {
+                    const previewTop = Math.max(0, Number(previewPane.scrollTop || 0));
+                    const atBottom = map.previewMax - previewTop <= 2;
+                    const targetTop = atBottom
+                        ? map.editorMax
+                        : projectToastScrollTop(map.points, 'previewTop', 'editorTop', previewTop);
+
+                    if (targetTop !== null) proseMirror.scrollTop = targetTop;
+                } else {
+                    const editorTop = Math.max(0, Number(proseMirror.scrollTop || 0));
+                    const atBottom = map.editorMax - editorTop <= 2;
+                    const targetTop = atBottom
+                        ? map.previewMax
+                        : projectToastScrollTop(map.points, 'editorTop', 'previewTop', editorTop);
+
+                    if (targetTop !== null) previewPane.scrollTop = targetTop;
+                }
+
+                releaseToastScrollSyncLock();
+            };
+
+            const scheduleToastExactScrollMapRebuild = (reason = 'render', delay = 40) => {
+                clearTimeout(toastScrollMapTimer);
+
+                if (toastScrollMapFrame) {
+                    cancelAnimationFrame(toastScrollMapFrame);
+                    toastScrollMapFrame = 0;
+                }
+
+                if (viewMode !== 'split') return;
+
+                toastScrollMapTimer = setTimeout(() => {
+                    toastScrollMapTimer = 0;
+                    toastScrollMapFrame = requestAnimationFrame(() => {
+                        toastScrollMapFrame = requestAnimationFrame(() => {
+                            toastScrollMapFrame = 0;
+                            rebuildToastExactScrollMap(reason);
+                        });
+                    });
+                }, Math.max(0, Number(delay || 0)));
+            };
+
+            const queueToastPreviewRender = (
+                preserveScroll = false,
+                delay = previewRenderTypingDelay,
+                markdownSnapshot = String(editor.getMarkdown() || '')
+            ) => {
                 if (viewMode === 'edit') return;
 
                 if (previewRenderDebounceTimer) {
@@ -4044,49 +4308,33 @@
 
                 previewRenderDebounceTimer = setTimeout(() => {
                     previewRenderDebounceTimer = 0;
-                    renderToastPreview(preserveScroll);
+                    renderToastPreview(preserveScroll, markdownSnapshot);
                 }, Math.max(0, Number(delay || 0)));
             };
 
-            const renderToastPreview = (preserveScroll = true) => {
+            const renderToastPreview = (
+                preserveScroll = true,
+                markdownSnapshot = String(editor.getMarkdown() || '')
+            ) => {
                 if (viewMode === 'edit') return;
 
-                const pane = ensureToastCustomPreviewPane();
+                const pane = getToastNativePreviewPane();
                 const root = getToastPreviewContentRoot();
                 if (!pane || !root) return;
-                const progress = preserveScroll ? readScrollableProgress(pane) : { top: 0, ratio: 0 };
-                const markdown = String(editor.getMarkdown() || '');
-                if (lastRenderedPreviewMarkdown === markdown) {
-                    if (preserveScroll) {
-                        requestAnimationFrame(() => {
-                            applyScrollableProgress(pane, progress.top, progress.ratio);
-                        });
-                    }
-                    return;
-                }
+                const markdown = String(markdownSnapshot || '');
 
-                lastRenderedPreviewMarkdown = markdown;
-                root.innerHTML = renderMarkdownForNotes(markdown);
+                if (String(editor.getMarkdown() || '') !== markdown) return;
+
                 bindSourceMarkdown(root, markdown);
                 renderMathSafe(root);
+                toastScrollMap = null;
+                scheduleToastExactScrollMapRebuild('preview-render', 40);
                 if (isDebugEnabled()) {
                     logDebug('toastPreviewRender', {
                         preserveScroll,
                         markdownLength: markdown.length,
                         pane: summarizeNode(pane),
                         root: summarizeNode(root)
-                    });
-                }
-                if (preserveScroll) {
-                    requestAnimationFrame(() => {
-                        applyScrollableProgress(pane, progress.top, progress.ratio);
-                        if (isDebugEnabled()) {
-                            logDebug('toastPreviewRenderRestore', {
-                                top: progress.top,
-                                ratio: progress.ratio,
-                                pane: summarizeNode(pane)
-                            });
-                        }
                     });
                 }
             };
@@ -4124,12 +4372,12 @@
                 const mdContainer = getToastEditorContainer();
                 const uiRoot = getToastUiRoot();
                 const editPane = getToastEditPane();
-                const previewPane = ensureToastCustomPreviewPane();
-                const splitter = ensureToastCustomSplitter();
+                const previewPane = getToastNativePreviewPane();
+                const splitter = getToastNativeSplitter();
                 const builtInPreview = getToastPreviewPane();
                 const builtInSplitter = getToastSplitter();
-                if (builtInPreview) builtInPreview.style.setProperty('display', 'none', 'important');
-                if (builtInSplitter) builtInSplitter.style.setProperty('display', 'none', 'important');
+                if (builtInPreview && builtInPreview !== previewPane) builtInPreview.style.setProperty('display', 'none', 'important');
+                if (builtInSplitter && builtInSplitter !== splitter) builtInSplitter.style.setProperty('display', 'none', 'important');
                 if (uiRoot && mdContainer && editPane && previewPane && splitter) {
                     if (previewPane.parentElement !== uiRoot) {
                         uiRoot.appendChild(previewPane);
@@ -4204,6 +4452,12 @@
                     });
                 }
                 renderToastPreview(viewMode !== 'preview');
+                if (viewMode === 'split') {
+                    toastScrollMap = null;
+                    scheduleToastExactScrollMapRebuild('mode-switch', 120);
+                } else {
+                    toastScrollMap = null;
+                }
                 requestAnimationFrame(() => {
                     const cm = getToastCodeMirror();
                     try {
@@ -4350,7 +4604,6 @@
                     }
                     window.scrollTo(window.scrollX || 0, windowScrollY);
                 });
-                queueToastPreviewRender(true, 0);
                 return true;
             };
 
@@ -4377,7 +4630,6 @@
                 }
                 const placeholderMarkdown = buildKnowledgeImagePlaceholderMarkdown(placeholderToken, `${knowledgeImagePendingAlt} ${fileName}`);
                 insertMarkdownFallback(`${placeholderMarkdown}\n`);
-                queueToastPreviewRender(false, 0);
                 trackPendingImageUpload(imageId, {
                     imageId,
                     fileName,
@@ -4570,7 +4822,6 @@
                 if (cmd) {
                     if (viewMode === 'preview') return;
                     void handleToolbarCommand(cmd);
-                    queueToastPreviewRender(false, 0);
                     return;
                 }
                 if (action === 'preview') {
@@ -4636,7 +4887,10 @@
             try {
                 if (typeof editor.on === 'function') {
                     const onEditorChange = () => {
-                        queueToastPreviewRender(true);
+                        const markdownSnapshot = String(editor.getMarkdown() || '');
+
+                        toastScrollMap = null;
+                        queueToastPreviewRender(true, previewRenderTypingDelay, markdownSnapshot);
 
                         if (
                             state.collabClient
@@ -4700,26 +4954,36 @@
 
             const bindPreviewBridge = () => {
                 const proseMirror = getToastProseMirrorEl();
-                if (!proseMirror) return;
-                const queue = () => queueToastPreviewRender(true);
-                proseMirror.addEventListener('input', queue);
-                proseMirror.addEventListener('keyup', queue);
-                proseMirror.addEventListener('paste', queue);
-                proseMirror.addEventListener('cut', queue);
-                proseMirror.addEventListener('compositionend', queue);
-                const observer = new MutationObserver(() => queueToastPreviewRender(true));
-                observer.observe(proseMirror, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true
-                });
+                const previewRoot = getToastPreviewContentRoot();
+
+                if (!proseMirror || !previewRoot) return;
+                const previewPane = getToastNativePreviewPane();
+                const onWindowResize = () => scheduleToastExactScrollMapRebuild('window-resize', 160);
+                const onPreviewAssetLoad = (event) => {
+                    const target = event && event.target;
+
+                    if (target && String(target.tagName || '').toUpperCase() === 'IMG') {
+                        scheduleToastExactScrollMapRebuild('image-load', 80);
+                    }
+                };
+                const onEditorScroll = () => syncToastExactScroll(false);
+                const onPreviewScroll = () => syncToastExactScroll(true);
+
+                try {
+                    editor.exec('toggleScrollSync', {active: false});
+                } catch (error) {
+                    console.error('[KnowledgeEditor] 关闭 Toast UI 原生滚动同步失败', error);
+                }
+
+                window.addEventListener('resize', onWindowResize, { passive: true });
+                previewRoot.addEventListener('load', onPreviewAssetLoad, true);
+                proseMirror.addEventListener('scroll', onEditorScroll, { passive: true });
+                if (previewPane) previewPane.addEventListener('scroll', onPreviewScroll, { passive: true });
                 previewBridgeCleanupFns.push(() => {
-                    proseMirror.removeEventListener('input', queue);
-                    proseMirror.removeEventListener('keyup', queue);
-                    proseMirror.removeEventListener('paste', queue);
-                    proseMirror.removeEventListener('cut', queue);
-                    proseMirror.removeEventListener('compositionend', queue);
-                    observer.disconnect();
+                    window.removeEventListener('resize', onWindowResize);
+                    previewRoot.removeEventListener('load', onPreviewAssetLoad, true);
+                    proseMirror.removeEventListener('scroll', onEditorScroll);
+                    if (previewPane) previewPane.removeEventListener('scroll', onPreviewScroll);
                 });
             };
             requestAnimationFrame(() => {
@@ -4837,7 +5101,6 @@
                 __editorType: 'toastui',
                 __editor: editor,
                 __alignedBound: true,
-                __queuePreviewRender: queueToastPreviewRender,
                 __renderPreviewNow: renderToastPreview,
                 get __viewMode() {
                     return viewMode;
@@ -4849,10 +5112,11 @@
                     if (typeof nextValue === 'undefined') {
                         return editor.getMarkdown();
                     }
-                    lastRenderedPreviewMarkdown = null;
-                    editor.setMarkdown(String(nextValue || ''), false);
-                    renderToastPreview(false);
-                    return String(nextValue || '');
+                    const markdown = String(nextValue || '');
+
+                    editor.setMarkdown(markdown, false);
+
+                    return markdown;
                 },
                 applyTextOperation(operation, nextValue) {
                     const nextText = String(nextValue || '');
@@ -4864,9 +5128,6 @@
                         && typeof window.NexoraKnowledgeCollab.applyToastOperation === 'function'
                         && window.NexoraKnowledgeCollab.applyToastOperation(editor, op, nextText)
                     ) {
-                        lastRenderedPreviewMarkdown = null;
-                        // preserveScroll=true：预览重绘不能把滚动打回顶部
-                        renderToastPreview(true);
                         return true;
                     }
 
@@ -4880,9 +5141,7 @@
                         const from = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(start) : offsetToCodeMirrorPos(current, start);
                         const to = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(end) : offsetToCodeMirrorPos(current, end);
 
-                        lastRenderedPreviewMarkdown = null;
                         cm.replaceRange(String(op.insert_text || ''), from, to, '+remote');
-                        renderToastPreview(false);
 
                         if (String(editor.getMarkdown() || '') === nextText) {
                             return true;
@@ -4902,8 +5161,8 @@
                     const snapshot = {
                         title: String(state.currentTitle || '').trim(),
                         sourceMode: viewMode,
-                        previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
-                        previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
+                        previewTop: readScrollableProgress(getToastNativePreviewPane()).top,
+                        previewRatio: readScrollableProgress(getToastNativePreviewPane()).ratio,
                         editTop: readCodeMirrorProgress().top,
                         editRatio: readCodeMirrorProgress().ratio
                     };
@@ -4918,8 +5177,8 @@
                     const snapshot = {
                         title: String(state.currentTitle || '').trim(),
                         sourceMode: viewMode,
-                        previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
-                        previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
+                        previewTop: readScrollableProgress(getToastNativePreviewPane()).top,
+                        previewRatio: readScrollableProgress(getToastNativePreviewPane()).ratio,
                         editTop: readCodeMirrorProgress().top,
                         editRatio: readCodeMirrorProgress().ratio
                     };
@@ -4935,6 +5194,19 @@
                     clearTimeout(previewRenderDebounceTimer);
                     previewRenderDebounceTimer = 0;
                 }
+                clearTimeout(toastScrollMapTimer);
+                toastScrollMapTimer = 0;
+                if (toastScrollMapFrame) {
+                    cancelAnimationFrame(toastScrollMapFrame);
+                    toastScrollMapFrame = 0;
+                }
+                if (toastScrollSyncReleaseFrame) {
+                    cancelAnimationFrame(toastScrollSyncReleaseFrame);
+                    toastScrollSyncReleaseFrame = 0;
+                }
+                toastScrollSyncLock = false;
+                toastScrollMap = null;
+                delete window.__nexoraKnowledgeBlockSyncStats;
                 previewBridgeCleanupFns.forEach((fn) => {
                     try { fn(); } catch (_) {}
                 });
@@ -5711,6 +5983,8 @@
             alignBlocks,
             scheduleAlignment,
             syncMirrorScroll,
+            startOwnerKnowledgeCollab,
+            stopKnowledgeCollab,
         };
     }
 

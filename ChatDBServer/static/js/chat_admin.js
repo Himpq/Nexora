@@ -40,6 +40,7 @@
     function createAdminSettingsTabsController(deps = {}) {
         const closeQuotaAdjustPopover = requireFunction(deps, 'closeQuotaAdjustPopover');
         const getSettingsModal = requireFunction(deps, 'getSettingsModal');
+        const syncSettingsManagementPanel = requireFunction(deps, 'syncSettingsManagementPanel');
 
         function initSettingsTabs() {
             const modal = getSettingsModal();
@@ -95,6 +96,7 @@
             }
 
             activateSettingsTab(tabName);
+            syncSettingsManagementPanel(tabName);
 
             if (tabName === 'admin-users') {
                 maybeCall(deps, 'resetAdminUserFilter');
@@ -251,17 +253,10 @@
             bindClick('adminPublicApiSaveGlobalBtn', () => requireFunction(deps, 'saveAdminPublicApiGlobalSettings')());
 
             maybeCall(deps, 'initAdminUserTokenStatsControls');
-
-            const publicApiModal = document.getElementById('adminPublicApiKeyModal');
-
-            if (publicApiModal) {
-                requireFunction(deps, 'bindBackdropSafeClose')(
-                    publicApiModal,
-                    requireFunction(deps, 'closeAdminPublicApiKeyModal')
-                );
-            }
+            requireFunction(deps, 'initAdminPublicApiModal')();
 
             bindClick('adminPublicApiKeyModalConfirmBtn', () => requireFunction(deps, 'submitAdminPublicApiKeyAction')());
+            bindClick('adminPublicApiModalCopyBtn', () => requireFunction(deps, 'copyAdminPublicApiModalKey')());
 
             const textConfirmModal = document.getElementById('adminTextConfirmModal');
 

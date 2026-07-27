@@ -35,7 +35,12 @@ def load_chapter_concept_candidates(
         dict(row)
         for row in catalog.get("concepts", [])
         if isinstance(row, Mapping)
-        and str(row.get("chapter_name") or "").strip() == normalized_chapter
+        and any(
+            str(source.get("book_id") or "").strip() == normalized_book_id
+            and str(source.get("chapter_name") or "").strip() == normalized_chapter
+            for source in row.get("source_refs", [])
+            if isinstance(source, Mapping)
+        )
     ]
 
     if not candidates:

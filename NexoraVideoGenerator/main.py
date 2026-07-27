@@ -33,6 +33,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "script": "",
             "storyboard": "",
             "canvas": "",
+            "template": "",
         },
         "image_model": "",
         "vision_model": "",
@@ -92,8 +93,12 @@ def create_app():
     CORS(app)
 
     from api.routes import bp, init_routes
+    from api.template_routes import bp as template_bp, init_template_routes
+
     init_routes(cfg)
+    init_template_routes(cfg)
     app.register_blueprint(bp)
+    app.register_blueprint(template_bp)
 
     @app.route("/health")
     def health():

@@ -97,6 +97,7 @@
     state.lpQADraft = "";
     state.lpPathDraft = "";
     state.lpChapterDraft = "";
+    state.lpChapterError = "";
     state.lpChapterGeneratingIndex = -1;
     state.lpChapterStreamKey = "";
     setView("learningPath");
@@ -200,8 +201,8 @@
       return;
     }
 
-    if (stage === "generating-chapter") {
-      renderLearningPathChapterStreamingView(md);
+    if (isLearningPathChapterGenerationStage(stage)) {
+      renderLearningPathChapterStreamingView(md, lectureId);
       return;
     }
 
@@ -296,7 +297,7 @@
       pathData.chapters.length
     );
 
-    if ((stage === "path-ready" || stage === "generating-chapter") && hasPathChapters) {
+    if ((stage === "path-ready" || isLearningPathChapterGenerationStage(stage)) && hasPathChapters) {
       renderLearningPathOutline(container, pathData.chapters, lectureId);
       return;
     }
@@ -378,11 +379,15 @@
     return { className: "", label: "", title: "普通章节" };
   }
 
+  function isLearningPathChapterGenerationStage(stage) {
+    return stage === "generating-chapter" || stage === "chapter-generation-error";
+  }
+
     // 渲染右侧学习大纲，收起动画由外层状态类驱动。
     function renderLearningPathOutline(container, chapters, lectureId) {
         let html = '<div class="lp-outline-list">';
         const generatingIndex = Number(state.lpChapterGeneratingIndex);
-        const activeIndex = state.learningPathStage === "generating-chapter" &&
+        const activeIndex = isLearningPathChapterGenerationStage(state.learningPathStage) &&
           Number.isInteger(generatingIndex) &&
           generatingIndex >= 0
             ? generatingIndex
@@ -414,7 +419,7 @@
             item.addEventListener("click", () => {
                 const idx = parseInt(item.dataset.index, 10);
                 if (
-                  state.learningPathStage === "generating-chapter" &&
+                  isLearningPathChapterGenerationStage(state.learningPathStage) &&
                   Number.isInteger(generatingIndex) &&
                   generatingIndex >= 0 &&
                   idx !== generatingIndex
@@ -472,7 +477,7 @@
       state.learningPathStage = "generating-chapter";
       state.lpChapterGeneratingIndex = idx;
       renderLearningPathSidePanel(lectureId);
-      renderLearningPathChapterStreamingView(md);
+      renderLearningPathChapterStreamingView(md, lectureId);
 
       if (!hasClientStream) {
         void generatePersonalizedChapterContent(lectureId, idx, { resume: true });
@@ -805,7 +810,7 @@
     }
   }
 
-  function renderLearningPathChapterStreamingView(md) {
+  function renderLearningPathChapterStreamingView(md, lectureId) {
     const pathData = state.learningPathData || {};
     const chapters = Array.isArray(pathData.chapters) ? pathData.chapters : [];
     const generatingIndex = Number(state.lpChapterGeneratingIndex);
@@ -814,20 +819,36 @@
       : Math.max(0, Number(state.currentChapterIndex) || 0);
     const chapter = chapters[chapterIndex] || {};
     const draft = String(state.lpChapterDraft || "");
+    const isError = state.learningPathStage === "chapter-generation-error";
+    const errorMessage = String(state.lpChapterError || "章节生成结果未通过保存校验");
     const bodyHtml = draft.trim()
-      ? renderMarkdownSimple(draft)
-      : '<p class="lp-chapter-stream-placeholder">等待模型输出正文...</p>';
+      ? renderMarkdownSimple(draft, { labState: isError ? "invalid" : "validating" })
+      : `<p class="lp-chapter-stream-placeholder">${isError ? "本次生成没有可保留的正文。" : "等待模型输出正文..."}</p>`;
+    const statusHtml = isError
+      ? `
+          <div class="lp-chapter-stream-status is-error" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v6M12 17h.01"></path>
+            </svg>
+            <span><strong>生成结果未保存</strong>${escapeHtml(errorMessage)}</span>
+            <button type="button" data-lp-chapter-retry>重新生成</button>
+          </div>
+        `
+      : `
+          <div class="lp-chapter-stream-status" role="status">
+            <span class="quiz-loading-spinner"></span>
+            <span>正在生成并校验章节阅读</span>
+          </div>
+        `;
 
     md.innerHTML = `
-      <div class="lp-chapter-view is-streaming">
+      <div class="lp-chapter-view is-streaming ${isError ? "has-generation-error" : ""}">
         <div class="lp-chapter-header">
           <div class="lp-chapter-title">${escapeHtml(chapter.name || "章节内容")}</div>
           <div class="lp-chapter-meta">${escapeHtml(chapter.book_title || "")}</div>
         </div>
-        <div class="lp-chapter-stream-status">
-          <span class="quiz-loading-spinner"></span>
-          <span>正在生成章节阅读</span>
-        </div>
+        ${statusHtml}
         <div class="lp-chapter-content" data-lp-chapter-stream-content>${bodyHtml}</div>
         <button class="lp-chapter-resume-scroll" type="button" data-lp-chapter-resume-scroll hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -839,6 +860,13 @@
     `;
 
     bindLearningPathChapterStreamingScroll();
+
+    const retryButton = md.querySelector("[data-lp-chapter-retry]");
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        void generatePersonalizedChapterContent(lectureId, chapterIndex);
+      });
+    }
   }
 
   function isLearningPathScrollNearBottom(scrollPane) {
@@ -897,7 +925,7 @@
 
     const text = String(markdown || "");
     contentEl.innerHTML = text.trim()
-      ? renderMarkdownSimple(text)
+      ? renderMarkdownSimple(text, { labState: "validating" })
       : '<p class="lp-chapter-stream-placeholder">等待模型输出正文...</p>';
 
     const scrollPane = contentEl.closest(".learning-path-main-pane");
@@ -1023,6 +1051,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const streamKey = `${String(lectureId || "").trim()}::${requestedChapterIndex}::${Date.now()}`;
     state.learningPathStage = "generating-chapter";
     state.lpChapterDraft = "";
+    state.lpChapterError = "";
     state.lpChapterAutoScroll = true;
     state.currentChapterIndex = requestedChapterIndex;
     state.lpChapterGeneratingIndex = requestedChapterIndex;
@@ -1110,16 +1139,6 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         throw new Error("章节生成结果与请求章节不一致，请重新打开该章节。");
       }
 
-      if (
-        state.learningPathData &&
-        state.learningPathData.chapters &&
-        state.learningPathData.chapters[resultChapterIndex]
-      ) {
-        state.learningPathData.chapters[resultChapterIndex].content_generated = true;
-        state.learningPathData.chapters[resultChapterIndex].content_generating = false;
-        state.learningPathData.chapters[resultChapterIndex].generation_status = "done";
-      }
-
       if (state.lpChapterStreamKey !== streamKey) {
         return;
       }
@@ -1134,9 +1153,20 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         throw new Error("章节生成完成但未返回 Markdown 正文");
       }
 
+      if (
+        state.learningPathData &&
+        state.learningPathData.chapters &&
+        state.learningPathData.chapters[resultChapterIndex]
+      ) {
+        state.learningPathData.chapters[resultChapterIndex].content_generated = true;
+        state.learningPathData.chapters[resultChapterIndex].content_generating = false;
+        state.learningPathData.chapters[resultChapterIndex].generation_status = "done";
+      }
+
       state.learningPathStage = "path-ready";
       state.lpChapterGeneratingIndex = -1;
       state.lpChapterStreamKey = "";
+      state.lpChapterError = "";
 
       const chapter = state.learningPathData && Array.isArray(state.learningPathData.chapters)
         ? state.learningPathData.chapters[resultChapterIndex]
@@ -1168,16 +1198,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         state.learningPathData.chapters[requestedChapterIndex].content_generating = false;
         state.learningPathData.chapters[requestedChapterIndex].generation_status = "error";
       }
-      state.learningPathStage = "path-ready";
-      state.lpChapterGeneratingIndex = -1;
+      const errorMessage = String(err && err.message ? err.message : "章节生成失败");
       state.lpChapterStreamKey = "";
       if (shouldRenderError) {
+        state.learningPathStage = "chapter-generation-error";
+        state.lpChapterGeneratingIndex = requestedChapterIndex;
+        state.lpChapterError = errorMessage;
         renderLearningPathView(lectureId);
-        showToast(String(err && err.message ? err.message : "章节生成失败"));
+        showToast(errorMessage);
       } else {
+        state.learningPathStage = "path-ready";
+        state.lpChapterGeneratingIndex = -1;
+        state.lpChapterError = errorMessage;
         renderLearningPathSidePanel(lectureId);
         if (!opts.silent) {
-          showToast(String(err && err.message ? err.message : "章节生成失败"));
+          showToast(errorMessage);
         }
       }
     }
@@ -1219,6 +1254,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
     if (type === "canvas_scene") {
         return renderCanvasSceneLab(config, blockIndex);
+    }
+
+    if (type === "step_flow") {
+        return renderStepFlowLab(config, blockIndex);
+    }
+
+    if (type === "chart_experiment") {
+        return renderChartExperimentLab(config, blockIndex);
     }
 
     if (type === "code_trace") {
@@ -1322,6 +1365,48 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     return "";
   }
 
+  function findCanvasSceneDynamicStyleError(config) {
+    const scene = config && typeof config.scene === "object" ? config.scene : null;
+    const elements = scene && Array.isArray(scene.elements) ? scene.elements : [];
+    const staticFields = new Set(["fill", "stroke", "color", "text_color"]);
+
+    const visit = (value, path) => {
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) {
+          const error = visit(value[index], `${path}[${index}]`);
+
+          if (error) return error;
+        }
+
+        return "";
+      }
+
+      if (!value || typeof value !== "object") {
+        return "";
+      }
+
+      for (const [key, child] of Object.entries(value)) {
+        const childPath = `${path}.${key}`;
+
+        if (staticFields.has(key) && typeof child === "string" && child.trim().startsWith("=")) {
+          return `${childPath} 使用了动态样式表达式。流程状态请使用 step_flow。`;
+        }
+
+        if (key === "text" && typeof child === "string" && child.trim().startsWith("=")) {
+          return `${childPath} 使用了条件文本表达式。流程状态请使用 step_flow。`;
+        }
+
+        const error = visit(child, childPath);
+
+        if (error) return error;
+      }
+
+      return "";
+    };
+
+    return visit(elements, "scene.elements");
+  }
+
   // 通用 canvas_scene 由模型组合基础图元，前端只执行受控绘制指令。
   function renderCanvasSceneLab(config, blockIndex) {
     const title = String(config.title || "Canvas 实验").trim();
@@ -1329,9 +1414,10 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const parameters = Array.isArray(config.parameters) ? config.parameters : [];
     const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
     const plotConfigError = findCanvasScenePlotConfigError(config);
+    const dynamicStyleError = findCanvasSceneDynamicStyleError(config);
 
-    if (plotConfigError) {
-      return renderLearningLabError("实验组件配置无效", plotConfigError);
+    if (plotConfigError || dynamicStyleError) {
+      return renderLearningLabError("实验组件配置无效", plotConfigError || dynamicStyleError);
     }
 
     return `
@@ -1348,6 +1434,62 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
           <div class="lp-lab-stage">
             <canvas class="lp-lab-canvas" data-lab-canvas></canvas>
           </div>
+        </div>
+      </section>
+    `;
+  }
+
+  // 流程实验使用统一组件呈现步骤、状态和详情，模型只负责提供教学数据。
+  function renderStepFlowLab(config, blockIndex) {
+    const title = String(config.title || "流程实验").trim();
+    const description = String(config.description || "").trim();
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const steps = Array.isArray(config.steps) ? config.steps : [];
+    const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+
+    if (!parameters.length || steps.length < 2) {
+      return renderLearningLabError("流程实验配置不完整", "parameters 和 steps 都必须提供。");
+    }
+
+    return `
+      <section class="lp-lab lp-lab-step-flow" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">交互流程</div>
+            <h3>${escapeHtml(title)}</h3>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+        </div>
+        <div class="lp-step-flow-controls">
+          ${renderLearningLabControls(parameters, "流程实验缺少进度参数。", "选择阶段查看学习重点")}
+        </div>
+        <div class="lp-step-flow-overview">
+          <div class="lp-step-flow-progress" aria-hidden="true">
+            <span data-step-flow-progress-bar></span>
+          </div>
+          <div class="lp-step-flow-progress-meta">
+            <strong data-step-flow-progress-label>0 / ${steps.length}</strong>
+            <span>点击步骤可直接查看对应阶段</span>
+          </div>
+        </div>
+        <div class="lp-step-flow-layout">
+          <div class="lp-step-flow-list" role="list">
+            ${steps.map((step, index) => `
+              <button class="lp-step-flow-item" type="button" role="listitem" data-step-flow-index="${index}" aria-pressed="false">
+                <span class="lp-step-flow-index">${String(index + 1).padStart(2, "0")}</span>
+                <span class="lp-step-flow-copy">
+                  <strong>${escapeHtml(String(step && step.title || `阶段 ${index + 1}`))}</strong>
+                  <small>${escapeHtml(String(step && step.summary || ""))}</small>
+                </span>
+                <span class="lp-step-flow-state" data-step-flow-state>待开始</span>
+              </button>
+            `).join("")}
+          </div>
+          <aside class="lp-step-flow-detail" aria-live="polite">
+            <span class="lp-step-flow-detail-tag" data-step-flow-detail-tag>当前阶段</span>
+            <h4 data-step-flow-detail-title></h4>
+            <p data-step-flow-detail-text></p>
+          </aside>
         </div>
       </section>
     `;
@@ -1801,6 +1943,113 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     ctx.fill();
   }
 
+  function clampCanvasGraphCoordinate(value, extent, limit) {
+    const safeLimit = Math.max(1, Number(limit || 0));
+    const safeExtent = Math.max(1, Number(extent || 0));
+
+    if (safeLimit <= safeExtent * 2 + 8) {
+      return safeLimit / 2;
+    }
+
+    return Math.min(safeLimit - safeExtent - 4, Math.max(safeExtent + 4, value));
+  }
+
+  function getCanvasGraphConnectionPoint(node, target) {
+    const dx = target.x - node.x;
+    const dy = target.y - node.y;
+    const distance = Math.hypot(dx, dy);
+
+    if (!distance) {
+      return { x: node.x, y: node.y };
+    }
+
+    if (node.shape === "rect") {
+      const halfWidth = Math.max(1, node.width / 2);
+      const halfHeight = Math.max(1, node.height / 2);
+      const scale = 1 / Math.max(Math.abs(dx) / halfWidth, Math.abs(dy) / halfHeight);
+
+      return {
+        x: node.x + dx * scale,
+        y: node.y + dy * scale,
+      };
+    }
+
+    const scale = Math.max(1, node.radius) / distance;
+
+    return {
+      x: node.x + dx * scale,
+      y: node.y + dy * scale,
+    };
+  }
+
+  function fitCanvasTextWithEllipsis(ctx, text, maxWidth) {
+    const characters = Array.from(String(text || ""));
+    let result = characters.join("");
+
+    while (characters.length && ctx.measureText(`${result}...`).width > maxWidth) {
+      characters.pop();
+      result = characters.join("");
+    }
+
+    return characters.length ? `${result}...` : "...";
+  }
+
+  function drawCanvasWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+    const characters = Array.from(String(text || ""));
+    const lines = [];
+    const lineLimit = Math.max(1, Number(maxLines || 3));
+    let currentLine = "";
+    let truncated = false;
+
+    for (const character of characters) {
+      if (character === "\n") {
+        lines.push(currentLine);
+        currentLine = "";
+
+        if (lines.length >= lineLimit) {
+          truncated = true;
+          break;
+        }
+
+        continue;
+      }
+
+      const candidate = `${currentLine}${character}`;
+
+      if (currentLine && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(currentLine);
+        currentLine = character;
+
+        if (lines.length >= lineLimit) {
+          truncated = true;
+          break;
+        }
+      } else {
+        currentLine = candidate;
+      }
+    }
+
+    if (lines.length < lineLimit && currentLine) {
+      lines.push(currentLine);
+    } else if (currentLine) {
+      truncated = true;
+    }
+
+    if (!lines.length) {
+      lines.push("");
+    }
+
+    if (truncated) {
+      const lastIndex = lines.length - 1;
+      lines[lastIndex] = fitCanvasTextWithEllipsis(ctx, lines[lastIndex], maxWidth);
+    }
+
+    const startY = y - ((lines.length - 1) * lineHeight) / 2;
+    lines.forEach((line, index) => {
+      ctx.fillText(line, x, startY + index * lineHeight);
+    });
+  }
+
   function drawCanvasSceneGraph(ctx, element, values, extraValues) {
     const nodes = Array.isArray(element.nodes) ? element.nodes : [];
     const edges = Array.isArray(element.edges) ? element.edges : [];
@@ -1810,13 +2059,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       const id = String(node && node.id || "").trim();
       if (!id) return;
 
+      const shape = String(node.shape || "circle").trim();
+      const radius = Math.max(1, resolveLabNumber(node.radius, values, extraValues, 18));
+      const width = Math.max(1, resolveLabNumber(node.width, values, extraValues, 78));
+      const height = Math.max(1, resolveLabNumber(node.height, values, extraValues, 36));
+      const extentX = shape === "rect" ? width / 2 : radius;
+      const extentY = shape === "rect" ? height / 2 : radius;
+
       nodeMap[id] = {
         source: node,
-        x: resolveLabNumber(node.x, values, extraValues, 0),
-        y: resolveLabNumber(node.y, values, extraValues, 0),
-        radius: resolveLabNumber(node.radius, values, extraValues, 18),
-        width: resolveLabNumber(node.width, values, extraValues, 78),
-        height: resolveLabNumber(node.height, values, extraValues, 36),
+        shape,
+        x: clampCanvasGraphCoordinate(resolveLabNumber(node.x, values, extraValues, 0), extentX, extraValues.W),
+        y: clampCanvasGraphCoordinate(resolveLabNumber(node.y, values, extraValues, 0), extentY, extraValues.H),
+        radius,
+        width,
+        height,
       };
     });
 
@@ -1827,15 +2084,17 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
       const color = String(edge.color || element.edge_color || "#64748b");
       const lineWidth = resolveLabNumber(edge.line_width, values, extraValues, 2);
+      const start = getCanvasGraphConnectionPoint(from, to);
+      const end = getCanvasGraphConnectionPoint(to, from);
       ctx.beginPath();
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(to.x, to.y);
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
       ctx.stroke();
 
       if (edge.arrow !== false) {
-        drawCanvasArrowHead(ctx, from.x, from.y, to.x, to.y, color, resolveLabNumber(edge.head_size, values, extraValues, 9));
+        drawCanvasArrowHead(ctx, start.x, start.y, end.x, end.y, color, resolveLabNumber(edge.head_size, values, extraValues, 9));
       }
 
       if (edge.label) {
@@ -1850,7 +2109,6 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     Object.keys(nodeMap).forEach((id) => {
       const node = nodeMap[id];
       const source = node.source || {};
-      const shape = String(source.shape || "circle").trim();
       const fill = String(source.fill || element.node_fill || "#ffffff");
       const stroke = String(source.stroke || element.node_stroke || "#111827");
       const label = resolveLabText(source.label || id, values, extraValues);
@@ -1858,7 +2116,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       ctx.strokeStyle = stroke;
       ctx.lineWidth = resolveLabNumber(source.line_width, values, extraValues, 2);
 
-      if (shape === "rect") {
+      if (node.shape === "rect") {
         const x = node.x - node.width / 2;
         const y = node.y - node.height / 2;
         ctx.fillRect(x, y, node.width, node.height);
@@ -1874,7 +2132,11 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       ctx.font = `${String(source.weight || "800")} ${resolveLabNumber(source.size, values, extraValues, 12)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(label, node.x, node.y);
+      const fontSize = Math.max(8, resolveLabNumber(source.size, values, extraValues, 12));
+      const textWidth = node.shape === "rect"
+        ? Math.max(24, node.width - 14)
+        : Math.max(24, node.radius * 1.55);
+      drawCanvasWrappedText(ctx, label, node.x, node.y, textWidth, fontSize * 1.22, 3);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
     });
@@ -2240,6 +2502,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       syncFormulaLabLabels(node, config, values);
 
       if (resultNode) {
+        const resultTemplate = String(config.result_template || "").trim();
         const summary = Array.isArray(config.parameters)
           ? config.parameters.map((param) => {
               const key = String(param && param.key || "").trim();
@@ -2249,7 +2512,9 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
                 : "";
             }).filter(Boolean).join(" · ")
           : "";
-        resultNode.textContent = summary || "场景已渲染";
+        resultNode.textContent = resultTemplate
+          ? resolveLabText(resultTemplate, values, {})
+          : (summary || "场景已渲染");
       }
     };
 
@@ -2276,6 +2541,107 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         window.cancelAnimationFrame(frameId);
       }
     });
+  }
+
+  function bindStepFlowLab(node) {
+    const config = decodeLearningLabConfig(node);
+    const steps = Array.isArray(config.steps) ? config.steps : [];
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const activeKey = String(config.active_parameter || "").trim();
+    const parameter = parameters.find((item) => String(item && item.key || "").trim() === activeKey) || {};
+    const input = findLearningLabDataNode(node, "data-lab-param", activeKey);
+    const resultNode = node.querySelector("[data-lab-result]");
+    const progressBar = node.querySelector("[data-step-flow-progress-bar]");
+    const progressLabel = node.querySelector("[data-step-flow-progress-label]");
+    const detailTag = node.querySelector("[data-step-flow-detail-tag]");
+    const detailTitle = node.querySelector("[data-step-flow-detail-title]");
+    const detailText = node.querySelector("[data-step-flow-detail-text]");
+    const stepNodes = Array.from(node.querySelectorAll("[data-step-flow-index]"));
+    const minimum = Number(parameter.min);
+    const maximum = Number(parameter.max);
+    const stepSize = Number(parameter.step);
+
+    const getCompletedCount = (value) => {
+      const range = Math.max(0.000001, maximum - minimum);
+      const ratio = Math.max(0, Math.min(1, (value - minimum) / range));
+
+      return Math.max(0, Math.min(steps.length, Math.round(ratio * steps.length)));
+    };
+
+    const render = () => {
+      const values = getFormulaLabValues(node, config);
+      const currentValue = Number(values[activeKey]);
+      const completedCount = getCompletedCount(Number.isFinite(currentValue) ? currentValue : minimum);
+      const allCompleted = completedCount >= steps.length;
+      const focusIndex = Math.max(0, Math.min(steps.length - 1, allCompleted ? steps.length - 1 : completedCount));
+      const focusStep = steps[focusIndex] || {};
+      const percent = steps.length ? (completedCount / steps.length) * 100 : 0;
+
+      syncFormulaLabLabels(node, config, values);
+
+      if (progressBar) {
+        progressBar.style.width = `${percent}%`;
+      }
+
+      if (progressLabel) {
+        progressLabel.textContent = `${completedCount} / ${steps.length} 已完成`;
+      }
+
+      stepNodes.forEach((stepNode, index) => {
+        const completed = index < completedCount || allCompleted;
+        const current = !allCompleted && index === focusIndex;
+        const stateNode = stepNode.querySelector("[data-step-flow-state]");
+        stepNode.classList.toggle("is-completed", completed);
+        stepNode.classList.toggle("is-current", current);
+        stepNode.classList.toggle("is-upcoming", !completed && !current);
+        stepNode.setAttribute("aria-pressed", index === focusIndex ? "true" : "false");
+
+        if (stateNode) {
+          stateNode.textContent = completed ? "已完成" : (current ? "当前" : "待开始");
+        }
+      });
+
+      if (detailTag) {
+        detailTag.textContent = allCompleted
+          ? "流程完成"
+          : String(focusStep.tag || `阶段 ${focusIndex + 1}`);
+      }
+
+      if (detailTitle) {
+        detailTitle.textContent = String(focusStep.title || "当前阶段");
+      }
+
+      if (detailText) {
+        detailText.textContent = String(focusStep.detail || focusStep.summary || "");
+      }
+
+      if (resultNode) {
+        const resultTemplate = String(config.result_template || "").trim();
+        resultNode.textContent = resultTemplate
+          ? resolveLabText(resultTemplate, values, {})
+          : (allCompleted ? "全部阶段已完成" : `当前查看：${String(focusStep.title || "当前阶段")}`);
+      }
+    };
+
+    if (input instanceof HTMLInputElement) {
+      input.addEventListener("input", render);
+    }
+
+    stepNodes.forEach((stepNode, index) => {
+      stepNode.addEventListener("click", () => {
+        if (!(input instanceof HTMLInputElement)) return;
+
+        const range = Math.max(0, maximum - minimum);
+        const target = minimum + (range * index) / Math.max(1, steps.length);
+        const snapped = Number.isFinite(stepSize) && stepSize > 0
+          ? minimum + Math.round((target - minimum) / stepSize) * stepSize
+          : target;
+        input.value = String(Math.max(minimum, Math.min(maximum, snapped)));
+        render();
+      });
+    });
+
+    render();
   }
 
   function bindSandboxComponentLab(node) {
@@ -2468,6 +2834,18 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         bindCanvasSceneLab(node);
     });
 
+    root.querySelectorAll(".lp-lab-step-flow").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindStepFlowLab(node);
+    });
+
+    root.querySelectorAll(".lp-lab-chart-experiment").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindChartExperimentLab(node);
+    });
+
     root.querySelectorAll(".lp-lab-code-trace").forEach((node) => {
         if (node.dataset.labBound === "1") return;
         node.dataset.labBound = "1";
@@ -2481,7 +2859,32 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     });
   }
 
-  function renderMarkdownSimple(text) {
+  function renderLearningLabPending(stateName) {
+    const isInvalid = stateName === "invalid";
+    const title = isInvalid ? "互动实验未启用" : "互动实验正在校验";
+    const description = isInvalid
+      ? "本次生成结果未保存，实验配置不会执行。重新生成并通过校验后即可使用。"
+      : "画布和交互会在文章通过校验并保存后启用。";
+
+    return `
+      <section class="lp-lab lp-lab-pending ${isInvalid ? "is-invalid" : ""}">
+        <div class="lp-lab-pending-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 7v5M12 16h.01"></path>
+          </svg>
+        </div>
+        <div>
+          <h3>${title}</h3>
+          <p>${description}</p>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderMarkdownSimple(text, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const labState = String(opts.labState || "").trim();
     const source = stripLearningPathContentMarker(text).replace(/\r\n?/g, "\n");
     if (!source.trim()) return "";
 
@@ -2527,7 +2930,9 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       const body = codeFenceLines.join("\n");
 
       if (lang === "nxl-lab") {
-        html.push(renderLearningLabBlock(body, labBlockIndex));
+        html.push(labState
+          ? renderLearningLabPending(labState)
+          : renderLearningLabBlock(body, labBlockIndex));
         labBlockIndex += 1;
       } else {
         const langLabel = lang ? `<span>${escapeHtml(lang)}</span>` : "";

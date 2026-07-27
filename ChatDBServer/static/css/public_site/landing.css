@@ -379,7 +379,17 @@ main {
 }
 
 .hero-actions {
+    align-items: flex-start;
     margin-top: 42px;
+}
+
+.hero-action-stack {
+    display: grid;
+    gap: 12px;
+}
+
+.hero-action-stack .hero-button {
+    width: 100%;
 }
 
 .hero-button {
@@ -655,6 +665,44 @@ main {
     font-size: 42px;
     font-weight: 760;
     line-height: 1.08;
+}
+
+.download-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 28px;
+    padding: 14px 28px;
+    color: #000000;
+    background: #ffffff;
+    border: 0;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: 760;
+    line-height: 1;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 180ms ease, transform 180ms ease;
+}
+
+.download-button svg {
+    width: 20px;
+    height: 20px;
+}
+
+.download-button path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.download-button:hover {
+    background: #e7e7e0;
+    transform: translateY(-1px);
 }
 
 .signal-panel {
@@ -2156,6 +2204,10 @@ main {
     .hero-actions {
         width: min(100%, 300px);
         margin-top: 28px;
+    }
+
+    .hero-action-stack {
+        width: 100%;
     }
 
     .workspace-window {

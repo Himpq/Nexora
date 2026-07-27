@@ -1023,7 +1023,7 @@
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
 
     el.profileAdminSettingsBtn.addEventListener("click", () => {
-      openSettingsView("users").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
+      openSettingsView("courses").catch((err) => showToast(`打开管理控制台失败：${err.message || "未知错误"}`));
     });
 
     if (el.learningStatusBtn) {
@@ -1250,7 +1250,9 @@
               state.settingsCourseView = "detail";
               await loadMaterialsRows();
               await loadRefinementSettings();
-              renderSettingsCourses();
+              state.adminCourseDialog = "";
+              state.adminCourseSelectedId = state.settingsCourseEditId;
+              renderAdminCourseManagement();
               showToast("课程创建成功");
           } catch (err) {
               showToast(`创建失败：${err.message || "未知错误"}`);
@@ -1270,6 +1272,22 @@
           } catch (err) {
               showToast(`上传失败：${err.message || "未知错误"}`);
           }
+          return;
+      }
+
+      const toggleRefinementBookInfoBtn = target.closest("[data-action='toggle-refinement-book-info']");
+      if (toggleRefinementBookInfoBtn) {
+          const bookKey = String(toggleRefinementBookInfoBtn.getAttribute("data-book-key") || "").trim();
+          const isSameBook = state.settingsRefinementInfoBookKey === bookKey;
+          state.settingsRefinementInfoBookKey = bookKey;
+          state.settingsRefinementInfoExpanded = !(isSameBook && state.settingsRefinementInfoExpanded);
+
+          const main = document.getElementById("agentFlowchart");
+          if (main) {
+              main.removeAttribute("data-selected-book-key");
+          }
+
+          renderSettingsRefinement();
           return;
       }
 
@@ -1410,7 +1428,8 @@
               });
               showToast("课程已更新");
               await loadMaterialsRows();
-              renderSettingsCourses();
+              state.adminCourseDialog = "";
+              renderAdminCourseManagement();
           } catch (err) {
               showToast(`保存失败：${err.message || "未知错误"}`);
           }
@@ -1421,6 +1440,10 @@
       if (startCourseOutlineBtn) {
           const lectureId = String(startCourseOutlineBtn.getAttribute("data-lecture-id") || "").trim();
           if (!lectureId) return;
+          const confirmed = await confirmModalAsync(MANUAL_OUTLINE_CONFIRM_MESSAGE);
+
+          if (!confirmed) return;
+
           try {
               await startOutline(lectureId);
               renderSettingsCourses();
@@ -1568,6 +1591,43 @@
 
         return;
       }
+
+      const pipelineBtn = target.closest("[data-action='start-material-pipeline']");
+      if (pipelineBtn) {
+        const lectureId = String(pipelineBtn.getAttribute("data-lecture-id") || "").trim();
+        const bookId = String(pipelineBtn.getAttribute("data-book-id") || "").trim();
+        const force = pipelineBtn.getAttribute("data-force") === "true";
+        if (!lectureId || !bookId) return;
+
+        if (force) {
+          const confirmed = await confirmModalAsync(MATERIAL_PIPELINE_RERUN_CONFIRM_MESSAGE);
+
+          if (!confirmed) return;
+        }
+
+        if (pipelineBtn instanceof HTMLButtonElement) {
+          pipelineBtn.disabled = true;
+        }
+
+        try {
+          await startMaterialPipeline(lectureId, bookId, force);
+          showToast(force ? "已重新提交教材自动处理" : "已提交教材自动处理");
+          renderSettingsView();
+        } catch (err) {
+          try {
+            await loadRefinementSettings();
+            renderSettingsView();
+          } catch (refreshErr) {
+            showToast(`自动处理启动失败：${err.message || "未知错误"}；状态刷新失败：${refreshErr.message || "未知错误"}`);
+            return;
+          }
+
+          showToast(`自动处理启动失败：${err.message || "未知错误"}`);
+        }
+
+        return;
+      }
+
       const stopBtn = target.closest("[data-action='stop-refinement']");
       if (stopBtn) {
         const lectureId = String(stopBtn.getAttribute("data-lecture-id") || "");

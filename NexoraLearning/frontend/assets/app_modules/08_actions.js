@@ -1,4 +1,7 @@
 // ─────── Upload & Materials Actions ───────────────────────────────────
+  const MANUAL_OUTLINE_CONFIRM_MESSAGE = "确认手动生成课程结构？此操作会调用模型并覆盖现有结构；新教材处理完成后系统会自动更新。";
+  const MATERIAL_PIPELINE_RERUN_CONFIRM_MESSAGE = "确认重新执行教材处理？已完成阶段会重新调用模型并覆盖现有解析结果。";
+
   function setSelectedUploadLecture(lectureId) {
     const id = String(lectureId || "").trim();
     const row = state.allLectureRows.find((it) => String((it.lecture || {}).id || "") === id);
@@ -1317,6 +1320,21 @@
     await loadRefinementSettings();
   }
 
+  async function startMaterialPipeline(lectureId, bookId, force = false) {
+    await fetchJson("/api/frontend/settings/refinement/pipeline", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+        force: Boolean(force),
+      }),
+    });
+    await loadRefinementSettings();
+    await loadMaterialsRows();
+  }
+
   async function stopRefinement(lectureId, bookId) {
     await fetchJson("/api/frontend/settings/refinement/stop", {
       method: "POST",
@@ -1415,10 +1433,24 @@
       startedAt: Date.now(),
       error: "",
     };
-    renderSettingsCourses();
+    renderAdminCourseManagement();
 
     return new Promise((resolve, reject) => {
       const eventSource = new EventSource(`/api/frontend/outline/${encodeURIComponent(resolvedLectureId)}/generate-stream`);
+      let settled = false;
+
+      const finishWithError = (message) => {
+        if (settled) return;
+
+        settled = true;
+        eventSource.close();
+        const errorMessage = String(message || "大纲生成失败");
+        state.outlineActivity.running = false;
+        state.outlineActivity.error = errorMessage;
+        state.outlineActivity.lines = [...state.outlineActivity.lines, `生成失败：${errorMessage}`];
+        renderAdminCourseManagement();
+        reject(new Error(errorMessage));
+      };
 
       eventSource.addEventListener("status", (e) => {
         try {
@@ -1426,7 +1458,7 @@
           const line = String(data.message || "").trim();
           if (line) {
             state.outlineActivity.lines = [...state.outlineActivity.lines, line].slice(-18);
-            renderSettingsCourses();
+            renderAdminCourseManagement();
           }
         } catch (_err) {}
       });
@@ -1437,42 +1469,58 @@
           const piece = String((data && data.content) || "");
           if (!piece) return;
           state.outlineActivity.draft = `${String(state.outlineActivity.draft || "")}${piece}`;
-          renderSettingsCourses();
+          renderAdminCourseManagement();
         } catch (_err) {}
       });
 
       eventSource.addEventListener("done", async (e) => {
+        if (settled) return;
+
+        let data;
+
         try {
-          const data = JSON.parse(e.data);
-          if (!data.success) {
-            throw new Error(data.error || "大纲生成失败");
-          }
-          state.outlineActivity.running = false;
-          state.outlineActivity.lines = [...state.outlineActivity.lines, "课程大纲已生成完成"];
-          await loadRefinementSettings();
-          renderSettingsCourses();
-          resolve(data);
-        } catch (err) {
-          state.outlineActivity.running = false;
-          state.outlineActivity.error = String(err.message || "大纲生成失败");
-          renderSettingsCourses();
-          reject(err);
+          data = JSON.parse(e.data);
+        } catch (_err) {
+          finishWithError("大纲生成完成事件格式错误");
+          return;
         }
+
+        if (!data.success) {
+          finishWithError(data.error || "大纲生成失败");
+          return;
+        }
+
+        settled = true;
         eventSource.close();
+        state.outlineActivity.running = false;
+        state.outlineActivity.error = "";
+        state.outlineActivity.lines = [...state.outlineActivity.lines, "课程大纲已生成完成"];
+        renderAdminCourseManagement();
+
+        try {
+          await loadRefinementSettings();
+        } catch (refreshError) {
+          const refreshMessage = String(refreshError && refreshError.message || "未知错误");
+          state.outlineActivity.lines = [
+            ...state.outlineActivity.lines,
+            `课程结构已生成，但状态刷新失败：${refreshMessage}`,
+          ];
+        }
+
+        renderAdminCourseManagement();
+        resolve(data);
       });
 
       eventSource.addEventListener("error", (e) => {
+        if (settled) return;
+
         let message = "大纲生成失败";
         try {
           const data = JSON.parse(e.data);
           message = data.error || message;
         } catch (_err) {}
-        state.outlineActivity.running = false;
-        state.outlineActivity.error = message;
-        state.outlineActivity.lines = [...state.outlineActivity.lines, `生成失败：${message}`];
-        renderSettingsCourses();
-        eventSource.close();
-        reject(new Error(message));
+
+        finishWithError(message);
       });
 
       eventSource.addEventListener("close", () => {

@@ -104,7 +104,18 @@ def build_papi_log_context(
     key_id = str(key_state.get("id") or "").strip()
     key_slug = _clean_slug(key_id)
     api_key_created_by = str(key_state.get("created_by") or "").strip()
-    resolved_username = str(username or "").strip() or api_key_created_by
+    api_key_scope = str(key_state.get("scope") or "").strip().lower()
+    api_key_owner = str(key_state.get("owner") or "").strip()
+
+    if api_key_scope == "owner":
+        if not api_key_owner:
+            raise ValueError("Owner-scoped PAPI key has no owner")
+
+        resolved_username = api_key_owner
+    elif api_key_scope == "global":
+        resolved_username = str(username or "").strip() or api_key_created_by
+    else:
+        raise ValueError("PAPI key scope is missing or invalid")
 
     return {
         "log_id": f"papi_log_{uuid.uuid4().hex}",
@@ -117,6 +128,8 @@ def build_papi_log_context(
         "api_key_name": str(key_state.get("name") or "").strip(),
         "api_key_preview": str(key_state.get("key_preview") or "").strip(),
         "api_key_created_by": api_key_created_by,
+        "api_key_scope": api_key_scope,
+        "api_key_owner": api_key_owner,
         "required_permission": str(auth.get("required_permission") or "").strip(),
         "remote_addr": _request_remote_addr(request_obj),
         "user_agent": _request_header(request_obj, "User-Agent")[:240],
@@ -227,6 +240,8 @@ def record_papi_token_usage(
         "api_key_name": str(ctx.get("api_key_name") or "").strip(),
         "api_key_preview": str(ctx.get("api_key_preview") or "").strip(),
         "api_key_created_by": str(ctx.get("api_key_created_by") or "").strip(),
+        "api_key_scope": str(ctx.get("api_key_scope") or "").strip(),
+        "api_key_owner": str(ctx.get("api_key_owner") or "").strip(),
         "username": str(ctx.get("username") or "").strip(),
         "request_path": str(request_path or ctx.get("request_path") or "").strip(),
         "method": str(ctx.get("method") or "").strip(),
@@ -317,6 +332,8 @@ def record_papi_image_generation(
         "api_key_id": str(ctx.get("api_key_id") or "").strip(),
         "api_key_name": str(ctx.get("api_key_name") or "").strip(),
         "api_key_preview": str(ctx.get("api_key_preview") or "").strip(),
+        "api_key_scope": str(ctx.get("api_key_scope") or "").strip(),
+        "api_key_owner": str(ctx.get("api_key_owner") or "").strip(),
         "username": str(ctx.get("username") or "").strip(),
         "request_path": str(request_path or ctx.get("request_path") or "").strip(),
         "method": str(ctx.get("method") or "").strip(),

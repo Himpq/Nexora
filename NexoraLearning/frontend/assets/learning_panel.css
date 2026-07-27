@@ -3727,6 +3727,49 @@
   border-width: 2px;
 }
 
+.lp-chapter-stream-status.is-error {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff7f7;
+  color: #b42318;
+}
+
+.lp-chapter-stream-status.is-error > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.lp-chapter-stream-status.is-error > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 2px;
+  line-height: 1.45;
+}
+
+.lp-chapter-stream-status.is-error button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #b42318;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #b42318;
+  font: inherit;
+  cursor: pointer;
+}
+
+.lp-chapter-stream-status.is-error button:hover {
+  background: #fff1f1;
+}
+
 .lp-chapter-stream-placeholder {
   color: #94a3b8;
 }
@@ -3994,6 +4037,215 @@
   display: block;
 }
 
+.lp-lab-canvas-scene .lp-lab-formula-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.lp-lab-canvas-scene .lp-lab-controls {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+}
+
+.lp-lab-canvas-scene .lp-lab-stage,
+.lp-lab-canvas-scene .lp-lab-canvas {
+  min-height: 340px;
+}
+
+.lp-lab-step-flow {
+  gap: 16px;
+}
+
+.lp-step-flow-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 360px);
+  gap: 10px;
+}
+
+.lp-step-flow-overview {
+  display: grid;
+  gap: 8px;
+}
+
+.lp-step-flow-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.lp-step-flow-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #2563eb;
+  transition: width 160ms ease;
+}
+
+.lp-step-flow-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lp-step-flow-progress-meta strong {
+  color: #1d4ed8;
+  font-size: 13px;
+}
+
+.lp-step-flow-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(250px, 0.8fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.lp-step-flow-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lp-step-flow-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 68px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.lp-step-flow-item:hover {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.lp-step-flow-item.is-current {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+.lp-step-flow-item.is-completed {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.lp-step-flow-index {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.lp-step-flow-item.is-current .lp-step-flow-index {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.lp-step-flow-item.is-completed .lp-step-flow-index {
+  border-color: #93c5fd;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.lp-step-flow-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.lp-step-flow-copy strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 14px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-step-flow-copy small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-step-flow-state {
+  min-width: 52px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.lp-step-flow-item.is-current .lp-step-flow-state {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.lp-step-flow-item.is-completed .lp-step-flow-state {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.lp-step-flow-detail {
+  min-height: 174px;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.lp-step-flow-detail-tag {
+  display: block;
+  margin-bottom: 8px;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.lp-step-flow-detail h4 {
+  margin: 0;
+  color: #111827;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.lp-step-flow-detail p {
+  margin: 10px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .lp-lab-sandbox-stage {
   min-height: 320px;
   background: #ffffff;
@@ -4159,6 +4411,56 @@
   color: #b42318;
 }
 
+.lp-lab-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-style: dashed;
+  background: #f8fafc;
+}
+
+.lp-lab-pending.is-invalid {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.lp-lab-pending-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+}
+
+.lp-lab-pending.is-invalid .lp-lab-pending-icon,
+.lp-lab-pending.is-invalid h3,
+.lp-lab-pending.is-invalid p {
+  color: #b42318;
+}
+
+.lp-lab-pending-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.lp-lab-pending h3 {
+  font-size: 14px;
+}
+
+.lp-lab-pending p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 @media (max-width: 760px) {
   .lp-lab {
     padding: 12px;
@@ -4183,6 +4485,16 @@
   .lp-lab-canvas,
   .lp-lab-sandbox-frame {
     min-height: 220px;
+  }
+
+  .lp-step-flow-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-step-flow-progress-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 }
 

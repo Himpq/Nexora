@@ -238,8 +238,8 @@ LLM_COMPRESS_SYSTEM_PROMPT = """
 LLM_COMPRESS_TOOL_SUMMARY_RULES = """
 工具历史压缩规范:
 1. 历史中出现 [assistant_tool_calls] / [tool_result] 时，必须总结工具调用，不允许原样复制工具 JSON。
-2. read/read_book_text 的工具参数可以保留 offset/length；面向模型的已读范围、实际范围必须写成 FROM:TO。
-3. find/index 的结果只保留 keyword、range、hits_count、关键命中位置，不复制命中文本全文。
+2. read/read_book_text/read_original 的工具参数保留教材标识和 offset/length 或 start/end；面向模型的已读范围、实际范围必须写成 FROM:TO。
+3. find/index/search_original 的结果保留教材标识、query/keyword、range、命中数量和足以支持事实核对的关键命中片段，不复制无关正文。
 4. write/update_summary 的结果只保留提交状态、目标章节、质量反馈和是否需要重写。
 5. 如果发现重复读取或回头读取，必须在摘要中明确写出“不要再重复读取的范围”和“下一次应该从哪个 offset 继续”。
 6. 输出中禁止出现 {"text": "..."}、[tool]: 原始工具块、大段 HTML/XML 正文、大量图片占位符。
@@ -247,6 +247,8 @@ LLM_COMPRESS_TOOL_SUMMARY_RULES = """
 工具摘要建议格式:
 最近工具调用:
 - read: requested_tool=offset,length, actual_range=FROM:TO, text_chars=N, 结论=...
+- read_original: book_id=ID, requested_tool=start,length, actual_range=FROM:TO, 关键原文=...
+- search_original: book_id=ID, query=..., 关键命中=...
 - update_summary: ok=true/false, feedback=...
 已读范围:
 - FROM:TO
@@ -971,12 +973,7 @@ PERSONALIZED_LEARNING_PATH_SYSTEM_PROMPT = """
 - 你必须调用 `submit_learning_path` 工具提交结果
 - `advice` 需要是 2-3 句整体学习建议
 - `chapters` 数组中每项必须包含：
-  - index: 章节序号（从0开始）
-  - name: 章节名
-  - book_id: 教材ID
-  - book_title: 教材名
-  - chapter_range: 教材目录中的章节原文范围，必须原样复制
-  - chapter_summary: 教材目录中的章节摘要，必须基于目录提供的信息
+  - source_id: 教材目录中该章节的稳定来源 ID，必须原样复制
   - outline_section_id: 对应课程大纲 section id
   - priority: 推荐学习顺序（1开始）
   - status: completed/current/recommended/pending
@@ -1010,8 +1007,8 @@ PERSONALIZED_LEARNING_PATH_USER_PROMPT = """
 3. 已完成的章节 status=completed，排在最后
 4. 如果用户在阅读前问答中表示对某主题已有基础，相关章节可降低优先级
 5. reason 必须结合用户画像、课程大纲目标和目录章节摘要，不能照抄大纲摘要
-6. 只能使用教材列表里已经出现过的 `book_id`，不得编造新 ID
-7. 只能选择教材目录中已经出现过的章节，`chapter_range` 必须从教材目录原样复制
+6. 只能使用教材目录里已经出现过的 `source_id`，不得编造新 ID
+7. 章节名称、教材信息、章节范围和摘要由后端根据 `source_id` 精确恢复，不要在工具参数中重复提交
 8. 章节排序必须主要依据课程大纲的 section 顺序和 prerequisites，再根据用户画像微调
 9. 直接基于上方已提供的课程大纲和教材目录判断，不需要再申请阅读工具
 10. 最终必须调用 `submit_learning_path` 工具提交结果
@@ -1044,7 +1041,7 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 - 导读：2-3 句话说明本章要真正学会什么，以及读完后应能回答/完成什么
 - 原文阅读：至少 2 段 Markdown 引用块，每行以 `> ` 开头，引用当前章节原文中的连续片段
 - 正文：按知识点分节，每节有小标题；关键小节要先给原文引用，再讲解；每节都要包含“这句话在说什么/为什么成立/怎么用或怎么判断”的实质说明
-- 互动实验：当章节涉及公式、参数关系、循环、流程、状态变化、执行步骤时，必须插入 1 个 `nxl-lab` 代码块，把抽象知识做成可操作实验，而不是继续堆文字
+- 互动实验：只有当操作能帮助用户验证一个具体结论、观察参数后果或推演执行过程时，才插入 1 个 `nxl-lab`；课程目录、任务依赖、概念清单等静态关系不要伪装成互动实验
 - 关键概念：用加粗或代码块突出
 - 易错点或辨析：列出 2-4 个学生可能误解的地方，并给出基于原文的澄清
 - 本章小结：3-5 个要点总结
@@ -1054,19 +1051,33 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 互动实验组件格式：
 - `nxl-lab` 只能作为 Markdown fenced code block 出现在正文中，不能包裹全文
 - `nxl-lab` 内部必须是合法 JSON object，不能写 JSON 注释、尾随逗号或 Markdown
-- 当前只允许四种 type：`canvas_scene`、`formula_simulation`、`code_trace`、`sandbox_component`
+- 当前只允许六种 type：`chart_experiment`、`step_flow`、`canvas_scene`、`formula_simulation`、`code_trace`、`sandbox_component`
 - 每个 `nxl-lab` 必须包含 `type`、`title`；`description` 可选但必须是字符串
 - 除 `sandbox_component.component` 内部外，不要输出 HTML、CSS、JavaScript；旧 DSL 实验由前端受控渲染器执行
-- 优先使用 `canvas_scene` 构造演示效果；它是通用 2D 画布模板，适合公式、流程、物理图示、状态变化、算法过程、参数联动和工程系统结构
+- 根据学习动作选择组件：需要预测、采样、指标和趋势对照时用 `chart_experiment`；流程、依赖关系、阶段推进用 `step_flow`；连续视觉变化用 `canvas_scene`；逐步执行过程用 `code_trace`；确实需要自定义交互时用 `sandbox_component`。不要用 canvas_scene 画课程流程、任务清单或统计图表
 - `parameters` 中每个参数必须包含 `key`、`label`、`min`、`max`、`step`、`value`、`unit`；`key` 必须是变量名，`min/max/step/value` 必须是数字
+- 每个参数必须实际改变实验计算、场景表达式、文本模板、公式结果或沙箱行为；只显示参数值、但观察结果不变的滑块会被拒绝
+- `chart_experiment` 是通用本地 ECharts 组件，必须提供纯 JSON `option` 和 `conclusion`；`option.series` 必须有 1-12 项，支持 line、bar、pie、scatter、effectScatter、radar、tree、treemap、sunburst、boxplot、candlestick、heatmap、parallel、lines、graph、sankey、funnel、gauge、pictorialBar、themeRiver
+- `chart_experiment.option` 可以使用完整 ECharts JSON 配置，但禁止 JavaScript、函数、回调、renderItem、外部 URL 和图片 URL；不要提交 formatter 函数，只能使用 ECharts 字符串模板
+- option 中任意纯数值字段可以使用以 `=` 开头的安全表达式，普通文本可以使用 `{{参数名}}`；表达式规则与 canvas_scene 相同，另外允许 `W`、`H` 表示图表容器宽高
+- 动态序列必须声明在 `data_sources`，并在 option 中用 `{"$source":"数据源ID"}` 替代 data/source 数组；支持 `xy`、`sequence`、`matrix` 三种数据源
+- `xy` 数据源必须提供 `id/type/x_min/x_max/step/y`，其中 y 是可使用 x、i 和参数的安全表达式；`sequence` 必须提供 `id/type/count/value`，value 可使用 i；`matrix` 必须提供 `id/type/rows/columns/value`，value 可使用 i、j
+- `parameters` 可省略；一旦提供，每个参数必须实际出现在 option 表达式、文本模板或 data_sources 表达式中。不要创建只改变标签、不改变图表数据或视觉编码的参数
+- 需要用户先判断时，可以同时提供 `prediction_prompt`、2-4 个 `prediction_options` 和 `correct_prediction`；这三个字段必须一起出现，也可以全部省略
+- 图表默认使用黑、白、蓝、灰配色，只有警告、失败和对照数据使用克制的红、绿或紫色；不要生成渐变、发光、3D 柱体和装饰性背景
+- `step_flow` 必须包含 `active_parameter` 和 2-8 个 `steps`；每个 step 必须有 `id`、`title`、`summary`、`detail`，用户可以点击步骤卡片或拖动进度查看当前阶段、已完成阶段和待处理阶段
 - `canvas_scene` 必须包含 `scene.width`、`scene.height`、`scene.elements`；图元 type 只支持 `rect`、`circle`、`line`、`arrow`、`text`、`particle_field`、`graph`、`plot`
+- `canvas_scene.result_template` 可用于解释当前参数对应的观察结果，例如 `"当前阶段 {{stage}}：重点观察高亮节点"`
 - `rect` 必须有 `x/y/width/height`；`circle` 必须有 `x/y/radius`；`line` 和 `arrow` 必须有 `x1/y1/x2/y2`；`text` 必须有 `x/y/text`
 - `particle_field` 必须有 `bounds.x/y/width/height`、`count`、`speed`、`radius`
 - `graph` 是拓扑基础积木，不是固定神经网络组件；它可以表达神经网络、数据流、模块调用、电路框图、网络拓扑、流水线结构
 - `graph` 必须有 `nodes` 和 `edges`；每个 node 必须有 `id/label/x/y`，每个 edge 必须有 `from/to`
+- `graph` 节点标签应简短，完整解释放在实验描述或画布外正文中；不要把整句话塞进圆形节点
 - `plot` 是曲线基础积木；它可以表达信号波形、控制响应、损失曲线、激活函数、阈值变化和参数扫描
 - `plot` 必须有 `x/y/width/height/x_min/x_max/y_min/y_max/curves`；每条 curve 必须有 `expression`
 - `canvas_scene` 的数值字段可以写数字，也可以写以 `=` 开头的安全表达式，例如 `"=80 + V * 12"`；表达式只能使用参数名、`t`、`W`、`H` 和 abs/sqrt/sin/cos/tan/exp/log/min/max/floor/ceil/round/pi/clamp 等数学函数
+- 安全表达式只允许数字、变量、括号、逗号和 `+ - * / % ^`；禁止 `==`、`>`、`<`、`&&`、`||`、`!` 和 `条件 ? A : B`。离散阶段可用 `clamp`、`min`、`max` 与算术位置表达，例如 `"=80 + (stage - 1) * 140"`
+- `canvas_scene` 的颜色、文本和状态字段不能写条件表达式；需要条件状态、步骤完成度或详情切换时必须改用 `step_flow`
 - `plot.curves[].expression` 必须至少有一条曲线使用变量 `x` 表示横轴采样点；如果要画“随维度变化”的曲线，表达式必须写 `sqrt(x / 3)` 这类随 `x` 变化的形式，不能只写 `sqrt(dim / 3)` 这种只会随滑块整体跳变的水平线
 - `plot` 中的可调参数只能用来改变曲线形状、阈值或标记位置；如果所有曲线都不依赖 `x`，不要使用 `plot`，改用 `text`、`rect`、`arrow`、`graph` 或其他图元表达当前状态
 - `formula_simulation` 当前只支持 `formula_key: "ideal_gas"`，且 parameters 必须包含 `n`、`T`、`V`；如果需要更自由的视觉构图，请用 `canvas_scene`
@@ -1076,6 +1087,64 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 - `sandbox_component.component.js` 必须定义 `function mount(ctx)`，可以定义 `function update(ctx)` 响应参数变化；从 `ctx.root` 查找组件根节点，从 `ctx.params` 读取参数，用 `ctx.setStatus(text)` 回传状态
 - `sandbox_component` 禁止联网和跨窗口访问：不要使用 fetch、XMLHttpRequest、WebSocket、EventSource、sendBeacon、import、Worker、localStorage、sessionStorage、indexedDB、document.cookie、parent、top、opener、location、eval、Function
 - `sandbox_component` 代码必须自包含，只使用浏览器内置 Canvas/SVG/DOM API；不要依赖外部库、外部图片、CDN、字体或接口
+
+流程推进示例：
+```nxl-lab
+{
+  "type": "step_flow",
+  "title": "DM8 中级技能学习路径",
+  "description": "拖动进度或点击步骤，理解安装、运维、监控和备份之间的前后依赖。",
+  "active_parameter": "progress",
+  "parameters": [
+    {"key": "progress", "label": "学习进度", "min": 0, "max": 4, "step": 1, "value": 0, "unit": "阶段"}
+  ],
+  "result_template": "已完成 {{progress}} / 4 个阶段",
+  "steps": [
+    {"id": "install", "tag": "基础", "title": "安装与环境", "summary": "准备 DM8 运行环境", "detail": "确认 Linux 环境、服务端和客户端安装条件，建立后续操作的基础。"},
+    {"id": "operate", "tag": "日常", "title": "实例与对象运维", "summary": "管理用户、表空间和对象", "detail": "理解日常运维对象之间的关系，并能判断常见配置操作的影响范围。"},
+    {"id": "monitor", "tag": "优化", "title": "监控与性能", "summary": "定位运行状态和瓶颈", "detail": "通过监控指标判断系统是否需要调整，区分资源问题和 SQL 问题。"},
+    {"id": "recovery", "tag": "保障", "title": "备份与容灾", "summary": "验证恢复路径", "detail": "根据故障范围选择备份和恢复策略，理解备份、恢复与容灾之间的依赖。"}
+  ]
+}
+```
+
+通用 ECharts 数据实验示例：
+```nxl-lab
+{
+  "type": "chart_experiment",
+  "title": "阻尼与振动衰减",
+  "description": "调整阻尼和角频率，观察响应包络、振荡速度与稳定时间的变化。",
+  "height": 460,
+  "prediction_prompt": "增大阻尼后，系统振幅会怎样变化？",
+  "prediction_options": [
+    {"id": "slower", "label": "衰减更慢"},
+    {"id": "faster", "label": "衰减更快"},
+    {"id": "stable", "label": "没有变化"}
+  ],
+  "correct_prediction": "faster",
+  "parameters": [
+    {"key": "damping", "label": "阻尼", "min": 0.05, "max": 0.8, "step": 0.05, "value": 0.2, "unit": ""},
+    {"key": "frequency", "label": "角频率", "min": 1, "max": 8, "step": 0.5, "value": 3, "unit": "rad/s"}
+  ],
+  "data_sources": [
+    {"id": "response", "type": "xy", "x_min": 0, "x_max": 12, "step": 0.1, "y": "=exp(-damping * x) * cos(frequency * x)"},
+    {"id": "upper", "type": "xy", "x_min": 0, "x_max": 12, "step": 0.1, "y": "=exp(-damping * x)"},
+    {"id": "lower", "type": "xy", "x_min": 0, "x_max": 12, "step": 0.1, "y": "=-exp(-damping * x)"}
+  ],
+  "option": {
+    "tooltip": {"trigger": "axis"},
+    "legend": {"data": ["系统响应", "衰减包络"]},
+    "xAxis": {"type": "value", "name": "时间 / s"},
+    "yAxis": {"type": "value", "name": "归一化振幅", "min": -1.1, "max": 1.1},
+    "series": [
+      {"name": "系统响应", "type": "line", "showSymbol": false, "data": {"$source": "response"}},
+      {"name": "衰减包络", "type": "line", "showSymbol": false, "lineStyle": {"type": "dashed"}, "data": {"$source": "upper"}},
+      {"name": "衰减包络", "type": "line", "showSymbol": false, "lineStyle": {"type": "dashed"}, "data": {"$source": "lower"}}
+    ]
+  },
+  "conclusion": "阻尼越大，指数包络下降越快；频率主要改变单位时间内的振荡次数，不直接决定包络衰减速度。"
+}
+```
 
 通用 canvas_scene 示例：
 ```nxl-lab
@@ -1205,8 +1274,8 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 - 不要输出工具调用、JSON、代码围栏包裹全文或正文标记以外的前置说明
 - 除 `nxl-lab` 代码块内部外，不要输出大段 JSON；`nxl-lab` 中也必须只放实验配置
 - 原文引用必须保持原文措辞，只允许为了 Markdown 引用在行首添加 `> `
-- 原文引用和正文都不得出现 `<p>`、`<span>`、`<div>`、`<br>` 等 HTML 标签，也不得输出 `&lt;p&gt;` 这类 HTML 实体标签
-- 如果原文中出现 HTML 标签，它们只是排版噪声，不属于可引用原文
+- 教材原文中的 `<p>`、`<span>`、`<div>`、`<br>` 等排版标签可以随引用保留，保存前会自动规范化为 Markdown 文本，不要因此删改原文语义
+- 不要主动生成 `<script>`、`<iframe>`、事件属性或外链资源；需要自定义互动组件时只能使用 `sandbox_component.component`
 - 不要把章节摘要改写成正文；章节摘要只能帮助你定位重点，正文必须依托当前章节原文
 - 不要使用“总之要重视”“值得思考”“可以进一步探索”这类没有学习信息量的收尾
 - 内容长度控制在 2000-4000 字

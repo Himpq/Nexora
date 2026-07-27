@@ -308,6 +308,7 @@
     },
     lpPathDraft: "",
     lpChapterDraft: "",
+    lpChapterError: "",
     lpChapterGeneratingIndex: -1,
     lpLabCleanups: [],
     feedMentionState: {

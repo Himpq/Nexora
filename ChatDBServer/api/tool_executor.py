@@ -84,7 +84,6 @@ class ToolExecutor:
             "cloud_file_read": self._file_read,
             "cloud_file_write": self._file_write,
             "cloud_doc_write": self._doc_write,
-            "cloud_file_patch": self._file_patch,
             "cloud_file_apply_diff": self._file_apply_diff,
             "cloud_file_edit": self._file_edit,
             "cloud_file_find": self._file_find,
@@ -1648,25 +1647,6 @@ class ToolExecutor:
                 render_stats={
                     "block_count": generation_result.block_count,
                 },
-            )
-            return json.dumps(payload, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
-
-    def _file_patch(self, args: Dict[str, Any]) -> str:
-        file_ref = args.get("file_path") or args.get("path") or args.get("file")
-        if not file_ref:
-            return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
-
-        dry_run = self._safe_bool(args.get("dry_run"), False)
-
-        try:
-            payload = self._file_sandbox.patch_file(
-                file_ref=str(file_ref),
-                patch=args.get("patch"),
-                edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
-                dry_run=dry_run,
-                expected_sha256=args.get("expected_sha256"),
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:

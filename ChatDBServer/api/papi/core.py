@@ -73,16 +73,10 @@ def require_papi_key(f):
                 return jsonify({'success': False, 'message': message}), status_code
             request.environ['papi.auth'] = auth
         else:
-            # Backward compatibility: if resolver is unavailable, keep legacy single-key check.
-            config = _load_config()
-            api_config = config.get('api', {})
-            if not _papi_coerce_bool(api_config.get('public_api_enabled'), False):
-                return jsonify({'success': False, 'message': 'Public API is disabled'}), 403
-            expected_key = str(api_config.get('public_api_key') or '').strip()
-            if not expected_key:
-                return jsonify({'success': False, 'message': 'Public API key is not configured'}), 401
-            if not auth_key or str(auth_key).strip() != expected_key:
-                return jsonify({'success': False, 'message': 'Invalid or missing API Key: incorrect'}), 401
+            return jsonify({
+                'success': False,
+                'message': 'PAPI authentication resolver is unavailable',
+            }), 500
         return f(*args, **kwargs)
     return decorated_function
 

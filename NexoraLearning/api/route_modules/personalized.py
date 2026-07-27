@@ -6,6 +6,32 @@ from api import routes as _routes
 _routes._export_route_context(globals())
 
 
+def _queue_learning_path_status(events: Any, message: str) -> None:
+    """将非空学习路线进度写入 SSE 事件队列。"""
+    text = str(message or "").strip()
+
+    if text:
+        events.put(("status", {"message": text}))
+
+
+def _learning_path_wait_event(user_id: str, lecture_id: str, started_at: float) -> str:
+    """记录模型等待心跳，并返回可展示的 SSE 状态。"""
+    elapsed_seconds = max(0, int(time.monotonic() - started_at))
+    log_event(
+        "personalized_learning_path_stream_wait",
+        "个性化学习路线模型请求仍在处理中",
+        payload={
+            "user_id": user_id,
+            "lecture_id": lecture_id,
+            "elapsed_seconds": elapsed_seconds,
+        },
+    )
+    return _reader_guide_sse_event(
+        "status",
+        {"message": f"模型仍在规划学习路线，已等待 {elapsed_seconds} 秒"},
+    )
+
+
 @bp.route("/frontend/personalized-learning/generate-path", methods=["POST"])
 def frontend_personalized_learning_generate_path():
     """SSE 流式生成个性化学习路线。"""
@@ -116,6 +142,7 @@ def frontend_personalized_learning_generate_path():
                     request_timeout=180,
                     catalog_rows=catalog_rows,
                     on_delta=push_delta,
+                    on_status=lambda message: _queue_learning_path_status(events, message),
                 )
 
                 if not chapters:
@@ -151,15 +178,16 @@ def frontend_personalized_learning_generate_path():
                 push_event("close", {})
 
         thread = threading.Thread(target=run_worker, name="personalized-learning-path", daemon=True)
+        started_at = time.monotonic()
         thread.start()
 
-        yield _reader_guide_sse_event("status", {"message": "personalized learning path generation started"})
+        yield _reader_guide_sse_event("status", {"message": "个性化学习路线生成已启动"})
 
         while True:
             try:
                 event_name, event_payload = events.get(timeout=30)
             except queue.Empty:
-                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                yield _learning_path_wait_event(user_id, lecture_id, started_at)
                 continue
 
             if event_name == "close":
@@ -281,6 +309,7 @@ def frontend_personalized_learning_generate_path_stream():
                     request_timeout=180,
                     catalog_rows=catalog_rows,
                     on_delta=push_delta,
+                    on_status=lambda message: _queue_learning_path_status(events, message),
                 )
 
                 if not chapters:
@@ -316,15 +345,16 @@ def frontend_personalized_learning_generate_path_stream():
                 push_event("close", {})
 
         thread = threading.Thread(target=run_worker, name="personalized-learning-path-get", daemon=True)
+        started_at = time.monotonic()
         thread.start()
 
-        yield _reader_guide_sse_event("status", {"message": "personalized learning path generation started"})
+        yield _reader_guide_sse_event("status", {"message": "个性化学习路线生成已启动"})
 
         while True:
             try:
                 event_name, event_payload = events.get(timeout=30)
             except queue.Empty:
-                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                yield _learning_path_wait_event(user_id, lecture_id, started_at)
                 continue
 
             if event_name == "close":

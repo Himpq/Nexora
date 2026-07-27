@@ -328,23 +328,27 @@
     if (!item || !state.catalogContext) return;
     const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
     flushReaderPosition();
-    const requestToken = state.readerRequestToken + 1;
-    state.readerRequestToken = requestToken;
     state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
     state.readerBookInfoXml = String(state.catalogContext.infoXml || "");
     state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
     const savedPosition = getSavedReaderPosition();
-    const openIndex = savedPosition ? savedPosition.chapterIndex : idx;
-    state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(openIndex) ? openIndex : 0));
+    const openIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
+    const restorePosition = savedPosition && savedPosition.chapterIndex === openIndex ? savedPosition : null;
+    state.readerActiveChapterIndex = openIndex;
+    logReaderDebug("catalogChapter:click", {
+      requestedChapterIndex: idx,
+      openedChapterIndex: openIndex,
+      restoredChapterIndex: restorePosition ? restorePosition.chapterIndex : null,
+    });
     // 先打开Reader并显示加载状态
     openReader(
       state.catalogContext.title || "教材阅读",
       state.catalogContext.subtitle || "",
       "",
-      { chapterIndex: state.readerActiveChapterIndex, loading: true, restorePosition: savedPosition }
+      { chapterIndex: openIndex, loading: true, restorePosition }
     );
     // 按章节加载内容
-    await loadChapterContent(state.readerActiveChapterIndex);
+    await loadChapterContent(openIndex);
   }
 
   async function loadVideos(lectureId, bookId) {

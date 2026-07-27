@@ -834,10 +834,10 @@ class UserFileSandbox:
         edits: Optional[List[Dict[str, Any]]] = None,
         dry_run: bool = False,
         expected_sha256: Optional[str] = None,
-        tool_name: str = "cloud_file_patch",
+        tool_name: str = "cloud_file_edit",
     ) -> Dict[str, Any]:
         """对云端文本文件应用统一 diff 或结构化 edits。"""
-        safe_tool_name = str(tool_name or "cloud_file_patch").strip() or "cloud_file_patch"
+        safe_tool_name = str(tool_name or "cloud_file_edit").strip() or "cloud_file_edit"
         entry = self._get_entry(file_ref)
         self._reject_docx_text_mutation(entry, safe_tool_name)
         alias = str(entry.get("alias"))

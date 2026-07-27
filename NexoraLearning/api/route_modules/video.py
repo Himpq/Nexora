@@ -14,10 +14,10 @@ def frontend_videos():
     if not lecture_id or not book_id:
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
 
-    from core.video_search import load_cached_videos
+    from core.video_search import has_video_search_cache, load_cached_videos
 
-    items = load_cached_videos(_cfg, lecture_id, book_id)
-    if items:
+    if has_video_search_cache(_cfg, lecture_id, book_id):
+        items = load_cached_videos(_cfg, lecture_id, book_id)
         return jsonify({"success": True, "items": items, "cached": True})
 
     try:

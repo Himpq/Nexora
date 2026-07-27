@@ -4,6 +4,7 @@
   const chunkPaths = [
     "app_modules/00_core_state.js",
     "app_modules/01_learning_path.js",
+    "app_modules/01_learning_chart_experiment.js",
     "app_modules/02_reader_dashboard.js",
     "app_modules/03_feed_profile.js",
     "app_modules/02_question_exam.js",
@@ -14,6 +15,7 @@
     "app_modules/06_reader_core.js",
     "app_modules/07_reader_floating.js",
     "app_modules/08_actions.js",
+    "app_modules/10_admin_console.js",
     "app_modules/09_events_init.js"
   ];
 

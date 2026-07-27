@@ -3883,9 +3883,7 @@ body.settings-companion-mode #addUserModal,
 body.settings-companion-mode #modelPermModal,
 body.settings-companion-mode #avatarCropModal,
 body.settings-companion-mode #adminTextConfirmModal,
-body.settings-companion-mode #adminConfigModal,
-body.settings-companion-mode #adminPublicApiKeyModal,
-body.settings-companion-mode #adminPublicApiDeleteModal {
+body.settings-companion-mode #adminConfigModal {
     z-index: 4300 !important;
 }
 
@@ -9034,13 +9032,6 @@ body.learning-workspace-active .learning-sidebar-panel {
         word-break: keep-all !important;
     }
 
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-        display: flex !important;
-        grid-template-columns: 36px minmax(0, 1fr);
-        min-height: 0 !important;
-        overflow: hidden !important;
-    }
-
     #settingsModal #settings-admin-models-tab .model-admin-panel {
         min-height: 0 !important;
         height: 100% !important;
@@ -9178,7 +9169,6 @@ body.learning-workspace-active .learning-sidebar-panel {
     }
 
     /* 4) model management overflow without scrollbar */
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active,
     #adminModal #stats-tab.admin-tab-content.active {
         min-height: 0 !important;
     }
@@ -10240,29 +10230,6 @@ body.is-admin .menu-item.admin-only {
     grid-column: 1 / -1;
 }
 
-#settingsModal #settings-admin-system-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-system-tab .admin-system-layout {
-    display: grid !important;
-    grid-template-columns: 280px minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-system-tab .admin-system-module-list,
-#settingsModal #settings-admin-system-tab .admin-system-detail {
-    min-height: 0 !important;
-    height: auto !important;
-    overflow-y: auto !important;
-}
-
 #settingsModal #settings-admin-system-tab .admin-system-toolbar-row {
     align-items: center;
 }
@@ -10325,9 +10292,6 @@ body.is-admin .menu-item.admin-only {
         align-items: center;
     }
 
-    #settingsModal #settings-admin-system-tab .admin-system-layout {
-        grid-template-columns: 1fr !important;
-    }
 }
 
 @media (max-width: 640px) {
@@ -11867,14 +11831,6 @@ body.is-admin .menu-item.admin-only {
     margin-top: 8px;
 }
 
-#settings-admin-auth-tab .admin-public-api-check-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: #334155;
-}
-
 #settings-admin-auth-tab .admin-public-api-save-row {
     margin-bottom: 8px !important;
 }
@@ -12287,50 +12243,11 @@ body.is-admin .menu-item.admin-only {
     flex-direction: column !important;
 }
 
-#settingsModal #settings-admin-system-tab.admin-tab-content.active,
-#settingsModal #settings-admin-users-tab.admin-tab-content.active,
-#settingsModal #settings-admin-mail-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-system-tab .admin-users-layout,
-#settingsModal #settings-admin-users-tab .admin-users-layout,
-#settingsModal #settings-admin-mail-tab .admin-users-layout {
-    display: grid !important;
-    grid-template-columns: 280px minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-system-tab .admin-users-list,
-#settingsModal #settings-admin-system-tab .admin-user-detail,
-#settingsModal #settings-admin-users-tab .admin-users-list,
-#settingsModal #settings-admin-users-tab .admin-user-detail,
-#settingsModal #settings-admin-mail-tab .admin-users-list,
-#settingsModal #settings-admin-mail-tab .admin-user-detail {
-    min-height: 0 !important;
-    height: auto !important;
-    overflow-y: auto !important;
-}
-
 /* Enable internal scrollbars for stats/model tabs */
 #settingsModal #settings-admin-stats-tab.admin-tab-content.active {
     min-height: 0 !important;
     height: auto !important;
     overflow-y: auto !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: auto !important;
-    overflow: hidden !important;
 }
 
 #settingsModal #settings-admin-models-tab .model-admin-panel {
@@ -12496,28 +12413,6 @@ body.is-admin .menu-item.admin-only {
         min-height: 0 !important;
     }
 
-    #settingsModal #settings-admin-system-tab.admin-tab-content.active,
-    #settingsModal #settings-admin-users-tab.admin-tab-content.active,
-    #settingsModal #settings-admin-mail-tab.admin-tab-content.active,
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-        display: block !important;
-        overflow: visible !important;
-        height: auto !important;
-    }
-
-    #settingsModal #settings-admin-system-tab .admin-users-layout,
-    #settingsModal #settings-admin-users-tab .admin-users-layout,
-    #settingsModal #settings-admin-mail-tab .admin-users-layout {
-        grid-template-columns: 1fr !important;
-        overflow: visible !important;
-    }
-
-    #settingsModal #settings-admin-system-tab .admin-users-list,
-    #settingsModal #settings-admin-system-tab .admin-user-detail,
-    #settingsModal #settings-admin-users-tab .admin-users-list,
-    #settingsModal #settings-admin-users-tab .admin-user-detail,
-    #settingsModal #settings-admin-mail-tab .admin-users-list,
-    #settingsModal #settings-admin-mail-tab .admin-user-detail,
     #settingsModal #settings-admin-models-tab .model-admin-list,
     #settingsModal #settings-admin-models-tab .model-admin-master,
     #settingsModal #settings-admin-models-tab .model-admin-col,
@@ -12773,13 +12668,6 @@ body.is-admin .menu-item.admin-only {
         writing-mode: horizontal-tb !important;
         text-orientation: mixed !important;
         word-break: keep-all !important;
-    }
-
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-        display: flex !important;
-        flex-direction: column !important;
-        min-height: 0 !important;
-        overflow: hidden !important;
     }
 
     #settingsModal #settings-admin-models-tab .model-admin-panel {
@@ -13227,35 +13115,8 @@ body.is-admin .menu-item.admin-only {
 
 #modelPermModal,
 #addUserModal,
-#adminConfigModal,
-#adminPublicApiKeyModal,
-#adminPublicApiDeleteModal {
+#adminConfigModal {
     z-index: 9200 !important;
-}
-
-#adminPublicApiDeleteModal .admin-public-api-delete-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 16px;
-    padding: 0;
-    background: transparent;
-    border-top: 0;
-    border-radius: 0;
-}
-
-#adminPublicApiDeleteModal .admin-public-api-delete-footer .btn-cancel,
-#adminPublicApiDeleteModal .admin-public-api-delete-footer .btn-danger-solid {
-    min-width: 78px;
-    height: 40px;
-    padding: 0 18px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
 }
 
 #confirmBackdrop,
@@ -13891,37 +13752,6 @@ body:not(.settings-companion-mode) #settingsModal .admin-users-toolbar {
     flex-wrap: wrap;
 }
 
-body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab.admin-tab-content.active,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab.admin-tab-content.active,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    gap: 12px;
-    overflow: hidden !important;
-}
-
-body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-layout,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-layout {
-    min-height: 0 !important;
-    height: 100% !important;
-    overflow: hidden !important;
-}
-
-body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-list,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-user-detail,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-list,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-list,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-user-detail {
-    min-height: 0 !important;
-    overflow: auto !important;
-}
-
-body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-    overflow: hidden !important;
-}
-
 body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab .model-admin-panel {
     flex: 1 1 auto;
     min-height: 0 !important;
@@ -13968,38 +13798,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab .mo
         grid-template-columns: 1fr !important;
     }
 
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-layout,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-layout {
-        display: flex !important;
-        gap: 8px;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-list,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-list,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-list {
-        min-width: 280px;
-        flex: 0 0 280px;
-    }
-
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-user-detail,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-user-detail {
-        min-width: 520px;
-        flex: 1 0 520px;
-    }
-}
-
-/* Model admin aligns with user/mail panel style */
-#settingsModal #settings-admin-models-tab.admin-tab-content.active,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    gap: 0;
-    overflow: hidden !important;
-    min-height: 0 !important;
 }
 
 #settingsModal #settings-admin-models-tab .model-quota-panel {
@@ -14240,19 +14038,7 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     word-break: break-word;
 }
 
-#settingsModal #settings-admin-models-tab .admin-users-toolbar {
-    margin-bottom: 12px !important;
-    align-items: stretch;
-    flex-wrap: wrap;
-}
-
-#settingsModal #settings-admin-models-tab .model-admin-search {
-    flex: 1 !important;
-    min-width: 240px !important;
-}
-
 #settingsModal #settings-admin-models-tab .model-admin-toolbar-unit {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -14262,32 +14048,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     font-size: 12px;
     color: #334155;
     white-space: nowrap;
-}
-
-#settingsModal #settings-admin-models-tab .model-admin-toolbar-unit select {
-    min-width: 140px;
-    height: 36px;
-}
-
-#settingsModal #settings-admin-models-tab .admin-users-toolbar .btn-primary,
-#settingsModal #settings-admin-models-tab .admin-users-toolbar #adminModelSearchInput {
-    height: 36px;
-    box-sizing: border-box;
-}
-
-#settingsModal #settings-admin-models-tab .admin-users-layout {
-    display: grid !important;
-    grid-template-columns: 280px minmax(0, 1fr) !important;
-    min-height: 0 !important;
-    height: 100% !important;
-    overflow: hidden !important;
-    background: #ffffff !important;
-    border: 1px solid #e5e7eb;
-    border-radius: 12px;
-    padding: 8px;
-    box-sizing: border-box;
-    position: relative;
-    z-index: 1;
 }
 
 #settingsModal #settings-admin-models-tab #adminModelProviderList,
@@ -14631,53 +14391,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
         max-width: 240px;
     }
 
-    #settingsModal #settings-admin-models-tab .admin-users-layout {
-        display: flex !important;
-        gap: 8px;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-
-    #settingsModal #settings-admin-models-tab #adminModelProviderList {
-        min-width: 280px;
-        flex: 0 0 280px;
-    }
-
-    #settingsModal #settings-admin-models-tab #adminModelConfigList {
-        min-width: 540px;
-        flex: 1 0 540px;
-    }
-
-    #settingsModal #settings-admin-models-tab .model-admin-toolbar-unit {
-        margin-left: 0;
-        width: auto;
-        flex: 0 0 auto;
-    }
-
-    #settingsModal #settings-admin-models-tab .model-admin-toolbar-unit select {
-        width: auto;
-        min-width: 0;
-        max-width: 220px;
-    }
-
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar {
-        flex-wrap: nowrap !important;
-        overflow-x: auto;
-        overflow-y: hidden;
-        align-items: center;
-        gap: 8px;
-    }
-
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .btn-primary,
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-search,
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-toolbar-unit {
-        flex: 0 0 auto;
-    }
-
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-search {
-        min-width: 260px !important;
-    }
-
     #settingsModal #settings-admin-models-tab .model-admin-item-actions {
         opacity: 1 !important;
         pointer-events: auto !important;
@@ -14712,46 +14425,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     padding-right: 0;
 }
 
-@media (max-width: 980px) {
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-        display: grid !important;
-        grid-template-rows: auto minmax(0, 1fr) !important;
-        grid-template-columns: minmax(0, 1fr) !important;
-        overflow: hidden !important;
-    }
-
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar {
-        order: 0;
-        width: 100% !important;
-        flex-wrap: nowrap !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-        align-items: center !important;
-        gap: 8px !important;
-        margin-bottom: 10px !important;
-    }
-
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-layout {
-        order: 1;
-        width: 100% !important;
-        min-height: 0 !important;
-        display: flex !important;
-        gap: 8px;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .btn-primary,
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-search,
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-toolbar-unit {
-        flex: 0 0 auto !important;
-    }
-
-    #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-search {
-        min-width: 320px !important;
-    }
-}
-
 /* ===== Final admin auth/model fix lock ===== */
 #settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn {
     background: #ffffff !important;
@@ -14776,121 +14449,13 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     border-color: #fca5a5 !important;
 }
 
-#settingsModal #settings-admin-auth-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    gap: 12px !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-auth-tab .admin-users-layout {
-    min-height: 0 !important;
-    height: 100% !important;
-    overflow: hidden !important;
-    padding-right: 0 !important;
-}
-
-#settingsModal #settings-admin-auth-tab .admin-public-api-layout {
-    min-height: 0 !important;
-    height: 100% !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-auth-tab .admin-users-list,
-#settingsModal #settings-admin-auth-tab .admin-user-detail {
-    min-height: 0 !important;
-    height: auto !important;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-}
-
-#settingsModal #settings-admin-models-tab .admin-users-layout {
-    border: none !important;
-    border-radius: 0 !important;
-    padding: 0 !important;
-    background: transparent !important;
-}
-
 #settingsModal #settings-admin-models-tab #adminModelProviderList,
 #settingsModal #settings-admin-models-tab #adminModelConfigList {
     border: 1px solid #e5e7eb !important;
     border-radius: 10px !important;
 }
 
-#settingsModal #settings-admin-models-tab.admin-tab-content.active,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    gap: 12px !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-    padding-top: 0 !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar {
-    display: grid !important;
-    grid-template-columns: max-content max-content minmax(180px, 1fr) max-content !important;
-    gap: 12px !important;
-    width: 100% !important;
-    margin-top: 0 !important;
-    margin-bottom: 12px !important;
-    align-items: center !important;
-    flex-wrap: nowrap !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .btn-primary {
-    white-space: nowrap !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-search {
-    width: 100% !important;
-    min-width: 0 !important;
-    flex: 0 1 auto !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-toolbar-unit {
-    margin-left: 0 !important;
-    height: 36px !important;
-    flex: 0 0 auto !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-toolbar-unit select {
-    min-width: 112px !important;
-    height: 36px !important;
-}
-
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-layout,
-#settingsModal #settings-admin-models-tab.admin-tab-content.active > .model-admin-users-layout {
-    padding-top: 0 !important;
-    margin-top: 0 !important;
-    min-height: 0 !important;
-}
-
-@media (max-width: 980px) {
-    #settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar {
-        grid-template-columns: max-content max-content minmax(260px, 1fr) max-content !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-}
-
 /* ===== Settings admin control layout polish ===== */
-#settingsModal #settings-admin-gen-image-tab.admin-tab-content.active {
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) !important;
-    gap: 12px !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-gen-image-tab.admin-tab-content.active > .admin-users-toolbar {
-    display: flex !important;
-    align-items: center !important;
-    gap: 12px !important;
-    margin-bottom: 12px !important;
-}
-
 #settingsModal #settings-admin-gen-image-tab #btnAddGenImageApi {
     width: auto !important;
     min-width: 112px !important;
@@ -14904,24 +14469,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
 #settingsModal #settings-admin-gen-image-tab #adminGenImageApiSearchInput {
     width: 100% !important;
     min-width: 0 !important;
-}
-
-#settingsModal #settings-admin-gen-image-tab .admin-users-layout {
-    display: grid !important;
-    grid-template-columns: 280px minmax(0, 1fr) !important;
-    gap: 12px !important;
-    min-height: 0 !important;
-    height: 100% !important;
-    margin-top: 0 !important;
-    padding-top: 0 !important;
-    overflow: hidden !important;
-}
-
-#settingsModal #settings-admin-gen-image-tab .admin-users-list,
-#settingsModal #settings-admin-gen-image-tab .admin-user-detail {
-    min-height: 0 !important;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
 }
 
 #settingsModal #settings-admin-gen-image-tab .admin-user-item {
@@ -14996,15 +14543,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     color: #334155 !important;
 }
 
-#settingsModal #settings-admin-auth-tab.admin-tab-content.active > .admin-users-toolbar {
-    margin-bottom: 12px !important;
-}
-
-#settingsModal #settings-admin-auth-tab.admin-tab-content.active > .admin-users-layout {
-    margin-top: 0 !important;
-    padding-top: 0 !important;
-}
-
 #settingsModal #settings-admin-auth-tab .admin-public-api-global-toggle,
 #settingsModal #settings-admin-auth-tab .admin-public-api-global-save,
 #settingsModal #settings-admin-auth-tab .admin-public-api-status-group {
@@ -15074,28 +14612,6 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
 }
 
 @media (max-width: 980px) {
-    #settingsModal #settings-admin-gen-image-tab.admin-tab-content.active > .admin-users-toolbar {
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-
-    #settingsModal #settings-admin-gen-image-tab .admin-users-layout {
-        display: flex !important;
-        gap: 8px;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-    }
-
-    #settingsModal #settings-admin-gen-image-tab .admin-users-list {
-        min-width: 280px;
-        flex: 0 0 280px;
-    }
-
-    #settingsModal #settings-admin-gen-image-tab .admin-user-detail {
-        min-width: 560px;
-        flex: 1 0 560px;
-    }
-
     #settingsModal #settings-admin-auth-tab .admin-public-api-action-row {
         grid-template-columns: minmax(0, 1fr) !important;
     }

@@ -95,17 +95,39 @@ class ConceptNode:
     concept_id: str
     lecture_id: str
     book_id: str
+    section_id: str
     chapter_index: int
     chapter_name: str
     path: Tuple[str, ...]
     name: str
     detail: str = ""
+    source_refs: Tuple[Tuple[str, str], ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
+        source_book_ids = []
+        seen_book_ids = set()
+
+        for source_book_id, _source_chapter_name in self.source_refs:
+
+            if source_book_id in seen_book_ids:
+                continue
+
+            seen_book_ids.add(source_book_id)
+            source_book_ids.append(source_book_id)
+
         return {
             "concept_id": self.concept_id,
             "lecture_id": self.lecture_id,
             "book_id": self.book_id,
+            "source_book_ids": source_book_ids,
+            "source_refs": [
+                {
+                    "book_id": source_book_id,
+                    "chapter_name": source_chapter_name,
+                }
+                for source_book_id, source_chapter_name in self.source_refs
+            ],
+            "section_id": self.section_id,
             "chapter_index": self.chapter_index,
             "chapter_name": self.chapter_name,
             "path": list(self.path),

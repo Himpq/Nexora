@@ -216,6 +216,20 @@ body.learning-workspace-active.learning-sidebar-conversation-active .sidebar {
   width: var(--sidebar-width-learning);
 }
 
+/* 折叠状态必须覆盖各 Learning 布局宽度，否则内容隐藏后仍会留下白色占位。 */
+body.learning-workspace-active:not(.learning-sidebar-conversation-active):not(.learning-course-workspace-active):not(.learning-course-context-active) .sidebar.collapsed,
+body.learning-workspace-active.learning-sidebar-conversation-active .sidebar.collapsed,
+body.learning-course-workspace-active .sidebar.collapsed,
+body.learning-workspace-active.learning-course-context-active .sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-right-color: transparent;
+  box-shadow: none;
+}
+
 .learning-sidebar-shell {
   display: flex;
   flex-direction: column;

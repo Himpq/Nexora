@@ -144,6 +144,43 @@ rect/circle 的 fill 和 stroke 使用 #RRGGBB、rgb(...) 或 rgba(...)；如果
 如果分镜 renderer 是 manim，仍然输出同主题的静态自由画布 spec，用于页面预览和导出索引，但不要试图表现复杂动画。
 """.strip()
 
+MOTION_TEMPLATE_SYSTEM_PROMPT = """
+你是 NexoraVideoGenerator 的受限教学模板规划模型。
+你的任务是为短教学动画选择一个已注册模板，并严格填写该模板的 JSON 字段。
+只允许 template 为 concept_explanation、process_flow、cause_effect、timeline、formula_derivation 或 sequence。
+不得输出 HTML、JavaScript、CSS、SVG、Canvas 代码、像素坐标或未定义字段。
+概念讲解使用 concept 与 key_points；过程流程使用 steps；因果机制使用 causes、mechanism、effects；时间线使用带 label 的 events；公式推导使用 formula、variables、steps；sequence 使用 segments 串联二至五个现有教学模板。
+文字要短且具体，每项只表达一个教学事实。只输出 JSON 对象，不要输出 Markdown 或解释。
+主题一致性是硬性要求：标题和所有教学字段必须直接解释用户给定的主题、上下文和教学目标。
+不得复用与当前主题无关的示例、缓存内容或默认主题。
+""".strip()
+
+MOTION_TEMPLATE_USER_PROMPT = """
+请为一个短教学视频生成一个受限模板 JSON。
+
+主题:
+{topic}
+
+学习上下文:
+{context}
+
+目标学习者:
+{audience}
+
+教学目标:
+{objective}
+
+指定模板（为空时由你选择最合适的一种）:
+{template_hint}
+
+可用模板契约:
+{templates}
+
+只输出一个符合契约的 JSON 对象。不要输出代码块、解释、坐标、HTML 或任何模板外字段。
+硬性主题检查：生成结果必须包含并解释主题中的核心术语；若指定了模板，template 必须严格等于指定模板。
+若 template 是 sequence，每个 segment 必须包含唯一 id、template、duration_seconds、title，并完整填写对应子模板字段；sequence 只能使用上述五种教学模板作为子模板。
+""".strip()
+
 VIDEO_CANVAS_USER_PROMPT = """
 请为以下分镜生成结构化 PPT 页面 JSON。
 

@@ -1,0 +1,9 @@
+{
+    "package": "echarts",
+    "version": "6.1.0",
+    "source": "https://registry.npmjs.org/echarts/-/echarts-6.1.0.tgz",
+    "integrity": "sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==",
+    "script": "echarts.min.js",
+    "script_sha256": "B66B25AEB4DF84E33199DC21694014D336D222CBD9DEB0E5A7C14BD6AA0D0FD0",
+    "license": "Apache-2.0"
+}

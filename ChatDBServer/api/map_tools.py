@@ -2,6 +2,7 @@ import json
 import math
 import hashlib
 import re
+import ssl
 import xml.etree.ElementTree as ET
 from html import unescape
 from typing import Any, Dict, List, Tuple
@@ -635,13 +636,22 @@ class MapToolService:
 
         return urllib_parse.urlunsplit((parts.scheme, parts.netloc, parts.path or "/", query, ""))
 
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        try:
+            import certifi
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            return ssl.create_default_context()
+
     def _request_text(self, url: str, timeout: float, user_agent: str = "NexoraMapTools/1.0") -> str:
         req = urllib_request.Request(url, headers={
             "User-Agent": str(user_agent or "NexoraMapTools/1.0"),
         })
 
+        ctx = self._build_ssl_context()
+
         try:
-            with urllib_request.urlopen(req, timeout=timeout) as resp:
+            with urllib_request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 data = resp.read()
         except urllib_error.HTTPError as exc:
             data = exc.read()

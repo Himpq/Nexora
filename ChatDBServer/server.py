@@ -152,6 +152,9 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 DATA_RES_DIR = os.path.join(DATA_DIR, 'res')
 SKILLS_DIR = os.path.join(DATA_DIR, 'skills')
 SKILLS_CATALOG_PATH = os.path.join(SKILLS_DIR, 'catalog.json')
+SKILLS_MARKET_DIR = os.path.join(DATA_DIR, 'skills_market')
+SKILLS_MARKET_ITEMS_DIR = os.path.join(SKILLS_MARKET_DIR, 'items')
+SKILLS_MARKET_INDEX_PATH = os.path.join(SKILLS_MARKET_DIR, 'index.json')
 
 ROOT_CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 ROOT_MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
@@ -501,6 +504,9 @@ PUBLIC_API_EXPIRE_PRESETS = {
     "forever": {"seconds": None, "label": "Forever"},
 }
 
+# owner: Key 仅可访问 owner 本人数据; global: 跨用户访问(平台组件用)
+PUBLIC_API_KEY_SCOPES = {"owner", "global"}
+
 
 def _coerce_bool_flag(value: Any, default: bool = False) -> bool:
     if value is None:
@@ -638,6 +644,13 @@ def _normalize_papi_key_record(raw: Any) -> Optional[Dict[str, Any]]:
     key_hash = str(raw.get("key_hash") or "").strip()
     if not key_hash:
         return None
+    scope = str(raw.get("scope") or "").strip().lower()
+    if scope not in PUBLIC_API_KEY_SCOPES:
+        # 存量记录迁移:无 scope 的旧数据一律视为全局 Key,owner 继承 created_by
+        scope = "global"
+        owner = str(raw.get("owner") or raw.get("created_by") or "").strip()
+    else:
+        owner = str(raw.get("owner") or "").strip()
     record: Dict[str, Any] = {
         "id": key_id,
         "name": name,
@@ -650,6 +663,8 @@ def _normalize_papi_key_record(raw: Any) -> Optional[Dict[str, Any]]:
         "expire_option": str(raw.get("expire_option") or "forever").strip().lower() or "forever",
         "last_regenerated_at": last_regenerated_at,
         "permissions": _normalize_public_api_permissions(raw.get("permissions")),
+        "scope": scope,
+        "owner": owner,
         "last_used_at": str(raw.get("last_used_at") or "").strip(),
         "created_by": str(raw.get("created_by") or "").strip(),
         "updated_by": str(raw.get("updated_by") or "").strip(),
@@ -725,6 +740,8 @@ def _build_public_api_key_state(record: Dict[str, Any]) -> Dict[str, Any]:
         "is_expired": bool(is_expired),
         "expires_in_seconds": expires_in_seconds,
         "permissions": _normalize_public_api_permissions(record.get("permissions")),
+        "scope": str(record.get("scope") or "").strip().lower(),
+        "owner": str(record.get("owner") or "").strip(),
         "last_used_at": str(record.get("last_used_at") or "").strip(),
         "created_by": str(record.get("created_by") or "").strip(),
         "updated_by": str(record.get("updated_by") or "").strip(),
@@ -801,33 +818,19 @@ def _find_active_papi_key_by_hash(key_hash: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _is_papi_key_name_taken(name: Any, *, exclude_key_id: str = "") -> bool:
-    lookup = str(name or "").strip().lower()
-    if not lookup:
-        return False
-    exclude = str(exclude_key_id or "").strip()
-    for row in _list_papi_key_records(include_revoked=True):
-        row_id = str(row.get("id") or "").strip()
-        if exclude and row_id == exclude:
-            continue
-        row_name = str(row.get("name") or "").strip().lower()
-        if row_name == lookup:
-            return True
-    return False
-
-
-def _assert_unique_papi_key_name(name: Any, *, exclude_key_id: str = "") -> None:
-    normalized = _normalize_public_api_key_name(name, fallback="")
-    if not normalized:
-        return
-    if _is_papi_key_name_taken(normalized, exclude_key_id=exclude_key_id):
-        raise ValueError(f"PAPI key name already exists: {normalized}")
+def _validate_papi_key_scope_owner(record: Dict[str, Any]) -> None:
+    scope = str(record.get("scope") or "").strip().lower()
+    if scope not in PUBLIC_API_KEY_SCOPES:
+        raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope!r}")
+    if scope == "owner" and not str(record.get("owner") or "").strip():
+        raise ValueError("PAPI key with scope='owner' requires a non-empty owner")
 
 
 def _write_papi_key_record(record: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_papi_key_record(record)
     if not normalized:
         raise ValueError("invalid papi key record")
+    _validate_papi_key_scope_owner(normalized)
     key_id = str(normalized.get("id") or "").strip()
     if not key_id:
         raise ValueError("invalid papi key id")
@@ -848,40 +851,61 @@ def _delete_papi_key_record(*, key_id: str) -> None:
     _write_papi_key_rows(list(index.values()))
 
 
-def _create_public_api_key(*, expire_option: str, permissions: Dict[str, bool], name: str = "", actor: str = "") -> Tuple[Dict[str, Any], str]:
+def _create_public_api_key(
+    *,
+    expire_option: str,
+    permissions: Dict[str, bool],
+    scope: str,
+    owner: str = "",
+    name: str = "",
+    actor: str = "",
+) -> Tuple[Dict[str, Any], str]:
+    scope_value = str(scope or "").strip().lower()
+    if scope_value not in PUBLIC_API_KEY_SCOPES:
+        raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope_value!r}")
+    owner_value = str(owner or "").strip()
+    actor_name = str(actor or "").strip() or "admin"
+    if scope_value == "owner":
+        if not owner_value:
+            raise ValueError("PAPI key with scope='owner' requires a non-empty owner")
+    elif not owner_value:
+        # global Key 的 owner 仅作归属展示,不参与访问控制;未显式指定时归属操作者
+        owner_value = actor_name
     option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
     if err:
         raise ValueError(err)
     now_iso = _utc_now_iso()
     plain_key = _generate_public_api_key_value()
-    actor_name = str(actor or "").strip() or "admin"
-    raw_name = str(name or "").strip()
-    if raw_name:
-        normalized_name = _normalize_public_api_key_name(raw_name, fallback="")
-        _assert_unique_papi_key_name(normalized_name)
-    else:
-        normalized_name = _normalize_public_api_key_name(
-            "",
-            fallback=f"PAPI Key {now_iso[:19]}-{uuid.uuid4().hex[:6]}",
-        )
-    record = {
-        "id": f"pak_{uuid.uuid4().hex}",
-        "name": normalized_name,
-        "status": "active",
-        "key_hash": _hash_public_api_key(plain_key),
-        "key_preview": _mask_public_api_key(plain_key),
-        "created_at": now_iso,
-        "updated_at": now_iso,
-        "expires_at": expires_at,
-        "expire_option": option,
-        "last_regenerated_at": "",
-        "permissions": _normalize_public_api_permissions(permissions),
-        "last_used_at": "",
-        "created_by": actor_name,
-        "updated_by": actor_name,
-        "last_regenerated_by": "",
-    }
-    _write_papi_key_record(record)
+    # PAPI 数据采用读改写存储，整个写入过程使用同一把可重入锁避免并发覆盖。
+    with get_path_lock(PAPI_KEYS_PATH):
+        raw_name = str(name or "").strip()
+        if raw_name:
+            normalized_name = _normalize_public_api_key_name(raw_name, fallback="")
+        else:
+            normalized_name = _normalize_public_api_key_name(
+                "",
+                fallback=f"PAPI Key {now_iso[:19]}-{uuid.uuid4().hex[:6]}",
+            )
+        record = {
+            "id": f"pak_{uuid.uuid4().hex}",
+            "name": normalized_name,
+            "status": "active",
+            "key_hash": _hash_public_api_key(plain_key),
+            "key_preview": _mask_public_api_key(plain_key),
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "expires_at": expires_at,
+            "expire_option": option,
+            "last_regenerated_at": "",
+            "permissions": _normalize_public_api_permissions(permissions),
+            "scope": scope_value,
+            "owner": owner_value,
+            "last_used_at": "",
+            "created_by": actor_name,
+            "updated_by": actor_name,
+            "last_regenerated_by": "",
+        }
+        _write_papi_key_record(record)
     return record, plain_key
 
 
@@ -914,15 +938,13 @@ def _regenerate_public_api_key(
     record["expire_option"] = option
     if not str(record.get("created_by") or "").strip():
         record["created_by"] = actor_name
-    if name is not None:
-        normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
-        old_name = _normalize_public_api_key_name(old.get("name"), fallback=str(old.get("id") or ""))
-        if normalized_name.strip().lower() != old_name.strip().lower():
-            _assert_unique_papi_key_name(normalized_name, exclude_key_id=str(old.get("id") or ""))
-        record["name"] = normalized_name
-    if permissions is not None:
-        record["permissions"] = _normalize_public_api_permissions(permissions)
-    _write_papi_key_record(record)
+    with get_path_lock(PAPI_KEYS_PATH):
+        if name is not None:
+            normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
+            record["name"] = normalized_name
+        if permissions is not None:
+            record["permissions"] = _normalize_public_api_permissions(permissions)
+        _write_papi_key_record(record)
     return record, plain_key
 
 
@@ -932,6 +954,8 @@ def _update_public_api_key(
     permissions: Optional[Dict[str, bool]] = None,
     expire_option: Optional[str] = None,
     name: Optional[str] = None,
+    scope: Optional[str] = None,
+    owner: Optional[str] = None,
     actor: str = "",
 ) -> Dict[str, Any]:
     old = _find_papi_key_by_id(key_id, include_revoked=True)
@@ -941,23 +965,33 @@ def _update_public_api_key(
     now_iso = _utc_now_iso()
     if permissions is not None:
         record["permissions"] = _normalize_public_api_permissions(permissions)
-    if name is not None:
-        normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
-        old_name = _normalize_public_api_key_name(old.get("name"), fallback=str(old.get("id") or ""))
-        if normalized_name.strip().lower() != old_name.strip().lower():
-            _assert_unique_papi_key_name(normalized_name, exclude_key_id=str(old.get("id") or ""))
-        record["name"] = normalized_name
-    if expire_option is not None:
-        option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
-        if err:
-            raise ValueError(err)
-        record["expire_option"] = option
-        record["expires_at"] = expires_at
-    record["updated_at"] = now_iso
-    record["updated_by"] = str(actor or "").strip() or "admin"
-    if not str(record.get("created_by") or "").strip():
-        record["created_by"] = str(actor or "").strip() or "admin"
-    _write_papi_key_record(record)
+    if scope is not None:
+        scope_value = str(scope or "").strip().lower()
+        if scope_value not in PUBLIC_API_KEY_SCOPES:
+            raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope_value!r}")
+        record["scope"] = scope_value
+    if owner is not None:
+        owner_value = str(owner or "").strip()
+        if owner_value and owner_value not in (load_users() or {}):
+            raise ValueError(f"PAPI key owner user not found: {owner_value}")
+        record["owner"] = owner_value
+    if str(record.get("scope") or "").strip().lower() == "owner" and not str(record.get("owner") or "").strip():
+        raise ValueError("PAPI key with scope='owner' requires a non-empty owner")
+    with get_path_lock(PAPI_KEYS_PATH):
+        if name is not None:
+            normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
+            record["name"] = normalized_name
+        if expire_option is not None:
+            option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
+            if err:
+                raise ValueError(err)
+            record["expire_option"] = option
+            record["expires_at"] = expires_at
+        record["updated_at"] = now_iso
+        record["updated_by"] = str(actor or "").strip() or "admin"
+        if not str(record.get("created_by") or "").strip():
+            record["created_by"] = str(actor or "").strip() or "admin"
+        _write_papi_key_record(record)
     return record
 
 
@@ -993,6 +1027,8 @@ def _migrate_legacy_public_api_key(api_cfg: Dict[str, Any]) -> bool:
             "expire_option": "forever",
             "last_regenerated_at": str(cfg.get("public_api_key_last_regenerated_at") or "").strip(),
             "permissions": _normalize_public_api_permissions(cfg.get("public_api_key_permissions")),
+            "scope": "global",
+            "owner": "system:migration",
             "last_used_at": "",
             "created_by": "system:migration",
             "updated_by": "system:migration",
@@ -1008,12 +1044,38 @@ def _migrate_legacy_public_api_key(api_cfg: Dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_papi_key_scope_schema() -> bool:
+    """将旧 PAPI Key 记录一次性重写为显式 scope/owner 结构。"""
+    raw_rows = _read_papi_key_rows()
+    needs_migration = any(
+        isinstance(row, dict)
+        and str(row.get("scope") or "").strip().lower() not in PUBLIC_API_KEY_SCOPES
+        for row in raw_rows
+    )
+
+    if not needs_migration:
+        return False
+
+    normalized_rows = []
+
+    for row in raw_rows:
+        normalized = _normalize_papi_key_record(row)
+
+        if normalized:
+            normalized_rows.append(normalized)
+
+    _write_papi_key_rows(normalized_rows)
+    return True
+
+
 def _issue_public_api_key(
     expire_option: str,
     permissions: Dict[str, bool],
     regenerate: bool = False,
     key_id: str = "",
     name: str = "",
+    scope: str = "",
+    owner: str = "",
     actor: str = "",
 ) -> Dict[str, Any]:
     cfg = ensure_main_config_defaults()
@@ -1038,6 +1100,8 @@ def _issue_public_api_key(
         _record, plain_key = _create_public_api_key(
             expire_option=expire_option,
             permissions=normalized_permissions,
+            scope=scope,
+            owner=owner,
             name=name,
             actor=actor,
         )
@@ -1162,6 +1226,8 @@ def ensure_main_config_defaults():
         api_cfg['public_api_key_last_regenerated_at'] = ''
         changed = True
     if _migrate_legacy_public_api_key(api_cfg):
+        changed = True
+    if _migrate_papi_key_scope_schema():
         changed = True
     normalized_api_perms = _normalize_public_api_permissions(api_cfg.get('public_api_key_permissions'))
     if api_cfg.get('public_api_key_permissions') != normalized_api_perms:
@@ -2001,11 +2067,22 @@ def _normalize_skill_catalog_item(raw: Any, index: int = 0) -> Optional[Dict[str
     title = str(item.get('title') or '').strip()
     if not title:
         return None
+
     skill_id = _skill_slug(item.get('id') or title, fallback=f"skill_{index + 1}")
     content = str(item.get('main_content') or item.get('content') or '')
     now_date = datetime.now().strftime('%Y-%m-%d')
     release_date = str(item.get('release_date') or '').strip() or now_date
     update_date = str(item.get('update_date') or '').strip() or now_date
+
+    # 标签规范化：支持列表或逗号分隔字符串
+    tags_raw = item.get('tags', [])
+    if isinstance(tags_raw, str):
+        tags = [t.strip() for t in tags_raw.replace('，', ',').split(',') if t.strip()]
+    elif isinstance(tags_raw, list):
+        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+    else:
+        tags = []
+
     return {
         'id': skill_id,
         'title': title,
@@ -2015,7 +2092,13 @@ def _normalize_skill_catalog_item(raw: Any, index: int = 0) -> Optional[Dict[str
         'release_date': release_date,
         'version': str(item.get('version') or '').strip(),
         'update_date': update_date,
-        'main_content': content.rstrip('\r\n')
+        'main_content': content.rstrip('\r\n'),
+        'description': str(item.get('description') or '').strip(),
+        'tags': tags,
+        'origin': str(item.get('origin') or '').strip(),
+        'origin_id': str(item.get('origin_id') or '').strip(),
+        'origin_version': str(item.get('origin_version') or '').strip(),
+        'installed_date': str(item.get('installed_date') or '').strip()
     }
 
 
@@ -2027,6 +2110,8 @@ def _skill_file_path(skill_id: str) -> str:
 def _serialize_skill_text(skill: Dict[str, Any]) -> str:
     item = _normalize_skill_catalog_item(skill, index=0) or {}
     required_tools = list(item.get('required_tools', []) or [])
+    tags = list(item.get('tags', []) or [])
+
     lines = [
         f"id: {str(item.get('id') or '').strip()}",
         f"title: {str(item.get('title') or '').strip()}",
@@ -2036,10 +2121,36 @@ def _serialize_skill_text(skill: Dict[str, Any]) -> str:
         f"release_date: {str(item.get('release_date') or '').strip()}",
         f"version: {str(item.get('version') or '').strip()}",
         f"update_date: {str(item.get('update_date') or '').strip()}",
-        "",
-        "---content---",
-        str(item.get('main_content') or '')
     ]
+
+    # 扩展字段：仅在非空时写入
+    description = str(item.get('description') or '').strip()
+    if description:
+        lines.append(f"description: {description}")
+
+    if tags:
+        lines.append(f"tags: {', '.join(tags)}")
+
+    origin = str(item.get('origin') or '').strip()
+    if origin:
+        lines.append(f"origin: {origin}")
+
+    origin_id = str(item.get('origin_id') or '').strip()
+    if origin_id:
+        lines.append(f"origin_id: {origin_id}")
+
+    origin_version = str(item.get('origin_version') or '').strip()
+    if origin_version:
+        lines.append(f"origin_version: {origin_version}")
+
+    installed_date = str(item.get('installed_date') or '').strip()
+    if installed_date:
+        lines.append(f"installed_date: {installed_date}")
+
+    lines.append("")
+    lines.append("---content---")
+    lines.append(str(item.get('main_content') or ''))
+
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -2081,6 +2192,12 @@ def _parse_skill_text(raw_text: Any, source: str = '') -> Optional[Dict[str, Any
         'release_date': header.get('release_date', ''),
         'version': header.get('version', ''),
         'update_date': header.get('update_date', ''),
+        'description': header.get('description', ''),
+        'tags': header.get('tags', ''),
+        'origin': header.get('origin', ''),
+        'origin_id': header.get('origin_id', ''),
+        'origin_version': header.get('origin_version', ''),
+        'installed_date': header.get('installed_date', ''),
         'main_content': "\n".join(content_lines).rstrip('\r\n')
     }
     return _normalize_skill_catalog_item(payload, index=0)
@@ -2274,7 +2391,34 @@ def _save_user_skill_settings(username: str, settings: Dict[str, Any]) -> Dict[s
 
 
 def _build_user_skill_runtime(username: str) -> Dict[str, Any]:
-    catalog = _load_skill_catalog()
+    # 加载全局 Skill 目录
+    global_catalog = _load_skill_catalog()
+
+    # 加载用户个人 Skill（自建 + 市场安装副本）
+    personal_skills = _load_user_skills(username)
+
+    # 合并：个人覆盖全局（同 ID 时个人优先）
+    merged_map: Dict[str, Dict[str, Any]] = {}
+    for item in global_catalog:
+        sid = str(item.get('id') or '').strip()
+        if not sid:
+            continue
+        row = dict(item)
+        if not row.get('origin'):
+            row['origin'] = 'global'
+        merged_map[sid] = row
+
+    for item in personal_skills:
+        sid = str(item.get('id') or '').strip()
+        if not sid:
+            continue
+        row = dict(item)
+        if not row.get('origin'):
+            row['origin'] = 'self'
+        merged_map[sid] = row
+
+    catalog = list(merged_map.values())
+
     settings = _load_user_skill_settings(username)
     skill_modes = settings.get('skill_modes', {}) if isinstance(settings.get('skill_modes', {}), dict) else {}
     normalized_modes: Dict[str, str] = {}
@@ -2289,18 +2433,22 @@ def _build_user_skill_runtime(username: str) -> Dict[str, Any]:
     enabled_ids: Set[str] = set()
     skills_with_state: List[Dict[str, Any]] = []
     active_skills: List[Dict[str, Any]] = []
+
     for item in catalog:
         sid = str(item.get('id') or '').strip()
         item_mode = _normalize_skill_mode(
             normalized_modes.get(sid, item.get('mode', 'off'))
         )
         enabled = item_mode != 'off'
+
         if enabled:
             enabled_ids.add(sid)
+
         row = dict(item)
         row['mode'] = item_mode
         row['enabled'] = enabled
         skills_with_state.append(row)
+
         if enabled:
             active_skills.append({
                 'id': sid,
@@ -2313,12 +2461,275 @@ def _build_user_skill_runtime(username: str) -> Dict[str, Any]:
                 'update_date': str(item.get('update_date') or '').strip(),
                 'main_content': str(item.get('main_content') or '').strip()
             })
+
     return {
         'mode': 'per_skill',
         'skill_modes': normalized_modes,
         'enabled_skill_ids': sorted(list(enabled_ids)),
         'skills': skills_with_state,
         'active_skills': active_skills
+    }
+
+
+# ==================== 个人 Skill 存储 ====================
+
+def _user_skills_dir(username: str) -> str:
+    """获取用户个人 Skill 目录路径"""
+    return safe_join_path(_resolve_user_base_path(username), 'skills')
+
+
+def _user_skill_file_path(username: str, skill_id: str) -> str:
+    """获取用户个人 Skill 文件路径"""
+    sid = _skill_slug(skill_id, fallback='skill')
+    return os.path.join(_user_skills_dir(username), f'{sid}.skill')
+
+
+def _load_user_skills(username: str) -> List[Dict[str, Any]]:
+    """加载用户所有个人 Skill（自建 + 市场安装副本）"""
+    skills_dir = _user_skills_dir(username)
+    if not os.path.isdir(skills_dir):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    skill_files = sorted([
+        os.path.join(skills_dir, fn)
+        for fn in os.listdir(skills_dir)
+        if str(fn or '').lower().endswith('.skill')
+    ])
+
+    for path in skill_files:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+        except Exception:
+            continue
+
+        skill = _parse_skill_text(raw_text, source=path)
+        if not skill:
+            continue
+
+        sid = str(skill.get('id') or '').strip()
+        if (not sid) or (sid in seen_ids):
+            continue
+
+        seen_ids.add(sid)
+        normalized.append(skill)
+
+    return normalized
+
+
+def _write_user_skill_file(username: str, skill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """写入用户个人 Skill 文件"""
+    item = _normalize_skill_catalog_item(skill, index=0)
+    if not item:
+        return None
+
+    skills_dir = _user_skills_dir(username)
+    os.makedirs(skills_dir, exist_ok=True)
+    path = _user_skill_file_path(username, str(item.get('id') or ''))
+
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(_serialize_skill_text(item))
+
+    return item
+
+
+def _delete_user_skill_file(username: str, skill_id: str) -> bool:
+    """删除用户个人 Skill 文件"""
+    path = _user_skill_file_path(username, skill_id)
+    if not os.path.exists(path):
+        return False
+
+    try:
+        os.remove(path)
+        return True
+    except Exception:
+        return False
+
+
+# ==================== Skill 市场存储 ====================
+
+def _load_market_index() -> List[Dict[str, Any]]:
+    """加载市场索引"""
+    if not os.path.exists(SKILLS_MARKET_INDEX_PATH):
+        return []
+
+    try:
+        with open(SKILLS_MARKET_INDEX_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    skills = data.get('skills', []) if isinstance(data, dict) else []
+    if not isinstance(skills, list):
+        return []
+
+    return skills
+
+
+def _save_market_index(skills: List[Dict[str, Any]]) -> None:
+    """保存市场索引（原子写入）"""
+    os.makedirs(SKILLS_MARKET_DIR, exist_ok=True)
+    payload = {'skills': skills}
+    tmp_path = SKILLS_MARKET_INDEX_PATH + '.tmp'
+
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    os.replace(tmp_path, SKILLS_MARKET_INDEX_PATH)
+
+
+def _market_item_path(skill_id: str) -> str:
+    """获取市场 Skill 正文文件路径"""
+    sid = _skill_slug(skill_id, fallback='skill')
+    return os.path.join(SKILLS_MARKET_ITEMS_DIR, f'{sid}.skill')
+
+
+def _load_market_skill_content(skill_id: str) -> Optional[Dict[str, Any]]:
+    """读取市场 Skill 完整内容（含正文）"""
+    path = _market_item_path(skill_id)
+    if not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw_text = f.read()
+    except Exception:
+        return None
+
+    return _parse_skill_text(raw_text, source=path)
+
+
+def _write_market_skill(skill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """写入市场 Skill 正文文件并更新索引"""
+    item = _normalize_skill_catalog_item(skill, index=0)
+    if not item:
+        return None
+
+    os.makedirs(SKILLS_MARKET_ITEMS_DIR, exist_ok=True)
+    path = _market_item_path(str(item.get('id') or ''))
+
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(_serialize_skill_text(item))
+
+    # 更新索引
+    _upsert_market_index_entry(item)
+    return item
+
+
+def _delete_market_skill(skill_id: str) -> bool:
+    """从市场删除 Skill（正文 + 索引条目）"""
+    sid = _skill_slug(skill_id, fallback='skill')
+    path = _market_item_path(sid)
+
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+    # 从索引中移除
+    index = _load_market_index()
+    next_index = [s for s in index if str(s.get('id') or '').strip() != sid]
+    _save_market_index(next_index)
+    return True
+
+
+def _upsert_market_index_entry(skill: Dict[str, Any]) -> None:
+    """在市场索引中新增或更新一条记录"""
+    sid = str(skill.get('id') or '').strip()
+    index = _load_market_index()
+
+    # 查找已有条目以保留 install_count
+    existing_count = 0
+    next_index: List[Dict[str, Any]] = []
+    for entry in index:
+        if str(entry.get('id') or '').strip() == sid:
+            existing_count = int(entry.get('install_count', 0) or 0)
+        else:
+            next_index.append(entry)
+
+    # 构建索引条目（不含正文，保持索引轻量）
+    entry = {
+        'id': sid,
+        'title': str(skill.get('title') or '').strip(),
+        'description': str(skill.get('description') or '').strip(),
+        'author': str(skill.get('author') or '').strip(),
+        'version': str(skill.get('version') or '').strip(),
+        'required_tools': list(skill.get('required_tools', []) or []),
+        'mode': str(skill.get('mode') or 'auto').strip(),
+        'tags': list(skill.get('tags', []) or []),
+        'release_date': str(skill.get('release_date') or '').strip(),
+        'update_date': str(skill.get('update_date') or '').strip(),
+        'install_count': existing_count,
+        'source': 'user'
+    }
+    next_index.append(entry)
+    _save_market_index(next_index)
+
+
+def _increment_market_install_count(skill_id: str) -> None:
+    """市场 Skill 安装计数 +1"""
+    sid = str(skill_id or '').strip()
+    index = _load_market_index()
+
+    for entry in index:
+        if str(entry.get('id') or '').strip() == sid:
+            entry['install_count'] = int(entry.get('install_count', 0) or 0) + 1
+            break
+
+    _save_market_index(index)
+
+
+def _search_market_skills(query: str = '', tag: str = '', sort: str = 'installs',
+                          page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+    """市场 Skill 搜索/筛选/排序/分页"""
+    index = _load_market_index()
+
+    # 关键词过滤
+    q = str(query or '').strip().lower()
+    if q:
+        filtered = []
+        for item in index:
+            searchable = ' '.join([
+                str(item.get('title') or ''),
+                str(item.get('description') or ''),
+                str(item.get('author') or ''),
+                ' '.join(item.get('tags', []) or [])
+            ]).lower()
+            if q in searchable:
+                filtered.append(item)
+        index = filtered
+
+    # 标签过滤
+    tag_filter = str(tag or '').strip().lower()
+    if tag_filter:
+        index = [
+            item for item in index
+            if tag_filter in [t.lower() for t in (item.get('tags', []) or [])]
+        ]
+
+    # 排序
+    if sort == 'newest':
+        index.sort(key=lambda x: str(x.get('update_date') or ''), reverse=True)
+    elif sort == 'name':
+        index.sort(key=lambda x: str(x.get('title') or '').lower())
+    else:
+        # 默认按安装量降序
+        index.sort(key=lambda x: int(x.get('install_count', 0) or 0), reverse=True)
+
+    # 分页
+    total = len(index)
+    start = (max(1, page) - 1) * page_size
+    end = start + page_size
+    page_items = index[start:end]
+
+    return {
+        'total': total,
+        'page': max(1, page),
+        'page_size': page_size,
+        'skills': page_items
     }
 
 
@@ -6359,6 +6770,12 @@ def introduce_page():
     return render_template('public_site/landing.html')
 
 
+@app.route('/nl_introduce')
+def nl_introduce_page():
+    """NexoraLearning 公开介绍页"""
+    return render_template('public_site/nl_introduce.html')
+
+
 @app.route('/introduce_2')
 def legacy_introduce_page():
     """新版介绍页历史入口"""
@@ -8721,6 +9138,346 @@ def upsert_skill_catalog_item_api():
             next_catalog.append(incoming)
         _save_skill_catalog(next_catalog)
         return jsonify({'success': True, 'skill': incoming})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ==================== 个人 Skill API ====================
+
+@app.route('/api/skills/my', methods=['GET'])
+@require_login
+def get_my_skills_api():
+    """获取当前用户的 Skill 合并视图（全局 + 个人）"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        runtime = _build_user_skill_runtime(username)
+        personal_skills = _load_user_skills(username)
+        personal_ids = {str(s.get('id') or '').strip() for s in personal_skills}
+
+        # 为每个 skill 标注来源
+        skills = runtime.get('skills', [])
+        for item in skills:
+            sid = str(item.get('id') or '').strip()
+            if sid in personal_ids:
+                item['origin'] = item.get('origin') or 'self'
+            else:
+                item['origin'] = 'global'
+
+        return jsonify({
+            'success': True,
+            'skills': skills,
+            'personal_skills': personal_skills,
+            'skill_modes': runtime.get('skill_modes', {}),
+            'active_skills': runtime.get('active_skills', [])
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/my', methods=['POST'])
+@require_login
+def create_my_skill_api():
+    """创建个人 Skill"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    data = request.get_json(silent=True) or {}
+    skill_raw = data.get('skill')
+
+    # 兼容：直接传 skill 字段在根级
+    if skill_raw is None:
+        if any(k in data for k in ('title', 'id', 'main_content', 'required_tools', 'mode')):
+            skill_raw = data
+
+    if not isinstance(skill_raw, dict):
+        return jsonify({'success': False, 'message': 'skill 参数无效'}), 400
+
+    try:
+        now_date = datetime.now().strftime('%Y-%m-%d')
+        skill_raw.setdefault('author', username)
+        skill_raw.setdefault('release_date', now_date)
+        skill_raw['update_date'] = now_date
+        skill_raw['origin'] = 'self'
+
+        item = _normalize_skill_catalog_item(skill_raw, index=0)
+        if not item:
+            return jsonify({'success': False, 'message': 'title 不能为空'}), 400
+
+        # 检查个人空间内 ID 唯一性
+        existing = _load_user_skills(username)
+        existing_ids = {str(s.get('id') or '').strip() for s in existing}
+        sid = str(item.get('id') or '').strip()
+
+        if sid in existing_ids:
+            return jsonify({'success': False, 'message': f'Skill ID "{sid}" 已存在'}), 409
+
+        saved = _write_user_skill_file(username, item)
+        return jsonify({'success': True, 'skill': saved}), 201
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/my/<skill_id>', methods=['PUT'])
+@require_login
+def update_my_skill_api(skill_id: str):
+    """更新个人 Skill"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    data = request.get_json(silent=True) or {}
+    skill_raw = data.get('skill')
+
+    if skill_raw is None:
+        if any(k in data for k in ('title', 'main_content', 'required_tools', 'mode')):
+            skill_raw = data
+
+    if not isinstance(skill_raw, dict):
+        return jsonify({'success': False, 'message': 'skill 参数无效'}), 400
+
+    try:
+        # 确认该 Skill 存在于个人空间
+        existing = _load_user_skills(username)
+        target_sid = _skill_slug(skill_id, fallback='skill')
+        found = None
+        for s in existing:
+            if str(s.get('id') or '').strip() == target_sid:
+                found = s
+                break
+
+        if not found:
+            return jsonify({'success': False, 'message': '未找到该个人 Skill'}), 404
+
+        # 合并更新
+        skill_raw['id'] = target_sid
+        skill_raw['update_date'] = datetime.now().strftime('%Y-%m-%d')
+        merged = dict(found)
+        merged.update(skill_raw)
+
+        saved = _write_user_skill_file(username, merged)
+        return jsonify({'success': True, 'skill': saved})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/my/<skill_id>', methods=['DELETE'])
+@require_login
+def delete_my_skill_api(skill_id: str):
+    """删除个人 Skill"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        deleted = _delete_user_skill_file(username, skill_id)
+        if not deleted:
+            return jsonify({'success': False, 'message': '未找到该个人 Skill'}), 404
+
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ==================== Skill 市场 API ====================
+
+@app.route('/api/skills/market', methods=['GET'])
+@require_login
+def browse_skill_market_api():
+    """浏览 Skill 市场（支持搜索、标签筛选、排序、分页）"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        query = request.args.get('q', '').strip()
+        tag = request.args.get('tag', '').strip()
+        sort = request.args.get('sort', 'installs').strip()
+        page = int(request.args.get('page', 1) or 1)
+        page_size = min(int(request.args.get('page_size', 20) or 20), 50)
+
+        result = _search_market_skills(query=query, tag=tag, sort=sort,
+                                       page=page, page_size=page_size)
+
+        # 标注当前用户已安装的 Skill
+        personal_skills = _load_user_skills(username)
+        installed_ids = set()
+        for s in personal_skills:
+            if str(s.get('origin') or '') == 'market':
+                origin_id = str(s.get('origin_id') or s.get('id') or '').strip()
+                if origin_id:
+                    installed_ids.add(origin_id)
+
+        for item in result['skills']:
+            item['installed'] = str(item.get('id') or '').strip() in installed_ids
+
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/market/<skill_id>', methods=['GET'])
+@require_login
+def get_market_skill_detail_api(skill_id: str):
+    """查看市场 Skill 详情（含正文）"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        skill = _load_market_skill_content(skill_id)
+        if not skill:
+            return jsonify({'success': False, 'message': '未找到该 Skill'}), 404
+
+        # 标注是否已安装
+        personal_skills = _load_user_skills(username)
+        sid = str(skill.get('id') or '').strip()
+        installed = any(
+            str(s.get('origin_id') or s.get('id') or '').strip() == sid
+            and str(s.get('origin') or '') == 'market'
+            for s in personal_skills
+        )
+        skill['installed'] = installed
+
+        return jsonify({'success': True, 'skill': skill})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/market/publish', methods=['POST'])
+@require_login
+def publish_skill_to_market_api():
+    """发布/更新 Skill 到市场"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    data = request.get_json(silent=True) or {}
+    skill_raw = data.get('skill')
+
+    if skill_raw is None:
+        if any(k in data for k in ('title', 'id', 'main_content', 'required_tools', 'mode')):
+            skill_raw = data
+
+    if not isinstance(skill_raw, dict):
+        return jsonify({'success': False, 'message': 'skill 参数无效'}), 400
+
+    try:
+        now_date = datetime.now().strftime('%Y-%m-%d')
+        skill_raw['author'] = username
+        skill_raw['update_date'] = now_date
+
+        item = _normalize_skill_catalog_item(skill_raw, index=0)
+        if not item:
+            return jsonify({'success': False, 'message': 'title 不能为空'}), 400
+
+        sid = str(item.get('id') or '').strip()
+
+        # 检查 ID 是否被他人占用
+        index = _load_market_index()
+        for entry in index:
+            entry_id = str(entry.get('id') or '').strip()
+            entry_author = str(entry.get('author') or '').strip()
+            if entry_id == sid and entry_author != username:
+                return jsonify({
+                    'success': False,
+                    'message': f'Skill ID "{sid}" 已被其他用户使用'
+                }), 409
+
+        # 判断是新建还是更新
+        is_update = any(
+            str(e.get('id') or '').strip() == sid and str(e.get('author') or '').strip() == username
+            for e in index
+        )
+
+        if not is_update:
+            skill_raw.setdefault('release_date', now_date)
+            item = _normalize_skill_catalog_item(skill_raw, index=0)
+
+        saved = _write_market_skill(item)
+        action = 'updated' if is_update else 'created'
+        return jsonify({'success': True, 'action': action, 'skill': saved})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/market/<skill_id>', methods=['DELETE'])
+@require_login
+def delete_market_skill_api(skill_id: str):
+    """从市场下架 Skill（仅作者或管理员）"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        # 查找该 Skill 的作者
+        index = _load_market_index()
+        sid = _skill_slug(skill_id, fallback='skill')
+        target_entry = None
+        for entry in index:
+            if str(entry.get('id') or '').strip() == sid:
+                target_entry = entry
+                break
+
+        if not target_entry:
+            return jsonify({'success': False, 'message': '未找到该 Skill'}), 404
+
+        # 权限校验：仅作者或管理员可删除
+        author = str(target_entry.get('author') or '').strip()
+        users = load_users()
+        user_info = users.get(username, {})
+        role = str(user_info.get('role') or 'member').strip().lower()
+
+        if author != username and role != 'admin':
+            return jsonify({'success': False, 'message': '无权删除他人的 Skill'}), 403
+
+        _delete_market_skill(sid)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/market/<skill_id>/install', methods=['POST'])
+@require_login
+def install_market_skill_api(skill_id: str):
+    """从市场安装 Skill 到个人空间（复制副本）"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    try:
+        # 读取市场 Skill 完整内容
+        market_skill = _load_market_skill_content(skill_id)
+        if not market_skill:
+            return jsonify({'success': False, 'message': '市场中未找到该 Skill'}), 404
+
+        sid = str(market_skill.get('id') or '').strip()
+
+        # 检查是否已安装
+        personal_skills = _load_user_skills(username)
+        for s in personal_skills:
+            origin_id = str(s.get('origin_id') or '').strip()
+            s_origin = str(s.get('origin') or '').strip()
+            if s_origin == 'market' and origin_id == sid:
+                return jsonify({'success': False, 'message': '已安装该 Skill'}), 409
+
+        # 复制为个人副本，记录来源
+        now_date = datetime.now().strftime('%Y-%m-%d')
+        personal_copy = dict(market_skill)
+        personal_copy['origin'] = 'market'
+        personal_copy['origin_id'] = sid
+        personal_copy['origin_version'] = str(market_skill.get('version') or '').strip()
+        personal_copy['installed_date'] = now_date
+
+        saved = _write_user_skill_file(username, personal_copy)
+
+        # 安装计数 +1
+        _increment_market_install_count(sid)
+
+        return jsonify({'success': True, 'skill': saved})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -11179,11 +11936,15 @@ def admin_update_public_api_auth_settings():
             permissions = _normalize_public_api_permissions(data.get('permissions')) if ('permissions' in data) else None
             expire = str(data.get('expire') or '').strip().lower() if ('expire' in data) else None
             key_name = str(data.get('name') or '').strip() if ('name' in data) else None
+            key_scope = str(data.get('scope') or '').strip().lower() if ('scope' in data) else None
+            key_owner = str(data.get('owner') or '').strip() if ('owner' in data) else None
             _update_public_api_key(
                 key_id=key_id,
                 permissions=permissions,
                 expire_option=expire if expire is not None else None,
                 name=key_name,
+                scope=key_scope,
+                owner=key_owner,
                 actor=actor,
             )
         save_main_config(cfg)
@@ -11204,9 +11965,23 @@ def admin_generate_public_api_key():
         return jsonify({'success': False, 'message': 'expire is required. Use one of: 1d, 7d, 1m, 3m, forever.'}), 400
     permissions = _normalize_public_api_permissions(data.get('permissions'))
     key_name = str(data.get('name') or '').strip()
+    key_scope = str(data.get('scope') or '').strip().lower()
+    key_owner = str(data.get('owner') or '').strip()
+    if not key_scope:
+        return jsonify({'success': False, 'message': "scope is required. Use 'owner' or 'global'."}), 400
     try:
         actor = str(session.get('username') or 'admin').strip() or 'admin'
-        state = _issue_public_api_key(expire, permissions, regenerate=False, name=key_name, actor=actor)
+        if key_owner and key_owner not in (load_users() or {}):
+            return jsonify({'success': False, 'message': f'PAPI key owner user not found: {key_owner}'}), 400
+        state = _issue_public_api_key(
+            expire,
+            permissions,
+            regenerate=False,
+            name=key_name,
+            scope=key_scope,
+            owner=key_owner,
+            actor=actor,
+        )
         return jsonify({
             'success': True,
             'message': 'Public API key generated.',
@@ -12913,24 +13688,6 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
     def _workspace_store():
         return find_store_for_visible_workspace(username, workspace_id)
 
-    def _make_patch_handler():
-        def _handler(args: dict) -> str:
-            try:
-                safe_args = args if isinstance(args, dict) else {}
-                payload = _workspace_store().patch_workspace_memory(
-                    workspace_id,
-                    username,
-                    patch=safe_args.get("patch"),
-                    edits=safe_args.get("edits") if isinstance(safe_args.get("edits"), list) else None,
-                    expected_sha256=safe_args.get("expected_sha256"),
-                    dry_run=_as_bool(safe_args.get("dry_run", False), False),
-                )
-                return _tool_result(payload)
-            except Exception as error:
-                return _tool_result({"success": False, "message": str(error)})
-
-        return _handler
-
     def _make_apply_diff_handler():
         def _handler(args: dict) -> str:
             try:
@@ -13002,7 +13759,6 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
     for tool in _workspace_memory_tool_definitions(model):
         model.register_external_function_tool(tool)
 
-    model.tool_executor.handlers["workspace_mem_patch"] = _make_patch_handler()
     model.tool_executor.handlers["workspace_mem_apply_diff"] = _make_apply_diff_handler()
     model.tool_executor.handlers["workspace_mem_edit"] = _make_edit_handler()
     model.tool_executor.handlers["workspace_mem_add"] = _make_add_handler()
@@ -17131,7 +17887,9 @@ def agent_tunnel_socket(ws):
 
 
 from api.papi.routes import papi_bp
+from api.papi.user_keys import user_papi_keys_bp
 app.register_blueprint(papi_bp)
+app.register_blueprint(user_papi_keys_bp)
 from api.files import files_bp
 app.register_blueprint(files_bp)
 from api.workspace.routes import workspace_bp

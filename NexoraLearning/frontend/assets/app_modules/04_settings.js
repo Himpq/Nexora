@@ -57,10 +57,6 @@
     return true;
   }
 
-  function canStartQuestion(item) {
-    return false;
-  }
-
   function canStartSection(item) {
     const intensive = normalizeStatusKey(item && item.intensive_status);
     const section = normalizeStatusKey(item && item.section_status);
@@ -92,7 +88,7 @@
     const video = normalizeStatusKey(item && item.video_status);
     const videoJob = normalizeStatusKey(item && item.video_job_status);
     // 概述完成，或概述跳过（已有其他步骤完成），都可以搜视频
-    const anyStepDone = ["coarse", "section", "intensive", "question", "annotation", "summary"].some(
+    const anyStepDone = ["coarse", "section", "intensive", "annotation", "summary"].some(
       (k) => ["done", "completed", "success"].includes(normalizeStatusKey(item && item[`${k}_status`]))
     );
     if (!anyStepDone) return false;
@@ -136,11 +132,10 @@
   // Agent 定义：按实际管线顺序排列
   const AGENT_PIPELINE = [
     { key: "coarse",     label: "概读", desc: "分析教材结构" },
-    { key: "section",    label: "分节", desc: "拆分章节单元" },
     { key: "intensive",  label: "精读", desc: "深度分析内容" },
-    { key: "question",   label: "出题", desc: "生成练习题目" },
-    { key: "annotation", label: "批注", desc: "生成学习批注" },
+    { key: "section",    label: "分节", desc: "拆分章节单元" },
     { key: "summary",    label: "概述", desc: "生成全书概述" },
+    { key: "annotation", label: "批注", desc: "生成学习批注" },
     { key: "video",      label: "视频", desc: "搜索相关视频" },
   ];
 
@@ -158,7 +153,6 @@
     if (agentKey === "coarse") return canStartRefinement(item);
     if (agentKey === "section") return canStartSection(item);
     if (agentKey === "intensive") return canStartIntensive(item);
-    if (agentKey === "question") return canStartQuestion(item);
     if (agentKey === "annotation") return canStartAnnotation(item);
     if (agentKey === "summary") return canStartSummary(item);
     if (agentKey === "video") return canStartVideo(item);
@@ -190,87 +184,48 @@
     return { steps, doneCount, activeIndex, percent, hasError };
   }
 
-  function getRefinementActionMeta(item) {
-    const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
-    const summaryDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.summary_status));
-    const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
-    const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
-    const annotationDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.annotation_status));
-    if (!coarseDone) {
-      return {
-        action: "start-refinement",
-        title: "开始粗读",
-        text: "▶",
-        enabled: canStartRefinement(item),
-      };
-    }
-
-    if (!intensiveDone) {
-      return {
-        action: "start-intensive",
-        title: "开始精读",
-        text: "◎",
-        enabled: canStartIntensive(item),
-      };
-    }
-
-    if (!sectionDone) {
-      return {
-        action: "start-section",
-        title: "开始分节",
-        text: "§",
-        enabled: canStartSection(item),
-      };
-    }
-    if (!summaryDone) {
-      return {
-        action: "start-summary",
-        title: "生成全书概述",
-        text: "◆",
-        enabled: canStartSummary(item),
-      };
-    }
-    if (!annotationDone) {
-      return {
-        action: "start-annotation",
-        title: "开始批注",
-        text: "✎",
-        enabled: canStartAnnotation(item),
-      };
-    }
-
-    const videoDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.video_status));
-    if (!videoDone) {
-      return {
-        action: "start-video",
-        title: "搜索视频",
-        text: "📺",
-        enabled: canStartVideo(item),
-      };
-    }
-
-    return {
-      action: "",
-      title: "全部完成",
-      text: "✓",
-      enabled: false,
-    };
-  }
-
 // ─────── Settings: Rendering ──────────────────────────────────────────
   function renderSettingsNav() {
-    const tabs = [
-      { id: "refinement", title: "教材管理" },
-      { id: "courses", title: "课程管理" },
-      { id: "model", title: "模型配置" },
-      { id: "channels", title: "频道与推送" },
-      { id: "users", title: "用户管理" },
-      { id: "logs", title: "系统日志" },
-      { id: "agents", title: "执行面板" },
+    const groups = [
+      {
+        title: "内容生产",
+        tabs: [
+          { id: "courses", title: "课程管理", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4v15.5M20 22V6a2 2 0 0 0-2-2H6.5A2.5 2.5 0 0 0 4 6.5"/></svg>' },
+          { id: "refinement", title: "教材管理", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v16H5z"/><path d="M9 4v16M12 8h4M12 12h4"/></svg>' },
+          { id: "channels", title: "频道与推送", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 13 15-8-5 15-3-6z"/><path d="m11 14 8-9"/></svg>' },
+        ],
+      },
+      {
+        title: "平台管理",
+        tabs: [
+          { id: "users", title: "用户管理", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 5a3 3 0 0 1 0 6M17 14a5 5 0 0 1 4 5"/></svg>' },
+          { id: "model", title: "模型配置", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>' },
+          { id: "logs", title: "系统日志", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>' },
+          { id: "agents", title: "执行面板", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="6" height="6"/><rect x="15" y="4" width="6" height="6"/><rect x="9" y="14" width="6" height="6"/><path d="M9 7h6M18 10v2a2 2 0 0 1-2 2h-4M6 10v2a2 2 0 0 0 2 2h4"/></svg>' },
+        ],
+      },
     ];
-    el.settingsNavList.innerHTML = `<div class="settings-tab-bar">
-      ${tabs.map((tab) => `<button class="settings-tab ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">${escapeHtml(tab.title)}</button>`).join("")}
-    </div>`;
+    const tabs = groups.flatMap((group) => group.tabs);
+    const activeTab = tabs.find((tab) => tab.id === state.settingsTab) || tabs[0];
+    const currentTitle = document.getElementById("settingsCurrentSection");
+
+    if (currentTitle) {
+      currentTitle.textContent = activeTab.title;
+    }
+
+    el.settingsNavList.innerHTML = `<nav class="settings-tab-bar" aria-label="管理控制台导航">
+      ${groups.map((group) => `
+        <section class="settings-nav-group">
+          <div class="settings-nav-group-title">${escapeHtml(group.title)}</div>
+          ${group.tabs.map((tab) => `
+            <button class="settings-tab ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">
+              <span class="settings-tab-icon">${tab.icon}</span>
+              <span>${escapeHtml(tab.title)}</span>
+            </button>
+          `).join("")}
+        </section>
+      `).join("")}
+    </nav>`;
   }
 
   function getSettingsUserRoleLabel(role) {
@@ -542,19 +497,19 @@
     ].map((f) => `<button class="settings-filter-btn ${state.settingsLogCategory === f.key ? "is-active" : ""}" data-filter="${f.key}" type="button">${f.label}</button>`).join("");
 
     el.settingsDetailPane.innerHTML = `
-      <section class="settings-detail-scroll">
-        <article class="settings-card">
-          <div class="settings-sub">按时间分组展示最近的模型执行记录，点击展开查看详情。</div>
-          <div class="settings-search-bar">
-            <input class="settings-search-input" id="settingsLogSearchInput" type="text" placeholder="搜索日志标题或内容..." value="${escapeHtml(state.settingsLogSearch || "")}" />
-            <button class="nxl-icon-btn" id="settingsLogRefreshBtn" type="button" title="刷新日志">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-            </button>
-          </div>
-          <div class="settings-filter-group">
+      <section class="settings-detail-scroll admin-log-page">
+        <header class="admin-log-toolbar">
+          <div class="settings-filter-group admin-log-filters">
             ${filterBtns}
           </div>
-        </article>
+          <label class="admin-log-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="settingsLogSearchInput" type="search" placeholder="搜索日志" value="${escapeHtml(state.settingsLogSearch || "")}" />
+          </label>
+          <button class="admin-icon-button" id="settingsLogRefreshBtn" type="button" title="刷新日志" aria-label="刷新日志">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          </button>
+        </header>
         <div id="settingsLogGroupsContainer">
           ${groupsHtml}
         </div>
@@ -893,43 +848,52 @@
     const lectureTitle = String((item && item.lecture_title) || "").trim();
     const sourceType = String((book && book.source_type) || (item && item.source_type) || "").trim();
     const statusText = String((book && (book.text_status || book.status)) || (item && item.status) || "未解析").trim();
+    const bookKey = getSettingsRefinementBookKey(lectureId, bookId);
+    const isExpanded = Boolean(
+      state.settingsRefinementInfoExpanded && state.settingsRefinementInfoBookKey === bookKey
+    );
 
     return `
       <section class="settings-refinement-book-panel" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}">
-        <div class="settings-inline-head settings-refinement-book-head">
-          <div>
-            <div class="settings-inline-title">教材资料</div>
-            <div class="settings-inline-sub">${escapeHtml(lectureTitle || "未绑定课程")} · ${escapeHtml(sourceType || "教材")} · ${escapeHtml(statusText)}</div>
+        <div class="settings-refinement-book-summary">
+          <div class="settings-refinement-book-summary-cover">
+            ${renderSettingsRefinementCoverPreview(coverPath, title)}
           </div>
-          <button class="settings-course-action-btn" type="button" data-action="save-refinement-book-info" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" aria-label="保存教材资料" title="保存教材资料">
-            ${SETTINGS_REFINEMENT_ICONS.save}
+          <div class="settings-refinement-book-summary-copy">
+            <div class="settings-inline-title">${escapeHtml(title)}</div>
+            <div class="settings-inline-sub">${escapeHtml(lectureTitle || "未绑定课程")} · ${escapeHtml(sourceType || "教材")} · ${escapeHtml(statusText)}</div>
+            <div class="settings-refinement-book-id">ID：${escapeHtml(bookId || "未生成")}</div>
+          </div>
+          <button class="admin-button" type="button" data-action="toggle-refinement-book-info" data-book-key="${escapeHtml(bookKey)}">
+            <span>${isExpanded ? "收起资料" : "编辑资料"}</span>
           </button>
         </div>
-        <div class="settings-refinement-book-body">
-          <div class="settings-refinement-book-cover-area">
-            <div class="settings-refinement-book-cover-preview" id="settingsRefinementBookCoverPreview">
-              ${renderSettingsRefinementCoverPreview(coverPath, title)}
+        ${isExpanded ? `
+          <div class="settings-refinement-book-body">
+            <div class="settings-refinement-book-cover-area">
+              <button class="settings-refinement-book-cover-preview" id="settingsRefinementBookCoverPreview" type="button" data-action="open-refinement-book-cover-picker" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" aria-label="更换教材封面" title="更换教材封面">
+                ${renderSettingsRefinementCoverPreview(coverPath, title)}
+                <span class="settings-refinement-cover-change">更换封面</span>
+              </button>
+              <input type="hidden" id="settingsRefinementBookCoverInput" value="${escapeHtml(coverPath)}">
             </div>
-            <input type="hidden" id="settingsRefinementBookCoverInput" value="${escapeHtml(coverPath)}">
-            <div class="settings-refinement-cover-actions">
-              <button class="settings-course-action-btn settings-refinement-cover-btn" type="button" data-action="open-refinement-book-cover-picker" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" aria-label="选择教材封面" title="选择教材封面">
-                ${SETTINGS_REFINEMENT_ICONS.cover}
-              </button>
-              <button class="settings-course-action-btn settings-refinement-cover-btn" type="button" data-action="clear-refinement-book-cover" aria-label="清除教材封面" title="清除教材封面" ${coverPath ? "" : "disabled"}>
-                ${SETTINGS_REFINEMENT_ICONS.trash}
-              </button>
+            <div class="settings-refinement-book-fields">
+              <label class="settings-field">
+                <span>教材名称</span>
+                <input id="settingsRefinementBookTitleInput" class="input-lite" value="${escapeHtml(title)}" placeholder="教材名称">
+              </label>
+              <label class="settings-field">
+                <span>教材简介</span>
+                <textarea id="settingsRefinementBookDescInput" class="input-lite input-textarea" rows="3" placeholder="教材简介">${escapeHtml(description)}</textarea>
+              </label>
+              <div class="settings-refinement-book-foot">
+                <button class="admin-button" type="button" data-action="save-refinement-book-info" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}">
+                  ${SETTINGS_REFINEMENT_ICONS.save}<span>保存</span>
+                </button>
+              </div>
             </div>
           </div>
-          <label class="settings-field">
-            <span>教材名称</span>
-            <input id="settingsRefinementBookTitleInput" class="input-lite" value="${escapeHtml(title)}" placeholder="教材名称">
-          </label>
-          <label class="settings-field">
-            <span>教材简介</span>
-            <textarea id="settingsRefinementBookDescInput" class="input-lite input-textarea" rows="5" placeholder="教材简介">${escapeHtml(description)}</textarea>
-          </label>
-          <div class="settings-refinement-book-id">ID：${escapeHtml(bookId || "未生成")}</div>
-        </div>
+        ` : ""}
       </section>
     `;
   }
@@ -978,7 +942,6 @@
     const coverInput = document.getElementById("settingsRefinementBookCoverInput");
     const coverPreview = document.getElementById("settingsRefinementBookCoverPreview");
     const titleInput = document.getElementById("settingsRefinementBookTitleInput");
-    const clearBtn = document.querySelector("[data-action='clear-refinement-book-cover']");
     const title = titleInput instanceof HTMLInputElement ? String(titleInput.value || "").trim() : "教材封面";
 
     if (coverInput instanceof HTMLInputElement) {
@@ -986,12 +949,9 @@
     }
 
     if (coverPreview) {
-      coverPreview.innerHTML = renderSettingsRefinementCoverPreview(resolvedPath, title);
+      coverPreview.innerHTML = `${renderSettingsRefinementCoverPreview(resolvedPath, title)}<span class="settings-refinement-cover-change">更换封面</span>`;
     }
 
-    if (clearBtn instanceof HTMLButtonElement) {
-      clearBtn.disabled = !resolvedPath;
-    }
   }
 
   async function openRefinementBookCoverPicker(lectureId, bookId) {
@@ -1142,7 +1102,6 @@
             <div class="agent-book-title">${escapeHtml(title)}</div>
             <div class="agent-book-meta">${escapeHtml(lecture)} · ${flow.doneCount}/${flow.steps.length}</div>
           </div>
-          ${isSelected ? `<button class="agent-book-reset" data-action="stop-refinement" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" type="button" title="重置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>` : ""}
         </div>`;
     }).join("");
 
@@ -1156,6 +1115,8 @@
 
         state.selectedAgentBookKey = String(el.getAttribute("data-book-key") || "");
         state.settingsRefinementView = "detail";
+        state.settingsRefinementInfoExpanded = false;
+        state.settingsRefinementInfoBookKey = state.selectedAgentBookKey;
         renderSettingsRefinement();
       });
     });
@@ -1215,92 +1176,107 @@
       warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>',
       tool: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
     };
-
-    const AGENT_SVG = {
-      coarse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
-      section: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v18M18 3v18M3 6h18M3 12h18M3 18h18"/></svg>',
-      intensive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
-      question: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 0 1 5.12 2.13c0 2-3 2-3 4.87M12 17h.01"/></svg>',
-      annotation: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
-      summary: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>',
-      outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
-      video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
-    };
+    const pipelineControl = getMaterialPipelineControlState(item, flow);
 
     // 增量更新：已有结构则只更新状态和日志，否则全量渲染
     const existingNodes = container.querySelectorAll(".flow-node[data-agent-key]");
     if (existingNodes.length === flow.steps.length) {
-      _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, AGENT_SVG, lectureId, bookId);
+      _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, lectureId, bookId);
       return;
     }
 
-    // 全量渲染
+    // 全量渲染：教材处理流程只在教材管理中展示，并保持明确的单向顺序。
     container.setAttribute("data-flow-book-key", getSettingsRefinementBookKey(lectureId, bookId));
-    let html = `<div class="flow-title">${escapeHtml(bookTitle)}</div>`;
-    html += '<div class="flow-nodes">';
+    let html = `<section class="material-flow-shell">
+      <header class="material-flow-head">
+        <div>
+          <div class="material-flow-title">教材处理进度</div>
+          <div class="material-flow-subtitle material-flow-book-title">${escapeHtml(bookTitle)}</div>
+        </div>
+        <div class="material-flow-head-actions">
+          <span class="admin-status ${pipelineControl.statusClass}">${escapeHtml(pipelineControl.statusLabel)}</span>
+          <button class="material-flow-pipeline-action" data-action="start-material-pipeline" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" data-force="${pipelineControl.force ? "true" : "false"}" type="button" aria-label="${escapeHtml(pipelineControl.buttonLabel)}" title="${escapeHtml(pipelineControl.buttonLabel)}" ${pipelineControl.disabled ? "disabled" : ""}>${SVG_ICONS.play}<span>${escapeHtml(pipelineControl.buttonLabel)}</span></button>
+        </div>
+      </header>
+      <div class="material-flow-steps">`;
     for (let i = 0; i < flow.steps.length; i++) {
       const step = flow.steps[i];
       const isLast = i === flow.steps.length - 1;
       const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : step.pending ? "pending" : "idle";
-      const icon = AGENT_SVG[step.key] || AGENT_SVG.coarse;
-      const { action, enabled } = _getAgentAction(item, step.key);
-      const btnHtml = (enabled && !step.pending)
-        ? `<button class="flow-node-btn" data-action="${action}" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" type="button" title="执行">${SVG_ICONS.play}</button>`
-        : "";
-      html += `<div class="flow-node is-${status}" data-agent-key="${step.key}">
-          <div class="flow-node-icon">${icon}</div>
-          <div class="flow-node-label">${escapeHtml(step.label)}</div>
-          ${btnHtml}${!isLast ? '<div class="flow-connector"></div>' : ""}
+      const statusLabel = step.running ? "执行中" : step.error ? "执行失败" : step.done ? "已完成" : step.pending ? "等待前序" : "未开始";
+      html += `<div class="flow-node material-flow-step is-${status}" data-agent-key="${step.key}">
+          <div class="material-flow-rail">
+            <div class="material-flow-marker">${String(i + 1).padStart(2, "0")}</div>
+            ${!isLast ? '<div class="material-flow-line"></div>' : ""}
+          </div>
+          <div class="material-flow-content">
+            <div class="material-flow-label-row">
+              <span class="flow-node-label material-flow-label">${escapeHtml(step.label)}</span>
+              <span class="admin-status is-${status}">${escapeHtml(statusLabel)}</span>
+            </div>
+            <div class="material-flow-description">${escapeHtml(step.desc)}</div>
+          </div>
         </div>`;
     }
-    html += '</div>';
-    html += '<div class="flow-log"><div class="flow-log-title">模型活动</div><div class="flow-log-body" id="flowLogBody"></div></div>';
+    html += `</div>
+      <div class="flow-log"><div class="flow-log-title">模型活动</div><div class="flow-log-body" id="flowLogBody"></div></div>
+    </section>`;
     container.innerHTML = html;
     _appendLogLines(container, item, flow, progressSteps, SVG_ICONS);
   }
 
-  function _getAgentAction(item, key) {
-    if (key === "coarse") return { action: "start-refinement", enabled: canStartRefinement(item) };
-    if (key === "video") return { action: "start-video", enabled: canStartVideo(item) };
-    if (key === "intensive") return { action: "start-intensive", enabled: canStartIntensive(item) };
-    if (key === "section") return { action: "start-section", enabled: canStartSection(item) };
-    if (key === "question") return { action: "start-question", enabled: canStartQuestion(item) };
-    if (key === "annotation") return { action: "start-annotation", enabled: canStartAnnotation(item) };
-    if (key === "summary") return { action: "start-summary", enabled: canStartSummary(item) };
-    return { action: "", enabled: false };
+  function getMaterialPipelineControlState(item, flow) {
+    const pipelineStatus = normalizeStatusKey(item && (item.pipeline_status || item.pipeline_job_status));
+    const running = ["queued", "running"].includes(pipelineStatus) || flow.activeIndex >= 0;
+    const complete = flow.steps.length > 0 && flow.doneCount === flow.steps.length;
+    const hasError = flow.hasError || pipelineStatus === "error";
+
+    return {
+      statusClass: hasError ? "is-error" : running ? "is-running" : complete ? "is-done" : "",
+      statusLabel: hasError ? "存在失败" : running ? "执行中" : `${flow.doneCount}/${flow.steps.length} 完成`,
+      buttonLabel: running ? "执行中" : complete || hasError ? "重新执行" : "执行教材处理",
+      disabled: running,
+      force: complete,
+    };
   }
 
-  function _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, AGENT_SVG, lectureId, bookId) {
+  function _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, lectureId, bookId) {
     container.setAttribute("data-flow-book-key", getSettingsRefinementBookKey(lectureId, bookId));
 
-    const titleNode = container.querySelector(".flow-title");
+    const titleNode = container.querySelector(".material-flow-book-title");
     if (titleNode) {
       titleNode.textContent = getSettingsRefinementBookTitle(item);
     }
 
-    // 只更新节点状态 class 和按钮
+    const flowStatusNode = container.querySelector(".material-flow-head-actions > .admin-status");
+    if (flowStatusNode) {
+      const pipelineControl = getMaterialPipelineControlState(item, flow);
+      flowStatusNode.className = `admin-status ${pipelineControl.statusClass}`.trim();
+      flowStatusNode.textContent = pipelineControl.statusLabel;
+    }
+
+    const pipelineButton = container.querySelector(".material-flow-pipeline-action");
+    if (pipelineButton) {
+      const pipelineControl = getMaterialPipelineControlState(item, flow);
+      pipelineButton.innerHTML = `${SVG_ICONS.play}<span>${escapeHtml(pipelineControl.buttonLabel)}</span>`;
+      pipelineButton.disabled = pipelineControl.disabled;
+      pipelineButton.setAttribute("data-force", pipelineControl.force ? "true" : "false");
+      pipelineButton.setAttribute("aria-label", pipelineControl.buttonLabel);
+      pipelineButton.setAttribute("title", pipelineControl.buttonLabel);
+    }
+
+    container.querySelectorAll(".flow-node-btn").forEach((button) => button.remove());
+
+    // 只更新节点状态，操作统一收敛到流程标题栏。
     for (const step of flow.steps) {
       const node = container.querySelector(`.flow-node[data-agent-key="${step.key}"]`);
       if (!node) continue;
       const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : step.pending ? "pending" : "idle";
-      node.className = `flow-node is-${status}`;
-      // 更新按钮
-      const { action, enabled } = _getAgentAction(item, step.key);
-      let btn = node.querySelector(".flow-node-btn");
-      if (enabled && !step.pending) {
-        if (!btn) {
-          btn = document.createElement("button");
-          btn.className = "flow-node-btn";
-          btn.type = "button";
-          btn.title = "执行";
-          btn.innerHTML = SVG_ICONS.play;
-          node.appendChild(btn);
-        }
-        btn.setAttribute("data-action", action);
-        btn.setAttribute("data-lecture-id", lectureId);
-        btn.setAttribute("data-book-id", bookId);
-      } else if (btn) {
-        btn.remove();
+      node.className = `flow-node material-flow-step is-${status}`;
+      const statusNode = node.querySelector(".admin-status");
+      if (statusNode) {
+        statusNode.className = `admin-status is-${status}`;
+        statusNode.textContent = step.running ? "执行中" : step.error ? "执行失败" : step.done ? "已完成" : step.pending ? "等待前序" : "未开始";
       }
     }
     // 更新活动日志
@@ -1616,7 +1592,7 @@
     }
     if (state.settingsTab === "courses") {
       state.refinementViewBootstrapped = false;
-      renderSettingsCourses();
+      renderAdminCourseManagement();
       return;
     }
     if (state.settingsTab === "logs") {
@@ -1653,7 +1629,7 @@
     if (state.settingsPollTimer) return;
     state.settingsPollTimer = setInterval(() => {
       if (!el.settingsView.classList.contains("is-active")) return;
-      if (state.settingsTab !== "refinement") return;
+      if (state.settingsTab !== "refinement" && state.settingsTab !== "courses") return;
       loadRefinementSettings().catch(() => {});
     }, 3000);
   }

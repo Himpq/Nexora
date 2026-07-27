@@ -71,23 +71,51 @@ def _videos_path(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> Path:
     return data_dir / "lectures" / lecture_id / "books" / book_id / "videos.json"
 
 
-def load_cached_videos(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
-    """Load cached videos from disk. Returns empty list if no cache."""
+def _load_video_cache(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+) -> Optional[Dict[str, Any]]:
+    """读取并校验视频搜索缓存；文件存在且结构有效才视为已执行。"""
     path = _videos_path(cfg, lecture_id, book_id)
+
     if not path.exists():
-        return []
+        return None
+
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("items"), list):
-            return list(data["items"])
     except Exception as exc:
         log_event(
             "video_cache_read_error",
             "视频缓存读取失败",
             payload={"path": str(path), "error": str(exc)},
         )
+        return None
 
-    return []
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        log_event(
+            "video_cache_schema_error",
+            "视频缓存结构无效",
+            payload={"path": str(path)},
+        )
+        return None
+
+    return data
+
+
+def has_video_search_cache(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> bool:
+    """判断教材是否已经产生有效的视频搜索缓存，包括零结果缓存。"""
+    return _load_video_cache(cfg, lecture_id, book_id) is not None
+
+
+def load_cached_videos(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    """Load cached videos from disk. Returns empty list if no cache."""
+    data = _load_video_cache(cfg, lecture_id, book_id)
+
+    if data is None:
+        return []
+
+    return list(data["items"])
 
 
 def _strip_html(value: Any) -> str:
@@ -792,8 +820,10 @@ def search_and_cache_videos(
 ) -> List[Dict[str, Any]]:
     """完整视频搜索流程：模型生成关键词 → 搜索 → 模型筛选 → 缓存。"""
     # 检查缓存
-    cached = load_cached_videos(cfg, lecture_id, book_id)
-    if cached:
+    cache = _load_video_cache(cfg, lecture_id, book_id)
+
+    if cache is not None:
+        cached = list(cache["items"])
         log_event("video_search_skip", "视频搜索跳过：已有缓存", payload={"lecture_id": lecture_id, "count": len(cached)})
         return cached
 

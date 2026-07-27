@@ -599,7 +599,8 @@
     function addTiandituMarker(T, map, markerConfig) {
         const point = toTiandituPoint(T, markerConfig.point);
         const marker = new T.Marker(point);
-        const label = new T.Label({
+        const labelCls = T.Label || T.DOMLabel;
+        const label = new labelCls({
             text: `<span class="nexora-map-label">${escapeHtml(markerConfig.label)}</span>`,
             position: point,
             offset: new T.Point(14, -14)
