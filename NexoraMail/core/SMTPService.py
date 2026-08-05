@@ -20,10 +20,11 @@ except Exception:
     import SocketUtils
 import tempfile
 try:
-    from . import Configure, AuthTracker, MailEventQueue
+    from . import Configure, AuthTracker, IPSendLimiter, MailEventQueue
 except Exception:
     import Configure
     import AuthTracker
+    import IPSendLimiter
     import MailEventQueue
 import html
 import importlib
@@ -95,6 +96,9 @@ def initModule(log, cfg):
         AuthTracker.init(loginfo)
     except Exception:
         pass
+
+    smtp_settings = conf.get('SMTPServices', {}).get('settings', {})
+    IPSendLimiter.init(loginfo, smtp_settings.get('ip_send_limit', {}))
 
 
 def _safe_close(obj: Any) -> None:
@@ -177,6 +181,7 @@ class SessionState:
         self.rcpt_list.clear()
         self.attributes.pop('mail_relay', None)
         self.attributes.pop('data_buffer', None)
+        self.attributes.pop('ip_send_limit_reserved', None)
         self.close_stream()
         if self.data_file:
             _safe_unlink(self.data_file)
@@ -513,12 +518,38 @@ def handle_rcpt_to(conn, cmds, state: SessionState, userGroup) -> None:
     _send_response(conn, "250 Recipient ok")
 
 
-def handle_data(conn, state: SessionState) -> None:
+def handle_data(conn, state: SessionState, userGroup) -> None:
     if not state.mail_from or not state.rcpt_list:
         raise ErrorService.SMTPInvalidCommand(
             "503",
             "Bad sequence of commands",
             log_message="DATA error: Bad sequence")
+
+    limit_decision = IPSendLimiter.reserve(state.peer)
+
+    if not limit_decision.allowed:
+        state.log(
+            "DATA rejected by IP send limit: "
+            f"count={limit_decision.message_count}/{limit_decision.max_messages}, "
+            f"retry_after={limit_decision.retry_after_seconds}s"
+        )
+        raise ErrorService.SMTPTransientError(
+            "451",
+            f"4.7.1 IP message limit reached; retry after {limit_decision.retry_after_seconds} seconds",
+            log_message=f"IP send limit active for {state.peer}",
+            count_error=False,
+        )
+
+    if limit_decision.enabled:
+        state.attributes['ip_send_limit_reserved'] = True
+        state.log(
+            "IP send slot reserved: "
+            f"count={limit_decision.message_count}/{limit_decision.max_messages}"
+        )
+
+        if limit_decision.report:
+            report_sent = sendIPLimitReport(limit_decision.report, userGroup)
+            IPSendLimiter.complete_report(limit_decision.report, report_sent)
 
     state.log("DATA starting")
     temp_base = Configure.get('wMailServerSettings', {}).get('tempPath') or os.path.join('.', 'temp')
@@ -802,6 +833,14 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
         state.close_stream()
         state.data_fp = None
 
+        if state.attributes.get('ip_send_limit_reserved'):
+            try:
+                with open(data_file, 'r', encoding='utf-8', errors='replace') as fp:
+                    recent_header = fp.read(65536)
+                IPSendLimiter.record_subject(state.peer, parse_subject(recent_header))
+            except Exception as exc:
+                state.log(f"IP send limit subject recording failed: {exc}")
+
         recipients = list(state.rcpt_list)
         any_success = False
         all_attempts: List = []
@@ -953,7 +992,7 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
                 elif cmd == 'RCPT':
                     handle_rcpt_to(conn, cmds, state, user_group)
                 elif cmd == 'DATA':
-                    handle_data(conn, state)
+                    handle_data(conn, state, user_group)
                 elif cmd == 'QUIT':
                     _send_response(conn, "221 Bye")
                     break
@@ -1285,6 +1324,73 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
     return False, dsn_attempts
     
     
+
+
+def sendIPLimitReport(report: IPSendLimiter.IPSendLimitReport, userGroup) -> bool:
+    """Deliver one IP quota warning directly to the configured local administrator."""
+    recipient = report.report_recipient
+
+    if not userGroup.isIn(recipient):
+        loginfo.write(
+            f"[{report.ip}][SMTP] IP send limit report recipient is not a local user: {recipient}"
+        )
+        return False
+
+    sender_domain = recipient.split('@', 1)[1]
+    sender = f"postmaster@{sender_domain}"
+    subject = f"[NexoraMail] IP send limit warning: {report.ip}"
+    window_started = time.strftime(
+        '%Y-%m-%d %H:%M:%S',
+        time.localtime(report.window_started_at),
+    )
+    observed_at = time.strftime(
+        '%Y-%m-%d %H:%M:%S',
+        time.localtime(report.observed_at),
+    )
+    body_lines = [
+        "NexoraMail detected elevated SMTP submission volume from one IP.",
+        "",
+        f"IP: {report.ip}",
+        f"Current usage: {report.message_count}/{report.max_messages}",
+        f"Window started: {window_started}",
+        f"Observed at: {observed_at}",
+        "",
+        "Recent message subjects:",
+    ]
+
+    if report.recent_subjects:
+        body_lines.extend(
+            f"{index}. {recent_subject}"
+            for index, recent_subject in enumerate(report.recent_subjects, start=1)
+        )
+    else:
+        body_lines.append("(no completed message subjects recorded yet)")
+
+    message = "\r\n".join([
+        f"From: {sender}",
+        f"To: {recipient}",
+        f"Subject: {subject}",
+        "MIME-Version: 1.0",
+        'Content-Type: text/plain; charset="UTF-8"',
+        "Content-Transfer-Encoding: 8bit",
+        "",
+        *body_lines,
+        "",
+    ])
+    result = sendMail(sender, recipient, message, None, userGroup, suppressError=True)
+    sent = result[0] if isinstance(result, tuple) else bool(result)
+
+    if sent:
+        loginfo.write(
+            f"[{report.ip}][SMTP] IP send limit report delivered to {recipient} "
+            f"at {report.message_count}/{report.max_messages}"
+        )
+    else:
+        loginfo.write(
+            f"[{report.ip}][SMTP] IP send limit report delivery failed for {recipient}"
+        )
+
+    return sent
 
 
 def sendErrorMail(sender, recipient, data, userGroup, reason="Email delivery failed", detail="The recipient's email address was not found on this server."):

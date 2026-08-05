@@ -49,6 +49,7 @@ class SMTPRelayAuthenticationTests(unittest.TestCase):
 
     def tearDown(self):
         SMTPService.conf = self.original_conf
+        SMTPService.IPSendLimiter.init(None, {"enabled": False})
 
     def make_state(self, *, using_tls, authenticated):
         state = SMTPService.SessionState(
@@ -97,6 +98,72 @@ class SMTPRelayAuthenticationTests(unittest.TestCase):
         self.assertEqual(state.rcpt_list, ["recipient@external.test"])
         self.assertEqual(state.attributes["mail_relay"], "relay")
         self.assertEqual(self.connection.responses, [b"250 Recipient ok\r\n"])
+
+    def test_data_is_rejected_while_ip_is_cooling_down(self):
+        SMTPService.IPSendLimiter.init(None, {
+            "enabled": True,
+            "max_messages": 1,
+            "window_seconds": 3600,
+            "cooldown_seconds": 3600,
+            "report_threshold_percent": 50,
+            "report_recipient": "admin@local.test",
+            "recent_subject_count": 5,
+        })
+        SMTPService.IPSendLimiter.reserve("203.0.113.10")
+        state = self.make_state(using_tls=True, authenticated=True)
+        state.rcpt_list.append("recipient@external.test")
+
+        with self.assertRaises(ErrorService.SMTPTransientError) as raised:
+            SMTPService.handle_data(self.connection, state, self.user_group)
+
+        self.assertEqual(raised.exception.code, "451")
+        self.assertFalse(raised.exception.count_error)
+        self.assertIn("retry after", raised.exception.message)
+
+    def test_ip_limit_report_contains_recent_subjects(self):
+        report = SMTPService.IPSendLimiter.IPSendLimitReport(
+            ip="203.0.113.10",
+            message_count=6,
+            max_messages=10,
+            window_started_at=1_750_000_000,
+            observed_at=1_750_000_300,
+            report_recipient="himpq@himpqblog.cn",
+            recent_subjects=["First message", "Second message"],
+        )
+        captured = {}
+        original_send_mail = SMTPService.sendMail
+        original_loginfo = SMTPService.loginfo
+
+        class LocalAdminGroup:
+            def isIn(self, address):
+                return address == "himpq@himpqblog.cn"
+
+        def record_send(sender, recipient, data, session, user_group, suppressError=False):
+            captured.update({
+                "sender": sender,
+                "recipient": recipient,
+                "data": data,
+                "session": session,
+                "suppress_error": suppressError,
+            })
+            return True, []
+
+        try:
+            SMTPService.sendMail = record_send
+            SMTPService.loginfo = self.logger
+
+            sent = SMTPService.sendIPLimitReport(report, LocalAdminGroup())
+        finally:
+            SMTPService.sendMail = original_send_mail
+            SMTPService.loginfo = original_loginfo
+
+        self.assertTrue(sent)
+        self.assertEqual(captured["recipient"], "himpq@himpqblog.cn")
+        self.assertIsNone(captured["session"])
+        self.assertTrue(captured["suppress_error"])
+        self.assertIn("Current usage: 6/10", captured["data"])
+        self.assertIn("1. First message", captured["data"])
+        self.assertIn("2. Second message", captured["data"])
 
 
 if __name__ == "__main__":
