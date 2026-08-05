@@ -16,12 +16,16 @@
   --bg-ai-msg: #ffffff;
   --sidebar-width-normal: 260px;
   --sidebar-width-learning: clamp(400px, 28vw, 520px);
+  --sidebar-width-workspace: 200px;
   --learning-sidebar-bg: #f5f6f8;
   --learning-sidebar-surface: #ffffff;
   --learning-sidebar-border: #e1e5ea;
   --learning-sidebar-text: #20242c;
   --learning-sidebar-muted: #6b7280;
   --learning-sidebar-accent: #3f4654;
+
+  /* toast 通知必须始终浮于全站所有弹窗/小窗之上（设置小窗弹窗栈基线 20000，每层 +20） */
+  --toast-notification-layer: 30000;
 }
 
 * { box-sizing: border-box; outline: none; }
@@ -240,6 +244,13 @@ body.learning-workspace-active .sidebar .btn-icon:hover {
   user-select: none;
 }
 
+/* .toolbar-item 的 display:flex 会覆盖 UA 样式表的 [hidden]{display:none}，
+   导致 Learning 功能区按钮在 JS 初始化补内联样式之前于首帧闪现。
+   用作者样式 !important 保证带 hidden 属性的按钮从首帧起即隐藏。 */
+.learning-nav-item[hidden] {
+  display: none !important;
+}
+
 .toolbar-item:hover {
   background: var(--bg-sidebar-hover);
   color: #ffffff;
@@ -273,6 +284,31 @@ body.learning-workspace-active .sidebar .btn-icon:hover {
     font-size: 14px;
 }
 
+#learningProgressBtn i {
+    color: #f59e0b;
+    font-size: 14px;
+}
+
+#learningResourcesBtn i {
+    color: #3b82f6;
+    font-size: 14px;
+}
+
+#learningPracticeBtn i {
+    color: #8b5cf6;
+    font-size: 14px;
+}
+
+#learningFeedBtn i {
+    color: #22c55e;
+    font-size: 14px;
+}
+
+#learningCoursesBtn i {
+    color: #14b8a6;
+    font-size: 14px;
+}
+
 body:not(.learning-workspace-active):not(.learning-course-workspace-active) .sidebar .toolbar-item {
   color: rgba(255, 255, 255, 0.72);
 }
@@ -290,6 +326,13 @@ body.learning-workspace-active .sidebar .toolbar-item:hover,
 body.learning-course-workspace-active .sidebar .toolbar-item:hover {
   background: rgba(31, 35, 42, 0.07);
   color: var(--learning-sidebar-accent);
+}
+
+/* 功能区入口激活态：与 iframe dashboard 当前功能区 tab 同步，底色略重于 hover */
+body.learning-workspace-active .sidebar .toolbar-item.is-active {
+  background: rgba(31, 35, 42, 0.10);
+  color: var(--learning-sidebar-accent);
+  font-weight: 600;
 }
 
 body.learning-workspace-active .sidebar .sidebar-action::after,
@@ -6171,13 +6214,47 @@ textarea {
   border-radius: 0;
   background: transparent;
   overflow: hidden;
+  cursor: pointer;
 }
 .knowledge-item:hover {
   background: #f8fafc;
 }
+.knowledge-item.active {
+  background: rgba(102, 126, 234, 0.08);
+}
+.knowledge-item.active .knowledge-item-title-text {
+  color: #667eea;
+  font-weight: 600;
+}
+#knowledgeViewer {
+  position: relative;
+}
+.knowledge-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  z-index: 20;
+}
+.knowledge-loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: knowledge-loading-spin 0.8s linear infinite;
+}
+@keyframes knowledge-loading-spin {
+  to { transform: rotate(360deg); }
+}
 .knowledge-item-row {
   position: relative;
-  cursor: default;
+  cursor: pointer;
   min-width: 0;
   min-height: 26px;
   padding-right: 28px; /*70px*/
@@ -6601,6 +6678,13 @@ textarea {
     color: #111827;
     box-sizing: border-box;
     padding: 42px 40px 58px;
+}
+
+/* 拖拽文件悬停高亮：虚线内描边 + 淡蓝底色，提示松手即打开上传小窗 */
+.file-center-view.file-drop-active {
+    outline: 2px dashed #2563eb;
+    outline-offset: -6px;
+    background: rgba(37, 99, 235, 0.03);
 }
 
 .file-center-shell {
@@ -9325,7 +9409,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     transition: transform 0.2s ease;
 }
 
-.user-profile-button:hover i {
+.user-profile-button:hover > i {
     color: #cbd5e1;
 }
 
@@ -9412,6 +9496,28 @@ body.is-admin .menu-item.admin-only {
 .menu-item.logout:hover {
     background: #441a1a;
     color: #ff7875;
+}
+
+/* 菜单项的 hover 只能作用于当前项，禁止旧伪元素覆盖整个 user-menu。 */
+.user-menu > .menu-item {
+    isolation: isolate;
+    position: relative;
+}
+
+.user-menu > .menu-item::before {
+    content: none !important;
+}
+
+.user-menu.active > .menu-item:not(:hover) {
+    background: transparent !important;
+}
+
+.user-menu.active > .menu-item:not(:hover):not(.logout) {
+    color: #cccccc !important;
+}
+
+.user-menu.active > .menu-item:not(:hover):not(.logout) i {
+    color: #888888 !important;
 }
 
 /* Settings Modal 风格统一 */
@@ -11021,7 +11127,7 @@ body.is-admin .menu-item.admin-only {
 }
 
 /* Toast Notification */
-.toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: all 0.3s ease; z-index: 16000 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: all 0.3s ease; z-index: var(--toast-notification-layer) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .toast-notification.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 /* Better Knowledge Panel Buttons */
 .k-actions .btn-icon-small { border: 1px solid transparent; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: #666; transition: all 0.2s; background: transparent; }
@@ -12127,6 +12233,35 @@ body.is-admin .menu-item.admin-only {
 
 .admin-user-token-selector .input-modern {
     width: 100%;
+    padding-right: 32px;
+}
+
+.admin-user-token-clear {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.admin-user-token-clear:hover {
+    background: #e2e8f0;
+    color: #475569;
+}
+
+.admin-user-token-selector .input-modern:not(:placeholder-shown) + .admin-user-token-clear {
+    display: inline-flex;
 }
 
 .admin-user-token-menu {
@@ -12135,6 +12270,8 @@ body.is-admin .menu-item.admin-only {
     width: 100%;
     max-width: none;
     z-index: 12020;
+    max-height: min(280px, 40vh);
+    overflow-y: auto;
 }
 
 .admin-user-token-item {
@@ -12248,6 +12385,36 @@ body.is-admin .menu-item.admin-only {
     min-height: 0 !important;
     height: auto !important;
     overflow-y: auto !important;
+    /* 抵消 .admin-content 的 16px padding，让仪表盘底色铺满内容区 */
+    margin: -16px !important;
+    padding: 16px !important;
+    background: #f6f8fa !important;
+}
+
+/* 统计面板仪表盘风格：统一卡片层次与间距 */
+#settingsModal #settings-admin-stats-tab .admin-stats-grid {
+    margin-bottom: 14px;
+}
+
+#settingsModal #settings-admin-stats-tab .admin-stats-grid .stat-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+#settingsModal #settings-admin-stats-tab .admin-token-trend-card {
+    margin-top: 0;
+}
+
+#settingsModal #settings-admin-stats-tab .admin-token-trend-card + .admin-token-trend-card {
+    margin-top: 14px;
+}
+
+/* “单用户 Token 查询”内嵌的四张统计卡保持浅灰底，与白色外层卡片形成层次 */
+#settingsModal #settings-admin-stats-tab .admin-user-token-summary-grid .stat-card {
+    background: #f8fafc;
+    border: 1px solid #eef2f7;
+    box-shadow: none;
 }
 
 #settingsModal #settings-admin-models-tab .model-admin-panel {
@@ -13105,7 +13272,7 @@ body.is-admin .menu-item.admin-only {
 }
 
 .toast-notification {
-    z-index: 16000 !important;
+    z-index: var(--toast-notification-layer) !important;
 }
 
 /* Ensure second-level admin modals render above settings modal */

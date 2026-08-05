@@ -997,14 +997,6 @@
       state.readerReportedChapterKey = reportKey;
       invalidateLearningReportCache(lectureId);
 
-      if (state.isReaderOpen) {
-        loadChapterQuiz(idx, chapterName, chapterRange, chapterContext).catch((err) => {
-          quizState.loading = false;
-          quizState.error = err && err.message ? err.message : "章节小测加载失败";
-          console.warn("[NXL-Reader] chapter quiz load failed", err);
-          renderQuizPanel();
-        });
-      }
     } catch (err) {
       console.warn("[NXL-Reader] chapter complete report failed", err);
       throw err;

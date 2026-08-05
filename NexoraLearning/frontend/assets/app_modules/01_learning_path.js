@@ -30,8 +30,8 @@
     }
     if (el.learningPathOutlineToggle) {
       el.learningPathOutlineToggle.setAttribute("aria-expanded", next ? "false" : "true");
-      el.learningPathOutlineToggle.setAttribute("aria-label", next ? "展开学习大纲" : "收起学习大纲");
-      el.learningPathOutlineToggle.setAttribute("title", next ? "展开学习大纲" : "收起学习大纲");
+      el.learningPathOutlineToggle.setAttribute("aria-label", next ? "展开章节列表" : "收起章节列表");
+      el.learningPathOutlineToggle.setAttribute("title", next ? "展开章节列表" : "收起章节列表");
     }
     if (persist) {
       try {
@@ -383,31 +383,69 @@
     return stage === "generating-chapter" || stage === "chapter-generation-error";
   }
 
-    // 渲染右侧学习大纲，收起动画由外层状态类驱动。
+  function getLearningPathStageLabel(stage) {
+    const labels = {
+      foundation: "基础建立",
+      core: "核心推进",
+      application: "应用深化",
+      extension: "迁移拓展",
+    };
+    return labels[String(stage || "").trim()] || "学习推进";
+  }
+
+    // 右侧章节列表同时呈现课程进度与章节状态，避免标题截断后失去上下文。
     function renderLearningPathOutline(container, chapters, lectureId) {
-        let html = '<div class="lp-outline-list">';
+        const completedCount = chapters.filter((chapter) => isLearningPathChapterCompleted(chapter)).length;
+        const generatedCount = chapters.filter((chapter) => chapter && chapter.content_generated).length;
+        const progressPercent = chapters.length ? Math.round((completedCount / chapters.length) * 100) : 0;
         const generatingIndex = Number(state.lpChapterGeneratingIndex);
         const activeIndex = isLearningPathChapterGenerationStage(state.learningPathStage) &&
           Number.isInteger(generatingIndex) &&
           generatingIndex >= 0
             ? generatingIndex
             : state.currentChapterIndex;
+        let html = `
+            <section class="lp-outline-summary" aria-label="章节学习进度">
+              <div class="lp-outline-summary-head">
+                <span class="lp-outline-summary-title">章节进度</span>
+                <span class="lp-outline-summary-count">${completedCount} / ${chapters.length} 完成</span>
+              </div>
+              <div class="lp-outline-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progressPercent}">
+                <span style="--lp-outline-progress: ${progressPercent}%"></span>
+              </div>
+              <div class="lp-outline-summary-meta">${generatedCount} 章学习内容已就绪</div>
+            </section>
+            <div class="lp-outline-list">
+        `;
 
         chapters.forEach((ch, idx) => {
             const isActive = activeIndex === idx;
             const completed = isLearningPathChapterCompleted(ch);
             const status = getLearningPathChapterStatus(ch);
             const activeAttr = isActive ? ' aria-current="step"' : "";
+            const chapterName = String(ch && ch.name || "").trim();
+            const bookTitle = String(ch && ch.book_title || "").trim();
+            const stageLabel = getLearningPathStageLabel(ch && ch.stage);
+            const progression = String(ch && ch.progression || "").trim();
+            const statusLabel = status.label || "待学习";
+            const trailingIcon = completed
+              ? '<svg viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"></path></svg>'
+              : '<svg viewBox="0 0 24 24" focusable="false"><path d="m9 18 6-6-6-6"></path></svg>';
 
             html += `
-                <button class="lp-outline-item ${isActive ? "is-active" : ""} ${status.className}" type="button" data-index="${idx}" title="${escapeHtml(status.title)}"${activeAttr}>
+                <button class="lp-outline-item ${isActive ? "is-active" : ""} ${status.className}" type="button" data-index="${idx}" title="${escapeHtml(`${chapterName} · ${status.title}`)}"${activeAttr}>
                   <span class="lp-outline-rail" aria-hidden="true"></span>
-                  <span class="lp-outline-num">${idx + 1}</span>
+                  <span class="lp-outline-num">${String(idx + 1).padStart(2, "0")}</span>
                   <span class="lp-outline-copy">
-                    <span class="lp-outline-text">${escapeHtml(ch.name || "")}</span>
-                    ${status.label ? `<span class="lp-outline-status">${escapeHtml(status.label)}</span>` : ""}
+                    <span class="lp-outline-overline">
+                      <span>第 ${idx + 1} 章 · ${escapeHtml(stageLabel)}</span>
+                      <span class="lp-outline-status">${escapeHtml(statusLabel)}</span>
+                    </span>
+                    <span class="lp-outline-text">${escapeHtml(chapterName)}</span>
+                    ${progression ? `<span class="lp-outline-progression">${escapeHtml(progression)}</span>` : ""}
+                    ${bookTitle ? `<span class="lp-outline-source">${escapeHtml(bookTitle)}</span>` : ""}
                   </span>
-                  ${completed ? '<span class="lp-outline-check" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"></path></svg></span>' : ""}
+                  <span class="lp-outline-check" aria-hidden="true">${trailingIcon}</span>
                 </button>
             `;
         });
@@ -551,7 +589,7 @@
         el.learningPathFloatingActions.hidden = true;
     }
 
-    // 章节级操作按钮固定跟随返回按钮，避免正文标题区承担导航操作。
+    // 浮动区只保留完成状态，课后测验固定跟随章节正文。
     function renderLearningPathFloatingActions(lectureId, chapterIndex, chapter, completed) {
         if (!el.learningPathFloatingActions) return;
 
@@ -560,14 +598,6 @@
             <button class="learning-path-float-action" type="button" data-lp-action="complete" ${completed ? "disabled" : ""} aria-label="${completed ? "已完成" : "完成学习"}" title="${completed ? "已完成" : "完成学习"}">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M20 6 9 17l-5-5"></path>
-              </svg>
-            </button>
-            <button class="learning-path-float-action" type="button" data-lp-action="quiz" aria-label="做题" title="做题">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M9 11h6"></path>
-                <path d="M9 15h4"></path>
-                <path d="M8 3h8l3 3v15H5V3h3z"></path>
-                <path d="M16 3v4h4"></path>
               </svg>
             </button>
         `;
@@ -591,12 +621,45 @@
             <div class="lp-chapter-meta">${escapeHtml(bookTitle)}</div>
           </div>
           <div class="lp-chapter-content">${renderMarkdownSimple(markdown)}</div>
+          <section class="lp-chapter-quiz" aria-labelledby="learningPathChapterQuizTitle">
+            <div class="lp-chapter-quiz-head">
+              <div>
+                <div class="lp-chapter-quiz-kicker">CHAPTER CHECK</div>
+                <h2 id="learningPathChapterQuizTitle">课后测验</h2>
+              </div>
+              <span>完成后计入本章学习分析</span>
+            </div>
+            <div id="learningPathChapterQuizBody" class="lp-chapter-quiz-body">
+              <div class="quiz-loading">
+                <div class="quiz-loading-spinner"></div>
+                <div class="quiz-loading-text">正在准备本章测验...</div>
+                <div class="quiz-loading-hint">打开章节后自动检查已有题目</div>
+              </div>
+            </div>
+          </section>
         </div>
     `;
 
     bindLearningArticleExperiments(md);
+    bindLearningPathChapterActions(md, lectureId, chapterIndex, chapter);
     renderLearningPathFloatingActions(lectureId, chapterIndex, chapter, completed);
+
+    if (isCurrentPersonalizedChapterQuiz(lectureId, chapterIndex, chapter)) {
+      renderQuizPanel();
+    }
+
     emitLearningPathChapterOpenTelemetry(lectureId, chapterIndex, chapter);
+    void loadPersonalizedChapterQuiz(lectureId, chapterIndex, chapter);
+  }
+
+  function isCurrentPersonalizedChapterQuiz(lectureId, chapterIndex, chapter) {
+    const meta = quizState.currentMeta || {};
+
+    return String(meta.quizType || "") === "personalized_chapter" &&
+      String(meta.lectureId || "") === String(lectureId || "").trim() &&
+      String(meta.bookId || "") === String(chapter && chapter.book_id || "").trim() &&
+      Number(meta.chapterIndex) === Number(chapterIndex) &&
+      (quizState.loading || !!quizState.error || normalizeQuizQuestions(quizState.questions).length > 0);
   }
 
   function bindLearningPathChapterActions(md, lectureId, chapterIndex, chapter) {
@@ -604,13 +667,6 @@
     if (completeBtn) {
       completeBtn.addEventListener("click", () => {
         markLearningPathChapterComplete(lectureId, chapterIndex, chapter);
-      });
-    }
-
-    const quizBtn = md.querySelector('[data-lp-action="quiz"]');
-    if (quizBtn) {
-      quizBtn.addEventListener("click", () => {
-        loadPersonalizedChapterQuiz(lectureId, chapterIndex, chapter);
       });
     }
   }
@@ -724,27 +780,36 @@
     const bookId = String(chapter.book_id || "").trim();
     const chapterName = String(chapter.name || "").trim();
     const chapterRange = String(chapter.chapter_range || "").trim();
+    const requestKey = `personalized::${resolvedLectureId}::${bookId}::${idx}::${chapterRange}`;
     if (!bookId || !chapterName) {
       showToast("当前章节缺少教材信息，暂时不能做题");
       return;
     }
 
     const currentMeta = quizState.currentMeta || {};
-    if (
-      String(currentMeta.quizType || "") === "personalized_chapter" &&
+    const isCurrentChapter = String(currentMeta.quizType || "") === "personalized_chapter" &&
       String(currentMeta.lectureId || "") === resolvedLectureId &&
       String(currentMeta.bookId || "") === bookId &&
-      Number(currentMeta.chapterIndex) === idx &&
+      Number(currentMeta.chapterIndex) === idx;
+
+    if (isCurrentChapter && quizState.loading && quizState.requestKey === requestKey) {
+      renderQuizPanel();
+      return;
+    }
+
+    if (
+      isCurrentChapter &&
       normalizeQuizQuestions(quizState.questions).length
     ) {
       setQuizQuestions(quizState.questions);
-      openFloatingPanel();
-      setFloatingTab("quiz");
       renderQuizPanel();
       return;
     }
 
     quizState.loading = true;
+    quizState.requestKey = requestKey;
+    quizState.streamDraft = "";
+    quizState.streamStatus = "正在准备本章测验";
     quizState.error = null;
     quizState.currentChapter = chapterName;
     quizState.currentSession = "学习素材练习";
@@ -762,19 +827,26 @@
     quizState.questions = [];
     quizState.answers = {};
     renderQuizPanel();
-    openFloatingPanel();
-    setFloatingTab("quiz");
 
     try {
-      const result = await fetchJson("/api/frontend/personalized-learning/chapter-quiz", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: getRuntimeUsername(),
-          lecture_id: resolvedLectureId,
-          chapter_index: idx,
-        }),
-      });
+      const result = await fetchPersonalizedLearningStream(
+        `/api/frontend/personalized-learning/chapter-quiz-stream?lecture_id=${encodeURIComponent(resolvedLectureId)}&chapter_index=${encodeURIComponent(idx)}`,
+        (delta) => {
+          if (quizState.requestKey !== requestKey) return;
+
+          quizState.streamDraft = `${String(quizState.streamDraft || "")}${String(delta || "")}`;
+          schedulePersonalizedQuizStreamRender(requestKey);
+        },
+        (eventName, payload) => {
+          if (quizState.requestKey !== requestKey || eventName !== "status") return;
+
+          quizState.streamStatus = String((payload && payload.message) || "正在生成本章测验").trim();
+          schedulePersonalizedQuizStreamRender(requestKey);
+        },
+        { includeStatusInDelta: false }
+      );
+
+      if (quizState.requestKey !== requestKey) return;
 
       const quiz = result && result.quiz && typeof result.quiz === "object" ? result.quiz : {};
       const questions = Array.isArray(result.questions) ? result.questions : Array.isArray(quiz.questions) ? quiz.questions : [];
@@ -803,11 +875,30 @@
       writeStoredQuiz(getCurrentQuizKey(), quizState.questions, quizState.answers, quizState.currentMeta);
       saveQuizState();
     } catch (err) {
-      quizState.error = err && err.message ? err.message : "本章练习加载失败";
+      if (quizState.requestKey === requestKey) {
+        quizState.error = err && err.message ? err.message : "本章练习加载失败";
+      }
     } finally {
-      quizState.loading = false;
-      renderQuizPanel();
+      if (quizState.requestKey === requestKey) {
+        quizState.loading = false;
+        quizState.requestKey = "";
+        quizState.streamDraft = "";
+        quizState.streamStatus = "";
+        renderQuizPanel();
+      }
     }
+  }
+
+  function schedulePersonalizedQuizStreamRender(requestKey) {
+    if (quizState.requestKey !== requestKey || quizState.streamRenderFrame) return;
+
+    quizState.streamRenderFrame = requestAnimationFrame(() => {
+      quizState.streamRenderFrame = 0;
+
+      if (quizState.requestKey === requestKey) {
+        renderQuizPanel();
+      }
+    });
   }
 
   function renderLearningPathChapterStreamingView(md, lectureId) {
@@ -966,7 +1057,8 @@
     }
   }
 
-  async function fetchPersonalizedLearningStream(url, onDelta, onEvent) {
+  async function fetchPersonalizedLearningStream(url, onDelta, onEvent, options) {
+    const streamOptions = options && typeof options === "object" ? options : {};
     const response = await fetch(resolveApiUrl(url), {
       method: "GET",
       credentials: "same-origin",
@@ -1005,7 +1097,7 @@
           onEvent(parsed.eventName, parsed.data || {});
         }
         const message = String((parsed.data && parsed.data.message) || "").trim();
-        if (message && typeof onDelta === "function") {
+        if (message && streamOptions.includeStatusInDelta !== false && typeof onDelta === "function") {
           onDelta(`[状态] ${message}\n`);
         }
       } else if (parsed.eventName === "done") {
@@ -3371,6 +3463,9 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
   function setView(name) {
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
+    if (el.profileCenterView) {
+      el.profileCenterView.classList.toggle("is-active", name === "profileCenter");
+    }
     if (el.questionPracticeView) {
       el.questionPracticeView.classList.toggle("is-active", name === "questionPractice");
     }
@@ -3404,6 +3499,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       notifyHostReaderState(false);
     }
     notifyHostInputVisibility(true);
+    emitDashboardStateToHost(name);
   }
 
   function notifyHostReaderState(opened, extra) {

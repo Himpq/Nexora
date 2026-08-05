@@ -1,48 +1,158 @@
 // ─────── Event Bindings ───────────────────────────────────────────────
+  // 顶部四个功能区（课程进度/学习资源/模拟练习/动态中心）的统一切换入口：
+  // 本地 kicker tab 点击与宿主侧栏按钮（postMessage 指令）共用，避免双份逻辑。
+  async function activateDashboardSideTab(tabName) {
+    const normalized = String(tabName || "").trim();
+    const validTab = ["progress", "push", "questionBank", "feed"].includes(normalized)
+      ? normalized
+      : "progress";
+
+    state.dashboardSideTab = validTab;
+
+    if (validTab === "questionBank") {
+      await loadQuestionBank();
+    }
+
+    syncDashboardSideTabs();
+  }
+
+  // 宿主侧栏 Learning 功能区按钮的指令入口：reader 沉浸视图先关闭（close_target
+  // 传 learning，宿主据此把侧栏恢复为 Learning 而不是 Nexora），再回 dashboard 切 tab；
+  // materials（课程列表）是独立视图，走打开课程页分支。
+  async function openDashboardSurfaceFromHost(tabName) {
+    const normalized = String(tabName || "").trim();
+
+    closeReader(false, {
+      closeReason: "host_dashboard_nav",
+      closeTarget: "learning",
+    });
+
+    if (normalized === "materials") {
+      setView("materials");
+      openMaterialsShelf();
+      return;
+    }
+
+    if (normalized === "profileCenter") {
+      setView("profileCenter");
+      await loadProfileCenter({ force: true });
+      return;
+    }
+
+    if (normalized === "questionBankMistakes") {
+      state.questionBankFilter.answerState = "needs_review";
+      state.questionBankPage = 1;
+      state.questionBankSelectedGroupId = "";
+      state.questionBankSelectedGroup = null;
+      setView("dashboard");
+      await activateDashboardSideTab("questionBank");
+      renderQuestionBankCenter();
+      scrollQuestionBankToAllSection();
+      return;
+    }
+
+    if (normalized === "questionBank") {
+      state.questionBankFilter.answerState = "all";
+      state.questionBankPage = 1;
+      state.questionBankSelectedGroupId = "";
+      state.questionBankSelectedGroup = null;
+    }
+
+    setView("dashboard");
+    await activateDashboardSideTab(normalized);
+  }
+
+  function handleHostDashboardCommand(data) {
+    if (!data || typeof data !== "object") return false;
+    if (String(data.source || "").trim().toLowerCase() !== "nexora-host") return false;
+
+    const msgType = String(data.type || "").trim().toLowerCase();
+
+    if (msgType !== "nexora:dashboard:open-tab") return false;
+
+    void openDashboardSurfaceFromHost(String(data.tab || "").trim());
+    return true;
+  }
+
+  // 宿主侧栏"工作台"下拉入口：打开资源工作台 / 视频工作台独立视图。
+  // 与功能区导航一致，先退出 reader 沉浸视图再切换。
+  async function openStudioSurfaceFromHost(studioName) {
+    const normalized = String(studioName || "").trim();
+
+    closeReader(false, {
+      closeReason: "host_studio_nav",
+      closeTarget: "learning",
+    });
+
+    if (normalized === "video") {
+      openLearningVideoStudio();
+      return;
+    }
+
+    openLearningResourceStudio();
+  }
+
+  function handleHostStudioCommand(data) {
+    if (!data || typeof data !== "object") return false;
+    if (String(data.source || "").trim().toLowerCase() !== "nexora-host") return false;
+
+    const msgType = String(data.type || "").trim().toLowerCase();
+
+    if (msgType !== "nexora:dashboard:open-studio") return false;
+
+    void openStudioSurfaceFromHost(String(data.studio || "").trim());
+    return true;
+  }
+
+  // 宿主侧栏接管功能区导航时下发自页顶部 kicker tab 的隐藏指令：
+  // nav_visible=true（桌面嵌入、宿主按钮可见）隐藏本地 tab；独立打开/移动端为 false，本地保留。
+  function handleHostDashboardLayout(data) {
+    if (!data || typeof data !== "object") return false;
+    if (String(data.source || "").trim().toLowerCase() !== "nexora-host") return false;
+    if (String(data.type || "").trim().toLowerCase() !== "nexora:dashboard:layout") return false;
+
+    document.body.classList.toggle("host-dashboard-nav-active", !!data.nav_visible);
+    return true;
+  }
+
   function bindEvents() {
+    bindProfileCenterEvents();
     el.openMaterialsViewBtn.addEventListener("click", () => {
       setView("materials");
       openMaterialsShelf();
     });
     if (el.dashboardProgressTabBtn) {
       el.dashboardProgressTabBtn.addEventListener("click", () => {
-        state.dashboardSideTab = "progress";
-        syncDashboardSideTabs();
+        void activateDashboardSideTab("progress");
       });
     }
     if (el.dashboardPushTabBtn) {
       el.dashboardPushTabBtn.addEventListener("click", () => {
-        state.dashboardSideTab = "push";
-        syncDashboardSideTabs();
+        void activateDashboardSideTab("push");
       });
     }
     if (el.dashboardQuestionBankTabBtn) {
-      el.dashboardQuestionBankTabBtn.addEventListener("click", async () => {
-        state.dashboardSideTab = "questionBank";
-        await loadQuestionBank();
-        syncDashboardSideTabs();
+      el.dashboardQuestionBankTabBtn.addEventListener("click", () => {
+        void activateDashboardSideTab("questionBank");
       });
     }
     if (el.dashboardProgressFeedTabBtn) {
       el.dashboardProgressFeedTabBtn.addEventListener("click", () => {
-        state.dashboardSideTab = "feed";
-        syncDashboardSideTabs();
+        void activateDashboardSideTab("feed");
       });
     }
     bindLearningPushEvents();
     bindLearningResourceStudioEvents();
     if (el.backFromResourceStudioBtn) {
       el.backFromResourceStudioBtn.addEventListener("click", () => {
-        state.dashboardSideTab = "push";
         setView("dashboard");
-        syncDashboardSideTabs();
+        void activateDashboardSideTab("push");
       });
     }
     if (el.backFromVideoStudioBtn) {
       el.backFromVideoStudioBtn.addEventListener("click", () => {
-        state.dashboardSideTab = "push";
         setView("dashboard");
-        syncDashboardSideTabs();
+        void activateDashboardSideTab("push");
       });
     }
     if (el.backFromResourceReaderBtn) {

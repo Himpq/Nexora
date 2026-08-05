@@ -201,13 +201,11 @@ class MemoryAnalysisQueue:
             "cached_input": 0,
             "estimated": False
         }
-        decision, analysis_model, model_source = self._run_model_decision_with_fallback(
-            job,
-            prompt,
-            analysis_model,
-            model_source,
-            usage_state
-        )
+        # 用户保存的记忆模型是明确执行选择；不可静默改用会话模型。
+        job["requested_analysis_model"] = analysis_model
+        job["analysis_model_fallback"] = False
+        job["analysis_model_fallback_error"] = ""
+        decision = self._run_model_decision(job, prompt, analysis_model, usage_state)
 
         result = self._apply_decision(user, existing_memory, decision)
         memory_io_tokens = {
@@ -276,47 +274,6 @@ class MemoryAnalysisQueue:
             f"fallback_used={bool(job.get('analysis_model_fallback', False))} "
             f"reason={result.get('reason', '')}"
         )
-
-    def _run_model_decision_with_fallback(
-        self,
-        job: Dict[str, Any],
-        prompt: str,
-        analysis_model: str,
-        model_source: str,
-        usage_state: Dict[str, Any]
-    ) -> tuple[Dict[str, Any], str, str]:
-        requested_model = str(analysis_model or "").strip()
-        conversation_model = str(job.get("model_name") or "").strip()
-        job["requested_analysis_model"] = requested_model
-        job["analysis_model_fallback"] = False
-        job["analysis_model_fallback_error"] = ""
-
-        try:
-            decision = self._run_model_decision(job, prompt, requested_model, usage_state)
-            return decision, requested_model, model_source
-        except Exception as model_error:
-            can_fallback = bool(
-                model_source == "preference"
-                and conversation_model
-                and conversation_model != requested_model
-            )
-
-            if not can_fallback:
-                raise
-
-            fallback_error = str(model_error)[:500]
-            job["analysis_model_fallback"] = True
-            job["analysis_model_fallback_error"] = fallback_error
-            self._log_event(job, "model_fallback", error=fallback_error)
-            print(
-                f"[MEMORY_ANALYSIS] model fallback job_id={job.get('job_id')} "
-                f"requested_model={requested_model} conversation_model={conversation_model} "
-                f"error={fallback_error}"
-            )
-            job["analysis_model"] = conversation_model
-            job["analysis_model_source"] = "conversation_fallback"
-            decision = self._run_model_decision(job, prompt, conversation_model, usage_state)
-            return decision, conversation_model, "conversation_fallback"
 
     def _run_model_decision(
         self,

@@ -109,20 +109,40 @@
         }
 
         const values = permissions && typeof permissions === 'object' ? permissions : {};
-        container.innerHTML = Object.entries(state.permissionLabels).map(([permissionId, label]) => `
-            <label class="settings-toggle-item">
-                <input class="settings-toggle-input" type="checkbox" data-papi-permission="${escapeHtml(permissionId)}" ${values[permissionId] !== false ? 'checked' : ''}>
-                <span class="settings-toggle-label">${escapeHtml(label)}</span>
-                <span class="settings-toggle-track" aria-hidden="true"></span>
-            </label>
-        `).join('');
+        const controls = Object.entries(state.permissionLabels).map(([permissionId, label]) => {
+            const enabled = values[permissionId] !== false;
+            const control = document.createElement('button');
+            control.className = 'papi-permission-toggle';
+            control.type = 'button';
+            control.dataset.papiPermission = permissionId;
+            control.setAttribute('aria-checked', enabled ? 'true' : 'false');
+            control.setAttribute('role', 'switch');
+
+            const labelElement = document.createElement('span');
+            labelElement.className = 'papi-permission-toggle-label';
+            labelElement.textContent = String(label || permissionId);
+
+            const track = document.createElement('span');
+            track.className = 'papi-permission-toggle-track';
+            track.setAttribute('aria-hidden', 'true');
+            const thumb = document.createElement('span');
+            thumb.className = 'papi-permission-toggle-thumb';
+            track.appendChild(thumb);
+            control.append(labelElement, track);
+            control.addEventListener('click', () => {
+                const nextValue = control.getAttribute('aria-checked') !== 'true';
+                control.setAttribute('aria-checked', nextValue ? 'true' : 'false');
+            });
+            return control;
+        });
+        container.replaceChildren(...controls);
     }
 
     function collectPermissions(container) {
         const permissions = {};
 
-        container?.querySelectorAll('input[data-papi-permission]').forEach((input) => {
-            permissions[String(input.dataset.papiPermission || '')] = !!input.checked;
+        container?.querySelectorAll('[data-papi-permission]').forEach((control) => {
+            permissions[String(control.dataset.papiPermission || '')] = control.getAttribute('aria-checked') === 'true';
         });
 
         return permissions;
@@ -146,14 +166,12 @@
         list.innerHTML = state.keys.map((item) => {
             const keyId = String(item?.id || '').trim();
             const active = keyId === state.selectedKeyId ? ' active' : '';
-            const status = item?.is_expired ? '已过期' : '有效';
             return `
                 <button class="admin-user-item papi-key-list-item${active}" type="button" data-user-papi-key-id="${escapeHtml(keyId)}">
                     <span class="admin-user-avatar admin-public-api-key-icon"><i class="fa-solid fa-key" aria-hidden="true"></i></span>
                     <span class="papi-key-list-main">
                         <span class="admin-user-name">${escapeHtml(item?.name || keyId)}</span>
                         <span class="admin-user-meta mono">${escapeHtml(item?.key_preview || '-')}</span>
-                        <span class="papi-scope-badge owner">用户私有 · ${escapeHtml(status)}</span>
                     </span>
                 </button>
             `;

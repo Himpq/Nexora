@@ -225,6 +225,17 @@
       `;
   }
 
+  // 向宿主回报 dashboard 当前视图与功能区 tab，宿主侧栏的功能区按钮据此同步高亮。
+  function emitDashboardStateToHost(viewName) {
+    const resolvedView = String(viewName || "").trim()
+      || (el.dashboardView && el.dashboardView.classList.contains("is-active") ? "dashboard" : "other");
+
+    emitHostPayload("nexora:dashboard:state", {
+      view: resolvedView,
+      side_tab: state.dashboardSideTab,
+    });
+  }
+
   function syncDashboardSideTabs() {
     const activeTab = ["progress", "push", "questionBank", "feed"].includes(state.dashboardSideTab)
       ? state.dashboardSideTab
@@ -277,6 +288,7 @@
     renderLearningPushCenter();
     renderQuestionBankCenter();
     renderLearningFeeds();
+    emitDashboardStateToHost();
   }
 
   function syncPieProfileTabs() {
@@ -609,6 +621,9 @@
     const data = event && event.data;
     if (!data || typeof data !== "object") return;
     if (handleHostReaderCommand(data)) return;
+    if (handleHostDashboardCommand(data)) return;
+    if (handleHostStudioCommand(data)) return;
+    if (handleHostDashboardLayout(data)) return;
     if (String(data.source || "").trim().toLowerCase() !== "nexora-learning") return;
     const msgType = String(data.type || "").trim().toLowerCase();
     const requestId = String(data.requestId || "").trim();

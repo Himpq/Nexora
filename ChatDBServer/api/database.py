@@ -1332,6 +1332,7 @@ class User:
             "language": "zh",
             "learning_mode": False,
             "memory_update_model": "",
+            "default_open_view": "learning",
             "quota": {
                 "enabled": False,
                 "remaining_tokens": 0,
@@ -1397,6 +1398,9 @@ class User:
             prefs["streaming"] = bool(raw.get("streaming"))
         if "learning_mode" in raw:
             prefs["learning_mode"] = bool(raw.get("learning_mode"))
+        if "default_open_view" in raw:
+            view = str(raw.get("default_open_view") or "").strip().lower()
+            prefs["default_open_view"] = view if view in ("nexora", "learning") else "learning"
         if "memory_update_model" in raw:
             prefs["memory_update_model"] = str(raw.get("memory_update_model") or "").strip()
 
@@ -1431,6 +1435,8 @@ class User:
         payload["language"] = str(payload.get("language") or "zh").strip() or "zh"
         payload["streaming"] = bool(payload.get("streaming", True))
         payload["learning_mode"] = bool(payload.get("learning_mode", False))
+        default_open_view = str(payload.get("default_open_view") or "").strip().lower()
+        payload["default_open_view"] = default_open_view if default_open_view in ("nexora", "learning") else "learning"
         payload["memory_update_model"] = str(payload.get("memory_update_model") or "").strip()
         safe_write_json(self._preferences_file(), payload, indent=2)
         return payload
@@ -1456,6 +1462,9 @@ class User:
                 prefs["streaming"] = bool(updates.get("streaming"))
             if "learning_mode" in updates:
                 prefs["learning_mode"] = bool(updates.get("learning_mode"))
+            if "default_open_view" in updates:
+                view = str(updates.get("default_open_view") or "").strip().lower()
+                prefs["default_open_view"] = view if view in ("nexora", "learning") else "learning"
             if "memory_update_model" in updates:
                 prefs["memory_update_model"] = str(updates.get("memory_update_model") or "").strip()
 

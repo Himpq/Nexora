@@ -7,6 +7,7 @@
     "app_modules/01_learning_chart_experiment.js",
     "app_modules/02_reader_dashboard.js",
     "app_modules/03_feed_profile.js",
+    "app_modules/03_profile_center.js",
     "app_modules/02_question_exam.js",
     "app_modules/03_feed_composer.js",
     "app_modules/04_settings.js",

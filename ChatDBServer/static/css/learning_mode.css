@@ -212,7 +212,7 @@ body.learning-workspace-active:not(.learning-sidebar-conversation-active):not(.l
   width: var(--sidebar-width-normal);
 }
 
-body.learning-workspace-active.learning-sidebar-conversation-active .sidebar {
+body.learning-workspace-active.learning-sidebar-conversation-active:not(.learning-course-workspace-active) .sidebar {
   width: var(--sidebar-width-learning);
 }
 
@@ -392,6 +392,108 @@ body.learning-workspace-active.learning-course-context-active .sidebar.collapsed
 
 .learning-sidebar-panel .nexoracode-sidebar-project.is-collapsed .nexoracode-sidebar-project-conversations {
   border-left-color: transparent;
+}
+
+/* ── 学习资源条目内的工作台下拉栏 ── */
+
+.learning-resource-nav-group {
+  width: 100%;
+}
+
+.learning-resource-nav-group[hidden] {
+  display: none !important;
+}
+
+.learning-resource-nav-row.nexoracode-sidebar-project-row {
+    min-height: 40px;
+    box-sizing: border-box;
+    margin-bottom: 0;
+    padding: 6px 6px 6px 12px;
+    background: transparent;
+}
+
+.learning-resource-nav-main {
+    gap: 11px;
+}
+
+body.learning-workspace-active .learning-resource-nav-row:hover,
+body.learning-workspace-active .learning-resource-nav-group.is-active .learning-resource-nav-row {
+  background: rgba(31, 35, 42, 0.07);
+}
+
+body.learning-workspace-active .learning-resource-nav-main .nexoracode-sidebar-project-name {
+  color: var(--learning-sidebar-text);
+}
+
+body.learning-workspace-active .learning-resource-nav-row:hover .nexoracode-sidebar-project-name,
+body.learning-workspace-active .learning-resource-nav-group.is-active .nexoracode-sidebar-project-name {
+  color: var(--learning-sidebar-accent);
+}
+
+body.learning-workspace-active .learning-resource-nav-main .nexoracode-sidebar-project-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    min-width: 16px;
+    height: 16px;
+    color: #3b82f6;
+    font-size: 14px;
+}
+
+body.learning-workspace-active .learning-resource-nav-toggle {
+  color: var(--learning-sidebar-muted);
+}
+
+body.learning-workspace-active .learning-resource-nav-toggle:hover {
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
+}
+
+.learning-resource-nav-group .learning-resource-studio-menu {
+  width: calc(100% - 18px);
+  box-sizing: border-box;
+  margin: 3px 0 4px 18px;
+  padding: 3px 0 3px 9px;
+  border-left-color: var(--learning-sidebar-border);
+}
+
+/* grid 折叠只会压缩内容轨道，容器自身 padding 必须同步归零，否则会留下空白行。 */
+.learning-resource-nav-group.is-collapsed .learning-resource-studio-menu {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.learning-resource-studio-item {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--learning-sidebar-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.learning-resource-studio-item i {
+  width: 14px;
+  min-width: 14px;
+  color: var(--learning-sidebar-accent);
+  font-size: 12px;
+  text-align: center;
+}
+
+.learning-resource-studio-item:hover {
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
 }
 
 .learning-sidebar-panel .learning-sidebar-conversation-item {

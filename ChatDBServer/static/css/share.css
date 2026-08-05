@@ -187,6 +187,83 @@ body {
     display: none;
 }
 
+/* 多文件清单：占面板整行，列在头部信息下方 */
+.share-file-list {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.share-file-list[hidden] {
+    display: none;
+}
+
+.share-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.share-file-row-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.share-file-row-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.share-file-row-size {
+    color: #64748b;
+    font-size: 12px;
+}
+
+.share-file-row-side {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.share-file-row-status {
+    color: #0369a1;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.share-file-row-btn {
+    height: 32px;
+    padding: 0 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #0f172a;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 140ms ease;
+}
+
+.share-file-row-btn:hover {
+    background: #f1f5f9;
+}
+
 .share-file-icon {
     width: 42px;
     height: 42px;

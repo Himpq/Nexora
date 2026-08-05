@@ -754,6 +754,7 @@ def _collect_reading_events(user_id: str, book_id: str = "", since_ts: Optional[
                 "ts": ts,
                 "bid": bid,
                 "ci_raw": raw.get("ci", ""),
+                "si_raw": raw.get("si", ""),
                 "event": str(raw.get("event", "")).strip(),
                 "focus": str(raw.get("focus", "")).strip(),
                 "scroll": raw.get("scroll", ""),
@@ -767,28 +768,67 @@ def _compute_reading_analysis(events: List[Dict[str, Any]], *, idle_threshold_se
     def _ci_key(row: Dict[str, Any]) -> str:
         return str(row.get("ci_raw", "-1")).strip()
 
-    # --- focus / session pairs --------------------------------------------
-    focus_ins: List[Dict[str, Any]] = [e for e in events if e["event"] == "focus_in"]
-    focus_outs: List[Dict[str, Any]] = [e for e in events if e["event"] == "focus_out"]
-    sessions: List[Dict[str, Any]] = []
-    sorted_outs = sorted(focus_outs, key=lambda r: r["ts"])
+    # --- verified reader sessions -----------------------------------------
+    # 只接收会话离开事件携带的明确 duration_ms；事件首末时间不能证明中间一直在学习。
+    session_map: Dict[str, Dict[str, Any]] = {}
+    unmeasured_session_events = 0
 
-    for fi in focus_ins:
-        fi_ts = fi["ts"]
-        # 拿 focus_in 之后的第一个 focus_out 配对（取最早的，保证持续推进也有效）
-        fo = next((f for f in sorted_outs if f["ts"] > fi_ts), None)
-        if not fo:
+    for event in sorted(events, key=lambda row: row["ts"]):
+        if event["event"] not in ("focus_out", "session_complete"):
             continue
-        dur_ms = fo["ts"] - fi_ts
-        if dur_ms <= 0:
+
+        extra_text = str(event.get("extra") or "").strip()
+
+        try:
+            extra = json.loads(extra_text) if extra_text else {}
+        except (json.JSONDecodeError, TypeError):
+            extra = {}
+
+        if not isinstance(extra, dict):
+            extra = {}
+
+        duration_ms = 0.0
+
+        for key in ("duration_ms", "active_duration_ms"):
+            try:
+                candidate = float(extra.get(key) or 0)
+            except (ValueError, TypeError):
+                candidate = 0.0
+
+            if candidate > 0:
+                duration_ms = candidate
+                break
+
+        if duration_ms <= 0:
+            unmeasured_session_events += 1
             continue
-        sessions.append({
-            "start_ts": fi_ts,
-            "end_ts": fo["ts"],
-            "duration_sec": round(dur_ms / 1000, 1),
-            "bid": fi.get("bid", ""),
-            "ci_raw": fi.get("ci_raw", ""),
-        })
+
+        session_key = str(extra.get("session_key") or "").strip()
+
+        if not session_key:
+            session_key = "|".join([
+                str(event.get("bid") or "").strip(),
+                str(event.get("ci_raw") or "").strip(),
+                str(event.get("si_raw") or "").strip(),
+                str(event.get("ts") or "").strip(),
+                event["event"],
+            ])
+
+        duration_sec = duration_ms / 1000.0
+        current = session_map.get(session_key)
+
+        if current and float(current.get("duration_sec") or 0.0) >= duration_sec:
+            continue
+
+        session_map[session_key] = {
+            "start_ts": int(event["ts"] - duration_ms),
+            "end_ts": event["ts"],
+            "duration_sec": round(duration_sec, 1),
+            "bid": event.get("bid", ""),
+            "ci_raw": event.get("ci_raw", ""),
+        }
+
+    sessions = sorted(session_map.values(), key=lambda row: row["start_ts"])
 
     # --- idle gaps ---------------------------------------------------------
     sorted_events = sorted(events, key=lambda r: r["ts"])
@@ -844,6 +884,7 @@ def _compute_reading_analysis(events: List[Dict[str, Any]], *, idle_threshold_se
     return {
         "session_count": len(sessions),
         "sessions": sessions[:200],
+        "unmeasured_session_events": unmeasured_session_events,
         "idle_gap_count": len(idle_gaps),
         "total_idle_sec": total_idle_sec,
         "idle_gaps": idle_gaps[:200],

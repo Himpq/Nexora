@@ -6,7 +6,7 @@ import threading
 import time
 import urllib.parse
 from collections import deque
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from flask import Blueprint, Response, jsonify, render_template, request, send_file, session, stream_with_context
 
@@ -31,13 +31,18 @@ TRANSFER_EXPIRE_MINUTES_MAX = 24 * 60
 TRANSFER_MAX_DOWNLOADS_DEFAULT = 5
 TRANSFER_MAX_DOWNLOADS_MIN = 1
 TRANSFER_MAX_DOWNLOADS_MAX = 50
-LIVE_TRANSFER_HEARTBEAT_TIMEOUT_SECONDS = 15
+# 心跳超时必须远大于浏览器后台标签页的心跳节流周期（Chromium 隐藏标签页
+# setInterval 会被节流到每分钟一次），按 3 倍余量取值，避免节流抖动踩线。
+LIVE_TRANSFER_HEARTBEAT_TIMEOUT_SECONDS = 180
 LIVE_TRANSFER_EVENTS_LIMIT = 30
 LIVE_TRANSFER_FILE_SIZE_MAX = 10 * 1024 * 1024 * 1024 * 1024
 LIVE_TRANSFER_CHUNK_MAX_BYTES = 1024 * 1024
 LIVE_TRANSFER_QUEUE_MAX_CHUNKS = 8
-LIVE_TRANSFER_DOWNLOAD_WAIT_SECONDS = 45
+# 接收端等待下一个分片的超时：需容忍发送端标签页短暂冻结/网络抖动等瞬时停顿。
+LIVE_TRANSFER_DOWNLOAD_WAIT_SECONDS = 120
 LIVE_TRANSFER_DOWNLOAD_ID_MAX_LENGTH = 96
+# 单次在线传输的文件数上限：每个并发下载会话占 8 分片内存缓冲，需设上限。
+LIVE_TRANSFER_MAX_FILES = 20
 
 
 def current_username() -> str:
@@ -120,6 +125,52 @@ def normalize_live_download_id(value: Any) -> str:
     return raw
 
 
+def normalize_live_transfer_file_entry(entry: Any) -> Dict[str, Any]:
+    """校验并标准化在线传输清单中的单个文件条目。"""
+    item = entry if isinstance(entry, dict) else {}
+    file_name = safe_filename(
+        item.get("file_name"),
+        default="transfer.bin",
+        max_len=180,
+    )
+    size = coerce_int(item.get("file_size", 0), 0, LIVE_TRANSFER_FILE_SIZE_MAX, "file_size")
+    mime_type = str(item.get("mime_type") or "").strip()[:180]
+
+    if not mime_type:
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+    return {
+        "file_name": file_name,
+        "size": int(size),
+        "mime_type": mime_type,
+    }
+
+
+def resolve_live_file_entry(record: Dict[str, Any], file_index: int) -> Dict[str, Any]:
+    """按索引取传输清单中的文件条目；旧记录没有清单时回落到 record 级字段。"""
+    manifest = record.get("files")
+    entries = manifest if isinstance(manifest, list) else []
+
+    if entries:
+        if file_index < 0 or file_index >= len(entries):
+            raise ValueError("file_index 超出文件清单范围")
+
+        entry = entries[file_index]
+        item = entry if isinstance(entry, dict) else {}
+
+        return {
+            "file_name": str(item.get("file_name") or "download.bin"),
+            "size": int(item.get("size") or 0),
+            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+        }
+
+    return {
+        "file_name": str(record.get("original_name") or "download.bin"),
+        "size": int(record.get("size") or 0),
+        "mime_type": str(record.get("mime_type") or "application/octet-stream"),
+    }
+
+
 def build_attachment_content_disposition(download_name: str) -> str:
     safe_download_name = safe_filename(download_name, default="download.bin", max_len=180)
     ascii_name = safe_download_name.encode("ascii", errors="ignore").decode("ascii").strip()
@@ -135,9 +186,10 @@ def build_attachment_content_disposition(download_name: str) -> str:
 class LiveTransferDownloadSession:
     """单个下载请求的内存中转队列，发送端写入分片，下载端同步读出分片。"""
 
-    def __init__(self, *, code_hash: str, download_id: str):
+    def __init__(self, *, code_hash: str, download_id: str, file_index: int = 0):
         self.code_hash = str(code_hash or "").strip()
         self.download_id = normalize_live_download_id(download_id)
+        self.file_index = max(0, int(file_index))
         self.condition = threading.Condition()
         self.chunks: Deque[bytes] = deque()
         self.closed = False
@@ -263,7 +315,7 @@ class LiveTransferRelayRuntime:
         self.lock = threading.RLock()
         self.sessions: Dict[str, LiveTransferDownloadSession] = {}
 
-    def create_download_session(self, *, code_hash: str) -> LiveTransferDownloadSession:
+    def create_download_session(self, *, code_hash: str, file_index: int = 0) -> LiveTransferDownloadSession:
         safe_code_hash = str(code_hash or "").strip()
 
         if not safe_code_hash:
@@ -277,6 +329,7 @@ class LiveTransferRelayRuntime:
                     session_item = LiveTransferDownloadSession(
                         code_hash=safe_code_hash,
                         download_id=download_id,
+                        file_index=file_index,
                     )
                     self.sessions[download_id] = session_item
 
@@ -489,9 +542,7 @@ class FileTransferStore:
         self,
         *,
         owner: str,
-        file_name: str,
-        file_size: int,
-        mime_type: str,
+        files: List[Dict[str, Any]],
         expires_in_minutes: int,
         max_downloads: int,
     ) -> Dict[str, Any]:
@@ -500,19 +551,20 @@ class FileTransferStore:
         if not safe_owner:
             raise PermissionError("login required")
 
-        if not str(file_name or "").strip():
-            raise ValueError("缺少 file_name")
+        raw_files = files if isinstance(files, list) else []
 
-        original_name = safe_filename(
-            file_name,
-            default="transfer.bin",
-            max_len=180,
-        )
-        safe_size = coerce_int(file_size, 0, LIVE_TRANSFER_FILE_SIZE_MAX, "file_size")
-        safe_mime_type = str(mime_type or "").strip()[:180]
+        if not raw_files:
+            raise ValueError("缺少待传输文件")
 
-        if not safe_mime_type:
-            safe_mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
+        if len(raw_files) > LIVE_TRANSFER_MAX_FILES:
+            raise ValueError(f"一次最多传输 {LIVE_TRANSFER_MAX_FILES} 个文件")
+
+        manifest = [normalize_live_transfer_file_entry(entry) for entry in raw_files]
+        first_entry = manifest[0]
+        total_size = sum(entry["size"] for entry in manifest)
+
+        if total_size > LIVE_TRANSFER_FILE_SIZE_MAX:
+            raise ValueError("文件总大小超过上限")
 
         created_at = int(time.time())
         expires_at = created_at + expires_in_minutes * 60
@@ -526,9 +578,10 @@ class FileTransferStore:
                 "transfer_type": "live",
                 "code_hash": code_hash,
                 "owner": safe_owner,
-                "original_name": original_name,
-                "size": int(safe_size),
-                "mime_type": safe_mime_type,
+                "original_name": first_entry["file_name"],
+                "size": int(total_size),
+                "mime_type": first_entry["mime_type"],
+                "files": manifest,
                 "relay_mode": "memory_stream",
                 "created_at": created_at,
                 "expires_at": expires_at,
@@ -748,6 +801,7 @@ class FileTransferStore:
         ip_address: str = "",
         user_agent: str = "",
         live_download_id: str = "",
+        live_file_index: int = 0,
     ) -> Dict[str, Any]:
         code_hash = hash_transfer_code(code)
         current_time = int(time.time())
@@ -770,6 +824,14 @@ class FileTransferStore:
 
             if is_live_transfer:
                 safe_download_id = normalize_live_download_id(live_download_id)
+                manifest = record.get("files")
+                entries = manifest if isinstance(manifest, list) else []
+                safe_file_index = max(0, int(live_file_index))
+
+                # 有清单的记录必须校验索引范围，避免下载端请求不存在的文件
+                if entries and safe_file_index >= len(entries):
+                    raise ValueError("file_index 超出文件清单范围")
+
                 events = record.get("download_events")
 
                 if not isinstance(events, list):
@@ -788,6 +850,7 @@ class FileTransferStore:
                     "type": "download_request",
                     "at": current_time,
                     "download_id": safe_download_id,
+                    "file_index": safe_file_index,
                     "ip": str(ip_address or "").strip()[:120],
                     "user_agent": str(user_agent or "").strip()[:500],
                 })
@@ -886,6 +949,17 @@ class FileTransferStore:
             default="download.bin",
             max_len=180,
         )
+        manifest = record.get("files")
+        raw_entries = manifest if isinstance(manifest, list) else []
+        public_files = [
+            {
+                "file_name": str(item.get("file_name") or "download.bin"),
+                "size": int(item.get("size") or 0),
+                "mime_type": str(item.get("mime_type") or "").strip() or "application/octet-stream",
+            }
+            for item in raw_entries
+            if isinstance(item, dict)
+        ]
 
         payload = {
             "file_name": file_name,
@@ -893,6 +967,7 @@ class FileTransferStore:
             "mime_type": str(record.get("mime_type") or "").strip()
             or mimetypes.guess_type(file_name)[0]
             or "application/octet-stream",
+            "files": public_files,
             "created_at": int(record.get("created_at") or 0),
             "expires_at": int(record.get("expires_at") or 0),
             "max_downloads": max_downloads,
@@ -986,13 +1061,13 @@ def get_live_transfer_request_file_size() -> int:
     )
 
 
-def build_transfer_download_headers(record: Dict[str, Any], download_name: str = "") -> Dict[str, str]:
+def build_transfer_download_headers(file_entry: Dict[str, Any]) -> Dict[str, str]:
     safe_download_name = safe_filename(
-        download_name or record.get("file_name") or record.get("original_name") or record.get("alias") or "download.bin",
+        file_entry.get("file_name") or "download.bin",
         default="download.bin",
         max_len=180,
     )
-    size = int(record.get("size") or 0)
+    size = int(file_entry.get("size") or 0)
     headers = {
         "Content-Disposition": build_attachment_content_disposition(safe_download_name),
         "Cache-Control": "no-store",
@@ -1005,24 +1080,16 @@ def build_transfer_download_headers(record: Dict[str, Any], download_name: str =
     return headers
 
 
-def build_transfer_head_response(record: Dict[str, Any]) -> Response:
-    download_name = safe_filename(
-        record.get("file_name") or record.get("original_name") or record.get("alias") or "download.bin",
-        default="download.bin",
-        max_len=180,
-    )
-    mimetype = str(record.get("mime_type") or "").strip() or mimetypes.guess_type(download_name)[0] or "application/octet-stream"
-    return Response(headers=build_transfer_download_headers(record, download_name), mimetype=mimetype)
+def build_transfer_head_response(record: Dict[str, Any], file_index: int = 0) -> Response:
+    file_entry = resolve_live_file_entry(record, file_index)
+    mimetype = str(file_entry.get("mime_type") or "").strip() or "application/octet-stream"
+    return Response(headers=build_transfer_download_headers(file_entry), mimetype=mimetype)
 
 
 def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTransferDownloadSession) -> Response:
     code_hash = str(record.get("code_hash") or session_item.code_hash or "").strip()
-    download_name = safe_filename(
-        record.get("original_name") or "download.bin",
-        default="download.bin",
-        max_len=180,
-    )
-    mimetype = str(record.get("mime_type") or "").strip() or mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+    file_entry = resolve_live_file_entry(record, session_item.file_index)
+    mimetype = str(file_entry.get("mime_type") or "").strip() or "application/octet-stream"
 
     def generate():
         completed = False
@@ -1073,7 +1140,7 @@ def stream_live_transfer_download(record: Dict[str, Any], session_item: LiveTran
 
     return Response(
         stream_with_context(generate()),
-        headers=build_transfer_download_headers(record, download_name),
+        headers=build_transfer_download_headers(file_entry),
         mimetype=mimetype,
     )
 
@@ -1138,38 +1205,23 @@ def create_live_file_transfer():
             raise ValueError("在线传输不接收文件内容，请只提交文件元数据")
 
         data = request.get_json(silent=True) or {}
-        file_name = str(
-            data.get("file_name")
-            or data.get("filename")
-            or request.form.get("file_name")
-            or request.form.get("filename")
-            or ""
-        ).strip()
-        file_size = data.get("file_size", request.form.get("file_size", request.form.get("size", 0)))
-        mime_type = str(
-            data.get("mime_type")
-            or data.get("type")
-            or request.form.get("mime_type")
-            or request.form.get("type")
-            or ""
-        ).strip()
+        raw_files = data.get("files")
+        files = raw_files if isinstance(raw_files, list) else []
         expires_in_minutes = coerce_int(
-            data.get("expires_in_minutes", request.form.get("expires_in_minutes", TRANSFER_EXPIRE_MINUTES_DEFAULT)),
+            data.get("expires_in_minutes", TRANSFER_EXPIRE_MINUTES_DEFAULT),
             TRANSFER_EXPIRE_MINUTES_MIN,
             TRANSFER_EXPIRE_MINUTES_MAX,
             "expires_in_minutes",
         )
         max_downloads = coerce_int(
-            data.get("max_downloads", request.form.get("max_downloads", TRANSFER_MAX_DOWNLOADS_DEFAULT)),
+            data.get("max_downloads", TRANSFER_MAX_DOWNLOADS_DEFAULT),
             TRANSFER_MAX_DOWNLOADS_MIN,
             TRANSFER_MAX_DOWNLOADS_MAX,
             "max_downloads",
         )
         transfer = transfer_store.create_live_transfer(
             owner=username,
-            file_name=file_name,
-            file_size=file_size,
-            mime_type=mime_type,
+            files=files,
             expires_in_minutes=expires_in_minutes,
             max_downloads=max_downloads,
         )
@@ -1376,17 +1428,28 @@ def download_file_transfer(code):
     session_item = None
 
     try:
+        file_index = coerce_int(
+            request.args.get("file_index", 0),
+            0,
+            LIVE_TRANSFER_MAX_FILES - 1,
+            "file_index",
+        )
+
         if request.method == "HEAD":
             record = transfer_store.get_public_record(code)
-            return build_transfer_head_response(record)
+            return build_transfer_head_response(record, file_index)
 
         code_hash = hash_transfer_code(code)
-        session_item = live_transfer_runtime.create_download_session(code_hash=code_hash)
+        session_item = live_transfer_runtime.create_download_session(
+            code_hash=code_hash,
+            file_index=file_index,
+        )
         record = transfer_store.claim_download(
             code,
             ip_address=get_download_client_ip(),
             user_agent=str(request.headers.get("User-Agent") or "").strip(),
             live_download_id=session_item.download_id,
+            live_file_index=file_index,
         )
 
         if str(record.get("transfer_type") or "").strip() == "live":

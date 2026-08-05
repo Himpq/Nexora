@@ -678,7 +678,7 @@
 
     async function loadStatusData() {
         try {
-            const response = await fetch("/api/status/overview", { credentials: "include" });
+            const response = await fetch("/api/rank/overview", { credentials: "include" });
             const payload = await response.json().catch(() => ({}));
 
             if (!response.ok || !payload.success || !payload.status) {

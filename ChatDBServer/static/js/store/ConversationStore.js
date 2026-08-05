@@ -41,7 +41,7 @@ export class ConversationStore extends ReactiveStore {
             hasImageHistory: false,
 
             // 待重新生成的过滤条件 {conversationId, index}
-            pendingRegenerateFilter: null
+            pendingRegenerateFilter: { conversationId: '', index: -1 }
         });
     }
 

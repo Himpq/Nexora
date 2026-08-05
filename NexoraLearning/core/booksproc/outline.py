@@ -218,6 +218,24 @@ def _build_outline_tools() -> List[Dict[str, Any]]:
                             "type": "string",
                             "description": "Course title"
                         },
+                        "course_summary": {
+                            "type": "string",
+                            "description": "课程简介：一两句话概括这门课程是什么、适合谁、学完能收获什么（80-150字）"
+                        },
+                        "course_long_summary": {
+                            "type": "string",
+                            "description": "课程长简介：面向课程知识领域本身的泛化性介绍，不绑定具体教材章节，阐述课程背景、核心内容脉络与价值（300-500字）"
+                        },
+                        "learning_objectives": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "学习目标：学完本课程后应具备的知识与能力（3-6条，泛化性表述）"
+                        },
+                        "learning_tasks": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "学习任务：为达成学习目标需要完成的关键学习任务（3-6条，泛化性表述）"
+                        },
                         "sections": {
                             "type": "array",
                             "description": "List of learning sections",
@@ -335,6 +353,14 @@ def _normalize_outline_sections(raw_sections: Any) -> List[Dict[str, Any]]:
     return parsed_sections
 
 
+def _normalize_str_list(raw: Any) -> List[str]:
+    """把模型返回的字符串数组字段规范化为非空字符串列表。"""
+    if not isinstance(raw, list):
+        return []
+
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
 def generate_outline(
     cfg: Mapping[str, Any],
     lecture_id: str,
@@ -426,7 +452,7 @@ def generate_outline(
     model_name = str(models_cfg.get("default_nexora_model") or "").strip()
     temperature = 0.3
     max_output_tokens = 8000
-    request_timeout = 300
+    request_timeout = 90
 
     # 工具定义
     tools = _build_outline_tools()
@@ -453,7 +479,13 @@ def generate_outline(
         log_event(
             "outline_round",
             "大纲生成轮次",
-            payload={"turn": turn, "messages_count": len(request_messages)},
+            payload={
+                "turn": turn,
+                "messages_count": len(request_messages),
+                "model_stream": False,
+                "tool_choice": "submit_outline",
+                "request_timeout": request_timeout,
+            },
         )
 
         round_fragments: List[str] = []
@@ -488,9 +520,11 @@ def generate_outline(
             options={
                 "temperature": temperature,
                 "max_tokens": max_output_tokens,
-                "stream": True,
+                # PAPI 上游在工具调用开启时不会返回有效流式增量；浏览器 SSE
+                # 仍由 generate-stream 路由持续发送状态，模型工具请求固定非流式。
+                "stream": False,
                 "tools": tools,
-                "tool_choice": "auto",
+                "tool_choice": {"type": "function", "function": {"name": "submit_outline"}},
             },
             use_chat_path=False,
             request_timeout=request_timeout,
@@ -638,10 +672,18 @@ def generate_outline(
                 emit_status("模型已调用 submit_outline，正在校验大纲结构")
                 course_title = str(args_obj.get("course_title") or lecture_title).strip()
                 parsed_sections = _normalize_outline_sections(args_obj.get("sections"))
+                course_summary = str(args_obj.get("course_summary") or "").strip()
+                course_long_summary = str(args_obj.get("course_long_summary") or "").strip()
+                learning_objectives = _normalize_str_list(args_obj.get("learning_objectives"))
+                learning_tasks = _normalize_str_list(args_obj.get("learning_tasks"))
 
                 if parsed_sections:
                     result_outline = {
                         "course_title": course_title,
+                        "course_summary": course_summary,
+                        "course_long_summary": course_long_summary,
+                        "learning_objectives": learning_objectives,
+                        "learning_tasks": learning_tasks,
                         "sections": parsed_sections,
                     }
                     outline_submitted = True

@@ -1,0 +1,240 @@
+.status-page {
+    padding: 94px 44px 116px;
+}
+
+.status-shell {
+    width: min(100%, 980px);
+    margin: 0 auto;
+}
+
+.status-heading {
+    margin-bottom: 42px;
+}
+
+.status-heading .eyebrow {
+    margin-bottom: 18px;
+}
+
+.status-heading h1 {
+    margin: 0;
+    color: #ffffff;
+    font-size: clamp(48px, 5vw, 72px);
+    font-weight: 760;
+    line-height: 1;
+}
+
+.status-heading > p:last-child {
+    margin: 18px 0 0;
+    color: rgba(247, 247, 242, 0.58);
+    font-size: 14px;
+}
+
+.overall-status {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 28px;
+    min-height: 92px;
+    padding: 24px 30px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: #ffffff;
+}
+
+.overall-status strong {
+    font-size: 26px;
+    font-weight: 760;
+}
+
+.overall-status span {
+    color: rgba(255, 255, 255, 0.74);
+    font-size: 14px;
+    text-align: right;
+}
+
+.overall-status.is-operational {
+    background: #3d7b18;
+}
+
+.overall-status.is-degraded {
+    background: #875f0e;
+}
+
+.overall-status.is-outage {
+    background: #8a303c;
+}
+
+.overall-status.is-unknown {
+    background: #252525;
+}
+
+.status-service-list {
+    margin-top: 42px;
+    padding: 0;
+}
+
+.status-list-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 30px;
+    color: rgba(247, 247, 242, 0.58);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.status-service-row {
+    position: relative;
+    z-index: 1;
+    padding: 30px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.status-service-row:last-child {
+    border-bottom: 0;
+}
+
+.service-row-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.service-row-header h2 {
+    margin: 0;
+    color: #ffffff;
+    font-size: 21px;
+    font-weight: 760;
+}
+
+.service-state {
+    flex: 0 0 auto;
+    font-size: 15px;
+    font-weight: 760;
+}
+
+.service-row-metrics {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 16px;
+}
+
+.service-latency {
+    color: rgba(247, 247, 242, 0.54);
+    font-size: 14px;
+    font-weight: 760;
+    white-space: nowrap;
+}
+
+.service-state.is-operational {
+    color: var(--mint);
+}
+
+.service-state.is-degraded {
+    color: var(--peach);
+}
+
+.service-state.is-outage {
+    color: var(--rose);
+}
+
+.service-state.is-unknown {
+    color: var(--muted);
+}
+
+.availability-bars {
+    display: grid;
+    grid-template-columns: repeat(60, minmax(3px, 1fr));
+    gap: 4px;
+    height: 42px;
+    margin-top: 18px;
+}
+
+.availability-bar {
+    min-width: 3px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.availability-bar.is-operational {
+    background: var(--mint);
+}
+
+.availability-bar.is-degraded {
+    background: var(--peach);
+}
+
+.availability-bar.is-outage {
+    background: var(--rose);
+}
+
+.availability-timeline {
+    display: grid;
+    grid-template-columns: auto minmax(12px, 1fr) auto minmax(12px, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    margin-top: 12px;
+    color: rgba(247, 247, 242, 0.54);
+    font-size: 13px;
+}
+
+.availability-timeline strong {
+    color: rgba(247, 247, 242, 0.7);
+    font-size: 13px;
+    font-weight: 760;
+    white-space: nowrap;
+}
+
+.availability-line {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.empty-state {
+    position: relative;
+    z-index: 1;
+    padding: 32px 30px;
+    color: rgba(247, 247, 242, 0.62);
+}
+
+@media (max-width: 760px) {
+    .status-page {
+        padding: 58px 22px 84px;
+    }
+
+    .overall-status {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .overall-status span {
+        text-align: left;
+    }
+
+    .status-list-heading {
+        display: block;
+    }
+
+    .status-list-heading span:last-child {
+        display: none;
+    }
+
+    .status-service-row,
+    .status-list-heading {
+        padding-right: 20px;
+        padding-left: 20px;
+    }
+
+    .availability-bars {
+        gap: 2px;
+    }
+
+    .availability-timeline {
+        gap: 8px;
+        font-size: 12px;
+    }
+}

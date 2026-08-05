@@ -1,9 +1,15 @@
 """Personalized learning and mindmap routes."""
 
+from typing import Callable
+
 from api import routes as _routes
 
 # The first split keeps common helpers in api.routes while route handlers move by domain.
 _routes._export_route_context(globals())
+
+
+_MINDMAP_STREAM_LOCK = threading.Lock()
+_ACTIVE_MINDMAP_STREAMS = set()
 
 
 def _queue_learning_path_status(events: Any, message: str) -> None:
@@ -957,11 +963,76 @@ def frontend_personalized_learning_chapter_complete():
         "memory_enqueue": memory_job,
     })
 
+
+def _load_personalized_chapter_quiz_context(
+    user_id: str,
+    lecture_id: str,
+    chapter_index: int,
+) -> Dict[str, Any]:
+    """校验个性化章节并组装课后测验唯一上下文。"""
+    from core.booksproc.personalized_learning import load_chapter_content, load_learning_path
+
+    path_data = load_learning_path(_cfg, user_id, lecture_id)
+    if not path_data:
+        raise FileNotFoundError("学习路线未生成。")
+
+    chapters = path_data.get("chapters") if isinstance(path_data, dict) else []
+    if not isinstance(chapters, list) or chapter_index < 0 or chapter_index >= len(chapters):
+        raise ValueError("章节索引超出范围。")
+
+    chapter = chapters[chapter_index] if isinstance(chapters[chapter_index], dict) else {}
+    chapter_name = str(chapter.get("name") or "").strip()
+    book_id = str(chapter.get("book_id") or "").strip()
+    chapter_range = str(chapter.get("chapter_range") or "").strip()
+    chapter_content = str(load_chapter_content(_cfg, user_id, lecture_id, chapter_index) or "").strip()
+
+    if not book_id or not chapter_name:
+        raise ValueError("学习路线章节缺少教材信息。")
+
+    if not chapter_content:
+        raise ValueError("请先生成本章学习素材。")
+
+    return {
+        "book_id": book_id,
+        "chapter_name": chapter_name,
+        "chapter_range": chapter_range,
+        "chapter_content": chapter_content[:12000],
+    }
+
+
+def _create_personalized_chapter_quiz(
+    user_id: str,
+    lecture_id: str,
+    chapter_index: int,
+    context: Mapping[str, Any],
+    *,
+    on_delta: Optional[Callable[[str], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """以同一入口读取或生成测验，供 JSON 与 SSE 路由复用。"""
+    from core.booksproc.chapter_quiz import load_or_create_chapter_quiz
+
+    return load_or_create_chapter_quiz(
+        _cfg,
+        user_id=user_id,
+        lecture_id=lecture_id,
+        book_id=str(context.get("book_id") or ""),
+        chapter_index=chapter_index,
+        chapter_name=str(context.get("chapter_name") or ""),
+        chapter_range=str(context.get("chapter_range") or ""),
+        chapter_context=str(context.get("chapter_content") or ""),
+        chapter_detail_xml="",
+        on_delta=on_delta,
+        on_status=on_status,
+    )
+
+
 @bp.route("/frontend/personalized-learning/chapter-quiz", methods=["POST"])
 def frontend_personalized_learning_chapter_quiz():
-    """读取或创建基于个性化学习素材的章节练习。"""
+    """兼容非流式客户端读取或创建个性化章节练习。"""
     data = request.get_json(silent=True) or {}
     lecture_id = str(data.get("lecture_id") or "").strip()
+
     try:
         chapter_index = int(data.get("chapter_index"))
     except (TypeError, ValueError):
@@ -974,40 +1045,9 @@ def frontend_personalized_learning_chapter_quiz():
     if not user_id:
         return jsonify({"success": False, "error": "user_id is required."}), 400
 
-    from core.booksproc.personalized_learning import load_chapter_content, load_learning_path
-
-    path_data = load_learning_path(_cfg, user_id, lecture_id)
-    if not path_data:
-        return jsonify({"success": False, "error": "学习路线未生成。"}), 404
-
-    chapters = path_data.get("chapters") if isinstance(path_data, dict) else []
-    if not isinstance(chapters, list) or chapter_index < 0 or chapter_index >= len(chapters):
-        return jsonify({"success": False, "error": "章节索引超出范围。"}), 400
-
-    chapter = chapters[chapter_index] if isinstance(chapters[chapter_index], dict) else {}
-    chapter_name = str(chapter.get("name") or "").strip()
-    book_id = str(chapter.get("book_id") or "").strip()
-    chapter_range = str(chapter.get("chapter_range") or "").strip()
-    chapter_content = str(load_chapter_content(_cfg, user_id, lecture_id, chapter_index) or "").strip()
-
-    if not book_id or not chapter_name:
-        return jsonify({"success": False, "error": "学习路线章节缺少教材信息。"}), 400
-    if not chapter_content:
-        return jsonify({"success": False, "error": "请先生成本章学习素材。"}), 400
-
     try:
-        from core.booksproc.chapter_quiz import load_or_create_chapter_quiz
-        quiz = load_or_create_chapter_quiz(
-            _cfg,
-            user_id=user_id,
-            lecture_id=lecture_id,
-            book_id=book_id,
-            chapter_index=chapter_index,
-            chapter_name=chapter_name,
-            chapter_range=chapter_range,
-            chapter_context=chapter_content[:12000],
-            chapter_detail_xml="",
-        )
+        context = _load_personalized_chapter_quiz_context(user_id, lecture_id, chapter_index)
+        quiz = _create_personalized_chapter_quiz(user_id, lecture_id, chapter_index, context)
         return jsonify({
             "success": True,
             "quiz": quiz,
@@ -1015,6 +1055,10 @@ def frontend_personalized_learning_chapter_quiz():
             "questions": quiz.get("questions") or [],
             "answers": quiz.get("answers") or {},
         }), 200
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
     except Exception as exc:
         log_event(
             "personalized_chapter_quiz_error",
@@ -1022,6 +1066,120 @@ def frontend_personalized_learning_chapter_quiz():
             payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
         )
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/personalized-learning/chapter-quiz-stream", methods=["GET"])
+def frontend_personalized_learning_chapter_quiz_stream():
+    """打开个性化章节后以 SSE 读取或流式生成课后测验。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    chapter_index_text = str(request.args.get("chapter_index") or "").strip()
+
+    if not lecture_id:
+        return Response(
+            _reader_guide_sse_event("error", {"success": False, "error": "lecture_id is required."}),
+            mimetype="text/event-stream",
+        )
+
+    try:
+        chapter_index = int(chapter_index_text)
+    except (TypeError, ValueError):
+        return Response(
+            _reader_guide_sse_event("error", {"success": False, "error": "chapter_index must be integer."}),
+            mimetype="text/event-stream",
+        )
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return Response(
+            _reader_guide_sse_event("error", {"success": False, "error": "user_id is required."}),
+            mimetype="text/event-stream",
+        )
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+
+            if text:
+                push_event("delta", {"content": text})
+
+        def push_status(message: str) -> None:
+            text = str(message or "").strip()
+
+            if text:
+                push_event("status", {"message": text})
+
+        def run_worker() -> None:
+            try:
+                context = _load_personalized_chapter_quiz_context(user_id, lecture_id, chapter_index)
+                quiz = _create_personalized_chapter_quiz(
+                    user_id,
+                    lecture_id,
+                    chapter_index,
+                    context,
+                    on_delta=push_delta,
+                    on_status=push_status,
+                )
+                push_event("done", {
+                    "success": True,
+                    "quiz": quiz,
+                    "quiz_id": quiz.get("quiz_id"),
+                    "questions": quiz.get("questions") or [],
+                    "answers": quiz.get("answers") or {},
+                })
+            except Exception as exc:
+                log_event(
+                    "personalized_chapter_quiz_stream_error",
+                    str(exc),
+                    payload={
+                        "user_id": user_id,
+                        "lecture_id": lecture_id,
+                        "chapter_index": chapter_index,
+                    },
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(
+            target=run_worker,
+            name="personalized-chapter-quiz-stream",
+            daemon=True,
+        )
+        started_at = time.monotonic()
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "正在准备本章测验"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=15)
+            except queue.Empty:
+                elapsed_seconds = max(0, int(time.monotonic() - started_at))
+                yield _reader_guide_sse_event(
+                    "status",
+                    {"message": f"模型仍在生成本章测验，已等待 {elapsed_seconds} 秒"},
+                )
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @bp.route("/frontend/personalized-learning/save-qa", methods=["POST"])
 def frontend_personalized_learning_save_qa():
@@ -1187,6 +1345,27 @@ def frontend_personalized_learning_generate_qa_stream():
         },
     )
 
+def _load_section_difficulty(lecture_id: str) -> Dict[str, str]:
+    """读取课程大纲中各 section 的难度标注（知识图谱按难度着色节点）。"""
+    from core.booksproc.outline import load_outline
+
+    outline = load_outline(_cfg, lecture_id)
+    if not isinstance(outline, dict):
+        return {}
+
+    difficulty_map: Dict[str, str] = {}
+    for section in outline.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+
+        section_id = str(section.get("id") or "").strip()
+        difficulty = str(section.get("difficulty") or "").strip()
+
+        if section_id and difficulty:
+            difficulty_map[section_id] = difficulty
+
+    return difficulty_map
+
 @bp.route("/frontend/mindmap/<lecture_id>", methods=["GET"])
 def frontend_get_mindmap(lecture_id: str):
     """读取已生成的课程级思维导图。"""
@@ -1195,7 +1374,11 @@ def frontend_get_mindmap(lecture_id: str):
     mindmap = load_mindmap(_cfg, lecture_id)
     if mindmap is None:
         return jsonify({"success": False, "error": "思维导图尚未生成"}), 404
-    return jsonify({"success": True, "mindmap": mindmap})
+    return jsonify({
+        "success": True,
+        "mindmap": mindmap,
+        "section_difficulty": _load_section_difficulty(lecture_id),
+    })
 
 @bp.route("/frontend/mindmap/<lecture_id>/generate-stream", methods=["GET"])
 def frontend_generate_mindmap_stream(lecture_id: str):
@@ -1206,7 +1389,21 @@ def frontend_generate_mindmap_stream(lecture_id: str):
         return Response('event: error\ndata: {"error": "lecture_id is required"}\n\n', mimetype="text/event-stream")
 
     def event_stream():
+        generation_key = (runtime_user_id, safe_lecture_id)
+        generation_in_progress = False
+        with _MINDMAP_STREAM_LOCK:
+            if generation_key in _ACTIVE_MINDMAP_STREAMS:
+                generation_in_progress = True
+            else:
+                _ACTIVE_MINDMAP_STREAMS.add(generation_key)
+
+        if generation_in_progress:
+            yield 'event: error\ndata: {"error": "该课程的知识图谱正在生成，请等待当前任务完成。"}\n\n'
+            return
+
         events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+        cancel_event = threading.Event()
+        generation_started_at = time.monotonic()
 
         def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
             events.put((event_name, event_payload))
@@ -1236,8 +1433,13 @@ def frontend_generate_mindmap_stream(lecture_id: str):
                     on_status=push_status,
                     on_delta=push_delta,
                     stream=True,
+                    cancel_event=cancel_event,
                 )
-                push_event("done", {"success": True, "mindmap": result})
+                push_event("done", {
+                    "success": True,
+                    "mindmap": result,
+                    "section_difficulty": _load_section_difficulty(safe_lecture_id),
+                })
             except Exception as exc:
                 log_event(
                     "mindmap_stream_error",
@@ -1246,24 +1448,33 @@ def frontend_generate_mindmap_stream(lecture_id: str):
                 )
                 push_event("error", {"success": False, "error": str(exc)})
             finally:
+                with _MINDMAP_STREAM_LOCK:
+                    _ACTIVE_MINDMAP_STREAMS.discard(generation_key)
                 push_event("close", {})
 
-        thread = threading.Thread(target=run_worker, name="mindmap-generate-stream", daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=run_worker, name="mindmap-generate-stream", daemon=True)
+            thread.start()
 
-        yield to_sse("status", {"message": "思维导图流式生成已启动"})
+            yield to_sse("status", {"message": "思维导图流式生成已启动"})
 
-        while True:
-            try:
-                event_name, event_payload = events.get(timeout=20)
-            except queue.Empty:
-                yield to_sse("ping", {"timestamp": time.time()})
-                continue
+            while True:
+                try:
+                    event_name, event_payload = events.get(timeout=15)
+                except queue.Empty:
+                    elapsed_seconds = max(0, int(time.monotonic() - generation_started_at))
+                    yield to_sse(
+                        "ping",
+                        {"message": f"模型正在准备关系图谱，已等待 {elapsed_seconds} 秒（首个响应最长 90 秒）"},
+                    )
+                    continue
 
-            if event_name == "close":
-                break
+                if event_name == "close":
+                    break
 
-            yield to_sse(event_name, event_payload)
+                yield to_sse(event_name, event_payload)
+        finally:
+            cancel_event.set()
 
     return Response(
         stream_with_context(event_stream()),

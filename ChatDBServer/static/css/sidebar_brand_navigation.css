@@ -1,0 +1,30 @@
+#sidebarBrandTabs[data-sidebar-brand-mode="workspace"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#sidebarBrandTabs[data-sidebar-brand-mode="workspace"] .sidebar-brand-tab {
+    width: 100%;
+    min-width: 0;
+    padding-bottom: 4px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+/* 视觉选中态由同一状态机的数据属性决定，避免异步业务模块留下旧 tab 的下划线。 */
+#sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandNexoraTab,
+#sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab {
+    border-bottom-color: rgba(255, 255, 255, 0.95);
+}
+
+#sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandLearningTab,
+#sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandNexoraTab {
+    border-bottom-color: transparent;
+}
+
+body.learning-workspace-active #sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab {
+    border-bottom-color: #20242c;
+}

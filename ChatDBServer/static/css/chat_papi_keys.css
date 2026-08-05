@@ -16,19 +16,47 @@
 
 #settingsModal .papi-key-list-item {
     appearance: none;
-    background: transparent;
+    align-items: start;
+    background: #ffffff;
     border: 0;
-    color: inherit;
+    border-bottom: 1px solid #e2e8f0;
+    color: #334155;
     cursor: pointer;
-    display: flex;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 40px minmax(0, 1fr);
+    min-height: 72px;
+    padding: 10px 12px;
     text-align: left;
     width: 100%;
+}
+
+#settingsModal .papi-key-list-item:hover {
+    background: #f8fafc;
+}
+
+#settingsModal .admin-public-api-key-icon {
+    align-items: center;
+    align-self: center;
+    color: #334155;
+    display: inline-flex;
+    flex: 0 0 40px;
+    height: 40px;
+    justify-content: center;
+    width: 40px;
 }
 
 #settingsModal .papi-key-list-main {
     display: grid;
     gap: 3px;
     min-width: 0;
+}
+
+#settingsModal .papi-key-list-main .admin-user-name,
+#settingsModal .papi-key-list-main .admin-user-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 #settingsModal .papi-key-meta-row {

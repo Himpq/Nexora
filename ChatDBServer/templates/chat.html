@@ -19,24 +19,25 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260726_papi_modal_04">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260730_dashboard_nav_03">
+    <link rel="stylesheet" href="/static/css/sidebar_brand_navigation.css?v=20260729_sidebar_brand_02">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260714_tool_flow_01">
-    <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260714_memory_model_compact_02">
+    <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260729_memory_model_layer_01">
     <link rel="stylesheet" href="/static/css/chat_skill_market.css?v=20260725_skill_market_01">
     <link rel="stylesheet" href="/static/css/chat_token_details.css?v=20260715_token_detail_01">
     <link rel="stylesheet" href="/static/css/chat_conversation_branches.css?v=20260716_conversation_branches_01">
     <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
-    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260717_course_sidebar_state_01">
+    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260730_style_unify_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
-    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_live_transfer_stream_01">
-    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260726_papi_slider_06">
-    <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260726_settings_dialog_04">
-    <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260726_settings_management_02">
+    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260729_multi_transfer_01">
+    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260728_papi_list_08">
+    <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07">
+    <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260728_settings_management_06">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
 </head>
 <body>
@@ -74,6 +75,68 @@
                         <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                         <span>Files</span>
                     </button>
+                    <button id="learningProgressBtn" class="toolbar-item learning-nav-item" type="button" hidden>
+                        <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
+                        <span>课程进度</span>
+                    </button>
+                    <button id="learningCoursesBtn" class="toolbar-item learning-nav-item" type="button" hidden>
+                        <i class="fa-solid fa-graduation-cap" aria-hidden="true"></i>
+                        <span>课程列表</span>
+                    </button>
+                    <div id="learningResourcesGroup" class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item is-collapsed" hidden>
+                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
+                            <button id="learningResourcesBtn" class="nexoracode-sidebar-project-main learning-resource-nav-main" type="button" aria-haspopup="true" aria-expanded="false">
+                                <i class="fa-solid fa-book-open nexoracode-sidebar-project-icon" aria-hidden="true"></i>
+                                <span class="nexoracode-sidebar-project-name">学习资源</span>
+                            </button>
+                            <span class="nexoracode-sidebar-actions">
+                                <button id="learningResourcesToggleBtn" class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle" type="button" aria-label="展开学习资源工作台" title="展开学习资源工作台" aria-controls="learningResourcesStudioMenu" aria-expanded="false">
+                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                </button>
+                            </span>
+                        </div>
+                        <div id="learningResourcesStudioMenu" class="nexoracode-sidebar-project-conversations learning-resource-studio-menu" aria-hidden="true">
+                            <div class="nexoracode-sidebar-project-conversations-inner">
+                                <button type="button" class="learning-resource-studio-item" data-learning-studio="resource">
+                                    <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+                                    <span>资源工作台</span>
+                                </button>
+                                <button type="button" class="learning-resource-studio-item" data-learning-studio="video">
+                                    <i class="fa-solid fa-clapperboard" aria-hidden="true"></i>
+                                    <span>视频工作台</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="learningPracticeGroup" class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item is-collapsed" hidden>
+                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
+                            <button id="learningPracticeBtn" class="nexoracode-sidebar-project-main learning-resource-nav-main" type="button" aria-haspopup="true" aria-expanded="false">
+                                <i class="fa-solid fa-pen-to-square nexoracode-sidebar-project-icon" aria-hidden="true"></i>
+                                <span class="nexoracode-sidebar-project-name">模拟练习</span>
+                            </button>
+                            <span class="nexoracode-sidebar-actions">
+                                <button id="learningPracticeToggleBtn" class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle" type="button" aria-label="展开模拟练习" title="展开模拟练习" aria-controls="learningPracticeMenu" aria-expanded="false">
+                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                </button>
+                            </span>
+                        </div>
+                        <div id="learningPracticeMenu" class="nexoracode-sidebar-project-conversations learning-resource-studio-menu" aria-hidden="true">
+                            <div class="nexoracode-sidebar-project-conversations-inner">
+                                <button type="button" class="learning-resource-studio-item" data-learning-practice="mistakes">
+                                    <i class="fa-solid fa-book-bookmark" aria-hidden="true"></i>
+                                    <span>错题本</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <button id="learningProfileBtn" class="toolbar-item learning-nav-item" type="button" hidden>
+                        <i class="fa-solid fa-user-pen" aria-hidden="true"></i>
+                        <span>画像中心</span>
+                    </button>
+                    <button id="learningFeedBtn" class="toolbar-item learning-nav-item" type="button" hidden>
+                        <i class="fa-solid fa-rss" aria-hidden="true"></i>
+                        <span>动态中心</span>
+                    </button>
                 </div>
             </div>
 
@@ -97,9 +160,9 @@
                     <i class="fa-solid fa-ellipsis"></i>
                     
                     <div class="user-menu" id="userMenu">
-                        <a href="./status" class="menu-item" id="">
+                        <a href="/rank" class="menu-item" id="">
                             <i class="fa-solid fa-gear"></i>
-                            <span>状态</span>
+                            <span>模型榜单</span>
                         </a>
                         <a href="#" class="menu-item" id="settingsBtn">
                             <i class="fa-solid fa-gear"></i>
@@ -753,7 +816,7 @@
     <script type="module" src="/static/js/knowledge_collab_client.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_knowledge.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_model_select.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat_memory_settings.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_memory_settings.js?v=20260729_memory_model_select_01"></script>
     <script type="module" src="/static/js/chat_tools.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_tool_canvas.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_conversation_branches.js?v=20260726_esm_01"></script>
@@ -768,11 +831,12 @@
     <script type="module" src="/static/js/chat_admin.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_skill_market.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_markdown.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat_files.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat_settings_dialog.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_files.js?v=20260729_multi_transfer_02"></script>
+    <script type="module" src="/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01"></script>
+    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>
     <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260731_course_context_03"></script>
+    <script type="module" src="/static/js/chat.js?v=20260731_profile_center_01"></script>
     <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/workspace.js?v=20260726_esm_01"></script>
@@ -783,7 +847,7 @@
     </script>
     <script type="module" src="/static/js/nexora_map_renderer.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/admin_map_settings.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/learning_course_workspace.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/learning_course_workspace.js?v=20260731_course_context_01"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -1031,11 +1095,12 @@
                 </div>
                 <div id="adminPublicApiModalLatestKeyGroup" class="papi-plain-result" hidden>
                     <div class="papi-plain-result-label">新 API Key（仅显示一次）</div>
-                    <div id="adminPublicApiModalLatestKey" class="papi-plain-result-value"></div>
-                    <button id="adminPublicApiModalCopyBtn" class="btn-primary-outline" type="button">
-                        <i class="fa-regular fa-copy" aria-hidden="true"></i>
-                        <span>复制 Key</span>
-                    </button>
+                    <div class="papi-plain-result-key-row">
+                        <div id="adminPublicApiModalLatestKey" class="papi-plain-result-value"></div>
+                        <button id="adminPublicApiModalCopyBtn" class="papi-copy-icon-button" type="button" title="复制 Key" aria-label="复制 Key">
+                            <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer settings-dialog-footer">
@@ -1068,11 +1133,12 @@
                 </div>
                 <div id="userPapiKeyPlainResult" class="papi-plain-result" hidden>
                     <div class="papi-plain-result-label">新 API Key</div>
-                    <div id="userPapiKeyPlainValue" class="papi-plain-result-value"></div>
-                    <button id="userPapiKeyCopyBtn" class="btn-primary-outline" type="button">
-                        <i class="fa-regular fa-copy" aria-hidden="true"></i>
-                        <span>复制 Key</span>
-                    </button>
+                    <div class="papi-plain-result-key-row">
+                        <div id="userPapiKeyPlainValue" class="papi-plain-result-value"></div>
+                        <button id="userPapiKeyCopyBtn" class="papi-copy-icon-button" type="button" title="复制 Key" aria-label="复制 Key">
+                            <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer settings-dialog-footer">
@@ -1277,6 +1343,16 @@
                                         </div>
                                     </div>
                                     <div id="set-learning-mode-desc" class="settings-help-text">开启后默认进入 Learning 侧边栏；点击侧边栏里的 New Chat 可打开 NexoraLearning 学习界面。</div>
+                                </div>
+                                <div class="form-group settings-pref-card settings-pref-card-wide" id="defaultOpenViewCard" style="display:none;">
+                                    <label>默认打开</label>
+                                    <div class="settings-pref-inline">
+                                        <div class="settings-mode-toggle" id="defaultOpenViewToggleGroup" role="tablist" aria-label="默认打开">
+                                            <button id="set-default-open-nexora" class="settings-mode-toggle-btn" type="button" data-default-open-view="nexora">Nexora</button>
+                                            <button id="set-default-open-learning" class="settings-mode-toggle-btn active" type="button" data-default-open-view="learning">NexoraLearning</button>
+                                        </div>
+                                    </div>
+                                    <div id="set-default-open-desc" class="settings-help-text">学习模式开启时，默认打开的视图。</div>
                                 </div>
                             </div>
                             <section class="settings-memory-profile" aria-labelledby="settingsMemoryProfileTitle">
@@ -1790,6 +1866,9 @@
                                 <div class="admin-user-token-query">
                                     <div class="admin-user-token-selector" id="adminUserTokenStatsUserSelector">
                                         <input id="adminUserTokenStatsUsernameInput" class="input-modern" placeholder="输入用户 ID" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                        <button id="adminUserTokenStatsClearBtn" class="admin-user-token-clear" type="button" aria-label="清空用户 ID" title="清空">
+                                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                                        </button>
                                         <div id="adminUserTokenStatsUserMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
                                     </div>
                                     <select id="adminUserTokenStatsRangeSelect" class="input-modern">
@@ -1835,7 +1914,7 @@
                                     </table>
                                 </div>
                             </div>
-                            <div class="admin-token-trend-card" style="margin-top: 12px;">
+                            <div class="admin-token-trend-card">
                                 <div class="admin-token-trend-head">
                                     <h4>Tool Observability (30d)</h4>
                                     <span id="adminToolTrendMeta" class="admin-token-trend-meta">-</span>

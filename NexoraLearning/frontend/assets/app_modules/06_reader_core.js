@@ -605,7 +605,6 @@
     if (atBottom) currentRelativeEnd = chapterLength;   // 兜底，确保浮点精度不上浮
     
     let changed = false;
-    let lastCompletedSession = null;
     const progress = ensureReaderSessionProgress();
     if (!progress || !progress.completedSessions) return;
     
@@ -620,24 +619,12 @@
         progress.completedSessions.add(sessionKey);
         reportSessionComplete(chapterIndex, sIdx).catch(() => {});
         changed = true;
-        // 记录最新完成的session
-        lastCompletedSession = { index: sIdx, ...s };
       }
     });
     
     if (changed) {
       saveSessionProgress();
       renderChapterList();
-      // Auto-open floating panel and generate quiz when session completed by scroll
-      if (lastCompletedSession && floatingPanelState.activeTab === "quiz" && typeof generateSessionQuiz === "function") {
-        generateSessionQuiz(
-          chapterIndex,
-          lastCompletedSession.index,
-          chapterName,
-          lastCompletedSession.name || "",
-          lastCompletedSession.range || ""
-        );
-      }
     }
     syncReaderTelemetrySessionContext("scroll");
   }

@@ -1239,7 +1239,8 @@
                 wrap.classList.toggle('is-collapsed', nextCollapsed);
             };
 
-            main.addEventListener('click', toggleProject);
+            // 整行可点击折叠/展开（与 conversation-item 一致），action 按钮已 stopPropagation 不会误触
+            row.addEventListener('click', toggleProject);
             main.addEventListener('contextmenu', (event) => {
                 event.preventDefault();
                 event.stopPropagation();

@@ -8,6 +8,9 @@
     let selectedModelId = CURRENT_CONVERSATION_MODEL;
     let modelSaveBusy = false;
     let modelOptionsPortalParent = null;
+    let modelSelectorLoaded = false;
+    let modelSelectorLoadPromise = null;
+    let openModelOptionsAfterLoad = false;
 
     function readElements() {
         return {
@@ -111,6 +114,7 @@
         }
 
         elements.modelOptions.classList.add('select-hide');
+        openModelOptionsAfterLoad = false;
         elements.modelSelected.classList.remove('select-arrow-active');
         elements.modelSelected.setAttribute('aria-expanded', 'false');
 
@@ -133,6 +137,8 @@
 
         modelOptionsPortalParent = elements.modelOptions.parentElement;
         document.body.appendChild(elements.modelOptions);
+        // 设置弹窗和其二级对话框使用高层级；门户菜单必须显式覆盖它们。
+        elements.modelOptions.style.setProperty('z-index', '20010', 'important');
         elements.modelOptions.classList.remove('select-hide');
         elements.modelSelected.classList.add('select-arrow-active');
         elements.modelSelected.setAttribute('aria-expanded', 'true');
@@ -257,43 +263,64 @@
             return;
         }
 
-        selectedModelId = String((preferences || {}).memory_update_model || '').trim();
-        elements.modelSelected.disabled = true;
-        updateSelectedModelDisplay(elements);
-        setStatus(elements.modelStatus, '正在读取可用模型');
-
-        try {
-            const response = await fetch('/api/config?context_refresh=cache');
-            const data = await response.json();
-
-            if (!response.ok || !data.success || !Array.isArray(data.models)) {
-                throw new Error(String(data.message || `HTTP ${response.status}`));
-            }
-
-            availableModels = data.models
-                .map(normalizeModel)
-                .filter((model) => !!model.id);
-            renderModelOptions();
-
-            if (selectedModelId && !getSelectedModel()) {
-                setStatus(elements.modelStatus, '已保存的记忆更新模型当前不可用，请重新选择', true);
-            } else {
-                setStatus(
-                    elements.modelStatus,
-                    selectedModelId ? '使用指定模型更新记忆' : '记忆更新将使用当前对话模型'
-                );
-            }
-        } catch (error) {
-            availableModels = [];
-            renderModelOptions();
-            setStatus(
-                elements.modelStatus,
-                `模型列表读取失败: ${String((error && error.message) || 'unknown')}`,
-                true
-            );
-        } finally {
-            elements.modelSelected.disabled = false;
+        if (Object.prototype.hasOwnProperty.call(preferences || {}, 'memory_update_model')) {
+            selectedModelId = String(preferences.memory_update_model || '').trim();
         }
+        updateSelectedModelDisplay(elements);
+        if (modelSelectorLoadPromise) {
+            return modelSelectorLoadPromise;
+        }
+
+        setStatus(elements.modelStatus, '正在读取可用模型');
+        modelSelectorLoadPromise = (async () => {
+            const timeoutController = typeof AbortController === 'function'
+                ? new AbortController()
+                : null;
+            const timeoutId = window.setTimeout(() => {
+                if (timeoutController) {
+                    timeoutController.abort();
+                }
+            }, 12000);
+
+            try {
+                const response = await fetch('/api/config?context_refresh=cache', timeoutController
+                    ? { signal: timeoutController.signal }
+                    : undefined);
+                const data = await response.json();
+
+                if (!response.ok || !data.success || !Array.isArray(data.models)) {
+                    throw new Error(String(data.message || `HTTP ${response.status}`));
+                }
+
+                availableModels = data.models
+                    .map(normalizeModel)
+                    .filter((model) => !!model.id);
+                modelSelectorLoaded = true;
+                renderModelOptions();
+
+                if (selectedModelId && !getSelectedModel()) {
+                    setStatus(elements.modelStatus, '已保存的记忆更新模型当前不可用，请重新选择', true);
+                } else {
+                    setStatus(
+                        elements.modelStatus,
+                        selectedModelId ? '使用指定模型更新记忆' : '记忆更新将使用当前对话模型'
+                    );
+                }
+            } catch (error) {
+                availableModels = [];
+                modelSelectorLoaded = false;
+                renderModelOptions();
+                const message = error && error.name === 'AbortError'
+                    ? '模型列表读取超时，请点击重试'
+                    : String((error && error.message) || 'unknown');
+                setStatus(elements.modelStatus, `模型列表读取失败: ${message}`, true);
+            } finally {
+                window.clearTimeout(timeoutId);
+                modelSelectorLoadPromise = null;
+            }
+        })();
+
+        return modelSelectorLoadPromise;
     }
 
     function bind() {
@@ -312,6 +339,24 @@
                 event.stopPropagation();
 
                 if (!elements.modelOptions || modelSaveBusy) {
+                    return;
+                }
+
+                if (!modelSelectorLoaded) {
+                    openModelOptionsAfterLoad = true;
+                    void loadModelSelector().then(() => {
+                        const currentElements = readElements();
+                        if (
+                            openModelOptionsAfterLoad
+                            && modelSelectorLoaded
+                            && !modelSaveBusy
+                            && currentElements.modelOptions
+                            && currentElements.modelOptions.classList.contains('select-hide')
+                        ) {
+                            openModelOptionsAfterLoad = false;
+                            openModelOptions(currentElements);
+                        }
+                    });
                     return;
                 }
 
@@ -376,4 +421,11 @@
         loadProfile,
         loadModelSelector
     });
+
+    // 不依赖设置页其它请求成功，避免按钮因无关的设置初始化错误而未绑定事件。
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bind, { once: true });
+    } else {
+        bind();
+    }
 })();

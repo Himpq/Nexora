@@ -1,4 +1,21 @@
 // ─────── Materials & Lecture Rendering ────────────────────────────────
+  const COURSE_WORKSPACE_USER_OPEN_TYPE = "nexora:course-workspace:user-open";
+
+  /**
+   * 明确通知宿主这是用户主动进入课程，而不是课程页 DOM 重绘产生的状态同步。
+   */
+  function notifyCourseWorkspaceUserOpen(lectureId) {
+    const resolvedLectureId = String(lectureId || "").trim();
+
+    if (!resolvedLectureId) return;
+
+    window.dispatchEvent(new CustomEvent(COURSE_WORKSPACE_USER_OPEN_TYPE, {
+      detail: {
+        lecture_id: resolvedLectureId,
+      },
+    }));
+  }
+
   function getSelectedLectureRow() {
     return state.allLectureRows.find((row) => String((row.lecture || {}).id || "") === state.selectedLectureId) || null;
   }
@@ -76,10 +93,16 @@
     state.materialsDetailMode = "lecture";
     state.courseHomeReturnTarget = returnTarget === "dashboard" ? "dashboard" : "shelf";
     state.catalogContext = null;
+
+    // 进入课程一律视为全新开始：不继承上次退出时的 tab 选中与滚动位置，默认回到课程内容
+    state.courseHomeTab = "content";
+    state.courseHomeScrollTop = 0;
+
     closeReader();
     syncMaterialsPageMode();
     renderLectureList();
     renderLectureDetail();
+    notifyCourseWorkspaceUserOpen(state.selectedLectureId);
   }
 
   function returnFromCourseHome() {
@@ -92,6 +115,13 @@
       state.materialsDetailMode = "lecture";
       state.catalogContext = null;
       renderLectureDetail();
+
+      // 恢复进入教材详细前的课程主页滚动位置（renderLectureDetail 已同步重建 DOM）
+      const courseHomeScroller = getCourseHomeScroller();
+      if (courseHomeScroller) {
+        courseHomeScroller.scrollTop = state.courseHomeScrollTop || 0;
+      }
+
       return;
     }
 
@@ -234,6 +264,13 @@
     state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
     state.readerBookInfoXml = "";
     state.readerBookDetailXml = "";
+
+    // 进入教材详细前记录课程主页滚动位置，返回时恢复（复用 refinementScrollTop 的状态槽模式）
+    const courseHomeScroller = getCourseHomeScroller();
+    if (courseHomeScroller) {
+      state.courseHomeScrollTop = courseHomeScroller.scrollTop;
+    }
+
     renderLectureDetail();
     const row = getSelectedLectureRow();
     const lecture = row ? (row.lecture || {}) : {};
@@ -378,8 +415,23 @@
     return !!bridge.isSidebarAutoCollapseLayout();
   }
 
+  /**
+   * 宿主 Workspace 侧栏是否真实可见（已收到宿主 layout 同步 且 侧栏未折叠）。
+   * 课程 Workspace 改版：仅当宿主侧栏可见时，iframe 才隐藏自己的功能区 tab 栏
+   * （导航已搬入宿主侧栏）；独立打开 / 移动端无宿主侧栏，必须保留 tab 栏。
+   */
+  function isHostWorkspaceSidebarVisible() {
+    const bridge = window.NXCourseWorkspaceBridge;
+
+    if (!bridge || typeof bridge.hasLayoutState !== "function" || typeof bridge.isSidebarAutoCollapseLayout !== "function") {
+      return false;
+    }
+
+    return bridge.hasLayoutState() && !bridge.isSidebarAutoCollapseLayout();
+  }
+
   function resolveCourseHomeTab(tabName) {
-    const normalizedTab = String(tabName || "books").trim() || "books";
+    const normalizedTab = String(tabName || "content").trim() || "content";
 
     if (!isCourseHomeCompactLayout() && normalizedTab === "videos") {
       return "books";
@@ -388,37 +440,106 @@
     return normalizedTab;
   }
 
-  function buildCourseHomeBooksPaneHtml(lectureId, books, options) {
-    const opts = options && typeof options === "object" ? options : {};
-    const includeVideos = !!opts.includeVideos;
-    const booksHtml = books.length
-      ? books.map(function (book) {
-          var bookId = String(book.id || "");
-          var bkActive = bookId === state.selectedBookId ? "is-active" : "";
-          var bookTitle = String(book.title || bookId || "教材").trim();
-          var bookState = bkActive ? '<div class="learning-panel-book-current">当前教材</div>' : "";
-          return '<article class="book-item ' + bkActive + ' learning-panel-book-item" data-book-id="' + escapeHtml(bookId) + '" title="' + escapeHtml(bookTitle) + '">' +
-            renderCourseDetailBookCover(book, bookTitle) +
-            '<div class="learning-panel-book-head">' +
-            '<div class="book-title learning-panel-book-title">' + escapeHtml(bookTitle) + '</div>' +
-            bookState +
-            '</div>' +
-            '</article>';
-        }).join("")
-      : '<div class="materials-empty">暂无教材</div>';
+  function buildBookItemsHtml(books) {
+    if (!books.length) {
+      return '<div class="materials-empty">暂无教材</div>';
+    }
 
-    var html = '<div class="course-home-tab-pane is-active-pane" data-tab-pane="books">' +
-      '<div class="learning-panel-split-grid">' +
-      '<div class="learning-panel-books-column">' +
-      '<div class="learning-panel-section-body">' +
-      '<div class="book-list learning-panel-books-grid">' +
-      booksHtml +
-      '</div>' +
-      '</div>';
+    return books.map(function (book) {
+      var bookId = String(book.id || "");
+      var bkActive = bookId === state.selectedBookId ? "is-active" : "";
+      var bookTitle = String(book.title || bookId || "教材").trim();
+      var bookState = bkActive ? '<div class="learning-panel-book-current">当前教材</div>' : "";
+      var bookDesc = String(book.description || "").trim();
+      var bookDescHtml = bookDesc
+        ? '<div class="book-item-desc" data-book-desc-id="' + escapeHtml(bookId) + '">' + escapeHtml(bookDesc) + '</div>'
+        : '<div class="book-item-desc book-item-desc-empty" data-book-desc-id="' + escapeHtml(bookId) + '">暂无教材简介</div>';
+      return '<article class="book-item book-item-row ' + bkActive + ' learning-panel-book-item" data-book-id="' + escapeHtml(bookId) + '" title="' + escapeHtml(bookTitle) + '">' +
+        '<div class="book-item-cover">' + renderCourseDetailBookCover(book, bookTitle) + '</div>' +
+        '<div class="book-item-info">' +
+        '<div class="learning-panel-book-head">' +
+        '<div class="book-title learning-panel-book-title">' + escapeHtml(bookTitle) + '</div>' +
+        bookState +
+        '</div>' +
+        bookDescHtml +
+        '</div>' +
+        '</article>';
+    }).join("");
+  }
 
-    if (includeVideos) {
-      html +=
-        '<section class="learning-panel-course-video-block">' +
+  /**
+   * 教材简介为空时，异步拉取教材概述(summary_brief)填充，充实教材卡片右侧内容。
+   */
+  async function loadBookSummaries(lectureId, books) {
+    const resolvedLectureId = String(lectureId || "").trim();
+
+    if (!resolvedLectureId || !Array.isArray(books) || !books.length) {
+      return;
+    }
+
+    for (const book of books) {
+      const bookId = String((book && book.id) || "").trim();
+
+      if (!bookId) {
+        continue;
+      }
+
+      const descEl = document.querySelector('.book-item-desc[data-book-desc-id="' + bookId + '"]');
+
+      // 简介已填充则不重复请求
+      if (!descEl || !descEl.classList.contains('book-item-desc-empty')) {
+        continue;
+      }
+
+      try {
+        const data = await fetchJson(`/api/lectures/${encodeURIComponent(resolvedLectureId)}/books/${encodeURIComponent(bookId)}/summary`);
+        const brief = String((data && data.summary_brief) || "").trim();
+
+        if (!brief) {
+          continue;
+        }
+
+        descEl.textContent = brief;
+        descEl.classList.remove('book-item-desc-empty');
+      } catch (_err) {
+        continue;
+      }
+    }
+  }
+
+  /**
+   * 课程内容功能区：课程简介 + 当前推进 + 学习信息，简介下方提供个性化学习入口，
+   * 下方异步填充课程长简介。
+   */
+  function buildCourseContentPaneHtml(lectureId, books) {
+    const row = getSelectedLectureRow();
+    const lecture = row ? (row.lecture || {}) : {};
+    const isLearning = state.selectedLearningLectureIds.includes(lectureId);
+    const progressTrail = getLectureProgressTrail(lecture, books);
+    const progressPercent = Math.max(0, Math.min(100, Number(progressTrail.progress) || 0));
+    const progressText = [progressTrail.bookTitle, progressTrail.chapterTitle, progressTrail.sessionTitle]
+      .filter((part) => String(part || "").trim())
+      .join(" · ");
+    const learningPillClass = isLearning ? "learning-state-pill is-on" : "learning-state-pill is-off";
+    const learningPillText = isLearning ? "学习中" : "未加入";
+    const lectureDescription = escapeHtml(String(lecture.description || "暂无描述"));
+    const lectureCoverHtml = renderLearningPanelCover(getLectureCoverPath(lecture), getLectureTitle(lecture));
+    const lectureInfoRows = [
+      ["课程分类", lecture.category || "未分类"],
+      ["教材数量", `${books.length} 本`],
+      ["学习状态", isLearning ? "学习中" : "未加入学习"],
+    ];
+
+    const infoRowsHtml = lectureInfoRows.map(([label, value]) =>
+      '<div class="learning-panel-info-row">' +
+      '<span class="learning-panel-info-label">' + escapeHtml(label) + '</span>' +
+      '<span class="learning-panel-info-value">' + escapeHtml(String(value || "")) + '</span>' +
+      '</div>'
+    ).join("");
+
+    const includeVideos = !isCourseHomeCompactLayout();
+    const videosHtml = includeVideos
+      ? '<section class="learning-panel-course-video-block">' +
           '<header class="learning-panel-course-video-head">' +
             '<div class="learning-panel-section-title">推荐视频</div>' +
           '</header>' +
@@ -427,26 +548,161 @@
               '<div class="lp-video-loading">正在加载已缓存视频...</div>' +
             '</div>' +
           '</div>' +
-        '</section>';
+        '</section>'
+      : "";
+
+    // 课程长简介与学习大纲共用 state.courseOutline 缓存：命中则同步渲染，
+    // 避免每次重建页面都闪一下"正在加载课程长简介..."占位
+    const cachedOutline = state.courseOutline && state.courseOutline.lecture_id === lectureId ? state.courseOutline : null;
+    const longSummaryHtml = cachedOutline
+      ? renderCourseLongSummaryHtml(cachedOutline)
+      : '<div class="lp-video-loading">正在加载课程长简介...</div>';
+
+    return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="content">' +
+      '<div class="learning-panel-section-body">' +
+      '<div class="learning-panel-hero-body">' +
+      lectureCoverHtml +
+      '<div class="learning-panel-hero-content">' +
+      '<div class="learning-panel-title-row">' +
+      '<div class="detail-title learning-panel-hero-title">' + escapeHtml(getLectureTitle(lecture)) + '</div>' +
+      '<span class="' + learningPillClass + '">' + learningPillText + '</span>' +
+      '</div>' +
+      '<div class="learning-panel-summary-grid">' +
+      '<div class="learning-panel-copy learning-panel-summary-copy">' +
+      '<div class="detail-description-label learning-panel-copy-label">课程简介</div>' +
+      '<div class="detail-description-text learning-panel-summary-text">' + lectureDescription + '</div>' +
+      '<div class="learning-panel-summary-actions">' +
+      '<button class="course-home-cta course-intro-cta" type="button" data-action="start-learning-path" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>' +
+      '<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>' +
+      '</svg>' +
+      '<span>开始个性化学习</span>' +
+      '</button>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<aside class="learning-panel-info-column learning-panel-hero-info-column">' +
+      '<div class="learning-panel-progress">' +
+      '<div class="learning-panel-progress-top">' +
+      '<div class="detail-description-label learning-panel-copy-label">当前推进</div>' +
+      '<div class="learning-panel-progress-percent">' + escapeHtml(String(progressPercent)) + '%</div>' +
+      '</div>' +
+      '<div class="learning-panel-progress-text" title="' + escapeHtml(progressText) + '">' + escapeHtml(progressText || "暂无推进信息") + '</div>' +
+      '<div class="nxl-course-bar learning-panel-progress-bar"><div class="nxl-course-bar-fill" style="width:' + progressPercent + '%"></div></div>' +
+      '</div>' +
+      '<div class="learning-panel-info-card">' +
+      '<div class="detail-description-label learning-panel-copy-label">学习信息</div>' +
+      '<div class="learning-panel-info-list">' + infoRowsHtml + '</div>' +
+      '</div>' +
+      '</aside>' +
+      '</div>' +
+      '</div>' +
+      '<div class="course-content-long" id="courseContentLongContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+      longSummaryHtml +
+      '</div>' +
+      '<section class="course-content-books" id="courseContentBooksSection">' +
+      '<header class="course-content-books-head">' +
+      '<div class="learning-panel-section-title">教材列表</div>' +
+      '</header>' +
+      '<div class="book-list course-content-book-list">' + buildBookItemsHtml(books) + '</div>' +
+      videosHtml +
+      '</section>' +
+      '</div>';
+  }
+
+  /**
+   * 渲染课程长简介（随大纲生成）：长简介正文 + 学习目标 + 学习任务。
+   */
+  function renderCourseLongSummaryHtml(outline) {
+    const longSummary = String((outline && outline.course_long_summary) || "").trim();
+    const objectives = Array.isArray(outline && outline.learning_objectives) ? outline.learning_objectives : [];
+    const tasks = Array.isArray(outline && outline.learning_tasks) ? outline.learning_tasks : [];
+
+    if (!longSummary && !objectives.length && !tasks.length) {
+      return '<div class="materials-empty">课程长简介将随课程大纲一起生成，请先生成学习大纲</div>';
     }
 
-    html +=
-      '</div>' +
-      '</div>' +
-      '</div>';
+    let html = '';
+
+    if (longSummary) {
+      html += '<div class="course-content-long-section">' +
+        '<div class="detail-description-label learning-panel-copy-label">课程长简介</div>' +
+        '<div class="course-content-long-text">' + escapeHtml(longSummary) + '</div>' +
+        '</div>';
+    }
+
+    if (objectives.length) {
+      html += '<div class="course-content-long-section">' +
+        '<div class="detail-description-label learning-panel-copy-label">学习目标</div>' +
+        '<ul class="course-content-long-list">' +
+        objectives.map((item) => '<li>' + escapeHtml(String(item)) + '</li>').join("") +
+        '</ul></div>';
+    }
+
+    if (tasks.length) {
+      html += '<div class="course-content-long-section">' +
+        '<div class="detail-description-label learning-panel-copy-label">学习任务</div>' +
+        '<ul class="course-content-long-list">' +
+        tasks.map((item) => '<li>' + escapeHtml(String(item)) + '</li>').join("") +
+        '</ul></div>';
+    }
 
     return html;
+  }
+
+  /**
+   * 拉取固化大纲并填充课程内容功能区的长简介容器。
+   * 与 loadCourseOutline 共用 state.courseOutline 缓存：命中同步渲染，避免占位闪烁与重复请求。
+   */
+  async function loadCourseContent(lectureId) {
+    const container = document.getElementById("courseContentLongContainer");
+    if (!container) return;
+
+    const resolvedLectureId = String(lectureId || "").trim();
+    if (!resolvedLectureId) {
+      container.innerHTML = '<div class="materials-empty">暂无课程内容</div>';
+      return;
+    }
+
+    // 缓存命中：直接同步渲染
+    if (state.courseOutline && state.courseOutline.lecture_id === resolvedLectureId) {
+      // 长简介已用缓存同步渲染（无加载占位）则不重复替换 innerHTML
+      if (container.querySelector(".lp-video-loading")) {
+        container.innerHTML = renderCourseLongSummaryHtml(state.courseOutline);
+      }
+
+      return;
+    }
+
+    container.dataset.lectureId = resolvedLectureId;
+
+    try {
+      const data = await fetchJson(`/api/frontend/outline/${encodeURIComponent(resolvedLectureId)}`);
+      if (String(container.dataset.lectureId || "") !== resolvedLectureId) return;
+
+      if (!data.success || !data.outline) {
+        container.innerHTML = '<div class="materials-empty">课程长简介将随课程大纲一起生成，请先生成学习大纲</div>';
+        return;
+      }
+
+      state.courseOutline = data.outline;
+      container.innerHTML = renderCourseLongSummaryHtml(data.outline);
+    } catch (_err) {
+      container.innerHTML = '<div class="materials-empty">课程长简介将随课程大纲一起生成，请先生成学习大纲</div>';
+    }
   }
 
   /**
    * 渲染单个课程主页 Tab pane 的 HTML（不依赖 display:none）
    */
   function renderCourseHomePaneHtml(tabName, lectureId, books) {
-    const compactLayout = isCourseHomeCompactLayout();
     const effectiveTab = resolveCourseHomeTab(tabName);
 
-    if (effectiveTab === "books") {
-      return buildCourseHomeBooksPaneHtml(lectureId, books, { includeVideos: !compactLayout });
+    // 课程内容与教材列表合并为同一连续页面（简介在上、教材列表在下），侧边栏仅负责跳转定位
+    if (effectiveTab === "content" || effectiveTab === "books") {
+      return buildCourseContentPaneHtml(lectureId, books);
     }
 
     if (effectiveTab === "videos") {
@@ -512,6 +768,76 @@
   }
 
   /**
+   * 课程内容功能区滚动容器（内含 hero + 长简介 + 教材列表，overflow:auto）。
+   */
+  function getCourseHomeScroller() {
+    const host = document.getElementById("courseHomeContent");
+
+    if (!host) {
+      return null;
+    }
+
+    const inner = host.querySelector(".materials-detail-scroll");
+
+    // 嵌套滚动容器兜底：优先取真正产生溢出的内层容器，内层未溢出时回退外层
+    if (inner && inner.scrollHeight > inner.clientHeight) {
+      return inner;
+    }
+
+    if (host.scrollHeight > host.clientHeight) {
+      return host;
+    }
+
+    return inner || host;
+  }
+
+  /**
+   * 课程主页滚动位置归零。#courseHomeContent 为稳定元素，替换其 innerHTML 不会重置自身 scrollTop，
+   * 故进入新页面（切换教材/讲座、进教材详细）时需显式归零，避免继承上一页的滚动位置。
+   */
+  function resetCourseHomeScrollTop() {
+    const host = document.getElementById("courseHomeContent");
+
+    if (!host) {
+      return;
+    }
+
+    host.scrollTop = 0;
+
+    const inner = host.querySelector(".materials-detail-scroll");
+
+    if (inner) {
+      inner.scrollTop = 0;
+    }
+  }
+
+  /**
+   * 课程内容与教材列表合并为同一连续页面后，侧边栏仅负责跳转定位：
+   * content → 回到页面顶部；books → 定位到教材列表分区顶部。平滑滚动（复用既有 scrollTo smooth 范式）。
+   */
+  function scrollCourseContentPane(tabName) {
+    const scroller = getCourseHomeScroller();
+
+    if (!scroller) {
+      return;
+    }
+
+    if (tabName !== "books") {
+      scroller.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    const anchor = document.getElementById("courseContentBooksSection");
+
+    if (!anchor) {
+      return;
+    }
+
+    const targetTop = anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+  }
+
+  /**
    * 激活课程主页的指定 Tab（innerHTML 替换 pane，无 display:none 残留）
    */
   function activateCourseHomeTab(tabName, lectureId) {
@@ -526,14 +852,38 @@
       btn.classList.toggle("is-active", resolveCourseHomeTab(rawTabName) === effectiveTabName);
     });
 
+    var row = getSelectedLectureRow();
+    var books = row && Array.isArray(row.books) ? row.books : [];
     var tabContent = document.querySelector(".course-home-tab-content");
-    if (tabContent) {
-      var row = getSelectedLectureRow();
-      var books = row && Array.isArray(row.books) ? row.books : [];
+
+    // 课程内容与教材列表已合并为同一连续页面：合并 pane 已在 DOM 中时不重建，仅跳转滚动位置，
+    // 避免切换时闪烁与教材简介重复拉取
+    const isMergedPane = effectiveTabName === "content" || effectiveTabName === "books";
+    const mergedPaneRendered = isMergedPane && !!document.getElementById("courseContentBooksSection");
+
+    if (tabContent && !mergedPaneRendered) {
       tabContent.innerHTML = renderCourseHomePaneHtml(effectiveTabName, effectiveLectureId, books);
     }
 
-    if (effectiveTabName === "videos" || (effectiveTabName === "books" && !compactLayout)) {
+    if (isMergedPane) {
+      // 同一连续页面只跳转滚动位置：content→页面顶部，books→教材列表分区。
+      // 课程长简介走 state.courseOutline 缓存同步渲染，高度稳定，锚点不会被异步加载推挤。
+      scrollCourseContentPane(effectiveTabName);
+      loadCourseContent(effectiveLectureId);
+      loadBookSummaries(effectiveLectureId, books);
+
+      if (!compactLayout) {
+        loadCourseCachedVideos(effectiveLectureId);
+      }
+
+      return;
+    }
+
+    // 非合并功能区是独立页面：滚动容器在 tab 切换时持久化、scrollTop 不会自动归零，
+    // 必须显式回顶，否则继承上一个 tab 的滚动位置（如课程内容50%切到大纲仍停在50%）
+    scrollCourseContentPane(effectiveTabName);
+
+    if (effectiveTabName === "videos") {
       loadCourseCachedVideos(effectiveLectureId);
     }
 
@@ -574,7 +924,11 @@
     // 缓存命中：直接渲染，不重复请求
     const cacheKey = resolvedLectureId;
     if (state.courseVideoCache[cacheKey]) {
-      renderVideoList(container, state.courseVideoCache[cacheKey].items, state.courseVideoCache[cacheKey].cached);
+      // 视频列表已渲染则不重建，避免重复生成封面图导致闪烁
+      if (!container.querySelector(".lp-video-grid")) {
+        renderVideoList(container, state.courseVideoCache[cacheKey].items, state.courseVideoCache[cacheKey].cached);
+      }
+
       return;
     }
 
@@ -1591,9 +1945,9 @@
 
     el.lectureDetailPane.innerHTML = `
       <section class="materials-detail-scroll">
-        <section class="detail-section" style="padding-top:0;border-bottom:0;">
+        <div class="materials-shelf-shell">
           <div class="materials-list">${cardsHtml}</div>
-        </section>
+        </div>
       </section>
     `;
   }
@@ -1968,77 +2322,17 @@
 
     const lecture = row.lecture || {};
     const lectureId = String(lecture.id || "");
-    const isLearning = state.selectedLearningLectureIds.includes(lectureId);
     const books = Array.isArray(row.books) ? row.books : [];
-    const progressTrail = getLectureProgressTrail(lecture, books);
 
     if (!state.selectedBookId && books.length) {
       state.selectedBookId = String(books[0].id || "");
     }
 
-    const toggleBtnClass = isLearning ? "btn btn-outline-danger btn-sm" : "btn btn-outline-secondary btn-sm";
-    const toggleBtnTitle = isLearning ? "退课" : "主动学习";
-    const toggleBtnText = toggleBtnTitle;
-    const learningPillClass = isLearning ? "learning-state-pill is-on" : "learning-state-pill is-off";
-    const learningPillText = isLearning ? "学习中" : "未加入";
-    const progressPercent = Math.max(0, Math.min(100, Number(progressTrail.progress) || 0));
-    const progressText = [progressTrail.bookTitle, progressTrail.chapterTitle, progressTrail.sessionTitle]
-      .filter((part) => String(part || "").trim())
-      .join(" · ");
-    const lectureDescription = escapeHtml(String(lecture.description || "暂无描述"));
-    const lectureTeachers = renderLectureTeacherTags(lecture);
-    const lectureCoverHtml = renderLearningPanelCover(getLectureCoverPath(lecture), getLectureTitle(lecture));
-    const lectureInfoRows = [
-      ["课程分类", lecture.category || "未分类"],
-      ["教材数量", `${books.length} 本`],
-      ["学习状态", isLearning ? "学习中" : "未加入学习"],
-    ];
-    const lectureInfoPanelHtml = `
-      <aside class="learning-panel-info-column learning-panel-hero-info-column">
-        <div class="learning-panel-progress">
-          <div class="learning-panel-progress-top">
-            <div class="detail-description-label learning-panel-copy-label">当前推进</div>
-            <div class="learning-panel-progress-percent">${escapeHtml(String(progressPercent))}%</div>
-          </div>
-          <div class="learning-panel-progress-text" title="${escapeHtml(progressText)}">${escapeHtml(progressText || "暂无推进信息")}</div>
-          <div class="nxl-course-bar learning-panel-progress-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
-        </div>
-
-        <div class="learning-panel-info-card">
-          <div class="detail-description-label learning-panel-copy-label">学习信息</div>
-          <div class="learning-panel-info-list">
-            ${lectureInfoRows.map(([label, value]) => `
-              <div class="learning-panel-info-row">
-                <span class="learning-panel-info-label">${escapeHtml(label)}</span>
-                <span class="learning-panel-info-value">${escapeHtml(String(value || ""))}</span>
-              </div>
-            `).join("")}
-          </div>
-        </div>
-
-        <div class="learning-panel-info-card">
-          <div class="detail-description-label learning-panel-copy-label">课程操作</div>
-          <div class="learning-panel-action-toolbar">
-            <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
-            ${isLearning ? `<button class="btn btn-outline-secondary btn-sm" data-action="start-learning-path" data-lecture-id="${escapeHtml(lectureId)}" aria-label="开始学习" title="开始学习">开始学习</button>` : ""}
-          </div>
-        </div>
-
-        <!-- 教师信息（已隐藏，保留后端逻辑）
-        <div class="learning-panel-info-card">
-          <div class="detail-description-label learning-panel-copy-label">教师信息${state.isAdmin ? ` <button class="learning-panel-inline-edit-btn" type="button" data-action="edit-teacher" title="编辑教师" aria-label="编辑教师"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>` : ""}</div>
-          <div class="learning-panel-teacher-list learning-panel-teacher-list-compact">
-            ${lectureTeachers}
-          </div>
-        </div>
-        -->
-      </aside>
-    `;
-
     // Tab 状态
-    const activeTab = resolveCourseHomeTab(state.courseHomeTab || "books");
+    const activeTab = resolveCourseHomeTab(state.courseHomeTab || "content");
     const compactLayout = isCourseHomeCompactLayout();
     const tabDefs = [
+      { key: "content", label: "课程内容" },
       { key: "books", label: "教材列表" },
       { key: "outline", label: "学习大纲" },
       { key: "mindmap", label: "思维导图" },
@@ -2048,35 +2342,13 @@
     if (compactLayout) {
       tabDefs.splice(1, 0, { key: "videos", label: "推荐视频" });
     }
-    const tabBarHtml = `<div class="course-home-tab-bar">
+    const tabBarHtml = `<div class="course-home-tab-bar${isHostWorkspaceSidebarVisible() ? " is-hidden-by-workspace" : ""}">
       ${tabDefs.map((t) => `<button class="course-home-tab${t.key === activeTab ? " is-active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
     </div>`;
 
-    // 整体写入：Hero + Tab 栏 + 单个激活的 Tab pane（无 display:none 残留）
+    // 整体写入：Tab 栏 + 单个激活的 Tab pane（课程介绍 hero 已移除，栏目独占整页）
     detailPane.innerHTML = `
       <section class="materials-detail-scroll learning-panel-page">
-        <section class="detail-section learning-panel-section learning-panel-hero">
-          <div class="learning-panel-section-body">
-            <div class="learning-panel-hero-body">
-              ${lectureCoverHtml}
-              <div class="learning-panel-hero-content">
-                <div class="learning-panel-title-row">
-                  <div class="detail-title learning-panel-hero-title">${escapeHtml(getLectureTitle(lecture))}</div>
-                  <span class="${learningPillClass}">${learningPillText}</span>
-                </div>
-
-                <div class="learning-panel-summary-grid">
-                  <div class="learning-panel-copy learning-panel-summary-copy">
-                    <div class="detail-description-label learning-panel-copy-label">课程简介</div>
-                    <div class="detail-description-text learning-panel-summary-text">${lectureDescription}</div>
-                  </div>
-                </div>
-              </div>
-              ${lectureInfoPanelHtml}
-            </div>
-          </div>
-        </section>
-
         ${tabBarHtml}
 
         <div class="course-home-tab-content">
@@ -2084,6 +2356,9 @@
         </div>
       </section>
     `;
+
+    // 新页面从顶部开始，不继承上一页的滚动位置（教材详细返回的恢复在 returnFromCourseHome 中于其后执行）
+    resetCourseHomeScrollTop();
 
     activateCourseHomeTab(activeTab, lectureId);
   }
@@ -2177,7 +2452,6 @@
     scheduleHostReaderContextSync(0);
     renderChapterAnnotations(idx);
     applyReaderGuidePatches();
-    scheduleReaderGuidePrompt(idx, content, guideOptions);
     // 滚动到指定偏移量（如果有）
     if (scrollToOffset !== undefined && scrollToOffset !== null) {
       const chapterStart = chapter ? chapter.start : 0;

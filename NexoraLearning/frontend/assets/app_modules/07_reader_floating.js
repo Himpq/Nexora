@@ -1356,6 +1356,10 @@
   const QUIZ_STATE_KEY = "nxl_quiz_state_v1";
   let quizState = {
     loading: false,
+    requestKey: "",
+    streamDraft: "",
+    streamStatus: "",
+    streamRenderFrame: 0,
     currentChapter: "",
     currentSession: "",
     currentMeta: null,
@@ -1475,8 +1479,24 @@
     return `${lectureId}::${bookId}::${chapterIndex}::${sessionIndex}`;
   }
 
+  function getQuizRenderContainer() {
+    const meta = quizState.currentMeta || {};
+
+    if (String(meta.quizType || "") === "personalized_chapter") {
+      return document.getElementById("learningPathChapterQuizBody");
+    }
+
+    return document.querySelector('.floating-tab-content[data-tab="quiz"]');
+  }
+
   function getFloatingTabContent(tabName) {
-    return document.querySelector(`.floating-tab-content[data-tab="${String(tabName || floatingPanelState.activeTab || "").trim()}"]`);
+    const resolvedTabName = String(tabName || floatingPanelState.activeTab || "").trim();
+
+    if (resolvedTabName === "quiz") {
+      return getQuizRenderContainer();
+    }
+
+    return document.querySelector(`.floating-tab-content[data-tab="${resolvedTabName}"]`);
   }
 
   function preserveFloatingScroll(tabName, renderFn) {
@@ -1621,11 +1641,68 @@
     }
   }
 
+  function readQuizStreamField(block, tagName) {
+    const pattern = new RegExp(`<${tagName}>\\s*([\\s\\S]*?)(?:</${tagName}>|$)`, "i");
+    const match = pattern.exec(String(block || ""));
+
+    return match ? String(match[1] || "").trim() : "";
+  }
+
+  function renderPersonalizedQuizStreamProgress() {
+    const draft = String(quizState.streamDraft || "");
+    const status = String(quizState.streamStatus || "正在准备本章测验").trim();
+    const blocks = draft.split(/<QUESTION>/i).slice(1, 7);
+    const previewHtml = blocks.map((block, index) => {
+      const title = readQuizStreamField(block, "question_title");
+      const content = readQuizStreamField(block, "question_content");
+      const questionType = readQuizStreamField(block, "question_type").toLowerCase();
+      const options = normalizeQuizQuestionOptions(readQuizStreamField(block, "question_options"));
+      const typeLabel = questionType === "choice" ? "选择题" : questionType === "text" ? "文本题" : "生成中";
+      const optionHtml = options.length
+        ? `<div class="quiz-stream-options">${options.map((option) => `<span>${escapeHtml(option)}</span>`).join("")}</div>`
+        : "";
+
+      return `
+        <article class="quiz-stream-question">
+          <div class="quiz-stream-question-head">
+            <span>题目 ${index + 1}</span>
+            <span>${escapeHtml(typeLabel)}</span>
+          </div>
+          <strong>${escapeHtml(title || `正在生成第 ${index + 1} 题`)}</strong>
+          ${content && content !== title ? `<p>${escapeHtml(content)}</p>` : ""}
+          ${optionHtml}
+        </article>
+      `;
+    }).join("");
+
+    return `
+      <div class="quiz-stream-progress" aria-live="polite">
+        <div class="quiz-stream-status">
+          <span class="quiz-loading-spinner"></span>
+          <div>
+            <strong>${escapeHtml(status)}</strong>
+            <span>${blocks.length ? `已接收 ${blocks.length}/6 道题` : "等待模型开始输出题目"}</span>
+          </div>
+        </div>
+        <div class="quiz-stream-questions">
+          ${previewHtml || '<div class="quiz-stream-placeholder">模型输出将在这里实时展开</div>'}
+        </div>
+      </div>
+    `;
+  }
+
   function renderQuizPanel() {
-    const content = document.querySelector('.floating-tab-content[data-tab="quiz"]');
+    const content = getQuizRenderContainer();
     if (!content) return;
 
     if (quizState.loading) {
+      const meta = quizState.currentMeta || {};
+
+      if (String(meta.quizType || "") === "personalized_chapter") {
+        content.innerHTML = renderPersonalizedQuizStreamProgress();
+        return;
+      }
+
       content.innerHTML = `
         <div class="quiz-loading">
           <div class="quiz-loading-spinner"></div>
@@ -1639,7 +1716,9 @@
     if (quizState.error) {
       content.innerHTML = `
         <div class="quiz-error">
-          <div class="quiz-error-icon">⚠</div>
+          <div class="quiz-error-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 17h.01"></path></svg>
+          </div>
           <div class="quiz-error-text">${escapeHtml(quizState.error)}</div>
           <button class="quiz-retry-btn" onclick="retryQuiz()">重试</button>
         </div>
@@ -1652,8 +1731,10 @@
     if (!quizState.questions || quizState.questions.length === 0) {
       content.innerHTML = `
         <div class="floating-empty-hint">
-          <div class="quiz-empty-icon">📝</div>
-          <div>完成章节阅读后开启测验</div>
+          <div class="quiz-empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M9 11h6M9 15h4M8 3h8l3 3v15H5V3h3M16 3v4h4"></path></svg>
+          </div>
+          <div>本章暂时没有可用的测验题目</div>
         </div>
       `;
       return;

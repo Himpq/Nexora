@@ -4,21 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260710_profile_agents_btn_01">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260730_style_unify_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_feed_composer.css?v=20260717_feed_composer_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_push.css?v=20260719_markdown_review_07">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260719_lab_step_flow_01">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260731_report_cleanup_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_chart_experiment.css?v=20260720_echarts_generic_01">
   <link rel="stylesheet" href="/api/frontend/assets/question_exam.css?v=20260718_exam_05">
   <link rel="stylesheet" href="/api/frontend/assets/learning_stream.css?v=20260718_stream_08">
-  <link rel="stylesheet" href="/api/frontend/assets/feed_navigation.css?v=20260718_feed_nav_01">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_report_redesign.css?v=20260718_report_02">
+  <link rel="stylesheet" href="/api/frontend/assets/feed_navigation.css?v=20260730_style_unify_01">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_report_redesign.css?v=20260731_report_cleanup_01">
   <link rel="stylesheet" href="/api/frontend/assets/cognition_twin.css?v=20260719_cognition_twin_01">
-  <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css?v=20260615_01">
+  <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css?v=20260731_kg_interaction_02">
   <link rel="stylesheet" href="/api/frontend/assets/settings_agents.css?v=20260709_agents_panel_01">
   <link rel="stylesheet" href="/api/frontend/assets/admin_console.css?v=20260719_admin_console_09">
+  <link rel="stylesheet" href="/api/frontend/assets/profile_center.css?v=20260802_profile_style_02">
 </head>
 <body>
+  <script>
+    // 首帧前应用宿主下发的初始布局状态，消除 postMessage 往返期间 panel-head 的闪现。
+    // dashboard_nav=1（桌面嵌入、宿主功能区导航接管）→ 隐藏顶部 kicker tab 行；
+    // 0 或缺省（独立打开 / 移动端 overlay）→ 保留。后续动态变化由宿主 postMessage 接管。
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      if (params.get('dashboard_nav') === '1') {
+        document.body.classList.add('host-dashboard-nav-active');
+      }
+    })();
+  </script>
   <main class="learning-shell" id="learningPanel">
     <section id="dashboardView" class="view-pane is-active">
       <section class="workbench-grid">
@@ -90,6 +102,42 @@
           </article>
         </div>
       </section>
+    </section>
+
+    <section id="profileCenterView" class="view-pane profile-center-view">
+      <article class="panel-card profile-center-page">
+        <header class="panel-head materials-head">
+          <div class="materials-head-left">
+            <p class="panel-kicker">画像中心</p>
+          </div>
+          <div class="materials-head-right">
+            <span id="profileCenterUpdatedAt" class="profile-center-updated">尚未评估</span>
+            <div id="profileCenterCompletion" class="profile-center-completion">评分 0/6 · 画像 0/8</div>
+            <button id="profileCenterGuideBtn" class="btn btn-primary" type="button">开始快速评估</button>
+          </div>
+        </header>
+        <div class="profile-center-layout">
+          <section class="profile-radar-pane" aria-label="六维画像图">
+            <div class="profile-radar-shell">
+              <div id="profileCenterRadar" class="profile-center-radar" aria-label="六维画像雷达图"></div>
+              <div id="profileCenterRadarEmpty" class="profile-radar-empty">
+                <p>完成快速评估后即可生成六维画像图</p>
+                <button type="button" class="btn btn-primary" data-profile-center-start>开始快速评估</button>
+              </div>
+            </div>
+          </section>
+          <section class="profile-analysis-pane" aria-label="画像数据分析">
+            <div class="profile-analysis-block">
+              <div class="profile-analysis-label">数据解析</div>
+              <div id="profileCenterScores" class="profile-center-scores"></div>
+            </div>
+            <div class="profile-analysis-block">
+              <div class="profile-analysis-label">数据内容</div>
+              <div id="profileCenterFacts" class="profile-center-facts"></div>
+            </div>
+          </section>
+        </div>
+      </article>
     </section>
 
     <section id="questionPracticeView" class="view-pane">
@@ -450,10 +498,10 @@
       <aside class="learning-path-outline-pane">
         <div class="learning-path-outline-header">
           <div class="learning-path-side-tabs" role="tablist" aria-label="学习路径侧栏">
-            <button id="learningPathOutlineTab" class="learning-path-side-tab is-active" type="button" data-lp-side-tab="outline" role="tab" aria-selected="true">学习大纲</button>
+            <button id="learningPathOutlineTab" class="learning-path-side-tab is-active" type="button" data-lp-side-tab="outline" role="tab" aria-selected="true">章节</button>
             <button id="learningPathReportTab" class="learning-path-side-tab" type="button" data-lp-side-tab="report" role="tab" aria-selected="false">学习报告</button>
           </div>
-          <button id="learningPathOutlineToggle" class="learning-path-outline-toggle" type="button" aria-label="收起学习大纲" title="收起学习大纲" aria-expanded="true">
+          <button id="learningPathOutlineToggle" class="learning-path-outline-toggle" type="button" aria-label="收起章节列表" title="收起章节列表" aria-expanded="true">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M15 18l-6-6 6-6"></path>
             </svg>
@@ -475,55 +523,19 @@
       </div>
     </div>
   </div>
-  <!-- Learning Floating Button & Panel -->
-  <div id="readerFloatingBtn" class="reader-floating-btn" hidden title="学习工具">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
-      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-    </svg>
-  </div>
-  <div id="readerFloatingPanel" class="reader-floating-panel" aria-hidden="true">
-    <div class="floating-panel-head" id="floatingPanelHead">
-      <div class="floating-panel-tabs">
-        <button class="floating-tab is-active" data-tab="guide" type="button">导读</button>
-        <button class="floating-tab" data-tab="quiz" type="button">测验</button>
-        <button class="floating-tab" data-tab="knowledge" type="button">知识点</button>
-        <button class="floating-tab" data-tab="progress" type="button">进度</button>
-      </div>
-      <button class="floating-panel-close" id="closeFloatingPanelBtn" type="button" title="关闭">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
-    </div>
-    <div class="floating-panel-body">
-      <div class="floating-tab-content is-active" data-tab="guide">
-        <div class="floating-empty-hint">进入章节后生成本节导读</div>
-      </div>
-      <div class="floating-tab-content" data-tab="quiz" hidden>
-        <div class="floating-empty-hint">完成章节阅读后开启测验</div>
-      </div>
-      <div class="floating-tab-content" data-tab="knowledge" hidden>
-        <div class="floating-empty-hint">当前章节知识点将在此显示</div>
-      </div>
-      <div class="floating-tab-content" data-tab="progress" hidden>
-        <div class="floating-empty-hint">学习进度统计将在此显示</div>
-      </div>
-    </div>
-    <div id="floatingResizeHandle" class="floating-resize-handle"></div>
-  </div>
   <script src="/api/frontend/assets/mermaid.min.js?v=20260706_static_cache_01"></script>
   <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/markdown_renderer.js?v=20260719_markdown_review_01"></script>
-  <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
-  <script src="/api/frontend/assets/knowledge_graph.js?v=20260615_01"></script>
+  <script src="/api/frontend/assets/telemetry.js?v=20260801_verified_duration_01"></script>
+  <script src="/api/frontend/assets/vendor/g6/g6.min.js?v=5.1.1_3e091a94"></script>
+  <script src="/api/frontend/assets/knowledge_graph_layout.js?v=20260731_kg_sector_layout_01"></script>
+  <script src="/api/frontend/assets/knowledge_graph.js?v=20260731_kg_sector_layout_01"></script>
   <script src="/api/frontend/assets/learning_push.js?v=20260719_markdown_review_09"></script>
   <script src="/api/frontend/assets/learning_resource_studio.js?v=20260719_markdown_review_05"></script>
   <script src="/api/frontend/assets/learning_video_studio.js?v=20260706_runtime_user_header_01"></script>
   <script src="/api/frontend/assets/vendor/echarts/echarts.min.js?v=6.1.0_b66b25ae"></script>
-  <script src="/api/frontend/assets/app.js?v=20260720_echarts_generic_01"></script>
-  <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260621_reader_workspace"></script>
+  <script src="/api/frontend/assets/app.js?v=20260802_profile_style_02"></script>
+  <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260731_course_reopen_01"></script>
 </body>
 </html>
 

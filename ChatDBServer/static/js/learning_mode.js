@@ -435,6 +435,10 @@
             url.searchParams.set('username', runtimeUsername);
         }
 
+        // 初始布局状态随 URL 下发：iframe 在首帧渲染前据此隐藏/保留顶部 kicker tab 行，
+        // 避免等待 postMessage 往返期间 panel-head 闪现。口径与 postDashboardNavLayout 一致。
+        url.searchParams.set('dashboard_nav', (dashboardNavVisible && isSidebarNavActuallyVisible()) ? '1' : '0');
+
         return url.toString();
     }
 
@@ -984,6 +988,12 @@
         frame.referrerPolicy = 'no-referrer';
         if (useMain) {
             sharedMainIframe = frame;
+            // iframe 内脚本在 load 事件前已完成注册，这里补发布局状态与待发功能区指令，
+            // 避免 frame 挂载过程中 postMessage 先于监听器注册而丢失。
+            frame.addEventListener('load', () => {
+                postDashboardNavLayout();
+                flushDashboardTabCommand();
+            });
         } else {
             sharedWelcomeIframe = frame;
         }
@@ -1036,6 +1046,164 @@
             close_reason: closeReason,
             close_target: closeTarget,
         });
+    }
+
+    // ---- Dashboard 功能区导航：宿主侧栏按钮 → iframe 指令 / iframe 状态 → 按钮高亮 ----
+
+    const LEARNING_NAV_BUTTON_TABS = [
+        ['learningProgressBtn', 'progress'],
+        ['learningResourcesBtn', 'push'],
+        ['learningPracticeBtn', 'questionBank'],
+        ['learningProfileBtn', 'profileCenter'],
+        ['learningFeedBtn', 'feed'],
+        ['learningCoursesBtn', 'materials'],
+    ];
+
+    let pendingDashboardTab = '';
+    let dashboardNavVisible = false;
+    let dashboardNavLayoutResizeTimer = null;
+    let lastDashboardCommandSentAt = 0;
+
+    function flushDashboardTabCommand() {
+        if (!pendingDashboardTab) return false;
+
+        // 注意：postMessage 成功不代表 iframe 监听器已注册（首次挂载会静默丢失），
+        // 这里不清 pending，等 iframe 回报 dashboard 状态确认后才清除（见 handleDashboardStatePayload）。
+        lastDashboardCommandSentAt = Date.now();
+        return postToSharedMainFrame({
+            source: 'nexora-host',
+            type: 'nexora:dashboard:open-tab',
+            tab: pendingDashboardTab,
+        });
+    }
+
+    // 侧栏功能区入口点击：iframe 可能尚未挂载（首次进入 Learning 主页），
+    // 指令先留存，frame load 事件里补发，避免挂载时序导致指令丢失。
+    function openDashboardTab(tab) {
+        const normalized = String(tab || '').trim();
+
+        if (!normalized) return false;
+
+        pendingDashboardTab = normalized;
+        return flushDashboardTabCommand();
+    }
+
+    // 侧栏工作台入口：打开 NexoraLearning 的资源工作台 / 视频工作台视图。
+    // 侧栏仅在 Learning 主 iframe 挂载后可见，指令直接下发。
+    function openLearningStudio(studio) {
+        const normalized = String(studio || '').trim();
+
+        if (!normalized) return false;
+
+        return postToSharedMainFrame({
+            source: 'nexora-host',
+            type: 'nexora:dashboard:open-studio',
+            studio: normalized,
+        });
+    }
+
+    function isSidebarNavActuallyVisible() {
+        const sidebar = document.getElementById('sidebar');
+
+        if (!sidebar) return false;
+        if (sidebar.classList.contains('collapsed')) return false;
+
+        try {
+            const position = String(window.getComputedStyle(sidebar).position || '').trim().toLowerCase();
+
+            // 移动端 overlay 布局侧栏不占位，宿主按钮实际不可见，iframe 保留自己的顶部 tab
+            if (position === 'fixed' || position === 'absolute') return false;
+        } catch (_err) {
+            return dashboardNavVisible;
+        }
+
+        return true;
+    }
+
+    function postDashboardNavLayout() {
+        if (!getSharedMainWindow()) return;
+
+        postToSharedMainFrame({
+            source: 'nexora-host',
+            type: 'nexora:dashboard:layout',
+            nav_visible: dashboardNavVisible && isSidebarNavActuallyVisible(),
+        });
+    }
+
+    function syncDashboardNavLayout(visible) {
+        dashboardNavVisible = !!visible;
+        postDashboardNavLayout();
+    }
+
+    window.addEventListener('resize', () => {
+        if (dashboardNavLayoutResizeTimer) {
+            window.clearTimeout(dashboardNavLayoutResizeTimer);
+        }
+
+        dashboardNavLayoutResizeTimer = window.setTimeout(() => {
+            dashboardNavLayoutResizeTimer = null;
+            postDashboardNavLayout();
+        }, 160);
+    });
+
+    // iframe 回报 dashboard 当前视图与功能区 tab：仅在 dashboard 视图下高亮对应侧栏按钮
+    function handleDashboardStatePayload(data) {
+        if (!data || typeof data !== 'object') return;
+        if (String(data.source || '').trim().toLowerCase() !== 'nexora-learning') return;
+        if (String(data.type || '').trim().toLowerCase() !== 'nexora:dashboard:state') return;
+
+        const view = String(data.view || '').trim().toLowerCase();
+        const sideTab = String(data.side_tab || '').trim();
+
+        // 独立视图按 view 匹配；dashboard 内功能区按 side_tab 匹配。
+        const matchesNavKey = (tabKey) => {
+            if (tabKey === 'materials') return view === 'materials';
+            if (tabKey === 'profileCenter') return view === 'profilecenter';
+            if (tabKey === 'questionBankMistakes') {
+                return view === 'dashboard' && sideTab === 'questionBank';
+            }
+
+            return view === 'dashboard' && sideTab === tabKey;
+        };
+
+        LEARNING_NAV_BUTTON_TABS.forEach(([buttonId, tabKey]) => {
+            const btn = document.getElementById(buttonId);
+
+            if (!btn) return;
+
+            const active = matchesNavKey(tabKey);
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+
+            if (['learningResourcesBtn', 'learningPracticeBtn'].includes(buttonId)) {
+                const groupId = buttonId === 'learningResourcesBtn'
+                    ? 'learningResourcesGroup'
+                    : 'learningPracticeGroup';
+                const group = document.getElementById(groupId);
+
+                if (group) {
+                    group.classList.toggle('is-active', active);
+                }
+            }
+        });
+
+        // 布局补发：iframe 应用模块经 app.js 异步 fetch 后执行，message 监听器注册
+        // 晚于 iframe load 事件，初始 layout 消息可能先于监听器注册而丢失，导致
+        // body.host-dashboard-nav-active 打不上、顶部 kicker tab 行无法隐藏。
+        // state 报告由 iframe chunk 代码发出，收到即证明监听器已就绪，补发布局确保送达。
+        postDashboardNavLayout();
+
+        // 指令确认：iframe 已切到目标功能区则清除 pending；
+        // 状态仍不一致说明指令可能丢失（如首次挂载时序），借状态回报补发一次。
+        // 600ms 静默窗口：指令应用途中 setView 会先回报旧 tab 的中间状态，
+        // 窗口内的不匹配不补发，避免重复指令导致 loadQuestionBank 等重复执行。
+        if (pendingDashboardTab) {
+            if (matchesNavKey(pendingDashboardTab)) {
+                pendingDashboardTab = '';
+            } else if (Date.now() - lastDashboardCommandSentAt > 600) {
+                flushDashboardTabCommand();
+            }
+        }
     }
 
     function renderWelcome(container, options = {}) {
@@ -1878,6 +2046,7 @@
         if (handlePuzzleStateUpdateFromIframe(event)) return;
         if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
+        handleDashboardStatePayload(event && event.data);
         const data = event && event.data;
         const msgType = String(data && data.type ? data.type : '').trim().toLowerCase();
 
@@ -2137,6 +2306,9 @@
         renderSidebarPanel,
         destroySidebarPanel,
         closeReaderFromHost,
+        openDashboardTab,
+        openLearningStudio,
+        syncDashboardNavLayout,
         postFeedViaIframe,
         searchFeedUsersViaIframe,
         createPuzzleCardNode,

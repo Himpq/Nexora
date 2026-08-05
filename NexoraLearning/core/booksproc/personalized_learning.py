@@ -15,6 +15,17 @@ from ..runlog import log_event
 
 
 CHAPTER_CONTENT_START_MARKER = "<!-- NEXORA_CONTENT_START -->"
+CHAPTER_LEARNING_MIN_PROSE_CHARS = 1800
+CHAPTER_LEARNING_MIN_H2_COUNT = 8
+CHAPTER_LEARNING_MIN_PARAGRAPHS = 10
+CHAPTER_LEARNING_MIN_QUOTE_BLOCKS = 2
+CHAPTER_LEARNING_REQUIRED_SECTIONS = (
+    ("学习目标", ("学习目标", "本章目标")),
+    ("先备知识与本章衔接", ("先备知识", "基础衔接", "知识衔接", "学习起点")),
+    ("例题与应用", ("例题", "案例", "应用", "推演", "实践")),
+    ("易错点与适用边界", ("易错", "误区", "边界", "限制", "常见错误")),
+    ("本章总结与掌握检查", ("总结", "小结", "复习", "掌握检查")),
+)
 HTML_TAG_PATTERN = re.compile(
     r"(?is)<\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^>]*)?\s*/?\s*>|"
     r"&lt;\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^&]*?)?/?\s*&gt;"
@@ -561,6 +572,8 @@ def load_all_chapter_status(
             "status": status,
             "priority": int(ch.get("priority") or idx + 1),
             "reason": str(ch.get("reason") or "").strip(),
+            "stage": str(ch.get("stage") or "").strip(),
+            "progression": str(ch.get("progression") or "").strip(),
             "content_generated": has_content,
             "content_generating": generation_status == "running",
             "generation_status": generation_status,
@@ -1688,6 +1701,126 @@ def validate_nxl_lab_blocks(markdown: str) -> int:
     return len(blocks)
 
 
+def _strip_markdown_fenced_blocks(markdown: str) -> str:
+    """移除 fenced code block，正文质量统计不能由实验 JSON 或代码填充。"""
+    visible_lines: List[str] = []
+    inside_fence = False
+
+    for raw_line in str(markdown or "").splitlines():
+        if MARKDOWN_FENCE_PATTERN.match(raw_line):
+            inside_fence = not inside_fence
+            continue
+
+        if not inside_fence:
+            visible_lines.append(raw_line)
+
+    return "\n".join(visible_lines)
+
+
+def _markdown_to_plain_text(markdown: str) -> str:
+    """将 Markdown 语法压平为可统计、可比对的正文文本。"""
+    text = str(markdown or "")
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"[*_~`]", "", text)
+    text = HTML_TAG_PATTERN.sub(" ", text)
+    return text
+
+
+def _extract_markdown_quote_blocks(markdown: str) -> List[str]:
+    """提取连续 Markdown 引用块，用于检查教材原文锚点。"""
+    quote_blocks: List[str] = []
+    current_lines: List[str] = []
+
+    for raw_line in str(markdown or "").splitlines():
+        match = re.match(r"^\s*>\s?(.*)$", raw_line)
+
+        if match:
+            current_lines.append(match.group(1).strip())
+            continue
+
+        if current_lines:
+            quote_blocks.append(" ".join(current_lines).strip())
+            current_lines = []
+
+    if current_lines:
+        quote_blocks.append(" ".join(current_lines).strip())
+
+    return [block for block in quote_blocks if block]
+
+
+def validate_chapter_learning_content(markdown: str, source_text: str = "") -> Dict[str, int]:
+    """校验章节是否达到可直接学习的正文质量，而不只是格式正确。"""
+    content = _strip_markdown_fenced_blocks(markdown)
+    headings_h1 = re.findall(r"^\s{0,3}#\s+(.+?)\s*$", content, flags=re.MULTILINE)
+    headings_h2 = re.findall(r"^\s{0,3}##\s+(.+?)\s*$", content, flags=re.MULTILINE)
+    quote_blocks = _extract_markdown_quote_blocks(content)
+    body_without_headings_or_quotes = re.sub(r"^\s{0,3}#{1,6}\s+.*$", "", content, flags=re.MULTILINE)
+    body_without_headings_or_quotes = re.sub(r"^\s*>.*$", "", body_without_headings_or_quotes, flags=re.MULTILINE)
+    prose_text = _markdown_to_plain_text(body_without_headings_or_quotes)
+    prose_chars = len(re.sub(r"\s+", "", prose_text))
+    paragraph_count = 0
+
+    for block in re.split(r"\n\s*\n", body_without_headings_or_quotes):
+        block_text = _markdown_to_plain_text(block)
+
+        if len(re.sub(r"\s+", "", block_text)) >= 30:
+            paragraph_count += 1
+
+    normalized_headings = "\n".join(headings_h2)
+    missing_sections = [
+        section_name
+        for section_name, aliases in CHAPTER_LEARNING_REQUIRED_SECTIONS
+        if not any(alias in normalized_headings for alias in aliases)
+    ]
+    verified_source_quote_count = 0
+    errors: List[str] = []
+
+    if not headings_h1:
+        errors.append("缺少一级章节标题")
+
+    if len(headings_h2) < CHAPTER_LEARNING_MIN_H2_COUNT:
+        errors.append(f"二级教学小节不足 {CHAPTER_LEARNING_MIN_H2_COUNT} 个，当前 {len(headings_h2)} 个")
+
+    if missing_sections:
+        errors.append(f"缺少必需小节：{'、'.join(missing_sections)}")
+
+    if prose_chars < CHAPTER_LEARNING_MIN_PROSE_CHARS:
+        errors.append(f"正文有效字数不足 {CHAPTER_LEARNING_MIN_PROSE_CHARS} 字，当前 {prose_chars} 字")
+
+    if paragraph_count < CHAPTER_LEARNING_MIN_PARAGRAPHS:
+        errors.append(f"实质讲解段落不足 {CHAPTER_LEARNING_MIN_PARAGRAPHS} 段，当前 {paragraph_count} 段")
+
+    if len(quote_blocks) < CHAPTER_LEARNING_MIN_QUOTE_BLOCKS:
+        errors.append(f"教材原文引用不足 {CHAPTER_LEARNING_MIN_QUOTE_BLOCKS} 段，当前 {len(quote_blocks)} 段")
+
+    if source_text and quote_blocks:
+        normalized_source = re.sub(r"\s+", "", _markdown_to_plain_text(_normalize_chapter_markdown_html(source_text)))
+        for quote in quote_blocks:
+            normalized_quote = re.sub(r"\s+", "", _markdown_to_plain_text(quote))
+
+            if len(normalized_quote) >= 20 and normalized_quote in normalized_source:
+                verified_source_quote_count += 1
+
+        if verified_source_quote_count < CHAPTER_LEARNING_MIN_QUOTE_BLOCKS:
+            errors.append(
+                f"可在教材原文中逐字核对的引用不足 {CHAPTER_LEARNING_MIN_QUOTE_BLOCKS} 段，当前 {verified_source_quote_count} 段"
+            )
+
+    if errors:
+        raise ValueError("章节学习内容不完整：" + "；".join(errors))
+
+    return {
+        "prose_chars": prose_chars,
+        "h1_count": len(headings_h1),
+        "h2_count": len(headings_h2),
+        "paragraph_count": paragraph_count,
+        "quote_block_count": len(quote_blocks),
+        "verified_source_quote_count": verified_source_quote_count,
+    }
+
+
 def save_chapter_content(
     cfg: Mapping[str, Any],
     user_id: str,
@@ -1712,6 +1845,17 @@ def save_chapter_content(
         )
 
     try:
+        content_metrics = validate_chapter_learning_content(markdown_text)
+    except ValueError as exc:
+        log_event(
+            "personalized_chapter_content_validation_error",
+            "个性化章节教学内容完整性校验失败",
+            payload={"user_id": safe_uid, "lecture_id": safe_lid, "chapter_index": chapter_index},
+            content=str(exc),
+        )
+        raise
+
+    try:
         lab_count = validate_nxl_lab_blocks(markdown_text)
     except ValueError as exc:
         log_event(
@@ -1733,6 +1877,7 @@ def save_chapter_content(
             "lecture_id": safe_lid,
             "chapter_index": chapter_index,
             "lab_count": lab_count,
+            **content_metrics,
         },
     )
     return str(target)
@@ -1830,19 +1975,14 @@ def _build_learning_path_tools() -> List[Dict[str, Any]]:
                                         "description": "Exact source_id from the provided catalog",
                                     },
                                     "outline_section_id": {"type": "string"},
-                                    "priority": {"type": "integer"},
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["completed", "current", "recommended", "pending"],
-                                    },
                                     "reason": {"type": "string"},
+                                    "progression": {"type": "string"},
                                 },
                                 "required": [
                                     "source_id",
                                     "outline_section_id",
-                                    "priority",
-                                    "status",
                                     "reason",
+                                    "progression",
                                 ],
                             },
                         },
@@ -1997,68 +2137,92 @@ def _canonicalize_learning_path_data_sources(path_data: Dict[str, Any]) -> bool:
     return changed
 
 
+def _learning_path_stage(index: int, total: int) -> str:
+    """Assign a monotonic curriculum stage from the canonical course position."""
+    position = (index + 1) / max(1, total)
+
+    if position <= 0.25:
+        return "foundation"
+    if position <= 0.6:
+        return "core"
+    if position <= 0.85:
+        return "application"
+
+    return "extension"
+
+
 def _normalize_learning_path_chapters(raw_chapters: Any, catalog_rows: Any = None) -> List[Dict[str, Any]]:
-    chapters: List[Dict[str, Any]] = []
+    """Validate full catalog coverage and preserve the curriculum's canonical order."""
     if not isinstance(raw_chapters, list):
-        return chapters
+        raise ValueError("chapters 必须是数组。")
+    if not isinstance(catalog_rows, list) or not catalog_rows:
+        raise ValueError("教材目录为空，无法校验学习路线。")
+    if len(raw_chapters) != len(catalog_rows):
+        raise ValueError(f"学习路线必须覆盖全部 {len(catalog_rows)} 个目录章节，当前提交 {len(raw_chapters)} 个。")
 
-    catalog_index = _build_catalog_source_candidates(catalog_rows)
+    chapters: List[Dict[str, Any]] = []
+    seen_source_ids = set()
 
-    for idx, item in enumerate(raw_chapters):
-        if not isinstance(item, dict):
-            continue
+    for idx, catalog_row in enumerate(catalog_rows):
+        item = raw_chapters[idx]
 
-        source = _canonicalize_learning_path_source(item, catalog_index)
-        source_id = source["source_id"]
-        name = source["name"]
-        book_id = source["book_id"]
-        book_title = source["book_title"]
-        chapter_range = source["chapter_range"]
-        chapter_summary = source["chapter_summary"]
+        if not isinstance(item, dict) or not isinstance(catalog_row, dict):
+            raise ValueError(f"第 {idx + 1} 个章节结构无效。")
+
+        expected_source_id = str(catalog_row.get("source_id") or "").strip()
+        source_id = str(item.get("source_id") or "").strip()
+
+        if not expected_source_id:
+            raise ValueError(f"教材目录第 {idx + 1} 项缺少 source_id。")
+        if source_id != expected_source_id:
+            raise ValueError(
+                f"第 {idx + 1} 章顺序错误，应为 {expected_source_id}，实际为 {source_id or '空'}。"
+            )
+        if source_id in seen_source_ids:
+            raise ValueError(f"source_id 重复：{source_id}。")
+
+        seen_source_ids.add(source_id)
+        expected_section_id = str(catalog_row.get("outline_section_id") or "").strip()
         outline_section_id = str(item.get("outline_section_id") or "").strip()
-        status = str(item.get("status") or "pending").strip().lower() or "pending"
+
+        if outline_section_id != expected_section_id:
+            raise ValueError(
+                f"{source_id} 的 outline_section_id 应为 {expected_section_id}，实际为 {outline_section_id or '空'}。"
+            )
+
         reason = str(item.get("reason") or "").strip()
+        progression = str(item.get("progression") or "").strip()
 
-        try:
-            priority = int(item.get("priority") or idx + 1)
-        except Exception:
-            priority = idx + 1
+        if len(reason) < 20:
+            raise ValueError(f"{source_id} 的个性化推荐理由过短。")
+        if len(progression) < 20:
+            raise ValueError(f"{source_id} 的章节推进说明过短。")
 
-        if not name or not book_id or not chapter_range:
-            continue
-
-        if status not in {"completed", "current", "recommended", "pending"}:
+        if idx == 0:
+            status = "current"
+        elif idx <= 2:
+            status = "recommended"
+        else:
             status = "pending"
 
         chapters.append(
             {
                 "index": idx,
                 "source_id": source_id,
-                "name": name,
-                "book_id": book_id,
-                "book_title": book_title,
-                "chapter_range": chapter_range,
-                "chapter_summary": chapter_summary,
-                "outline_section_id": outline_section_id,
-                "priority": max(1, priority),
+                "name": str(catalog_row.get("chapter_name") or "").strip(),
+                "book_id": str(catalog_row.get("book_id") or "").strip(),
+                "book_title": str(catalog_row.get("book_title") or "").strip(),
+                "chapter_range": str(catalog_row.get("chapter_range") or "").strip(),
+                "chapter_summary": str(catalog_row.get("chapter_summary") or "").strip(),
+                "outline_section_id": expected_section_id,
+                "outline_section_title": str(catalog_row.get("outline_section_title") or "").strip(),
+                "priority": idx + 1,
                 "status": status,
+                "stage": _learning_path_stage(idx, len(catalog_rows)),
                 "reason": reason,
+                "progression": progression,
             }
         )
-
-    chapters.sort(key=lambda row: (int(row.get("priority") or 9999), int(row.get("index") or 0)))
-
-    current_seen = False
-    for idx, chapter in enumerate(chapters):
-        chapter["index"] = idx
-        if chapter["status"] == "current":
-            if current_seen:
-                chapter["status"] = "recommended"
-            else:
-                current_seen = True
-
-    if chapters and not current_seen:
-        chapters[0]["status"] = "current"
 
     return chapters
 
@@ -2150,7 +2314,10 @@ def generate_learning_path_with_tools(
             options={
                 "temperature": 0.3,
                 "max_tokens": 12000,
-                "stream": True,
+                # PAPI 上游在 function tools 开启时不会返回有效流式首包。
+                # 浏览器 SSE 继续发送状态事件，模型工具请求固定使用非流式响应。
+                "stream": False,
+                "think": False,
                 "tools": tools,
                 "tool_choice": tool_choice,
             },
@@ -2298,9 +2465,22 @@ def generate_learning_path_with_tools(
 
             if tool_name == "submit_learning_path":
                 emit_status("模型已提交学习路线，正在校验章节来源和学习顺序")
-                advice_text = str(args_obj.get("advice") or "").strip()
-                chapters = _normalize_learning_path_chapters(args_obj.get("chapters"), catalog_rows)
-                tool_result = {"ok": bool(advice_text and chapters), "chapters_count": len(chapters)}
+                submitted_advice = str(args_obj.get("advice") or "").strip()
+
+                try:
+                    normalized_chapters = _normalize_learning_path_chapters(args_obj.get("chapters"), catalog_rows)
+                except ValueError as exc:
+                    advice_text = ""
+                    chapters = []
+                    tool_result = {"ok": False, "error": str(exc)}
+                else:
+                    advice_text = submitted_advice
+                    chapters = normalized_chapters
+                    tool_result = {
+                        "ok": bool(advice_text and chapters),
+                        "chapters_count": len(chapters),
+                        "canonical_order": True,
+                    }
             else:
                 tool_result = {"ok": False, "error": f"unsupported tool: {tool_name}"}
 
@@ -2411,7 +2591,7 @@ def generate_chapter_markdown_with_tools(
     request_timeout: int,
     on_delta: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """流式生成章节 Markdown，并在返回前完成实验配置校验与纠错。"""
+    """生成章节 Markdown，并在返回前完成教学内容与实验配置校验。"""
     safe_user_id = str(user_id or "").strip()
     safe_lecture_id = str(lecture_id or "").strip()
     messages: List[Dict[str, Any]] = [
@@ -2487,6 +2667,7 @@ def generate_chapter_markdown_with_tools(
         try:
             markdown_text = _extract_markdown_after_content_marker(assistant_content)
             lab_count = validate_nxl_lab_blocks(markdown_text)
+            content_metrics = validate_chapter_learning_content(markdown_text, full_text)
         except ValueError as exc:
             validation_error = str(exc)
             log_event(
@@ -2514,7 +2695,7 @@ def generate_chapter_markdown_with_tools(
                             "你生成的章节未通过保存前校验，请修正后重新输出完整文章。\n"
                             f"校验错误：{validation_error}\n"
                             "第一行仍必须是 <!-- NEXORA_CONTENT_START -->。\n"
-                            "不要删除正文，只修正导致错误的部分。\n"
+                            "必须重新输出整篇完整文章，不要只返回局部修补片段；保留全部必需教学小节、教材原文引用和实质讲解。\n"
                             "nxl-lab 数值表达式只允许算术和已注册数学函数，禁止比较、逻辑运算和 ?: 条件表达式。\n"
                             "canvas_scene 的每个滑块参数必须实际出现在画布表达式或 {{参数名}} 文本模板中；"
                             "chart_experiment 必须提供纯 JSON option，动态数据通过 data_sources 生成并由 $source 引用。"
@@ -2534,6 +2715,7 @@ def generate_chapter_markdown_with_tools(
                 "attempt": attempt,
                 "chars": len(markdown_text),
                 "lab_count": lab_count,
+                **content_metrics,
             },
         )
 

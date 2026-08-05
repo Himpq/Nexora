@@ -26,6 +26,50 @@
         return value;
     }
 
+    // 同步知识库列表的"当前展示项"高亮。currentTitle 为空（未展示知识库）时清除全部高亮，
+    // 保证只有真正打开知识库时才高亮对应条目
+    function syncKnowledgeListActiveHighlight(currentTitle) {
+        const list = document.getElementById('panelBasisKnowledgeList');
+
+        if (!list) return;
+
+        const safeTitle = String(currentTitle || '').trim();
+        const items = list.querySelectorAll('.knowledge-item');
+
+        items.forEach((item) => {
+            const itemTitle = String(item.dataset.title || '').trim();
+            item.classList.toggle('active', !!safeTitle && itemTitle === safeTitle);
+        });
+    }
+
+    // 切换知识时的加载动画：不透明遮罩 + 旋转图标盖住编辑区，
+    // 避免 fetch 期间旧内容闪烁。遮罩按需创建并挂到 viewer 上
+    function showKnowledgeLoading() {
+        const viewer = document.getElementById('knowledgeViewer');
+
+        if (!viewer) return;
+
+        let loading = document.getElementById('knowledgeLoading');
+
+        if (!loading) {
+            loading = document.createElement('div');
+            loading.id = 'knowledgeLoading';
+            loading.className = 'knowledge-loading';
+            loading.innerHTML = '<div class="knowledge-loading-spinner" aria-hidden="true"></div>';
+            viewer.appendChild(loading);
+        }
+
+        loading.style.display = 'flex';
+    }
+
+    function hideKnowledgeLoading() {
+        const loading = document.getElementById('knowledgeLoading');
+
+        if (loading) {
+            loading.style.display = 'none';
+        }
+    }
+
     function createKnowledgeController(deps = {}) {
         const escapeHtml = requireKnowledgeDependency(deps, 'escapeHtml');
         const showToast = requireKnowledgeDependency(deps, 'showToast');
@@ -701,7 +745,8 @@
                             pinned: isPinned
                         });
                     });
-                    row.addEventListener('click', () => viewKnowledge(rawTitle));
+                    // 整块可点击打开（含 padding 区域），vectorize 按钮已 stopPropagation 不会误触
+                    div.addEventListener('click', () => viewKnowledge(rawTitle));
                 } else {
                     const editBtn = document.createElement('button');
                     editBtn.type = 'button';
@@ -826,7 +871,7 @@
                         });
                     });
 
-                    row.addEventListener('click', (ev) => {
+                    div.addEventListener('click', (ev) => {
                         if (div.classList.contains('editing')) return;
                         if (ev.target && ev.target.closest && ev.target.closest('.knowledge-item-actions')) return;
 
@@ -855,6 +900,9 @@
                 div.appendChild(row);
                 container.appendChild(div);
             });
+
+            // 列表渲染完成后同步当前展示项高亮（未展示知识库时会自动清除）
+            syncKnowledgeListActiveHighlight(getCurrentViewingKnowledge());
         }
 
         function confirmDeleteKnowledge(title, type = 'basis') {
@@ -5114,7 +5162,17 @@
                     }
                     const markdown = String(nextValue || '');
 
+                    // setMarkdown 触发 ProseMirror 的 scrollIntoView，会错误地滚动知识库
+                    // 列表容器(.k-content)导致列表跳位；该滚动在 setMarkdown 内同步发生，
+                    // 故先存后还，保证切换知识内容时列表滚动位置不受影响
+                    const knowledgeListScroller = document.querySelector('#knowledgePanel .k-content');
+                    const preservedListScrollTop = knowledgeListScroller ? knowledgeListScroller.scrollTop : null;
+
                     editor.setMarkdown(markdown, false);
+
+                    if (knowledgeListScroller && preservedListScrollTop !== null) {
+                        knowledgeListScroller.scrollTop = preservedListScrollTop;
+                    }
 
                     return markdown;
                 },
@@ -5218,6 +5276,8 @@
 
         async function viewKnowledge(title, options = {}) {
             setCurrentTitle(title);
+            // 打开知识的瞬间同步列表高亮
+            syncKnowledgeListActiveHighlight(title);
             const {
                 forceEditMode = false,
                 highlightData = null,
@@ -5306,7 +5366,28 @@
                 setNavigationStack([]);
             }
 
-            // 2. Fetch Content
+            // 2. UI Switch（提前到 fetch 之前：点击立即切换视图并展示加载动画，
+            //    避免 fetch 期间停留旧视图、加载完才突变导致的生硬感）
+            msgs.style.display = 'none';
+            if (elements.learningMainPanel) {
+                elements.learningMainPanel.style.display = 'none';
+            }
+            const inputDock = document.querySelector('.input-dock');
+            if (inputDock) inputDock.style.display = 'none';
+            if(inputWrapper) inputWrapper.style.display = 'none';
+            viewer.style.display = 'flex';
+            viewer.style.flexDirection = 'column';
+            syncTurnIndicatorVisibility();
+            // 如果当前viewer是搜索页，先恢复为编辑器容器
+            const existingEditorMount = document.getElementById('knowledgeEditor');
+            if (!existingEditorMount || String(existingEditorMount.tagName || '').toUpperCase() !== 'DIV') {
+                viewer.innerHTML = '<div id="knowledgeEditor" class="knowledge-toast-editor"></div>';
+                // 搜索页替换会销毁编辑器，需重建
+                destroyEditor();
+            }
+            showKnowledgeLoading();
+
+            // 3. Fetch Content
             let content = '';
             let knowledgeMetadata = {};
             try {
@@ -5326,25 +5407,7 @@
                     }
                 }
             } catch(e) { console.error(e); }
-
-            // 3. UI Switch
-            msgs.style.display = 'none';
-            if (elements.learningMainPanel) {
-                elements.learningMainPanel.style.display = 'none';
-            }
-            const inputDock = document.querySelector('.input-dock');
-            if (inputDock) inputDock.style.display = 'none';
-            if(inputWrapper) inputWrapper.style.display = 'none';
-            viewer.style.display = 'flex';
-            viewer.style.flexDirection = 'column';
-            syncTurnIndicatorVisibility();
-            // 如果当前viewer是搜索页，先恢复为编辑器容器
-            const existingEditorMount = document.getElementById('knowledgeEditor');
-            if (!existingEditorMount || String(existingEditorMount.tagName || '').toUpperCase() !== 'DIV') {
-                viewer.innerHTML = '<div id="knowledgeEditor" class="knowledge-toast-editor"></div>';
-                // 搜索页替换会销毁编辑器，需重建
-                destroyEditor();
-            }
+            hideKnowledgeLoading();
 
             // 4. Update Header
             headerTitle.textContent = title;
@@ -5525,6 +5588,8 @@
             storeScrollPosition();
             clearTitleState(closingTitle);
             clearCurrentTitle();
+            // 关闭知识库后清除列表高亮（当前已无展示的知识）
+            syncKnowledgeListActiveHighlight('');
             clearWorkspaceReturnContext();
 
             // 检查导航栈

@@ -37,25 +37,43 @@ body.learning-course-workspace-active .sidebar-brand-tab:not(.active):hover {
     color: #344054;
 }
 
+/* Workspace 的颜色和侧栏尺寸由课程上下文控制，品牌 tab 的可见性由全局状态机控制。 */
+body.learning-course-workspace-active .sidebar-header {
+    padding: 16px 14px;
+}
+
+body.learning-course-workspace-active .sidebar-brand-tab {
+    flex: 0 0 auto;
+    padding-bottom: 4px;
+}
+
 body.learning-course-workspace-active .sidebar-brand-workspace-text,
 body.learning-course-workspace-active .sidebar-brand-learning-text {
     font-size: 16px;
     font-weight: 600;
-    letter-spacing: -0.02em;
+    letter-spacing: 0;
 }
 
 body.learning-course-workspace-active .sidebar {
-    width: var(--sidebar-width-learning);
+    width: var(--sidebar-width-workspace);
     background: var(--learning-sidebar-bg, #f5f6f8);
     color: var(--learning-sidebar-text, #20242c);
     border-right-color: var(--learning-sidebar-border, #e1e5ea);
 }
 
-body.learning-workspace-active.learning-course-context-active .sidebar {
+/* 学习模式 + 课程上下文但【不在】课程 Workspace：用学习宽。
+   必须排除 course-workspace（workspace 激活时 course-context 类也在 body 上，
+   且本规则特异性更高，否则会覆盖上面的 workspace 紧凑宽） */
+body.learning-workspace-active.learning-course-context-active:not(.learning-course-workspace-active) .sidebar {
     width: var(--sidebar-width-learning);
 }
 
 body.learning-course-workspace-active #newChatBtn {
+    display: none !important;
+}
+
+/* 功能区入口属于 Learning 部分，Workspace 态与 Nexora 的 Files/Workspaces 一样不显示 */
+body.learning-course-workspace-active .learning-nav-item {
     display: none !important;
 }
 
@@ -137,285 +155,63 @@ body.learning-course-workspace-active #learningMainPanel.learning-main-panel {
     display: block;
 }
 
-.course-workspace-hero-copy {
-    width: 100%;
-    min-width: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-hero-body {
-    display: grid;
-    grid-template-columns: 104px minmax(0, 1fr);
-    gap: 14px;
-    align-items: start;
-    padding: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-cover {
-    width: 104px;
-    max-width: 104px;
-    height: 142px;
-    background: #eef1f4;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.course-workspace-hero-copy .learning-panel-cover-image {
-    width: 100%;
-    height: auto;
-    display: block;
-}
-
-.course-workspace-hero-copy .learning-panel-cover-empty {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
-    color: #666666;
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 1.35;
-    letter-spacing: 0;
-    text-align: center;
-}
-
-.course-workspace-hero-copy .learning-panel-hero-content {
-    display: grid;
-    gap: 8px;
-    min-width: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-title-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    min-width: 0;
-    flex-wrap: wrap;
-}
-
-.course-workspace-hero-copy .learning-panel-hero-title {
-    margin: 0;
-    color: #111111;
-    font-size: 18px;
-    font-weight: 800;
-    line-height: 1.24;
-    overflow-wrap: anywhere;
-}
-
-.course-workspace-hero-copy .learning-state-pill {
-    min-height: 22px;
-    border: 1px solid #111111;
-    border-radius: 0;
-    background: #ffffff;
-    color: #111111;
-    display: inline-flex;
-    align-items: center;
-    padding: 3px 7px;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.2;
-}
-
-.course-workspace-hero-copy .learning-state-pill.is-off {
-    border-color: #c8cdd3;
-    color: #666666;
-}
-
-.course-workspace-hero-copy .learning-panel-summary-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-}
-
-.course-workspace-hero-copy .learning-panel-copy,
-.course-workspace-hero-copy .learning-panel-summary-copy {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-    border: 0;
-    background: transparent;
-    padding: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-copy-label,
-.course-workspace-hero-copy .detail-description-label {
-    margin: 0;
-    color: #6b7280;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.25;
-    letter-spacing: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-summary-text,
-.course-workspace-hero-copy .detail-description-text {
-    color: #2f343d;
-    font-size: 12px;
-    line-height: 1.58;
-    display: -webkit-box;
-    -webkit-line-clamp: 5;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-}
-
-.course-workspace-hero-copy .learning-panel-info-column,
-.course-workspace-hero-copy .learning-panel-hero-info-column {
-    grid-column: 1 / -1;
-    max-width: none;
-    min-width: 0;
-    display: grid;
-    gap: 12px;
-    border-left: 0;
-    border-top: 1px solid var(--learning-sidebar-border, #e1e5ea);
-    padding-left: 0;
-    padding-top: 14px;
-}
-
-.course-workspace-hero-copy .learning-panel-progress {
-    display: grid;
-    gap: 8px;
-    padding: 0 0 12px 10px;
-    border: 0;
-    border-left: 2px solid #111111;
-    border-radius: 0;
-    background: transparent;
-}
-
-.course-workspace-hero-copy .learning-panel-progress-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.course-workspace-hero-copy .learning-panel-progress-percent {
-    margin: 0;
-    color: #111111;
-    font-size: 13px;
-    font-weight: 800;
-    line-height: 1;
-}
-
-.course-workspace-hero-copy .learning-panel-progress-text {
-    margin: 0;
-    color: #666666;
-    font-size: 11px;
-    line-height: 1.35;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.course-workspace-hero-copy .nxl-course-bar,
-.course-workspace-hero-copy .learning-panel-progress-bar {
-    width: 100%;
-    height: 7px;
-    border-radius: 4px;
-    background: #e4e7eb;
-    overflow: hidden;
-}
-
-.course-workspace-hero-copy .nxl-course-bar-fill {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: #111111;
-}
-
-.course-workspace-hero-copy .learning-panel-info-card {
-    display: grid;
-    gap: 9px;
-    border: 0;
-    border-top: 1px solid var(--learning-sidebar-border, #e1e5ea);
-    border-radius: 0;
-    background: transparent;
-    padding: 12px 0 0;
-}
-
-.course-workspace-hero-copy .learning-panel-info-list {
-    display: grid;
-    gap: 7px;
-}
-
-.course-workspace-hero-copy .learning-panel-info-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-    color: #20242c;
-    font-size: 12px;
-    line-height: 1.35;
-}
-
-.course-workspace-hero-copy .learning-panel-info-label {
-    color: #6b7280;
-}
-
-.course-workspace-hero-copy .learning-panel-info-value {
-    color: #111111;
-    font-weight: 700;
-    text-align: right;
-    min-width: 0;
-}
-
-.course-workspace-hero-copy .learning-panel-action-toolbar {
+.course-workspace-nav {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 8px 0;
-}
-
-.course-workspace-hero-copy .learning-panel-action-toolbar .btn {
+    gap: 2px;
     width: 100%;
-    display: inline-flex;
+}
+
+.course-workspace-nav-item {
+    display: flex;
     align-items: center;
-    justify-content: center;
-}
-
-.course-workspace-hero-copy .btn {
-    border: 1px solid #d0d7de;
-    min-height: 32px;
-    padding: 0 12px;
-    border-radius: 0;
-    background: #fff;
-    color: #24292f;
+    gap: 11px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--learning-sidebar-text);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.3;
     cursor: pointer;
-    font-size: 12px;
-    line-height: 1.2;
-    text-decoration: none;
-    box-shadow: none;
-    transition: none;
+    text-align: left;
+    transition: background 0.15s ease, color 0.15s ease;
 }
 
-.course-workspace-hero-copy .btn.btn-sm {
-    padding: 4px 10px;
-    font-size: 12px;
+.course-workspace-nav-item svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: inherit;
+    transition: color 0.15s ease;
 }
 
-.course-workspace-hero-copy .btn.btn-outline-danger {
-    border-color: #f5c2c7;
-    color: #991b1b;
-    background: #fff;
+.course-workspace-nav-item:hover {
+    background: rgba(31, 35, 42, 0.07);
+    color: var(--learning-sidebar-accent);
 }
 
-.course-workspace-hero-copy .btn.btn-outline-danger:hover {
-    background: #fef2f2;
+.course-workspace-nav-item:hover svg {
+    color: inherit;
 }
 
-.course-workspace-hero-copy .btn.btn-outline-secondary {
-    border-color: #d0d7de;
-    color: #4b5563;
-    background: #fff;
+.course-workspace-nav-item.is-active {
+    background: rgba(31, 35, 42, 0.10);
+    color: var(--learning-sidebar-accent);
+    font-weight: 600;
 }
 
-.course-workspace-hero-copy .btn.btn-outline-secondary:hover {
-    background: #f8fafc;
+.course-workspace-nav-item.is-active svg {
+    color: inherit;
+}
+
+.course-workspace-nav-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -434,20 +230,5 @@ body.learning-course-workspace-active #learningMainPanel.learning-main-panel {
 
     .learning-course-workspace-panel {
         padding: 10px 12px 14px;
-    }
-
-    .course-workspace-hero-copy .learning-panel-hero-body {
-        grid-template-columns: 88px minmax(0, 1fr);
-        gap: 12px;
-    }
-
-    .course-workspace-hero-copy .learning-panel-cover {
-        width: 88px;
-        max-width: 88px;
-        height: 122px;
-    }
-
-    .course-workspace-hero-copy .learning-panel-action-toolbar .btn {
-        width: 100%;
     }
 }

@@ -18,6 +18,70 @@ from .models import CognitiveEvidence, ConceptNode
 from .storage import CognitiveEvidenceStore
 
 
+def _rebuild_chapters_from_flat_graph(graph: Mapping[str, Any]) -> Mapping[str, Any]:
+    """把扁平 nodes/edges 知识图谱重建成树形 chapters，供概念目录消费。
+
+    知识图谱 v2（G6 力导向图）落盘为扁平的 nodes/edges（mindmap._normalize_mindmap 拍平），
+    而概念目录构建器（catalog.build_course_catalog）消费树形 chapters/concepts/children。
+    扁平节点保留了 type/label/detail/parent，可无损重建章节树，两种格式在此桥接。
+    """
+    # 已是树形（含非空 chapters）则无需重建
+    existing_chapters = graph.get("chapters")
+
+    if isinstance(existing_chapters, list) and existing_chapters:
+        return graph
+
+    nodes = graph.get("nodes")
+
+    if not isinstance(nodes, list):
+        return graph
+
+    chapter_nodes: List[Mapping[str, Any]] = []
+    children_by_parent: Dict[str, List[Mapping[str, Any]]] = {}
+
+    # 按 parent 分组（保留节点原始顺序）：chapter 节点单独收集，其余挂到父节点下
+    for node in nodes:
+
+        if not isinstance(node, Mapping):
+            continue
+
+        if str(node.get("type") or "").strip().lower() == "chapter":
+            chapter_nodes.append(node)
+            continue
+
+        parent_id = str(node.get("parent") or "").strip()
+        children_by_parent.setdefault(parent_id, []).append(node)
+
+    def build_concept(node: Mapping[str, Any]) -> Dict[str, Any]:
+        concept: Dict[str, Any] = {
+            "name": str(node.get("label") or "").strip(),
+            "detail": str(node.get("detail") or "").strip(),
+        }
+        child_nodes = children_by_parent.get(str(node.get("id") or "").strip())
+
+        if child_nodes:
+            concept["children"] = [build_concept(child) for child in child_nodes]
+
+        return concept
+
+    chapters: List[Dict[str, Any]] = []
+
+    for chapter_node in chapter_nodes:
+        chapter_id = str(chapter_node.get("id") or "").strip()
+        chapters.append({
+            "section_id": chapter_id,
+            "name": str(chapter_node.get("label") or "").strip(),
+            "concepts": [
+                build_concept(child)
+                for child in children_by_parent.get(chapter_id, [])
+            ],
+        })
+
+    rebuilt = dict(graph)
+    rebuilt["chapters"] = chapters
+    return rebuilt
+
+
 class CognitionService:
     """Provide strict catalog, evidence, and overview operations."""
 
@@ -86,6 +150,9 @@ class CognitionService:
                     "resource": "solidified/mindmap.json",
                 },
             )
+
+        # 知识图谱 v2 落盘为扁平 nodes/edges，概念目录需要树形 chapters，此处重建。
+        graph = _rebuild_chapters_from_flat_graph(graph)
 
         outline = load_outline(self._cfg, normalized_lecture_id)
 

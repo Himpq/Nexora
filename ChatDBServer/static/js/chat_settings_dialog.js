@@ -11,6 +11,10 @@
 const controllers = new Map();
 const confirmStates = new Map();
 
+// 全站 modal-backdrop 的唯一层级权威。所有旧入口只可委托此处登记或同步状态。
+const registeredModalBackdrops = new Map();
+const activeModalBackdrops = [];
+
 const PUBLIC_API_EXPIRY_LABELS = Object.freeze({
     '1d': '1 天',
     '7d': '7 天',
@@ -20,9 +24,11 @@ const PUBLIC_API_EXPIRY_LABELS = Object.freeze({
 });
 
 const activeDialogIds = [];
+const MODAL_STACK_STEP = 20;
 let escapeBound = false;
+let modalBackdropDocumentObserver = null;
 
-function getDialogLayerBase() {
+function getModalLayerBase() {
     const rawValue = getComputedStyle(document.documentElement)
         .getPropertyValue('--settings-dialog-layer-base')
         .trim();
@@ -35,21 +41,131 @@ function getDialogLayerBase() {
     return layerBase;
 }
 
-function syncDialogStack() {
-    const layerBase = getDialogLayerBase();
+function getModalLayerStep() {
+    return MODAL_STACK_STEP;
+}
 
-    controllers.forEach((controller, dialogId) => {
-        const stackIndex = activeDialogIds.indexOf(dialogId);
+function requireModalBackdrop(backdrop) {
+    if (!(backdrop instanceof HTMLElement) || !backdrop.classList.contains('modal-backdrop')) {
+        throw new Error('弹窗栈只能登记 modal-backdrop 元素');
+    }
 
-        if (stackIndex < 0) {
-            controller.element.style.removeProperty('z-index');
-            delete controller.element.dataset.settingsDialogStackIndex;
-            return;
+    return backdrop;
+}
+
+function removeActiveModalBackdrop(backdrop) {
+    const index = activeModalBackdrops.indexOf(backdrop);
+
+    if (index >= 0) {
+        activeModalBackdrops.splice(index, 1);
+    }
+}
+
+function syncModalBackdropStack() {
+    const layerBase = getModalLayerBase();
+
+    activeModalBackdrops.forEach((backdrop, stackIndex) => {
+        backdrop.style.setProperty(
+            'z-index',
+            String(layerBase + (stackIndex * getModalLayerStep())),
+            'important',
+        );
+        backdrop.dataset.settingsDialogStackIndex = String(stackIndex);
+    });
+}
+
+function updateModalBackdropStack(backdrop, promoteActiveBackdrop) {
+    const target = requireModalBackdrop(backdrop);
+    const state = registeredModalBackdrops.get(target);
+
+    if (!state) {
+        throw new Error('弹窗尚未登记到统一弹窗栈');
+    }
+
+    const isActive = target.classList.contains('active');
+
+    if (isActive) {
+        if (!state.active || promoteActiveBackdrop) {
+            removeActiveModalBackdrop(target);
+            activeModalBackdrops.push(target);
         }
 
-        controller.element.style.setProperty('z-index', String(layerBase + stackIndex), 'important');
-        controller.element.dataset.settingsDialogStackIndex = String(stackIndex);
+        state.active = true;
+    } else {
+        removeActiveModalBackdrop(target);
+        state.active = false;
+        target.style.removeProperty('z-index');
+        delete target.dataset.settingsDialogStackIndex;
+    }
+
+    syncModalBackdropStack();
+}
+
+function registerModalBackdrop(backdrop) {
+    const target = requireModalBackdrop(backdrop);
+    const existingState = registeredModalBackdrops.get(target);
+
+    if (existingState) {
+        return target;
+    }
+
+    const state = {
+        active: false,
+        observer: null,
+    };
+    state.observer = new MutationObserver(() => {
+        const isActive = target.classList.contains('active');
+
+        if (isActive !== state.active) {
+            updateModalBackdropStack(target, false);
+        }
     });
+    state.observer.observe(target, { attributes: true, attributeFilter: ['class'] });
+    registeredModalBackdrops.set(target, state);
+    target.dataset.modalStackBound = '1';
+    updateModalBackdropStack(target, false);
+
+    return target;
+}
+
+function handleModalBackdropStackingChange(backdrop) {
+    const target = registerModalBackdrop(backdrop);
+    updateModalBackdropStack(target, true);
+}
+
+function registerAddedModalBackdrops(node) {
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+
+    if (node.classList.contains('modal-backdrop')) {
+        registerModalBackdrop(node);
+    }
+
+    node.querySelectorAll('.modal-backdrop').forEach((backdrop) => {
+        registerModalBackdrop(backdrop);
+    });
+}
+
+function initializeModalBackdropStacking() {
+    if (!(document.body instanceof HTMLBodyElement)) {
+        throw new Error('统一弹窗栈初始化时缺少 document.body');
+    }
+
+    document.querySelectorAll('.modal-backdrop').forEach((backdrop) => {
+        registerModalBackdrop(backdrop);
+    });
+
+    if (modalBackdropDocumentObserver) {
+        return;
+    }
+
+    modalBackdropDocumentObserver = new MutationObserver((records) => {
+        records.forEach((record) => {
+            record.addedNodes.forEach(registerAddedModalBackdrops);
+        });
+    });
+    modalBackdropDocumentObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 function requireElement(element, message) {
@@ -117,6 +233,7 @@ function createDialogController(config) {
     }
 
     const backdrop = requireElementById(dialogId, `未找到设置小窗: ${dialogId}`);
+    registerModalBackdrop(backdrop);
     const dialog = requireElement(
         backdrop.querySelector(':scope > .settings-dialog'),
         `${dialogId} 缺少 settings-dialog`,
@@ -151,7 +268,7 @@ function createDialogController(config) {
         backdrop.classList.remove('active');
         backdrop.setAttribute('aria-hidden', 'true');
         removeActiveDialogId(dialogId);
-        syncDialogStack();
+        handleModalBackdropStackingChange(backdrop);
 
         if (config.onClose) {
             config.onClose(reason);
@@ -184,7 +301,7 @@ function createDialogController(config) {
         document.body.appendChild(backdrop);
         backdrop.classList.add('active');
         backdrop.setAttribute('aria-hidden', 'false');
-        syncDialogStack();
+        handleModalBackdropStackingChange(backdrop);
 
         if (options.initialFocus) {
             options.initialFocus.focus();
@@ -504,11 +621,17 @@ export const NexoraSettingsDialog = Object.freeze({
     confirm,
     copyText,
     createDialogController,
+    getModalLayerBase,
+    getModalLayerStep,
     getExpiryValue,
+    handleModalBackdropStackingChange,
+    initializeModalBackdropStacking,
     localizePublicApiExpiryOptions,
+    registerModalBackdrop,
     renderExpirySlider,
     setExpiryDisabled,
 });
 
 // 兼容期：保留 window 挂载
 window.NexoraSettingsDialog = NexoraSettingsDialog;
+initializeModalBackdropStacking();

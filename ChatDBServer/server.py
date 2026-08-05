@@ -9,6 +9,7 @@ import base64
 import binascii
 import secrets
 import hashlib
+import ipaddress
 import mimetypes
 import re
 import shutil
@@ -54,6 +55,7 @@ from memory_analysis import get_memory_analysis_queue
 from token_usage_details import TokenUsageDetailPresenter
 from longdoc_skills import load_longdoc_skill_catalog
 from system_settings_runtime import SystemSettingsRuntimeSyncer
+from service_status_monitor import ServiceStatusMonitor
 from server_quota import (
     get_server_quota_status,
     update_server_quota_config,
@@ -150,6 +152,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DATA_RES_DIR = os.path.join(DATA_DIR, 'res')
+SERVICE_STATUS_HISTORY_PATH = os.path.join(DATA_RES_DIR, 'service_status_history.json')
 SKILLS_DIR = os.path.join(DATA_DIR, 'skills')
 SKILLS_CATALOG_PATH = os.path.join(SKILLS_DIR, 'catalog.json')
 SKILLS_MARKET_DIR = os.path.join(DATA_DIR, 'skills_market')
@@ -352,6 +355,9 @@ DEFAULT_MAIN_CONFIG = {
     "port": 5000,
     "debug": False,
     "public_base_url": "",
+    # Empty by default: forwarded client-IP headers are untrusted unless the
+    # direct peer is explicitly listed as a reverse proxy.
+    "trusted_proxy_cidrs": [],
     "default_model": "doubao-seed-1-6-250615",
     "conclusion_model": "doubao-seed-1-6-flash-250828",
     "organization_model": "doubao-seed-1-6-flash-250828",
@@ -1189,6 +1195,52 @@ def _merge_defaults(dst, src):
             if _merge_defaults(dst[k], v):
                 changed = True
     return changed
+
+
+def _parse_ip_literal(value: Any) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return ''
+
+
+def _trusted_proxy_networks(raw_value: Any) -> List[Any]:
+    raw_items = raw_value if isinstance(raw_value, list) else str(raw_value or '').split(',')
+    networks = []
+    for raw_item in raw_items:
+        item = str(raw_item or '').strip()
+        if not item:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _resolve_recent_login_ip(request_obj: Any) -> str:
+    """Resolve a login IP without trusting client-supplied forwarding headers."""
+    direct_ip = _parse_ip_literal(getattr(request_obj, 'remote_addr', ''))
+    if not direct_ip:
+        return str(getattr(request_obj, 'remote_addr', '') or '').strip()
+
+    config = get_config_all()
+    trusted_networks = _trusted_proxy_networks(config.get('trusted_proxy_cidrs'))
+    direct_address = ipaddress.ip_address(direct_ip)
+    if not any(direct_address in network for network in trusted_networks):
+        return direct_ip
+
+    headers = getattr(request_obj, 'headers', {})
+    real_ip = _parse_ip_literal(headers.get('X-Real-IP'))
+    if real_ip:
+        return real_ip
+
+    forwarded_for = str(headers.get('X-Forwarded-For') or '').split(',', 1)[0]
+    forwarded_ip = _parse_ip_literal(forwarded_for)
+    return forwarded_ip or direct_ip
 
 
 def ensure_main_config_defaults():
@@ -2812,6 +2864,23 @@ def get_config_all():
         _config_cache = config
 
     return dict(config)
+
+
+SERVICE_STATUS_MONITOR = ServiceStatusMonitor(
+    get_config_all,
+    SERVICE_STATUS_HISTORY_PATH,
+    interval_seconds=60,
+)
+
+
+def start_service_status_monitor() -> None:
+    """Start the shared service-health poller once for this server process."""
+    SERVICE_STATUS_MONITOR.start()
+
+
+@app.before_request
+def ensure_service_status_monitor_started():
+    start_service_status_monitor()
 
 
 def get_public_base_url() -> str:
@@ -6626,10 +6695,10 @@ JS_BUNDLE_MANIFEST = {
     "public-site-landing": (
         "static/js/public_site/site.js",
     ),
-    "public-site-status": (
+    "public-site-rank": (
         "static/js/secure_render.js",
         "static/js/public_site/site.js",
-        "static/js/public_site/status.js",
+        "static/js/public_site/rank.js",
     ),
     "public-site-blog": (
         "static/js/public_site/site.js",
@@ -6788,6 +6857,11 @@ def status_page():
     return render_template('public_site/status.html')
 
 
+@app.route('/rank')
+def rank_page():
+    return render_template('public_site/rank.html')
+
+
 @app.route('/status_2')
 def legacy_status_page():
     """新版公开状态页历史入口"""
@@ -6848,7 +6922,7 @@ def login():
             return jsonify({'success': False, 'message': '密码错误'})
         
         # 更新登录IP
-        users[username]['last_ip'] = request.remote_addr
+        users[username]['last_ip'] = _resolve_recent_login_ip(request)
         users[username]['last_login'] = int(time.time())
         save_users(users)
             
@@ -8820,12 +8894,22 @@ def build_status_overview() -> Dict[str, Any]:
     }
 
 
-@app.route('/api/status/overview', methods=['GET'])
-def status_overview_api():
+@app.route('/api/rank/overview', methods=['GET'])
+def rank_overview_api():
     try:
         return jsonify({'success': True, 'status': build_status_overview()})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/status/overview', methods=['GET'])
+def service_status_overview_api():
+    return jsonify({'success': True, 'status': SERVICE_STATUS_MONITOR.overview()})
+
+
+@app.route('/api/health', methods=['GET'])
+def service_health_api():
+    return jsonify({'success': True, 'service': 'Nexora'})
 
 
 @app.route('/api/user/token-logs/reconcile', methods=['POST'])
@@ -8961,7 +9045,7 @@ def get_user_preferences():
         if request.method == 'PUT':
             payload = request.get_json(silent=True) or {}
             updates: Dict[str, Any] = {}
-            for key in ('default_model', 'theme', 'streaming', 'language', 'learning_mode', 'memory_update_model'):
+            for key in ('default_model', 'theme', 'streaming', 'language', 'learning_mode', 'memory_update_model', 'default_open_view'):
                 if key in payload:
                     updates[key] = payload.get(key)
 

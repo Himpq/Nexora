@@ -111,16 +111,10 @@
             eventTimer: 0,
             lastEventId: 0,
             busy: false,
-            activeFile: null,
-            currentDownloadId: '',
-            transferUploadActive: false,
-            transferUploadDone: false,
-            transferBytesSent: 0,
-            transferStartedAt: 0,
-            transferLastBytes: 0,
-            transferLastAt: 0,
-            transferSpeedBps: 0,
-            transferAbortController: null,
+            // 在线传输清单（File 对象数组），单文件即长度为 1 的清单
+            activeFiles: [],
+            // downloadId → 独立推送会话 { downloadId, fileIndex, file, abortController, bytesSent, startedAt, speedBps, done }
+            transferSessions: {},
             ...overrides
         };
     }
@@ -664,6 +658,7 @@
                                         <span id="fileCenterLiveTransferProgressSpeed">0 B/s</span>
                                     </div>
                                 </div>
+                                <div class="file-center-live-transfer-file-progress" id="fileCenterLiveTransferFileProgress" hidden></div>
                                 <div class="file-center-live-transfer-events" id="fileCenterLiveTransferEvents"></div>
                             </div>
                         </aside>
@@ -671,6 +666,7 @@
                 </div>
             `;
             document.body.appendChild(modal);
+            registerModalBackdropStacking(modal);
             bindFileCenterUploadDialog(modal);
         
             return modal;
@@ -762,6 +758,7 @@
         
             modal.classList.add('active');
             modal.setAttribute('aria-hidden', 'false');
+            handleBackdropStackingChange(modal);
             renderFileCenterUploadDialog();
         }
         
@@ -783,6 +780,7 @@
             if (modal) {
                 modal.classList.remove('active');
                 modal.setAttribute('aria-hidden', 'true');
+                handleBackdropStackingChange(modal);
             }
         
             if (notifyTransferClosed && hadLiveTransfer) {
@@ -853,31 +851,75 @@
             const fill = document.getElementById('fileCenterLiveTransferProgressFill');
             const bytesEl = document.getElementById('fileCenterLiveTransferProgressBytes');
             const speedEl = document.getElementById('fileCenterLiveTransferProgressSpeed');
-            const file = fileCenterUploadDialogState.activeFile;
+            const listEl = document.getElementById('fileCenterLiveTransferFileProgress');
+            const activeFiles = fileCenterUploadDialogState.activeFiles || [];
+            const sessions = Object.values(fileCenterUploadDialogState.transferSessions || {});
+
+            // 多文件传输：每个文件独立一行进度
+            if (activeFiles.length > 1) {
+                if (progress) {
+                    progress.hidden = true;
+                }
+
+                if (!listEl) return;
+
+                listEl.hidden = !sessions.length;
+                listEl.innerHTML = activeFiles.map((file, index) => {
+                    const entry = sessions.find((item) => item.fileIndex === index);
+                    const total = Number(file.size || 0);
+                    const sent = entry ? Math.max(0, Math.min(total, Number(entry.bytesSent || 0))) : 0;
+                    const percent = total > 0 ? Math.max(0, Math.min(100, (sent / total) * 100)) : (entry && entry.done ? 100 : 0);
+                    const name = escapeHtml(String(file.name || '未命名文件'));
+                    const stateText = entry
+                        ? (entry.done ? '传输完成' : escapeHtml(formatByteRate(entry.speedBps || 0)))
+                        : '等待接收端连接';
+
+                    return `
+                        <div class="file-center-live-transfer-file-row">
+                            <div class="file-center-live-transfer-file-head">
+                                <span class="file-center-live-transfer-file-name" title="${name}">${name}</span>
+                                <span class="file-center-live-transfer-file-state">${stateText}</span>
+                            </div>
+                            <div class="file-center-live-transfer-progress-bar">
+                                <div class="file-center-live-transfer-progress-fill" style="width: ${percent}%"></div>
+                            </div>
+                            <div class="file-center-live-transfer-file-bytes">${escapeHtml(formatFileSize(sent))} / ${escapeHtml(formatFileSize(total))}</div>
+                        </div>
+                    `;
+                }).join('');
+
+                return;
+            }
+
+            // 单文件传输：保留原有进度条形态
+            if (listEl) {
+                listEl.hidden = true;
+                listEl.innerHTML = '';
+            }
+
+            const file = activeFiles[0] || null;
+            const entry = sessions[0] || null;
             const total = Number(file && file.size ? file.size : 0);
-            const sent = Math.max(0, Math.min(total, Number(fileCenterUploadDialogState.transferBytesSent || 0)));
-            const hasProgress = !!fileCenterUploadDialogState.currentDownloadId
-                || fileCenterUploadDialogState.transferUploadActive
-                || fileCenterUploadDialogState.transferUploadDone
-                || sent > 0;
-            const percent = total > 0 ? Math.max(0, Math.min(100, (sent / total) * 100)) : (fileCenterUploadDialogState.transferUploadDone ? 100 : 0);
-        
+            const sent = entry ? Math.max(0, Math.min(total, Number(entry.bytesSent || 0))) : 0;
+            const hasProgress = !!entry;
+            const percent = total > 0 ? Math.max(0, Math.min(100, (sent / total) * 100)) : (entry && entry.done ? 100 : 0);
+
             if (progress) {
                 progress.hidden = !hasProgress;
             }
-        
+
             if (fill) {
                 fill.style.width = `${percent}%`;
             }
-        
+
             if (bytesEl) {
                 bytesEl.textContent = `${formatFileSize(sent)} / ${formatFileSize(total)}`;
             }
-        
+
             if (speedEl) {
-                speedEl.textContent = fileCenterUploadDialogState.transferUploadDone
+                speedEl.textContent = entry && entry.done
                     ? '传输完成'
-                    : formatByteRate(fileCenterUploadDialogState.transferSpeedBps || 0);
+                    : formatByteRate(entry ? entry.speedBps || 0 : 0);
             }
         }
         
@@ -923,24 +965,12 @@
                 showToast('请先选择文件');
                 return;
             }
-        
-            if (files.length !== 1) {
-                showToast('在线传输一次只能选择一个文件');
-                return;
-            }
-        
+
             await revokeActiveFileCenterLiveTransfer();
             stopFileCenterLiveTransferTimers();
             fileCenterUploadDialogState.busy = true;
-            fileCenterUploadDialogState.activeFile = files[0];
-            fileCenterUploadDialogState.currentDownloadId = '';
-            fileCenterUploadDialogState.transferUploadActive = false;
-            fileCenterUploadDialogState.transferUploadDone = false;
-            fileCenterUploadDialogState.transferBytesSent = 0;
-            fileCenterUploadDialogState.transferStartedAt = 0;
-            fileCenterUploadDialogState.transferLastBytes = 0;
-            fileCenterUploadDialogState.transferLastAt = 0;
-            fileCenterUploadDialogState.transferSpeedBps = 0;
+            fileCenterUploadDialogState.activeFiles = files;
+            fileCenterUploadDialogState.transferSessions = {};
             updateFileCenterLiveTransferStatus('正在创建在线传输...');
             renderFileCenterUploadDialog();
         
@@ -951,9 +981,11 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        file_name: files[0].name || 'transfer.bin',
-                        file_size: Number(files[0].size || 0),
-                        mime_type: files[0].type || 'application/octet-stream',
+                        files: files.map((file) => ({
+                            file_name: file.name || 'transfer.bin',
+                            file_size: Number(file.size || 0),
+                            mime_type: file.type || 'application/octet-stream'
+                        })),
                         expires_in_minutes: 30,
                         max_downloads: FILE_CENTER_LIVE_TRANSFER_MAX_DOWNLOADS
                     })
@@ -972,7 +1004,8 @@
                 }
         
                 fileCenterUploadDialogState.activeCode = code;
-                fileCenterUploadDialogState.downloadUrl = new URL(`/api/files/transfer/${encodeURIComponent(code)}/download`, window.location.origin).toString();
+                // 多文件传输必须先进入分享页读取文件清单，不能直接指向默认下载索引 0 的流接口。
+                fileCenterUploadDialogState.downloadUrl = new URL(`/share?code=${encodeURIComponent(code)}`, window.location.origin).toString();
                 fileCenterUploadDialogState.lastEventId = 0;
                 updateFileCenterLiveTransferStatus('在线传输已开启，等待接收端打开链接。');
                 startFileCenterLiveTransferTimers(code);
@@ -999,17 +1032,11 @@
             }
         }
         
-        function assertFileCenterLiveTransferActive(code, downloadId = '') {
+        function assertFileCenterLiveTransferActive(code) {
             const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
-            const currentDownloadId = String(fileCenterUploadDialogState.currentDownloadId || '').trim();
-            const expectedDownloadId = String(downloadId || '').trim();
-        
+
             if (!activeCode || activeCode !== String(code || '').trim()) {
                 throw new Error('在线传输已关闭');
-            }
-        
-            if (expectedDownloadId && currentDownloadId && currentDownloadId !== expectedDownloadId) {
-                throw new Error('接收端连接已切换');
             }
         }
         
@@ -1029,22 +1056,18 @@
             return data;
         }
         
-        function updateFileCenterLiveTransferUploadProgress(sentBytes) {
+        function updateFileCenterLiveTransferUploadProgress(sessionEntry, sentBytes) {
             const now = performance.now();
             const sent = Math.max(0, Number(sentBytes || 0));
-        
-            if (!fileCenterUploadDialogState.transferStartedAt) {
-                fileCenterUploadDialogState.transferStartedAt = now;
-                fileCenterUploadDialogState.transferLastAt = now;
-                fileCenterUploadDialogState.transferLastBytes = 0;
+
+            if (!sessionEntry.startedAt) {
+                sessionEntry.startedAt = now;
             }
-        
-            const elapsedSeconds = Math.max(0.001, (now - fileCenterUploadDialogState.transferStartedAt) / 1000);
-            fileCenterUploadDialogState.transferBytesSent = sent;
-            fileCenterUploadDialogState.transferSpeedBps = sent / elapsedSeconds;
-            fileCenterUploadDialogState.transferLastAt = now;
-            fileCenterUploadDialogState.transferLastBytes = sent;
-        
+
+            const elapsedSeconds = Math.max(0.001, (now - sessionEntry.startedAt) / 1000);
+            sessionEntry.bytesSent = sent;
+            sessionEntry.speedBps = sent / elapsedSeconds;
+
             renderFileCenterLiveTransferProgress();
         }
         
@@ -1081,69 +1104,105 @@
             return readFileCenterLiveTransferJson(res, '结束在线传输失败');
         }
         
-        async function startFileCenterLiveTransferUpload(code, downloadId) {
+        async function startFileCenterLiveTransferUpload(code, downloadId, fileIndex) {
             const safeCode = String(code || '').trim();
             const safeDownloadId = String(downloadId || '').trim();
-        
+            const safeFileIndex = Math.max(0, Number(fileIndex || 0));
+
             if (!safeCode || !safeDownloadId) {
                 throw new Error('缺少接收端连接 ID');
             }
-        
-            if (fileCenterUploadDialogState.transferUploadActive) {
+
+            const sessions = fileCenterUploadDialogState.transferSessions;
+
+            // 同一接收端连接的重复事件直接忽略，避免重推分片打乱会话分片顺序
+            if (sessions[safeDownloadId]) {
                 return;
             }
-        
-            const file = fileCenterUploadDialogState.activeFile || (fileCenterUploadDialogState.files || [])[0];
-        
+
+            // 单接收端、按文件接管：同一文件的新连接到来时中止旧会话循环，
+            // 从分片 0 向新会话重推；旧循环通过 abort 标记静默退出，不弹错误提示。
+            const staleSession = Object.values(sessions).find(
+                (entry) => entry.fileIndex === safeFileIndex
+            );
+
+            if (staleSession) {
+                try {
+                    staleSession.abortController.abort();
+                } catch (error) {
+                    console.warn('abort previous live transfer session failed', error);
+                }
+
+                delete sessions[staleSession.downloadId];
+            }
+
+            const file = (fileCenterUploadDialogState.activeFiles || [])[safeFileIndex];
+
             if (!file) {
                 throw new Error('未找到待传输文件');
             }
-        
+
             const abortController = new AbortController();
             const totalBytes = Number(file.size || 0);
             let offset = 0;
             let chunkIndex = 0;
-        
-            fileCenterUploadDialogState.currentDownloadId = safeDownloadId;
-            fileCenterUploadDialogState.activeFile = file;
-            fileCenterUploadDialogState.transferUploadActive = true;
-            fileCenterUploadDialogState.transferUploadDone = false;
-            fileCenterUploadDialogState.transferAbortController = abortController;
-            fileCenterUploadDialogState.transferStartedAt = 0;
-            fileCenterUploadDialogState.transferBytesSent = 0;
-            fileCenterUploadDialogState.transferSpeedBps = 0;
-            updateFileCenterLiveTransferStatus('接收端已连接，正在在线传输...');
+
+            const sessionEntry = {
+                downloadId: safeDownloadId,
+                fileIndex: safeFileIndex,
+                file: file,
+                abortController: abortController,
+                bytesSent: 0,
+                startedAt: 0,
+                speedBps: 0,
+                done: false
+            };
+            sessions[safeDownloadId] = sessionEntry;
+
+            updateFileCenterLiveTransferStatus(fileCenterUploadDialogState.activeFiles.length > 1
+                ? `接收端已连接，正在传输“${file.name}”...`
+                : '接收端已连接，正在在线传输...');
             renderFileCenterLiveTransferProgress();
-        
+
             try {
-                assertFileCenterLiveTransferActive(safeCode, safeDownloadId);
-        
-                while (offset < totalBytes) {
+                assertFileCenterLiveTransferActive(safeCode);
+
+                while (offset < totalBytes && !abortController.signal.aborted) {
                     const nextOffset = Math.min(offset + FILE_CENTER_LIVE_TRANSFER_CHUNK_SIZE, totalBytes);
                     const chunk = file.slice(offset, nextOffset);
-        
+
                     await sendFileCenterLiveTransferChunk(safeCode, safeDownloadId, chunkIndex, chunk, abortController);
                     offset = nextOffset;
                     chunkIndex += 1;
-                    updateFileCenterLiveTransferUploadProgress(offset);
-                    assertFileCenterLiveTransferActive(safeCode, safeDownloadId);
+                    updateFileCenterLiveTransferUploadProgress(sessionEntry, offset);
+                    assertFileCenterLiveTransferActive(safeCode);
                 }
-        
-                await finishFileCenterLiveTransferUpload(safeCode, safeDownloadId, file, abortController);
-                fileCenterUploadDialogState.transferUploadDone = true;
-                fileCenterUploadDialogState.transferUploadActive = false;
-                fileCenterUploadDialogState.transferAbortController = null;
-                updateFileCenterLiveTransferUploadProgress(totalBytes);
-                updateFileCenterLiveTransferStatus('文件已发送，等待接收端保存完成。');
-            } catch (error) {
-                fileCenterUploadDialogState.transferUploadActive = false;
-                fileCenterUploadDialogState.transferAbortController = null;
-        
-                if (error && error.name === 'AbortError') {
-                    updateFileCenterLiveTransferStatus('在线传输已中断');
+
+                // 会话已被新接收端连接接管或主动撤销，直接退出，不再结束会话
+                if (abortController.signal.aborted) {
                     return;
                 }
-        
+
+                await finishFileCenterLiveTransferUpload(safeCode, safeDownloadId, file, abortController);
+
+                // 仅当本会话未被接管时才标记完成
+                if (fileCenterUploadDialogState.transferSessions[safeDownloadId] === sessionEntry) {
+                    sessionEntry.done = true;
+                    sessionEntry.speedBps = 0;
+                }
+
+                updateFileCenterLiveTransferUploadProgress(sessionEntry, totalBytes);
+                updateFileCenterLiveTransferStatus('文件已发送，等待接收端保存完成。');
+            } catch (error) {
+                // 本会话被新接收端连接接管或主动撤销而中止：静默退出，不弹错误提示
+                if (abortController.signal.aborted) {
+                    return;
+                }
+
+                if (fileCenterUploadDialogState.transferSessions[safeDownloadId] === sessionEntry) {
+                    delete fileCenterUploadDialogState.transferSessions[safeDownloadId];
+                }
+
                 updateFileCenterLiveTransferStatus(String((error && error.message) || '在线传输失败'));
                 showToast(String((error && error.message) || '在线传输失败'));
             } finally {
@@ -1156,23 +1215,45 @@
         
             const sendHeartbeat = async () => {
                 const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
-        
+
                 if (!activeCode || activeCode !== code) return;
-        
+
+                let res = null;
+
                 try {
-                    const res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/heartbeat`, {
+                    res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/heartbeat`, {
                         method: 'POST',
                         cache: 'no-store'
                     });
+                } catch (error) {
+                    // 瞬时网络错误不停心跳，等下一个周期重试，后台标签页恢复后可自愈
+                    console.warn('live transfer heartbeat network error, will retry next tick', error);
+                    return;
+                }
+
+                if (res.ok) return;
+
+                // 服务端 5xx 属于瞬时故障，同样等下一个周期重试
+                if (res.status >= 500) {
+                    console.warn('live transfer heartbeat server error, will retry next tick', res.status);
+                    return;
+                }
+
+                // 仅服务端 4xx 明确拒绝（撤销/过期/窗口关闭）才判定传输已失效
+                let message = '在线传输已失效';
+
+                try {
                     const data = await res.json();
-        
-                    if (!data || !data.success) {
-                        throw new Error(String((data && data.message) || '在线传输已失效'));
+
+                    if (data && data.message) {
+                        message = String(data.message);
                     }
                 } catch (error) {
-                    updateFileCenterLiveTransferStatus(String((error && error.message) || '在线传输已失效'));
-                    stopFileCenterLiveTransferTimers();
+                    console.warn('live transfer heartbeat error body parse failed', error);
                 }
+
+                updateFileCenterLiveTransferStatus(message);
+                stopFileCenterLiveTransferTimers();
             };
             const pollEvents = async () => {
                 const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
@@ -1221,34 +1302,40 @@
                 fileCenterUploadDialogState.lastEventId = Math.max(fileCenterUploadDialogState.lastEventId || 0, eventId);
         
                 if (type === 'download_request') {
-                    label = '接收端已连接';
                     const downloadId = String(event.download_id || '').trim();
-        
+                    const fileIndex = Math.max(0, Number(event.file_index || 0));
+                    const requestedFile = (fileCenterUploadDialogState.activeFiles || [])[fileIndex];
+
+                    label = fileCenterUploadDialogState.activeFiles.length > 1 && requestedFile
+                        ? `接收端已连接：${requestedFile.name}`
+                        : '接收端已连接';
+
                     if (downloadId) {
-                        void startFileCenterLiveTransferUpload(fileCenterUploadDialogState.activeCode, downloadId)
+                        void startFileCenterLiveTransferUpload(fileCenterUploadDialogState.activeCode, downloadId, fileIndex)
                             .catch((error) => {
                                 const messageText = String((error && error.message) || '在线传输失败');
-        
+
                                 updateFileCenterLiveTransferStatus(messageText);
                                 showToast(messageText);
                             });
                     }
                 } else if (type === 'download_complete' || type === 'download') {
                     label = '接收完成';
-                    fileCenterUploadDialogState.transferUploadDone = true;
-                    fileCenterUploadDialogState.transferUploadActive = false;
-                    fileCenterUploadDialogState.transferSpeedBps = 0;
-                    if (fileCenterUploadDialogState.activeFile) {
-                        fileCenterUploadDialogState.transferBytesSent = Number(fileCenterUploadDialogState.activeFile.size || 0);
+                    const downloadId = String(event.download_id || '').trim();
+                    const entry = downloadId ? fileCenterUploadDialogState.transferSessions[downloadId] : null;
+
+                    if (entry) {
+                        entry.done = true;
+                        entry.speedBps = 0;
+                        entry.bytesSent = Number(entry.file && entry.file.size ? entry.file.size : 0);
                     }
+
                     updateFileCenterLiveTransferStatus('接收端已完成下载。');
                 } else if (type === 'download_aborted') {
                     label = '接收端已断开';
-                    fileCenterUploadDialogState.transferUploadActive = false;
                     updateFileCenterLiveTransferStatus(rawMessage || '接收端已断开');
                 } else if (type === 'download_failed') {
                     label = '传输失败';
-                    fileCenterUploadDialogState.transferUploadActive = false;
                     updateFileCenterLiveTransferStatus(rawMessage || '在线传输失败');
                 }
         
@@ -1282,22 +1369,23 @@
         
         async function revokeActiveFileCenterLiveTransfer(options = {}) {
             const code = String(fileCenterUploadDialogState.activeCode || '').trim();
-        
+
             if (!code) return false;
-        
-            if (fileCenterUploadDialogState.transferAbortController) {
+
+            // 中止全部推送会话（多文件可能并行推送中）
+            Object.values(fileCenterUploadDialogState.transferSessions).forEach((entry) => {
                 try {
-                    fileCenterUploadDialogState.transferAbortController.abort();
+                    entry.abortController.abort();
                 } catch (error) {
-                    // ignore abort errors
+                    console.warn('abort live transfer session failed', error);
                 }
-            }
-        
-            fileCenterUploadDialogState.transferAbortController = null;
-            fileCenterUploadDialogState.transferUploadActive = false;
+            });
+
+            fileCenterUploadDialogState.transferSessions = {};
+            fileCenterUploadDialogState.activeFiles = [];
             fileCenterUploadDialogState.activeCode = '';
             fileCenterUploadDialogState.downloadUrl = '';
-        
+
             const url = `/api/files/live-transfer/${encodeURIComponent(code)}/revoke`;
         
             if (options && options.beacon === true && navigator.sendBeacon) {

@@ -135,7 +135,8 @@
     opacity: 0.7;
 }
 
-.settings-memory-model-options {
+/* This menu is portaled to body while Settings remains in its own modal layer. */
+#memoryModelOptions.settings-memory-model-options {
     position: fixed !important;
     width: min(340px, calc(100vw - 24px)) !important;
     min-width: 0 !important;
@@ -145,7 +146,7 @@
     padding: 0 !important;
     overflow: hidden !important;
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-    z-index: 16000 !important;
+    z-index: 20010 !important;
 }
 
 .settings-memory-model-options .model-options-scroll {

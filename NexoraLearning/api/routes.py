@@ -239,6 +239,7 @@ VECTOR_TOOL_NAMES = {"triggerBookVectorization", "vectorSearch"}
 
 _ROUTE_MODULES = (
     "frontend",
+    "profile",
     "video",
     "knowledge",
     "cognition",
@@ -3291,6 +3292,7 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "append_learning_memory",
     "update_learning_memory",
     "write_learning_memory",
+    "submit_profile_score",
 }
 
 
@@ -3410,6 +3412,23 @@ def _runtime_tool_specs() -> List[Dict[str, Any]]:
                     "memory_type": {"type": "string", "enum": ["user", "soul", "context"]},
                     "lecture_id": {"type": "string"},
                     "content": {"type": "string"},
+                },
+            )
+        )
+    if "submit_profile_score" not in names:
+        from core.memory import PROFILE_SCORE_DIMENSIONS
+
+        score_keys = [item["key"] for item in PROFILE_SCORE_DIMENSIONS]
+        rows.append(
+            _runtime_memory_tool_spec(
+                "submit_profile_score",
+                "Record one six-dimensional learner profile score during the quick interview.",
+                ["dimension_key", "score", "evidence", "confidence"],
+                {
+                    "dimension_key": {"type": "string", "enum": score_keys},
+                    "score": {"type": "integer", "description": "0-100 integer score for the dimension."},
+                    "evidence": {"type": "string", "description": "One-sentence basis for the score."},
+                    "confidence": {"type": "number", "description": "0-1 confidence of the score."},
                 },
             )
         )
@@ -3542,6 +3561,24 @@ def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, An
         memory_type, lecture_id = _runtime_memory_target(safe_args)
         path = _runtime_write_memory(username, memory_type, lecture_id, str(safe_args.get("content") or ""))
         return {"success": True, "memory_type": memory_type, "lecture_id": lecture_id, "path": path}
+
+    if name == "submit_profile_score":
+        from core.memory import record_profile_center_score
+
+        payload = record_profile_center_score(
+            _cfg,
+            user_id=username,
+            dimension_key=safe_args.get("dimension_key"),
+            score=safe_args.get("score"),
+            evidence=safe_args.get("evidence"),
+            confidence=safe_args.get("confidence"),
+        )
+        return {
+            "success": True,
+            "dimension_key": str(safe_args.get("dimension_key") or "").strip(),
+            "scored_count": payload.get("scored_count"),
+            "score_total": payload.get("score_total"),
+        }
 
     payload = _runtime_executor(username).execute(name, safe_args)
     return dict(payload or {})
@@ -5674,6 +5711,83 @@ def _build_personalized_learning_catalog_context(
     if not catalog_rows:
         raise ValueError("教材目录为空，请先完成教材粗读解析后再生成学习路线。")
 
+    # 学习路线的唯一顺序来源是课程大纲，而不是教材上传顺序或模型 priority。
+    # sources 必须精确命中真实目录；任何失配都应先修复大纲，不能静默猜测章节。
+    def normalize_source_name(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+    catalog_by_source = {
+        (
+            str(row.get("book_id") or "").strip(),
+            normalize_source_name(row.get("chapter_name")),
+        ): row
+        for row in catalog_rows
+    }
+    sections = outline.get("sections") or []
+    section_positions = {
+        str(section.get("id") or "").strip(): index
+        for index, section in enumerate(sections)
+        if isinstance(section, dict) and str(section.get("id") or "").strip()
+    }
+    ordered_catalog: List[Dict[str, Any]] = []
+    seen_source_ids = set()
+
+    for section_index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            raise ValueError(f"课程大纲第 {section_index + 1} 个单元结构无效。")
+
+        section_id = str(section.get("id") or "").strip()
+        prerequisites = section.get("prerequisites") if isinstance(section.get("prerequisites"), list) else []
+
+        for prerequisite in prerequisites:
+            prerequisite_id = str(prerequisite or "").strip()
+
+            if prerequisite_id not in section_positions:
+                raise ValueError(f"课程大纲单元 {section_id} 引用了不存在的前置单元 {prerequisite_id}。")
+            if section_positions[prerequisite_id] >= section_index:
+                raise ValueError(f"课程大纲单元 {section_id} 的前置关系顺序无效：{prerequisite_id} 必须位于其前面。")
+
+        sources = section.get("sources") if isinstance(section.get("sources"), list) else []
+
+        if not sources:
+            raise ValueError(f"课程大纲单元 {section_id or section_index + 1} 没有教材来源。")
+
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError(f"课程大纲单元 {section_id} 存在无效教材来源。")
+
+            source_key = (
+                str(source.get("book_id") or "").strip(),
+                normalize_source_name(source.get("chapter_name")),
+            )
+            catalog_row = catalog_by_source.get(source_key)
+
+            if catalog_row is None:
+                raise ValueError(
+                    f"课程大纲来源无法匹配真实教材目录：{source.get('book_id') or '未知教材'} / "
+                    f"{source.get('chapter_name') or '未知章节'}。请重新生成课程大纲。"
+                )
+
+            source_id = str(catalog_row.get("source_id") or "").strip()
+
+            if source_id in seen_source_ids:
+                continue
+
+            seen_source_ids.add(source_id)
+            ordered_catalog.append(
+                {
+                    **catalog_row,
+                    "outline_section_id": section_id,
+                    "outline_section_title": str(section.get("title") or "").strip(),
+                    "progression_order": len(ordered_catalog) + 1,
+                }
+            )
+
+    if not ordered_catalog:
+        raise ValueError("课程大纲没有可用于学习路线的有效教材来源。")
+
+    catalog_rows = ordered_catalog
+
     return books_info, catalog_rows
 
 
@@ -5689,11 +5803,48 @@ def _build_personalized_learning_catalog_context(
 
 
 
+class _PersonalizedChapterRequestError(ValueError):
+    """阻止无效章节请求进入生成任务持久化流程。"""
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def _load_personalized_chapter_request(user_id: str, lecture_id: str, chapter_index: int):
+    from core.booksproc.personalized_learning import load_learning_path
+
+    path_data = load_learning_path(_cfg, user_id, lecture_id)
+
+    if not path_data:
+        raise _PersonalizedChapterRequestError(
+            "学习路径未生成，请重新生成学习路径。",
+            "path_missing",
+        )
+
+    chapters = path_data.get("chapters") or []
+
+    if chapter_index < 0 or chapter_index >= len(chapters):
+        raise _PersonalizedChapterRequestError(
+            "章节索引超出范围，请刷新学习路径。",
+            "chapter_out_of_range",
+        )
+
+    chapter = chapters[chapter_index]
+
+    if not isinstance(chapter, dict):
+        raise _PersonalizedChapterRequestError(
+            "学习路径章节数据无效，请重新生成学习路径。",
+            "chapter_invalid",
+        )
+
+    return path_data, chapter
+
+
 def _build_personalized_chapter_generation_worker(user_id: str, lecture_id: str, chapter_index: int):
     def worker(on_delta):
         from core.booksproc.personalized_learning import (
             generate_chapter_markdown_with_tools,
-            load_learning_path,
             load_pre_reading_qa,
             save_chapter_content,
         )
@@ -5705,15 +5856,11 @@ def _build_personalized_chapter_generation_worker(user_id: str, lecture_id: str,
             payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
         )
 
-        path_data = load_learning_path(_cfg, user_id, lecture_id)
-        if not path_data:
-            raise ValueError("学习路径未生成，请先生成学习路径。")
-
-        chapters = path_data.get("chapters") or []
-        if chapter_index < 0 or chapter_index >= len(chapters):
-            raise ValueError("章节索引超出范围。")
-
-        chapter = chapters[chapter_index] if isinstance(chapters[chapter_index], dict) else {}
+        path_data, chapter = _load_personalized_chapter_request(
+            user_id,
+            lecture_id,
+            chapter_index,
+        )
         chapter_name = str(chapter.get("name") or "").strip()
         book_id = str(chapter.get("book_id") or "").strip()
         book_title = str(chapter.get("book_title") or "").strip()
@@ -5808,6 +5955,30 @@ def _personalized_learning_chapter_stream_response(user_id: str, lecture_id: str
             load_chapter_content,
             start_or_attach_chapter_generation,
         )
+
+        # 必须在创建任务前校验；任务构造会立即写入状态文件并创建用户目录。
+        try:
+            _load_personalized_chapter_request(user_id, lecture_id, chapter_index)
+        except _PersonalizedChapterRequestError as exc:
+            log_event(
+                "personalized_chapter_generation_rejected",
+                "个性化章节生成请求在任务创建前被拒绝",
+                payload={
+                    "user_id": user_id,
+                    "lecture_id": lecture_id,
+                    "chapter_index": chapter_index,
+                    "reason": exc.reason,
+                },
+            )
+            yield _reader_guide_sse_event(
+                "error",
+                {
+                    "success": False,
+                    "chapter_index": chapter_index,
+                    "error": str(exc),
+                },
+            )
+            return
 
         cached_content = load_chapter_content(_cfg, user_id, lecture_id, chapter_index)
         if cached_content is not None:

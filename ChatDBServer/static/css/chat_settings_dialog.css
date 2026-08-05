@@ -252,82 +252,73 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.settings-toggle-item {
+.papi-permission-toggle {
     align-items: center;
+    appearance: none;
     background: #ffffff;
     border: 1px solid #dbe2ea;
     border-radius: 6px;
     color: #334155;
     cursor: pointer;
-    display: flex;
-    gap: 10px;
-    min-height: 42px;
-    padding: 7px 10px;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    min-height: 40px;
+    padding: 5px 9px;
+    text-align: left;
+    width: 100%;
 }
 
-.settings-toggle-item:hover {
+.papi-permission-toggle:hover {
     border-color: #94a3b8;
 }
 
-.settings-toggle-label {
-    flex: 1 1 auto;
-    font-size: 12px;
+.papi-permission-toggle:focus-visible {
+    outline: 3px solid rgba(15, 23, 42, 0.18);
+    outline-offset: 2px;
+}
+
+.papi-permission-toggle-label {
+    font-size: 11px;
     font-weight: 600;
     line-height: 1.35;
     min-width: 0;
 }
 
-.settings-toggle-input {
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-    position: absolute;
-    width: 1px;
-}
-
-.settings-toggle-track {
-    background: #e2e8f0;
+.papi-permission-toggle-track {
+    background: #cbd5e1;
     border: 1px solid #94a3b8;
     border-radius: 999px;
-    box-sizing: border-box;
-    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
-    flex: 0 0 38px;
-    height: 22px;
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+    height: 18px;
     position: relative;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
-    width: 38px;
+    width: 32px;
 }
 
-.settings-toggle-track::after {
+.papi-permission-toggle-thumb {
     background: #ffffff;
     border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
-    content: '';
-    height: 16px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.26);
+    height: 14px;
     left: 2px;
     position: absolute;
     top: 2px;
     transition: transform 0.15s ease;
-    width: 16px;
+    width: 14px;
 }
 
-.settings-toggle-input:checked ~ .settings-toggle-track {
+.papi-permission-toggle[aria-checked="true"] {
+    background: #f8fafc;
+    border-color: #64748b;
+}
+
+.papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-track {
     background: #0f172a;
     border-color: #0f172a;
 }
 
-.settings-toggle-input:checked ~ .settings-toggle-track::after {
-    transform: translateX(16px);
-}
-
-.settings-toggle-input:focus-visible ~ .settings-toggle-track {
-    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.14);
-}
-
-.settings-toggle-input:disabled ~ .settings-toggle-label,
-.settings-toggle-input:disabled ~ .settings-toggle-track {
-    cursor: not-allowed;
-    opacity: 0.55;
+.papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-thumb {
+    transform: translateX(14px);
 }
 
 .settings-dialog .papi-plain-result {
@@ -358,19 +349,41 @@
     user-select: all;
 }
 
-.settings-dialog .papi-plain-result .btn-primary-outline {
-    background: #ffffff !important;
-    border: 1px solid #cbd5e1 !important;
-    color: #0f172a !important;
-    margin-top: 12px;
-    min-height: 38px;
-    width: 100%;
+.settings-dialog .papi-plain-result-key-row {
+    align-items: start;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) 34px;
 }
 
-.settings-dialog .papi-plain-result .btn-primary-outline:hover {
-    background: #0f172a !important;
-    border-color: #0f172a !important;
-    color: #ffffff !important;
+.settings-dialog .papi-plain-result-value {
+    min-width: 0;
+}
+
+.settings-dialog .papi-copy-icon-button {
+    align-items: center;
+    appearance: none;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    color: #0f172a;
+    cursor: pointer;
+    display: inline-flex;
+    height: 34px;
+    justify-content: center;
+    padding: 0;
+    width: 34px;
+}
+
+.settings-dialog .papi-copy-icon-button:hover {
+    background: #0f172a;
+    border-color: #0f172a;
+    color: #ffffff;
+}
+
+.settings-dialog .papi-copy-icon-button:focus-visible {
+    outline: 3px solid rgba(15, 23, 42, 0.18);
+    outline-offset: 2px;
 }
 
 .settings-dialog .admin-user-token-menu {

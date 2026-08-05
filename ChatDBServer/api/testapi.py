@@ -15,6 +15,11 @@ class ServiceHealthTester:
     """由 ChatDB 服务端发起外部服务 health 测试。"""
 
     SERVICE_SPECS = {
+        "Nexora": {
+            "label": "Nexora",
+            "default_health_path": "/api/health",
+            "default_timeout": 5.0,
+        },
         "NexoraDB": {
             "label": "NexoraDB",
             "default_health_path": "/health",
@@ -42,7 +47,7 @@ class ServiceHealthTester:
         self.payload = payload if isinstance(payload, dict) else {}
         self.spec = self.SERVICE_SPECS.get(self.service_name)
 
-    def run(self) -> Tuple[Dict[str, Any], int]:
+    def run(self, *, record_log: bool = True) -> Tuple[Dict[str, Any], int]:
         started_at = time.perf_counter()
 
         try:
@@ -67,7 +72,8 @@ class ServiceHealthTester:
             response_payload = self._build_error_payload(str(exc) or "服务端测试超时", "timeout", started_at)
             status_code = 504
 
-        self._write_test_log(response_payload)
+        if record_log:
+            self._write_test_log(response_payload)
         return response_payload, status_code
 
     def _validate_service_name(self) -> None:

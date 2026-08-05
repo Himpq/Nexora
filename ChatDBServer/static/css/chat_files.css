@@ -54,3 +54,49 @@
     font-size: 11px;
     line-height: 1.35;
 }
+
+/* 多文件传输：每个文件独立一行进度 */
+.file-center-live-transfer-file-progress[hidden] {
+    display: none;
+}
+
+.file-center-live-transfer-file-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.file-center-live-transfer-file-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.file-center-live-transfer-file-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.file-center-live-transfer-file-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #111827;
+    font-size: 12px;
+    font-weight: 550;
+}
+
+.file-center-live-transfer-file-state {
+    flex: 0 0 auto;
+    color: #475569;
+    font-size: 11px;
+}
+
+.file-center-live-transfer-file-bytes {
+    color: #475569;
+    font-size: 11px;
+}

@@ -7,6 +7,7 @@
     const ACTION_TYPE = 'nexora:course-workspace:action';
     const LAYOUT_TYPE = 'nexora:course-workspace:layout';
     const POINTER_TYPE = 'nexora:learning-frame:pointerdown';
+    const USER_OPEN_TYPE = 'nexora:course-workspace:user-open';
 
     let lastPayloadKey = '';
     let lastLectureId = '';
@@ -15,6 +16,7 @@
     let syncTimer = null;
     let hostSidebarAutoCollapse = false;
     let hasHostLayoutState = false;
+    let pendingUserOpenLectureId = '';
 
     function byId(id) {
         return document.getElementById(id);
@@ -183,14 +185,42 @@
         }
 
         const materialsActive = isPaneActive('materialsView');
-        const learningPathActive = isPaneActive('learningPathView');
         const courseHome = byId('courseHomePane');
 
-        // 教材 Reader 由 reader state 接管沉浸主视图，课程 Workspace 只代表课程主页和学习路线。
-        return !!(
-            learningPathActive
-            || (materialsActive && isShown(courseHome))
-        );
+        // 教材 Reader 由 reader state 接管沉浸主视图；个性化学习（学习路线）页面不展示
+        // 课程 Workspace，故 Workspace 只代表课程主页。
+        return !!(materialsActive && isShown(courseHome));
+    }
+
+    function readTabs() {
+        const tabs = [];
+
+        document.querySelectorAll('.course-home-tab').forEach((btn) => {
+            if (btn.hidden) {
+                return;
+            }
+
+            const key = normalizeText(btn.getAttribute('data-tab') || '');
+            const label = normalizeText(btn.textContent);
+
+            if (!key || !label) {
+                return;
+            }
+
+            tabs.push({
+                key,
+                label,
+                active: btn.classList.contains('is-active'),
+            });
+        });
+
+        return tabs;
+    }
+
+    function readActiveTab(tabs) {
+        const active = (tabs || []).find((tab) => tab.active);
+
+        return active ? active.key : '';
     }
 
     function readSnapshot() {
@@ -198,6 +228,7 @@
         const lectureId = active ? readLectureId() : '';
         const title = active ? readCourseTitle() : '';
         const heroHtml = active ? readHeroHtml() : '';
+        const tabs = active ? readTabs() : [];
 
         return {
             source: LEARNING_SOURCE,
@@ -206,6 +237,9 @@
             lecture_id: lectureId,
             title,
             hero_html: heroHtml,
+            tabs,
+            active_tab: active ? readActiveTab(tabs) : '',
+            activation: active && lectureId === pendingUserOpenLectureId ? 'user' : 'sync',
         };
     }
 
@@ -251,6 +285,18 @@
         clickNode(findCourseActionButton('start-learning-path', safeLectureId));
     }
 
+    function handleSwitchTab(tabKey) {
+        const safeTab = String(tabKey || '').trim();
+
+        if (!safeTab) {
+            return;
+        }
+
+        const tabBtn = document.querySelector(`.course-home-tab[data-tab="${escapeAttributeValue(safeTab)}"]`);
+
+        clickNode(tabBtn);
+    }
+
     function handleHostAction(payload) {
         const src = payload && typeof payload === 'object' ? payload : {};
 
@@ -261,10 +307,20 @@
         const type = String(src.type || '').trim().toLowerCase();
 
         if (type === LAYOUT_TYPE) {
+            const nextCollapse = !!src.sidebar_auto_collapse;
+            const firstLayout = !hasHostLayoutState;
+            const changed = hostSidebarAutoCollapse !== nextCollapse;
+
             hasHostLayoutState = true;
-            hostSidebarAutoCollapse = !!src.sidebar_auto_collapse;
+            hostSidebarAutoCollapse = nextCollapse;
             syncHeroBodyVisibility();
-            emitLayoutStateChange();
+
+            // 宿主每次 STATE 同步都会回发 LAYOUT，但布局未变化时不向应用层派发，
+            // 避免 layout 监听触发 renderLectureDetail 整页重建（闪烁 + 滚动位置丢失）
+            if (firstLayout || changed) {
+                emitLayoutStateChange();
+            }
+
             scheduleSync(0);
             return;
         }
@@ -283,6 +339,11 @@
 
         if (action === 'start-learning-path') {
             handleStartLearningPath(lectureId);
+            return;
+        }
+
+        if (action === 'switch-tab') {
+            handleSwitchTab(src.tab);
         }
     }
 
@@ -312,6 +373,20 @@
 
         lastPayloadKey = payloadKey;
         emitHostPayload(payload);
+
+        if (payload.activation === 'user') {
+            pendingUserOpenLectureId = '';
+        }
+    }
+
+    function handleUserCourseOpen(event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const lectureId = normalizeText(detail.lecture_id || detail.lectureId || '');
+
+        if (!lectureId) return;
+
+        pendingUserOpenLectureId = lectureId;
+        syncNow(true);
     }
 
     function scheduleSync(delay) {
@@ -343,6 +418,7 @@
     function bindEvents() {
         window.addEventListener('resize', () => scheduleSync(120));
         window.addEventListener('message', (event) => handleHostAction(event && event.data));
+        window.addEventListener(USER_OPEN_TYPE, handleUserCourseOpen);
 
         document.addEventListener('pointerdown', () => {
             emitPointerPayload();

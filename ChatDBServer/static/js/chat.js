@@ -1,3 +1,5 @@
+import { store } from './store/index.js';
+
 const INVISIBLE_TEXT_CHARS = [
     String.fromCharCode(0x200B),
     String.fromCharCode(0x200C),
@@ -462,9 +464,12 @@ function resolveNewConversationMode(targetMode = null) {
 }
 
 // Global State
-let currentConversationId = null;
-let currentAbortController = null;
-let isGenerating = false;
+// ─── 会话核心状态已迁移至 store.conversation（单一数据源）───
+// 通过 exposeLiveState 桥接为 window 访问器，文件内全部裸引用自动读写 store，
+// 无需逐处改动；跨模块引用（nexora_map_renderer.js 等）同样经 window 生效
+exposeLiveState('currentConversationId', () => store.conversation.get('currentId'), (v) => store.conversation.set('currentId', v));
+exposeLiveState('currentAbortController', () => store.conversation.get('abortController'), (v) => store.conversation.set('abortController', v));
+exposeLiveState('isGenerating', () => store.conversation.get('isGenerating'), (v) => store.conversation.set('isGenerating', v));
 let lastAgentOnline = false;
 // NexoraCode 本地项目（仅本地计算节点在线时可见）
 let nexoraCodeProjectRecords = [];
@@ -499,7 +504,7 @@ if (!learningNavigationStateApi || typeof learningNavigationStateApi.create !== 
 }
 
 const learningNavigationState = learningNavigationStateApi.create();
-let currentConversationSidebarScope = 'nexora';
+exposeLiveState('currentConversationSidebarScope', () => store.conversation.get('sidebarScope'), (v) => store.conversation.set('sidebarScope', v));
 let learningHeaderMode = 'chat';
 let learningWelcomeMounted = false;
 let learningMainMounted = false;
@@ -507,6 +512,7 @@ let learningModeAssetsPromise = null;
 let learningEmbedLayoutMode = 'default';
 let pendingLearningModeValue = false;
 let learningModePreferenceSaving = false;
+let defaultOpenViewPreferenceSaving = false;
 let pendingAvatarDataUrl = '';
 let adminUserTokenSelectorState = {
     users: [],
@@ -546,15 +552,12 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260719_learning_sidebar_collapse_03';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260717_learning_unknown_root_02';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260731_profile_center_01';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260731_profile_center_01';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
 const BROWSER_SYNC_PING_MS = 20000;
 const BROWSER_MODEL_CONFIG_SYNC_MS = 25000;
-const MODAL_STACK_BASE_Z = 12000;
-const MODAL_STACK_STEP_Z = 20;
-let modalStackCounter = 0;
 let browserSyncSocket = null;
 let browserSyncReconnectTimer = null;
 let browserSyncPingTimer = null;
@@ -564,7 +567,7 @@ let browserSyncManuallyClosed = false;
 let browserSyncSocketSerial = 0;
 let originalHeaderState = null;
 let navigationStack = [];
-let currentSearchQuery = ''; // 保存搜索关键词，以便返回时重新显示
+exposeLiveState('currentSearchQuery', () => store.conversation.get('searchQuery'), (v) => store.conversation.set('searchQuery', v)); // 保存搜索关键词，以便返回时重新显示
 let chatHeaderBaseState = null;
 let chatModelConfigSyncState = {
     version: '',
@@ -584,8 +587,8 @@ let tokenMiniState = {
     requestSeq: 0,
     streaming: false
 };
-let conversationNavigationSeq = 0;
-let activeConversationLoadController = null;
+exposeLiveState('conversationNavigationSeq', () => store.conversation.get('navigationSeq'), (v) => store.conversation.set('navigationSeq', v));
+exposeLiveState('activeConversationLoadController', () => store.conversation.get('loadController'), (v) => store.conversation.set('loadController', v));
 const TOKEN_BUDGET_DEFAULT_LIMIT = 0;
 let tokenBudgetState = {
     contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
@@ -1468,8 +1471,8 @@ let modelCatalog = [];
 let providerCatalogByKey = {};
 let ollamaChatProviderStatusCache = new Map();
 let ollamaChatProviderStatusPending = new Map();
-let currentConversationHasImageHistory = false;
-let currentConversationMode = 'chat';
+exposeLiveState('currentConversationHasImageHistory', () => store.conversation.get('hasImageHistory'), (v) => store.conversation.set('hasImageHistory', v));
+exposeLiveState('currentConversationMode', () => store.conversation.get('mode'), (v) => store.conversation.set('mode', v));
 let currentConversationLongtermState = {
     active: false,
     task: '',
@@ -1644,8 +1647,8 @@ function hasConversationUrlTarget(params = null) {
 
 let pinContextMenuState = null;
 let pinContextMenuBusy = false;
-let pendingRegenerateFilter = { conversationId: '', index: -1 };
-let conversationListCache = [];
+exposeLiveState('pendingRegenerateFilter', () => store.conversation.get('pendingRegenerateFilter'), (v) => store.conversation.set('pendingRegenerateFilter', v));
+exposeLiveState('conversationListCache', () => store.conversation.get('listCache'), (v) => store.conversation.set('listCache', v));
 let basisKnowledgeListCache = [];
 let trashViewState = {
     loading: false,
@@ -3630,58 +3633,27 @@ function positionMobileHeaderMenuPanel() {
     panel.style.right = 'auto';
 }
 
-function syncModalBackdropStacking() {
-    const activeBackdrops = Array.from(document.querySelectorAll('.modal-backdrop.active'));
-    activeBackdrops.sort((a, b) => {
-        const ao = Number(a.dataset.modalStackOrder || 0);
-        const bo = Number(b.dataset.modalStackOrder || 0);
-        if (ao !== bo) return ao - bo;
-        return 0;
-    });
-    activeBackdrops.forEach((backdrop, idx) => {
-        const zIndex = MODAL_STACK_BASE_Z + (idx * MODAL_STACK_STEP_Z);
-        backdrop.style.setProperty('z-index', String(zIndex), 'important');
-    });
+function getModalStackManager() {
+    const manager = window.NexoraSettingsDialog;
+
+    if (
+        !manager
+        || typeof manager.registerModalBackdrop !== 'function'
+        || typeof manager.handleModalBackdropStackingChange !== 'function'
+        || typeof manager.getModalLayerStep !== 'function'
+    ) {
+        throw new Error('NexoraSettingsDialog 统一弹窗栈未初始化');
+    }
+
+    return manager;
 }
 
 function handleBackdropStackingChange(backdrop) {
-    if (!backdrop) return;
-    if (backdrop.classList.contains('active')) {
-        const currentOrder = Number(backdrop.dataset.modalStackOrder || 0);
-        if (!Number.isFinite(currentOrder) || currentOrder <= 0) {
-            modalStackCounter += 1;
-            backdrop.dataset.modalStackOrder = String(modalStackCounter);
-        }
-    } else {
-        delete backdrop.dataset.modalStackOrder;
-        backdrop.style.removeProperty('z-index');
-    }
-    syncModalBackdropStacking();
+    getModalStackManager().handleModalBackdropStackingChange(backdrop);
 }
 
 function registerModalBackdropStacking(backdrop) {
-    // 动态创建的弹窗必须进入统一弹窗栈，避免被已打开的主设置窗体压住。
-
-    if (!backdrop || backdrop.dataset.modalStackBound === '1') return;
-
-    backdrop.dataset.modalStackBound = '1';
-
-    const observer = new MutationObserver(() => {
-        handleBackdropStackingChange(backdrop);
-    });
-    observer.observe(backdrop, { attributes: true, attributeFilter: ['class'] });
-
-    if (backdrop.classList.contains('active')) {
-        handleBackdropStackingChange(backdrop);
-    }
-}
-
-function initModalBackdropStacking() {
-    const allBackdrops = Array.from(document.querySelectorAll('.modal-backdrop'));
-    allBackdrops.forEach((backdrop) => {
-        registerModalBackdropStacking(backdrop);
-    });
-    syncModalBackdropStacking();
+    getModalStackManager().registerModalBackdrop(backdrop);
 }
 
 function bindBackdropSafeClose(backdrop, onClose) {
@@ -7471,6 +7443,98 @@ async function handleCloudFilePanelUploadChange(input) {
     await loadCloudFiles();
 }
 
+// --- Files 视图拖拽上传：拖入文件松手后自动打开上传小窗并填入待上传列表 ---
+let fileCenterDragDepth = 0;
+let fileCenterDragResetBound = false;
+
+function setFileCenterDropHighlight(visible) {
+    const view = document.querySelector('.file-center-view');
+
+    if (!view) return;
+
+    view.classList.toggle('file-drop-active', !!visible);
+}
+
+function resetFileCenterDragState() {
+    fileCenterDragDepth = 0;
+    setFileCenterDropHighlight(false);
+}
+
+function bindFileCenterDragUpload() {
+    const view = document.querySelector('.file-center-view');
+
+    if (!view || view.dataset.fileCenterDropBound === '1') return;
+
+    view.dataset.fileCenterDropBound = '1';
+
+    view.addEventListener('dragenter', (event) => {
+
+        if (!dragEventHasFiles(event)) return;
+
+        event.preventDefault();
+        fileCenterDragDepth += 1;
+        setFileCenterDropHighlight(true);
+    });
+
+    view.addEventListener('dragover', (event) => {
+
+        if (!dragEventHasFiles(event)) return;
+
+        event.preventDefault();
+
+        if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = 'copy';
+        }
+
+        setFileCenterDropHighlight(true);
+    });
+
+    view.addEventListener('dragleave', (event) => {
+
+        if (!view.classList.contains('file-drop-active')) return;
+
+        if (dragEventHasFiles(event)) {
+            event.preventDefault();
+        }
+
+        // 深度计数器：dragleave 会在进入子元素时误触发，归零才真正离开视图
+        fileCenterDragDepth = Math.max(0, fileCenterDragDepth - 1);
+
+        if (fileCenterDragDepth === 0) {
+            setFileCenterDropHighlight(false);
+        }
+    });
+
+    view.addEventListener('drop', (event) => {
+
+        if (!dragEventHasFiles(event)) return;
+
+        event.preventDefault();
+
+        const files = Array.from((event.dataTransfer && event.dataTransfer.files) ? event.dataTransfer.files : []);
+        resetFileCenterDragState();
+
+        if (!files.length) return;
+
+        // 先打开上传小窗，再把拖入的文件填入待上传列表
+        openFileCenterUploadDialog();
+        setFileCenterUploadDialogFiles(files);
+    });
+
+    // 失焦/切走页面时重置，避免拖拽中断后高亮残留
+    if (!fileCenterDragResetBound) {
+        fileCenterDragResetBound = true;
+
+        window.addEventListener('blur', () => resetFileCenterDragState());
+        document.addEventListener('visibilitychange', () => {
+
+            if (document.hidden) {
+                resetFileCenterDragState();
+            }
+        });
+    }
+}
+
 function bindFileCenterView() {
     installFileCenterSortDropdownCloseHandlers();
     installFileCenterSelectionClearHandler();
@@ -7550,6 +7614,8 @@ function bindFileCenterView() {
             void handleFileCenterUploadChange(uploadInput);
         });
     }
+
+    bindFileCenterDragUpload();
 }
 
 // 文件中心是主内容区入口，保留右侧 Cloud Files 抽屉作为聊天中的快捷工具。
@@ -7710,6 +7776,18 @@ const els = {
     newChatBtn: document.getElementById('newChatBtn'),
     workspacesBtn: document.getElementById('workspacesBtn'),
     fileCenterBtn: document.getElementById('fileCenterBtn'),
+    learningProgressBtn: document.getElementById('learningProgressBtn'),
+    learningResourcesGroup: document.getElementById('learningResourcesGroup'),
+    learningResourcesBtn: document.getElementById('learningResourcesBtn'),
+    learningResourcesToggleBtn: document.getElementById('learningResourcesToggleBtn'),
+    learningResourcesStudioMenu: document.getElementById('learningResourcesStudioMenu'),
+    learningPracticeGroup: document.getElementById('learningPracticeGroup'),
+    learningPracticeBtn: document.getElementById('learningPracticeBtn'),
+    learningPracticeToggleBtn: document.getElementById('learningPracticeToggleBtn'),
+    learningPracticeMenu: document.getElementById('learningPracticeMenu'),
+    learningProfileBtn: document.getElementById('learningProfileBtn'),
+    learningFeedBtn: document.getElementById('learningFeedBtn'),
+    learningCoursesBtn: document.getElementById('learningCoursesBtn'),
     conversationTitle: document.getElementById('conversationTitle'),
     knowledgePanel: document.getElementById('knowledgePanel'),
     filePanel: document.getElementById('filePanel'),
@@ -8257,7 +8335,13 @@ function captureLearningSidebarListScrollPosition() {
 
 function enterLearningSidebarConversationView() {
     captureLearningSidebarListScrollPosition();
-    return setLearningSidebarView('conversation');
+    const nextView = setLearningSidebarView('conversation');
+
+    if (learningSidebarMode === 'learning') {
+        syncLearningSidebarNavigationVisibility(true);
+    }
+
+    return nextView;
 }
 
 function restoreLearningSidebarListScrollPosition() {
@@ -8429,20 +8513,43 @@ async function switchToNexoraSidebar() {
     }
 }
 
+function activateLearningSidebarView(view) {
+    const normalizedView = String(view || '').trim().toLowerCase() === 'conversation'
+        ? 'conversation'
+        : 'list';
+
+    setLearningSidebarView(normalizedView);
+    learningHeaderMode = 'learning';
+    applyLearningSidebarMode('learning');
+
+    return normalizedView;
+}
+
+// Learning 会话 → Learning 主页：先同步接管侧栏，再异步解除当前会话占用。
+// "重点 Learning tab（无恢复会话）"与"侧栏功能区入口"共用同一返回序列。
+async function returnToLearningHomeView() {
+    activateLearningSidebarView('list');
+    await conversationNavigationController.createNewConversation(false, 'learning', { pushHistory: false });
+    replaceConversationHistory();
+    await syncLearningHeaderMode();
+}
+
 async function switchToLearningSidebar() {
+    const courseWorkspace = window.NexoraLearningCourseWorkspace;
+    let workspaceRestoreState = null;
+
+    // Learning 点击必须无条件请求课程控制器退出，不能用 isActive/isAvailable 作为门。
+    // 两个状态来自 iframe 消息，可能落后于已经呈现的 Workspace DOM。
+    if (courseWorkspace && typeof courseWorkspace.exitToLearning === 'function') {
+        const exitResult = courseWorkspace.exitToLearning();
+        const normalizedExitResult = exitResult && typeof exitResult === 'object' ? exitResult : {};
+        workspaceRestoreState = normalizedExitResult.restoreState || null;
+    } else {
+        console.error('[LearningNavigation] course workspace controller is unavailable');
+    }
+
     closeKnowledgeViewBeforeLearningSwitch();
     resumeLearningReaderForSidebar();
-
-    const courseWorkspace = window.NexoraLearningCourseWorkspace;
-    const returningFromCourseWorkspace = !!(
-        courseWorkspace
-        && typeof courseWorkspace.isActive === 'function'
-        && courseWorkspace.isActive()
-    );
-    const workspaceRestoreState = returningFromCourseWorkspace
-        && typeof courseWorkspace.getLearningSidebarRestoreState === 'function'
-        ? courseWorkspace.getLearningSidebarRestoreState()
-        : null;
 
     if (workspaceRestoreState) {
         const restoreView = String(workspaceRestoreState.view || '').trim().toLowerCase() === 'conversation'
@@ -8453,14 +8560,15 @@ async function switchToLearningSidebar() {
         if (restoreView === 'list') {
             learningNavigationState.clearRememberedConversation('learning');
 
+            // 先同步接管侧栏（与 conversation 分支一致），避免 createNewConversation
+            // 让出控制权期间侧栏停留在课程 Workspace 或出现空窗。
+            activateLearningSidebarView('list');
+
             if (currentConversationSidebarScope !== 'learning') {
                 await conversationNavigationController.createNewConversation(false, 'learning', { pushHistory: false });
                 replaceConversationHistory();
             }
 
-            setLearningSidebarView('list');
-            learningHeaderMode = 'learning';
-            applyLearningSidebarMode('learning');
             await syncLearningHeaderMode();
             learningNavigationState.captureLearningListScroll(workspaceRestoreState.scrollTop);
             queueLearningSidebarListScrollRestore(workspaceRestoreState.scrollTop);
@@ -8468,14 +8576,15 @@ async function switchToLearningSidebar() {
         }
 
         if (isLearningConversationSelection(restoreConversationId)) {
+            // 先同步切换侧栏：loadConversation 的侧栏切换在 fetch 之后且会被多道门短路，
+            // Workspace 面板已经同步清空，若不立即接管侧栏会出现首次点击无内容、需点第二次的窗口。
+            activateLearningSidebarView('conversation');
+
             if (String(currentConversationId || '').trim() !== restoreConversationId
                 || currentConversationSidebarScope !== 'learning') {
                 await loadConversation(restoreConversationId, { pushHistory: false });
                 replaceConversationHistory(restoreConversationId);
             } else {
-                setLearningSidebarView('conversation');
-                learningHeaderMode = 'learning';
-                applyLearningSidebarMode('learning');
                 await syncLearningHeaderMode();
             }
 
@@ -8483,9 +8592,7 @@ async function switchToLearningSidebar() {
         }
 
         learningNavigationState.clearRememberedConversation('learning');
-        setLearningSidebarView('list');
-        learningHeaderMode = 'learning';
-        applyLearningSidebarMode('learning');
+        activateLearningSidebarView('list');
         await syncLearningHeaderMode();
         learningNavigationState.captureLearningListScroll(workspaceRestoreState.scrollTop);
         queueLearningSidebarListScrollRestore(workspaceRestoreState.scrollTop);
@@ -8493,8 +8600,7 @@ async function switchToLearningSidebar() {
     }
 
     if (currentConversationSidebarScope === 'learning') {
-        learningHeaderMode = 'learning';
-        applyLearningSidebarMode('learning');
+        activateLearningSidebarView(getLearningSidebarView());
         await syncLearningHeaderMode();
 
         if (getLearningSidebarView() === 'list') {
@@ -8516,16 +8622,12 @@ async function switchToLearningSidebar() {
     if (!restoreConversationId) {
         learningNavigationState.clearRememberedConversation('learning');
         // 仅清理 conversation 上下文，保留 NexoraLearning iframe 当前课程详情。
-        await conversationNavigationController.createNewConversation(false, 'learning', { pushHistory: false });
-        replaceConversationHistory();
-        setLearningSidebarView('list');
-        learningHeaderMode = 'learning';
-        applyLearningSidebarMode('learning');
-        await syncLearningHeaderMode();
+        await returnToLearningHomeView();
         restoreLearningSidebarListScrollPosition();
         return;
     }
 
+    activateLearningSidebarView('conversation');
     await loadConversation(restoreConversationId, { pushHistory: false });
 
     if (String(currentConversationId || '').trim() === restoreConversationId
@@ -8542,6 +8644,17 @@ async function startNewLearningConversation() {
     await conversationNavigationController.createNewConversation(false, 'learning');
 }
 
+// 画像中心快速评估：新建 Learning 会话并发送开场指令，模型随后用 question 选项卡逐维提问。
+async function startLearningProfileInterview(text, display) {
+    learningNavigationState.clearRememberedConversation('learning');
+    enterLearningSidebarConversationView();
+    await conversationNavigationController.createNewConversation(false, 'learning');
+    await sendMessage({
+        textOverride: text,
+        displayContentOverride: display || text
+    });
+}
+
 function updateLearningSidebarPrimaryAction() {
     if (!els || !els.newChatBtn) return;
 
@@ -8556,13 +8669,140 @@ function updateLearningSidebarPrimaryAction() {
     els.newChatBtn.dataset.learningPrimaryAction = inLearningConversation ? 'back' : 'new';
 }
 
+// Learning 模式四个功能区入口与 Nexora 的 Workspaces/Files 对位：
+// learning 态显示、nexora 态隐藏；隐藏时同步清除激活态，避免再进入时残留旧高亮。
+function setLearningNavButtonsVisible(visible) {
+    const navEntries = [
+        { container: els.learningProgressBtn, button: els.learningProgressBtn },
+        { container: els.learningCoursesBtn, button: els.learningCoursesBtn },
+        { container: els.learningResourcesGroup, button: els.learningResourcesBtn },
+        { container: els.learningPracticeGroup, button: els.learningPracticeBtn },
+        { container: els.learningProfileBtn, button: els.learningProfileBtn },
+        { container: els.learningFeedBtn, button: els.learningFeedBtn },
+    ];
+
+    navEntries.forEach((entry) => {
+        const container = entry.container;
+        const button = entry.button;
+
+        if (!container || !button) return;
+
+        container.hidden = !visible;
+        container.style.display = visible ? '' : 'none';
+
+        if (!visible) {
+            button.classList.remove('is-active');
+            button.setAttribute('aria-pressed', 'false');
+        }
+    });
+
+    if (!visible) {
+        setLearningResourceStudioMenuOpen(false);
+        setLearningPracticeMenuOpen(false);
+    }
+}
+
+/**
+ * Learning 下拉导航始终在 sidebar 正常文档流中展开。
+ */
+function setLearningSidebarMenuOpen(elements, open, label) {
+    const expanded = !!open;
+    const group = elements.group;
+    const menu = elements.menu;
+    const toggle = elements.toggle;
+    const main = elements.main;
+
+    if (!group || !menu || !toggle || !main) return;
+
+    group.classList.toggle('is-collapsed', !expanded);
+    menu.setAttribute('aria-hidden', expanded ? 'false' : 'true');
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    toggle.setAttribute('aria-label', `${expanded ? '收起' : '展开'}${label}`);
+    toggle.setAttribute('title', `${expanded ? '收起' : '展开'}${label}`);
+    main.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
+
+function setLearningResourceStudioMenuOpen(open) {
+    setLearningSidebarMenuOpen({
+        group: els.learningResourcesGroup,
+        menu: els.learningResourcesStudioMenu,
+        toggle: els.learningResourcesToggleBtn,
+        main: els.learningResourcesBtn,
+    }, open, '学习资源工作台');
+}
+
+function setLearningPracticeMenuOpen(open) {
+    setLearningSidebarMenuOpen({
+        group: els.learningPracticeGroup,
+        menu: els.learningPracticeMenu,
+        toggle: els.learningPracticeToggleBtn,
+        main: els.learningPracticeBtn,
+    }, open, '模拟练习');
+}
+
+// 宿主侧栏功能区按钮可见时，iframe 自身顶部 kicker tab 由宿主接管（桌面嵌入）；
+// 不可见（nexora 态 / 移动端 overlay）时 iframe 保留自己的 tab。
+function syncLearningDashboardNavLayout(visible) {
+    const api = window.NexoraLearningMode;
+    if (!api || typeof api.syncDashboardNavLayout !== 'function') return;
+
+    api.syncDashboardNavLayout(visible);
+}
+
+/**
+ * Learning 功能入口只属于列表主页。进入侧栏会话后必须整体隐藏，
+ * 避免课程导航与当前会话操作同时争夺侧栏顶部空间。
+ */
+function syncLearningSidebarNavigationVisibility(learningVisible) {
+    const navVisible = !!learningVisible && getLearningSidebarView() === 'list';
+
+    setLearningNavButtonsVisible(navVisible);
+    syncLearningDashboardNavLayout(navVisible);
+}
+
+// 侧栏功能区入口（课程进度/学习资源/模拟练习/动态中心）：
+// 主面板是 NexoraLearning iframe 的 dashboard，会话还开着时先解除会话占用
+// 回到 Learning 主页（主面板切回 iframe），再通知 iframe 切换功能区。
+async function openLearningDashboardSurface(tab) {
+    if (String(learningSidebarMode || '').trim().toLowerCase() === 'learning'
+        && String(currentConversationId || '').trim()) {
+        rememberSidebarConversationSelection('learning', currentConversationId);
+        await returnToLearningHomeView();
+    }
+
+    const api = window.NexoraLearningMode;
+    if (!api || typeof api.openDashboardTab !== 'function') return;
+
+    api.openDashboardTab(tab);
+}
+
+/**
+ * 从学习资源条目的下拉菜单打开独立工作台；若正在 Learning 对话，先恢复主页 iframe。
+ */
+async function openLearningStudioSurface(studio) {
+    const normalizedStudio = String(studio || '').trim().toLowerCase();
+
+    if (!['resource', 'video'].includes(normalizedStudio)) return;
+
+    if (String(learningSidebarMode || '').trim().toLowerCase() === 'learning'
+        && String(currentConversationId || '').trim()) {
+        rememberSidebarConversationSelection('learning', currentConversationId);
+        await returnToLearningHomeView();
+    }
+
+    const api = window.NexoraLearningMode;
+
+    if (!api || typeof api.openLearningStudio !== 'function') return;
+
+    api.openLearningStudio(normalizedStudio);
+}
+
 // 学习模式偏好异步加载完成后，按当前会话状态恢复侧栏，避免覆盖 cid 导航结果。
+// 会话状态必须优先于 suppressAutoLearningOpen：URL 指向 Learning 会话时，cid 导航
+// 已经把侧栏切到 learning，此处若先因 suppress 回落 nexora，会把下划线与侧栏列表
+// 整体打回 nexora，而主面板仍停留在 Learning 内容（切换到了 learning、下划线却在 nexora）。
 function resolveLearningSidebarModeAfterPreferenceLoad(options = {}) {
     if (!learningModeEnabled) return 'nexora';
-
-    if (options && options.suppressAutoLearningOpen) {
-        return 'nexora';
-    }
 
     const hasConversation = !!String(currentConversationId || '').trim();
 
@@ -8570,7 +8810,11 @@ function resolveLearningSidebarModeAfterPreferenceLoad(options = {}) {
         return resolveLearningSidebarModeForConversation(currentConversationMode);
     }
 
-    return 'learning';
+    if (options && options.suppressAutoLearningOpen) {
+        return 'nexora';
+    }
+
+    return resolveDefaultOpenView();
 }
 
 function syncLearningWorkspaceLayout() {
@@ -8602,6 +8846,28 @@ function normalizeLearningReaderHostTarget(target) {
     return String(target || '').trim().toLowerCase() === 'learning' ? 'learning' : 'nexora';
 }
 
+function syncSidebarBrandLearningState(active) {
+    const pendingState = window.__nexoraSidebarBrandPendingState;
+    const nextState = {
+        enabled: learningModeEnabled,
+        active: !!active,
+    };
+    const pending = pendingState && typeof pendingState === 'object' ? pendingState : {};
+    pending.learning = nextState;
+    window.__nexoraSidebarBrandPendingState = pending;
+
+    // chat.js 是 Learning 主视图切换的最终执行点。控制器尚未加载时仍要同步可见选中态。
+    const tabs = document.getElementById('sidebarBrandTabs');
+    if (tabs) {
+        tabs.dataset.sidebarBrandMode = active ? 'learning' : 'nexora';
+    }
+
+    const brandNavigation = window.NexoraSidebarBrand;
+    if (!brandNavigation || typeof brandNavigation.setLearningState !== 'function') return;
+
+    brandNavigation.setLearningState(nextState);
+}
+
 function applyLearningSidebarMode(mode) {
     const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
     learningSidebarMode = normalized;
@@ -8624,15 +8890,7 @@ function applyLearningSidebarMode(mode) {
             conversationMode: currentConversationMode,
         });
     };
-    if (els.sidebarBrandLearningTab) {
-        els.sidebarBrandLearningTab.style.display = learningModeEnabled ? '' : 'none';
-        els.sidebarBrandLearningTab.classList.toggle('active', visible);
-        els.sidebarBrandLearningTab.setAttribute('aria-pressed', visible ? 'true' : 'false');
-    }
-    if (els.sidebarBrandNexoraTab) {
-        els.sidebarBrandNexoraTab.classList.toggle('active', !visible);
-        els.sidebarBrandNexoraTab.setAttribute('aria-pressed', !visible ? 'true' : 'false');
-    }
+    syncSidebarBrandLearningState(visible);
     if (els.conversationList) {
         els.conversationList.style.display = visible ? 'none' : '';
     }
@@ -8650,6 +8908,8 @@ function applyLearningSidebarMode(mode) {
         els.fileCenterBtn.hidden = visible;
         els.fileCenterBtn.style.display = visible ? 'none' : '';
     }
+
+    syncLearningSidebarNavigationVisibility(visible);
 
     if (els.learningSidebarPanel) {
         els.learningSidebarPanel.style.display = visible ? '' : 'none';
@@ -8790,6 +9050,14 @@ function handleLearningHostMessage(payload) {
         if (text) {
             if (payload.interview) window.__nexoraInterviewPending = true;
             sendMessage({ textOverride: text, displayContentOverride: text });
+        }
+        return true;
+    }
+    if (msgType === 'nexora:profile-interview:start') {
+        const text = String(payload.text || '').trim();
+        const display = String(payload.display || '').trim();
+        if (text) {
+            void startLearningProfileInterview(text, display);
         }
         return true;
     }
@@ -9185,6 +9453,8 @@ async function applyLearningMode(enabled, options = {}) {
     }
 
     learningModeEnabled = !!enabled;
+    // 偏好已读取即可恢复全局入口；学习资源加载失败也不能让 Nexora 中的 Learning tab 消失。
+    syncSidebarBrandLearningState(learningSidebarMode === 'learning');
     if (!learningModeEnabled) {
         learningNavigationState.setReaderOpened(false);
     }
@@ -9207,11 +9477,10 @@ async function applyLearningMode(enabled, options = {}) {
         if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
     }
     if (learningModeEnabled && !String(currentConversationId || '').trim() && !suppressAutoLearningOpen) {
-        // Learning 首次进入只展示课程对话列表和 NexoraLearning 主页面，
-        // 不把“尚未选择对话”伪装成一个新的 Learning 会话。
+        // 默认打开视图同时决定左侧列表与右侧主面板，避免两套状态在初始化时分叉。
         setLearningSidebarView('list');
         currentConversationMode = 'chat';
-        learningHeaderMode = 'learning';
+        learningHeaderMode = learningSidebarMode === 'learning' ? 'learning' : 'chat';
     } else if (suppressAutoLearningOpen && !String(currentConversationId || '').trim()) {
         currentConversationMode = 'chat';
         learningHeaderMode = 'chat';
@@ -9322,6 +9591,86 @@ async function saveLearningModePreference(enabled) {
     } finally {
         learningModePreferenceSaving = false;
         setLearningModeToggleUi(!!(currentUserPreferences && currentUserPreferences.learning_mode));
+    }
+}
+
+function getDefaultOpenViewNexoraBtn() {
+    return document.getElementById('set-default-open-nexora');
+}
+
+function getDefaultOpenViewLearningBtn() {
+    return document.getElementById('set-default-open-learning');
+}
+
+function getDefaultOpenViewCard() {
+    return document.getElementById('defaultOpenViewCard');
+}
+
+// 解析"默认打开"偏好值，非法值回落到 learning（与后端默认一致）
+function resolveDefaultOpenView() {
+    const view = String((currentUserPreferences && currentUserPreferences.default_open_view) || '').trim().toLowerCase();
+    return view === 'nexora' ? 'nexora' : 'learning';
+}
+
+// 同步"默认打开"开关 UI；卡片仅在 NexoraLearning 功能启用时显示
+function setDefaultOpenViewToggleUi(value) {
+    const card = getDefaultOpenViewCard();
+    if (card) {
+        card.style.display = learningRuntimeEnabled ? '' : 'none';
+    }
+
+    const safeValue = value === 'nexora' ? 'nexora' : 'learning';
+    const nexoraBtn = getDefaultOpenViewNexoraBtn();
+    const learningBtn = getDefaultOpenViewLearningBtn();
+    if (nexoraBtn) {
+        nexoraBtn.classList.toggle('active', safeValue === 'nexora');
+        nexoraBtn.setAttribute('aria-pressed', safeValue === 'nexora' ? 'true' : 'false');
+    }
+    if (learningBtn) {
+        learningBtn.classList.toggle('active', safeValue === 'learning');
+        learningBtn.setAttribute('aria-pressed', safeValue === 'learning' ? 'true' : 'false');
+    }
+}
+
+async function saveDefaultOpenViewPreference(value) {
+    const nextValue = value === 'nexora' ? 'nexora' : 'learning';
+
+    if (!learningRuntimeEnabled) {
+        setDefaultOpenViewToggleUi(resolveDefaultOpenView());
+        showToast('NexoraLearning 未启用');
+        return;
+    }
+
+    if (defaultOpenViewPreferenceSaving) {
+        return;
+    }
+
+    const previousValue = resolveDefaultOpenView();
+    defaultOpenViewPreferenceSaving = true;
+    setDefaultOpenViewToggleUi(nextValue);
+
+    try {
+        const res = await fetch('/api/user/preferences', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_open_view: nextValue }),
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+
+        currentUserPreferences = data.preferences || currentUserPreferences || {};
+        setDefaultOpenViewToggleUi(resolveDefaultOpenView());
+        showToast(nextValue === 'nexora' ? '默认打开 Nexora' : '默认打开 NexoraLearning');
+    } catch (err) {
+        console.error('保存默认打开设置失败:', err);
+        setDefaultOpenViewToggleUi(previousValue);
+        showToast(`保存默认打开设置失败: ${String((err && err.message) || 'unknown')}`);
+    } finally {
+        defaultOpenViewPreferenceSaving = false;
+        setDefaultOpenViewToggleUi(resolveDefaultOpenView());
     }
 }
 
@@ -13111,10 +13460,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const urlParams = new URLSearchParams(window.location.search || '');
     const hasConversationTargetInUrl = hasConversationUrlTarget(urlParams);
 
+    // 流恢复目标与 URL cid 同属"待导航会话"：默认打开视图必须让位给它们，
+    // 否则默认视图先展示 learning 侧栏，会话导航随后切回 nexora，加载时一闪而过。
+    const resumeState = loadActiveStreamResumeState();
+    const resumeCid = resumeState ? String(resumeState.conversation_id || '').trim() : '';
+
     // applyLearningMode 内部同步部分会立即设置 learningModeEnabled 等状态，
     // 异步部分（资产加载）在后台进行，不阻塞对话加载。
     const learningPromise = applyLearningMode(!!(prefs && prefs.learning_mode), {
-        suppressAutoLearningOpen: hasConversationTargetInUrl
+        suppressAutoLearningOpen: hasConversationTargetInUrl || !!resumeCid
     })
         .catch(err => console.error('初始化学习模式失败:', err));
 
@@ -13125,10 +13479,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isMailViewUrl() && !mailEntryCanOpen) {
         clearMailViewUrl();
     }
-
-    // Check if there is an active stream resume state that needs a specific conversation
-    const resumeState = loadActiveStreamResumeState();
-    const resumeCid = resumeState ? String(resumeState.conversation_id || '').trim() : '';
 
     if (shouldRestoreMailView) {
         loadConversations();
@@ -13167,7 +13517,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function initUI() {
     captureChatHeaderBaseState();
-    initModalBackdropStacking();
     ensureAdminPublicApiLayout();
     bindGeneratedImageViewportLimit();
     bindImageViewerEvents();
@@ -13269,6 +13618,12 @@ function initUI() {
         if (modeBtn) {
             const mode = String(modeBtn.getAttribute('data-learning-mode') || '').trim().toLowerCase();
             void saveLearningModePreference(mode === 'on');
+            return;
+        }
+        const defaultOpenBtn = target.closest('[data-default-open-view]');
+        if (defaultOpenBtn) {
+            const view = String(defaultOpenBtn.getAttribute('data-default-open-view') || '').trim().toLowerCase();
+            void saveDefaultOpenViewPreference(view);
             return;
         }
     });
@@ -13642,6 +13997,95 @@ function initUI() {
             window.openFilesFrameView();
         });
     }
+
+    const learningNavBindings = [
+        [els.learningProgressBtn, 'progress'],
+        [els.learningResourcesBtn, 'push'],
+        [els.learningPracticeBtn, 'questionBank'],
+        [els.learningProfileBtn, 'profileCenter'],
+        [els.learningFeedBtn, 'feed'],
+        [els.learningCoursesBtn, 'materials'],
+    ];
+
+    learningNavBindings.forEach(([btn, tab]) => {
+        if (!btn) return;
+
+        btn.addEventListener('click', () => {
+            if (btn === els.learningResourcesBtn) {
+                setLearningResourceStudioMenuOpen(true);
+            }
+
+            if (btn === els.learningPracticeBtn) {
+                setLearningPracticeMenuOpen(true);
+            }
+
+            void openLearningDashboardSurface(tab);
+        });
+    });
+
+    if (els.learningResourcesToggleBtn) {
+        els.learningResourcesToggleBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const open = els.learningResourcesGroup.classList.contains('is-collapsed');
+            setLearningResourceStudioMenuOpen(open);
+        });
+    }
+
+    if (els.learningResourcesStudioMenu) {
+        els.learningResourcesStudioMenu.addEventListener('click', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element)) return;
+
+            const item = target.closest('[data-learning-studio]');
+
+            if (!item) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            void openLearningStudioSurface(item.getAttribute('data-learning-studio'));
+        });
+    }
+
+    if (els.learningPracticeToggleBtn) {
+        els.learningPracticeToggleBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const open = els.learningPracticeGroup.classList.contains('is-collapsed');
+            setLearningPracticeMenuOpen(open);
+        });
+    }
+
+    if (els.learningPracticeMenu) {
+        els.learningPracticeMenu.addEventListener('click', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element)) return;
+
+            const item = target.closest('[data-learning-practice]');
+
+            if (!item) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            void openLearningDashboardSurface('questionBankMistakes');
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+
+        if (!(target instanceof Element)) return;
+
+        if (els.learningResourcesGroup && !els.learningResourcesGroup.contains(target)) {
+            setLearningResourceStudioMenuOpen(false);
+        }
+
+        if (els.learningPracticeGroup && !els.learningPracticeGroup.contains(target)) {
+            setLearningPracticeMenuOpen(false);
+        }
+    });
 
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search || '');
@@ -20776,8 +21220,22 @@ window.closeConfirmModal = function() {
 };
 
 function confirmModalAsync(title, message, type = 'danger') {
-    return new Promise((resolve) => {
-        window.showConfirm(title, message, type, () => resolve(true), () => resolve(false));
+    const settingsDialog = window.NexoraSettingsDialog;
+
+    if (!settingsDialog || typeof settingsDialog.confirm !== 'function') {
+        throw new Error('NexoraSettingsDialog.confirm 未初始化');
+    }
+
+    if (type !== 'danger' && type !== 'primary') {
+        throw new Error(`不支持的确认窗类型: ${type}`);
+    }
+
+    return settingsDialog.confirm({
+        dialogId: 'sharedConfirmDialog',
+        title: String(title || '').trim(),
+        message: String(message || '').trim(),
+        confirmLabel: '确认',
+        tone: type,
     });
 }
 
@@ -24744,33 +25202,31 @@ function normalizeAdminPublicApiPermissions(raw) {
 }
 
 function collectAdminPublicApiPermissionsFromUi() {
+    const readPermissionToggle = (id) => document.getElementById(id)?.getAttribute('aria-checked') === 'true';
     return normalizeAdminPublicApiPermissions({
-        model_inference: !!document.getElementById('adminPublicApiPermModel')?.checked,
-        image_generation: !!document.getElementById('adminPublicApiPermImage')?.checked,
-        knowledge_read: !!document.getElementById('adminPublicApiPermKnowledge')?.checked,
-        conversations_read: !!document.getElementById('adminPublicApiPermConversation')?.checked,
-        conversations_write: !!document.getElementById('adminPublicApiPermConversationWrite')?.checked,
-        token_stats_read: !!document.getElementById('adminPublicApiPermToken')?.checked,
-        user_read: !!document.getElementById('adminPublicApiPermUserRead')?.checked
+        model_inference: readPermissionToggle('adminPublicApiPermModel'),
+        image_generation: readPermissionToggle('adminPublicApiPermImage'),
+        knowledge_read: readPermissionToggle('adminPublicApiPermKnowledge'),
+        conversations_read: readPermissionToggle('adminPublicApiPermConversation'),
+        conversations_write: readPermissionToggle('adminPublicApiPermConversationWrite'),
+        token_stats_read: readPermissionToggle('adminPublicApiPermToken'),
+        user_read: readPermissionToggle('adminPublicApiPermUserRead')
     });
 }
 
 function applyAdminPublicApiPermissionsToUi(perms) {
     const p = normalizeAdminPublicApiPermissions(perms);
-    const modelEl = document.getElementById('adminPublicApiPermModel');
-    const imageEl = document.getElementById('adminPublicApiPermImage');
-    const knowledgeEl = document.getElementById('adminPublicApiPermKnowledge');
-    const convEl = document.getElementById('adminPublicApiPermConversation');
-    const convWriteEl = document.getElementById('adminPublicApiPermConversationWrite');
-    const tokenEl = document.getElementById('adminPublicApiPermToken');
-    const userReadEl = document.getElementById('adminPublicApiPermUserRead');
-    if (modelEl) modelEl.checked = !!p.model_inference;
-    if (imageEl) imageEl.checked = !!p.image_generation;
-    if (knowledgeEl) knowledgeEl.checked = !!p.knowledge_read;
-    if (convEl) convEl.checked = !!p.conversations_read;
-    if (convWriteEl) convWriteEl.checked = !!p.conversations_write;
-    if (tokenEl) tokenEl.checked = !!p.token_stats_read;
-    if (userReadEl) userReadEl.checked = !!p.user_read;
+    const writePermissionToggle = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('aria-checked', value ? 'true' : 'false');
+    };
+    writePermissionToggle('adminPublicApiPermModel', p.model_inference);
+    writePermissionToggle('adminPublicApiPermImage', p.image_generation);
+    writePermissionToggle('adminPublicApiPermKnowledge', p.knowledge_read);
+    writePermissionToggle('adminPublicApiPermConversation', p.conversations_read);
+    writePermissionToggle('adminPublicApiPermConversationWrite', p.conversations_write);
+    writePermissionToggle('adminPublicApiPermToken', p.token_stats_read);
+    writePermissionToggle('adminPublicApiPermUserRead', p.user_read);
 }
 
 function formatAdminPublicApiRemaining(key) {
@@ -24891,25 +25347,46 @@ function ensureAdminPublicApiLayout() {
             ['adminPublicApiPermUserRead', '用户信息读取'],
         ];
         permItems.forEach(([id, labelText]) => {
-            const input = document.getElementById(id);
-            if (!input) return;
-            const oldWrap = input.closest('label');
-            let targetWrap = permGrid.querySelector(`label[data-key="${id}"]`);
-            if (!targetWrap) {
-                targetWrap = document.createElement('label');
-                targetWrap.dataset.key = id;
-                permGrid.appendChild(targetWrap);
+            let control = permGrid.querySelector(`.papi-permission-toggle[data-key="${id}"]`);
+            let enabled = true;
+
+            if (control) {
+                // 已转换为按钮：保留按钮上当前的权限状态
+                enabled = control.getAttribute('aria-checked') === 'true';
+            } else {
+                // 首次转换：模板提供的是 checkbox，把其勾选状态迁移到按钮后移除
+                const templateInput = document.getElementById(id);
+                if (templateInput && templateInput.tagName === 'INPUT') {
+                    enabled = !!templateInput.checked;
+                    const oldWrap = templateInput.closest('label');
+                    templateInput.remove();
+                    if (oldWrap && oldWrap.parentElement) oldWrap.remove();
+                }
+                control = document.createElement('button');
+                control.type = 'button';
+                control.id = id;
+                control.dataset.key = id;
+                control.setAttribute('role', 'switch');
+                control.addEventListener('click', () => {
+                    const next = control.getAttribute('aria-checked') !== 'true';
+                    control.setAttribute('aria-checked', next ? 'true' : 'false');
+                });
+                permGrid.appendChild(control);
             }
-            targetWrap.className = 'settings-toggle-item';
-            input.className = 'settings-toggle-input';
+
+            control.className = 'papi-permission-toggle';
+            control.setAttribute('aria-checked', enabled ? 'true' : 'false');
+
             const label = document.createElement('span');
-            label.className = 'settings-toggle-label';
+            label.className = 'papi-permission-toggle-label';
             label.textContent = labelText;
             const track = document.createElement('span');
-            track.className = 'settings-toggle-track';
+            track.className = 'papi-permission-toggle-track';
             track.setAttribute('aria-hidden', 'true');
-            targetWrap.replaceChildren(input, label, track);
-            if (oldWrap && oldWrap !== targetWrap && oldWrap.parentElement) oldWrap.remove();
+            const thumb = document.createElement('span');
+            thumb.className = 'papi-permission-toggle-thumb';
+            track.appendChild(thumb);
+            control.replaceChildren(label, track);
         });
     }
 
@@ -24979,7 +25456,6 @@ function renderAdminPublicApiKeyList(payload) {
     listEl.innerHTML = keys.map((item) => {
         const id = String(item?.id || '');
         const name = escapeHtml(String(item?.name || id || 'Unnamed Key'));
-        const preview = escapeHtml(String(item?.key_preview || '-'));
         const isExpired = !!item?.is_expired;
         const statusRaw = String(item?.status || 'active').toLowerCase();
         const statusText = statusRaw === 'revoked' ? 'revoked' : (isExpired ? 'expired' : 'active');
@@ -24991,7 +25467,6 @@ function renderAdminPublicApiKeyList(payload) {
                 </div>
                 <div>
                     <div class="admin-user-name">${name}</div>
-                    <div class="admin-user-meta mono">${preview}</div>
                     <div class="admin-user-meta">${escapeHtml(statusText)}</div>
                     <div class="papi-key-meta-row">${getAdminPapiScopeModule().describeKey(item)}</div>
                 </div>
@@ -26540,7 +27015,7 @@ function initAdminUserTokenStatsControls() {
     if (usernameInput && usernameInput.dataset.bound !== '1') {
         usernameInput.dataset.bound = '1';
         usernameInput.addEventListener('focus', () => {
-            showAdminUserTokenUserMenu();
+            showAdminUserTokenUserMenuOnFocus();
         });
         usernameInput.addEventListener('input', () => {
             showAdminUserTokenUserMenu();
@@ -26552,6 +27027,7 @@ function initAdminUserTokenStatsControls() {
                 event.preventDefault();
                 adminUserTokenSelectorState.activeIndex = (adminUserTokenSelectorState.activeIndex + 1) % adminUserTokenSelectorState.filteredUsers.length;
                 renderAdminUserTokenUserMenu();
+                scrollAdminUserTokenActiveItemIntoView();
                 return;
             }
 
@@ -26559,6 +27035,7 @@ function initAdminUserTokenStatsControls() {
                 event.preventDefault();
                 adminUserTokenSelectorState.activeIndex = (adminUserTokenSelectorState.activeIndex - 1 + adminUserTokenSelectorState.filteredUsers.length) % adminUserTokenSelectorState.filteredUsers.length;
                 renderAdminUserTokenUserMenu();
+                scrollAdminUserTokenActiveItemIntoView();
                 return;
             }
 
@@ -26583,6 +27060,20 @@ function initAdminUserTokenStatsControls() {
                 hideAdminUserTokenUserMenu();
                 void queryAdminUserTokenStats();
             }
+        });
+    }
+
+    const clearBtn = document.getElementById('adminUserTokenStatsClearBtn');
+    if (clearBtn && clearBtn.dataset.bound !== '1') {
+        clearBtn.dataset.bound = '1';
+        // mousedown 阻止默认行为，避免输入框失焦
+        clearBtn.addEventListener('mousedown', (event) => {
+            event.preventDefault();
+        });
+        clearBtn.addEventListener('click', () => {
+            if (usernameInput) usernameInput.value = '';
+            adminUserTokenSelectorState.activeIndex = 0;
+            hideAdminUserTokenUserMenu();
         });
     }
 
@@ -26696,6 +27187,38 @@ function showAdminUserTokenUserMenu() {
     adminUserTokenSelectorState.activeIndex = 0;
     adminUserTokenSelectorState.visible = true;
     renderAdminUserTokenUserMenu();
+}
+
+// 聚焦时的菜单展示：若输入框已填入某个已选用户，则不按该值筛选，
+// 而是展示全部用户并滚动定位到该用户，方便直接换选其他用户（无需先清空）
+function showAdminUserTokenUserMenuOnFocus() {
+    const inputEl = document.getElementById('adminUserTokenStatsUsernameInput');
+    const query = String(inputEl?.value || '').trim().toLowerCase();
+    const users = adminUserTokenSelectorState.users;
+    const selectedIndex = users.findIndex((user) => getAdminUserTokenUserId(user).toLowerCase() === query);
+
+    if (selectedIndex >= 0) {
+        adminUserTokenSelectorState.filteredUsers = users;
+        adminUserTokenSelectorState.activeIndex = selectedIndex;
+        adminUserTokenSelectorState.visible = true;
+        renderAdminUserTokenUserMenu();
+        scrollAdminUserTokenActiveItemIntoView();
+        return;
+    }
+
+    showAdminUserTokenUserMenu();
+}
+
+function scrollAdminUserTokenActiveItemIntoView() {
+    const menuEl = document.getElementById('adminUserTokenStatsUserMenu');
+
+    if (!menuEl) return;
+
+    const activeItem = menuEl.querySelector('.admin-user-token-item.is-active');
+
+    if (activeItem && typeof activeItem.scrollIntoView === 'function') {
+        activeItem.scrollIntoView({ block: 'nearest' });
+    }
 }
 
 function hideAdminUserTokenUserMenu() {
@@ -27550,9 +28073,12 @@ function resolveSkillModeFloatingZIndex() {
     const settingsModal = document.getElementById('settingsModal');
     const rawZIndex = settingsModal ? window.getComputedStyle(settingsModal).zIndex : '';
     const modalZIndex = Number.parseInt(String(rawZIndex || ''), 10);
-    const baseZIndex = Number.isFinite(modalZIndex) ? modalZIndex : MODAL_STACK_BASE_Z;
 
-    return baseZIndex + Math.max(2, MODAL_STACK_STEP_Z);
+    if (!Number.isFinite(modalZIndex)) {
+        throw new Error('无法计算设置面板的 Skill 菜单层级');
+    }
+
+    return modalZIndex + 1;
 }
 
 function positionSkillModeFloatingMenu(triggerEl, menuEl) {
@@ -28054,6 +28580,7 @@ async function loadUserSettings() {
             }
 
             setLearningModeToggleUi(!!prefs.learning_mode);
+            setDefaultOpenViewToggleUi(String(prefs.default_open_view || 'learning'));
         }
 
         const memorySettings = getNexoraChatMemorySettings();
@@ -29103,7 +29630,7 @@ function clampAvatarCropOffset() {
 function exposeLiveState(prop, get, set) {
     Object.defineProperty(window, prop, { get, set, configurable: true });
 }
-exposeLiveState('currentConversationId', () => currentConversationId, (v) => { currentConversationId = v; });
+// currentConversationId 已在声明处桥接到 store.conversation，此处不再重复绑定
 exposeLiveState('currentUsername', () => currentUsername, (v) => { currentUsername = v; });
 exposeLiveState('shouldAutoScroll', () => shouldAutoScroll, (v) => { shouldAutoScroll = v; });
 exposeLiveState('isUploadingFiles', () => isUploadingFiles, (v) => { isUploadingFiles = v; });

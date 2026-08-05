@@ -1,906 +1,1389 @@
-/**
- * 思维导图（知识图谱）前端渲染层。
+/*
+ * 课程知识图谱（AntV G6 v5 章节扇区关系图）。
  *
- * 对接后端思维导图 Agent（core/booksproc/mindmap.py）：
- *   - GET  /api/frontend/mindmap/{lectureId}              读取课程级导图
- *   - GET  /api/frontend/mindmap/{lectureId}/generate-stream  SSE 流式生成课程级导图
- *   - POST /api/frontend/mindmap/{lectureId}/section      生成 section 级详细子树
+ * 数据来源：/api/frontend/mindmap/<lecture_id> 返回扁平 nodes/edges 结构，
+ * 附带 section_difficulty（大纲各章节的难度标注）。
  *
- * 数据结构（与后端 mindmap.py 一致）：
- *   { course_title, chapters: [{ section_id, name, summary, concepts: [{ name, detail, children }] }] }
- *
- * 渲染采用 mermaid flowchart（而非 mindmap 语法），因为 flowchart 支持单节点着色、
- * 点击事件和右键菜单，更适合"知识点树 + 交互探索"场景。
- *
- * 交互：
- *   - 章节节点（type=chapter）点击 → 调 section API，右侧抽屉展示 section 级详细子树
- *   - 知识点节点（type=concept）点击 → 详情弹窗显示 detail
- *   - 任意节点右键 → 查看详情 / 让模型解释（postMessage 到父窗口）
+ * 视觉结构：课程名作为中心大节点，章节（课程蓝）与知识点按难度着色
+ * （基础=入门绿 / 中等=进阶橙 / 进阶=高级红），由章节扇区向外分层展开；
+ * 语义关系（前置/关联/延伸）以彩色弧线叠加在层级辐条之上。
  */
 (function () {
     "use strict";
 
-    var NXKG = {};
+    var CENTER_NODE_ID = "nxkg_center";
+    var ZOOM_MIN = 0.2;
+    var ZOOM_MAX = 2.6;
+    var WHEEL_ZOOM_SENSITIVITY = 0.0008;
+    var VIEWPORT_ANIMATION = { duration: 320, easing: "ease-out" };
+    var FIT_VIEW_ANIMATION = { duration: 520, easing: "ease-in-out" };
 
-    // 当前课程级导图数据
-    var currentGraph = null;
-    // 当前激活的 EventSource（用于中断旧的流式请求）
-    var currentEventSource = null;
-    var contextMenu = null;
-    var mermaidReady = false;
-    var GRAPH_MIN_SCALE = 0.08;
-    var GRAPH_MAX_SCALE = 2.6;
+    // 各类节点的外观规格，size 为直径（px）
+    var NODE_SPECS = {
+        center: { size: 110, color: "#2f54eb", labelFill: "#ffffff", fontSize: 14, maxChars: 10, weight: 600 },
+        chapter: { size: 56, color: "#1890ff", labelFill: "#25304a", fontSize: 12, maxChars: 10, weight: 600 },
+        concept: { size: 36, color: "#52c41a", labelFill: "#3c465e", fontSize: 11, maxChars: 7, weight: 500 },
+        sub: { size: 28, color: "#52c41a", labelFill: "#3c465e", fontSize: 11, maxChars: 8, weight: 500 },
+    };
 
-    // ==================== 工具函数 ====================
+    // 大纲 difficulty 取值 → 节点颜色与图例文案
+    var DIFFICULTY_META = {
+        "基础": { color: "#52c41a", label: "入门" },
+        "中等": { color: "#fa8c16", label: "进阶" },
+        "进阶": { color: "#f5222d", label: "高级" },
+    };
+    var DIFFICULTY_ORDER = ["基础", "中等", "进阶"];
+    var UNLABELED_META = { color: "#9aa7b6", label: "未标注" };
+    var CHAPTER_META = { color: "#1890ff", label: "课程" };
+
+    // 语义关系（与关系浏览器时期保持一致的配色）
+    var RELATIONS = {
+        prerequisite: { label: "前置", color: "#1971c2" },
+        related: { label: "关联", color: "#7048e8" },
+        extends: { label: "延伸", color: "#0f9f6e" },
+    };
+    var HIERARCHY_EDGE_COLOR = "#c2cfdc";
+
+    var state = {
+        graph: null,
+        lectureId: "",
+        sectionDifficulty: {},
+        eventSource: null,
+        focusedNodeId: "",
+        searchMatchIds: null,
+        g6Graph: null,
+        keydownHandler: null,
+        wheelHandler: null,
+        wheelAnimationFrame: null,
+        wheelZoomTarget: null,
+        wheelZoomOrigin: null,
+    };
+
+    function escapeHtml(value) {
+        var element = document.createElement("div");
+        element.appendChild(document.createTextNode(String(value || "")));
+        return element.innerHTML;
+    }
 
     async function nxlFetch(url, init) {
         var options = init && typeof init === "object" ? Object.assign({}, init) : {};
         var headers = new Headers(options.headers || {});
         var username = "";
-        try { username = (window.state && window.state.username) || ""; } catch (_) {}
-        if (username && !headers.has("X-Nexora-Username")) headers.set("X-Nexora-Username", username);
-        if (typeof options.body === "string" && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+
+        try {
+            username = (window.state && window.state.username) || "";
+        } catch (_) {}
+
+        if (username && !headers.has("X-Nexora-Username")) {
+            headers.set("X-Nexora-Username", username);
+        }
+
         options.headers = headers;
-        if (!options.credentials) options.credentials = "same-origin";
-        var resp = await fetch(url, options);
-        var text = await resp.text();
-        if (!resp.ok) throw new Error(text || resp.statusText);
+        options.credentials = options.credentials || "same-origin";
+
+        var response = await fetch(url, options);
+        var text = await response.text();
+
+        if (!response.ok) {
+            throw new Error(text || response.statusText);
+        }
+
         return JSON.parse(text);
     }
 
-    function escapeHtml(text) {
-        var d = document.createElement("div");
-        d.appendChild(document.createTextNode(String(text || "")));
-        return d.innerHTML;
+    function createIcon(name) {
+        var paths = {
+            close: ["M6 6l12 12", "M18 6L6 18"],
+            reset: ["M4 8V4h4", "M4 4l4 4", "M5 15a7 7 0 1 0 2-9"],
+            plus: ["M12 5v14", "M5 12h14"],
+            minus: ["M5 12h14"],
+        };
+        var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("focusable", "false");
+
+        (paths[name] || []).forEach(function (path) {
+            var element = document.createElementNS("http://www.w3.org/2000/svg", "path");
+
+            element.setAttribute("d", path);
+            svg.appendChild(element);
+        });
+
+        return svg.outerHTML;
     }
 
-    function normalizeLabelText(text, maxLength) {
-        var raw = String(text || "")
-            .replace(/[\r\n\t]+/g, " ")
-            .replace(/\s{2,}/g, " ")
-            .trim();
+    function getNodeMap(nodes) {
+        var nodeMap = {};
 
-        if (raw.length > maxLength) {
-            return raw.slice(0, Math.max(0, maxLength - 3)) + "...";
+        nodes.forEach(function (node) {
+            if (node && node.id) {
+                nodeMap[node.id] = node;
+            }
+        });
+
+        return nodeMap;
+    }
+
+    /**
+     * 旧版树形 chapters 结构迁移为扁平 nodes/edges，
+     * 保证历史数据与新版 mindmap.json 走同一条渲染链路。
+     */
+    function migrateLegacyGraph(mindmap) {
+        if (Array.isArray(mindmap.nodes)) {
+            return mindmap;
         }
 
-        return raw;
-    }
+        var nodes = [];
+        var edges = [];
 
-    function formatMermLabel(text, maxLength, lineLength) {
-        var label = normalizeLabelText(text, maxLength);
-        var lines = [];
+        (mindmap.chapters || []).forEach(function (chapter, chapterIndex) {
+            var chapterId = chapter.section_id || ("chapter_" + chapterIndex);
 
-        for (var i = 0; i < label.length; i += lineLength) {
-            lines.push(escapeHtml(label.slice(i, i + lineLength)).replace(/"/g, "'").replace(/[\[\]]/g, ""));
-        }
+            nodes.push({
+                id: chapterId,
+                label: chapter.name || "未命名章节",
+                type: "chapter",
+                detail: chapter.summary || "",
+                parent: "",
+            });
 
-        return lines.join("<br/>");
-    }
+            (chapter.concepts || []).forEach(function (concept, conceptIndex) {
+                var conceptId = chapterId + "_concept_" + conceptIndex;
 
-    function collectGraphStats(graphData) {
-        var chapters = Array.isArray(graphData.chapters) ? graphData.chapters : [];
-        var conceptCount = 0;
-        var childCount = 0;
+                nodes.push({
+                    id: conceptId,
+                    label: concept.name || "未命名知识点",
+                    type: "concept",
+                    detail: concept.detail || "",
+                    parent: chapterId,
+                });
+                edges.push({ source: chapterId, target: conceptId, type: "hierarchy", label: "" });
 
-        chapters.forEach(function (chapter) {
-            var concepts = Array.isArray(chapter.concepts) ? chapter.concepts : [];
-            conceptCount += concepts.length;
+                (concept.children || []).forEach(function (child, childIndex) {
+                    var childId = conceptId + "_child_" + childIndex;
 
-            concepts.forEach(function (concept) {
-                var children = Array.isArray(concept.children) ? concept.children : [];
-                childCount += children.length;
+                    nodes.push({
+                        id: childId,
+                        label: child.name || "未命名知识点",
+                        type: "sub",
+                        detail: child.detail || "",
+                        parent: conceptId,
+                    });
+                    edges.push({ source: conceptId, target: childId, type: "hierarchy", label: "" });
+                });
             });
         });
 
         return {
-            chapters: chapters.length,
-            concepts: conceptCount,
-            children: childCount,
+            course_title: mindmap.course_title || "课程知识图谱",
+            nodes: nodes,
+            edges: edges,
         };
     }
 
-    function clampNumber(value, min, max) {
-        var num = Number(value);
-        if (!Number.isFinite(num)) return min;
+    function normalizeGraph(mindmap) {
+        var graph = migrateLegacyGraph(mindmap || {});
+        var nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(function (node) {
+            return node && node.id;
+        }) : [];
+        var nodeMap = getNodeMap(nodes);
+        var edges = Array.isArray(graph.edges) ? graph.edges.filter(function (edge) {
+            return edge && edge.source && edge.target && nodeMap[edge.source] && nodeMap[edge.target];
+        }) : [];
 
-        return Math.max(min, Math.min(max, num));
+        return {
+            course_title: graph.course_title || graph.lecture_title || "课程知识图谱",
+            nodes: nodes,
+            edges: edges,
+        };
     }
 
-    // ==================== Mermaid 定义构建 ====================
+    function nodeKindOf(node) {
+        if (node.type === "chapter") {
+            return "chapter";
+        }
+
+        return node.type === "sub" ? "sub" : "concept";
+    }
+
+    function getChapterForNode(node, nodeMap) {
+        var current = node;
+
+        while (current && current.parent) {
+            current = nodeMap[current.parent];
+        }
+
+        return current && current.type === "chapter" ? current : null;
+    }
+
+    function getNodeDepth(node, nodeMap) {
+        var depth = 1;
+        var current = node;
+        var visited = {};
+
+        while (current && current.parent && !visited[current.parent]) {
+            visited[current.parent] = true;
+            current = nodeMap[current.parent];
+            depth += 1;
+        }
+
+        return depth;
+    }
+
+    function resolveDifficultyMeta(rawDifficulty) {
+        var meta = DIFFICULTY_META[String(rawDifficulty || "").trim()];
+
+        return meta || UNLABELED_META;
+    }
+
+    function truncateLabel(label, maxChars) {
+        var text = String(label || "未命名知识点");
+
+        return text.length > maxChars ? text.slice(0, maxChars - 1) + "…" : text;
+    }
+
+    function getContainer() {
+        return document.getElementById("courseMindmapContainer");
+    }
 
     /**
-     * 把思维导图 JSON 树构建为 mermaid flowchart 定义 + 节点映射表。
-     * 章节节点用 id CH{ci}，知识点用 CH{ci}K{ki}，子知识点用 CH{ci}K{ki}C{xi}。
+     * 把扁平 mindmap 转换为 G6 v5 数据：
+     * 补充虚拟课程中心节点与 中心→章节 辐条，其余层级/语义边原样保留。
      */
-    function buildMermaidDef(graphData) {
-        var chapters = graphData.chapters || [];
-        if (!chapters.length) return null;
+    function buildG6Data(graph, sectionDifficulty) {
+        var nodeMap = getNodeMap(graph.nodes);
+        var nodes = [{
+            id: CENTER_NODE_ID,
+            data: {
+                kind: "center",
+                label: graph.course_title,
+                detail: "",
+                difficulty: "",
+                depth: 0,
+                chapterId: "",
+                parentId: "",
+            },
+        }];
+        var hierarchyEdges = [];
+        var semanticEdges = [];
+        var seenEdgeKeys = {};
+        var edgeIndex = 0;
 
-        var rootTitle = graphData.course_title || graphData.section_title || graphData.lecture_title || "知识导图";
-        var lines = ["flowchart LR"];
-        var nodeMap = {};
-        var classLines = [
-            "    classDef nxkgRoot fill:#eaf3ff,color:#102a43,stroke:#2f80ed,stroke-width:2px",
-            "    classDef nxkgChapter fill:#fff7e6,color:#4a2c00,stroke:#d97706,stroke-width:1.8px",
-            "    classDef nxkgConcept fill:#f1f5f9,color:#172033,stroke:#64748b,stroke-width:1.4px",
-            "    classDef nxkgSub fill:#ecfdf5,color:#064e3b,stroke:#10b981,stroke-width:1.2px",
-        ];
+        graph.nodes.forEach(function (node) {
+            var kind = nodeKindOf(node);
+            var chapter = kind === "chapter" ? node : getChapterForNode(node, nodeMap);
 
-        nodeMap.ROOT = {
-            label: rootTitle,
-            detail: graphData.summary || graphData.description || "",
-            type: "root",
-            sectionId: "",
+            nodes.push({
+                id: node.id,
+                data: {
+                    kind: kind,
+                    label: node.label,
+                    detail: node.detail,
+                    difficulty: chapter ? String(sectionDifficulty[chapter.id] || "") : "",
+                    depth: getNodeDepth(node, nodeMap),
+                    chapterId: chapter ? chapter.id : "",
+                    parentId: node.parent || "",
+                },
+            });
+
+            if (kind === "chapter") {
+                hierarchyEdges.push({
+                    id: "nxkg_center_edge_" + edgeIndex,
+                    source: CENTER_NODE_ID,
+                    target: node.id,
+                    data: { kind: "hierarchy" },
+                });
+                edgeIndex += 1;
+            }
+        });
+
+        graph.edges.forEach(function (edge) {
+            var edgeKind = edge.type || "hierarchy";
+            var key = edge.source + ">" + edge.target + ">" + edgeKind;
+
+            if (seenEdgeKeys[key]) {
+                return;
+            }
+
+            seenEdgeKeys[key] = true;
+            var targetEdges = edgeKind === "hierarchy" ? hierarchyEdges : semanticEdges;
+
+            targetEdges.push({
+                id: "nxkg_edge_" + edgeIndex,
+                source: edge.source,
+                target: edge.target,
+                data: { kind: edgeKind, label: edge.label },
+            });
+            edgeIndex += 1;
+        });
+
+        return {
+            nodes: nodes,
+            hierarchyEdges: hierarchyEdges,
+            semanticEdges: semanticEdges,
         };
-        lines.push('    ROOT(["' + formatMermLabel(rootTitle, 42, 14) + '"])');
-        classLines.push("    class ROOT nxkgRoot");
+    }
 
-        for (var ci = 0; ci < chapters.length; ci++) {
-            var ch = chapters[ci];
-            var chId = "CH" + ci;
-            nodeMap[chId] = {
-                label: ch.name,
-                detail: ch.summary || "",
-                type: "chapter",
-                sectionId: ch.section_id || "",
-            };
-            lines.push("    ROOT --> " + chId);
-            lines.push("    " + chId + '(["' + formatMermLabel(ch.name, 52, 13) + '"])');
-            classLines.push("    class " + chId + " nxkgChapter");
+    function getNodeSpec(datum) {
+        return NODE_SPECS[datum.data.kind] || NODE_SPECS.concept;
+    }
 
-            var concepts = ch.concepts || [];
-            for (var ki = 0; ki < concepts.length; ki++) {
-                var kpId = chId + "K" + ki;
-                nodeMap[kpId] = {
-                    label: concepts[ki].name,
-                    detail: concepts[ki].detail || "",
-                    type: "concept",
-                };
-                lines.push("    " + chId + " --> " + kpId);
-                lines.push("    " + kpId + '["' + formatMermLabel(concepts[ki].name, 46, 12) + '"]');
-                classLines.push("    class " + kpId + " nxkgConcept");
+    function getNodeColor(datum) {
+        var kind = datum.data.kind;
 
-                var children = concepts[ki].children || [];
-                for (var xi = 0; xi < children.length; xi++) {
-                    var cId = kpId + "C" + xi;
-                    nodeMap[cId] = {
-                        label: children[xi].name,
-                        detail: children[xi].detail || "",
-                        type: "concept",
-                    };
-                    lines.push("    " + kpId + " --> " + cId);
-                    lines.push("    " + cId + '["' + formatMermLabel(children[xi].name, 42, 12) + '"]');
-                    classLines.push("    class " + cId + " nxkgSub");
+        if (kind === "center") {
+            return NODE_SPECS.center.color;
+        }
+
+        if (kind === "chapter") {
+            return CHAPTER_META.color;
+        }
+
+        return resolveDifficultyMeta(datum.data.difficulty).color;
+    }
+
+    function getEdgeColor(kind) {
+        var relation = RELATIONS[kind];
+
+        return relation ? relation.color : HIERARCHY_EDGE_COLOR;
+    }
+
+    function buildTooltipHtml(items) {
+        var item = items && items[0];
+
+        if (!item || !item.data) {
+            return "";
+        }
+
+        // 边数据带 source/target，节点数据没有
+        if (item.source !== undefined) {
+            var relation = RELATIONS[item.data.kind];
+
+            if (!relation) {
+                return "";
+            }
+
+            return '<div class="nxkg-tooltip"><div class="nxkg-tooltip-title">' +
+                escapeHtml(relation.label) + "关系</div></div>";
+        }
+
+        var detail = String(item.data.detail || "").trim();
+
+        return '<div class="nxkg-tooltip">' +
+            '<div class="nxkg-tooltip-title">' + escapeHtml(item.data.label || "知识点") + "</div>" +
+            (detail ? '<div class="nxkg-tooltip-detail">' + escapeHtml(detail) + "</div>" : "") +
+            "</div>";
+    }
+
+    async function createG6Graph(g6Data) {
+        var mount = getContainer().querySelector("[data-nxkg-canvas]");
+        var positionedNodes = window.NXKnowledgeGraphLayout.createChapterSectorLayout(g6Data.nodes);
+
+        var g6Graph = new G6.Graph({
+            container: mount,
+            data: {
+                nodes: positionedNodes,
+                edges: g6Data.hierarchyEdges,
+            },
+            transforms: [{ type: "process-parallel-edges", offset: 18 }],
+            node: {
+                type: "circle",
+                style: {
+                    size: function (datum) { return getNodeSpec(datum).size; },
+                    fill: function (datum) { return getNodeColor(datum); },
+                    stroke: "#ffffff",
+                    lineWidth: function (datum) { return datum.data.kind === "center" ? 3 : 2; },
+                    shadowColor: "rgba(15, 31, 61, 0.16)",
+                    shadowBlur: 10,
+                    shadowOffsetY: 3,
+                    cursor: "pointer",
+                    labelText: function (datum) {
+                        return truncateLabel(datum.data.label, getNodeSpec(datum).maxChars);
+                    },
+                    labelPlacement: function (datum) {
+                        return datum.data.labelPlacement;
+                    },
+                    labelFill: function (datum) { return getNodeSpec(datum).labelFill; },
+                    labelFontSize: function (datum) { return getNodeSpec(datum).fontSize; },
+                    labelFontWeight: function (datum) { return getNodeSpec(datum).weight; },
+                    labelBackground: true,
+                    labelBackgroundFill: function (datum) {
+                        return datum.data.kind === "center" ? "transparent" : "rgba(255, 255, 255, 0.86)";
+                    },
+                    labelBackgroundRadius: 3,
+                    labelPadding: [1, 4, 1, 4],
+                },
+                state: {
+                    selected: {
+                        stroke: "#10234f",
+                        lineWidth: 4,
+                        labelFontWeight: 700,
+                        halo: true,
+                        haloFill: "#2f54eb",
+                        haloOpacity: 0.18,
+                        haloLineWidth: 10,
+                    },
+                    highlight: {
+                        stroke: "#10234f",
+                        lineWidth: 3,
+                        halo: true,
+                        haloFill: "#5b8ff9",
+                        haloOpacity: 0.1,
+                        haloLineWidth: 7,
+                    },
+                },
+                animation: {
+                    enter: [{
+                        fields: ["opacity"],
+                        from: { opacity: 0 },
+                        to: { opacity: 1 },
+                        duration: 420,
+                        easing: "ease-out",
+                    }],
+                    update: [{
+                        fields: ["stroke", "lineWidth", "haloOpacity"],
+                        duration: 180,
+                        easing: "ease-out",
+                    }],
+                },
+            },
+            edge: {
+                type: function (datum) {
+                    return datum.data.kind === "hierarchy" ? "line" : "quadratic";
+                },
+                style: {
+                    stroke: function (datum) { return getEdgeColor(datum.data.kind); },
+                    lineWidth: function (datum) { return datum.data.kind === "hierarchy" ? 1.3 : 1.8; },
+                    opacity: function (datum) { return datum.data.kind === "hierarchy" ? 0.85 : 0.62; },
+                    lineDash: function (datum) { return datum.data.kind === "related" ? [5, 5] : undefined; },
+                    endArrow: function (datum) {
+                        return datum.data.kind === "prerequisite" || datum.data.kind === "extends";
+                    },
+                    endArrowSize: 6,
+                    endArrowFill: function (datum) { return getEdgeColor(datum.data.kind); },
+                },
+                state: {
+                    highlight: { opacity: 1, lineWidth: 2.6 },
+                },
+                animation: {
+                    enter: [{
+                        fields: ["opacity"],
+                        from: { opacity: 0 },
+                        duration: 360,
+                        easing: "ease-out",
+                    }],
+                    update: [{
+                        fields: ["opacity", "lineWidth"],
+                        duration: 180,
+                        easing: "ease-out",
+                    }],
+                },
+            },
+            behaviors: [
+                "drag-canvas",
+                {
+                    type: "zoom-canvas",
+                    trigger: ["pinch"],
+                    sensitivity: 0.45,
+                    animation: VIEWPORT_ANIMATION,
+                },
+                "drag-element",
+            ],
+            plugins: [
+                {
+                    type: "tooltip",
+                    trigger: "hover",
+                    getContent: buildTooltipHtml,
+                },
+            ],
+        });
+
+        g6Graph.on("node:click", function (event) {
+            focusNode(event.target.id);
+        });
+
+        g6Graph.on("canvas:click", function () {
+            clearFocus();
+        });
+
+        state.g6Graph = g6Graph;
+        bindSmoothWheelZoom(mount, g6Graph);
+        await g6Graph.render();
+
+        if (state.g6Graph !== g6Graph) {
+            return;
+        }
+
+        if (g6Data.semanticEdges.length) {
+            g6Graph.addEdgeData(g6Data.semanticEdges);
+            await g6Graph.draw();
+        }
+
+        if (state.g6Graph === g6Graph) {
+            await fitView(g6Graph);
+        }
+    }
+
+    function destroyG6Graph() {
+        unbindSmoothWheelZoom();
+
+        if (!state.g6Graph) {
+            return;
+        }
+
+        state.g6Graph.destroy();
+        state.g6Graph = null;
+    }
+
+    function clampZoom(zoom) {
+        return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+    }
+
+    function unbindSmoothWheelZoom() {
+        var mount = getContainer() && getContainer().querySelector("[data-nxkg-canvas]");
+
+        if (mount && state.wheelHandler) {
+            mount.removeEventListener("wheel", state.wheelHandler);
+        }
+
+        if (state.wheelAnimationFrame) {
+            window.cancelAnimationFrame(state.wheelAnimationFrame);
+        }
+
+        state.wheelHandler = null;
+        state.wheelAnimationFrame = null;
+        state.wheelZoomTarget = null;
+        state.wheelZoomOrigin = null;
+    }
+
+    /**
+     * G6 默认滚轮每次直接应用完整 delta，触控板与鼠标滚轮都会出现跳变。
+     * 这里把 delta 归一化、限制单帧跨度，并通过视口动画平滑缩放到指针位置。
+     */
+    function bindSmoothWheelZoom(mount, g6Graph) {
+        state.wheelHandler = function (event) {
+            event.preventDefault();
+
+            var delta = event.deltaY;
+
+            if (event.deltaMode === 1) {
+                delta *= 16;
+            } else if (event.deltaMode === 2) {
+                delta *= mount.clientHeight;
+            }
+
+            delta = Math.max(-120, Math.min(120, delta));
+            var currentTarget = state.wheelZoomTarget === null
+                ? g6Graph.getZoom()
+                : state.wheelZoomTarget;
+            var bounds = mount.getBoundingClientRect();
+
+            state.wheelZoomTarget = clampZoom(
+                currentTarget * Math.exp(-delta * WHEEL_ZOOM_SENSITIVITY)
+            );
+            state.wheelZoomOrigin = [event.clientX - bounds.left, event.clientY - bounds.top];
+
+            if (state.wheelAnimationFrame) {
+                return;
+            }
+
+            state.wheelAnimationFrame = window.requestAnimationFrame(function () {
+                var targetZoom = state.wheelZoomTarget;
+                var origin = state.wheelZoomOrigin;
+
+                state.wheelAnimationFrame = null;
+
+                if (state.g6Graph === g6Graph) {
+                    g6Graph.zoomTo(targetZoom, { duration: 160, easing: "ease-out" }, origin);
+                }
+            });
+        };
+
+        mount.addEventListener("wheel", state.wheelHandler, { passive: false });
+    }
+
+    function zoomByFactor(factor) {
+        if (!state.g6Graph) {
+            return;
+        }
+
+        var targetZoom = clampZoom(state.g6Graph.getZoom() * factor);
+
+        state.wheelZoomTarget = targetZoom;
+        state.g6Graph.zoomTo(targetZoom, VIEWPORT_ANIMATION);
+    }
+
+    async function fitView(graph) {
+        var targetGraph = graph || state.g6Graph;
+
+        if (!targetGraph || state.g6Graph !== targetGraph) {
+            return;
+        }
+
+        state.wheelZoomTarget = null;
+        await targetGraph.fitView({
+            padding: 72,
+            duration: FIT_VIEW_ANIMATION.duration,
+            easing: FIT_VIEW_ANIMATION.easing,
+        });
+    }
+
+    function getNeighborIds(nodeId) {
+        var neighbors = {};
+
+        if (nodeId === CENTER_NODE_ID) {
+            state.graph.nodes.forEach(function (node) {
+                if (node.type === "chapter") {
+                    neighbors[node.id] = true;
+                }
+            });
+
+            return neighbors;
+        }
+
+        state.graph.edges.forEach(function (edge) {
+            if (edge.source === nodeId) {
+                neighbors[edge.target] = true;
+            }
+
+            if (edge.target === nodeId) {
+                neighbors[edge.source] = true;
+            }
+        });
+
+        var node = getNodeMap(state.graph.nodes)[nodeId];
+
+        // 章节与课程中心之间存在虚拟辐条边（不在原始 edges 里）
+        if (node && node.type === "chapter") {
+            neighbors[CENTER_NODE_ID] = true;
+        }
+
+        return neighbors;
+    }
+
+    /**
+     * 图上高亮的唯一入口：根据当前焦点与搜索命中集合统一计算
+     * 每个节点/边的状态，避免多处改写状态造成漂移。
+     */
+    function applyGraphStates() {
+        var g6Graph = state.g6Graph;
+
+        if (!g6Graph) {
+            return;
+        }
+
+        var focusId = state.focusedNodeId;
+        var matches = state.searchMatchIds;
+        var emphasizedIds = {};
+
+        if (matches) {
+            Object.keys(matches).forEach(function (id) {
+                emphasizedIds[id] = true;
+            });
+        } else if (focusId) {
+            emphasizedIds[focusId] = true;
+
+            var neighbors = getNeighborIds(focusId);
+
+            Object.keys(neighbors).forEach(function (id) {
+                emphasizedIds[id] = true;
+            });
+        }
+
+        var hasEmphasis = Object.keys(emphasizedIds).length > 0;
+
+        g6Graph.getNodeData().forEach(function (datum) {
+            var id = datum.id;
+            var nextState = "";
+
+            if (hasEmphasis) {
+                if (focusId && id === focusId) {
+                    nextState = "selected";
+                } else if (emphasizedIds[id]) {
+                    nextState = "highlight";
                 }
             }
-        }
 
-        return { definition: lines.concat(classLines).join("\n"), nodeMap: nodeMap };
-    }
-
-    // ==================== 交互：详情弹窗 / 右键菜单 ====================
-
-    function showDetailModal(name, detail) {
-        var backdrop = document.getElementById("confirmBackdrop");
-        var title = document.getElementById("confirmTitle");
-        var body = document.getElementById("confirmBody");
-        var okBtn = document.getElementById("confirmOkBtn");
-        var cancelBtn = document.getElementById("confirmCancelBtn");
-        if (!backdrop || !body) return;
-
-        title.textContent = name;
-        body.innerHTML = '<div class="nxkg-detail-content">' + escapeHtml(detail || "暂无详细说明") + '</div>';
-        okBtn.textContent = "关闭";
-        okBtn.onclick = function () {
-            backdrop.style.display = "none";
-            okBtn.textContent = "是";
-            if (cancelBtn) cancelBtn.style.display = "";
-        };
-        if (cancelBtn) cancelBtn.style.display = "none";
-        backdrop.style.display = "flex";
-    }
-
-    function explainConcept(name) {
-        var promptText = "请解释这个概念：" + name;
-        if (window.parent && window.parent !== window) {
-            window.parent.postMessage({
-                source: "nexora-learning",
-                type: "nexora:reader:ask-annotation",
-                text: promptText
-            }, "*");
-        } else if (navigator.clipboard) {
-            navigator.clipboard.writeText(promptText).then(function () {
-                if (typeof window.showToast === "function") window.showToast("提示词已复制到剪贴板");
-            });
-        }
-    }
-
-    function showContextMenu(name, detail, x, y) {
-        hideContextMenu();
-        contextMenu = document.createElement("div");
-        contextMenu.className = "nxkg-context-menu";
-        contextMenu.style.left = x + "px";
-        contextMenu.style.top = y + "px";
-
-        if (detail) {
-            var detailBtn = document.createElement("button");
-            detailBtn.className = "nxkg-context-menu-item";
-            detailBtn.textContent = "查看详情";
-            detailBtn.addEventListener("click", function (e) {
-                e.stopPropagation();
-                hideContextMenu();
-                showDetailModal(name, detail);
-            });
-            contextMenu.appendChild(detailBtn);
-        }
-
-        var explainBtn = document.createElement("button");
-        explainBtn.className = "nxkg-context-menu-item";
-        explainBtn.textContent = "让模型解释";
-        explainBtn.addEventListener("click", function (e) {
-            e.stopPropagation();
-            hideContextMenu();
-            explainConcept(name);
+            g6Graph.setElementState(id, nextState ? [nextState] : []);
         });
-        contextMenu.appendChild(explainBtn);
 
-        document.body.appendChild(contextMenu);
+        g6Graph.getEdgeData().forEach(function (datum) {
+            var nextState = "";
 
-        var rect = contextMenu.getBoundingClientRect();
-        if (rect.right > window.innerWidth) contextMenu.style.left = (x - rect.width) + "px";
-        if (rect.bottom > window.innerHeight) contextMenu.style.top = (y - rect.height) + "px";
+            if (hasEmphasis) {
+                var touchesFocus = focusId && (datum.source === focusId || datum.target === focusId);
+                var bothEndsEmphasized = emphasizedIds[datum.source] && emphasizedIds[datum.target];
+
+                if (touchesFocus) {
+                    nextState = "highlight";
+                } else if (matches && bothEndsEmphasized) {
+                    nextState = "highlight";
+                }
+            }
+
+            g6Graph.setElementState(datum.id, nextState ? [nextState] : []);
+        });
     }
 
-    function hideContextMenu() {
-        if (contextMenu && contextMenu.parentNode) contextMenu.parentNode.removeChild(contextMenu);
-        contextMenu = null;
-    }
+    function getRelations(nodeId) {
+        var nodeMap = getNodeMap(state.graph.nodes);
+        var relations = [];
 
-    // ==================== SVG 节点事件绑定 ====================
+        state.graph.edges.forEach(function (edge) {
+            var otherId = edge.source === nodeId ? edge.target : (edge.target === nodeId ? edge.source : "");
 
-    function bindSvgEvents(container, nodeMap, lectureId) {
-        var svg = container.querySelector("svg");
-        if (!svg) return;
-
-        svg.addEventListener("click", function (e) {
-            if (consumeGraphDragClick(container)) {
-                e.preventDefault();
-                e.stopPropagation();
+            if (!otherId || !nodeMap[otherId]) {
                 return;
             }
 
-            var nodeEl = e.target.closest(".node");
-            if (!nodeEl) return;
-            var nodeId = extractNodeId(nodeEl, nodeMap);
-            if (!nodeId || !nodeMap[nodeId]) return;
-            var data = nodeMap[nodeId];
-
-            // 章节节点：展开 section 级详细子树
-            if (data.type === "chapter" && data.sectionId) {
-                openSectionDrawer(lectureId, data.sectionId, data.label);
-                return;
-            }
-
-            // 知识点节点：显示详情
-            showDetailModal(data.label, data.detail);
+            relations.push({ node: nodeMap[otherId], edge: edge });
         });
 
-        svg.addEventListener("contextmenu", function (e) {
-            var nodeEl = e.target.closest(".node");
-            if (!nodeEl) return;
-            var nodeId = extractNodeId(nodeEl, nodeMap);
-            if (!nodeId || !nodeMap[nodeId]) return;
-            e.preventDefault();
-            var data = nodeMap[nodeId];
-            showContextMenu(data.label, data.detail || "", e.clientX, e.clientY);
-        });
-    }
+        var node = nodeMap[nodeId];
 
-    function extractNodeId(nodeEl, nodeMap) {
-        var svgId = nodeEl.id || "";
-        var match = svgId.match(/^flowchart-(.+?)-\d+$/);
-        if (match) return match[1];
-
-        // Mermaid 版本差异导致 id 解析失败时，通过 label 文本反查。
-        var labelEl = nodeEl.querySelector(".nodeLabel");
-        if (labelEl) {
-            var text = labelEl.textContent.trim();
-            for (var key in nodeMap) {
-                if (nodeMap.hasOwnProperty(key) && nodeMap[key].label === text) return key;
-            }
-        }
-        return null;
-    }
-
-    function consumeGraphDragClick(container) {
-        var board = container.querySelector(".nxkg-board");
-        var viewport = board && board._nxkgViewport;
-
-        if (!viewport || !viewport.dragMoved) {
-            return false;
-        }
-
-        viewport.dragMoved = false;
-        return true;
-    }
-
-    function parseSvgSize(svg) {
-        if (!svg) {
-            return { width: 1, height: 1 };
-        }
-
-        var viewBox = svg.viewBox && svg.viewBox.baseVal;
-        if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
-            return { width: viewBox.width, height: viewBox.height };
-        }
-
-        var width = Number.parseFloat(String(svg.getAttribute("width") || ""));
-        var height = Number.parseFloat(String(svg.getAttribute("height") || ""));
-        if (width > 0 && height > 0) {
-            return { width: width, height: height };
-        }
-
-        try {
-            var box = svg.getBBox();
-            if (box && box.width > 0 && box.height > 0) {
-                return { width: box.width, height: box.height };
-            }
-        } catch (_err) {}
-
-        return { width: 1, height: 1 };
-    }
-
-    function getGraphViewport(container) {
-        var board = container.querySelector(".nxkg-board");
-        var canvas = container.querySelector("[data-nxkg-canvas]");
-        var stage = container.querySelector("[data-nxkg-graph-stage]");
-        var svg = stage ? stage.querySelector("svg") : null;
-
-        if (!board || !canvas || !stage || !svg) {
-            return null;
-        }
-
-        if (!board._nxkgViewport) {
-            board._nxkgViewport = {
-                scale: 1,
-                x: 0,
-                y: 0,
-                dragging: false,
-                dragMoved: false,
-                startX: 0,
-                startY: 0,
-                startOffsetX: 0,
-                startOffsetY: 0,
-            };
-        }
-
-        return {
-            board: board,
-            canvas: canvas,
-            stage: stage,
-            svg: svg,
-            state: board._nxkgViewport,
-        };
-    }
-
-    function updateGraphToolbar(container) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        var valueEl = viewport.board.querySelector("[data-nxkg-zoom-value]");
-        if (valueEl) {
-            valueEl.textContent = Math.round(viewport.state.scale * 100) + "%";
-        }
-
-        var expandBtn = viewport.board.querySelector('[data-nxkg-view-action="toggle-fullscreen"]');
-        if (expandBtn) {
-            var expanded = viewport.board.classList.contains("is-expanded");
-            expandBtn.setAttribute("aria-pressed", expanded ? "true" : "false");
-            expandBtn.setAttribute("title", expanded ? "退出全屏" : "全屏查看");
-        }
-    }
-
-    function applyGraphTransform(container) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        viewport.stage.style.transform = "translate(" + viewport.state.x + "px, " + viewport.state.y + "px) scale(" + viewport.state.scale + ")";
-        updateGraphToolbar(container);
-    }
-
-    function fitGraphViewport(container) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        var graphSize = parseSvgSize(viewport.svg);
-        var rect = viewport.canvas.getBoundingClientRect();
-        var canvasWidth = Math.max(1, rect.width);
-        var canvasHeight = Math.max(1, rect.height);
-        var padding = viewport.board.classList.contains("nxkg-board-compact") ? 28 : 40;
-        var fitScale = Math.min(
-            (canvasWidth - padding * 2) / graphSize.width,
-            (canvasHeight - padding * 2) / graphSize.height
-        );
-
-        viewport.state.scale = clampNumber(fitScale, GRAPH_MIN_SCALE, GRAPH_MAX_SCALE);
-        viewport.state.x = Math.round((canvasWidth - graphSize.width * viewport.state.scale) / 2);
-        viewport.state.y = Math.round((canvasHeight - graphSize.height * viewport.state.scale) / 2);
-        applyGraphTransform(container);
-    }
-
-    function resetGraphViewport(container) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        var graphSize = parseSvgSize(viewport.svg);
-        var rect = viewport.canvas.getBoundingClientRect();
-        viewport.state.scale = 1;
-        viewport.state.x = Math.round((Math.max(1, rect.width) - graphSize.width) / 2);
-        viewport.state.y = Math.round((Math.max(1, rect.height) - graphSize.height) / 2);
-        applyGraphTransform(container);
-    }
-
-    function zoomGraphViewport(container, factor, clientX, clientY) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        var oldScale = viewport.state.scale;
-        var nextScale = clampNumber(oldScale * factor, GRAPH_MIN_SCALE, GRAPH_MAX_SCALE);
-        if (nextScale === oldScale) return;
-
-        var rect = viewport.canvas.getBoundingClientRect();
-        var originX = Number.isFinite(clientX) ? clientX - rect.left : rect.width / 2;
-        var originY = Number.isFinite(clientY) ? clientY - rect.top : rect.height / 2;
-        var graphX = (originX - viewport.state.x) / oldScale;
-        var graphY = (originY - viewport.state.y) / oldScale;
-
-        viewport.state.scale = nextScale;
-        viewport.state.x = Math.round(originX - graphX * nextScale);
-        viewport.state.y = Math.round(originY - graphY * nextScale);
-        applyGraphTransform(container);
-    }
-
-    function bindGraphViewport(container) {
-        var viewport = getGraphViewport(container);
-        if (!viewport) return;
-
-        viewport.board.addEventListener("click", function (event) {
-            var target = event.target instanceof Element ? event.target : null;
-            var actionBtn = target ? target.closest("[data-nxkg-view-action]") : null;
-
-            if (!actionBtn || !viewport.board.contains(actionBtn)) {
-                return;
-            }
-
-            var action = String(actionBtn.getAttribute("data-nxkg-view-action") || "").trim();
-            event.preventDefault();
-            event.stopPropagation();
-
-            if (action === "zoom-in") {
-                zoomGraphViewport(container, 1.18);
-            } else if (action === "zoom-out") {
-                zoomGraphViewport(container, 1 / 1.18);
-            } else if (action === "fit") {
-                fitGraphViewport(container);
-            } else if (action === "actual") {
-                resetGraphViewport(container);
-            } else if (action === "toggle-fullscreen") {
-                viewport.board.classList.toggle("is-expanded");
-                document.body.classList.toggle("nxkg-board-expanded", viewport.board.classList.contains("is-expanded"));
-                window.setTimeout(function () {
-                    fitGraphViewport(container);
-                }, 40);
-            }
-        });
-
-        viewport.canvas.addEventListener("wheel", function (event) {
-            event.preventDefault();
-            zoomGraphViewport(container, event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
-        }, { passive: false });
-
-        viewport.canvas.addEventListener("pointerdown", function (event) {
-            if (event.button !== 0) return;
-
-            var target = event.target instanceof Element ? event.target : null;
-            if (target && target.closest("[data-nxkg-view-action]")) return;
-
-            viewport.state.dragging = true;
-            viewport.state.dragMoved = false;
-            viewport.state.startX = event.clientX;
-            viewport.state.startY = event.clientY;
-            viewport.state.startOffsetX = viewport.state.x;
-            viewport.state.startOffsetY = viewport.state.y;
-            viewport.canvas.classList.add("is-panning");
-            viewport.canvas.setPointerCapture(event.pointerId);
-        });
-
-        viewport.canvas.addEventListener("pointermove", function (event) {
-            if (!viewport.state.dragging) return;
-
-            var dx = event.clientX - viewport.state.startX;
-            var dy = event.clientY - viewport.state.startY;
-
-            if (Math.abs(dx) + Math.abs(dy) > 3) {
-                viewport.state.dragMoved = true;
-            }
-
-            viewport.state.x = Math.round(viewport.state.startOffsetX + dx);
-            viewport.state.y = Math.round(viewport.state.startOffsetY + dy);
-            applyGraphTransform(container);
-            event.preventDefault();
-        });
-
-        function stopDrag(event) {
-            if (!viewport.state.dragging) return;
-
-            viewport.state.dragging = false;
-            viewport.canvas.classList.remove("is-panning");
-            try {
-                viewport.canvas.releasePointerCapture(event.pointerId);
-            } catch (_err) {}
-        }
-
-        viewport.canvas.addEventListener("pointerup", stopDrag);
-        viewport.canvas.addEventListener("pointercancel", stopDrag);
-
-        window.setTimeout(function () {
-            fitGraphViewport(container);
-        }, 30);
-    }
-
-    // ==================== Section 级抽屉 ====================
-
-    /**
-     * 打开右侧抽屉，调用 section API 生成该章节的详细思维导图子树。
-     */
-    async function openSectionDrawer(lectureId, sectionId, sectionName) {
-        var drawer = ensureSectionDrawer();
-        showSectionDrawerLoading(drawer, sectionName);
-
-        try {
-            var data = await nxlFetch("/api/frontend/mindmap/" + encodeURIComponent(lectureId) + "/section", {
-                method: "POST",
-                body: JSON.stringify({ section_id: sectionId }),
+        if (nodeId === CENTER_NODE_ID) {
+            state.graph.nodes.forEach(function (chapter) {
+                if (chapter.type === "chapter") {
+                    relations.push({ node: chapter, edge: { type: "hierarchy" } });
+                }
             });
+        } else if (node && node.type === "chapter") {
+            relations.push({
+                node: { id: CENTER_NODE_ID, label: state.graph.course_title, type: "center" },
+                edge: { type: "hierarchy" },
+            });
+        }
 
-            if (data && data.success && data.mindmap) {
-                renderSectionDrawer(drawer, lectureId, sectionName, data.mindmap);
-            } else {
-                showSectionDrawerError(drawer, sectionName, (data && data.error) || "生成失败");
+        return relations;
+    }
+
+    function relationMeta(item) {
+        var relation = RELATIONS[item.edge.type];
+
+        if (relation) {
+            return { label: relation.label, cssClass: item.edge.type };
+        }
+
+        if (item.node.type === "center") {
+            return { label: "所属课程", cssClass: "hierarchy" };
+        }
+
+        if (item.node.type === "chapter") {
+            return { label: "所属章节", cssClass: "hierarchy" };
+        }
+
+        return { label: "知识点", cssClass: "hierarchy" };
+    }
+
+    function buildInspectorBadge(node) {
+        var typeLabel = "知识点";
+
+        if (node.type === "center") {
+            typeLabel = "课程";
+        } else if (node.type === "chapter") {
+            typeLabel = "章节";
+        }
+
+        var badge = '<span class="nxkg-inspector-type">' + typeLabel + "</span>";
+
+        if (node.type !== "center") {
+            var chapter = node.type === "chapter"
+                ? node
+                : getChapterForNode(node, getNodeMap(state.graph.nodes));
+            var rawDifficulty = chapter ? String(state.sectionDifficulty[chapter.id] || "") : "";
+
+            if (rawDifficulty) {
+                var meta = resolveDifficultyMeta(rawDifficulty);
+
+                badge += '<span class="nxkg-difficulty-chip" style="background:' + meta.color + '">' +
+                    meta.label + "</span>";
             }
-        } catch (err) {
-            showSectionDrawerError(drawer, sectionName, err.message || "请求失败");
+        }
+
+        return '<div class="nxkg-inspector-badges">' + badge + "</div>";
+    }
+
+    function renderInspector() {
+        var container = getContainer();
+        var card = container && container.querySelector("[data-nxkg-inspector]");
+
+        if (!card) {
+            return;
+        }
+
+        if (!state.focusedNodeId) {
+            card.hidden = true;
+            card.innerHTML = "";
+            return;
+        }
+
+        var node = state.focusedNodeId === CENTER_NODE_ID
+            ? { id: CENTER_NODE_ID, label: state.graph.course_title, detail: "", type: "center" }
+            : getNodeMap(state.graph.nodes)[state.focusedNodeId];
+
+        if (!node) {
+            card.hidden = true;
+            card.innerHTML = "";
+            return;
+        }
+
+        var relations = getRelations(node.id);
+        var relationsMarkup = relations.length ? relations.map(function (item) {
+            var meta = relationMeta(item);
+
+            return '<button class="nxkg-relation-item" type="button" data-node-focus="' +
+                escapeHtml(item.node.id) + '">' +
+                '<span class="nxkg-relation-type nxkg-relation-type-' + escapeHtml(meta.cssClass) + '">' +
+                escapeHtml(meta.label) + "</span>" +
+                '<span class="nxkg-relation-name">' + escapeHtml(item.node.label || "知识点") + "</span>" +
+                (item.edge.label ? '<span class="nxkg-relation-note">' + escapeHtml(item.edge.label) + "</span>" : "") +
+                "</button>";
+        }).join("") : '<div class="nxkg-relations-empty">暂无直接关联</div>';
+
+        var detail = String(node.detail || "").trim();
+
+        card.innerHTML = '<div class="nxkg-inspector-content">' +
+            '<div class="nxkg-inspector-heading">' +
+            buildInspectorBadge(node) +
+            '<button class="nxkg-inspector-close" type="button" data-action="clear-focus" title="关闭详情" aria-label="关闭详情">' +
+            createIcon("close") + "</button>" +
+            "</div>" +
+            '<h3 class="nxkg-inspector-title">' + escapeHtml(node.label || "知识点") + "</h3>" +
+            (detail ? '<p class="nxkg-inspector-detail">' + escapeHtml(detail) + "</p>" : "") +
+            '<div class="nxkg-relations">' +
+            '<div class="nxkg-relations-title">直接关联</div>' +
+            relationsMarkup +
+            "</div>" +
+            "</div>";
+        card.hidden = false;
+    }
+
+    function focusNode(nodeId) {
+        if (!state.g6Graph) {
+            return;
+        }
+
+        resetSearchState();
+        state.focusedNodeId = nodeId;
+        applyGraphStates();
+        renderInspector();
+        state.g6Graph.focusElement(nodeId, VIEWPORT_ANIMATION);
+    }
+
+    function clearFocus() {
+        if (!state.focusedNodeId) {
+            return;
+        }
+
+        state.focusedNodeId = "";
+        applyGraphStates();
+        renderInspector();
+    }
+
+    function performSearch() {
+        var container = getContainer();
+        var input = container && container.querySelector("[data-search-input]");
+        var hint = container && container.querySelector("[data-search-hint]");
+        var keyword = input ? input.value.trim().toLowerCase() : "";
+
+        if (!keyword) {
+            clearSearch();
+            return;
+        }
+
+        var matches = {};
+        var matchCount = 0;
+
+        state.graph.nodes.forEach(function (node) {
+            if (String(node.label || "").toLowerCase().indexOf(keyword) !== -1) {
+                matches[node.id] = true;
+                matchCount += 1;
+            }
+        });
+
+        state.searchMatchIds = matches;
+
+        // 唯一命中时直接聚焦并平移到该节点
+        if (matchCount === 1) {
+            var matchId = Object.keys(matches)[0];
+
+            state.focusedNodeId = matchId;
+            state.g6Graph.focusElement(matchId, VIEWPORT_ANIMATION);
+        }
+
+        applyGraphStates();
+        renderInspector();
+
+        if (hint) {
+            hint.textContent = matchCount ? matchCount + " 个匹配" : "无匹配结果";
+            hint.classList.toggle("nxkg-search-hint-empty", !matchCount);
         }
     }
 
-    function ensureSectionDrawer() {
-        var drawer = document.getElementById("nxkgSectionDrawer");
-        if (drawer) return drawer;
+    function resetSearchState() {
+        var container = getContainer();
+        var input = container && container.querySelector("[data-search-input]");
+        var hint = container && container.querySelector("[data-search-hint]");
 
-        drawer = document.createElement("aside");
-        drawer.id = "nxkgSectionDrawer";
-        drawer.className = "nxkg-section-drawer";
-        drawer.innerHTML =
-            '<div class="nxkg-section-drawer-head">' +
-            '<div class="nxkg-section-drawer-title"></div>' +
-            '<button class="nxkg-section-drawer-close" type="button" aria-label="关闭">' +
-            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>' +
-            '</button>' +
-            '</div>' +
-            '<div class="nxkg-section-drawer-body"></div>';
-        document.body.appendChild(drawer);
+        state.searchMatchIds = null;
 
-        drawer.querySelector(".nxkg-section-drawer-close").addEventListener("click", function () {
-            drawer.classList.remove("is-open");
-        });
+        if (input) {
+            input.value = "";
+        }
 
-        return drawer;
+        if (hint) {
+            hint.textContent = "";
+            hint.classList.remove("nxkg-search-hint-empty");
+        }
     }
 
-    function showSectionDrawerLoading(drawer, sectionName) {
-        drawer.querySelector(".nxkg-section-drawer-title").textContent = sectionName;
-        drawer.querySelector(".nxkg-section-drawer-body").innerHTML = '<div class="nxkg-loading">正在生成「' + escapeHtml(sectionName) + '」的详细知识点...</div>';
-        drawer.classList.add("is-open");
+    function clearSearch() {
+        // 清空搜索即"恢复全图"：搜索建立的焦点一并清除
+        resetSearchState();
+        state.focusedNodeId = "";
+
+        applyGraphStates();
+        renderInspector();
     }
-
-    function showSectionDrawerError(drawer, sectionName, message) {
-        drawer.querySelector(".nxkg-section-drawer-title").textContent = sectionName;
-        drawer.querySelector(".nxkg-section-drawer-body").innerHTML = '<div class="nxkg-error">生成失败：' + escapeHtml(message) + '</div>';
-        drawer.classList.add("is-open");
-    }
-
-    async function renderSectionDrawer(drawer, lectureId, sectionName, mindmapData) {
-        drawer.querySelector(".nxkg-section-drawer-title").textContent = sectionName;
-        var body = drawer.querySelector(".nxkg-section-drawer-body");
-        body.innerHTML = '<div class="nxkg-loading">渲染中...</div>';
-        drawer.classList.add("is-open");
-
-        var innerContainer = document.createElement("div");
-        innerContainer.className = "nxkg-section-graph";
-        body.innerHTML = "";
-        body.appendChild(innerContainer);
-
-        await renderGraph(innerContainer, mindmapData, lectureId);
-    }
-
-    // ==================== 渲染主流程 ====================
 
     function renderLegend() {
-        return '<div class="nxkg-legend">' +
-            '<div class="nxkg-legend-item"><span class="nxkg-dot nxkg-root"></span>课程主题</div>' +
-            '<div class="nxkg-legend-item"><span class="nxkg-dot nxkg-chapter"></span>章节（点击展开）</div>' +
-            '<div class="nxkg-legend-item"><span class="nxkg-dot nxkg-concept"></span>核心知识点</div>' +
-            '<div class="nxkg-legend-item"><span class="nxkg-dot nxkg-sub"></span>子知识点</div>' +
-            '<div class="nxkg-legend-hint">点击章节展开 · 点击知识点看详情 · 右键可操作</div>' +
-            '</div>';
-    }
+        var container = getContainer();
+        var legend = container && container.querySelector("[data-nxkg-legend]");
 
-    function renderGraphHeader(graphData, isSectionGraph) {
-        var stats = collectGraphStats(graphData);
-        var title = graphData.course_title || graphData.section_title || graphData.lecture_title || "知识导图";
-        var subtitle = isSectionGraph ? "章节知识点展开" : "课程知识结构";
-
-        return '<div class="nxkg-board-head">' +
-            '<div class="nxkg-board-title-wrap">' +
-            '<div class="nxkg-board-kicker">' + escapeHtml(subtitle) + '</div>' +
-            '<h3 class="nxkg-board-title">' + escapeHtml(title) + '</h3>' +
-            '</div>' +
-            '<div class="nxkg-board-stats">' +
-            '<span>章节 ' + stats.chapters + '</span>' +
-            '<span>知识点 ' + stats.concepts + '</span>' +
-            '<span>子知识点 ' + stats.children + '</span>' +
-            '</div>' +
-            '</div>';
-    }
-
-    function renderGraphToolbar() {
-        return '<div class="nxkg-toolbar" aria-label="思维导图视图控制">' +
-            '<button class="nxkg-toolbar-btn" type="button" data-nxkg-view-action="zoom-out" title="缩小" aria-label="缩小">' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg>' +
-            '</button>' +
-            '<span class="nxkg-zoom-value" data-nxkg-zoom-value>100%</span>' +
-            '<button class="nxkg-toolbar-btn" type="button" data-nxkg-view-action="zoom-in" title="放大" aria-label="放大">' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>' +
-            '</button>' +
-            '<button class="nxkg-toolbar-btn" type="button" data-nxkg-view-action="fit" title="适配视图" aria-label="适配视图">' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M16 3h3a2 2 0 0 1 2 2v3"></path><path d="M8 21H5a2 2 0 0 1-2-2v-3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>' +
-            '</button>' +
-            '<button class="nxkg-toolbar-btn" type="button" data-nxkg-view-action="actual" title="100% 居中" aria-label="100% 居中">' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v4"></path><path d="M12 18v4"></path><path d="M2 12h4"></path><path d="M18 12h4"></path></svg>' +
-            '</button>' +
-            '<button class="nxkg-toolbar-btn" type="button" data-nxkg-view-action="toggle-fullscreen" title="全屏查看" aria-label="全屏查看" aria-pressed="false">' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M8 21H3v-5"></path><path d="M16 21h5v-5"></path></svg>' +
-            '</button>' +
-            '</div>';
-    }
-
-    async function renderGraph(container, graphData, lectureId) {
-        if (typeof mermaid === "undefined") {
-            container.innerHTML = '<div class="nxkg-error">Mermaid 库未加载</div>';
+        if (!legend) {
             return;
         }
 
-        if (!mermaidReady) {
-            mermaid.initialize({
-                startOnLoad: false,
-                theme: "base",
-                themeVariables: {
-                    primaryColor: "#f8fafc",
-                    primaryTextColor: "#172033",
-                    primaryBorderColor: "#cbd5e1",
-                    lineColor: "#b7c4d4",
-                    fontSize: "13px",
-                    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-                },
-                flowchart: {
-                    useMaxWidth: false,
-                    htmlLabels: true,
-                    curve: "monotoneX",
-                    rankSpacing: 76,
-                    nodeSpacing: 34,
-                },
-            });
-            mermaidReady = true;
+        var nodeMap = getNodeMap(state.graph.nodes);
+        var hasUnlabeled = false;
+
+        state.graph.nodes.forEach(function (node) {
+            if (nodeKindOf(node) === "chapter") {
+                return;
+            }
+
+            var chapter = getChapterForNode(node, nodeMap);
+            var rawDifficulty = chapter ? String(state.sectionDifficulty[chapter.id] || "") : "";
+
+            if (resolveDifficultyMeta(rawDifficulty) === UNLABELED_META) {
+                hasUnlabeled = true;
+            }
+        });
+
+        function legendItem(color, label) {
+            return '<div class="nxkg-legend-item">' +
+                '<span class="nxkg-legend-dot" style="background:' + color + '"></span>' +
+                label + "</div>";
         }
 
-        container.classList.add("nxkg-container");
+        var html = legendItem(CHAPTER_META.color, CHAPTER_META.label);
 
-        var result = buildMermaidDef(graphData);
-        if (!result || !result.definition) {
-            container.innerHTML = '<div class="nxkg-empty-hint">暂无知识点数据</div>';
-            return;
+        DIFFICULTY_ORDER.forEach(function (key) {
+            html += legendItem(DIFFICULTY_META[key].color, DIFFICULTY_META[key].label);
+        });
+
+        if (hasUnlabeled) {
+            html += legendItem(UNLABELED_META.color, UNLABELED_META.label);
         }
 
-        var graphId = "nxkg_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
-        try {
-            var renderResult = await mermaid.render(graphId, result.definition);
-            var isSectionGraph = container.classList.contains("nxkg-section-graph");
-            container.innerHTML =
-                '<section class="nxkg-board' + (isSectionGraph ? ' nxkg-board-compact' : '') + '">' +
-                renderGraphHeader(graphData, isSectionGraph) +
-                renderGraphToolbar() +
-                '<div class="nxkg-canvas" data-nxkg-canvas>' +
-                '<div class="nxkg-graph-wrapper">' +
-                '<div class="nxkg-graph-stage" data-nxkg-graph-stage>' + renderResult.svg + '</div>' +
-                '</div>' +
-                '</div>' +
-                renderLegend() +
-                '</section>';
-            bindSvgEvents(container, result.nodeMap, lectureId);
-            bindGraphViewport(container);
-        } catch (err) {
-            console.error("Mermaid render error:", err);
-            container.innerHTML = '<div class="nxkg-error">图谱渲染失败：' + escapeHtml(err.message || "未知错误") + '</div>';
-        }
+        legend.innerHTML = html;
     }
-
-    // ==================== 对外 API ====================
 
     /**
-     * 加载课程级思维导图：先读已有，无则显示"生成"按钮。
+     * 课程下拉列表：允许在图谱面板内直接切换课程，
+     * 列表加载失败时隐藏下拉，不影响图谱主体。
      */
-    NXKG.loadCourse = async function (lectureId) {
-        var container = document.getElementById("courseMindmapContainer");
-        if (!container) return;
-        container.classList.add("nxkg-container");
-        document.body.classList.remove("nxkg-board-expanded");
+    async function loadCourseOptions(currentLectureId) {
+        var select = getContainer() && getContainer().querySelector("[data-course-select]");
 
-        // 中断可能进行中的流式请求
+        if (!select) {
+            return;
+        }
+
+        try {
+            var data = await nxlFetch("/api/lectures");
+            var lectures = data && Array.isArray(data.lectures) ? data.lectures : [];
+            var liveSelect = getContainer() && getContainer().querySelector("[data-course-select]");
+
+            if (!liveSelect) {
+                return;
+            }
+
+            liveSelect.innerHTML = lectures.map(function (lecture) {
+                var id = String(lecture.id || "");
+                var title = String(lecture.title || "未命名课程");
+
+                return '<option value="' + escapeHtml(id) + '"' +
+                    (id === currentLectureId ? " selected" : "") + ">" +
+                    escapeHtml(title) + "</option>";
+            }).join("");
+        } catch (_) {
+            select.hidden = true;
+        }
+    }
+
+    function renderBoardShell() {
+        var graph = state.graph;
+        var container = getContainer();
+        var conceptCount = graph.nodes.length;
+        var relationCount = graph.edges.filter(function (edge) {
+            return edge.type !== "hierarchy";
+        }).length;
+
+        container.innerHTML = '<section class="nxkg-board nxkg-board-fullscreen">' +
+            '<header class="nxkg-board-head">' +
+            '<div class="nxkg-board-title-wrap">' +
+            '<div class="nxkg-board-kicker">知识图谱</div>' +
+            '<h2 class="nxkg-board-title">' + escapeHtml(graph.course_title) + "</h2>" +
+            "</div>" +
+            '<div class="nxkg-board-tools">' +
+            '<select class="nxkg-course-select" data-course-select="true" aria-label="切换课程"></select>' +
+            '<div class="nxkg-search-wrap">' +
+            '<input class="nxkg-search-input" data-search-input="true" type="search" placeholder="搜索知识点..." aria-label="搜索知识点">' +
+            '<button class="nxkg-search-btn" type="button" data-action="search">搜索</button>' +
+            "</div>" +
+            '<span class="nxkg-search-hint" data-search-hint="true"></span>' +
+            "</div>" +
+            '<div class="nxkg-board-stats"><span>' + conceptCount + " 个知识点</span><span>" +
+            relationCount + " 条关系</span></div>" +
+            '<div class="nxkg-board-controls">' +
+            '<button class="nxkg-toolbar-btn" type="button" data-action="fit-view" title="重置视图" aria-label="重置视图">' + createIcon("reset") + "</button>" +
+            '<button class="nxkg-toolbar-btn" type="button" data-action="zoom-out" title="缩小" aria-label="缩小">' + createIcon("minus") + "</button>" +
+            '<button class="nxkg-toolbar-btn" type="button" data-action="zoom-in" title="放大" aria-label="放大">' + createIcon("plus") + "</button>" +
+            '<button class="nxkg-toolbar-btn" type="button" data-action="close-graph" title="关闭" aria-label="关闭">' + createIcon("close") + "</button>" +
+            "</div>" +
+            "</header>" +
+            '<div class="nxkg-workspace">' +
+            '<div class="nxkg-canvas">' +
+            '<div class="nxkg-g6-mount" data-nxkg-canvas="true" aria-label="课程知识图谱"></div>' +
+            '<div class="nxkg-legend" data-nxkg-legend="true"></div>' +
+            '<aside class="nxkg-inspector-card" data-nxkg-inspector="true" hidden></aside>' +
+            "</div>" +
+            "</div>" +
+            "</section>";
+
+        bindBoardControls(container);
+    }
+
+    function bindBoardControls(container) {
+        container.addEventListener("click", function (event) {
+            var button = event.target.closest("[data-action], [data-node-focus]");
+
+            if (!button) {
+                return;
+            }
+
+            var focusId = button.getAttribute("data-node-focus");
+
+            if (focusId) {
+                focusNode(focusId);
+                return;
+            }
+
+            var action = button.getAttribute("data-action");
+
+            if (action === "zoom-in") {
+                zoomByFactor(1.12);
+            } else if (action === "zoom-out") {
+                zoomByFactor(0.9);
+            } else if (action === "fit-view") {
+                fitView();
+            } else if (action === "clear-focus") {
+                clearFocus();
+            } else if (action === "close-graph") {
+                closeGraph();
+            } else if (action === "search") {
+                performSearch();
+            } else if (action === "generate-mindmap") {
+                var lectureId = button.getAttribute("data-lecture-id");
+
+                if (lectureId) {
+                    NXKG.generateCourseStream(lectureId);
+                }
+            }
+        });
+
+        var courseSelect = container.querySelector("[data-course-select]");
+
+        if (courseSelect) {
+            courseSelect.addEventListener("change", function () {
+                if (courseSelect.value) {
+                    NXKG.loadCourse(courseSelect.value);
+                }
+            });
+        }
+
+        var searchInput = container.querySelector("[data-search-input]");
+
+        if (searchInput) {
+            searchInput.addEventListener("keydown", function (event) {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    performSearch();
+                }
+            });
+
+            // 清空输入框立即恢复全图显示
+            searchInput.addEventListener("input", function () {
+                if (!searchInput.value.trim()) {
+                    clearSearch();
+                }
+            });
+        }
+    }
+
+    function closeGraph() {
+        var container = getContainer();
+
+        NXKG.reset();
+
+        if (container) {
+            container.classList.remove("nxkg-container");
+            container.innerHTML = "";
+        }
+    }
+
+    function renderGraph(mindmap, lectureId, sectionDifficulty) {
+        state.graph = normalizeGraph(mindmap);
+        state.lectureId = lectureId || "";
+        state.sectionDifficulty = sectionDifficulty || {};
+        state.focusedNodeId = "";
+        state.searchMatchIds = null;
+
+        if (!state.graph.nodes.length) {
+            showGenerateEntry(lectureId);
+            return;
+        }
+
+        destroyG6Graph();
+        renderBoardShell();
+        void createG6Graph(buildG6Data(state.graph, state.sectionDifficulty));
+        renderLegend();
+        loadCourseOptions(state.lectureId);
+    }
+
+    function showGenerateEntry(lectureId) {
+        var container = getContainer();
+
+        container.innerHTML = '<div class="nxkg-empty">' +
+            '<div class="nxkg-empty-text">尚未生成课程知识图谱</div>' +
+            '<button class="nxkg-generate-btn" type="button" data-action="generate-mindmap" data-lecture-id="' +
+            escapeHtml(lectureId) + '">生成知识图谱</button>' +
+            "</div>";
+        bindBoardControls(container);
+    }
+
+    function showGeneratingState() {
+        var container = getContainer();
+
+        container.innerHTML = '<div class="nxkg-generating">' +
+            '<section class="nxkg-generating-panel">' +
+            '<div class="nxkg-generating-head">正在生成知识图谱...</div>' +
+            '<div class="nxkg-generating-lines" aria-live="polite"></div>' +
+            "</section>" +
+            '<section class="nxkg-generating-preview">' +
+            '<div class="nxkg-generating-preview-head">流式草稿</div>' +
+            '<pre class="nxkg-generating-draft"></pre>' +
+            "</section>" +
+            "</div>";
+    }
+
+    function installEscapeHandler() {
+        if (state.keydownHandler) {
+            document.removeEventListener("keydown", state.keydownHandler);
+        }
+
+        state.keydownHandler = function (event) {
+            if (event.key !== "Escape") {
+                return;
+            }
+
+            clearSearch();
+            clearFocus();
+        };
+        document.addEventListener("keydown", state.keydownHandler);
+    }
+
+    var NXKG = {};
+
+    NXKG.loadCourse = async function (lectureId) {
+        var container = getContainer();
+
+        if (!container) {
+            return;
+        }
+
         NXKG.abortStream();
+        container.classList.add("nxkg-container");
 
         var safeLectureId = String(lectureId || "").trim();
+
         if (!safeLectureId) {
             container.innerHTML = '<div class="nxkg-empty">暂无课程</div>';
             return;
         }
 
-        container.innerHTML = '<div class="nxkg-loading">正在加载思维导图...</div>';
+        container.innerHTML = '<div class="nxkg-loading">正在加载知识图谱...</div>';
 
         try {
             var data = await nxlFetch("/api/frontend/mindmap/" + encodeURIComponent(safeLectureId));
+
             if (data && data.success && data.mindmap) {
-                currentGraph = data.mindmap;
-                container.innerHTML = "";
-                await renderGraph(container, data.mindmap, safeLectureId);
+                renderGraph(data.mindmap, safeLectureId, data.section_difficulty);
+                installEscapeHandler();
             } else {
-                showGenerateEntry(container, safeLectureId);
+                showGenerateEntry(safeLectureId);
             }
-        } catch (err) {
-            // 404 表示尚未生成
-            showGenerateEntry(container, safeLectureId);
+        } catch (_) {
+            showGenerateEntry(safeLectureId);
         }
     };
 
-    function showGenerateEntry(container, lectureId) {
-        container.innerHTML =
-            '<div class="nxkg-empty">' +
-            '<div class="nxkg-empty-text">尚未生成课程思维导图</div>' +
-            '<div class="nxkg-empty-sub">基于课程大纲自动梳理知识脉络，点击下方按钮生成</div>' +
-            '<button class="nxkg-generate-btn" data-action="generate-mindmap" data-lecture-id="' + escapeHtml(lectureId) + '" type="button">生成思维导图</button>' +
-            '</div>';
-    }
-
-    /**
-     * 通过 SSE 流式生成课程级思维导图，实时显示模型活动。
-     */
     NXKG.generateCourseStream = function (lectureId, onDone, onError) {
-        var container = document.getElementById("courseMindmapContainer");
-        if (!container) return;
-        container.classList.add("nxkg-container");
-        document.body.classList.remove("nxkg-board-expanded");
-
+        var container = getContainer();
         var safeLectureId = String(lectureId || "").trim();
-        if (!safeLectureId) return;
 
-        // 中断旧的流式请求
-        NXKG.abortStream();
+        if (!container || !safeLectureId || state.eventSource) {
+            return;
+        }
+
+        showGeneratingState();
 
         var lines = [];
         var draft = "";
+        var linesElement = container.querySelector(".nxkg-generating-lines");
+        var draftElement = container.querySelector(".nxkg-generating-draft");
+        var eventSource = new EventSource(
+            "/api/frontend/mindmap/" + encodeURIComponent(safeLectureId) + "/generate-stream"
+        );
 
-        container.innerHTML =
-            '<div class="nxkg-generating">' +
-            '<section class="nxkg-generating-panel">' +
-            '<div class="nxkg-generating-head">正在生成思维导图...</div>' +
-            '<div class="nxkg-generating-sub">模型正在梳理课程大纲、章节关系和知识点层级</div>' +
-            '<div class="nxkg-generating-lines" aria-live="polite"></div>' +
-            '</section>' +
-            '<section class="nxkg-generating-preview">' +
-            '<div class="nxkg-generating-preview-head">' +
-            '<span>流式草稿</span>' +
-            '<span>实时更新</span>' +
-            '</div>' +
-            '<pre class="nxkg-generating-draft"></pre>' +
-            '</section>' +
-            '</div>';
+        state.eventSource = eventSource;
 
-        var linesEl = container.querySelector(".nxkg-generating-lines");
-        var draftEl = container.querySelector(".nxkg-generating-draft");
+        function pushLine(message) {
+            lines.push(message);
 
-        var url = "/api/frontend/mindmap/" + encodeURIComponent(safeLectureId) + "/generate-stream";
-        var es = new EventSource(url);
-        currentEventSource = es;
+            if (lines.length > 20) {
+                lines.shift();
+            }
 
-        function pushLine(text) {
-            lines.push(text);
-            if (lines.length > 20) lines.shift();
-            if (linesEl) {
-                linesEl.innerHTML = lines.map(function (l) {
-                    return '<div class="nxkg-generating-line">' + escapeHtml(l) + '</div>';
+            if (linesElement) {
+                linesElement.innerHTML = lines.map(function (line) {
+                    return '<div class="nxkg-generating-line">' + escapeHtml(line) + "</div>";
                 }).join("");
             }
         }
 
-        function appendDraft(text) {
-            draft += text;
-            if (draftEl) {
-                draftEl.textContent = draft.slice(-4000);
+        function fail(message) {
+            NXKG.abortStream();
+            container.innerHTML = '<div class="nxkg-error">生成失败：' + escapeHtml(message) + "</div>";
+
+            if (typeof onError === "function") {
+                onError(message);
             }
         }
 
-        es.addEventListener("status", function (e) {
+        eventSource.addEventListener("status", function (event) {
             try {
-                var p = JSON.parse(e.data || "{}");
-                if (p && p.message) pushLine(p.message);
-            } catch (_) {}
-        });
+                var payload = JSON.parse(event.data || "{}");
 
-        es.addEventListener("delta", function (e) {
-            try {
-                var p = JSON.parse(e.data || "{}");
-                if (p && p.content) appendDraft(p.content);
-            } catch (_) {}
-        });
-
-        es.addEventListener("done", function (e) {
-            NXKG.abortStream();
-            try {
-                var p = JSON.parse(e.data || "{}");
-                if (p && p.success && p.mindmap) {
-                    currentGraph = p.mindmap;
-                    container.innerHTML = "";
-                    renderGraph(container, p.mindmap, safeLectureId);
-                    if (typeof onDone === "function") onDone(p.mindmap);
-                } else {
-                    container.innerHTML = '<div class="nxkg-error">生成失败：' + escapeHtml((p && p.error) || "未知错误") + '</div>';
-                    if (typeof onError === "function") onError((p && p.error) || "未知错误");
+                if (payload.message) {
+                    pushLine(payload.message);
                 }
-            } catch (err) {
-                container.innerHTML = '<div class="nxkg-error">生成失败：' + escapeHtml(err.message) + '</div>';
-                if (typeof onError === "function") onError(err.message);
+            } catch (_) {}
+        });
+
+        eventSource.addEventListener("ping", function (event) {
+            try {
+                var payload = JSON.parse(event.data || "{}");
+
+                if (payload.message) {
+                    pushLine(payload.message);
+                }
+            } catch (_) {}
+        });
+
+        eventSource.addEventListener("delta", function (event) {
+            try {
+                var payload = JSON.parse(event.data || "{}");
+
+                if (!payload.content) {
+                    return;
+                }
+
+                draft += payload.content;
+
+                if (draftElement) {
+                    draftElement.textContent = draft.slice(-4000);
+                }
+            } catch (_) {}
+        });
+
+        eventSource.addEventListener("done", function (event) {
+            try {
+                var payload = JSON.parse(event.data || "{}");
+
+                if (!payload.success || !payload.mindmap) {
+                    throw new Error(payload.error || "知识图谱生成失败");
+                }
+
+                NXKG.abortStream();
+                renderGraph(payload.mindmap, safeLectureId, payload.section_difficulty);
+                installEscapeHandler();
+
+                if (typeof onDone === "function") {
+                    onDone(payload.mindmap);
+                }
+            } catch (error) {
+                fail(error.message);
             }
         });
 
-        es.addEventListener("error", function (e) {
-            // EventSource 在连接关闭时也会触发 error，只在还有数据流时当作真错误
-            if (es.readyState === EventSource.CLOSED) return;
-            NXKG.abortStream();
-            container.innerHTML = '<div class="nxkg-error">生成连接中断</div>';
-            if (typeof onError === "function") onError("连接中断");
+        eventSource.addEventListener("error", function (event) {
+            if (eventSource.readyState === EventSource.CLOSED) {
+                return;
+            }
+
+            var message = "生成连接中断";
+
+            try {
+                var payload = JSON.parse((event && event.data) || "{}");
+
+                message = String(payload.error || message);
+            } catch (_) {}
+
+            fail(message);
         });
 
         pushLine("已建立生成连接，等待模型输出...");
     };
 
     NXKG.abortStream = function () {
-        if (currentEventSource) {
-            try { currentEventSource.close(); } catch (_) {}
-            currentEventSource = null;
+        if (!state.eventSource) {
+            return;
         }
+
+        state.eventSource.close();
+        state.eventSource = null;
     };
 
     NXKG.reset = function () {
-        currentGraph = null;
         NXKG.abortStream();
-        hideContextMenu();
-        var drawer = document.getElementById("nxkgSectionDrawer");
-        if (drawer) drawer.classList.remove("is-open");
+        destroyG6Graph();
+
+        if (state.keydownHandler) {
+            document.removeEventListener("keydown", state.keydownHandler);
+        }
+
+        state.graph = null;
+        state.lectureId = "";
+        state.sectionDifficulty = {};
+        state.focusedNodeId = "";
+        state.searchMatchIds = null;
+        state.keydownHandler = null;
     };
 
-    document.addEventListener("click", function () {
-        hideContextMenu();
-    });
-
     window.NXKG = NXKG;
-})();
+    window.NexoraKnowledgeGraph = NXKG;
+}());
