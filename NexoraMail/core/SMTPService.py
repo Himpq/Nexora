@@ -479,11 +479,15 @@ def handle_rcpt_to(conn, cmds, state: SessionState, userGroup) -> None:
                 except Exception:
                     is_local_peer = False
 
-                if not (state.authenticated or state.using_tls or is_local_peer):
+                # TLS only protects the transport; it never establishes a relay identity.
+                if not (state.authenticated or is_local_peer):
                     raise ErrorService.SMTPAuthError(
                         "530",
                         "5.7.0 Authentication required for relay",
-                        log_message=f"RCPT TO rejected: relay not allowed for unauthenticated client {peer_ip}")
+                        log_message=(
+                            f"RCPT TO rejected: relay not allowed for unauthenticated client {peer_ip} "
+                            f"(tls={state.using_tls}, authenticated={state.authenticated})"
+                        ))
 
                 mail_relay_mode = 'relay'
                 state.log(f"RCPT TO: Relay allowed for {domain}, domains: {userGroup.getDomains()}")
