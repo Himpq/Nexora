@@ -145,12 +145,23 @@
     color: var(--muted);
 }
 
+.service-last-operational {
+    margin: 10px 0 0;
+    color: rgba(247, 247, 242, 0.64);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 .availability-bars {
     display: grid;
     grid-template-columns: repeat(60, minmax(3px, 1fr));
     gap: 4px;
     height: 42px;
     margin-top: 18px;
+}
+
+.service-last-operational + .availability-bars {
+    margin-top: 12px;
 }
 
 .availability-bar {

@@ -49,6 +49,7 @@
             status: normalizeStatus(source.status),
             uptime24h: source.uptime24h,
             latencyMs: source.latencyMs,
+            lastOperationalAt: String(source.lastOperationalAt || ""),
             samples: Array.isArray(source.recentSamples) ? source.recentSamples.slice(-SAMPLE_COUNT) : []
         };
     }
@@ -141,6 +142,14 @@
             metrics.appendChild(createElement("span", `service-state is-${service.status}`, STATUS_LABELS[service.status]));
             header.appendChild(metrics);
             row.appendChild(header);
+
+            if (service.status === "degraded" || service.status === "outage") {
+                const lastOperationalText = service.lastOperationalAt
+                    ? `最后正常检查：${service.lastOperationalAt}`
+                    : "尚无正常检查记录";
+                row.appendChild(createElement("p", "service-last-operational", lastOperationalText));
+            }
+
             row.appendChild(createBars(service.samples));
             row.appendChild(createTimeline(service.uptime24h));
             root.appendChild(row);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
+from math import isfinite
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from datastorage import get_path_lock, safe_read_json, safe_write_json
@@ -82,7 +83,15 @@ class ServiceStatusMonitor:
                     "at": checked_at,
                     "status": current["status"],
                 })
+                last_operational_at = self._last_operational_timestamp(
+                    service_history,
+                    samples,
+                    checked_at,
+                )
                 service_history["samples"] = self._trim_samples(samples, checked_at)
+
+                if last_operational_at is not None:
+                    service_history["lastOperationalAt"] = last_operational_at
 
                 if previous_status != current["status"]:
                     print(
@@ -196,6 +205,11 @@ class ServiceStatusMonitor:
         for current in current_rows:
             service_history = self._mapping(history_services.get(str(current["id"])))
             samples = self._trim_samples(service_history.get("samples", []), checked_at)
+            last_operational_at = self._last_operational_timestamp(
+                service_history,
+                samples,
+                checked_at,
+            )
             history24h = self._history_cells(samples, checked_at)
             known_samples = [sample for sample in samples if str(sample.get("status") or "") != "unknown"]
             operational_samples = [sample for sample in known_samples if sample.get("status") == "operational"]
@@ -210,6 +224,11 @@ class ServiceStatusMonitor:
                 "history24h": history24h,
                 "recentSamples": self._recent_samples(samples),
                 "sampleCount24h": len(known_samples),
+                "lastOperationalAt": (
+                    self._format_timestamp(last_operational_at)
+                    if last_operational_at is not None
+                    else ""
+                ),
             })
 
         return {
@@ -311,6 +330,40 @@ class ServiceStatusMonitor:
                 return cls._normalize_status(sample.get("status"))
 
         return ""
+
+    @classmethod
+    def _last_operational_timestamp(
+        cls,
+        service_history: Mapping[str, Any],
+        raw_samples: Any,
+        checked_at: float,
+    ) -> float | None:
+        """Keep the latest successful check independently from rolling sample retention."""
+        candidates = []
+        stored_at = service_history.get("lastOperationalAt")
+
+        try:
+            stored_timestamp = float(stored_at)
+        except (TypeError, ValueError):
+            stored_timestamp = 0.0
+
+        if isfinite(stored_timestamp) and 0 < stored_timestamp <= checked_at:
+            candidates.append(stored_timestamp)
+
+        if isinstance(raw_samples, list):
+            for sample in raw_samples:
+                if not isinstance(sample, dict) or cls._normalize_status(sample.get("status")) != "operational":
+                    continue
+
+                try:
+                    sampled_at = float(sample.get("at"))
+                except (TypeError, ValueError):
+                    continue
+
+                if isfinite(sampled_at) and 0 < sampled_at <= checked_at:
+                    candidates.append(sampled_at)
+
+        return max(candidates) if candidates else None
 
     @staticmethod
     def _normalize_status(value: Any) -> str:
