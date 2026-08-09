@@ -2298,6 +2298,14 @@
                         return false;
                     }
 
+                    // snapshot 内容与本地一致时跳过全量替换，
+                    // 避免复用编辑器残留的旧滚动快照把新文档拉到底部
+                    if (meta.source === 'snapshot' && String(liveEditor.value() || '') === String(value || '')) {
+                        setCurrentVersion({ title: safeTitle }, String(value || ''));
+
+                        return true;
+                    }
+
                     const snapshot = captureEditorViewportSnapshot();
                     state.collabApplyingRemote = true;
 

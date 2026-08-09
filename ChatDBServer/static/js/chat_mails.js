@@ -83,8 +83,8 @@ let mailViewState = {
     status: null,
     mails: [],
     selectedId: '',
+    selectedIds: [],
     query: '',
-    sidebarCollapsed: false,
     restorePositionOnce: false,
     mode: 'inbox',
     currentMail: null,
@@ -98,7 +98,6 @@ let mailViewState = {
 };
 let mailEntryAvailable = false;
 let mailEntryVisibilityPromise = null;
-const MAIL_SIDEBAR_COLLAPSED_KEY = 'nexora_mail_sidebar_collapsed';
 const MAIL_SELECTED_ID_KEY = 'nexora_mail_selected_id';
 const MAIL_LIST_SCROLL_KEY = 'nexora_mail_list_scroll';
 const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
@@ -111,25 +110,6 @@ let mailNotifyState = {
     newCount: 0,
     initialized: false
 };
-
-function loadMailSidebarCollapsedState() {
-    try {
-        const v = localStorage.getItem(MAIL_SIDEBAR_COLLAPSED_KEY);
-        if (v === '1' || v === 'true') return true;
-        if (v === '0' || v === 'false') return false;
-    } catch (e) {
-        // ignore
-    }
-    return false;
-}
-
-function saveMailSidebarCollapsedState(collapsed) {
-    try {
-        localStorage.setItem(MAIL_SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
-    } catch (e) {
-        // ignore
-    }
-}
 
 function getCurrentUrlParams() {
     return new URLSearchParams(window.location.search || '');
@@ -191,11 +171,10 @@ function isMailMobileLayout() {
 }
 
 
-function setMailMobileDetailMode(showDetail) {
+function setMailDetailOpen(showDetail) {
     const workspace = document.getElementById('mailWorkspace');
     if (!workspace) return;
-    if (isMailMobileLayout() && !!showDetail) workspace.classList.add('mail-mobile-detail');
-    else workspace.classList.remove('mail-mobile-detail');
+    workspace.classList.toggle('mail-detail-open', !!showDetail);
 }
 
 function loadMailLastOpenTs() {
@@ -576,11 +555,7 @@ async function openMailPlaceholderView() {
     }
 
     runtime.resetKnowledgeViewRuntimeState();
-    if (isMailMobileLayout()) {
-        mailViewState.sidebarCollapsed = false;
-        saveMailSidebarCollapsedState(false);
-    }
-    setMailViewUrl(mailViewState.selectedId || '');
+    setMailViewUrl(getMailIdFromUrl() || '');
     if (mailViewState.folder === 'sent') {
         refreshMailNotifyBadgeFromServer();
     } else {
@@ -605,42 +580,44 @@ async function openMailPlaceholderView() {
     runtime.applyDesktopHeaderTools(headerRight);
 
     viewer.innerHTML = `
-        <div class="mail-workspace ${mailViewState.sidebarCollapsed ? 'mail-sidebar-collapsed' : ''}" id="mailWorkspace">
-            <aside class="mail-sidebar">
-                <div class="mail-sidebar-head">
-                    <button class="mail-sidebar-toggle-btn" type="button" data-mail-action="toggle-sidebar" title="${mailViewState.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}">
-                        <i class="fa-solid ${mailViewState.sidebarCollapsed ? 'fa-angles-right' : 'fa-angles-left'}"></i>
-                    </button>
-                </div>
-                <button class="btn-primary mail-compose-btn" type="button" title="写邮件" data-mail-action="compose">
-                    <i class="fa-solid fa-pen-to-square"></i>
-                    <span>写邮件</span>
-                </button>
-                <div class="mail-folder-section">
-                    <div class="mail-folder-title">邮箱分组</div>
-                    <button class="mail-folder-item ${mailViewState.folder === 'all' ? 'active' : ''}" type="button" id="mailFolderInboxBtn" data-mail-action="set-folder" data-mail-folder="all">
-                        <i class="fa-solid fa-inbox"></i>
-                        <span>收件箱</span>
-                        <span class="mail-folder-badge" id="mailInboxCountBadge">0</span>
-                    </button>
-                    <button class="mail-folder-item ${mailViewState.folder === 'unread' ? 'active' : ''}" type="button" id="mailFolderUnreadBtn" data-mail-action="set-folder" data-mail-folder="unread">
-                        <i class="fa-regular fa-envelope"></i>
-                        <span>未读</span>
-                        <span class="mail-folder-badge alert" id="mailUnreadCountBadge">0</span>
-                    </button>
-                    <button class="mail-folder-item ${mailViewState.folder === 'sent' ? 'active' : ''}" type="button" id="mailFolderSentBtn" data-mail-action="set-folder" data-mail-folder="sent">
-                        <i class="fa-regular fa-paper-plane"></i>
-                        <span>发件箱</span>
-                        <span class="mail-folder-badge" id="mailSentCountBadge">0</span>
-                    </button>
-                </div>
-            </aside>
+        <div class="mail-workspace" id="mailWorkspace">
             <section class="mail-list-panel">
                 <div class="mail-list-toolbar">
-                    <div class="mail-toolbar-title" id="mailToolbarTitle">收件箱</div>
-                    <div class="mail-list-search">
-                        <i class="fa-solid fa-magnifying-glass"></i>
-                        <input id="mailSearchInput" type="text" placeholder="搜索邮件主题 / 发件人">
+                    <div class="mail-list-toolbar-row">
+                        <button class="btn-primary mail-compose-btn" type="button" title="写邮件" data-mail-action="compose">
+                            <i class="fa-solid fa-pen-to-square"></i>
+                            <span>写邮件</span>
+                        </button>
+                        <div class="mail-folder-tabs" role="tablist">
+                            <button class="mail-folder-item ${mailViewState.folder === 'all' ? 'active' : ''}" type="button" id="mailFolderInboxBtn" data-mail-action="set-folder" data-mail-folder="all">
+                                <i class="fa-solid fa-inbox"></i>
+                                <span>收件箱</span>
+                                <span class="mail-folder-badge" id="mailInboxCountBadge">0</span>
+                            </button>
+                            <button class="mail-folder-item ${mailViewState.folder === 'unread' ? 'active' : ''}" type="button" id="mailFolderUnreadBtn" data-mail-action="set-folder" data-mail-folder="unread">
+                                <i class="fa-regular fa-envelope"></i>
+                                <span>未读</span>
+                                <span class="mail-folder-badge alert" id="mailUnreadCountBadge">0</span>
+                            </button>
+                            <button class="mail-folder-item ${mailViewState.folder === 'sent' ? 'active' : ''}" type="button" id="mailFolderSentBtn" data-mail-action="set-folder" data-mail-folder="sent">
+                                <i class="fa-regular fa-paper-plane"></i>
+                                <span>发件箱</span>
+                                <span class="mail-folder-badge" id="mailSentCountBadge">0</span>
+                            </button>
+                        </div>
+                        <div class="mail-list-search">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input id="mailSearchInput" type="text" placeholder="搜索邮件主题 / 发件人">
+                        </div>
+                    </div>
+                    <div class="mail-batch-toolbar" id="mailBatchToolbar">
+                        <span class="mail-batch-count" id="mailBatchCount">已选 0 封</span>
+                        <button class="mail-icon-btn" type="button" title="标记已读" data-mail-action="batch-mark-read" disabled>
+                            <i class="fa-regular fa-envelope-open"></i>
+                        </button>
+                        <button class="mail-icon-btn danger" type="button" title="删除选中" data-mail-action="batch-delete" disabled>
+                            <i class="fa-regular fa-trash-can"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="mail-list-body" id="mailListBody"></div>
@@ -649,7 +626,7 @@ async function openMailPlaceholderView() {
                 <div class="mail-detail-head">
                     <div class="mail-detail-head-row">
                         <div class="mail-detail-head-left">
-                            <button class="mail-mobile-back-btn" type="button" title="返回邮件列表" data-mail-action="back-mobile">
+                            <button class="mail-back-btn" type="button" title="返回邮件列表" data-mail-action="back-mobile">
                                 <i class="fa-solid fa-arrow-left"></i>
                             </button>
                             <h3 id="mailDetailTitle">邮件详情</h3>
@@ -667,7 +644,7 @@ async function openMailPlaceholderView() {
             </section>
         </div>
     `;
-    setMailMobileDetailMode(false);
+    setMailDetailOpen(false);
     initMailWorkspace();
     runtime.syncTurnIndicatorVisibility();
 };
@@ -680,32 +657,22 @@ function formatMailTime(ts) {
     return d.toLocaleString();
 }
 
-function getMailDateGroupKey(ts) {
+function formatMailListTime(ts) {
     const n = Number(ts || 0);
-    if (!n) return 'unknown';
+    if (!n) return '-';
     const d = new Date(n * 1000);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-}
-
-function getMailDateGroupLabel(groupKey) {
-    if (!groupKey || groupKey === 'unknown') return '未知日期';
-    const today = new Date();
-    const ty = today.getFullYear();
-    const tm = String(today.getMonth() + 1).padStart(2, '0');
-    const td = String(today.getDate()).padStart(2, '0');
-    const todayKey = `${ty}-${tm}-${td}`;
-    if (groupKey === todayKey) return '今天';
-    const yest = new Date(today);
-    yest.setDate(today.getDate() - 1);
-    const yy = yest.getFullYear();
-    const ym = String(yest.getMonth() + 1).padStart(2, '0');
-    const yd = String(yest.getDate()).padStart(2, '0');
-    const yestKey = `${yy}-${ym}-${yd}`;
-    if (groupKey === yestKey) return '昨天';
-    return groupKey;
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear()
+        && d.getMonth() === now.getMonth()
+        && d.getDate() === now.getDate();
+    if (sameDay) {
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+    }
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${mm}-${dd}`;
 }
 
 function parseRawMail(raw) {
@@ -771,13 +738,6 @@ function htmlToText(html) {
     return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim();
 }
 
-function extractMailSnippet(rawLike) {
-    const parsed = parseRawMail(rawLike);
-    const plain = parsed.isHtml ? htmlToText(parsed.body) : String(parsed.body || '').replace(/\s+/g, ' ').trim();
-    if (!plain) return '';
-    return plain.length > 110 ? `${plain.slice(0, 110)}...` : plain;
-}
-
 function getMailPlainTextForQuote(mail) {
     const m = mail || {};
     const text = decodeUnicodeEscapes(String(m.content_text || '')).trim();
@@ -840,12 +800,6 @@ function getVisibleMailsByFolder() {
     return all;
 }
 
-function getMailFolderTitle() {
-    if (mailViewState.folder === 'unread') return '未读邮件';
-    if (mailViewState.folder === 'sent') return '发件箱';
-    return '收件箱';
-}
-
 function updateMailFolderUiState() {
     const inboxBtn = document.getElementById('mailFolderInboxBtn');
     const unreadBtn = document.getElementById('mailFolderUnreadBtn');
@@ -853,8 +807,6 @@ function updateMailFolderUiState() {
     if (inboxBtn) inboxBtn.classList.toggle('active', mailViewState.folder === 'all');
     if (unreadBtn) unreadBtn.classList.toggle('active', mailViewState.folder === 'unread');
     if (sentBtn) sentBtn.classList.toggle('active', mailViewState.folder === 'sent');
-    const titleEl = document.getElementById('mailToolbarTitle');
-    if (titleEl) titleEl.textContent = getMailFolderTitle();
 }
 
 function updateMailItemInState(item) {
@@ -1009,6 +961,12 @@ function renderMailComposeForm(preset = {}) {
     `;
 }
 
+function renderMailListMessage(text) {
+    const listEl = document.getElementById('mailListBody');
+    if (!listEl) return;
+    listEl.innerHTML = `<div class="mail-empty-state">${escapeHtml(text || '')}</div>`;
+}
+
 function renderMailList() {
     const listEl = document.getElementById('mailListBody');
     const inboxBadgeEl = document.getElementById('mailInboxCountBadge');
@@ -1042,53 +1000,35 @@ function renderMailList() {
             : (mailViewState.folder === 'sent' ? '暂无发件记录' : '暂无邮件');
         listEl.innerHTML = `<div class="mail-empty-state">${emptyText}</div>`;
         saveMailListScroll(0);
+        updateMailBatchToolbar();
         return;
     }
 
-    const grouped = {};
-    const groupOrder = [];
-    for (const m of visibleMails) {
-        const key = getMailDateGroupKey(m.timestamp);
-        if (!grouped[key]) {
-            grouped[key] = [];
-            groupOrder.push(key);
-        }
-        grouped[key].push(m);
-    }
-
-    const renderSection = (groupKey, sectionMails) => {
-        const title = getMailDateGroupLabel(groupKey);
-        const sectionItems = sectionMails.map((m) => {
-            const id = String(m.id || '');
-            const eid = encodeURIComponent(id);
-            const active = id === mailViewState.selectedId ? 'active' : '';
-            const sender = m.sender || '-';
-            const recipient = m.recipient || '-';
-            const roleLabel = mailViewState.folder === 'sent' ? '收件人' : '来自';
-            const roleValue = mailViewState.folder === 'sent' ? recipient : sender;
-            const subject = m.subject || '(No Subject)';
-            const snippet = extractMailSnippet(m.preview_text || m.preview || '');
-            const unreadDot = (mailViewState.folder === 'sent' || m.is_read) ? '' : '<span class="mail-unread-dot" title="未读"></span>';
-            return `
-                <div class="mail-list-item ${active}" data-mail-action="select-mail" data-mail-eid="${eid}">
-                    <div class="mail-list-top">
-                        <span class="mail-subject-row">${unreadDot}<span class="mail-subject">${escapeHtml(subject)}</span></span>
-                        <span class="mail-time">${escapeHtml(formatMailTime(m.timestamp))}</span>
-                    </div>
-                    <div class="mail-sender">${escapeHtml(roleLabel)}: ${escapeHtml(roleValue)}</div>
-                    <div class="mail-snippet">${escapeHtml(snippet)}</div>
-                </div>
-            `;
-        }).join('');
+    const renderItem = (m) => {
+        const id = String(m.id || '');
+        const eid = encodeURIComponent(id);
+        const active = id === mailViewState.selectedId ? 'active' : '';
+        const checked = mailViewState.selectedIds.includes(id) ? 'checked' : '';
+        const sender = m.sender || '-';
+        const recipient = m.recipient || '-';
+        const roleValue = mailViewState.folder === 'sent' ? recipient : sender;
+        const subject = m.subject || '(No Subject)';
+        const unreadDot = (mailViewState.folder === 'sent' || m.is_read) ? '' : '<span class="mail-unread-dot" title="未读"></span>';
         return `
-            <div class="mail-list-section">
-                <div class="mail-list-section-title">${escapeHtml(title)} <span class="mail-list-section-count">${sectionMails.length}</span></div>
-                ${sectionItems}
+            <div class="mail-list-item ${active}" data-mail-action="select-mail" data-mail-eid="${eid}">
+                <span class="mail-checkbox-wrap">
+                    <input class="mail-checkbox" type="checkbox" data-mail-action="toggle-select" data-mail-eid="${eid}" ${checked}>
+                </span>
+                <span class="mail-list-sender">${escapeHtml(roleValue)}</span>
+                <span class="mail-subject-row">${unreadDot}<span class="mail-subject">${escapeHtml(subject)}</span></span>
+                <span class="mail-time">${escapeHtml(formatMailListTime(m.timestamp))}</span>
             </div>
         `;
     };
 
-    listEl.innerHTML = groupOrder.map((k) => renderSection(k, grouped[k])).join('');
+    listEl.innerHTML = visibleMails.map(renderItem).join('');
+
+    updateMailBatchToolbar();
 
     if (mailViewState.restorePositionOnce) {
         const savedId = String(mailViewState.selectedId || '');
@@ -1147,16 +1087,15 @@ async function loadMailInbox(query = '', options = {}) {
             mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
         }
         saveMailSelectedId(mailViewState.selectedId);
-        if (isMailViewActiveInDom()) {
+        renderMailList();
+        const openDetailAllowed = !!getMailIdFromUrl() || !!options.forceDetail;
+        if (openDetailAllowed && isMailViewActiveInDom()) {
             setMailViewUrl(mailViewState.selectedId || '');
         }
-        renderMailList();
-        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
+        if (refreshDetail && openDetailAllowed && mailViewState.selectedId && mailViewState.mode !== 'compose') {
             await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
         } else if (refreshDetail && mailViewState.mode !== 'compose') {
-            setMailMobileDetailMode(false);
-            renderMailDetailEmpty('收件箱为空');
+            setMailDetailOpen(false);
         }
     } catch (err) {
         if (requestId !== mailViewState.inboxRequestId) return;
@@ -1203,16 +1142,15 @@ async function loadMailSent(query = '', options = {}) {
             mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
         }
         saveMailSelectedId(mailViewState.selectedId);
-        if (isMailViewActiveInDom()) {
+        renderMailList();
+        const openDetailAllowed = !!getMailIdFromUrl() || !!options.forceDetail;
+        if (openDetailAllowed && isMailViewActiveInDom()) {
             setMailViewUrl(mailViewState.selectedId || '');
         }
-        renderMailList();
-        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
+        if (refreshDetail && openDetailAllowed && mailViewState.selectedId && mailViewState.mode !== 'compose') {
             await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
         } else if (refreshDetail && mailViewState.mode !== 'compose') {
-            setMailMobileDetailMode(false);
-            renderMailDetailEmpty('发件箱为空');
+            setMailDetailOpen(false);
         }
     } catch (err) {
         if (requestId !== mailViewState.inboxRequestId) return;
@@ -1258,7 +1196,7 @@ async function loadMailDetail(mailId, options = {}) {
         updateMailItemInState(mail);
         mailViewState.currentMail = mail;
         mailViewState.mode = viewingSent ? 'sent' : 'inbox';
-        setMailMobileDetailMode(true);
+        setMailDetailOpen(true);
         const parsed = parseRawMail(mail.content || '');
         const senderLine = mail.sender || parsed.headers['from'] || '-';
         const recipientLine = mail.recipient || parsed.headers['to'] || '-';
@@ -1314,8 +1252,18 @@ async function loadMailDetail(mailId, options = {}) {
 async function handleMailWorkspaceAction(actionEl) {
     const action = String(actionEl && actionEl.dataset.mailAction || '').trim();
 
-    if (action === 'toggle-sidebar') {
-        toggleMailSidebar();
+    if (action === 'toggle-select') {
+        toggleMailSelect(actionEl.dataset.mailEid || '');
+        return;
+    }
+
+    if (action === 'batch-mark-read') {
+        await batchMarkSelectedRead();
+        return;
+    }
+
+    if (action === 'batch-delete') {
+        await batchDeleteSelected();
         return;
     }
 
@@ -1394,7 +1342,8 @@ function bindMailWorkspaceDelegatedEvents() {
 }
 
 async function initMailWorkspace() {
-    setMailMobileDetailMode(false);
+    setMailDetailOpen(false);
+    mailViewState.selectedIds = [];
     mailViewState.selectedId = getMailIdFromUrl() || loadMailSelectedId() || mailViewState.selectedId || '';
     mailViewState.restorePositionOnce = true;
     bindMailWorkspaceDelegatedEvents();
@@ -1422,17 +1371,17 @@ async function initMailWorkspace() {
         mailViewState.status = statusData;
         if (!statusData.success || !statusData.enabled) {
             renderMailList();
-            renderMailDetailEmpty(statusData.message || '邮件系统未启用');
+            renderMailListMessage(statusData.message || '邮件系统未启用');
             return;
         }
         if (!statusData.linked) {
             renderMailList();
-            renderMailDetailEmpty('当前用户未绑定邮箱账号，请联系管理员在设置中绑定');
+            renderMailListMessage('当前用户未绑定邮箱账号，请联系管理员在设置中绑定');
             return;
         }
     } catch (err) {
         renderMailList();
-        renderMailDetailEmpty('无法获取邮件状态');
+        renderMailListMessage('无法获取邮件状态');
         return;
     }
     await loadMailCurrentFolder(mailViewState.query || '');
@@ -1443,13 +1392,14 @@ async function selectMailItemById(encodedMailId) {
     if (!mailId) return;
     mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
     mailViewState.selectedId = mailId;
+    mailViewState.selectedIds = [];
     saveMailSelectedId(mailId);
     if (isMailViewActiveInDom()) {
         setMailViewUrl(mailId);
     }
     renderMailList();
     await loadMailDetail(mailId, { markAsRead: mailViewState.folder !== 'sent' });
-    setMailMobileDetailMode(true);
+    setMailDetailOpen(true);
 }
 
 async function refreshMailInbox() {
@@ -1465,13 +1415,80 @@ async function setMailFolder(folder) {
     else if (f === 'unread') mailViewState.folder = 'unread';
     else mailViewState.folder = 'all';
     mailViewState.selectedId = '';
+    mailViewState.selectedIds = [];
     saveMailSelectedId('');
-    setMailMobileDetailMode(false);
+    setMailDetailOpen(false);
     if (isMailViewActiveInDom()) {
         setMailViewUrl('');
     }
     renderMailList();
     renderMailDetailEmpty(mailViewState.folder === 'sent' ? '正在加载发件箱...' : '正在加载收件箱...');
+    await loadMailCurrentFolder(mailViewState.query || '');
+}
+
+function toggleMailSelect(encodedMailId) {
+    const id = decodeURIComponent(encodedMailId || '');
+    if (!id) return;
+    const idx = mailViewState.selectedIds.indexOf(id);
+    if (idx >= 0) {
+        mailViewState.selectedIds.splice(idx, 1);
+    } else {
+        mailViewState.selectedIds.push(id);
+    }
+    updateMailBatchToolbar();
+    renderMailList();
+}
+
+function updateMailBatchToolbar() {
+    const countEl = document.getElementById('mailBatchCount');
+    const count = mailViewState.selectedIds.length;
+    const isSentFolder = mailViewState.folder === 'sent';
+    if (countEl) countEl.textContent = `已选 ${count} 封`;
+    const markBtn = document.querySelector('[data-mail-action="batch-mark-read"]');
+    const deleteBtn = document.querySelector('[data-mail-action="batch-delete"]');
+    if (markBtn) markBtn.disabled = count === 0 || isSentFolder;
+    if (deleteBtn) deleteBtn.disabled = count === 0;
+}
+
+async function batchMarkSelectedRead() {
+    const ids = Array.from(mailViewState.selectedIds || []);
+    if (!ids.length) return;
+    let updated = 0;
+    for (const id of ids) {
+        const ok = await markMailRead(id, true);
+        if (ok) updated += 1;
+    }
+    mailViewState.selectedIds = [];
+    updateMailBatchToolbar();
+    renderMailList();
+    showToast(updated > 0 ? `已标记 ${updated} 封为已读` : '无需标记');
+}
+
+async function batchDeleteSelected() {
+    const ids = Array.from(mailViewState.selectedIds || []);
+    if (!ids.length) return;
+    const confirmed = await confirmModalAsync(
+        '删除选中邮件',
+        `确定删除选中的 ${ids.length} 封邮件吗？此操作不可撤销。`,
+        'danger'
+    );
+    if (!confirmed) return;
+    let deleted = 0;
+    for (const id of ids) {
+        try {
+            const basePath = mailViewState.folder === 'sent' ? '/api/mail/me/sent' : '/api/mail/me/inbox';
+            const res = await fetch(`${basePath}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data && data.success) deleted += 1;
+        } catch (err) {
+            // 单封失败不中断批量
+        }
+    }
+    mailViewState.selectedIds = [];
+    mailViewState.selectedId = '';
+    saveMailSelectedId('');
+    updateMailBatchToolbar();
+    showToast(`已删除 ${deleted} 封邮件`);
     await loadMailCurrentFolder(mailViewState.query || '');
 }
 
@@ -1504,21 +1521,31 @@ async function deleteCurrentMail() {
 
 async function returnToInboxView() {
     mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
-    setMailMobileDetailMode(false);
-    renderMailDetailEmpty('请选择一封邮件');
-    if (mailViewState.selectedId) {
-        await loadMailDetail(mailViewState.selectedId);
+    mailViewState.selectedId = '';
+    mailViewState.selectedIds = [];
+    saveMailSelectedId('');
+    setMailDetailOpen(false);
+    if (isMailViewActiveInDom()) {
+        setMailViewUrl('');
     }
+    renderMailList();
+    updateMailBatchToolbar();
 }
 
 function openMailComposeView(preset = {}) {
     setMailViewUrl('');
-    setMailMobileDetailMode(true);
+    setMailDetailOpen(true);
     renderMailComposeForm(preset);
 }
 
 function backToMailListMobile() {
-    setMailMobileDetailMode(false);
+    mailViewState.selectedId = '';
+    mailViewState.selectedIds = [];
+    saveMailSelectedId('');
+    setMailDetailOpen(false);
+    if (isMailViewActiveInDom()) {
+        setMailViewUrl('');
+    }
 }
 
 function openMailComposeReply() {
@@ -1613,19 +1640,6 @@ async function submitMailCompose() {
         }
     })();
 }
-
-function toggleMailSidebar() {
-    mailViewState.sidebarCollapsed = !mailViewState.sidebarCollapsed;
-    saveMailSidebarCollapsedState(mailViewState.sidebarCollapsed);
-    const workspace = document.getElementById('mailWorkspace');
-    if (workspace) workspace.classList.toggle('mail-sidebar-collapsed', mailViewState.sidebarCollapsed);
-    const btn = document.querySelector('.mail-sidebar-toggle-btn');
-    if (btn) {
-        btn.title = mailViewState.sidebarCollapsed ? '展开侧栏' : '折叠侧栏';
-        btn.innerHTML = `<i class="fa-solid ${mailViewState.sidebarCollapsed ? 'fa-angles-right' : 'fa-angles-left'}"></i>`;
-    }
-}
-
 
 async function loadAdminMailGroups() {
     const groupSelect = document.getElementById('adminMailGroupSelect');
@@ -2060,7 +2074,6 @@ function bindAdminMailManagementEvents() {
 
 
     function initMailUiState() {
-        mailViewState.sidebarCollapsed = loadMailSidebarCollapsedState();
         mailNotifyState.lastOpenTs = loadMailLastOpenTs();
         mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
         mailNotifyState.newCount = 0;
@@ -2089,15 +2102,13 @@ function bindAdminMailManagementEvents() {
     getShared().registerModule(MODULE_NAME, {
         state: mailViewState,
         initMailUiState,
-        loadMailSidebarCollapsedState,
-        saveMailSidebarCollapsedState,
         isMailViewUrl,
         getMailIdFromUrl,
         setMailViewUrl,
         clearMailViewUrl,
         isMailViewActiveInDom,
         isMailMobileLayout,
-        setMailMobileDetailMode,
+        setMailDetailOpen,
         loadMailLastOpenTs,
         saveMailLastOpenTs,
         getMailToggleButton,

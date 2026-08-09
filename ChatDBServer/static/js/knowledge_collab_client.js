@@ -943,6 +943,10 @@
             });
 
             state.socket.addEventListener('error', () => {
+                if (state.closedByClient) {
+                    return;
+                }
+
                 setStatus('error', '实时协作通道异常');
             });
         }

@@ -3548,9 +3548,9 @@ function isMailMobileLayout() {
     return api ? api.isMailMobileLayout() : false;
 }
 
-function setMailMobileDetailMode(showDetail) {
+function setMailDetailOpen(showDetail) {
     const api = getNexoraChatMailsIfEnabled();
-    if (api) api.setMailMobileDetailMode(showDetail);
+    if (api) api.setMailDetailOpen(showDetail);
 }
 
 async function openMailPlaceholderView() {
@@ -13590,7 +13590,7 @@ function initUI() {
         }
         updateMobileSelectionQuickAdd();
         if (!isMailMobileLayout()) {
-            setMailMobileDetailMode(false);
+            setMailDetailOpen(false);
         }
     });
     // Event Listeners
