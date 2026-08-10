@@ -28,3 +28,10 @@
 body.learning-workspace-active #sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab {
     border-bottom-color: #20242c;
 }
+
+/* Learning 未启用（body 无 learning-mode-enabled）时不显示任何品牌 tab 的选中下划线，
+   避免单 tab 状态下留下与业务不一致的"选中"视觉。 */
+body:not(.learning-mode-enabled) #sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandNexoraTab,
+body:not(.learning-mode-enabled) #sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab {
+    border-bottom-color: transparent;
+}

@@ -89,7 +89,9 @@ let mailViewState = {
     mode: 'inbox',
     currentMail: null,
     folder: 'all',
-    isSending: false,
+    page: 1,
+    pageSize: 20,
+    unreadMails: [],
     inboxTotal: 0,
     unreadTotal: 0,
     sentTotal: 0,
@@ -621,6 +623,7 @@ async function openMailPlaceholderView() {
                     </div>
                 </div>
                 <div class="mail-list-body" id="mailListBody"></div>
+                <div class="mail-pagination" id="mailPagination"></div>
             </section>
             <section class="mail-detail-panel">
                 <div class="mail-detail-head">
@@ -790,14 +793,19 @@ function normalizeMailItem(item) {
 }
 
 function getVisibleMailsByFolder() {
-    const all = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
     if (mailViewState.folder === 'sent') {
-        return all;
+        return Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
     }
     if (mailViewState.folder === 'unread') {
-        return all.filter((m) => !parseMailReadState(m.is_read));
+        // 未读文件夹使用独立的完整未读列表（loadMailUnread 累积），按当前页切片，
+        // 不能从收件箱当前页中筛选，否则未读跨页时列表不完整。
+        const all = Array.isArray(mailViewState.unreadMails) ? mailViewState.unreadMails : [];
+        const pageSize = Math.max(1, Number(mailViewState.pageSize || 20));
+        const page = Math.max(1, Number(mailViewState.page || 1));
+        const start = (page - 1) * pageSize;
+        return all.slice(start, start + pageSize);
     }
-    return all;
+    return Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
 }
 
 function updateMailFolderUiState() {
@@ -835,6 +843,19 @@ function setMailReadStateLocal(mailId, isRead) {
     if (mailViewState.currentMail && String(mailViewState.currentMail.id || '') === id) {
         mailViewState.currentMail = { ...mailViewState.currentMail, is_read: !!isRead };
     }
+    // 未读文件夹基于独立的 unreadMails 列表，标记已读后必须同步移除，
+    // 否则列表与收件箱状态不一致。
+    if (mailViewState.folder === 'unread' && isRead) {
+        const unreadList = Array.isArray(mailViewState.unreadMails) ? mailViewState.unreadMails : [];
+        const next = unreadList.filter((m) => String(m.id || '') !== id);
+        mailViewState.unreadMails = next;
+        // 当前页被删空时回退页码，避免停留在空页。
+        const pageSize = Math.max(1, Number(mailViewState.pageSize || 20));
+        const totalPages = Math.max(1, Math.ceil(next.length / pageSize));
+        if (mailViewState.page > totalPages) {
+            mailViewState.page = totalPages;
+        }
+    }
 }
 
 async function markMailRead(mailId, isRead = true) {
@@ -844,6 +865,9 @@ async function markMailRead(mailId, isRead = true) {
     const target = list.find((m) => String(m.id || '') === id);
     const oldValue = target ? !!target.is_read : false;
     if (oldValue === !!isRead) return true;
+
+    // 分页后仅加载当前页，renderMailList 无法还原全局未读数，需在此同步维护。
+    mailViewState.unreadTotal = Math.max(0, Number(mailViewState.unreadTotal || 0) + (isRead ? -1 : 1));
 
     // optimistic update for immediate UX: unread item moves to read section on open
     setMailReadStateLocal(id, !!isRead);
@@ -975,11 +999,11 @@ function renderMailList() {
     if (!listEl) return;
     const prevScrollTop = listEl.scrollTop;
     const mails = (Array.isArray(mailViewState.mails) ? mailViewState.mails : []).map(normalizeMailItem);
+    // 总数由 loadMailInbox/loadMailSent 从 API total 字段写入，分页后仅靠当前页数量无法还原真实总数。
     if (mailViewState.folder === 'sent') {
-        mailViewState.sentTotal = mails.length;
+        mailViewState.sentTotal = Math.max(mailViewState.sentTotal || 0, mails.length);
     } else {
-        mailViewState.inboxTotal = mails.length;
-        mailViewState.unreadTotal = mails.filter((m) => !m.is_read).length;
+        mailViewState.inboxTotal = Math.max(mailViewState.inboxTotal || 0, mails.length);
     }
     const inboxCount = Math.max(0, Number(mailViewState.inboxTotal || 0));
     const unreadCount = Math.max(0, Number(mailViewState.unreadTotal || 0));
@@ -999,6 +1023,8 @@ function renderMailList() {
             ? '暂无未读邮件'
             : (mailViewState.folder === 'sent' ? '暂无发件记录' : '暂无邮件');
         listEl.innerHTML = `<div class="mail-empty-state">${emptyText}</div>`;
+        const paginationEl = document.getElementById('mailPagination');
+        if (paginationEl) paginationEl.innerHTML = '';
         saveMailListScroll(0);
         updateMailBatchToolbar();
         return;
@@ -1016,7 +1042,7 @@ function renderMailList() {
         const unreadDot = (mailViewState.folder === 'sent' || m.is_read) ? '' : '<span class="mail-unread-dot" title="未读"></span>';
         return `
             <div class="mail-list-item ${active}" data-mail-action="select-mail" data-mail-eid="${eid}">
-                <span class="mail-checkbox-wrap">
+                <span class="mail-checkbox-wrap" data-mail-action="toggle-select" data-mail-eid="${eid}">
                     <input class="mail-checkbox" type="checkbox" data-mail-action="toggle-select" data-mail-eid="${eid}" ${checked}>
                 </span>
                 <span class="mail-list-sender">${escapeHtml(roleValue)}</span>
@@ -1029,6 +1055,7 @@ function renderMailList() {
     listEl.innerHTML = visibleMails.map(renderItem).join('');
 
     updateMailBatchToolbar();
+    renderMailPagination();
 
     if (mailViewState.restorePositionOnce) {
         const savedId = String(mailViewState.selectedId || '');
@@ -1045,9 +1072,77 @@ function renderMailList() {
     }
 }
 
+function renderMailPagination() {
+    const paginationEl = document.getElementById('mailPagination');
+    if (!paginationEl) return;
+
+    const total = Math.max(0, Number(
+        mailViewState.folder === 'sent'
+            ? mailViewState.sentTotal
+            : (mailViewState.folder === 'unread'
+                ? (Array.isArray(mailViewState.unreadMails) ? mailViewState.unreadMails.length : 0)
+                : mailViewState.inboxTotal || 0)
+    ));
+    const pageSize = Math.max(1, Number(mailViewState.pageSize || 20));
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(Math.max(1, Number(mailViewState.page || 1)), totalPages);
+
+    if (totalPages <= 1) {
+        paginationEl.innerHTML = '';
+        return;
+    }
+
+    const pageNumbers = [];
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, currentPage + 2);
+    for (let p = startPage; p <= endPage; p += 1) {
+        pageNumbers.push(p);
+    }
+
+    const buildItem = (label, page, opts = {}) => {
+        const disabled = opts.disabled ? ' disabled' : '';
+        const active = opts.active ? ' active' : '';
+        const extra = opts.action ? ` data-mail-action="${opts.action}"` : '';
+        return `<button type="button" class="mail-page-btn${active}${disabled}" data-mail-page="${page}"${extra}>${label}</button>`;
+    };
+
+    const parts = [];
+    parts.push(buildItem('上一页', currentPage - 1, {
+        disabled: currentPage <= 1,
+        action: 'page-prev'
+    }));
+
+    if (startPage > 1) {
+        parts.push(buildItem('1', 1, { action: 'page-goto' }));
+        if (startPage > 2) parts.push('<span class="mail-page-ellipsis">…</span>');
+    }
+
+    for (const p of pageNumbers) {
+        parts.push(buildItem(String(p), p, {
+            active: p === currentPage,
+            action: 'page-goto'
+        }));
+    }
+
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) parts.push('<span class="mail-page-ellipsis">…</span>');
+        parts.push(buildItem(String(totalPages), totalPages, { action: 'page-goto' }));
+    }
+
+    parts.push(buildItem('下一页', currentPage + 1, {
+        disabled: currentPage >= totalPages,
+        action: 'page-next'
+    }));
+
+    paginationEl.innerHTML = parts.join('');
+}
+
 async function loadMailCurrentFolder(query = '', options = {}) {
     if (mailViewState.folder === 'sent') {
         return loadMailSent(query, options);
+    }
+    if (mailViewState.folder === 'unread') {
+        return loadMailUnread(query, options);
     }
     return loadMailInbox(query, options);
 }
@@ -1062,6 +1157,8 @@ async function loadMailInbox(query = '', options = {}) {
     try {
         const params = new URLSearchParams();
         if (query) params.set('q', query);
+        params.set('offset', String((Math.max(1, mailViewState.page || 1) - 1) * (mailViewState.pageSize || 20)));
+        params.set('limit', String(mailViewState.pageSize || 20));
         params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
         const q = params.toString();
         const res = await fetch(`/api/mail/me/inbox${q ? `?${q}` : ''}`);
@@ -1081,6 +1178,10 @@ async function loadMailInbox(query = '', options = {}) {
         mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
         mailViewState.inboxTotal = Number(data.total || mailViewState.mails.length || 0);
         mailViewState.unreadTotal = Number(data.unread_total || mailViewState.mails.filter((m) => !m.is_read).length || 0);
+        if (!mailViewState.mails.length && mailViewState.inboxTotal > 0 && mailViewState.page > 1) {
+            mailViewState.page -= 1;
+            return loadMailInbox(query, options);
+        }
         updateMailNotifyFromMails(mailViewState.mails, { markChecked: isMailViewActiveInDom() });
         const visible = getVisibleMailsByFolder();
         if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
@@ -1120,6 +1221,8 @@ async function loadMailSent(query = '', options = {}) {
     try {
         const params = new URLSearchParams();
         if (query) params.set('q', query);
+        params.set('offset', String((Math.max(1, mailViewState.page || 1) - 1) * (mailViewState.pageSize || 20)));
+        params.set('limit', String(mailViewState.pageSize || 20));
         params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
         const q = params.toString();
         const res = await fetch(`/api/mail/me/sent${q ? `?${q}` : ''}`);
@@ -1137,6 +1240,10 @@ async function loadMailSent(query = '', options = {}) {
         }
         mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
         mailViewState.sentTotal = Number(data.total || mailViewState.mails.length || 0);
+        if (!mailViewState.mails.length && mailViewState.sentTotal > 0 && mailViewState.page > 1) {
+            mailViewState.page -= 1;
+            return loadMailSent(query, options);
+        }
         const visible = getVisibleMailsByFolder();
         if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
             mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
@@ -1157,6 +1264,89 @@ async function loadMailSent(query = '', options = {}) {
         mailViewState.mails = [];
         mailViewState.selectedId = '';
         mailViewState.sentTotal = 0;
+        renderMailList();
+        if (mailViewState.mode !== 'compose') {
+            renderMailDetailEmpty('邮件服务连接失败');
+        }
+    }
+}
+
+async function loadMailUnread(query = '', options = {}) {
+    const silent = !!(options && options.silent);
+    const refreshDetail = !options || options.refreshDetail !== false;
+    const forceNetwork = !!(options && options.forceNetwork);
+    const requestId = ++mailViewState.inboxRequestId;
+    const listEl = document.getElementById('mailListBody');
+    if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载未读邮件...</div>`;
+    try {
+        // 未读文件夹需要独立的完整未读列表，先分页累积收件箱中的全部未读，
+        // 再按当前页切片，避免未读邮件分布在不同收件箱页时被误判为空。
+        const accumulated = [];
+        const pageSize = Math.max(1, Number(mailViewState.pageSize || 20));
+        let offset = 0;
+        let inboxTotal = 0;
+        let fetchCount = 0;
+        const MAX_FETCH_PAGES = 50;
+        while (fetchCount < MAX_FETCH_PAGES) {
+            const params = new URLSearchParams();
+            if (query) params.set('q', query);
+            params.set('offset', String(offset));
+            params.set('limit', String(pageSize));
+            params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
+            const q = params.toString();
+            const res = await fetch(`/api/mail/me/inbox${q ? `?${q}` : ''}`);
+            const data = await res.json();
+            if (requestId !== mailViewState.inboxRequestId) return;
+            if (!data.success) {
+                mailViewState.unreadMails = [];
+                mailViewState.selectedId = '';
+                mailViewState.inboxTotal = 0;
+                mailViewState.unreadTotal = 0;
+                renderMailList();
+                if (mailViewState.mode !== 'compose') {
+                    renderMailDetailEmpty(data.message || '未读邮件加载失败');
+                }
+                return;
+            }
+            const pageMails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
+            for (const item of pageMails) {
+                if (!parseMailReadState(item.is_read)) {
+                    accumulated.push(item);
+                }
+            }
+            inboxTotal = Number(data.total || 0);
+            const nextOffset = offset + Math.max(pageMails.length, pageSize);
+            if (nextOffset >= inboxTotal || !pageMails.length) break;
+            offset = nextOffset;
+            fetchCount += 1;
+        }
+        mailViewState.unreadMails = accumulated;
+        mailViewState.unreadTotal = Math.max(0, Number(mailViewState.unreadTotal || accumulated.length));
+        const totalPages = Math.max(1, Math.ceil(accumulated.length / pageSize));
+        if (mailViewState.page > totalPages) {
+            mailViewState.page = totalPages;
+        }
+        const visible = getVisibleMailsByFolder();
+        if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
+            mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
+        }
+        saveMailSelectedId(mailViewState.selectedId);
+        renderMailList();
+        const openDetailAllowed = !!getMailIdFromUrl() || !!options.forceDetail;
+        if (openDetailAllowed && isMailViewActiveInDom()) {
+            setMailViewUrl(mailViewState.selectedId || '');
+        }
+        if (refreshDetail && openDetailAllowed && mailViewState.selectedId && mailViewState.mode !== 'compose') {
+            await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
+        } else if (refreshDetail && mailViewState.mode !== 'compose') {
+            setMailDetailOpen(false);
+        }
+    } catch (err) {
+        if (requestId !== mailViewState.inboxRequestId) return;
+        mailViewState.unreadMails = [];
+        mailViewState.selectedId = '';
+        mailViewState.inboxTotal = 0;
+        mailViewState.unreadTotal = 0;
         renderMailList();
         if (mailViewState.mode !== 'compose') {
             renderMailDetailEmpty('邮件服务连接失败');
@@ -1314,6 +1504,45 @@ async function handleMailWorkspaceAction(actionEl) {
 
     if (action === 'select-mail') {
         await selectMailItemById(actionEl.dataset.mailEid || '');
+        return;
+    }
+
+    if (action === 'page-prev' || action === 'page-next' || action === 'page-goto') {
+        const total = Math.max(0, Number(
+            mailViewState.folder === 'sent'
+                ? mailViewState.sentTotal
+                : (mailViewState.folder === 'unread'
+                    ? (Array.isArray(mailViewState.unreadMails) ? mailViewState.unreadMails.length : 0)
+                    : mailViewState.inboxTotal || 0)
+        ));
+        const totalPages = Math.max(1, Math.ceil(total / Math.max(1, Number(mailViewState.pageSize || 20))));
+        let nextPage = mailViewState.page || 1;
+        if (action === 'page-prev') {
+            nextPage -= 1;
+        } else if (action === 'page-next') {
+            nextPage += 1;
+        } else {
+            nextPage = Math.max(1, Number(actionEl.dataset.mailPage || 1));
+        }
+        nextPage = Math.min(Math.max(1, nextPage), totalPages);
+        if (nextPage === mailViewState.page) return;
+        mailViewState.page = nextPage;
+        mailViewState.selectedId = '';
+        mailViewState.selectedIds = [];
+        saveMailSelectedId('');
+        setMailDetailOpen(false);
+        if (mailViewState.folder === 'unread') {
+            // 未读完整列表已在 unreadMails 中累积，翻页仅需重新切片渲染。
+            const unreadPage = getVisibleMailsByFolder();
+            mailViewState.selectedId = unreadPage[0] ? String(unreadPage[0].id || '') : '';
+            saveMailSelectedId(mailViewState.selectedId);
+            renderMailList();
+            if (mailViewState.selectedId) {
+                await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
+            }
+            return;
+        }
+        await loadMailCurrentFolder(mailViewState.query || '');
     }
 }
 
@@ -1360,6 +1589,7 @@ async function initMailWorkspace() {
         searchEl.addEventListener('keydown', async (e) => {
             if (e.key === 'Enter') {
                 mailViewState.query = (searchEl.value || '').trim();
+                mailViewState.page = 1;
                 await loadMailCurrentFolder(mailViewState.query);
             }
         });
@@ -1414,6 +1644,7 @@ async function setMailFolder(folder) {
     if (f === 'sent') mailViewState.folder = 'sent';
     else if (f === 'unread') mailViewState.folder = 'unread';
     else mailViewState.folder = 'all';
+    mailViewState.page = 1;
     mailViewState.selectedId = '';
     mailViewState.selectedIds = [];
     saveMailSelectedId('');

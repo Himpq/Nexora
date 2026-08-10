@@ -8131,17 +8131,17 @@ body.learning-workspace-active .learning-sidebar-panel {
     align-items: center;
     justify-content: center;
     padding: 28px;
-    background: #f8fafc;
+    background: #fafafa;
 }
 
 .mail-placeholder-card {
     width: min(560px, 100%);
-    border: 1px solid #e2e8f0;
+    border: 1px solid #e0e0e0;
     border-radius: 14px;
     background: #ffffff;
     padding: 26px 24px;
     text-align: center;
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
 }
 
 .mail-placeholder-icon {
@@ -8149,25 +8149,25 @@ body.learning-workspace-active .learning-sidebar-panel {
     height: 54px;
     margin: 0 auto 12px;
     border-radius: 50%;
-    border: 1px solid #cbd5e1;
+    border: 1px solid #d0d0d0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: #334155;
+    color: #555555;
     font-size: 20px;
-    background: #f8fafc;
+    background: #fafafa;
 }
 
 .mail-placeholder-card h3 {
     margin: 0 0 6px;
     font-size: 18px;
-    color: #0f172a;
+    color: #111111;
 }
 
 .mail-placeholder-card p {
     margin: 0;
     font-size: 13px;
-    color: #64748b;
+    color: #666666;
     line-height: 1.6;
 }
 
@@ -8176,7 +8176,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     display: flex;
     flex-direction: column;
     padding: 12px;
-    background: #f8fafc;
+    background: #fafafa;
     min-height: 0;
     overflow: hidden;
 }
@@ -8184,7 +8184,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 .mail-list-panel,
 .mail-detail-panel {
     background: #ffffff;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #e0e0e0;
     border-radius: 12px;
     min-height: 0;
 }
@@ -8202,7 +8202,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: #eef2f7;
+    background: #f5f5f5;
     border-radius: 10px;
     padding: 3px;
     flex: 0 0 auto;
@@ -8216,7 +8216,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    color: #334155;
+    color: #555555;
     cursor: pointer;
     text-align: left;
     min-width: 0;
@@ -8243,28 +8243,28 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-folder-item:hover {
     background: #ffffff;
-    border-color: #dbe3ef;
+    border-color: #d0d0d0;
 }
 
 .mail-folder-item.active {
     background: #ffffff;
-    border-color: #c7d2fe;
-    color: #1e293b;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    border-color: #b0b0b0;
+    color: #111111;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .mail-folder-badge {
     margin-left: auto;
     font-size: 11px;
-    color: #0f172a;
-    background: #e2e8f0;
+    color: #111111;
+    background: #e6e6e6;
     border-radius: 999px;
     padding: 1px 7px;
 }
 
 .mail-folder-badge.muted {
-    color: #475569;
-    background: #f1f5f9;
+    color: #666666;
+    background: #f5f5f5;
 }
 
 .mail-folder-badge.alert {
@@ -8298,7 +8298,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-list-toolbar {
     padding: 12px;
-    border-bottom: 1px solid #eef2f7;
+    border-bottom: 1px solid #f0f0f0;
 }
 
 .mail-list-toolbar-row {
@@ -8309,13 +8309,13 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 .mail-list-search {
-    border: 1px solid #e2e8f0;
+    border: 1px solid #e0e0e0;
     border-radius: 8px;
     padding: 6px 10px;
     display: flex;
     align-items: center;
     gap: 8px;
-    color: #64748b;
+    color: #666666;
     flex: 1 1 auto;
     min-width: 180px;
 }
@@ -8325,7 +8325,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     outline: none;
     width: 100%;
     font-size: 13px;
-    color: #0f172a;
+    color: #111111;
     background: transparent;
 }
 
@@ -8335,13 +8335,13 @@ body.learning-workspace-active .learning-sidebar-panel {
     gap: 10px;
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px dashed #e2e8f0;
+    border-top: 1px dashed #e0e0e0;
 }
 
 .mail-batch-count {
     font-size: 13px;
     font-weight: 600;
-    color: #475569;
+    color: #666666;
 }
 
 .mail-batch-toolbar .mail-icon-btn:disabled {
@@ -8353,13 +8353,18 @@ body.learning-workspace-active .learning-sidebar-panel {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    padding: 8px 14px;
+    margin-left: -8px;
+    margin-right: -4px;
+    cursor: pointer;
 }
 
 .mail-checkbox {
     width: 16px;
     height: 16px;
     cursor: pointer;
-    accent-color: #6366f1;
+    accent-color: #000000;
 }
 
 .mail-list-body {
@@ -8369,34 +8374,79 @@ body.learning-workspace-active .learning-sidebar-panel {
     flex: 1;
 }
 
+.mail-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 16px;
+    border-top: 1px solid #f0f0f0;
+    flex: 0 0 auto;
+}
+
+.mail-page-btn {
+    appearance: none;
+    border: 1px solid #e0e0e0;
+    background: #fff;
+    color: #555555;
+    font-size: 13px;
+    line-height: 1;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.mail-page-btn:hover:not(:disabled) {
+    border-color: #000000;
+    color: #000000;
+}
+
+.mail-page-btn.active {
+    background: #000000;
+    border-color: #000000;
+    color: #fff;
+}
+
+.mail-page-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.mail-page-ellipsis {
+    color: #888888;
+    padding: 0 2px;
+}
+
 .mail-list-item {
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 12px 16px;
-    border-bottom: 1px solid #f1f5f9;
+    padding: 8px 16px;
+    border-bottom: 1px solid #f0f0f0;
     cursor: pointer;
     min-width: 0;
     overflow: hidden;
 }
 
 .mail-list-item:hover {
-    background: #f8fafc;
+    background: #fafafa;
 }
 
 .mail-list-item.active {
-    background: #eef2ff;
+    background: #f4f4f4;
 }
 
 .mail-list-sender {
     flex: 0 0 180px;
     font-size: 14px;
     font-weight: 600;
-    color: #334155;
+    color: #333333;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    margin-right: 16px;
 }
 
 .mail-subject-row {
@@ -8413,7 +8463,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-subject {
     font-size: 14px;
-    color: #0f172a;
+    color: #111111;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -8423,7 +8473,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 .mail-time {
     flex: 0 0 auto;
     font-size: 13px;
-    color: #64748b;
+    color: #666666;
 }
 
 .mail-unread-dot {
@@ -8443,7 +8493,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-detail-head {
     padding: 14px 16px 10px;
-    border-bottom: 1px solid #eef2f7;
+    border-bottom: 1px solid #f0f0f0;
 }
 
 .mail-detail-head-row {
@@ -8464,7 +8514,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 .mail-detail-head h3 {
     margin: 0 0 8px;
     font-size: 18px;
-    color: #0f172a;
+    color: #111111;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -8481,9 +8531,9 @@ body.learning-workspace-active .learning-sidebar-panel {
     width: 30px;
     height: 30px;
     border-radius: 8px;
-    border: 1px solid #dbe3ef;
+    border: 1px solid #d0d0d0;
     background: #ffffff;
-    color: #334155;
+    color: #555555;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -8492,9 +8542,9 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 .mail-icon-btn:hover {
-    background: #f8fafc;
-    border-color: #cbd5e1;
-    color: #0f172a;
+    background: #fafafa;
+    border-color: #b0b0b0;
+    color: #111111;
 }
 
 .mail-icon-btn.danger {
@@ -8513,13 +8563,13 @@ body.learning-workspace-active .learning-sidebar-panel {
     flex-wrap: wrap;
     gap: 14px;
     font-size: 12px;
-    color: #64748b;
+    color: #666666;
 }
 
 .mail-detail-content {
     padding: 14px 16px;
     overflow-y: auto;
-    color: #334155;
+    color: #333333;
     font-size: 14px;
     line-height: 1.8;
     flex: 1;
@@ -8527,7 +8577,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 .mail-empty-state {
-    color: #64748b;
+    color: #666666;
     font-size: 13px;
     line-height: 1.6;
     padding: 12px;
@@ -8540,7 +8590,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     line-height: 1.7;
-    color: #1f2937;
+    color: #1a1a1a;
 }
 
 .mail-html-frame {
@@ -8575,14 +8625,14 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-compose-actions .btn-primary-outline {
     background: #ffffff !important;
-    color: #334155 !important;
-    border: 1px solid #cbd5e1 !important;
+    color: #333333 !important;
+    border: 1px solid #d0d0d0 !important;
 }
 
 .mail-compose-actions .btn-primary-outline:hover {
-    background: #f8fafc !important;
-    color: #0f172a !important;
-    border-color: #94a3b8 !important;
+    background: #fafafa !important;
+    color: #111111 !important;
+    border-color: #888888 !important;
 }
 
 .mail-compose-btn-row {
@@ -8600,18 +8650,18 @@ body.learning-workspace-active .learning-sidebar-panel {
 
 .mail-compose-btn-row .mail-compose-cancel-btn {
     background: #ffffff !important;
-    color: #334155 !important;
-    border: 1px solid #cbd5e1 !important;
+    color: #333333 !important;
+    border: 1px solid #d0d0d0 !important;
 }
 
 .mail-compose-btn-row .mail-compose-cancel-btn:hover {
-    background: #f8fafc !important;
-    color: #0f172a !important;
-    border-color: #94a3b8 !important;
+    background: #fafafa !important;
+    color: #111111 !important;
+    border-color: #888888 !important;
 }
 
 .mail-detail-actions {
-    border-top: 1px solid #eef2f7;
+    border-top: 1px solid #f0f0f0;
     padding: 10px 16px;
     display: flex;
     gap: 8px;
@@ -8622,9 +8672,9 @@ body.learning-workspace-active .learning-sidebar-panel {
     width: 30px;
     height: 30px;
     border-radius: 8px;
-    border: 1px solid #dbe3ef;
+    border: 1px solid #d0d0d0;
     background: #ffffff;
-    color: #334155;
+    color: #555555;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -8633,8 +8683,8 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 .mail-back-btn:hover {
-    background: #f8fafc;
-    border-color: #cbd5e1;
+    background: #fafafa;
+    border-color: #b0b0b0;
 }
 
 @media (max-width: 980px) {

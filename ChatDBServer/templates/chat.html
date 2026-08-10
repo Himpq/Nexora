@@ -19,8 +19,8 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260809_mail_batch_02">
-    <link rel="stylesheet" href="/static/css/sidebar_brand_navigation.css?v=20260729_sidebar_brand_02">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260810_mail_neutral_01">
+    <link rel="stylesheet" href="/static/css/sidebar_brand_navigation.css?v=20260809_learning_off_hide_02">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
@@ -49,7 +49,7 @@
                     <button type="button" class="sidebar-brand-tab active" id="sidebarBrandNexoraTab" data-sidebar-mode="nexora" aria-pressed="true">
                         <span class="logo">Nexora<span class="dot"></span></span>
                     </button>
-                    <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false">
+                    <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false" hidden>
                         <span class="sidebar-brand-learning-text">Learning</span>
                     </button>
                     <button type="button" class="sidebar-brand-tab sidebar-brand-tab-workspace" id="sidebarBrandWorkspaceTab" data-sidebar-mode="workspace" aria-pressed="false" hidden>
@@ -809,7 +809,7 @@
     <script type="module" src="/static/js/chat_shared.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_admin_users.js?v=20260726_esm_01"></script>
     {% if nexora_mail_enabled %}
-    <script type="module" src="/static/js/chat_mails.js?v=20260809_mail_batch_02"></script>
+    <script type="module" src="/static/js/chat_mails.js?v=20260810_mail_unread_list_01"></script>
     {% endif %}
     <script type="module" src="/static/js/chat_message_window.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_message_versions.js?v=20260726_esm_01"></script>
@@ -835,7 +835,7 @@
     <script type="module" src="/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01"></script>
     <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>
     <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260731_course_context_03"></script>
+    <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260809_learning_tab_hide_01"></script>
     <script type="module" src="/static/js/chat.js?v=20260731_profile_center_01"></script>
     <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>

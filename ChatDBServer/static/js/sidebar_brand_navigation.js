@@ -51,8 +51,9 @@
         const workspaceVisible = state.workspaceAvailable && (workspaceActive || learningActive);
 
         setTabVisible(nexoraTab, !workspaceActive);
-        // Learning 是全局一级入口，不能由异步偏好或课程资源状态决定是否可见。
-        setTabVisible(learningTab, true);
+        // Learning 关闭（偏好未启用或运行环境不可用）时隐藏一级入口，
+        // 否则 tab 常驻但点击无响应，造成"呈现却不可用"的割裂状态。
+        setTabVisible(learningTab, state.learningEnabled);
         setTabVisible(workspaceTab, workspaceVisible);
 
         setTabActive(nexoraTab, mode === 'nexora');
