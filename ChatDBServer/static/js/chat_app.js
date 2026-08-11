@@ -84,7 +84,6 @@ import {
     isHoverProxySuppressedBySelection,
     isMailMobileLayout,
     isMailViewUrl,
-    isMessageInputComposing,
     isMessagesNearBottom,
     isMobileKeyboardLikelyOpen,
     isSidebarOverlayLayout,
@@ -140,7 +139,8 @@ import {
     setLearningPracticeMenuOpen,
     setLearningResourceStudioMenuOpen,
     setMailDetailOpen,
-    settingsModalEscapeHandlerBound,
+    setMessagesLastObservedScrollTop,
+    setShouldAutoScroll,
     shouldAutoScroll,
     startAgentStatusHttpFallback,
     startAgentStatusPolling,
@@ -169,6 +169,12 @@ import {
     updateMobileMessageInputViewportBaseline,
     updateMobileSelectionQuickAdd,
 } from './chat.js?v=20260731_profile_center_01';
+
+// 设置弹窗 Esc 关闭处理器是否已绑定：唯一读写方为本模块，状态收敛于此。
+let settingsModalEscapeHandlerBound = false;
+
+// 输入法组合输入中标记：唯一读写方为本模块，状态收敛于此。
+let isMessageInputComposing = false;
 
 async function bootstrap() {
     installAuthFetchGuard();
@@ -621,31 +627,31 @@ function initUI() {
             if (Date.now() <= __messagesBottomPinUntilTs) {
                 if (hasUserScrollIntent && userScrolledUp) {
                     breakMessagesAutoScroll();
-                    __messagesLastObservedScrollTop = currentScrollTop;
+                    setMessagesLastObservedScrollTop(currentScrollTop);
                     scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
                     return;
                 }
 
-                shouldAutoScroll = true;
-                __messagesLastObservedScrollTop = currentScrollTop;
-                return;
+                setShouldAutoScroll(true);
+                    setMessagesLastObservedScrollTop(currentScrollTop);
+                    return;
             }
 
             if (_isJumping) return; // Skip during jump
 
             if (hasUserScrollIntent && userScrolledUp) {
-                shouldAutoScroll = false;
-                __messagesLastObservedScrollTop = currentScrollTop;
+                setShouldAutoScroll(false);
+                setMessagesLastObservedScrollTop(currentScrollTop);
                 scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
                 return;
             }
             
             if (isMessagesNearBottom(els.messagesContainer)) {
-                shouldAutoScroll = true;
+                setShouldAutoScroll(true);
             } else {
-                shouldAutoScroll = false;
+                setShouldAutoScroll(false);
             }
-            __messagesLastObservedScrollTop = currentScrollTop;
+            setMessagesLastObservedScrollTop(currentScrollTop);
 
             // Turn indicator 跟随滚动只更新激活态，不再每次强制滚动面板内部，避免额外重排。
             scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });

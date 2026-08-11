@@ -161,9 +161,11 @@ import {
     fetchKnowledgeByTitle,
     fillMessageInputWithExplainText,
     flushNotesCloudSync,
+    forceContextCompressionOnce,
     getConversationTitleFromCache,
     hideNotesContextMenu,
     hidePinContextMenu,
+    highlightMessageForNoteJump,
     initNotesUi,
     installAuthFetchGuard,
     jumpToChatSource,
@@ -174,7 +176,6 @@ import {
     normalizeSelectionTextForNotes,
     notesCloudSyncPendingStore,
     notesCloudSyncTimer,
-    notesJumpHighlightTimer,
     notesState,
     openConversationRenameModal,
     openNotesCompanionWindow,
@@ -755,9 +756,7 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     refreshLastUserPromptEditButtons,
     getShouldAutoScroll: () => shouldAutoScroll,
     scrollMessagesToBottomNow,
-    setMessagesLastObservedScrollTop: (value) => {
-        __messagesLastObservedScrollTop = Number(value || 0);
-    },
+    setMessagesLastObservedScrollTop,
     pinMessagesToBottomFor,
     getMessagesBottomPinUntilTs: () => __messagesBottomPinUntilTs,
     setMessagesBottomPinPendingRestoreBehavior: (value) => {
@@ -1235,7 +1234,6 @@ const adminSettingsEventsController = getNexoraChatAdmin().createAdminSettingsEv
     },
     toggleAdminOllamaModelStatus,
 });
-let isMessageInputComposing = false;
 let selectedModelId = null;
 let modelCatalog = [];
 let providerCatalogByKey = {};
@@ -1300,7 +1298,6 @@ function bindFloatingPanelFront(panel) {
     panel.addEventListener('pointerdown', lift, true);
     panel.addEventListener('mousedown', lift, true);
 }
-let forceContextCompressionOnce = false;
 let mobileMessageInputViewportBaseline = 0;
 let lastMessageInputGestureTs = 0;
 const SETTINGS_COMPANION_MODE = (() => {
@@ -1347,7 +1344,6 @@ let skillModeFloatingMenuEl = null;
 let skillModeFloatingAnchorEl = null;
 let skillModeFloatingDocHandler = null;
 let skillModeFloatingViewportHandler = null;
-let settingsModalEscapeHandlerBound = false;
 
 function normalizeSkillModeValue(raw) {
     const token = String(raw || '').trim().toLowerCase();
@@ -13931,6 +13927,24 @@ function stopMessagesBottomPin() {
     restoreMessagesBottomPinBehavior();
 }
 
+/**
+ * 设置自动滚动开关（供拆分模块写入，避免直接赋值 ESM import 绑定）。
+ *
+ * @param {boolean} value - 是否自动滚动
+ */
+function setShouldAutoScroll(value) {
+    shouldAutoScroll = !!value;
+}
+
+/**
+ * 记录最近一次观察到的滚动位置（供拆分模块写入，避免直接赋值 ESM import 绑定）。
+ *
+ * @param {number} value - 滚动位置
+ */
+function setMessagesLastObservedScrollTop(value) {
+    __messagesLastObservedScrollTop = Number(value || 0);
+}
+
 function breakMessagesAutoScroll() {
     shouldAutoScroll = false;
     stopMessagesBottomPin();
@@ -14794,16 +14808,8 @@ function scrollToAndHighlight(messageEl) {
     // Unblock after scroll completes
     setTimeout(() => { _isJumping = false; }, 500);
 
-    // Highlight
-    if (notesJumpHighlightTimer) {
-        clearTimeout(notesJumpHighlightTimer);
-        notesJumpHighlightTimer = null;
-    }
-    messageEl.classList.add('note-source-highlight');
-    notesJumpHighlightTimer = setTimeout(() => {
-        messageEl.classList.remove('note-source-highlight');
-        notesJumpHighlightTimer = null;
-    }, 2200);
+    // Highlight（统一走 chat_notes.js 的封装，状态由其持有）
+    highlightMessageForNoteJump(messageEl);
 }
 
 function extractMessageText(msg) {
@@ -23233,7 +23239,6 @@ export {
     isLearningReaderHostActive,
     isMailMobileLayout,
     isMailViewUrl,
-    isMessageInputComposing,
     isMessagesNearBottom,
     isMobileKeyboardLikelyOpen,
     isSidebarOverlayLayout,
@@ -23335,8 +23340,9 @@ export {
     setLearningPracticeMenuOpen,
     setLearningResourceStudioMenuOpen,
     setMailDetailOpen,
+    setMessagesLastObservedScrollTop,
+    setShouldAutoScroll,
     SETTINGS_COMPANION_MODE,
-    settingsModalEscapeHandlerBound,
     setWorkflowDesignerTitle,
     setWorkflowMainMode,
     setWorkflowSidebarActiveWorkflow,

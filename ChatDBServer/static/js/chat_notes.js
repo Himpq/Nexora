@@ -32,7 +32,6 @@ import {
     ensureConversationMessageIndexLoaded,
     ensureMessageInputFocus,
     escapeHtml,
-    forceContextCompressionOnce,
     hideNexoraCodeProject,
     highlightCode,
     isChatMobileLayout,
@@ -1978,6 +1977,9 @@ function resolveSelectionSource(target, selectionText = '', plainText = '') {
     };
 }
 
+// 强制压缩一次开关状态：所有权归属本模块（读写一致），chat.js 经 import 只读消费。
+let forceContextCompressionOnce = false;
+
 function setForceContextCompressionOnce(enabled) {
     forceContextCompressionOnce = !!enabled;
     const btn = els.forceContextCompressionBtn || document.getElementById('forceContextCompressionBtn');
@@ -3714,9 +3716,11 @@ export {
     fetchKnowledgeByTitle,
     fillMessageInputWithExplainText,
     flushNotesCloudSync,
+    forceContextCompressionOnce,
     getConversationTitleFromCache,
     hideNotesContextMenu,
     hidePinContextMenu,
+    highlightMessageForNoteJump,
     initNotesUi,
     installAuthFetchGuard,
     jumpToChatSource,
