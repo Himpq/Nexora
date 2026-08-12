@@ -2,10 +2,6 @@ import socket
 import os
 import threading
 import base64
-try:
-    from . import UserManager
-except Exception:
-    import UserManager
 import json
 import time
 import random
@@ -14,27 +10,13 @@ import re
 import email.header
 import ssl as ssl_lib
 import fnmatch
-try:
-    from . import SocketUtils
-except Exception:
-    import SocketUtils
 import tempfile
-try:
-    from . import Configure, AuthTracker, IPSendLimiter, MailEventQueue
-except Exception:
-    import Configure
-    import AuthTracker
-    import IPSendLimiter
-    import MailEventQueue
 import html
 import importlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-try:
-    from . import ErrorService
-except Exception:
-    import ErrorService
+from . import UserManager, SocketUtils, Configure, AuthTracker, IPSendLimiter, MailEventQueue, ErrorService
 
 # 单个连接尝试的超时（秒）
 SEND_TIMEOUT = 5
@@ -198,99 +180,101 @@ class SessionState:
             self.data_fp = None
 
 
-def loadErrorMailContent(sender, recipient, data, errorReason="Email delivery failed", detail="The recipient's email address was not found on this server.", severity='error', subject=None, dsn_table=None):
-    """生成通知/错误邮件的 HTML 内容。"""
-    error_template = None
-    template_path = conf.get("UserGroups", {}).get("default", {}).get("errorPath") if conf else None
+_SEVERITY_COLORS = {
+    'error': ('#fdecea', '#b71c1c'),
+    'warning': ('#fff8e1', '#f57f17'),
+    'info': ('#e8f5e9', '#2e7d32'),
+}
 
-    try:
-        if template_path:
-            with open(template_path, 'r', encoding='utf-8') as f:
-                error_template = f.read()
-    except Exception:
-        if loginfo:
-            loginfo.write(f"[{sender}][SMTP] Error loading error mail template from {template_path}.")
+_DEFAULT_EMAIL_TEMPLATE = """From: <{from_addr}>
+To: <{sender}>
 
-    if not error_template:
-        domain = None
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; padding: 20px; border-radius: 5px;">
+    <h1 style="margin-bottom: 8px;">$TITLE</h1>
+    <div style="padding: 12px; border-radius: 4px; background: $BGCOLOR; color: $FONTCOLOR; margin-bottom: 12px;">
+        $DETAIL
+    </div>
+    <div style="color:#666; line-height:1.6;">
+        <p>Original message:</p>
+        <pre style="white-space:pre-wrap; background:#fff; padding:10px; border:1px solid #eee;">$ORIGINAL</pre>
+    </div>
+    <div style="margin-top: 12px; color: #999; font-size: 12px;">This is an automatically generated message.</div>
+</div>"""
+
+
+def _resolve_sender_domain():
+    services = (conf.get('SMTPServices', {}) or {}).get('services', {}) if conf else {}
+    if services:
         try:
-            services = conf.get('SMTPServices', {}).get('services', {}) or {} if conf else {}
-            if services:
-                try:
-                    ports = sorted(int(p) for p in services.keys())
-                    chosen = services.get(str(ports[0]), {})
-                except Exception:
-                    chosen = next(iter(services.values()))
-                usergroup_name = chosen.get('userGroup') if isinstance(chosen, dict) else None
-                if usergroup_name:
-                    try:
-                        ug = UserManager.getGroup(usergroup_name)
-                        bind_domains = getattr(ug, 'domains', None) or []
-                        if bind_domains:
-                            domain = bind_domains[0]
-                    except Exception:
-                        domain = None
-            if not domain and conf:
-                ug_default = conf.get('UserGroups', {}).get('default', {})
-                bind_domains = ug_default.get('bindDomains') or []
-                domain = bind_domains[0] if bind_domains else None
+            ports = sorted(int(p) for p in services.keys())
+            chosen = services.get(str(ports[0]), {})
         except Exception:
-            domain = None
+            chosen = next(iter(services.values()))
+        usergroup_name = chosen.get('userGroup') if isinstance(chosen, dict) else None
+        if usergroup_name:
+            try:
+                ug = UserManager.getGroup(usergroup_name)
+                domains = getattr(ug, 'domains', None) or []
+                if domains:
+                    return domains[0]
+            except Exception:
+                pass
+    if conf:
+        domains = (conf.get('UserGroups', {}).get('default', {}) or {}).get('bindDomains') or []
+        if domains:
+            return domains[0]
+    return None
 
-        from_addr = f"wMailServer@{domain}" if domain else "wMailServer@localhost"
-        error_template = f"From: <{from_addr}>\r\n"
-        error_template += f"To: <{sender}>\r\n\r\n"
-        error_template += "<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; padding: 20px; border-radius: 5px;\">"
-        error_template += "<h1 style=\"margin-bottom: 8px;\">$TITLE</h1>"
-        error_template += "<div style=\"padding: 12px; border-radius: 4px; background: $BGCOLOR; color: $FONTCOLOR; margin-bottom: 12px;\">"
-        error_template += "$DETAIL"
-        error_template += "</div>"
-        error_template += "<div style=\"color:#666; line-height:1.6;\">\n<p>Original message:</p>\n<pre style=\"white-space:pre-wrap; background:#fff; padding:10px; border:1px solid #eee;\">$ORIGINAL</pre>\n</div>"
-        error_template += "<div style=\"margin-top: 12px; color: #999; font-size: 12px;\">This is an automatically generated message.</div>"
-        error_template += "</div>"
 
-    current_time = time.strftime("%a, %d %b %Y %H:%M:%S %z")
+def _load_template():
+    template_path = (conf.get('UserGroups', {}).get('default', {}) or {}).get('errorPath') if conf else None
+    if template_path:
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            if loginfo:
+                loginfo.write(f"[SMTP] Error loading error mail template from {template_path}.")
+    return None
 
-    colors = {
-        'error': ('#fdecea', '#b71c1c'),
-        'warning': ('#fff8e1', '#f57f17'),
-        'info': ('#e8f5e9', '#2e7d32'),
-    }
-    bg, fg = colors.get(severity, colors['error'])
+
+def loadErrorMailContent(sender, recipient, data, errorReason="Email delivery failed",
+                         detail="The recipient's email address was not found on this server.",
+                         severity='error', subject=None, dsn_table=None):
+    """生成通知/错误邮件的 HTML 内容。"""
+    template = _load_template()
+    if not template:
+        domain = _resolve_sender_domain() or "localhost"
+        template = _DEFAULT_EMAIL_TEMPLATE.format(from_addr=f"wMailServer@{domain}", sender="{sender}")
+        template = template.replace("{sender}", "<%s>" % sender)
+
+    bg, fg = _SEVERITY_COLORS.get(severity, _SEVERITY_COLORS['error'])
+    header_color = {'warning': '#f57f17', 'info': '#2e7d32'}.get(severity, '#b71c1c')
+    recipient_domain = recipient.split('@', 1)[1] if '@' in recipient else recipient
 
     replacements = {
-        "$TIME": current_time,
-        "$MAIL_FROM": sender,
-        "$MAIL_TO": recipient,
+        "$TIME": time.strftime("%a, %d %b %Y %H:%M:%S %z"),
+        "$MAIL_FROM": html.escape(sender),
+        "$MAIL_TO": html.escape(recipient),
         "$ERROR_MAIL_ID": ''.join(random.choices(string.ascii_letters + string.digits, k=16)),
-        "$USERGROUP_DOMAIN": recipient.split('@')[1] if '@' in recipient else recipient,
-        "$TITLE": errorReason,
-        "$RECIPIENT": recipient,
-        "$REASON": errorReason,
+        "$USERGROUP_DOMAIN": html.escape(recipient_domain),
+        "$TITLE": html.escape(errorReason),
+        "$RECIPIENT": html.escape(recipient),
+        "$REASON": html.escape(errorReason),
         "$DETAIL": detail,
-        "$ORIGINAL": data,
+        "$ORIGINAL": html.escape(data),
         "$BGCOLOR": bg,
         "$FONTCOLOR": fg,
+        "$HEADER_COLOR": header_color,
+        "$ACCENT_COLOR": header_color,
+        "$SUBJECT": html.escape(subject) if subject else '',
+        "$DSN_TABLE": dsn_table or '',
     }
 
-    replacements["$SUBJECT"] = subject or ''
-    replacements["$DSN_TABLE"] = dsn_table or ''
-
-    header_color = '#b71c1c'
-    accent_color = '#b71c1c'
-    if severity == 'warning':
-        header_color = '#f57f17'
-        accent_color = '#f57f17'
-    elif severity == 'info':
-        header_color = '#2e7d32'
-        accent_color = '#2e7d32'
-    replacements['$HEADER_COLOR'] = header_color
-    replacements['$ACCENT_COLOR'] = accent_color
-
     for key, value in replacements.items():
-        error_template = error_template.replace(key, value)
+        template = template.replace(key, value)
 
-    return error_template
+    return template
 
 
 def _send_response(conn, message: str) -> None:
@@ -525,7 +509,7 @@ def handle_data(conn, state: SessionState, userGroup) -> None:
             "Bad sequence of commands",
             log_message="DATA error: Bad sequence")
 
-    limit_decision = IPSendLimiter.reserve(state.peer)
+    limit_decision = IPSendLimiter.reserve(state.peer, state.mail_from or "")
 
     if not limit_decision.allowed:
         state.log(
@@ -1105,7 +1089,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             if not has_perm(auth_user, 'sendlocal'):
                 loginfo.write(f"[{auth_user}][SMTP] Permission denied: sendlocal required to send to local user {recipient}")
                 sendErrorMail(sender, recipient, data, userGroup, "Permission denied", "sendlocal permission required")
-                return False
+                return False, []
         # 本地投递（保存）
         path = userGroup.getUserPath(recipient)
         mail_id = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
@@ -1347,36 +1331,39 @@ def sendIPLimitReport(report: IPSendLimiter.IPSendLimitReport, userGroup) -> boo
         '%Y-%m-%d %H:%M:%S',
         time.localtime(report.observed_at),
     )
-    body_lines = [
-        "NexoraMail detected elevated SMTP submission volume from one IP.",
-        "",
-        f"IP: {report.ip}",
-        f"Current usage: {report.message_count}/{report.max_messages}",
-        f"Window started: {window_started}",
-        f"Observed at: {observed_at}",
-        "",
-        "Recent message subjects:",
-    ]
 
+    # 构建详情 HTML
+    user_info = f"<p><strong>触发用户:</strong> {html.escape(report.user)}</p>" if report.user else ""
+    detail_html = f"""
+    <p>NexoraMail 检测到来自以下 IP 的 SMTP 发送量达到阈值。</p>
+    <div style="background:#fff3e0;padding:12px;border-radius:4px;margin:12px 0;border-left:4px solid #f57f17;">
+        <p style="margin:4px 0;"><strong>IP 地址:</strong> {html.escape(report.ip)}</p>
+        <p style="margin:4px 0;"><strong>当前用量:</strong> {report.message_count}/{report.max_messages}</p>
+        <p style="margin:4px 0;"><strong>窗口开始:</strong> {window_started}</p>
+        <p style="margin:4px 0;"><strong>检测时间:</strong> {observed_at}</p>
+        {user_info}
+    </div>
+    """
+
+    subjects_html = ""
     if report.recent_subjects:
-        body_lines.extend(
-            f"{index}. {recent_subject}"
-            for index, recent_subject in enumerate(report.recent_subjects, start=1)
-        )
+        items = "".join(f"<li>{html.escape(s)}</li>" for s in report.recent_subjects)
+        subjects_html = f"<p><strong>最近邮件主题:</strong></p><ul>{items}</ul>"
     else:
-        body_lines.append("(no completed message subjects recorded yet)")
+        subjects_html = "<p><strong>最近邮件主题:</strong> <em>(暂无记录)</em></p>"
 
-    message = "\r\n".join([
-        f"From: {sender}",
-        f"To: {recipient}",
-        f"Subject: {subject}",
-        "MIME-Version: 1.0",
-        'Content-Type: text/plain; charset="UTF-8"',
-        "Content-Transfer-Encoding: 8bit",
-        "",
-        *body_lines,
-        "",
-    ])
+    detail_html += subjects_html
+
+    # 使用模板生成 HTML 邮件内容
+    message = loadErrorMailContent(
+        sender=sender,
+        recipient=recipient,
+        data="",
+        errorReason=subject,
+        detail=detail_html,
+        severity='warning',
+        subject=subject,
+    )
     result = sendMail(sender, recipient, message, None, userGroup, suppressError=True)
     sent = result[0] if isinstance(result, tuple) else bool(result)
 
@@ -1600,12 +1587,10 @@ def sendDsnMail(sender, original, attempts, userGroup):
 class SMTPService:
     def __init__(self, bindIP, port, userGroup, ssl=False):
         self.socket = socket.socket()
-        # Allow fast restart without hitting transient EADDRINUSE after reboot/restart.
         try:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except Exception:
             pass
-        # Optional on Linux: allow rebinding in edge cases. Ignore if unsupported.
         try:
             if hasattr(socket, "SO_REUSEPORT"):
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -1614,9 +1599,11 @@ class SMTPService:
         self.port = port
         self.userGroupName = userGroup
         self.userGroup = UserManager.getGroup(userGroup)
-        
+
         self.threadpools = []
         self.useSSL = ssl
+        smtp_settings = Configure.get('SMTPServices', {}).get('settings', {}) or {}
+        self.max_connections = int(smtp_settings.get('maxConnections', 512))
 
         if ssl:
             sslConfig = conf.get("UserGroups", {}).get(userGroup, {}).get("sslCert", {})
@@ -1670,9 +1657,21 @@ class SMTPService:
     def listen(self):
         while True:
             try:
-                # reload user group to get the latest config
                 self.userGroup = UserManager.getGroup(self.userGroupName)
 
+                self.threadpools = [t for t in self.threadpools if t.is_alive()]
+                if len(self.threadpools) >= self.max_connections:
+                    try:
+                        conn, addr = self.socket.accept()
+                        loginfo.write(f"[SMTP] Too many active connections ({len(self.threadpools)}), refusing {addr}")
+                        conn.send(b"421 Server busy, try later\r\n")
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    continue
 
                 conn, addr = self.socket.accept()
                 # check IP block before creating handler thread
@@ -1813,6 +1812,8 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
                         if int(port) == 465:
                             try:
                                 context = ssl_lib.create_default_context()
+                                context.check_hostname = True
+                                context.verify_mode = ssl_lib.CERT_REQUIRED
                                 conn = context.wrap_socket(conn, server_hostname=host)
                                 # 使用全局 SMTPSettings.ioTimeout 作为 I/O 超时
                                 io_timeout = conf.get('SMTPSettings', {}).get('ioTimeout')
@@ -1851,6 +1852,8 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
                                 resp = connfile.readline()
                                 if resp.startswith('220'):
                                     context = ssl_lib.create_default_context()
+                                    context.check_hostname = True
+                                    context.verify_mode = ssl_lib.CERT_REQUIRED
                                     conn = context.wrap_socket(conn, server_hostname=host)
                                     io_timeout = conf.get('SMTPSettings', {}).get('ioTimeout')
                                     if io_timeout is not None:
@@ -2086,6 +2089,8 @@ def mailRelay(sender, recipient, data, userGroup:UserManager.UserGroup, suppress
         if use_ssl_on_connect:
             try:
                 context = ssl_lib.create_default_context()
+                context.check_hostname = True
+                context.verify_mode = ssl_lib.CERT_REQUIRED
                 conn = context.wrap_socket(conn, server_hostname=relayHost)
                 if io_timeout is not None:
                     conn.settimeout(float(io_timeout))
@@ -2121,6 +2126,8 @@ def mailRelay(sender, recipient, data, userGroup:UserManager.UserGroup, suppress
                 resp = connfile.readline()
                 if resp.startswith('220'):
                     context = ssl_lib.create_default_context()
+                    context.check_hostname = True
+                    context.verify_mode = ssl_lib.CERT_REQUIRED
                     conn = context.wrap_socket(conn, server_hostname=relayHost)
                     if io_timeout is not None:
                         conn.settimeout(float(io_timeout))

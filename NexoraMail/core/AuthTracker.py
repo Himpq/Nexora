@@ -1,21 +1,25 @@
 import time
 import threading
 import datetime
+from collections import OrderedDict
 
-# optional logger (set by services via AuthTracker.init(log))
 loginfo = None
 
-# 简单的内存追踪器：IP -> {'fails': int, 'blocked_until': ts}
 _lock = threading.Lock()
-_store = {}
+_store = OrderedDict()
 
-# 配置驱动的阈值，默认值会由 Configure.init() 写入配置后读取
 DEFAULT_MAX_TRIES = 5
 DEFAULT_BLOCK_SECONDS = 3600
+MAX_TRACKED_IPS = 10000
 
 
 def _now():
     return int(time.time())
+
+
+def _evict_if_needed():
+    while len(_store) > MAX_TRACKED_IPS:
+        _store.popitem(last=False)
 
 
 def record_failure(ip, max_tries=DEFAULT_MAX_TRIES, block_seconds=DEFAULT_BLOCK_SECONDS):
@@ -26,11 +30,11 @@ def record_failure(ip, max_tries=DEFAULT_MAX_TRIES, block_seconds=DEFAULT_BLOCK_
         if not ent:
             ent = {'fails': 0, 'blocked_until': 0, 'block_seconds': 0}
             _store[ip] = ent
+            _evict_if_needed()
         ent['fails'] += 1
         if ent['fails'] >= int(max_tries):
             ent['block_seconds'] = int(block_seconds)
             ent['blocked_until'] = _now() + int(block_seconds)
-            # log detail if logger provided
             try:
                 if loginfo:
                     ts = datetime.datetime.fromtimestamp(ent['blocked_until']).isoformat()
@@ -56,8 +60,8 @@ def is_blocked(ip):
         if not ent:
             return False
         if ent.get('blocked_until', 0) > _now():
+            _store.move_to_end(ip)
             return True
-        # expired -> clear
         if ent.get('blocked_until', 0) and ent.get('blocked_until', 0) <= _now():
             _store.pop(ip, None)
             return False
@@ -82,6 +86,7 @@ def block_ip(ip, seconds=60):
         if not ent:
             ent = {'fails': 0, 'blocked_until': 0, 'block_seconds': 0}
             _store[ip] = ent
+            _evict_if_needed()
         ent['block_seconds'] = int(seconds)
         ent['blocked_until'] = _now() + int(seconds)
         try:

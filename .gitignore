@@ -42,3 +42,4 @@ NexoraVideoGenerator/core
 NexoraLearning/tests/test_booksproc_outline_trigger.py
 NexoraLearning/tests/test_cognition_course_catalog.py
 NexoraLearning/frontend/assets/vendor/echarts/LICENSE
+.arts

@@ -1,8 +1,11 @@
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional
+
+MAX_TRACKED_IPS = 10000
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,7 @@ class IPSendLimitReport:
     observed_at: int
     report_recipient: str
     recent_subjects: List[str]
+    user: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,7 @@ class _IPSendState:
     report_pending: bool = False
     report_sent: bool = False
     recent_subjects: List[str] = field(default_factory=list)
+    last_user: str = ""
 
 
 class IPSendLimiter:
@@ -130,14 +135,14 @@ class IPSendLimiter:
         self._config = config
         self._clock = clock
         self._lock = threading.Lock()
-        self._states: Dict[str, _IPSendState] = {}
+        self._states: "OrderedDict[str, _IPSendState]" = OrderedDict()
         self._last_cleanup_at = 0
 
     @property
     def config(self) -> IPSendLimitConfig:
         return self._config
 
-    def reserve(self, ip: str) -> IPSendLimitDecision:
+    def reserve(self, ip: str, user: str = "") -> IPSendLimitDecision:
         """Atomically consume one message slot before SMTP accepts DATA."""
         if not self._config.enabled:
             return IPSendLimitDecision(allowed=True, enabled=False)
@@ -173,8 +178,12 @@ class IPSendLimiter:
             if state is None:
                 state = _IPSendState(window_started_at=now)
                 self._states[ip] = state
+                while len(self._states) > MAX_TRACKED_IPS:
+                    self._states.popitem(last=False)
 
             state.message_count += 1
+            if user:
+                state.last_user = user
 
             if state.message_count == self._config.max_messages:
                 state.cooldown_until = now + self._config.cooldown_seconds
@@ -201,19 +210,23 @@ class IPSendLimiter:
         if now - self._last_cleanup_at < cleanup_interval:
             return
 
-        expired_ips = [
-            tracked_ip
-            for tracked_ip, state in self._states.items()
+        batch_size = 100
+        expired_count = 0
+        keys_to_remove = []
+
+        for tracked_ip, state in self._states.items():
+            if len(keys_to_remove) >= batch_size:
+                break
             if (
                 0 < state.cooldown_until <= now
                 or (
                     state.cooldown_until == 0
                     and now - state.window_started_at >= self._config.window_seconds
                 )
-            )
-        ]
+            ):
+                keys_to_remove.append(tracked_ip)
 
-        for tracked_ip in expired_ips:
+        for tracked_ip in keys_to_remove:
             self._states.pop(tracked_ip, None)
 
         self._last_cleanup_at = now
@@ -239,6 +252,7 @@ class IPSendLimiter:
             observed_at=now,
             report_recipient=self._config.report_recipient,
             recent_subjects=list(state.recent_subjects),
+            user=state.last_user,
         )
 
     def complete_report(self, report: IPSendLimitReport, sent: bool) -> None:
@@ -295,8 +309,8 @@ def init(logger: Any, settings: Mapping[str, Any]) -> None:
         )
 
 
-def reserve(ip: str) -> IPSendLimitDecision:
-    return _limiter.reserve(ip)
+def reserve(ip: str, user: str = "") -> IPSendLimitDecision:
+    return _limiter.reserve(ip, user)
 
 
 def complete_report(report: IPSendLimitReport, sent: bool) -> None:

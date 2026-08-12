@@ -9,8 +9,6 @@ def initModule():
     if not os.path.exists("./usermanager/"):
         os.makedirs("./usermanager")
         getGroup("default")
-        getGroup("default").addUser("admin", "admin")
-        getGroup("default").addUser("admin2", "admin2")
 
 def getGroup(groupname):
     if not groupname in groups:

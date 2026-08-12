@@ -7,6 +7,15 @@ from providers.volcengine import VolcengineProvider
 
 
 def _infer_api_type(provider_name: str, provider_config: Dict[str, Any]) -> str:
+    # 内置专用 adapter 的 provider 优先按 provider 名路由，避免 api_type 误判为通用 openai。
+    # 例：volcengine 配置 api_type=openai_compatible 时会错误落到 OpenAIProvider（use_responses_api=False），
+    #     导致 Chat Completions + native web_search 触发 Ark 报 missing tools.function。
+    p = str(provider_name or "").strip().lower()
+    if p == "volcengine":
+        return "volcengine"
+    if p == "aliyun":
+        return "dashscope"
+
     api_type = str(provider_config.get("api_type", "") or "").strip().lower()
     if api_type:
         if api_type in {"openaiapi", "openai-api", "openai_compatibleapi"}:
@@ -14,11 +23,8 @@ def _infer_api_type(provider_name: str, provider_config: Dict[str, Any]) -> str:
         if api_type in {"openai-compatible", "openai compatible"}:
             return "openai_compatible"
         return api_type
-    p = str(provider_name or "").strip().lower()
-    if p == "volcengine":
-        return "volcengine"
-    if p == "aliyun":
-        return "dashscope"
+    if p == "vllm":
+        return "vllm"
     return "openai"
 
 

@@ -3,22 +3,11 @@ import threading
 import os
 import json
 import base64
-try:
-    from . import UserManager, AuthTracker
-except Exception:
-    import UserManager
-    import AuthTracker
 import time
 import math
-try:
-    from . import Configure
-except Exception:
-    import Configure
 import ssl as ssl_lib
-try:
-    from . import SocketUtils
-except Exception:
-    import SocketUtils
+
+from . import UserManager, AuthTracker, Configure, SocketUtils
 
 loginfo = None
 conf = None
@@ -497,7 +486,8 @@ def list_mails(mailpath):
             })
         except Exception:
             continue
-    mails.sort(key=lambda x: (int(x.get('timestamp', 0) or 0), str(x.get('id', ''))), reverse=True)
+    # 按时间戳升序排列：先收到的邮件编号小，新邮件到达时旧邮件编号保持不变
+    mails.sort(key=lambda x: (int(x.get('timestamp', 0) or 0), str(x.get('id', ''))))
     return mails
 
 
@@ -645,17 +635,17 @@ def handle(conn: socket.socket, addr, user_group):
                     loginfo.write(f"[{conn.getpeername()}][POP3] Unknown command: {cmd}")
                     conn.send("-ERR Unknown command\r\n".encode())
 
-        except Exception as e:
-            loginfo.write(f"[{conn.getpeername()}][POP3] Error processing command: {str(e)}")
-            try:
-                conn.send("-ERR Server error\r\n".encode())
-            except Exception:
-                pass
-            break
         except socket.timeout:
             try:
                 loginfo.write(f"[{conn.getpeername()}][POP3] Idle timeout, closing connection")
                 conn.send("-ERR idle timeout\r\n".encode())
+            except Exception:
+                pass
+            break
+        except Exception as e:
+            loginfo.write(f"[{conn.getpeername()}][POP3] Error processing command: {str(e)}")
+            try:
+                conn.send("-ERR Server error\r\n".encode())
             except Exception:
                 pass
             break

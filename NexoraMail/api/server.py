@@ -106,15 +106,9 @@ def _get_expected_api_key():
 def require_api_token(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        cfg = _get_api_config()
         expected = _get_expected_api_key()
-        # If no token configured, keep API local-only by default.
         if not expected:
-            if cfg.get("local_only_when_no_api_key", True):
-                remote = (request.remote_addr or "").strip()
-                if remote not in ("127.0.0.1", "::1", "localhost"):
-                    return jsonify({"success": False, "message": "API key not configured; local-only mode"}), 403
-            return fn(*args, **kwargs)
+            return jsonify({"success": False, "message": "API key not configured"}), 403
         got = _extract_token()
         if got != expected:
             return jsonify({"success": False, "message": "Invalid API key"}), 401
