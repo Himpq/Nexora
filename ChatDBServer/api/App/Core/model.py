@@ -14,20 +14,20 @@ from urllib import request as urllib_request, error as urllib_error, parse as ur
 from email.header import Header
 from email.utils import parsedate_to_datetime
 from basis.Tool import TOOLS, canonicalize_tool_name, get_tools_for_config, ToolResultPresenter
-from tool_executor import ToolExecutor
+from App.Executor import ToolExecutor
 from database import User, BASIS
 from basis.Conversation import ConversationManager
-from context_manager import ChatContextManager
+from basis.Model.Context import ChatContextManager
 from App.Utils import (
     sanitize_assistant_visible_content,
     strip_streamed_history_time_marker_echo,
 )
 from basis.Model.Provider import create_provider_adapter
-from basis.Model.MailMixin import MailMixin
+from App.Components import MailMixin
 from basis.Permission import build_permission_hint_by_role, get_user_role_by_username
-from temp_context_store import TempContextStore
+from App.Storage import TempContextStore
 from basis.TokenUsage import get_generation_quota_gate
-from stream_runtime import is_stream_cancelled_error
+from .stream_runtime import is_stream_cancelled_error
 from basis.TokenUsage import append_usage_log_record
 from longterm.longterm_api import (
     build_longterm_hook_payload,
@@ -36,7 +36,7 @@ from longterm.longterm_api import (
     normalize_longterm_payload,
     conversation_longterm_root_state,
 )
-from learning_runtime import (
+from App.Components import (
     get_learning_tools,
     trigger_learning_memory_analysis,
     increment_learning_turn_and_maybe_enqueue,
@@ -176,19 +176,9 @@ LEARNING_ALLOWED_BASE_TOOL_NAMES = {
 }
 
 def _ensure_json_serializable(obj):
-    """
-    递归确保对象可以被 JSON 序列化
-    将所有不可序列化的对象转换为字符串
-    """
-    if isinstance(obj, (str, int, float, bool, type(None))):
-        return obj
-    elif isinstance(obj, dict):
-        return {k: _ensure_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_ensure_json_serializable(item) for item in obj]
-    else:
-        # 对于任何其他类型（包括 SDK 对象），转换为字符串
-        return str(obj)
+    """递归确保对象可 JSON 序列化。核心由 basis.Database 提供。"""
+    from basis.Database import ensure_json_serializable
+    return ensure_json_serializable(obj)
 
 class Model(MailMixin):
     """大模型封装类 - 支持多供应商"""
@@ -1469,22 +1459,9 @@ class Model(MailMixin):
         return users
 
     def _estimate_token_count(self, text: str) -> int:
-        """估算 token 数（当 provider 不返回 usage 时的兜底）"""
-        if not text:
-            return 0
-        try:
-            s = str(text)
-            cjk = 0
-            for ch in s:
-                if '\u4e00' <= ch <= '\u9fff':
-                    cjk += 1
-            other = max(0, len(s) - cjk)
-            # 经验估算（保守）：中文约 0.8 token/字，其他字符约 1 token/4字符
-            # 仅用于 provider 缺少 usage 时兜底，实际计费以 provider 返回为准。
-            est = int(cjk * 0.8 + other / 4.0)
-            return max(1, est)
-        except Exception:
-            return max(1, len(str(text)) // 4)
+        """估算 token 数（当 provider 不返回 usage 时的兜底）。核心由 basis.TokenUsage 提供。"""
+        from basis.TokenUsage import estimate_token_count
+        return estimate_token_count(text)
 
     def _resolve_model_context_window_limit(self) -> int:
         """

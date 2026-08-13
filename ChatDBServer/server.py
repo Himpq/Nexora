@@ -28,16 +28,16 @@ import httpx
 
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
-from model import Model
+from App.Core import Model
 from database import User
 from basis.Conversation import ConversationManager
 from longterm.longterm_api import normalize_longterm_request
-from chroma_client import ChromaStore
-from file_sandbox import UserFileSandbox
+from App.Storage import ChromaStore
+from App.Storage import UserFileSandbox
 from basis.Model.Provider import create_provider_adapter
 from App.Utils import add_request_listener, pull_pending_request, submit_request_result
 from agent_tunnel import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
-from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
+from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
 from map.baidu import load_map_scene_for_map_id
 from App.Utils import normalize_text, resolve_configured_path, safe_filename, safe_join_path
@@ -56,12 +56,12 @@ from basis.Permission import (
 import basis.Permission.AuthKey as _authkey
 import basis.Config as _config_basis
 import basis.User as _user_basis
-from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
-from learning_runtime import get_learning_runtime_local_config
+from App.Components import build_learning_context_payload, build_learning_memory_blocks
+from App.Components import get_learning_runtime_local_config
 from memory_analysis import get_memory_analysis_queue
 from basis.TokenUsage import TokenUsageDetailPresenter
-from longdoc_skills import load_longdoc_skill_catalog
-from system_settings_runtime import SystemSettingsRuntimeSyncer
+from App.Executor import load_longdoc_skill_catalog
+from App.Core import SystemSettingsRuntimeSyncer
 from service_status_monitor import ServiceStatusMonitor
 from basis.TokenUsage import (
     get_server_quota_status,
@@ -17120,7 +17120,7 @@ def ai_generate_index():
         return jsonify({'success': False, 'error': '未指定分类'})
     
     try:
-        from api.model import Model
+        from App.Core import Model
         
         graph = user.get_knowledge_graph()
         if category not in graph['categories']:

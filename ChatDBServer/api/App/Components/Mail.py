@@ -1,14 +1,13 @@
 """
-Nexora.basis.Model.MailMixin — 模型邮件工具混合类
+Nexora.app.Components.Mail — NexoraMail 链接桥
 
-职责：NexoraMail 集成（配置读取、HTTP 调用、邮件工具注入、发送/读取工具）。
-从 model.py 拆分，Model 主类继承本 Mixin 保持 self 语义不变。
+职责：模型调用 NexoraMail 服务的链接桥梁（HTTP 调用、邮件工具注入、发送/读取工具）。
+归入 app.Components（其他项目链接桥梁），不再属于 basis.Model。
 
-依赖：
-- self.config: Model 实例配置（nexora_mail 段）
-- self.username / self.user: 当前用户
-- DATA_DIR: 经延迟导入（from model import DATA_DIR）
+对外提供：
+- MailMixin: 邮件工具混合类（Model 主类继承）
 """
+
 from __future__ import annotations
 
 import base64
@@ -28,7 +27,7 @@ from urllib.parse import urlsplit
 class MailMixin:
     def _get_model_data_dir(self) -> str:
         """延迟获取 model 模块的 DATA_DIR（避免顶层循环导入）。"""
-        from model import DATA_DIR
+        from App.Core.model import DATA_DIR
         return DATA_DIR
 
     def _get_nexora_mail_config(self) -> Dict[str, Any]:

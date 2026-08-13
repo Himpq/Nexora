@@ -18,7 +18,7 @@ from flask import Blueprint, jsonify, request, session
 
 from basis.Conversation import ConversationManager
 from database import User
-from file_sandbox import UserFileSandbox
+from App.Storage import UserFileSandbox
 
 
 global_search_bp = Blueprint("global_search", __name__)

@@ -1,7 +1,12 @@
-"""ChatDB 聊天上下文管理组件。
+"""
+Nexora.basis.Model.Context — 模型上下文构建层
 
-该组件集中管理请求上下文构建、压缩摘要注入、压缩输入格式化与压缩轮次执行。
-Model 只负责主流程编排和 Provider 调用细节。
+职责：构建模型请求的消息列表（system prompt + 历史消息）、上下文压缩、
+上下文策略控制。从 context_manager.py 迁移，归入 basis.Model。
+
+对外提供：
+- ChatContextManager: 上下文管理器
+- ChatContext / ChatContextMessage / ChatContextPolicy: 上下文模型
 """
 
 from __future__ import annotations

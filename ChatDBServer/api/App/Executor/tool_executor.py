@@ -12,16 +12,16 @@ import xml.etree.ElementTree as ET
 import ssl
 import uuid
 
-from chroma_client import ChromaStore
-from file_sandbox import UserFileSandbox
-from document_generation import DocumentGenerationService
+from App.Storage import ChromaStore
+from App.Storage import UserFileSandbox
+from .document_generation import DocumentGenerationService
 from App.Utils import request_client_js_execution
 from basis.Conversation import persist_conversation_image_bytes
 from basis.TokenUsage import build_image_generation_log_context, record_papi_image_generation
 from basis.Model.Provider import create_provider_adapter
 from basis.Tool import canonicalize_tool_name
-from learning_runtime import LearningRuntimeExecutor, get_learning_tools
-from longdoc_skills import read_longdoc_skill
+from App.Components import LearningRuntimeExecutor, get_learning_tools
+from .longdoc_skills import read_longdoc_skill
 from map.baidu import BaiduMapToolService
 from map.tianditu import create_map_tool_service
 from permission_requests import build_permission_question_id, normalize_project_permission_request

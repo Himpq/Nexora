@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from basis.Conversation import ConversationManager
 from database import User
-from model import Model
+from App.Core import Model
 from basis.TokenUsage import append_usage_log_record
 import prompts
 

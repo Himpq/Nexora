@@ -1,7 +1,11 @@
-"""HTTP runtime adapter for NexoraLearning.
+"""
+Nexora.app.Components.Learning — NexoraLearning 链接桥
 
-ChatDBServer must not import NexoraLearning internals directly.
-This module talks to NexoraLearning over its runtime API.
+职责：模型/工具调用 NexoraLearning 服务的链接桥梁（HTTP 调用、学习上下文构建）。
+归入 app.Components（其他项目链接桥梁）。
+
+对外提供：
+- LearningRuntimeExecutor / build_learning_context_payload 等
 """
 
 from __future__ import annotations

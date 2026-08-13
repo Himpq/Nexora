@@ -897,7 +897,7 @@ class WorkspaceStore:
         if ref["added_by"] != owner:
             raise PermissionError("workspace file owner mismatch")
 
-        from api.file_sandbox import UserFileSandbox
+        from App.Storage import UserFileSandbox
 
         return UserFileSandbox(owner)._get_entry(ref["file_ref"])
 

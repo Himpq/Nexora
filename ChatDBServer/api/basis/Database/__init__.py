@@ -389,3 +389,18 @@ def safe_read_jsonl_tail(path: str, limit: int = 120) -> list:
     except Exception:
         return []
 
+
+
+def ensure_json_serializable(obj):
+    """
+    递归确保对象可以被 JSON 序列化。
+    将所有不可序列化的对象转换为字符串（含 SDK 对象）。
+    从 model._ensure_json_serializable 抽取，供各模块复用。
+    """
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    if isinstance(obj, dict):
+        return {k: ensure_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [ensure_json_serializable(item) for item in obj]
+    return str(obj)

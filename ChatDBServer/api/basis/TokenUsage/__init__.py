@@ -23,6 +23,7 @@ from .quota import (
 from .usage_logs import (
     append_usage_log_record,
     compact_usage_log_records,
+    estimate_token_count,
     is_usage_log_path,
     maybe_compact_usage_log_async,
     read_usage_log_records,

@@ -243,3 +243,23 @@ def maybe_compact_usage_log_async(json_path: str) -> bool:
     thread.start()
 
     return True
+
+
+def estimate_token_count(text):
+    """
+    估算 token 数（当 provider 不返回 usage 时的兜底）。
+    从 model._estimate_token_count 抽取，供各模块复用。
+    """
+    if not text:
+        return 0
+    try:
+        s = str(text)
+        cjk = 0
+        for ch in s:
+            if '一' <= ch <= '鿿':
+                cjk += 1
+        other = max(0, len(s) - cjk)
+        est = int(cjk * 0.8 + other / 4.0)
+        return max(1, est)
+    except Exception:
+        return max(1, len(str(text)) // 4)

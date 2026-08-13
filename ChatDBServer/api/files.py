@@ -11,7 +11,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from flask import Blueprint, Response, jsonify, render_template, request, send_file, session, stream_with_context
 
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
-from api.file_sandbox import UserFileSandbox
+from App.Storage import UserFileSandbox
 from App.Utils import safe_filename
 
 

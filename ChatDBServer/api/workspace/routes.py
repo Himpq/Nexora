@@ -6,7 +6,7 @@ from flask import Blueprint, jsonify, request, send_file, session
 from api.database import User
 from api.notification import create_user_notification
 from basis.Database import safe_read_json
-from api.file_sandbox import UserFileSandbox
+from App.Storage import UserFileSandbox
 from App.Utils import safe_filename
 
 from .storage import (
