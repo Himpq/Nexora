@@ -1,12 +1,14 @@
 """
-datastorage.py — 统一的数据存储层
-负责所有 JSON / 文本文件的安全读写、锁管理和备份。
-上层模块（database.py, conversation_manager.py 等）应通过此模块进行文件 IO。
+Nexora.basis.Database — 统一数据存储基础层
 
-核心保证:
-  1. 所有写入都是原子的 (tmp → fsync → rename)，崩溃不会产生半截文件
-  2. 所有读-改-写操作在同一把锁内完成，消除并发覆盖
-  3. 写入前自动保留 .bak 备份，可用于灾后恢复
+负责所有 JSON / 文本文件的安全读写、锁管理和备份。
+上层模块应通过此模块进行文件 IO（原子写 / 锁 / 备份）。
+
+对外提供：
+- get_user_lock / get_path_lock / global_file_lock: 锁管理
+- safe_read_json / safe_read_text / safe_write_json / safe_write_text: 安全读写
+- locked_read_modify_write_json / ensure_file_exists: 原子读改写
+- safe_append_jsonl / safe_read_jsonl_tail: JSONL 追加/读取
 """
 
 import json

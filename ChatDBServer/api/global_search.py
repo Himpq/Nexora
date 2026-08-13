@@ -16,7 +16,7 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, jsonify, request, session
 
-from conversation_manager import ConversationManager
+from basis.Conversation import ConversationManager
 from database import User
 from file_sandbox import UserFileSandbox
 

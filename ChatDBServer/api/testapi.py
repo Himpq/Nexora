@@ -8,7 +8,7 @@ from urllib import error as urllib_error, parse as urllib_parse, request as urll
 import certifi
 from flask import Blueprint, jsonify, request
 
-from .runlog import log_event
+from App.Utils import log_event
 
 
 class ServiceHealthTester:

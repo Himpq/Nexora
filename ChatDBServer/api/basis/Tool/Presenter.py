@@ -1,12 +1,16 @@
-﻿"""Render selected tool results as model-friendly Markdown.
+"""
+Nexora.basis.Tool.Presenter — 工具结果展示层
 
-工具函数仍然返回结构化数据；这里负责把少数高频工程工具的结果
-转换成更适合模型继续推理的 Markdown。
+职责：把工具返回的结构化数据渲染成适合模型继续推理的 Markdown。
+工具契约层（basis.Tool）的展示层：schema/命名（Tool）+ 结果渲染（Presenter）。
+
+对外提供：
+- ToolResultPresenter: 工具结果渲染器
 """
 
 import json
 import os
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class ToolResultPresenter:

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterator, Optional
 
-from datastorage import safe_append_jsonl
+from basis.Database import safe_append_jsonl
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

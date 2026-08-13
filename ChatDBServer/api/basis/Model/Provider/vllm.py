@@ -1,4 +1,4 @@
-from providers.openai import OpenAIProvider
+from .openai import OpenAIProvider
 
 
 class VLLMProvider(OpenAIProvider):

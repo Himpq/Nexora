@@ -6,7 +6,7 @@ from urllib import request as urllib_request, error as urllib_error, parse as ur
 from openai import OpenAI
 from volcenginesdkarkruntime import Ark
 
-from provider_base import ProviderInterface
+from .base import ProviderInterface
 
 
 class VolcengineProvider(ProviderInterface):

@@ -1,3 +1,15 @@
+"""
+Nexora.basis.Map — 地图服务基础层
+
+职责：地图工具服务契约（MapToolService），统一 baidu/tianditu 两种 provider 的
+render/calc_distance/calc_route/geocode/poi_search 接口。
+
+对外提供：
+- MapToolService: 地图工具服务
+- BAIDU_PROVIDER / TIANDITU_PROVIDER: provider 常量
+- SUPPORTED_MAP_PROVIDERS / SUPPORTED_ROUTE_MODES: 支持范围
+"""
+
 import json
 import math
 import hashlib

@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 import httpx
 from openai import OpenAI
 
-from provider_base import ProviderInterface
+from .base import ProviderInterface
 
 
 class DashScopeProvider(ProviderInterface):

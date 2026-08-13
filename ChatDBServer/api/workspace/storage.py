@@ -5,9 +5,9 @@ import secrets
 from datetime import datetime
 from typing import Any, Dict, List
 
-from api.conversation_manager import ConversationManager
-from api.datastorage import get_path_lock, safe_read_json, safe_write_json
-from api.text_patch import apply_text_patch, build_preview_diff
+from basis.Conversation import ConversationManager
+from basis.Database import get_path_lock, safe_read_json, safe_write_json
+from App.Utils import apply_text_patch, build_preview_diff
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

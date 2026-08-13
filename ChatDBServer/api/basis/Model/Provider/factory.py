@@ -1,9 +1,9 @@
 from typing import Any, Dict
 
-from providers.dashscope import DashScopeProvider
-from providers.openai import OpenAIProvider
-from providers.vllm import VLLMProvider
-from providers.volcengine import VolcengineProvider
+from .dashscope import DashScopeProvider
+from .openai import OpenAIProvider
+from .vllm import VLLMProvider
+from .volcengine import VolcengineProvider
 
 
 def _infer_api_type(provider_name: str, provider_config: Dict[str, Any]) -> str:
@@ -39,7 +39,7 @@ def create_provider_adapter(provider_name: str, provider_config: Dict[str, Any])
     if api_type == "dashscope":
         return DashScopeProvider(provider_name, cfg)
     if api_type == "ollama":
-        from providers.ollama import OllamaProvider
+        from .ollama import OllamaProvider
         return OllamaProvider(provider_name, cfg)
     if api_type in {"openai", "openai_compatible"}:
         return OpenAIProvider(provider_name, cfg)

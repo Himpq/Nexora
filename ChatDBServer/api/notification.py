@@ -6,8 +6,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from flask import Blueprint, jsonify, request, session
 
-from datastorage import safe_append_jsonl, safe_write_text, get_path_lock
-from secure import safe_join_path
+from basis.Database import safe_append_jsonl, safe_write_text, get_path_lock
+from App.Utils import safe_join_path
 
 
 notification_bp = Blueprint('notification', __name__)

@@ -6,7 +6,7 @@ from urllib import request as urllib_request
 
 from openai import OpenAI
 
-from provider_base import ProviderInterface
+from .base import ProviderInterface
 
 
 OPENAI_CONTEXT_WINDOW_KEYS = (

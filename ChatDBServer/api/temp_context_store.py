@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-from datastorage import safe_read_json, safe_write_json
+from basis.Database import safe_read_json, safe_write_json
 
 _FILE_LOCK = threading.Lock()
 

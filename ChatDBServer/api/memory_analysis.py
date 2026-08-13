@@ -5,10 +5,10 @@ import threading
 import time
 from typing import Any, Dict, List
 
-from conversation_manager import ConversationManager
+from basis.Conversation import ConversationManager
 from database import User
 from model import Model
-from usage_logs import append_usage_log_record
+from basis.TokenUsage import append_usage_log_record
 import prompts
 
 

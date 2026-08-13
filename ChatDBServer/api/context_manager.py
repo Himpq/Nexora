@@ -10,7 +10,7 @@ import json
 from enum import Enum
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
 
-from history_sanitizer import (
+from App.Utils import (
     sanitize_assistant_visible_content,
     strip_history_time_prefix_from_content,
     strip_history_time_prefix_text,

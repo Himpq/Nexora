@@ -8,9 +8,9 @@ import uuid
 import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
-from secure import safe_filename
-from datastorage import safe_read_json, safe_write_json
-from text_patch import apply_text_patch, build_preview_diff, line_separator_name
+from App.Utils import safe_filename
+from basis.Database import safe_read_json, safe_write_json
+from App.Utils import apply_text_patch, build_preview_diff, line_separator_name
 import prompts
 
 

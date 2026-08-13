@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 from typing import Any, Dict, List
 
-from datastorage import get_path_lock, safe_append_jsonl, safe_read_json, safe_read_jsonl_tail, safe_write_json
+from basis.Database import get_path_lock, safe_append_jsonl, safe_read_json, safe_read_jsonl_tail, safe_write_json
 
 
 USAGE_LOG_FILENAMES = {

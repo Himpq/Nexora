@@ -9,10 +9,10 @@ from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime
 
-from conversation_repair import recover_conversation_bytes
-from history_sanitizer import sanitize_assistant_visible_content
+from .repair import recover_conversation_bytes
+from App.Utils import sanitize_assistant_visible_content
 from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
-from datastorage import get_path_lock, safe_write_json
+from basis.Database import get_path_lock, safe_write_json
 
 CONVERSATION_INDEX_VERSION = 3
 

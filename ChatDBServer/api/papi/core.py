@@ -9,7 +9,8 @@ from typing import Any, Callable, Dict, List, Tuple, Optional, Generator
 from flask import request, jsonify, Response, stream_with_context, current_app
 from functools import wraps
 
-from runlog import append_log_text, log_event
+from App.Utils import append_log_text, log_event
+from basis.Permission import PERMISSION_DEFAULTS as _PAPI_PERMISSION_DEFAULTS
 
 
 def _resolve_server_module():

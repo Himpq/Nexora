@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-from secure import safe_join_path
+from App.Utils import safe_join_path
 
 
 IMAGE_MIME_TO_EXT = {

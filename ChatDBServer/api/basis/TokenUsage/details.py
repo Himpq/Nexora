@@ -2,7 +2,7 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
-from conversation_manager import ConversationManager
+from basis.Conversation import ConversationManager
 
 
 class TokenUsageDetailPresenter:

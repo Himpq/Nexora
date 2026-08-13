@@ -3,7 +3,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from datastorage import get_user_lock, safe_append_jsonl, safe_read_jsonl_tail, safe_read_json
+from basis.Database import get_user_lock, safe_append_jsonl, safe_read_jsonl_tail, safe_read_json
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
