@@ -1,17 +1,19 @@
 """
-代码结构扫描工具（local_code_scan）。
+NexoraCode.local.tools.CodeScanTool — 代码结构扫描工具
 
-按文件类型用行级标识（class/def/function/func/fn 等）提取类、函数、方法符号，
-构建"符号名 + 行号"的代码结构地图，供模型快速了解项目结构后
-再用 local_file_read 精读目标位置，避免盲目全文件阅读。
+local_code_scan：按文件类型用行级标识提取类 / 函数 / 方法符号，
+返回"符号名 + 行号"的代码地图，供模型快速了解项目结构后再精读目标位置。
 """
+
+from __future__ import annotations
 
 import re
 from pathlib import Path
 
-from tools.path_guard import build_permission_required, is_sensitive_path, resolve_allowed_path
+from ..PathGuard import build_permission_required, is_sensitive_path, resolve_allowed_path
+from ..Tool import LocalTool, ToolContext
 
-# 扫描安全上限
+
 MAX_FILE_BYTES = 1024 * 1024
 MAX_TOTAL_SYMBOLS = 4000
 
@@ -20,13 +22,99 @@ SKIP_DIR_NAMES = {
     "venv", ".venv", "env", "dist", "build", "target", "vendor", ".next",
 }
 
-# JS/TS 中形如 name(...) { 但并非方法定义的关键字
 JS_METHOD_EXCLUDES = {
     "if", "for", "while", "switch", "catch", "return", "else", "do",
     "new", "typeof", "function", "async", "await", "constructor",
 }
 
 C_FUNCTION_EXCLUDES = {"if", "for", "while", "switch", "return", "sizeof", "defined"}
+
+
+class CodeScanTool(LocalTool):
+    name = "local_code_scan"
+    description = (
+        "扫描本地项目代码结构（NexoraCode 本地工具）：按文件类型提取类、函数、方法符号列表，"
+        "返回符号名与行号构成的代码地图。支持 Python/JS/TS/C/C++/Java/C#/Go/Rust。"
+        "用于接手项目时快速了解代码结构，再用 local_file_read 按行号精读目标位置，避免盲目通读文件。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "要扫描的文件或目录路径（目录会递归，自动跳过依赖/构建目录）。"},
+            "max_files": {"type": "integer", "default": 200, "description": "最多扫描的代码文件数，上限 1000。"},
+        },
+        "required": ["path"],
+    }
+
+    def run(self, args: dict, context: ToolContext) -> dict:
+        path = str(args.get("path") or "").strip()
+
+        resolved, error = resolve_allowed_path(path, context=context.as_dict(), access="read")
+
+        if error:
+            return build_permission_required(
+                path,
+                operation="read",
+                sensitive=is_sensitive_path(Path(str(path or ""))),
+            )
+
+        root = Path(resolved)
+
+        if not root.exists():
+            return {"success": False, "error": f"Path not found: {path}"}
+
+        if root.is_file() and root.suffix.lower() not in LANGUAGE_SCANNERS:
+            return {"success": False, "error": f"Unsupported file type: {root.suffix}"}
+
+        try:
+            max_files = int(args.get("max_files") or 200)
+        except (TypeError, ValueError):
+            max_files = 200
+
+        safe_max_files = max(1, min(max_files, 1000))
+        files = _iter_code_files(root, safe_max_files)
+        results = []
+        total_symbols = 0
+        skipped = 0
+        truncated = False
+
+        for file_path in files:
+            try:
+                if file_path.stat().st_size > MAX_FILE_BYTES:
+                    skipped += 1
+                    continue
+
+                text = file_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                skipped += 1
+                continue
+
+            language, scanner = LANGUAGE_SCANNERS[file_path.suffix.lower()]
+            symbols = scanner(text.splitlines())
+
+            if not symbols:
+                continue
+
+            if total_symbols + len(symbols) > MAX_TOTAL_SYMBOLS:
+                symbols = symbols[:MAX_TOTAL_SYMBOLS - total_symbols]
+                truncated = True
+
+            relative = str(file_path.relative_to(root)) if root.is_dir() else file_path.name
+            results.append({"file": relative, "language": language, "symbols": symbols})
+            total_symbols += len(symbols)
+
+            if truncated:
+                break
+
+        return {
+            "success": True,
+            "root": str(root),
+            "scanned_files": len(files),
+            "skipped_files": skipped,
+            "total_symbols": total_symbols,
+            "truncated": truncated,
+            "files": results,
+        }
 
 
 def _scan_python(lines):
@@ -184,7 +272,6 @@ def _scan_rust(lines):
     return symbols
 
 
-# 扩展名 → (语言名, 提取器)
 LANGUAGE_SCANNERS = {
     ".py": ("python", _scan_python),
     ".js": ("javascript", _scan_javascript),
@@ -239,70 +326,3 @@ def _iter_code_files(root: Path, max_files: int):
 
     collected.sort()
     return collected
-
-
-def code_scan(path: str, max_files: int = 200, _nexora_context=None) -> dict:
-    """扫描文件或目录，提取类/函数/方法符号列表（名称 + 行号）。"""
-
-    resolved, error = resolve_allowed_path(path, context=_nexora_context, access="read")
-
-    if error:
-        return build_permission_required(
-            path,
-            operation="read",
-            sensitive=is_sensitive_path(Path(str(path or ""))),
-        )
-
-    root = Path(resolved)
-
-    if not root.exists():
-        return {"success": False, "error": f"Path not found: {path}"}
-
-    if root.is_file() and root.suffix.lower() not in LANGUAGE_SCANNERS:
-        return {"success": False, "error": f"Unsupported file type: {root.suffix}"}
-
-    safe_max_files = max(1, min(int(max_files or 200), 1000))
-    files = _iter_code_files(root, safe_max_files)
-
-    results = []
-    total_symbols = 0
-    skipped = 0
-    truncated = False
-
-    for file_path in files:
-        try:
-            if file_path.stat().st_size > MAX_FILE_BYTES:
-                skipped += 1
-                continue
-
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            skipped += 1
-            continue
-
-        language, scanner = LANGUAGE_SCANNERS[file_path.suffix.lower()]
-        symbols = scanner(text.splitlines())
-
-        if not symbols:
-            continue
-
-        if total_symbols + len(symbols) > MAX_TOTAL_SYMBOLS:
-            symbols = symbols[:MAX_TOTAL_SYMBOLS - total_symbols]
-            truncated = True
-
-        relative = str(file_path.relative_to(root)) if root.is_dir() else file_path.name
-        results.append({"file": relative, "language": language, "symbols": symbols})
-        total_symbols += len(symbols)
-
-        if truncated:
-            break
-
-    return {
-        "success": True,
-        "root": str(root),
-        "scanned_files": len(files),
-        "skipped_files": skipped,
-        "total_symbols": total_symbols,
-        "truncated": truncated,
-        "files": results,
-    }

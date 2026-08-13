@@ -29,23 +29,23 @@ import httpx
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
 from App.Core import Model
-from database import User
+from basis.User import User
 from basis.Conversation import ConversationManager
 from longterm.longterm_api import normalize_longterm_request
 from App.Storage import ChromaStore
 from App.Storage import UserFileSandbox
 from basis.Model.Provider import create_provider_adapter
 from App.Utils import add_request_listener, pull_pending_request, submit_request_result
-from agent_tunnel import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
+from App.Agent import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
 from map.baidu import load_map_scene_for_map_id
 from App.Utils import normalize_text, resolve_configured_path, safe_filename, safe_join_path
-from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
+from basis.Timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from basis.Database import safe_read_json, safe_write_json, get_path_lock
 from basis.TokenUsage import is_usage_log_path, read_usage_log_records, replace_usage_log_records
-from knowledge_word_exporter import KnowledgeWordExporter
-from knowledge_collab import KnowledgeCollabHub
+from App.Files import KnowledgeWordExporter
+from App.Collaboration import KnowledgeCollabHub
 from App.Utils import append_log_text, init_run_logger
 from basis.Conversation import asset_store
 import prompts
@@ -58,11 +58,11 @@ import basis.Config as _config_basis
 import basis.User as _user_basis
 from App.Components import build_learning_context_payload, build_learning_memory_blocks
 from App.Components import get_learning_runtime_local_config
-from memory_analysis import get_memory_analysis_queue
+from App.Memory import get_memory_analysis_queue
 from basis.TokenUsage import TokenUsageDetailPresenter
 from App.Executor import load_longdoc_skill_catalog
 from App.Core import SystemSettingsRuntimeSyncer
-from service_status_monitor import ServiceStatusMonitor
+from App.Observability import ServiceStatusMonitor
 from basis.TokenUsage import (
     get_server_quota_status,
     update_server_quota_config,
@@ -14114,7 +14114,7 @@ def chat_stream():
 
     def _resolve_local_agent_info_for_chat():
         """解析当前用户的 NexoraCode 本地工具，只使用 WSS 在线工具表。"""
-        from agent_tunnel import is_agent_online, get_agent_tools
+        from App.Agent import is_agent_online, get_agent_tools
 
         if is_agent_online(username):
             online_tools = get_agent_tools(username)
@@ -14894,7 +14894,7 @@ def _format_nexoracode_tree_result(result: Any) -> str:
 
 def _fetch_nexoracode_project_tree_text(username: str, project_path: str, cancel_checker=None) -> str:
     """经 NexoraCode WSS 通道拉取项目目录树文本，带 TTL 缓存。"""
-    from agent_tunnel import call_local_tool_sync
+    from App.Agent import call_local_tool_sync
 
     cache_key = (str(username or ''), str(project_path or ''))
     now = time.time()
@@ -15097,7 +15097,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
         # 注入执行处理器：本地工具只走 agent_tunnel_socket 的 WSS 通道。
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
-                from agent_tunnel import is_agent_online, call_local_tool_sync
+                from App.Agent import is_agent_online, call_local_tool_sync
 
                 _raise_if_cancelled()
                 conversation_id = str(getattr(model, "conversation_id", "") or "").strip()
@@ -15141,7 +15141,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
 
 
 def _resolve_agent_info_for_user(username: str):
-    from agent_tunnel import is_agent_online, get_agent_tools
+    from App.Agent import is_agent_online, get_agent_tools
 
     if is_agent_online(username):
         tools = get_agent_tools(username)
@@ -17449,7 +17449,7 @@ def get_agent_status():
     online = is_agent_online(session['username'])
     return jsonify({'online': online})
 
-from agent_tunnel import handle_agent_result
+from App.Agent import handle_agent_result
 
 
 @sock.route('/ws/public/knowledge/<username>/<share_id>')
@@ -17821,18 +17821,18 @@ from api.papi.routes import papi_bp
 from api.papi.user_keys import user_papi_keys_bp
 app.register_blueprint(papi_bp)
 app.register_blueprint(user_papi_keys_bp)
-from api.files import files_bp
+from App.Files import files_bp
 app.register_blueprint(files_bp)
 from api.workspace.routes import workspace_bp
 app.register_blueprint(workspace_bp)
-from api.notification import configure_notification_realtime, notification_bp
+from App.Observability import configure_notification_realtime, notification_bp
 configure_notification_realtime(_send_browser_event_to_user)
 app.register_blueprint(notification_bp)
-from api.agent_permissions import agent_permissions_bp
+from App.Agent import agent_permissions_bp
 app.register_blueprint(agent_permissions_bp)
-from api.global_search import global_search_bp
+from App.Collaboration import global_search_bp
 app.register_blueprint(global_search_bp)
-from api.testapi import create_testapi_blueprint
+from App.Observability import create_testapi_blueprint
 app.register_blueprint(create_testapi_blueprint(require_admin))
 
 if __name__ == '__main__':

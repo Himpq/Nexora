@@ -23,7 +23,7 @@ import webview
 from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html
 from core.tray import run_tray
 from core.config import config, get_app_root
-from core.tool_registry import ToolRegistry
+from local import build_default_executor
 from core import wintitle
 
 # WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
@@ -3152,7 +3152,7 @@ def _build_notes_local_shell_html() -> str:
 """
 
 
-def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
+def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
     """
     通过 WebSocket 持续与服务器保持长连接，作为远端 LLM 的本地 Tool 计算节点
     """
@@ -3349,7 +3349,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
 
 
 def main():
-    registry = ToolRegistry()
+    registry = build_default_executor()
     js_api = NexoraWindowApi()
     print(f"[NexoraWindow] mode={_WINDOW_MODE} frameless={_USE_FRAMELESS} custom_titlebar={_USE_CUSTOM_TITLEBAR}")
     runtime_base_url = _resolve_runtime_base_url()

@@ -1,7 +1,17 @@
 """
-工具：文件操作（读取、写入、列目录）
-安全策略：只允许操作 config 中 allowed_dirs 内的路径
+NexoraCode.local.tools.FileOpsCore — 文件操作核心引擎
+
+文件读写 / 探测 / 精确 patch 的共享实现，被 FileTool 中的各工具类复用：
+- 版本锁（sha256）与原子写入
+- 编码 / BOM / 换行类型探测
+- 统一 diff 与结构化 edits 的 dry_run → confirm 两段式预览
+
+对外提供：
+- 文件读写相关函数（见下方各函数 docstring）
+- 供 FileTool 直接调用，不在本模块定义工具类
 """
+
+from __future__ import annotations
 
 import codecs
 import difflib
@@ -12,96 +22,24 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from core.config import config
-from tools.path_guard import build_permission_required, is_sensitive_path, resolve_allowed_path
+from typing import Callable
+
+from ..PathGuard import build_permission_required, is_sensitive_path, resolve_allowed_path
 
 
-_FILE_LOCKS = {}
+_FILE_LOCKS: dict[str, threading.RLock] = {}
 _FILE_LOCKS_GUARD = threading.RLock()
-_PATCH_PREVIEW_CACHE = {}
+_PATCH_PREVIEW_CACHE: dict[str, dict] = {}
 _PATCH_PREVIEW_GUARD = threading.RLock()
 _PATCH_PREVIEW_TTL_SECONDS = 30 * 60
 _PATCH_PREVIEW_MAX_ITEMS = 128
 _PROBE_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "utf-16", "utf-16-le", "utf-16-be")
 _PROBE_CHUNK_SIZE = 64 * 1024
 _WRITE_CHUNK_SIZE = 1024 * 1024
-
-TOOL_MANIFEST = [
-    {
-        "name": "local_file_read",
-        "handler": "file_read",
-        "description": "读取用户本地计算机上指定文件的内容（NexoraCode 本地工具）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "文件绝对路径"},
-                "encoding": {"type": "string", "default": "utf-8"},
-                "start_line": {"type": "integer", "description": "可选。按行读取的起始行，1 表示第一行，必须和 end_line 同时提供。"},
-                "end_line": {"type": "integer", "description": "可选。按行读取的结束行，包含该行，必须和 start_line 同时提供。"},
-                "offset": {"type": "integer", "description": "可选。按字符读取的起始位置，0 表示第一个字符，必须和 limit 同时提供。"},
-                "limit": {"type": "integer", "description": "可选。按字符读取的字符数量，必须和 offset 同时提供。"},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "local_file_probe",
-        "handler": "file_probe",
-        "description": "探测用户本地计算机上指定文件的元信息，不返回文件正文（NexoraCode 本地工具）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "文件绝对路径"},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "local_file_write",
-        "handler": "file_write",
-        "description": "将内容写入用户本地计算机上的指定文件，会覆盖原有内容（NexoraCode 本地工具）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "文件绝对路径"},
-                "content": {"type": "string", "description": "写入内容"},
-                "encoding": {"type": "string", "default": "utf-8"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "local_file_list",
-        "handler": "file_list",
-        "description": "列出用户本地计算机指定目录下的文件和子目录（NexoraCode 本地工具）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "目录绝对路径"},
-            },
-            "required": ["path"],
-        },
-    },
-]
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _check_allowed(target: Path) -> bool:
-    allowed_dirs: list = config.get("allowed_dirs", [])
-    if not allowed_dirs:
-        # 未配置白名单：拒绝，提示用户在设置中添加
-        return False
-    resolved = target.resolve()
-    for d in allowed_dirs:
-        allowed_root = Path(d).resolve()
-        try:
-            resolved.relative_to(allowed_root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def _resolve_allowed_file_path(path: str, context: dict | None = None, access: str = "read"):
+def resolve_allowed_file_path(path: str, context: dict | None = None, access: str = "read"):
     resolved, error = resolve_allowed_path(path, context=context, access=access)
 
     if error:
@@ -114,16 +52,17 @@ def _resolve_allowed_file_path(path: str, context: dict | None = None, access: s
     return resolved, None
 
 
-def _sha256_text(content: str, encoding: str) -> str:
+def sha256_text(content: str, encoding: str) -> str:
     return hashlib.sha256(content.encode(encoding)).hexdigest()
 
 
-def _sha256_bytes(content: bytes) -> str:
+def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _get_file_lock(path: Path):
+def get_file_lock(path: Path) -> threading.RLock:
     """同一路径的读改写流程必须串行，避免并发 patch 覆盖彼此结果。"""
+
     lock_key = str(path.resolve())
 
     with _FILE_LOCKS_GUARD:
@@ -133,7 +72,7 @@ def _get_file_lock(path: Path):
         return _FILE_LOCKS[lock_key]
 
 
-def _detect_bom(content: bytes) -> str:
+def detect_bom(content: bytes) -> str:
     if content.startswith(b"\xff\xfe\x00\x00"):
         return "utf-32-le"
 
@@ -152,7 +91,7 @@ def _detect_bom(content: bytes) -> str:
     return ""
 
 
-def _detect_line_separator(content: str) -> str:
+def detect_line_separator(content: str) -> str:
     if "\r\n" in content:
         return "\r\n"
 
@@ -162,8 +101,8 @@ def _detect_line_separator(content: str) -> str:
     return "\n"
 
 
-def _line_separator_name(content: str) -> str:
-    separator = _detect_line_separator(content)
+def line_separator_name(content: str) -> str:
+    separator = detect_line_separator(content)
 
     if separator == "\r\n":
         return "crlf"
@@ -177,63 +116,55 @@ def _line_separator_name(content: str) -> str:
     return "none"
 
 
-def _read_text_with_raw(path: Path, encoding: str) -> tuple[str, bytes]:
+def read_text_with_raw(path: Path, encoding: str) -> tuple[str, bytes]:
     """读取原始字节后解码，避免文本模式自动改写换行符。"""
+
     raw_content = path.read_bytes()
     return raw_content.decode(encoding), raw_content
 
 
-def _encode_text(content: str, encoding: str) -> bytes:
+def encode_text(content: str, encoding: str) -> bytes:
     return content.encode(encoding)
 
 
-def _context_cancel_checker(context: dict | None):
-    if not isinstance(context, dict):
-        return None
-
-    checker = context.get("is_cancelled")
-
-    if callable(checker):
-        return checker
-
-    return None
-
-
-def _raise_if_cancelled(cancel_checker) -> None:
+def raise_if_cancelled(cancel_checker: Callable[[], bool] | None) -> None:
     if callable(cancel_checker) and cancel_checker():
         raise RuntimeError("stream_cancelled")
 
 
-def _write_bytes_atomic(path: Path, content: bytes, cancel_checker=None) -> None:
+def write_bytes_atomic(path: Path, content: bytes, cancel_checker: Callable[[], bool] | None = None) -> None:
     """通过临时文件和 os.replace 写入，保证单次写入不会留下半截文件。"""
+
     temp_path = path.with_name(f".{path.name}.nexora_patch_tmp")
+
     try:
-        _raise_if_cancelled(cancel_checker)
+        raise_if_cancelled(cancel_checker)
 
         with open(temp_path, "wb") as f:
             for start in range(0, len(content), _WRITE_CHUNK_SIZE):
-                _raise_if_cancelled(cancel_checker)
+                raise_if_cancelled(cancel_checker)
                 f.write(content[start:start + _WRITE_CHUNK_SIZE])
 
-        _raise_if_cancelled(cancel_checker)
+        raise_if_cancelled(cancel_checker)
         os.replace(temp_path, path)
     finally:
         if temp_path.exists():
             temp_path.unlink()
 
 
-def _build_file_metadata(path: Path, content: str, raw_content: bytes, encoding: str) -> dict:
+def build_file_metadata(path: Path, content: str, raw_content: bytes, encoding: str) -> dict:
     """返回给模型使用的文件版本和格式元信息。"""
+
     return {
         "path": str(path),
         "encoding": encoding,
         "size": len(raw_content),
-        "sha256": _sha256_bytes(raw_content),
-        "content_sha256": _sha256_text(content, encoding),
+        "sha256": sha256_bytes(raw_content),
+        "content_sha256": sha256_text(content, encoding),
         "line_count": len(content.splitlines()),
-        "line_separator": _line_separator_name(content),
+        "line_separator": line_separator_name(content),
         "has_trailing_newline": content.endswith(("\n", "\r")),
-        "bom": _detect_bom(raw_content),
+        "bom": detect_bom(raw_content),
     }
 
 
@@ -305,8 +236,9 @@ def _build_probe_encoding_hint(size: int, bom: str, is_binary: bool, encoding_ch
     return "unknown"
 
 
-def _scan_file_probe(path: Path) -> dict:
+def scan_file_probe(path: Path) -> dict:
     """逐块扫描文件字节，返回元信息，不返回正文内容。"""
+
     sha256 = hashlib.sha256()
     decoder_status = {
         encoding: {"decodable": True, "error": ""}
@@ -327,7 +259,6 @@ def _scan_file_probe(path: Path) -> dict:
     pending_cr = False
 
     with path.open("rb") as file_obj:
-
         while True:
             chunk = file_obj.read(_PROBE_CHUNK_SIZE)
 
@@ -344,12 +275,10 @@ def _scan_file_probe(path: Path) -> dict:
             last_bytes = (last_bytes + chunk)[-4:]
 
             for byte_value in chunk:
-
                 if byte_value < 32 and byte_value not in (9, 10, 12, 13):
                     control_bytes += 1
 
                 if pending_cr:
-
                     if byte_value == 10:
                         crlf_count += 1
                         pending_cr = False
@@ -364,7 +293,6 @@ def _scan_file_probe(path: Path) -> dict:
                     lf_count += 1
 
             for encoding, decoder in list(decoders.items()):
-
                 try:
                     decoder.decode(chunk, final=False)
                 except UnicodeDecodeError as exc:
@@ -378,7 +306,6 @@ def _scan_file_probe(path: Path) -> dict:
         cr_count += 1
 
     for encoding, decoder in list(decoders.items()):
-
         try:
             decoder.decode(b"", final=True)
         except UnicodeDecodeError as exc:
@@ -387,7 +314,7 @@ def _scan_file_probe(path: Path) -> dict:
                 "error": str(exc),
             }
 
-    bom = _detect_bom(bytes(first_bytes))
+    bom = detect_bom(bytes(first_bytes))
     text_bom = bom in {"utf-8-sig", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"}
     control_ratio = 0 if total_size == 0 else control_bytes / total_size
     has_null_bytes = null_bytes > 0
@@ -427,11 +354,11 @@ def _scan_file_probe(path: Path) -> dict:
     }
 
 
-def _has_argument_value(value) -> bool:
+def has_argument_value(value) -> bool:
     return value is not None and str(value).strip() != ""
 
 
-def _parse_integer_argument(value, name: str, minimum: int) -> tuple[int, str]:
+def parse_integer_argument(value, name: str, minimum: int) -> tuple[int, str]:
     if isinstance(value, bool):
         return 0, f"{name} 必须是整数。"
 
@@ -446,7 +373,7 @@ def _parse_integer_argument(value, name: str, minimum: int) -> tuple[int, str]:
     return parsed, ""
 
 
-def _slice_read_content(
+def slice_read_content(
     content: str,
     start_line,
     end_line,
@@ -454,8 +381,9 @@ def _slice_read_content(
     limit,
 ) -> tuple[str, str, dict, str]:
     """根据显式范围读取文件内容，范围非法时直接返回错误。"""
-    line_range_requested = _has_argument_value(start_line) or _has_argument_value(end_line)
-    char_range_requested = _has_argument_value(offset) or _has_argument_value(limit)
+
+    line_range_requested = has_argument_value(start_line) or has_argument_value(end_line)
+    char_range_requested = has_argument_value(offset) or has_argument_value(limit)
 
     if line_range_requested and char_range_requested:
         return "", "", {}, "start_line/end_line 不能和 offset/limit 同时使用。"
@@ -464,16 +392,15 @@ def _slice_read_content(
         return content, "full", {}, ""
 
     if line_range_requested:
-
-        if not _has_argument_value(start_line) or not _has_argument_value(end_line):
+        if not has_argument_value(start_line) or not has_argument_value(end_line):
             return "", "", {}, "start_line 和 end_line 必须同时提供。"
 
-        start, start_error = _parse_integer_argument(start_line, "start_line", 1)
+        start, start_error = parse_integer_argument(start_line, "start_line", 1)
 
         if start_error:
             return "", "", {}, start_error
 
-        end, end_error = _parse_integer_argument(end_line, "end_line", 1)
+        end, end_error = parse_integer_argument(end_line, "end_line", 1)
 
         if end_error:
             return "", "", {}, end_error
@@ -501,17 +428,18 @@ def _slice_read_content(
             "returned_lines": end - start + 1,
             "total_lines": total_lines,
         }
+
         return selected_content, "line_range", slice_meta, ""
 
-    if not _has_argument_value(offset) or not _has_argument_value(limit):
+    if not has_argument_value(offset) or not has_argument_value(limit):
         return "", "", {}, "offset 和 limit 必须同时提供。"
 
-    start, start_error = _parse_integer_argument(offset, "offset", 0)
+    start, start_error = parse_integer_argument(offset, "offset", 0)
 
     if start_error:
         return "", "", {}, start_error
 
-    read_limit, limit_error = _parse_integer_argument(limit, "limit", 1)
+    read_limit, limit_error = parse_integer_argument(limit, "limit", 1)
 
     if limit_error:
         return "", "", {}, limit_error
@@ -534,11 +462,13 @@ def _slice_read_content(
         "returned_chars": len(selected_content),
         "total_chars": total_chars,
     }
+
     return selected_content, "char_range", slice_meta, ""
 
 
-def _build_preview_diff(path: Path, original: str, new_content: str) -> str:
+def build_preview_diff(path: Path, original: str, new_content: str) -> str:
     """生成预览 diff，供 dry_run 和工具调用结果展示。"""
+
     if original == new_content:
         return ""
 
@@ -573,8 +503,9 @@ def _cleanup_patch_previews(now: float) -> None:
         _PATCH_PREVIEW_CACHE.pop(preview_id, None)
 
 
-def _store_patch_preview(preview: dict) -> str:
+def store_patch_preview(preview: dict) -> str:
     """保存 dry_run 生成的写入预览，确认写入只能使用这份内容。"""
+
     now = time.time()
     preview_id = f"patch_preview_{uuid.uuid4().hex}"
     preview["preview_id"] = preview_id
@@ -588,7 +519,7 @@ def _store_patch_preview(preview: dict) -> str:
     return preview_id
 
 
-def _load_patch_preview(preview_id: str) -> tuple[dict, str]:
+def load_patch_preview(preview_id: str) -> tuple[dict, str]:
     clean_id = str(preview_id or "").strip()
 
     if not clean_id:
@@ -606,7 +537,7 @@ def _load_patch_preview(preview_id: str) -> tuple[dict, str]:
         return dict(preview), ""
 
 
-def _remove_patch_preview(preview_id: str) -> None:
+def remove_patch_preview(preview_id: str) -> None:
     clean_id = str(preview_id or "").strip()
 
     if not clean_id:
@@ -616,10 +547,7 @@ def _remove_patch_preview(preview_id: str) -> None:
         _PATCH_PREVIEW_CACHE.pop(clean_id, None)
 
 
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-
-
-def _parse_unified_diff(patch_text: str) -> tuple[list[dict], str]:
+def parse_unified_diff(patch_text: str) -> tuple[list[dict], str]:
     hunks = []
     current = None
 
@@ -643,7 +571,6 @@ def _parse_unified_diff(patch_text: str) -> tuple[list[dict], str]:
             continue
 
         if current is None:
-
             if (
                 not raw_line.strip()
                 or raw_line.startswith("diff ")
@@ -667,8 +594,8 @@ def _parse_unified_diff(patch_text: str) -> tuple[list[dict], str]:
     return hunks, ""
 
 
-def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]:
-    hunks, parse_error = _parse_unified_diff(patch_text)
+def apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]:
+    hunks, parse_error = parse_unified_diff(patch_text)
 
     if parse_error:
         return original, {}, parse_error
@@ -696,7 +623,6 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
         new_seen = 0
 
         for raw_line in hunk["lines"]:
-
             if raw_line.startswith("\\"):
                 continue
 
@@ -704,7 +630,6 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
             value = raw_line[1:]
 
             if marker == " ":
-
                 if source_index >= len(source_lines):
                     return original, {}, f"上下文行超出文件范围: {value}"
 
@@ -718,7 +643,6 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
                 continue
 
             if marker == "-":
-
                 if source_index >= len(source_lines):
                     return original, {}, f"删除行超出文件范围: {value}"
 
@@ -745,7 +669,7 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
             return original, {}, f"第 {hunk['line_number']} 行 hunk 的新行数不一致: 声明 {hunk['new_count']}，实际 {new_seen}。"
 
     result_lines.extend(source_lines[source_index:])
-    line_separator = _detect_line_separator(original)
+    line_separator = detect_line_separator(original)
     new_content = line_separator.join(result_lines)
 
     if original.endswith(("\n", "\r")):
@@ -757,6 +681,7 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
         "added_lines": added_lines,
         "removed_lines": removed_lines,
     }
+
     return new_content, stats, ""
 
 
@@ -778,7 +703,6 @@ def _collect_text_positions(content: str, target: str) -> list[int]:
 
 def _select_occurrence_position(positions: list[int], occurrence, target_name: str) -> tuple[int, str]:
     if occurrence is None:
-
         if len(positions) != 1:
             return -1, f"{target_name} 出现 {len(positions)} 次，请传入 occurrence 指定第几处。"
 
@@ -808,7 +732,6 @@ def _normalize_newlines_with_offsets(content: str) -> tuple[str, list[int], list
         char = content[index]
 
         if char == "\r":
-
             if index + 1 < len(content) and content[index + 1] == "\n":
                 normalized_chars.append("\n")
                 start_offsets.append(index)
@@ -830,11 +753,11 @@ def _normalize_newlines_with_offsets(content: str) -> tuple[str, list[int], list
     return "".join(normalized_chars), start_offsets, end_offsets
 
 
-def _normalize_text_line_separator(content: str, line_separator: str) -> str:
+def normalize_text_line_separator(content: str, line_separator: str) -> str:
     return re.sub(r"\r\n|\r|\n", line_separator, content)
 
 
-def _find_target_occurrence(content: str, target: str, occurrence) -> tuple[int, int, dict, str]:
+def find_target_occurrence(content: str, target: str, occurrence) -> tuple[int, int, dict, str]:
     if not target:
         return -1, -1, {}, "target 不能为空。"
 
@@ -877,16 +800,13 @@ def _validate_structured_edit(edit: dict, edit_index: int) -> str:
         return f"第 {edit_index} 个 edit 的 action 不支持: {action}"
 
     if action == "replace":
-
         if "replacement" not in edit:
             return f"第 {edit_index} 个 edit 使用 replace 时必须提供 replacement。"
 
         return ""
 
     if action in {"insert_before", "insert_after"}:
-
         if "content" not in edit:
-
             if "replacement" in edit:
                 return f"第 {edit_index} 个 edit 使用 {action} 时必须提供 content，不能使用 replacement。"
 
@@ -900,7 +820,7 @@ def _validate_structured_edit(edit: dict, edit_index: int) -> str:
     return ""
 
 
-def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]:
+def apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]:
     if not isinstance(edits, list) or not edits:
         return original, {}, "edits 必须是非空数组。"
 
@@ -909,7 +829,6 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
     match_messages = []
 
     for edit_index, edit in enumerate(edits, start=1):
-
         if not isinstance(edit, dict):
             return original, {}, f"第 {edit_index} 个 edit 必须是对象。"
 
@@ -921,7 +840,7 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
         action = str(edit.get("action") or "").strip()
         target = str(edit.get("target") or "")
         occurrence = edit.get("occurrence")
-        target_start, target_end, match_meta, target_error = _find_target_occurrence(content, target, occurrence)
+        target_start, target_end, match_meta, target_error = find_target_occurrence(content, target, occurrence)
 
         if target_error:
             return original, {}, (
@@ -932,19 +851,19 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
         before = content[:target_start]
         matched_target = content[target_start:target_end]
         after = content[target_end:]
-        line_separator = _detect_line_separator(content)
+        line_separator = detect_line_separator(content)
 
         if action == "replace":
             replacement = str(edit.get("replacement") or "")
-            replacement = _normalize_text_line_separator(replacement, line_separator)
+            replacement = normalize_text_line_separator(replacement, line_separator)
             content = before + replacement + after
         elif action == "insert_before":
             insert_content = str(edit.get("content") or "")
-            insert_content = _normalize_text_line_separator(insert_content, line_separator)
+            insert_content = normalize_text_line_separator(insert_content, line_separator)
             content = before + insert_content + matched_target + after
         elif action == "insert_after":
             insert_content = str(edit.get("content") or "")
-            insert_content = _normalize_text_line_separator(insert_content, line_separator)
+            insert_content = normalize_text_line_separator(insert_content, line_separator)
             content = before + matched_target + insert_content + after
         elif action == "delete":
             content = before + after
@@ -970,121 +889,7 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
     return content, stats, ""
 
 
-def file_read(
-    path: str,
-    encoding: str = "utf-8",
-    start_line=None,
-    end_line=None,
-    offset=None,
-    limit=None,
-    _nexora_context=None,
-) -> dict:
-    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
-    if permission_error:
-        return permission_error
-    if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
-    if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
-    try:
-        content, raw_content = _read_text_with_raw(p, encoding)
-        selected_content, mode, slice_meta, slice_error = _slice_read_content(
-            content,
-            start_line,
-            end_line,
-            offset,
-            limit,
-        )
-
-        if slice_error:
-            return {
-                "success": False,
-                "error": slice_error,
-                "path": str(p),
-                "encoding": encoding,
-                **_build_file_metadata(p, content, raw_content, encoding),
-            }
-
-        return {
-            "success": True,
-            "content": selected_content,
-            "mode": mode,
-            "slice": slice_meta,
-            "total_chars": len(content),
-            "returned_chars": len(selected_content),
-            "returned_line_count": len(selected_content.splitlines()),
-            "returned_content_sha256": _sha256_text(selected_content, encoding),
-            **_build_file_metadata(p, content, raw_content, encoding),
-        }
-    except UnicodeDecodeError as e:
-        return {
-            "success": False,
-            "error": f"文件无法按 {encoding} 解码: {e}",
-            "encoding": encoding,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def file_probe(path: str, _nexora_context=None) -> dict:
-    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
-
-    if permission_error:
-        return permission_error
-
-    if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
-
-    if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
-
-    try:
-        stat_result = p.stat()
-        probe_result = _scan_file_probe(p)
-
-        return {
-            "success": True,
-            "path": str(p),
-            "resolved_path": str(p.resolve()),
-            "readable": os.access(p, os.R_OK),
-            "writable": os.access(p, os.W_OK),
-            "created_at": stat_result.st_ctime,
-            "modified_at": stat_result.st_mtime,
-            **probe_result,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def file_write(path: str, content: str, encoding: str = "utf-8", _nexora_context=None) -> dict:
-    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="write")
-    if permission_error:
-        return permission_error
-    try:
-        cancel_checker = _context_cancel_checker(_nexora_context)
-        _raise_if_cancelled(cancel_checker)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        raw_content = _encode_text(content, encoding)
-        _raise_if_cancelled(cancel_checker)
-
-        with _get_file_lock(p):
-            _write_bytes_atomic(p, raw_content, cancel_checker=cancel_checker)
-
-        return {
-            "success": True,
-            "path": str(p),
-            "encoding": encoding,
-            "bytes_written": len(raw_content),
-            "sha256": _sha256_bytes(raw_content),
-        }
-    except Exception as e:
-        if str(e) == "stream_cancelled":
-            return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
-
-        return {"success": False, "error": str(e)}
-
-
-def _build_patch_preview_locked(
+def build_patch_preview_locked(
     p: Path,
     patch_text: str,
     has_patch: bool,
@@ -1093,9 +898,10 @@ def _build_patch_preview_locked(
     expected_sha256: str,
 ) -> dict:
     """执行 patch 校验并生成确认写入预览。调用方必须持有该文件锁。"""
-    original, old_raw_content = _read_text_with_raw(p, encoding)
-    old_sha256 = _sha256_bytes(old_raw_content)
-    old_content_sha256 = _sha256_text(original, encoding)
+
+    original, old_raw_content = read_text_with_raw(p, encoding)
+    old_sha256 = sha256_bytes(old_raw_content)
+    old_content_sha256 = sha256_text(original, encoding)
 
     if expected_sha256 and str(expected_sha256).strip().lower() != old_sha256:
         return {
@@ -1106,9 +912,9 @@ def _build_patch_preview_locked(
         }
 
     if has_patch:
-        new_content, stats, apply_error = _apply_unified_diff(original, patch_text)
+        new_content, stats, apply_error = apply_unified_diff(original, patch_text)
     else:
-        new_content, stats, apply_error = _apply_structured_edits(original, edits)
+        new_content, stats, apply_error = apply_structured_edits(original, edits)
 
     if apply_error:
         return {
@@ -1118,14 +924,14 @@ def _build_patch_preview_locked(
             "encoding": encoding,
             "old_sha256": old_sha256,
             "old_content_sha256": old_content_sha256,
-            "line_separator": _line_separator_name(original),
-            "bom": _detect_bom(old_raw_content),
+            "line_separator": line_separator_name(original),
+            "bom": detect_bom(old_raw_content),
         }
 
-    new_raw_content = _encode_text(new_content, encoding)
-    new_sha256 = _sha256_bytes(new_raw_content)
-    new_content_sha256 = _sha256_text(new_content, encoding)
-    preview_diff = _build_preview_diff(p, original, new_content)
+    new_raw_content = encode_text(new_content, encoding)
+    new_sha256 = sha256_bytes(new_raw_content)
+    new_content_sha256 = sha256_text(new_content, encoding)
+    preview_diff = build_preview_diff(p, original, new_content)
 
     if new_content == original:
         preview = {
@@ -1139,12 +945,12 @@ def _build_patch_preview_locked(
             "new_content_sha256": old_content_sha256,
             "new_raw_content": old_raw_content,
             "diff": "",
-            "line_separator": _line_separator_name(original),
-            "bom": _detect_bom(old_raw_content),
+            "line_separator": line_separator_name(original),
+            "bom": detect_bom(old_raw_content),
             "bytes_to_write": len(old_raw_content),
             "stats": dict(stats),
         }
-        preview_id = _store_patch_preview(preview)
+        preview_id = store_patch_preview(preview)
 
         return {
             "success": True,
@@ -1158,10 +964,10 @@ def _build_patch_preview_locked(
             "old_sha256": old_sha256,
             "new_sha256": old_sha256,
             "old_content_sha256": old_content_sha256,
-            "new_content_sha256": old_content_sha256,
+            "new_content_sha256": new_content_sha256,
             "diff": "",
-            "line_separator": _line_separator_name(original),
-            "bom": _detect_bom(old_raw_content),
+            "line_separator": line_separator_name(original),
+            "bom": detect_bom(old_raw_content),
             **stats,
         }
 
@@ -1176,14 +982,14 @@ def _build_patch_preview_locked(
         "new_content_sha256": new_content_sha256,
         "new_raw_content": new_raw_content,
         "diff": preview_diff,
-        "line_separator": _line_separator_name(new_content),
-        "bom": _detect_bom(new_raw_content),
+        "line_separator": line_separator_name(new_content),
+        "bom": detect_bom(new_raw_content),
         "bytes_to_write": len(new_raw_content),
         "stats": dict(stats),
     }
-    preview_id = _store_patch_preview(preview)
+    preview_id = store_patch_preview(preview)
 
-    result = {
+    return {
         "success": True,
         "changed": True,
         "dry_run": True,
@@ -1198,18 +1004,17 @@ def _build_patch_preview_locked(
         "new_content_sha256": new_content_sha256,
         "bytes_to_write": len(new_raw_content),
         "diff": preview_diff,
-        "line_separator": _line_separator_name(new_content),
-        "bom": _detect_bom(new_raw_content),
+        "line_separator": line_separator_name(new_content),
+        "bom": detect_bom(new_raw_content),
         **stats,
     }
 
-    return result
 
-
-def _confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker=None) -> dict:
+def confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker: Callable[[], bool] | None = None) -> dict:
     """按 dry_run 保存的预览内容写入文件。调用方必须持有该文件锁。"""
-    _raise_if_cancelled(cancel_checker)
-    preview, preview_error = _load_patch_preview(preview_id)
+
+    raise_if_cancelled(cancel_checker)
+    preview, preview_error = load_patch_preview(preview_id)
 
     if preview_error:
         return {"success": False, "error": preview_error}
@@ -1245,8 +1050,8 @@ def _confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker=None)
     except (TypeError, ValueError):
         return {"success": False, "error": "preview 写入字节数无效，请重新 dry_run 生成预览。"}
 
-    original, old_raw_content = _read_text_with_raw(p, preview_encoding)
-    actual_sha256 = _sha256_bytes(old_raw_content)
+    original, old_raw_content = read_text_with_raw(p, preview_encoding)
+    actual_sha256 = sha256_bytes(old_raw_content)
 
     if actual_sha256 != expected_sha256:
         return {
@@ -1265,9 +1070,9 @@ def _confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker=None)
         return {"success": False, "error": "preview 内容无效，请重新 dry_run 生成预览。"}
 
     if changed:
-        _write_bytes_atomic(p, new_raw_content, cancel_checker=cancel_checker)
+        write_bytes_atomic(p, new_raw_content, cancel_checker=cancel_checker)
 
-    _remove_patch_preview(preview_id)
+    remove_patch_preview(preview_id)
 
     result = {
         "success": True,
@@ -1291,108 +1096,3 @@ def _confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker=None)
         result["bytes_written"] = len(new_raw_content)
 
     return result
-
-
-def file_patch(
-    path: str,
-    patch: str = "",
-    edits: list = None,
-    encoding: str = "utf-8",
-    expected_sha256: str = "",
-    dry_run: bool = False,
-    confirm_preview_id: str = "",
-    _nexora_context=None,
-) -> dict:
-    """对单个文件执行精确 patch，支持统一 diff 或结构化编辑。"""
-    p = Path(path)
-    cancel_checker = _context_cancel_checker(_nexora_context)
-
-    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="write")
-    if permission_error:
-        return permission_error
-
-    if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
-
-    if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
-
-    patch_text = str(patch or "")
-    has_patch = bool(patch_text.strip())
-    has_edits = isinstance(edits, list) and len(edits) > 0
-    has_confirm_preview = bool(str(confirm_preview_id or "").strip())
-
-    if has_confirm_preview:
-
-        if dry_run:
-            return {"success": False, "error": "confirm_preview_id 不能和 dry_run=true 同时使用。"}
-
-        if has_patch or has_edits:
-            return {"success": False, "error": "确认写入时只能传入 path 和 confirm_preview_id，不能重新传 patch 或 edits。"}
-
-        if expected_sha256:
-            return {"success": False, "error": "确认写入时不能重新传 expected_sha256，版本锁以 dry_run 预览为准。"}
-
-        try:
-            with _get_file_lock(p):
-                return _confirm_patch_preview_locked(p, confirm_preview_id, cancel_checker=cancel_checker)
-        except RuntimeError as e:
-            if str(e) == "stream_cancelled":
-                return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
-
-            return {"success": False, "error": str(e)}
-        except UnicodeDecodeError as e:
-            return {
-                "success": False,
-                "error": f"文件无法按预览编码解码: {e}",
-                "encoding": encoding,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    if has_patch == has_edits:
-        return {"success": False, "error": "必须且只能提供 patch 或 edits 其中一种输入。"}
-
-    if not dry_run:
-        return {
-            "success": False,
-            "error": "local_file_patch 写入必须先 dry_run=true 获取 preview_id，再传 confirm_preview_id 确认写入。",
-        }
-
-    try:
-        with _get_file_lock(p):
-            return _build_patch_preview_locked(
-                p,
-                patch_text,
-                has_patch,
-                edits,
-                encoding,
-                expected_sha256,
-            )
-    except UnicodeDecodeError as e:
-        return {
-            "success": False,
-            "error": f"文件无法按 {encoding} 解码: {e}",
-            "encoding": encoding,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def file_list(path: str, _nexora_context=None) -> dict:
-    p, permission_error = _resolve_allowed_file_path(path, context=_nexora_context, access="read")
-    if permission_error:
-        return permission_error
-    if not p.is_dir():
-        return {"success": False, "error": f"Not a directory: {path}"}
-    try:
-        entries = []
-        for item in sorted(p.iterdir()):
-            entries.append({
-                "name": item.name,
-                "type": "dir" if item.is_dir() else "file",
-                "size": item.stat().st_size if item.is_file() else None,
-            })
-        return {"success": True, "entries": entries, "count": len(entries)}
-    except Exception as e:
-        return {"success": False, "error": str(e)}

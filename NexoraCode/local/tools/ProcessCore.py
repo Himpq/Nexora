@@ -1,6 +1,16 @@
 """
-Generic process manager for processes started by NexoraCode.
+NexoraCode.local.tools.ProcessCore — 本地进程管理核心
+
+NexoraCode 启动的本地进程的统一状态表与管理逻辑：
+- start / list / status / read / stop
+- 输出缓冲环形裁剪（限制内存占用）
+- 顺序读取（output_from_byte 增量游标）
+- 超时自动终止、进程树强制清理
+
+local_terminal 复用本核心，与 local_process_manager 共享同一份进程状态表。
 """
+
+from __future__ import annotations
 
 import codecs
 import os
@@ -27,7 +37,7 @@ _DEFAULT_OUTPUT_LIMIT = 20000
 _MAX_OUTPUT_LIMIT = 200000
 
 
-def local_process_manager(
+def process_manager(
     action: str,
     process_id: str = "",
     command: str = "",
@@ -226,6 +236,7 @@ def _read_process_output(
     output_from_byte: int = None,
 ) -> dict:
     """读取完整输出，或从绝对字节偏移开始顺序读取一个输出分块。"""
+
     record, error = _get_process_record(process_id)
 
     if error:
@@ -354,7 +365,6 @@ def _get_process_record(process_id: str) -> tuple[dict | None, dict | None]:
         }
 
     _enforce_process_timeout(record)
-
     return record, None
 
 
@@ -435,6 +445,7 @@ def _decode_output_chunk(
     final: bool,
 ) -> tuple[str, int, bool]:
     """按字符上限顺序解码字节，并返回下一次读取所需的精确字节位置。"""
+
     if not raw:
         return "", 0, False
 
@@ -481,6 +492,7 @@ def _coerce_grace_seconds(value) -> int:
 
 def _terminate_process_tree(proc: subprocess.Popen, grace_seconds: int) -> str:
     """终止命令对应的完整进程树，避免 shell 子进程在后台残留。"""
+
     grace = _coerce_grace_seconds(grace_seconds)
 
     if os.name == "nt":
@@ -495,24 +507,22 @@ def _terminate_process_tree(proc: subprocess.Popen, grace_seconds: int) -> str:
             raise RuntimeError(f"taskkill failed with return code {completed.returncode}: {message}")
 
         proc.wait(timeout=grace)
-
         return "taskkill"
 
     os.killpg(proc.pid, signal.SIGTERM)
 
     try:
         proc.wait(timeout=grace)
-
         return "terminate"
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait(timeout=5)
-
         return "kill"
 
 
 def _join_output_reader(record: dict) -> None:
     """等待输出管道读到 EOF，确保返回结果包含进程结束前的最后内容。"""
+
     reader = record.get("reader")
 
     if reader and reader.is_alive():

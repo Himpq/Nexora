@@ -15,7 +15,7 @@ from email.header import Header
 from email.utils import parsedate_to_datetime
 from basis.Tool import TOOLS, canonicalize_tool_name, get_tools_for_config, ToolResultPresenter
 from App.Executor import ToolExecutor
-from database import User, BASIS
+from basis.User import User, BASIS
 from basis.Conversation import ConversationManager
 from basis.Model.Context import ChatContextManager
 from App.Utils import (
@@ -557,7 +557,7 @@ class Model(MailMixin):
             return ""
 
         try:
-            from agent_tunnel import call_local_tool_sync, get_agent_tools, is_agent_online
+            from App.Agent import call_local_tool_sync, get_agent_tools, is_agent_online
 
             if not is_agent_online(username):
                 return ""

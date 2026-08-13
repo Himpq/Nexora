@@ -1,94 +1,29 @@
 """
-工具：网页渲染 + Readability 正文提取
+NexoraCode.local.tools.BrowserCore — 网页渲染与驻留页面核心
+
+浏览器能力实现层，被 BrowserTool 中 7 个 browser_page_* 工具复用：
+- 一次性渲染：后台 WebView 无头渲染 + requests 静态抓取（按 renderer_engine 选择）
+- 驻留交互模式：interactive 页面管理（open/read/click/input/eval/scroll/list/close）
+- Readability 正文提取（BeautifulSoup 预处理 + trafilatura）
+- 会话 Cookie 持久化到 renderer_cookies.lwp
+
+本模块不定义工具类，只提供实现函数。
 """
 
+from __future__ import annotations
+
 import re
-from core.config import config, get_app_root
-
-# Tool definitions are centralized in tools/catalog.py.
-TOOL_MANIFEST = []
-
-# Readability.js 的 Python 移植（使用 trafilatura 库）
-def _extract_readability(html: str, url: str) -> str:
-    # 优先尝试利用 BeautifulSoup 对 HTML 节点进行修改：将 <a> 标签和 onclick 转为 [URL] Title 格式
-    try:
-        from bs4 import BeautifulSoup
-        import urllib.parse
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # 处理普通 <a> 标签
-        for a in soup.find_all('a', href=True):
-            href = a['href'].strip()
-            text = a.get_text(strip=True)
-            if href and not href.startswith('javascript:') and text:
-                full_href = urllib.parse.urljoin(url, href)
-                a.string = f"[{full_href}] {text}"
-                
-        # 处理带有 onclick 类似 location.href 跳转的元素
-        for el in soup.find_all(attrs={'onclick': True}):
-            onclick = el['onclick'].strip()
-            m = re.search(r"(?:window\.)?location(?:\[\'href\'\]|\.href)?\s*=\s*['\"](.*?)['\"]", onclick)
-            if m:
-                href = m.group(1).strip()
-                text = el.get_text(strip=True)
-                if href and not href.startswith('javascript:') and text:
-                    full_href = urllib.parse.urljoin(url, href)
-                    el.string = f"[{full_href}] {text}"
-                    
-        # 用替换后的 HTML 送入 trafilatura 获取结构化干净文本
-        html = str(soup)
-    except Exception as bs_err:
-        import logging
-        logging.warning(f"BeautifulSoup preprocessing failed: {bs_err}")
-
-    try:
-        import trafilatura
-        # trafilatura在处理自己生成的结果时有时会吞掉链接，所以关闭 include_links，完全依赖上面 bs4 提前重写的文本。
-        result = trafilatura.extract(html, url=url, include_links=False, include_images=False)
-        return result or "[No main content extracted]"
-    except Exception as e:
-        # trafilatura 未安装或执行失败（如缺少配置文件）时降级到全文
-        import logging
-        logging.warning(f"Trafilatura extraction failed: {e}, falling back to Basic HTMLParser")
-        from html.parser import HTMLParser
-        class _TextExtractor(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.texts = []
-                self._skip_tags = {"script", "style", "noscript", "head"}
-                self._current_skip = 0
-
-            def handle_starttag(self, tag, attrs):
-                if tag in self._skip_tags:
-                    self._current_skip += 1
-            def handle_endtag(self, tag):
-                if tag in self._skip_tags:
-                    self._current_skip = max(0, self._current_skip - 1)
-            def handle_data(self, data):
-                if self._current_skip == 0:
-                    text = data.strip()
-                    if text:
-                        self.texts.append(text)
-        extractor = _TextExtractor()
-        extractor.feed(html)
-        return "\n".join(extractor.texts)
-
-
-def _extract_title(html: str) -> str:
-    m = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
-    if not m:
-        return ""
-    return re.sub(r"\s+", " ", (m.group(1) or "").strip())
-
-
 import threading
 import time
 import uuid
 from pathlib import Path
 
+from core.config import config, get_app_root
+
+
 _INTERACTIVE_WIN = None
 _INTERACTIVE_READY = threading.Event()
-_INTERACTIVE_PAGES = {}
+_INTERACTIVE_PAGES: dict[int, dict] = {}
 _INTERACTIVE_LOCK = threading.RLock()
 _NEXT_INTERACTIVE_PAGE_ID = 0
 _ACTIVE_PAGE_ID = None
@@ -97,8 +32,127 @@ _STATIC_REQUESTS_SESSION = None
 _STATIC_COOKIE_JAR_PATH = Path(get_app_root()) / "renderer_cookies.lwp"
 
 
+def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "readability", page_id=None) -> dict:
+    engine = str(config.get("renderer_engine", "auto") or "auto").strip().lower()
+
+    if engine == "requests":
+        try:
+            return _render_static(url, extract_mode)
+        except Exception as e:
+            return {"error": str(e)}
+
+    # 非 requests 引擎：优先 WebView 后台无头渲染（GUI 已启动时），失败则静态抓取
+    try:
+        import webview
+
+        if len(webview.windows) > 0:
+            if extract_mode == "interactive":
+                return _init_interactive_window(url, page_id=page_id)
+
+            res = _render_webview(url, extract_mode)
+
+            if "error" not in res:
+                return res
+    except Exception:
+        pass
+
+    try:
+        data = _render_static(url, extract_mode)
+        data["warning"] = "后台 WebView 不可用，已降级为纯静态抓取"
+        return data
+    except Exception as e:
+        return {"error": f"网页渲染器与静态抓取全部失败: {e}"}
+
+
+def _render_webview(url: str, extract_mode: str) -> dict:
+    import webview
+
+    timeout_sec = int(config.get("renderer_timeout", 20))
+    event = threading.Event()
+    result = {}
+
+    window_id = f"hidden_render_{uuid.uuid4().hex[:8]}"
+
+    def on_loaded():
+        time.sleep(1.5)
+
+        try:
+            html = w.evaluate_js("document.documentElement.outerHTML")
+            title = w.evaluate_js("document.title")
+            result["html"] = html
+            result["title"] = title
+        except Exception as e:
+            result["error"] = str(e)
+        finally:
+            event.set()
+
+    try:
+        w = webview.create_window(window_id, url, hidden=True)
+        w.events.loaded += on_loaded
+    except Exception as e:
+        return {"error": f"创建后台 WebView 失败: {e}"}
+
+    success = event.wait(timeout=timeout_sec)
+
+    try:
+        w.destroy()
+    except Exception:
+        pass
+
+    if not success:
+        return {"error": f"WebView 渲染超时 ({timeout_sec}s)"}
+
+    if "error" in result:
+        return {"error": f"WebView JS 执行异常: {result['error']}"}
+
+    html = result.get("html", "")
+    title = result.get("title", url)
+
+    if extract_mode == "html":
+        content = html
+    else:
+        content = _extract_readability(html, url)
+
+    return {
+        "title": title,
+        "content": content,
+        "url": url,
+        "engine": "webview",
+    }
+
+
+def _render_static(url: str, extract_mode: str) -> dict:
+    timeout_sec = int(config.get("renderer_timeout", 20))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        )
+    }
+    session = _get_static_requests_session()
+    resp = session.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
+    resp.raise_for_status()
+    _save_static_requests_cookies(session)
+    html = resp.text or ""
+    title = _extract_title(html) or (resp.url or url)
+
+    if extract_mode == "html":
+        content = html
+    else:
+        content = _extract_readability(html, resp.url or url)
+
+    return {
+        "title": title,
+        "content": content,
+        "url": resp.url or url,
+        "engine": "requests_fallback",
+    }
+
+
+# ===== 驻留交互页面管理 =====
+
 def _allocate_interactive_page_id() -> int:
-    """为 browser_page_open 创建的驻留页面分配稳定递增 ID。"""
     global _NEXT_INTERACTIVE_PAGE_ID
 
     with _INTERACTIVE_LOCK:
@@ -221,18 +275,22 @@ def _interactive_pages_summary() -> list:
 
 def _get_static_requests_session():
     global _STATIC_REQUESTS_SESSION
+
     if _STATIC_REQUESTS_SESSION is not None:
         return _STATIC_REQUESTS_SESSION
+
     import requests
     from http.cookiejar import LWPCookieJar
 
     session = requests.Session()
     jar = LWPCookieJar(str(_STATIC_COOKIE_JAR_PATH))
+
     try:
         if _STATIC_COOKIE_JAR_PATH.exists():
             jar.load(ignore_discard=True, ignore_expires=True)
     except Exception:
         pass
+
     session.cookies = jar
     _STATIC_REQUESTS_SESSION = session
     return session
@@ -240,11 +298,15 @@ def _get_static_requests_session():
 
 def _save_static_requests_cookies(session=None):
     sess = session or _STATIC_REQUESTS_SESSION
+
     if not sess:
         return
+
     jar = getattr(sess, "cookies", None)
+
     if not jar or not hasattr(jar, "save"):
         return
+
     with _STATIC_COOKIE_LOCK:
         try:
             _STATIC_COOKIE_JAR_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -260,14 +322,17 @@ def _merge_document_cookies_into_static_session(url: str, cookie_text: str):
 
     target_url = str(url or "").strip()
     raw_cookie = str(cookie_text or "").strip()
+
     if not target_url or not raw_cookie:
         return
 
     host = str(urlsplit(target_url).hostname or "").strip()
+
     if not host:
         return
 
     parsed = SimpleCookie()
+
     try:
         parsed.load(raw_cookie)
     except Exception:
@@ -275,10 +340,13 @@ def _merge_document_cookies_into_static_session(url: str, cookie_text: str):
 
     session = _get_static_requests_session()
     changed = False
+
     for key, morsel in parsed.items():
         name = str(key or "").strip()
+
         if not name:
             continue
+
         try:
             cookie = create_cookie(
                 name=name,
@@ -291,6 +359,7 @@ def _merge_document_cookies_into_static_session(url: str, cookie_text: str):
             changed = True
         except Exception:
             continue
+
     if changed:
         _save_static_requests_cookies(session)
 
@@ -327,10 +396,13 @@ def _run_with_timeout(func, timeout_sec: float = 4.0):
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
+
     if not done.wait(timeout=max(0.2, float(timeout_sec or 0))):
         return False, {"error": f"Interactive call timeout ({timeout_sec}s)"}
+
     if "error" in box:
         return False, {"error": str(box["error"])}
+
     return True, box.get("value")
 
 
@@ -522,15 +594,21 @@ def _format_interactive_node_line(node: dict) -> str:
     locator = node.get("locator", {}) if isinstance(node.get("locator"), dict) else {}
     preferred = str(locator.get("preferred", "") or "")
     extras = []
+
     if node.get("id"):
         extras.append(f"id={node.get('id')}")
+
     if node.get("class_name"):
         extras.append(f"class={node.get('class_name')}")
+
     if preferred:
         extras.append(f"selector={preferred}")
+
     meta = " | ".join(extras)
+
     if meta:
         meta = " | " + meta
+
     return f"[ID:{node_id} {tag} ({text}) rect:{rect_text}{meta}]"
 
 
@@ -615,7 +693,7 @@ def _interactive_basic_snapshot(page_id: int) -> dict:
         "title": str(title or ""),
         "url": str(url or ""),
         "viewport": {},
-        "nodes": []
+        "nodes": [],
     }
 
     _sync_interactive_cookies_to_static_session(page_id)
@@ -642,7 +720,6 @@ def _get_interactive_dom(page_id: int):
             _sync_interactive_cookies_to_static_session(resolved_page_id)
             snap = _build_interactive_snapshot(payload, page_id=resolved_page_id)
 
-            # During navigation transition, payload may be empty/non-structured; retry briefly.
             if snap.get("title") or snap.get("url") or snap.get("nodes"):
                 return snap
 
@@ -694,8 +771,6 @@ def _init_interactive_window(url: str, page_id=None):
         created_page_id = _allocate_interactive_page_id()
         ready = threading.Event()
         window_id = f"interactive_{created_page_id}_{uuid.uuid4().hex[:8]}"
-
-        # Needs to be a bit large
         w = webview.create_window(window_id, url, hidden=False, width=1280, height=800)
 
         with _INTERACTIVE_LOCK:
@@ -731,6 +806,7 @@ def _init_interactive_window(url: str, page_id=None):
 
         return {"error": f"Interactive window create failed: {e}"}
 
+
 def handle_web_click(page_id: int, node_id: int) -> dict:
     resolved_page_id, _, page_err = _get_interactive_page(page_id)
 
@@ -749,17 +825,16 @@ def handle_web_click(page_id: int, node_id: int) -> dict:
     (function() {{
         var el = document.querySelector('[data-nexora-id="{safe_node_id}"]');
         if (el) {{
-            // Remove target so new_window behavior is blocked
             if (el.tagName && el.tagName.toLowerCase() === 'a') el.removeAttribute('target');
             let parent = el.closest ? el.closest('a[target="_blank"]') : null;
             if (parent) parent.removeAttribute('target');
-            
-            el.click(); 
-            return true; 
+            el.click();
+            return true;
         }}
         return false;
     }})();
     """
+
     try:
         clicked, err = _interactive_eval_js_safe(js, timeout_sec=4.5, page_id=resolved_page_id)
 
@@ -769,8 +844,7 @@ def handle_web_click(page_id: int, node_id: int) -> dict:
         if not clicked:
             return {"page_id": resolved_page_id, "error": f"找不到 ID 为 {safe_node_id} 的元素"}
 
-        import time
-        time.sleep(3) # Wait for page load or JS mutation
+        time.sleep(3)
         return _get_interactive_dom(resolved_page_id)
     except Exception as e:
         return {"page_id": resolved_page_id, "error": f"Click Error: {str(e)}"}
@@ -786,9 +860,6 @@ def handle_web_exec_js(page_id: int, code: str) -> dict:
         return {"page_id": resolved_page_id, "error": "code 不能为空"}
 
     try:
-        import time
-        # Ensure it is safely evaluated and returned
-        # Wrap the code in an IIFE to ensure variables are locally scoped and the return value escapes
         if "return" in code and not "(function(" in code:
             wrapped_code = f"(function() {{\n{code}\n}})();"
         else:
@@ -799,13 +870,15 @@ def handle_web_exec_js(page_id: int, code: str) -> dict:
         if err:
             return err
 
-        time.sleep(1) # Short wait for DOM to settle
+        time.sleep(1)
         return {"page_id": resolved_page_id, "result": res, "dom": _get_interactive_dom(resolved_page_id)}
     except Exception as e:
         return {"page_id": resolved_page_id, "error": f"JS eval failed: {str(e)}"}
 
 
 def handle_web_input(page_id: int, selector: str, text: str, submit: bool = False) -> dict:
+    import json
+
     resolved_page_id, _, page_err = _get_interactive_page(page_id)
 
     if page_err:
@@ -815,8 +888,6 @@ def handle_web_input(page_id: int, selector: str, text: str, submit: bool = Fals
 
     if not safe_selector:
         return {"page_id": resolved_page_id, "error": "selector 不能为空"}
-
-    import json
 
     js = f"""
     (function() {{
@@ -866,8 +937,8 @@ def handle_web_input(page_id: int, selector: str, text: str, submit: bool = Fals
         }};
     }})();
     """
+
     try:
-        import time
         result, err = _interactive_eval_js_safe(js, timeout_sec=6.0, page_id=resolved_page_id)
 
         if err:
@@ -889,7 +960,7 @@ def handle_web_scroll(page_id: int, direction: str) -> dict:
         "down": "window.scrollBy(0, window.innerHeight * 0.8)",
         "up": "window.scrollBy(0, -window.innerHeight * 0.8)",
         "top": "window.scrollTo(0, 0)",
-        "bottom": "window.scrollTo(0, document.body.scrollHeight)"
+        "bottom": "window.scrollTo(0, document.body.scrollHeight)",
     }
     safe_direction = str(direction or "").strip().lower()
 
@@ -904,7 +975,6 @@ def handle_web_scroll(page_id: int, direction: str) -> dict:
         if err:
             return err
 
-        import time
         time.sleep(1)
         return _get_interactive_dom(resolved_page_id)
     except Exception as e:
@@ -1024,126 +1094,79 @@ def handle_web_close_page(page_id: int) -> dict:
         "pages": _interactive_pages_summary(),
     }
 
-def _render_webview(
 
-url: str, extract_mode: str) -> dict:
-    import webview
-    import threading
-    import time
-    import uuid
-    
-    timeout_sec = int(config.get("renderer_timeout", 20))
-    event = threading.Event()
-    result = {}
-    
-    window_id = f"hidden_render_{uuid.uuid4().hex[:8]}"
-    
-    def on_loaded():
-        # wait a bit for dynamic JS
-        time.sleep(1.5)
-        try:
-            html = w.evaluate_js('document.documentElement.outerHTML')
-            title = w.evaluate_js('document.title')
-            result["html"] = html
-            result["title"] = title
-        except Exception as e:
-            result["error"] = str(e)
-        finally:
-            event.set()
+def _extract_readability(html: str, url: str) -> str:
+    """Readability 正文提取：BeautifulSoup 预处理链接 + trafilatura 提取正文。"""
 
     try:
-        w = webview.create_window(window_id, url, hidden=True)
-        w.events.loaded += on_loaded
-    except Exception as e:
-        return {"error": f"创建后台 WebView 失败: {e}"}
+        from bs4 import BeautifulSoup
+        import urllib.parse
 
-    success = event.wait(timeout=timeout_sec)
-    
-    try:
-        w.destroy()
-    except:
+        soup = BeautifulSoup(html, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            text = a.get_text(strip=True)
+
+            if href and not href.startswith("javascript:") and text:
+                full_href = urllib.parse.urljoin(url, href)
+                a.string = f"[{full_href}] {text}"
+
+        for el in soup.find_all(attrs={"onclick": True}):
+            onclick = el["onclick"].strip()
+            m = re.search(r"(?:window\.)?location(?:\[\'href\'\]|\.href)?\s*=\s*['\"](.*?)['\"]", onclick)
+
+            if m:
+                href = m.group(1).strip()
+                text = el.get_text(strip=True)
+
+                if href and not href.startswith("javascript:") and text:
+                    full_href = urllib.parse.urljoin(url, href)
+                    el.string = f"[{full_href}] {text}"
+
+        html = str(soup)
+    except Exception:
         pass
-        
-    if not success:
-        return {"error": f"WebView 渲染超时 ({timeout_sec}s)"}
-
-    if "error" in result:
-        return {"error": f"WebView JS 执行异常: {result['error']}"}
-
-    html = result.get("html", "")
-    title = result.get("title", url)
-    
-    # WebView 动态执行拿到的 HTML，通常比较干净
-    if extract_mode == "html":
-        content = html
-    else:
-        content = _extract_readability(html, url)
-        
-    return {
-        "title": title,
-        "content": content,
-        "url": url,
-        "engine": "webview",
-    }
-
-
-def _render_static(url: str, extract_mode: str) -> dict:
-    timeout_sec = int(config.get("renderer_timeout", 20))
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        )
-    }
-    session = _get_static_requests_session()
-    resp = session.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
-    resp.raise_for_status()
-    _save_static_requests_cookies(session)
-    html = resp.text or ""
-    title = _extract_title(html) or (resp.url or url)
-    if extract_mode == "html":
-        content = html
-    else:
-        content = _extract_readability(html, resp.url or url)
-    return {
-        "title": title,
-        "content": content,
-        "url": resp.url or url,
-        "engine": "requests_fallback",
-    }
-
-
-def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "readability", page_id=None) -> dict:
-    engine = str(config.get("renderer_engine", "auto") or "auto").strip().lower()
-
-    if engine == "requests":
-        try:
-            return _render_static(url, extract_mode)
-        except Exception as e:
-            return {"error": str(e)}
-
-    # 优先尝试 WebView 后台无头渲染
-    try:
-        import webview
-        # 如果已经有活跃的 webview（通过 webview.windows 判断应用是否已经启动 GUI 循环）
-        if len(webview.windows) > 0:
-            if extract_mode == "interactive":
-                return _init_interactive_window(url, page_id=page_id)
-
-            res = _render_webview(url, extract_mode)
-            if "error" not in res:
-                return res
-            # 如果 webview 报错，回退到 static
-            import logging
-            logging.warning(f"WebView render API fallback due to: {res['error']}")
-    except Exception as e:
-        import logging
-        logging.warning(f"WebView initialization skipped: {e}")
 
     try:
-        data = _render_static(url, extract_mode)
-        data["warning"] = "后台 WebView 不可用，已降级为纯静态抓取"
-        return data
-    except Exception as e:
-        return {"error": f"网页渲染器与静态抓取全部失败: {e}"}
+        import trafilatura
+
+        result = trafilatura.extract(html, url=url, include_links=False, include_images=False)
+        return result or "[No main content extracted]"
+    except Exception:
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.texts = []
+                self._skip_tags = {"script", "style", "noscript", "head"}
+                self._current_skip = 0
+
+            def handle_starttag(self, tag, attrs):
+                if tag in self._skip_tags:
+                    self._current_skip += 1
+
+            def handle_endtag(self, tag):
+                if tag in self._skip_tags:
+                    self._current_skip = max(0, self._current_skip - 1)
+
+            def handle_data(self, data):
+                if self._current_skip == 0:
+                    text = data.strip()
+
+                    if text:
+                        self.texts.append(text)
+
+        extractor = _TextExtractor()
+        extractor.feed(html)
+        return "\n".join(extractor.texts)
+
+
+def _extract_title(html: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
+
+    if not m:
+        return ""
+
+    return re.sub(r"\s+", " ", (m.group(1) or "").strip())

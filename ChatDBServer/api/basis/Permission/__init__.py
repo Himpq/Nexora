@@ -115,3 +115,7 @@ def get_user_permission_hint_by_username(
     """
     role = get_user_role_by_username(username, loader=loader)
     return build_permission_hint_by_role(role)
+
+
+# 权限请求工具（Requests）
+from .Requests import build_permission_question_id, normalize_project_permission_request

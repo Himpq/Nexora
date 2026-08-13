@@ -27,14 +27,14 @@ except Exception as _ws_client_import_error:
     _ws_client_lib = None
     print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
 
-from core.tool_registry import ToolRegistry
+from local import build_default_executor
 from core.config import config
 
 LOCAL_PORT = 27700
 
 app = Flask(__name__, static_folder=None)
 sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
-registry = ToolRegistry()
+registry = build_default_executor()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""

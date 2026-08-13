@@ -24,7 +24,7 @@ from App.Components import LearningRuntimeExecutor, get_learning_tools
 from .longdoc_skills import read_longdoc_skill
 from map.baidu import BaiduMapToolService
 from map.tianditu import create_map_tool_service
-from permission_requests import build_permission_question_id, normalize_project_permission_request
+from basis.Permission import build_permission_question_id, normalize_project_permission_request
 
 
 class ToolExecutor:

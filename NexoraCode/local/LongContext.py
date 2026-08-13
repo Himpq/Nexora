@@ -1,82 +1,88 @@
-import uuid
+"""
+NexoraCode.local.LongContext — 长文本上下文存储
+
+大输出截断后的全文保存与按需回读：
+- 截断工具结果时生成 ctxId，全文写入内存或文件缓存
+- 模型用 local_context_read（getContext）按 regex / 行范围 / 关键词回读
+- local_context_clear 清理缓存，建议一轮对话结束后执行
+
+对外提供：
+- process_large_output: 超长文本截断并返回 ctxId 提示
+- get_context_handler: 按 ctxId 回读截断内容
+- clear_context: 清理全部缓存
+"""
+
+from __future__ import annotations
+
 import re
+import uuid
+
 from core.config import config, get_app_root
 
-TOOL_MANIFEST = [
-    {
-        "name": "getContext",
-        "handler": "get_context_handler",
-        "description": "获取被截断的长文本上下文内容。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ctxId": {"type": "string", "description": "被截断时返回的上下文ID"},
-                "regex": {"type": "string", "description": "要匹配的正则表达式（可选）"},
-                "keyword": {"type": "string", "description": "要搜索包含的关键词（可选）"},
-                "range": {"type": "string", "description": "行号范围别名（可选），格式如 '10:80'。推荐优先使用 range_start/range_end。"},
-                "range_start": {"type": "integer", "description": "起始行号（可选）"},
-                "range_end": {"type": "integer", "description": "结束行号（可选）"}
-            },
-            "required": ["ctxId"]
-        }
-    },
-    {
-        "name": "clear_context",
-        "handler": "clear_context",
-        "description": "清理长文本上下文缓存，建议一轮对话结束后执行。",
-        "parameters": {
-            "type": "object",
-            "properties": {}
-        }
-    }
-]
-
-_mem_cache = {}
 
 def get_cache_dir():
     d = get_app_root() / "temp" / "longcontent"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+
 def store_context(content: str) -> str:
     cache_type = config.get("long_content_cache_type", "file")
     max_bytes = config.get("long_content_max_bytes", 1048576)
-    
+
     encoded = content.encode("utf-8")
+
     if len(encoded) > max_bytes:
         encoded = encoded[:max_bytes]
+
     content = encoded.decode("utf-8", errors="ignore")
-    
+
     ctx_id = f"ctx_{uuid.uuid4().hex[:8]}"
+
     if cache_type == "memory":
         _mem_cache[ctx_id] = content
     else:
         file_path = get_cache_dir() / f"{ctx_id}.txt"
         file_path.write_text(content, encoding="utf-8")
+
     return ctx_id
+
 
 def clear_context(**kwargs):
     _mem_cache.clear()
-    d = get_app_root() / "temp" / "longcontent"
+    d = get_cache_dir()
+
     if d.exists():
         for file in d.glob("*.txt"):
-            try: file.unlink()
-            except: pass
+            try:
+                file.unlink()
+            except Exception:
+                pass
+
     return "长文本上下文缓存已清理。"
+
 
 def process_large_output(content: str) -> str:
     if len(content) > 10000:
         ctx_id = store_context(content)
-        return f"[Content truncated due to length. Full content saved with Context ID: {ctx_id}. Use tool getContext(ctxId='{ctx_id}', regex=..., range_start=..., range_end=..., keyword=...) to read it.]\n" + content[:6000]
+        return (
+            "[Content truncated due to length. Full content saved with Context ID: "
+            f"{ctx_id}. Use tool getContext(ctxId='{ctx_id}', regex=..., range_start=..., "
+            "range_end=..., keyword=...) to read it.]\n"
+        ) + content[:6000]
+
     return content
+
 
 def _coerce_int(value, default=None):
     try:
         if value is None or value == "":
             return default
+
         return int(value)
     except Exception:
         return default
+
 
 def _parse_range_arg(value):
     if value is None or value == "":
@@ -92,10 +98,12 @@ def _parse_range_arg(value):
 
     text = str(value or "").strip()
     match = re.match(r"^\s*(\d+)\s*[:,-]\s*(\d+)\s*$", text)
+
     if match:
         return _coerce_int(match.group(1)), _coerce_int(match.group(2))
 
     return None, None
+
 
 def get_context_handler(ctxId: str = "", regex: str = None, range_start: int = None, range_end: int = None, keyword: str = None, range=None, ctx_id: str = "", **kwargs):
     if not ctxId:
@@ -103,23 +111,32 @@ def get_context_handler(ctxId: str = "", regex: str = None, range_start: int = N
 
     if (range_start is None or range_end is None) and range is not None:
         parsed_start, parsed_end = _parse_range_arg(range)
+
         if range_start is None:
             range_start = parsed_start
+
         if range_end is None:
             range_end = parsed_end
 
     cache_type = config.get("long_content_cache_type", "file")
     text = ""
+
     if cache_type == "memory":
-        if ctxId not in _mem_cache: return "Context not found."
+        if ctxId not in _mem_cache:
+            return "Context not found."
+
         text = _mem_cache[ctxId]
     else:
         file_path = get_cache_dir() / f"{ctxId}.txt"
-        if not file_path.exists(): return "Context not found."
+
+        if not file_path.exists():
+            return "Context not found."
+
         text = file_path.read_text(encoding="utf-8")
-        
+
     lines = text.splitlines()
     res = []
+
     if range_start is not None and range_end is not None:
         start = max(0, _coerce_int(range_start, 0))
         end = min(len(lines), max(start, _coerce_int(range_end, start)))
@@ -127,12 +144,16 @@ def get_context_handler(ctxId: str = "", regex: str = None, range_start: int = N
     elif regex:
         try:
             r = re.compile(regex)
-            res = [l for l in lines if r.search(l)]
-        except Exception as e: return f"Regex error: {e}"
+            res = [line for line in lines if r.search(line)]
+        except Exception as e:
+            return f"Regex error: {e}"
     elif keyword:
-        res = [l for l in lines if keyword.lower() in l.lower()]
+        res = [line for line in lines if keyword.lower() in line.lower()]
     else:
         res = lines[:100]
-        res.append('... (Specify regex, keyword, or range_start/range_end to see more)')
-        
+        res.append("... (Specify regex, keyword, or range_start/range_end to see more)")
+
     return "\n".join(res)
+
+
+_mem_cache = {}

@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request, session
 
-from agent_tunnel import call_local_tool_sync, get_agent_tools, is_agent_online
+from .agent_tunnel import call_local_tool_sync, get_agent_tools, is_agent_online
 
 
 agent_permissions_bp = Blueprint("agent_permissions", __name__)

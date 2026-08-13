@@ -9,7 +9,7 @@ from math import isfinite
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
-from api.testapi import ServiceHealthTester
+from .testapi import ServiceHealthTester
 
 
 class ServiceStatusMonitor:

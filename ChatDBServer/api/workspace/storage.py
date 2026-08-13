@@ -2106,7 +2106,7 @@ class WorkspaceStore:
         if knowledge_type != "basis" or not title:
             return snapshot
 
-        from api.database import User
+        from basis.User import User
 
         metadata = User(added_by).getBasisMetadata(title)
 

@@ -43,7 +43,7 @@ from .scope import (
     require_papi_owner_match,
     resolve_papi_request_username,
 )
-from api.database import User
+from basis.User import User
 from basis.Conversation import ConversationManager
 from basis.TokenUsage import get_generation_quota_gate
 from basis.Model.Provider import create_provider_adapter

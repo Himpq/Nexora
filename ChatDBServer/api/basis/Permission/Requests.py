@@ -1,9 +1,18 @@
-"""Stable identities for temporary local permission requests."""
+"""
+Nexora.basis.Permission.Requests — 权限请求工具
 
+职责：临时本地权限请求的稳定身份构建与项目级权限请求归一化。
+纯标准库依赖，从 api/permission_requests.py 抽取归入 basis.Permission。
+
+对外提供：
+- build_permission_question_id: 构建稳定权限请求 ID
+- normalize_project_permission_request: 项目级权限请求归一化
+"""
 import hashlib
 import ntpath
 import posixpath
 import re
+from typing import Tuple
 
 
 def build_permission_question_id(path: str, operation: str, scope: str) -> str:
@@ -33,7 +42,7 @@ def normalize_project_permission_request(
     scope: str,
     project_root: str,
     sensitive: bool = False,
-) -> tuple[str, str, str, bool]:
+) -> Tuple[str, str, str, bool]:
     """Promote a non-sensitive path inside a bound Project to one project-root request."""
     clean_path = str(path or "").strip()
     clean_operation = str(operation or "read").strip().lower()

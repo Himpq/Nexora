@@ -1,10 +1,24 @@
 """
-Shared path and privacy guards for local tools.
+NexoraCode.local.PathGuard — 本地路径与隐私守卫
+
+本地工具共享的路径准入契约：
+- allowed_dirs 白名单根目录判定
+- 敏感路径识别（.env / credentials / token 等）
+- 会话级临时授权（grant / list / TTL 清理）
+- 统一 permission_required 错误结构，供模型按 ask_for_permission 流程自愈
+
+对外提供：
+- resolve_allowed_path / build_permission_required
+- grant_temporary_permission / list_temporary_permissions
+- is_hidden_path / is_sensitive_path
 """
 
-from pathlib import Path
+from __future__ import annotations
+
 import threading
 import time
+from pathlib import Path
+
 from core.config import config
 
 
@@ -168,7 +182,8 @@ def grant_temporary_permission(
         _cleanup_temp_permissions_locked(now)
         bucket = _TEMP_PERMISSIONS.setdefault(clean_conversation_id, [])
         bucket[:] = [
-            item for item in bucket
+            item
+            for item in bucket
             if not (
                 str(item.get("path") or "") == record["path"]
                 and str(item.get("scope") or "") == record["scope"]
@@ -263,7 +278,6 @@ def _is_temporarily_allowed(path: Path, context: dict | None, access: str = "rea
             return True
 
         if scope == "dir":
-
             try:
                 path.relative_to(allowed_path)
                 return True

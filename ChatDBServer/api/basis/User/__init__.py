@@ -70,7 +70,7 @@ import time
 import re
 import hashlib
 import uuid
-from timeline import record_knowledge_change
+from basis.Timeline import record_knowledge_change
 from basis.Database import (
     get_user_lock,
     global_file_lock as _global_file_lock,
