@@ -39,15 +39,72 @@
     <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07">
     <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260728_settings_management_06">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
+    <style>
+        /* ===== NexoraCode 项目模式精简 ===== */
+        /* 品牌 logo：Nexora.Code，点蓝色，无动画无图标 */
+        .sidebar-brand-tab .logo { display: inline-flex; align-items: center; }
+        .sidebar-brand-tab .logo .dot { color: #6ea8ff; animation: none !important; }
+        .sidebar-brand-tab .logo .dot::after { content: none !important; }
+        /* toast 避开自绘标题栏 */
+        .toast-notification { top: calc(var(--nc-titlebar-h) + 20px) !important; }
+        /* 只保留项目侧栏 section，隐藏普通会话项与无关面板 */
+        #conversationList { display: block !important; }
+        #conversationList > :not(.nexoracode-sidebar-section) { display: none !important; }
+        #learningSidebarPanel, #learningCourseWorkspacePanel { display: none !important; }
+        /* titlebar 与页面重叠修复：强制标题栏 36px，body 顶部预留同高 */
+        #nc-titlebar { height: 36px !important; min-height: 36px !important; max-height: 36px !important; }
+        html.nc-titlebar-ready body { padding-top: 36px !important; }
+        html.nc-titlebar-ready .app-container { height: calc(100vh - 36px) !important; }
+    </style>
 </head>
 <body>
+    <script>
+    // 项目模式精简：为已删除入口创建隐藏占位，避免 chat.js 初始化绑定报错
+    (function () {
+        var PLACEHOLDER_IDS = [
+            'workspacesBtn', 'fileCenterBtn', 'learningProgressBtn', 'learningCoursesBtn',
+            'learningResourcesBtn', 'learningResourcesToggleBtn', 'learningPracticeBtn',
+            'learningPracticeToggleBtn', 'learningProfileBtn', 'learningFeedBtn',
+            'toggleNotesPanel', 'toggleNotificationPanel', 'chatNotificationBadge',
+            'chatNotificationPopover', 'mobileHeaderMenu', 'mobileHeaderMenuTrigger',
+            'mobileHeaderNotificationBadge', 'mobileHeaderMenuPanel', 'mobileNotificationMenuItem',
+            'mobileNotificationMenuBadge', 'mobileNotesMenuItem', 'mobileTimelineMenuItem',
+            'toggleFilePanel', 'toggleKnowledgePanel'
+        ];
+        function createPlaceholders() {
+            var body = document.body;
+            if (!body) return;
+            PLACEHOLDER_IDS.forEach(function (id) {
+                if (document.getElementById(id)) return;
+                var el = document.createElement('div');
+                el.id = id;
+                el.style.display = 'none';
+                body.appendChild(el);
+            });
+        }
+        createPlaceholders();
+        document.addEventListener('DOMContentLoaded', createPlaceholders);
+
+        // 左下角"设置"：捕获阶段拦截，打开本地设置窗口（替代云端设置页面）
+        document.addEventListener('click', function (e) {
+            var el = e.target && e.target.closest ? e.target.closest('#settingsBtn') : null;
+            if (!el) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var bridge = window.pywebview && window.pywebview.api;
+            if (bridge && bridge.open_settings) {
+                bridge.open_settings();
+            }
+        }, true);
+    })();
+    </script>
     <div class="app-container">
         <!-- Sidebar: Navigation -->
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-brand-tabs" id="sidebarBrandTabs">
                     <button type="button" class="sidebar-brand-tab active" id="sidebarBrandNexoraTab" data-sidebar-mode="nexora" aria-pressed="true">
-                        <span class="logo">Nexora<span class="dot"></span></span>
+                        <span class="logo">Nexora<span class="dot">.</span>Code</span>
                     </button>
                     <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false" hidden>
                         <span class="sidebar-brand-learning-text">Learning</span>
@@ -66,76 +123,6 @@
                     <button id="newChatBtn" class="toolbar-item" type="button">
                         <i class="fa-solid fa-plus" aria-hidden="true"></i>
                         <span>New Chat</span>
-                    </button>
-                    <button id="workspacesBtn" class="toolbar-item" type="button">
-                        <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
-                        <span>Workspaces</span>
-                    </button>
-                    <button id="fileCenterBtn" class="toolbar-item" type="button">
-                        <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                        <span>Files</span>
-                    </button>
-                    <button id="learningProgressBtn" class="toolbar-item learning-nav-item" type="button" hidden>
-                        <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
-                        <span>课程进度</span>
-                    </button>
-                    <button id="learningCoursesBtn" class="toolbar-item learning-nav-item" type="button" hidden>
-                        <i class="fa-solid fa-graduation-cap" aria-hidden="true"></i>
-                        <span>课程列表</span>
-                    </button>
-                    <div id="learningResourcesGroup" class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item is-collapsed" hidden>
-                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
-                            <button id="learningResourcesBtn" class="nexoracode-sidebar-project-main learning-resource-nav-main" type="button" aria-haspopup="true" aria-expanded="false">
-                                <i class="fa-solid fa-book-open nexoracode-sidebar-project-icon" aria-hidden="true"></i>
-                                <span class="nexoracode-sidebar-project-name">学习资源</span>
-                            </button>
-                            <span class="nexoracode-sidebar-actions">
-                                <button id="learningResourcesToggleBtn" class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle" type="button" aria-label="展开学习资源工作台" title="展开学习资源工作台" aria-controls="learningResourcesStudioMenu" aria-expanded="false">
-                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                                </button>
-                            </span>
-                        </div>
-                        <div id="learningResourcesStudioMenu" class="nexoracode-sidebar-project-conversations learning-resource-studio-menu" aria-hidden="true">
-                            <div class="nexoracode-sidebar-project-conversations-inner">
-                                <button type="button" class="learning-resource-studio-item" data-learning-studio="resource">
-                                    <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
-                                    <span>资源工作台</span>
-                                </button>
-                                <button type="button" class="learning-resource-studio-item" data-learning-studio="video">
-                                    <i class="fa-solid fa-clapperboard" aria-hidden="true"></i>
-                                    <span>视频工作台</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="learningPracticeGroup" class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item is-collapsed" hidden>
-                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
-                            <button id="learningPracticeBtn" class="nexoracode-sidebar-project-main learning-resource-nav-main" type="button" aria-haspopup="true" aria-expanded="false">
-                                <i class="fa-solid fa-pen-to-square nexoracode-sidebar-project-icon" aria-hidden="true"></i>
-                                <span class="nexoracode-sidebar-project-name">模拟练习</span>
-                            </button>
-                            <span class="nexoracode-sidebar-actions">
-                                <button id="learningPracticeToggleBtn" class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle" type="button" aria-label="展开模拟练习" title="展开模拟练习" aria-controls="learningPracticeMenu" aria-expanded="false">
-                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                                </button>
-                            </span>
-                        </div>
-                        <div id="learningPracticeMenu" class="nexoracode-sidebar-project-conversations learning-resource-studio-menu" aria-hidden="true">
-                            <div class="nexoracode-sidebar-project-conversations-inner">
-                                <button type="button" class="learning-resource-studio-item" data-learning-practice="mistakes">
-                                    <i class="fa-solid fa-book-bookmark" aria-hidden="true"></i>
-                                    <span>错题本</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    <button id="learningProfileBtn" class="toolbar-item learning-nav-item" type="button" hidden>
-                        <i class="fa-solid fa-user-pen" aria-hidden="true"></i>
-                        <span>画像中心</span>
-                    </button>
-                    <button id="learningFeedBtn" class="toolbar-item learning-nav-item" type="button" hidden>
-                        <i class="fa-solid fa-rss" aria-hidden="true"></i>
-                        <span>动态中心</span>
                     </button>
                 </div>
             </div>
@@ -160,26 +147,9 @@
                     <i class="fa-solid fa-ellipsis"></i>
                     
                     <div class="user-menu" id="userMenu">
-                        <a href="/rank" class="menu-item" id="">
-                            <i class="fa-solid fa-gear"></i>
-                            <span>模型榜单</span>
-                        </a>
                         <a href="#" class="menu-item" id="settingsBtn">
                             <i class="fa-solid fa-gear"></i>
                             <span>设置</span>
-                        </a>
-                        <a href="#" class="menu-item" id="timelineMenuBtn">
-                            <i class="fa-solid fa-timeline"></i>
-                            <span>时间线</span>
-                        </a>
-                        <a href="#" class="menu-item" id="trashMenuBtn">
-                            <i class="fa-regular fa-trash-can"></i>
-                            <span>回收站</span>
-                        </a>
-                        <div class="menu-divider"></div>
-                        <a href="/logout" id="logoutLink" class="menu-item logout">
-                            <i class="fa-solid fa-right-from-bracket"></i>
-                            <span>退出</span>
                         </a>
                     </div>
                 </div>
@@ -207,57 +177,6 @@
                 <div class="header-center" id="conversationTitle">Untitled Conversation</div>
 
                 <div class="header-right">
-                   <button class="btn-icon notes-toggle-btn" id="toggleNotesPanel" title="笔记" onclick="toggleNotesPanel()">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M4 3h12a2 2 0 0 1 2 2v12l-4 4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path>
-                            <path d="M14 21v-4h4"></path>
-                            <line x1="8" y1="9" x2="14" y2="9"></line>
-                            <line x1="8" y1="13" x2="14" y2="13"></line>
-                        </svg>
-                    </button>
-                   <button class="btn-icon chat-notification-toggle" id="toggleNotificationPanel" title="通知" aria-haspopup="dialog" aria-expanded="false">
-                        <i class="fa-regular fa-bell" aria-hidden="true"></i>
-                        <span class="chat-notification-badge" id="chatNotificationBadge" hidden></span>
-                    </button>
-                   <div class="chat-notification-popover" id="chatNotificationPopover" role="dialog" aria-label="通知" aria-hidden="true"></div>
-                   <div class="mobile-header-menu" id="mobileHeaderMenu">
-                        <button class="btn-icon mobile-header-menu-trigger" id="mobileHeaderMenuTrigger" title="更多" aria-haspopup="menu" aria-expanded="false">
-                            <i class="fa-solid fa-ellipsis-vertical"></i>
-                            <span class="mobile-notification-badge" id="mobileHeaderNotificationBadge" hidden></span>
-                        </button>
-                        <div class="mobile-header-menu-panel" id="mobileHeaderMenuPanel" aria-hidden="true">
-                            <button type="button" class="mobile-header-menu-item" id="mobileNotificationMenuItem">
-                                <i class="fa-regular fa-bell"></i>
-                                <span>通知</span>
-                                <span class="mobile-notification-badge" id="mobileNotificationMenuBadge" hidden></span>
-                            </button>
-                            <button type="button" class="mobile-header-menu-item" id="mobileNotesMenuItem">
-                                <i class="fa-solid fa-note-sticky"></i>
-                                <span>笔记</span>
-                            </button>
-                            <button type="button" class="mobile-header-menu-item" id="mobileTimelineMenuItem">
-                                <i class="fa-solid fa-timeline"></i>
-                                <span>时间线</span>
-                            </button>
-                        </div>
-                   </div>
-                   {% if nexora_mail_enabled %}
-                   <button class="btn-icon" id="toggleMailView" title="邮件" onclick="openMailPlaceholderView()" hidden aria-hidden="true">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path>
-                            <polyline points="22,6 12,13 2,6"></polyline>
-                        </svg>
-                    </button>
-                   {% endif %}
-                   <button class="btn-icon" id="toggleFilePanel" title="云端文件" onclick="toggleCloudFilePanel()">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                        </svg>
-                    </button>
-                   <button class="btn-icon" id="toggleKnowledgePanel" title="Knowledge Base">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
-                    </button>
                 </div>
             </header>
 

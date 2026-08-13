@@ -14892,8 +14892,45 @@ def _format_nexoracode_tree_result(result: Any) -> str:
     return "\n".join(lines)
 
 
-def _fetch_nexoracode_project_tree_text(username: str, project_path: str, cancel_checker=None) -> str:
-    """经 NexoraCode WSS 通道拉取项目目录树文本，带 TTL 缓存。"""
+def _is_permission_required_result(result) -> bool:
+    """判断本地工具结果是否为 permission_required。"""
+    if not isinstance(result, dict):
+        return False
+    detail = result.get('result') if isinstance(result.get('result'), dict) else result
+    return bool(detail.get('permission_required')) or str(detail.get('error') or '').strip() == 'permission_required'
+
+
+def _auto_grant_project_root_read(username: str, project_path: str, conversation_id: str) -> None:
+    """项目根未授权时自动授予 read：用户主动绑定项目即同意浏览该项目目录。"""
+    if not str(conversation_id or '').strip():
+        return
+    from App.Agent import call_local_tool_sync
+    try:
+        call_local_tool_sync(
+            username,
+            'local_permission_grant',
+            {
+                'path': project_path,
+                'scope': 'dir',
+                'access': 'read',
+                'reason': '项目目录浏览',
+                'conversation_id': conversation_id,
+            },
+            timeout_sec=10,
+            context={'conversation_id': conversation_id, 'username': username},
+        )
+    except Exception as e:
+        try:
+            print(f"[NexoraCode ProjectContext] auto grant failed: {e}")
+        except Exception:
+            pass
+
+
+def _fetch_nexoracode_project_tree_text(username: str, project_path: str, conversation_id: str = '', cancel_checker=None) -> str:
+    """经 NexoraCode WSS 通道拉取项目目录树文本，带 TTL 缓存。
+
+    项目根未授权时先自动授予 read 再重试一次，避免目录树为空。
+    """
     from App.Agent import call_local_tool_sync
 
     cache_key = (str(username or ''), str(project_path or ''))
@@ -14905,18 +14942,26 @@ def _fetch_nexoracode_project_tree_text(username: str, project_path: str, cancel
         if cached and (now - float(cached.get('ts') or 0)) < _NEXORACODE_PROJECT_TREE_TTL_SEC:
             return str(cached.get('text') or '')
 
-    result = call_local_tool_sync(
-        username,
-        'local_file_search_tree',
-        {
-            'path': project_path,
-            'max_depth': 3,
-            'max_entries': 400,
-            'include_hidden': False,
-        },
-        timeout_sec=12,
-        cancel_checker=cancel_checker,
-    )
+    def _request_tree():
+        return call_local_tool_sync(
+            username,
+            'local_file_search_tree',
+            {
+                'path': project_path,
+                'max_depth': 3,
+                'max_entries': 400,
+                'include_hidden': False,
+            },
+            timeout_sec=12,
+            cancel_checker=cancel_checker,
+        )
+
+    result = _request_tree()
+
+    if _is_permission_required_result(result):
+        _auto_grant_project_root_read(username, project_path, conversation_id)
+        result = _request_tree()
+
     tree_text = _format_nexoracode_tree_result(result)
 
     with _NEXORACODE_PROJECT_TREE_CACHE_LOCK:
@@ -15006,8 +15051,8 @@ def _resolve_project_excluded_tools() -> set:
     return excluded
 
 
-def _build_auto_permission_question(model, detail) -> str:
-    """本地工具返回 permission_required 时自动发起授权询问，省去模型显式调用 ask_for_permission。"""
+def _build_auto_permission_payload(model, detail) -> dict:
+    """构建本地路径自动授权询问的 question payload（dict）。"""
     from basis.Permission import build_permission_question_payload
 
     path = str(detail.get("path") or "").strip() or str(detail.get("resolved_path") or "").strip()
@@ -15016,7 +15061,7 @@ def _build_auto_permission_question(model, detail) -> str:
     reason = str(detail.get("reason") or detail.get("message") or "本地工具需要访问该路径。").strip()
     sensitive = bool(detail.get("sensitive", False))
 
-    payload = build_permission_question_payload(
+    return build_permission_question_payload(
         path=path,
         operation=operation,
         scope=scope,
@@ -15024,7 +15069,11 @@ def _build_auto_permission_question(model, detail) -> str:
         sensitive=sensitive,
         project_root=str(getattr(model, "_runtime_nexoracode_project_path", "") or "").strip(),
     )
-    return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_auto_permission_question(model, detail) -> str:
+    """本地工具返回 permission_required 时自动发起授权询问，省去模型显式调用 ask_for_permission。"""
+    return json.dumps(_build_auto_permission_payload(model, detail), ensure_ascii=False)
 
 
 def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
@@ -15163,12 +15212,26 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                         if result and "error" in result and not result.get("success", True):
                             detail = result.get("result") if isinstance(result.get("result"), dict) else result
 
-                            # 权限缺失时自动发起授权询问，模型无需显式调用 ask_for_permission。
+                            # 权限缺失时自动发起授权询问：直接向流推送 question chunk（前端原生渲染授权卡片），
+                            # 不依赖模型原样输出 JSON，确保用户一定能看到权限申请。
                             if detail and (
                                 bool(detail.get("permission_required"))
                                 or str(detail.get("error") or "").strip() == "permission_required"
                             ):
-                                return _build_auto_permission_question(model, detail)
+                                permission_payload = _build_auto_permission_payload(model, detail)
+                                pusher = getattr(model, "_stream_direct_push_chunk", None)
+
+                                if callable(pusher):
+                                    try:
+                                        pusher({
+                                            "type": "question",
+                                            "question": permission_payload.get("question"),
+                                            "await": True,
+                                        })
+                                    except Exception:
+                                        pass
+
+                                return json.dumps(permission_payload, ensure_ascii=False)
 
                             return _format_local_tool_failure_markdown(name, result, "本地工具 WSS 执行失败")
                         r = result.get("result", result)

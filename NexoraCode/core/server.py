@@ -38,6 +38,11 @@ app.template_folder = str(get_app_root() / "ui")
 _LOCAL_STATIC_ROOT = Path(__file__).resolve().parents[2] / "ChatDBServer" / "static"
 sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
 registry = build_default_executor()
+
+# 本地对话与会话路由（会话一律存本地，不依赖云端引擎）
+from model.Routes import register_local_routes
+
+register_local_routes(app, executor=registry)
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""
@@ -783,12 +788,122 @@ def local_cloud_chat():
     try:
         return render_template(
             "chat.html",
-            username="",
+            username=str(config.get("local_username", "local") or "local"),
             nexora_mail_enabled=False,
             map_renderer_config={},
         )
     except Exception as e:
         return Response(f"chat template render failed: {e}", status=500, mimetype="text/plain")
+
+
+def _local_agent_enabled_value() -> bool:
+    return str(config.get("local_agent", False)).strip().lower() in {"1", "true", "on", "yes"}
+
+
+@app.route("/settings.css")
+@app.route("/settings.js")
+def local_settings_asset():
+    """本地设置页静态资源。"""
+    name = str(request.path or "").lstrip("/")
+    target = get_app_root() / "ui" / name
+    if not target.is_file():
+        return Response(status=404)
+    return _serve_file(target, cache_seconds=0)
+
+
+@app.route("/settings")
+def local_settings_page():
+    """本地自绘设置页。"""
+    target = get_app_root() / "ui" / "settings.html"
+    if not target.is_file():
+        return Response("settings not built", status=503, mimetype="text/plain")
+    return _serve_file(target, cache_seconds=0)
+
+
+@app.route("/api/local/settings", methods=["GET"])
+def local_settings_get():
+    """读取本地设置（Provider 列表 + 对话配置）。api_key 不回显明文。"""
+    from model.Provider import load_providers
+
+    providers = load_providers()
+    default_id = ""
+
+    try:
+        import json as _json
+        from model.Provider import _PROVIDERS_PATH
+
+        if _PROVIDERS_PATH.is_file():
+            with open(_PROVIDERS_PATH, "r", encoding="utf-8") as f:
+                _data = _json.load(f)
+            default_id = str(_data.get("default_id") or "") if isinstance(_data, dict) else ""
+    except Exception:
+        default_id = ""
+
+    return jsonify({
+        "success": True,
+        "provider": {
+            "providers": [provider.to_public_dict() for provider in providers],
+            "default_id": default_id,
+        },
+        "general": {
+            "username": str(config.get("local_username", "local") or "local"),
+        },
+    })
+
+
+@app.route("/api/local/settings", methods=["POST"])
+def local_settings_save():
+    """保存本地设置。api_key 留空表示保留原 key。"""
+    from model.Provider import ProviderConfig, load_providers, save_providers
+
+    body = request.get_json(silent=True) or {}
+    provider_payload = body.get("provider") if isinstance(body.get("provider"), dict) else {}
+    general_payload = body.get("general") if isinstance(body.get("general"), dict) else {}
+
+    raw_providers = provider_payload.get("providers")
+
+    if isinstance(raw_providers, list):
+        current = {p.provider_id: p for p in load_providers()}
+        new_list = []
+
+        for item in raw_providers:
+            if not isinstance(item, dict):
+                continue
+
+            provider_id = str(item.get("id") or "").strip()
+            old = current.get(provider_id)
+            api_key = str(item.get("api_key") or "").strip()
+
+            if not api_key and old is not None:
+                api_key = old.api_key
+
+            try:
+                temperature = float(item.get("temperature", 0.7))
+            except (TypeError, ValueError):
+                temperature = 0.7
+
+            try:
+                max_tokens = int(item.get("max_tokens", 4096))
+            except (TypeError, ValueError):
+                max_tokens = 4096
+
+            new_list.append(ProviderConfig(
+                provider_id=provider_id or "",
+                name=str(item.get("name") or "").strip(),
+                base_url=str(item.get("base_url") or "").strip(),
+                api_key=api_key,
+                model=str(item.get("model") or "").strip(),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ))
+
+        default_id = str(provider_payload.get("default_id") or "").strip()
+        save_providers(new_list, default_id)
+
+    if "username" in general_payload and str(general_payload.get("username") or "").strip():
+        config.set("local_username", str(general_payload.get("username") or "").strip())
+
+    return jsonify({"success": True, "message": "设置已保存"})
 
 
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

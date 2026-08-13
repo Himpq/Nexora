@@ -1626,6 +1626,24 @@
 
             const targetSnapshot = preloadedSnapshot || await fetchConversationMessagesSnapshot(regenerateConversationId);
             const serverMessages = targetSnapshot && Array.isArray(targetSnapshot.messages) ? targetSnapshot.messages : [];
+
+            // 防御：重答索引必须落在服务端消息列表的有效下标范围内。
+            // 越界索引（如 DOM 残留值）会导致后端无法定位目标 assistant 消息，
+            // 从而引发答非所问或流式会话卡死，这里直接拦截。
+            if (normalizedRegenerateIndex < 0 || normalizedRegenerateIndex >= serverMessages.length) {
+                if (targetSnapshot) {
+                    renderMessages(serverMessages, true, { instant: true });
+                }
+
+                console.warn('[Regenerate] server target index out of range', {
+                    conversation_id: regenerateConversationId,
+                    regenerate_index: normalizedRegenerateIndex,
+                    server_message_count: serverMessages.length
+                });
+                showToast('目标消息已失效，请刷新后重试');
+                return;
+            }
+
             const targetMessage = serverMessages[normalizedRegenerateIndex] || null;
             const sourceUserMessage = normalizedRegenerateIndex > 0 ? serverMessages[normalizedRegenerateIndex - 1] : null;
             const targetRole = String((targetMessage && targetMessage.role) || '').trim().toLowerCase();

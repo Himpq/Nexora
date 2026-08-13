@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>NexoraCode 设置</title>
+    <link rel="stylesheet" href="/settings.css"/>
+</head>
+<body>
+    <div class="titlebar" id="nc-titlebar">
+        <div class="tb-brand">
+            <svg class="tb-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+            <span>Nexora<span class="dot">.</span>Code</span>
+        </div>
+        <div class="tb-title">设置</div>
+        <div class="tb-btns">
+            <button class="tb-btn" data-act="min" title="最小化">
+                <svg width="10" height="10" viewBox="0 0 10 1"><rect width="10" height="1" y="0" fill="currentColor"/></svg>
+            </button>
+            <button class="tb-btn" data-act="max" title="最大化">
+                <svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+            </button>
+            <button class="tb-btn close" data-act="close" title="关闭">
+                <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="app">
+        <aside class="nav">
+            <nav class="nav-list">
+                <button type="button" class="nav-item active" data-view="provider">模型 Provider</button>
+                <button type="button" class="nav-item" data-view="general">对话</button>
+                <button type="button" class="nav-item" data-view="about">关于</button>
+            </nav>
+            <div class="nav-foot">本地模式 · 对话与会话均在本地</div>
+        </aside>
+
+        <main class="content">
+            <!-- Provider -->
+            <section id="view-provider" class="view active">
+                <h1>模型 Provider</h1>
+                <p class="sub">支持配置多个 Provider，对话使用默认 Provider。均通过 OpenAI 兼容接口直连。</p>
+
+                <div id="provider-list" class="provider-list"></div>
+
+                <button id="btn-add-provider" type="button" class="secondary">+ 新增 Provider</button>
+
+                <div id="provider-form" class="provider-form hidden">
+                    <h2 id="pf-title">新增 Provider</h2>
+                    <div class="form">
+                        <label class="field">
+                            <span>名称</span>
+                            <input id="pf-name" type="text" placeholder="deepseek" spellcheck="false"/>
+                        </label>
+                        <label class="field">
+                            <span>Base URL</span>
+                            <input id="pf-base-url" type="text" placeholder="https://api.deepseek.com" spellcheck="false"/>
+                        </label>
+                        <label class="field">
+                            <span>API Key</span>
+                            <input id="pf-api-key" type="password" placeholder="留空表示保留原 Key" spellcheck="false"/>
+                            <small id="pf-key-hint" class="hint"></small>
+                        </label>
+                        <label class="field">
+                            <span>Model</span>
+                            <input id="pf-model" type="text" placeholder="deepseek-chat" spellcheck="false"/>
+                        </label>
+                        <div class="row">
+                            <label class="field">
+                                <span>Temperature</span>
+                                <input id="pf-temperature" type="number" step="0.1" min="0" max="2" value="0.7"/>
+                            </label>
+                            <label class="field">
+                                <span>Max Tokens</span>
+                                <input id="pf-max-tokens" type="number" step="128" min="256" value="4096"/>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="pf-actions">
+                        <button id="pf-cancel" type="button" class="secondary">取消</button>
+                        <button id="pf-save" type="button" class="primary">保存</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- General -->
+            <section id="view-general" class="view">
+                <h1>对话</h1>
+                <p class="sub">NexoraCode 的对话与会话全部在本地运行与存储，不依赖云端引擎。</p>
+
+                <div class="info-box">
+                    <div class="info-title">本地 Agent 模式（已启用）</div>
+                    <div class="info-desc">消息由本地 Agent Loop 驱动，工具直接在本机执行，会话存于本地。</div>
+                </div>
+
+                <label class="field">
+                    <span>本地用户名</span>
+                    <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
+                </label>
+            </section>
+
+            <!-- About -->
+            <section id="view-about" class="view">
+                <h1>关于</h1>
+                <p class="sub">NexoraCode — 运行在用户本地的编程助手。</p>
+                <ul class="about-list">
+                    <li>对话在本地运行，只调用你配置的模型服务商。</li>
+                    <li>文件、终端、搜索等工具直接在本机执行。</li>
+                    <li>会话全部存储在本地，路径访问遵循本地授权。</li>
+                </ul>
+            </section>
+        </main>
+
+        <div class="bar">
+            <div id="save-status" class="status"></div>
+            <button id="btn-save" type="button" class="primary">保存设置</button>
+        </div>
+    </div>
+
+    <script src="/settings.js"></script>
+</body>
+</html>

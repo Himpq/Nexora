@@ -1294,20 +1294,17 @@ class NexoraWindowApi:
                         pass
                     return {"success": True, "reused": True}
 
-                settings_html_path = get_app_root() / "ui" / "settings_local.html"
-                settings_html = settings_html_path.read_text(encoding="utf-8")
-
                 try:
-                    settings_w = int(config.get("settings_window_width", 900) or 900)
-                    settings_h = int(config.get("settings_window_height", 640) or 640)
+                    settings_w = int(config.get("settings_window_width", 860) or 860)
+                    settings_h = int(config.get("settings_window_height", 600) or 600)
                 except Exception:
-                    settings_w, settings_h = 900, 640
-                settings_w = max(700, min(1600, settings_w))
-                settings_h = max(520, min(1400, settings_h))
+                    settings_w, settings_h = 860, 600
+                settings_w = max(700, min(1400, settings_w))
+                settings_h = max(520, min(1200, settings_h))
 
                 settings_kwargs = {
                     "title": "Nexora Settings",
-                    "html": settings_html,
+                    "url": f"http://127.0.0.1:{LOCAL_PORT}/settings",
                     "width": settings_w,
                     "height": settings_h,
                     "min_size": (700, 520),
@@ -1315,8 +1312,6 @@ class NexoraWindowApi:
                     "frameless": _USE_FRAMELESS,
                     "text_select": True,
                     "js_api": self,
-                    "easy_drag": False,
-                    "background_color": "#0c0c0f",
                 }
                 try:
                     settings_window = webview.create_window(**settings_kwargs)
@@ -4565,7 +4560,22 @@ def main():
         '#toggleNotesPanel'
     ];
     const STRIP_CLASSES = ['learning-mode-enabled', 'learning-workspace-active'];
+    # titlebar 渲染与页面重叠修复：body 顶部预留标题栏高度（固定 36px），
+    # 标题栏浮于预留区；同时隐藏普通会话列表，只保留项目侧栏。
+    const TITLEBAR_LAYOUT_STYLE = 'html.nc-titlebar-ready body{padding-top:36px !important;}html.nc-titlebar-ready .app-container{height:calc(100vh - 36px) !important;}';
+    function ensureTitlebarLayout() {
+        try {
+            let s = document.getElementById('nc-project-layout-style');
+            if (!s && document.head) {
+                s = document.createElement('style');
+                s.id = 'nc-project-layout-style';
+                document.head.appendChild(s);
+            }
+            if (s) s.textContent = TITLEBAR_LAYOUT_STYLE;
+        } catch (_) {}
+    }
     function apply() {
+        ensureTitlebarLayout();
         try {
             for (const cls of STRIP_CLASSES) {
                 document.documentElement && document.documentElement.classList.remove(cls);
