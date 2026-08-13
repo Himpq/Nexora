@@ -39,7 +39,7 @@ from App.Utils import add_request_listener, pull_pending_request, submit_request
 from App.Agent import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
-from map.baidu import load_map_scene_for_map_id
+from Map.baidu import load_map_scene_for_map_id
 from App.Utils import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from basis.Timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from basis.Database import safe_read_json, safe_write_json, get_path_lock
@@ -10740,7 +10740,7 @@ def fork_conversation_api(conv_id):
         if not target_conversation_id:
             return
 
-        from api.map.baidu import remove_map_records
+        from Map.baidu import remove_map_records
 
         _remove_conversation_assets_dir(username, target_conversation_id)
         remove_map_records(username, target_conversation_id)
@@ -10761,7 +10761,7 @@ def fork_conversation_api(conv_id):
             branch_conversation,
         )
 
-        from api.map.baidu import (
+        from Map.baidu import (
             clone_map_records,
             rewrite_map_conversation_references,
         )
@@ -10779,7 +10779,7 @@ def fork_conversation_api(conv_id):
         workspace_id = str(data.get('workspace_id') or '').strip()
 
         if workspace_id:
-            from api.workspace.storage import find_store_for_visible_workspace, validate_workspace_id
+            from App.Workspace import find_store_for_visible_workspace, validate_workspace_id
 
             validated_workspace_id = validate_workspace_id(workspace_id)
             workspace_store = find_store_for_visible_workspace(username, validated_workspace_id)
@@ -13443,7 +13443,7 @@ def _resolve_workspace_chat_context(username: str, data: Dict[str, Any], convers
     if not workspace_id:
         return {}
 
-    from api.workspace.storage import find_store_for_visible_workspace, validate_workspace_id
+    from App.Workspace import find_store_for_visible_workspace, validate_workspace_id
 
     wid = validate_workspace_id(workspace_id)
     cid = str(conversation_id or '').strip()
@@ -13611,7 +13611,7 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
     if not workspace_id:
         return
 
-    from api.workspace.storage import find_store_for_visible_workspace
+    from App.Workspace import find_store_for_visible_workspace
 
     def _tool_result(payload: Dict[str, Any]) -> str:
         return json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
@@ -14951,7 +14951,8 @@ def _inject_nexoracode_project_context(model, username: str, conversation_id: st
         f'当前对话绑定本地项目：{project_name}',
         f'项目根路径：{project_path}',
         '涉及该项目的文件读写、搜索、命令执行请使用 local_* 工具，并保持在项目根路径内。',
-        '项目内非敏感路径需要授权时，只申请一次项目根目录的 read_write/dir 权限，不要逐文件重复申请。',
+        '项目内路径需要授权时，系统会自动向用户发起询问，无需调用任何权限工具；'
+        '用户允许后即可重试，项目根目录只申请一次。',
         '敏感文件仍必须按实际敏感路径单独申请权限。',
     ]
 
@@ -14981,8 +14982,49 @@ def _inject_nexoracode_project_context(model, username: str, conversation_id: st
     # 且 debug window 展示的是重建后的 request_system_prompt（原先看不到本段）。
     model._runtime_project_context_block = section
     model._runtime_nexoracode_project_path = project_path
+    # 项目模式：强制 force 工具模式，并裁剪远程业务工具（本地工具不受影响）。
+    model._runtime_project_force_tools = True
+    model._runtime_project_excluded_tool_names = _resolve_project_excluded_tools()
     model.system_prompt = f"{str(model.system_prompt or '').rstrip()}\n\n{section}"
     return True
+
+
+def _resolve_project_excluded_tools() -> set:
+    """解析项目模式工具裁剪集：默认使用内置集，config 的 project_mode_excluded_tools 可覆盖。"""
+    from basis.Tool import NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES
+
+    excluded = set(NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES)
+
+    try:
+        custom = (get_config_all() or {}).get("project_mode_excluded_tools")
+    except Exception:
+        custom = None
+
+    if isinstance(custom, list) and custom:
+        excluded = {str(item or "").strip() for item in custom if str(item or "").strip()}
+
+    return excluded
+
+
+def _build_auto_permission_question(model, detail) -> str:
+    """本地工具返回 permission_required 时自动发起授权询问，省去模型显式调用 ask_for_permission。"""
+    from basis.Permission import build_permission_question_payload
+
+    path = str(detail.get("path") or "").strip() or str(detail.get("resolved_path") or "").strip()
+    operation = str(detail.get("operation") or "read").strip().lower() or "read"
+    scope = str(detail.get("suggested_scope") or "file").strip().lower() or "file"
+    reason = str(detail.get("reason") or detail.get("message") or "本地工具需要访问该路径。").strip()
+    sensitive = bool(detail.get("sensitive", False))
+
+    payload = build_permission_question_payload(
+        path=path,
+        operation=operation,
+        scope=scope,
+        reason=reason,
+        sensitive=sensitive,
+        project_root=str(getattr(model, "_runtime_nexoracode_project_path", "") or "").strip(),
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
@@ -15119,6 +15161,15 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                         if result and str(result.get("error") or "") == "stream_cancelled":
                             raise StreamCancelled("user_abort")
                         if result and "error" in result and not result.get("success", True):
+                            detail = result.get("result") if isinstance(result.get("result"), dict) else result
+
+                            # 权限缺失时自动发起授权询问，模型无需显式调用 ask_for_permission。
+                            if detail and (
+                                bool(detail.get("permission_required"))
+                                or str(detail.get("error") or "").strip() == "permission_required"
+                            ):
+                                return _build_auto_permission_question(model, detail)
+
                             return _format_local_tool_failure_markdown(name, result, "本地工具 WSS 执行失败")
                         r = result.get("result", result)
                         return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
@@ -15526,7 +15577,7 @@ def _resolve_workspace_basis_target(title: str, data: Optional[Dict[str, Any]] =
 
     requested_user = _get_workspace_request_value(data, 'user', 'owner_username', 'added_by')
 
-    from api.workspace.storage import (
+    from App.Workspace import (
         find_store_for_visible_workspace,
         validate_username,
         validate_workspace_id,
@@ -17817,13 +17868,13 @@ def agent_tunnel_socket(ws):
             unregister_agent(username, ws)
 
 
-from api.papi.routes import papi_bp
-from api.papi.user_keys import user_papi_keys_bp
+from App.Papi import papi_bp
+from App.Papi import user_papi_keys_bp
 app.register_blueprint(papi_bp)
 app.register_blueprint(user_papi_keys_bp)
 from App.Files import files_bp
 app.register_blueprint(files_bp)
-from api.workspace.routes import workspace_bp
+from App.Workspace import workspace_bp
 app.register_blueprint(workspace_bp)
 from App.Observability import configure_notification_realtime, notification_bp
 configure_notification_realtime(_send_browser_event_to_user)

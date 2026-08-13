@@ -12,7 +12,7 @@ except Exception:
     from .token_logger import iter_papi_token_log_entries
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MODELS_PATH = os.path.join(DATA_DIR, 'models.json')
 MODEL_QUOTA_PATH = os.path.join(DATA_DIR, 'model_quota.jsonl')

@@ -1,91 +1,581 @@
 {
-  "updated_at": 1773592884,
-  "host": "chat.himpqblog.cn",
-  "page_url": "https://chat.himpqblog.cn/chat?_nc_page_ts=1773592860",
+  "updated_at": 1786630191,
+  "host": "127.0.0.1",
+  "page_url": "http://127.0.0.1:27700/chat?_nc_page_ts=1786630188",
   "assets": {
-    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css": {
-      "etag": "W/\"6523913a-268\"",
-      "last_modified": "Mon, 09 Oct 2023 05:35:54 GMT",
+    "http://127.0.0.1:27700/static/vendor/fonts/fonts.css": {
+      "etag": "\"1780330024.6813426-406-2364544579\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/highlightjs/styles/github.min.css": {
+      "etag": "\"1780330024.6833453-1309-1659575628\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/katex/katex.min.css": {
+      "etag": "\"1780330024.7167923-23196-3887929243\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/easymde/easymde.min.css": {
+      "etag": "\"1780330024.6760287-12923-1264458033\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "https://uicdn.toast.com/editor/latest/toastui-editor.min.css": {
+      "etag": "78a04668e7c8786dd2cf365e70cf884b",
+      "last_modified": "Fri, 17 Feb 2023 07:29:15 GMT",
       "content_length": "",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css": {
-      "etag": "W/\"5a9c-lO28SQaT2n884EhUbtO3kNiBAkc\"",
-      "last_modified": "",
-      "content_length": "3494",
+    "http://127.0.0.1:27700/static/vendor/fontawesome/css/all.min.css": {
+      "etag": "\"1780330024.6780286-102025-3058375354\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css": {
-      "etag": "W/\"327b-ZOuvKPeNbrHftg4kR/zLDfltN+c\"",
-      "last_modified": "",
-      "content_length": "3147",
+    "http://127.0.0.1:27700/static/vendor/marked/marked.min.js": {
+      "etag": "\"1780330024.718297-35141-4279441373\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css": {
-      "etag": "W/\"6421d693-547f\"",
-      "last_modified": "Mon, 27 Mar 2023 17:46:59 GMT",
+    "http://127.0.0.1:27700/static/vendor/highlightjs/highlight.min.js": {
+      "etag": "\"1780330024.6823428-121727-3533118274\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/katex/katex.min.js": {
+      "etag": "\"1780330024.718297-277038-3492812591\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/katex/contrib/auto-render.min.js": {
+      "etag": "\"1780330024.6833453-3478-1068637336\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/vendor/easymde/easymde.min.js": {
+      "etag": "\"1780330024.6780286-326569-842733765\"",
+      "last_modified": "Mon, 01 Jun 2026 16:07:04 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js": {
+      "etag": "1a9bfbb34b9a15facbde13718cd91b7f",
+      "last_modified": "Fri, 17 Feb 2023 07:29:15 GMT",
       "content_length": "",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js": {
-      "etag": "W/\"65917be3-29ee\"",
-      "last_modified": "Sun, 31 Dec 2023 14:34:11 GMT",
-      "content_length": "",
+    "http://127.0.0.1:27700/static/css/style.css?v=20260810_mail_neutral_01": {
+      "etag": "\"1786362925.6358504-344884-3523285676\"",
+      "last_modified": "Mon, 10 Aug 2026 11:55:25 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js": {
-      "etag": "W/\"6523913a-a1e9\"",
-      "last_modified": "Mon, 09 Oct 2023 05:35:54 GMT",
-      "content_length": "",
+    "http://127.0.0.1:27700/static/css/sidebar_brand_navigation.css?v=20260809_learning_off_hide_02": {
+      "etag": "\"1786299708.8149135-1490-2161318474\"",
+      "last_modified": "Sun, 09 Aug 2026 18:21:48 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js": {
-      "etag": "W/\"43a2e-pDv54tRaJ1S0ofgPUd83UBlfOEc\"",
-      "last_modified": "",
-      "content_length": "76702",
+    "http://127.0.0.1:27700/static/css/notification.css?v=20260630_chat_notification_07": {
+      "etag": "\"1782795958.3541024-7243-1620055426\"",
+      "last_modified": "Tue, 30 Jun 2026 05:05:58 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js": {
-      "etag": "W/\"d96-SRYWuMn9sE0zm2YNbPruEmBM8Yc\"",
-      "last_modified": "",
-      "content_length": "1528",
+    "http://127.0.0.1:27700/static/css/message_avatar.css?v=20260630_user_avatar_slot_01": {
+      "etag": "\"1782791412.7741122-624-2349012542\"",
+      "last_modified": "Tue, 30 Jun 2026 03:50:12 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592883
+      "checked_at": 1786630190
     },
-    "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js": {
-      "etag": "W/\"4fc7a-rIYYO5jQTN8A2bOJhLY/htntMHo\"",
-      "last_modified": "",
-      "content_length": "107206",
+    "http://127.0.0.1:27700/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01": {
+      "etag": "\"1783246091.413672-57365-3971815443\"",
+      "last_modified": "Sun, 05 Jul 2026 10:08:11 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592884
+      "checked_at": 1786630190
     },
-    "https://chat.himpqblog.cn/static/css/style.css?v=20260311g": {
-      "etag": "W/\"1773410717.6619754-168505-2399539528\"",
-      "last_modified": "Fri, 13 Mar 2026 14:05:17 GMT",
-      "content_length": "",
+    "http://127.0.0.1:27700/static/css/execution_flow.css?v=20260714_tool_flow_01": {
+      "etag": "\"1784004271.6665535-10918-2375489126\"",
+      "last_modified": "Tue, 14 Jul 2026 04:44:31 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592884
+      "checked_at": 1786630190
     },
-    "https://chat.himpqblog.cn/static/css/easymde_override.css": {
-      "etag": "W/\"1772634817.3628092-3470-1756304830\"",
-      "last_modified": "Wed, 04 Mar 2026 14:33:37 GMT",
-      "content_length": "",
+    "http://127.0.0.1:27700/static/css/chat_memory_settings.css?v=20260729_memory_model_layer_01": {
+      "etag": "\"1785244514.1956387-5206-479008995\"",
+      "last_modified": "Tue, 28 Jul 2026 13:15:14 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592884
+      "checked_at": 1786630190
     },
-    "https://chat.himpqblog.cn/static/js/chat.js?v=20260312_03": {
-      "etag": "W/\"1773410714.4250197-546417-1526271967\"",
-      "last_modified": "Fri, 13 Mar 2026 14:05:14 GMT",
-      "content_length": "",
+    "http://127.0.0.1:27700/static/css/chat_skill_market.css?v=20260725_skill_market_01": {
+      "etag": "\"1785004301.2490861-9596-3511424892\"",
+      "last_modified": "Sat, 25 Jul 2026 18:31:41 GMT",
+      "content_length": "0",
       "status_code": 200,
-      "checked_at": 1773592884
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/chat_token_details.css?v=20260715_token_detail_01": {
+      "etag": "\"1784046215.1058612-3954-3911849952\"",
+      "last_modified": "Tue, 14 Jul 2026 16:23:35 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/chat_conversation_branches.css?v=20260716_conversation_branches_01": {
+      "etag": "\"1784198839.209559-1184-3117161274\"",
+      "last_modified": "Thu, 16 Jul 2026 10:47:19 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/global_search.css?v=20260710_global_search_02": {
+      "etag": "\"1783845599.9106824-3205-1959138753\"",
+      "last_modified": "Sun, 12 Jul 2026 08:39:59 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01": {
+      "etag": "\"1782480060.882769-5066-55973979\"",
+      "last_modified": "Fri, 26 Jun 2026 13:21:00 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/admin_map_settings.css?v=20260628_admin_controls_04": {
+      "etag": "\"1782642321.862783-5785-3915978737\"",
+      "last_modified": "Sun, 28 Jun 2026 10:25:21 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/learning_course_workspace.css?v=20260730_style_unify_01": {
+      "etag": "\"1785355271.2796302-5884-2685016809\"",
+      "last_modified": "Wed, 29 Jul 2026 20:01:11 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/easymde_override.css?v=20260416_12": {
+      "etag": "\"1784557127.3687632-19127-3136689954\"",
+      "last_modified": "Mon, 20 Jul 2026 14:18:47 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/chat_files.css?v=20260729_multi_transfer_01": {
+      "etag": "\"1785269867.0043344-1945-872944781\"",
+      "last_modified": "Tue, 28 Jul 2026 20:17:47 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630190
+    },
+    "http://127.0.0.1:27700/static/css/chat_papi_keys.css?v=20260728_papi_list_08": {
+      "etag": "\"1785221918.5693386-2706-2337412671\"",
+      "last_modified": "Tue, 28 Jul 2026 06:58:38 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07": {
+      "etag": "\"1785188603.704142-9638-460200122\"",
+      "last_modified": "Mon, 27 Jul 2026 21:43:23 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/css/chat_settings_management.css?v=20260728_settings_management_06": {
+      "etag": "\"1785223553.250433-10028-2203327079\"",
+      "last_modified": "Tue, 28 Jul 2026 07:25:53 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/css/knowledge_collab.css?v=20260708_04": {
+      "etag": "\"1783511565.6156874-4106-3128170247\"",
+      "last_modified": "Wed, 08 Jul 2026 11:52:45 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_logger.js?v=20260726_esm_01": {
+      "etag": "\"1785074997.1701376-4688-525669410\"",
+      "last_modified": "Sun, 26 Jul 2026 14:09:57 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/learning_navigation_state.js?v=20260726_esm_01": {
+      "etag": "\"1784264935.8412278-3027-1759255042\"",
+      "last_modified": "Fri, 17 Jul 2026 05:08:55 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/learning_workspace_layout.js?v=20260726_esm_01": {
+      "etag": "\"1784226590.2334094-3137-1782520350\"",
+      "last_modified": "Thu, 16 Jul 2026 18:29:50 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_shared.js?v=20260726_esm_01": {
+      "etag": "\"1785075011.0684094-1273-524031001\"",
+      "last_modified": "Sun, 26 Jul 2026 14:10:11 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_admin_users.js?v=20260726_esm_01": {
+      "etag": "\"1783431510.5811632-24566-2329744956\"",
+      "last_modified": "Tue, 07 Jul 2026 13:38:30 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_mails.js?v=20260810_mail_unread_list_01": {
+      "etag": "\"1786364531.9131522-94487-183178168\"",
+      "last_modified": "Mon, 10 Aug 2026 12:22:11 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_message_window.js?v=20260726_esm_01": {
+      "etag": "\"1783337086.5618184-8022-3506902910\"",
+      "last_modified": "Mon, 06 Jul 2026 11:24:46 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_message_versions.js?v=20260726_esm_01": {
+      "etag": "\"1783342073.069021-4253-33364063\"",
+      "last_modified": "Mon, 06 Jul 2026 12:47:53 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/knowledge_collab_client.js?v=20260726_esm_01": {
+      "etag": "\"1786261673.0356548-33997-873666829\"",
+      "last_modified": "Sun, 09 Aug 2026 07:47:53 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_knowledge.js?v=20260726_esm_01": {
+      "etag": "\"1786261672.9567387-272442-1596921186\"",
+      "last_modified": "Sun, 09 Aug 2026 07:47:52 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_model_select.js?v=20260726_esm_01": {
+      "etag": "\"1785075362.1940546-6101-2709657234\"",
+      "last_modified": "Sun, 26 Jul 2026 14:16:02 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_memory_settings.js?v=20260729_memory_model_select_01": {
+      "etag": "\"1785244514.1956387-16567-3938588683\"",
+      "last_modified": "Tue, 28 Jul 2026 13:15:14 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_tools.js?v=20260726_esm_01": {
+      "etag": "\"1784096817.6397285-96803-195630035\"",
+      "last_modified": "Wed, 15 Jul 2026 06:26:57 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_tool_canvas.js?v=20260726_esm_01": {
+      "etag": "\"1783414370.7120562-61531-2341148219\"",
+      "last_modified": "Tue, 07 Jul 2026 08:52:50 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_conversation_branches.js?v=20260726_esm_01": {
+      "etag": "\"1784198786.0548737-4478-2201033314\"",
+      "last_modified": "Thu, 16 Jul 2026 10:46:26 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_messages.js?v=20260726_esm_01": {
+      "etag": "\"1786629723.558389-115983-1230836986\"",
+      "last_modified": "Thu, 13 Aug 2026 14:02:03 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_latex.js?v=20260726_esm_01": {
+      "etag": "\"1783449980.7598643-21882-185996224\"",
+      "last_modified": "Tue, 07 Jul 2026 18:46:20 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_streaming.js?v=20260726_esm_01": {
+      "etag": "\"1784092234.592203-103281-1601574252\"",
+      "last_modified": "Wed, 15 Jul 2026 05:10:34 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_stream_lifecycle.js?v=20260726_esm_01": {
+      "etag": "\"1783344350.755516-15757-26875965\"",
+      "last_modified": "Mon, 06 Jul 2026 13:25:50 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_stream_reconnect.js?v=20260726_esm_01": {
+      "etag": "\"1784016291.1062398-56605-35133518\"",
+      "last_modified": "Tue, 14 Jul 2026 08:04:51 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_conversations.js?v=20260726_esm_01": {
+      "etag": "\"1785186413.6142766-63312-3128760112\"",
+      "last_modified": "Mon, 27 Jul 2026 21:06:53 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_admin_system.js?v=20260726_esm_01": {
+      "etag": "\"1783427147.543723-22838-2718439087\"",
+      "last_modified": "Tue, 07 Jul 2026 12:25:47 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_settings_management.js?v=20260726_esm_01": {
+      "etag": "\"1785075105.8875756-4575-1315182991\"",
+      "last_modified": "Sun, 26 Jul 2026 14:11:45 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_admin.js?v=20260726_esm_01": {
+      "etag": "\"1785064656.4160228-11591-177542059\"",
+      "last_modified": "Sun, 26 Jul 2026 11:17:36 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_skill_market.js?v=20260726_esm_01": {
+      "etag": "\"1785004637.3331614-31136-2721781412\"",
+      "last_modified": "Sat, 25 Jul 2026 18:37:17 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_markdown.js?v=20260726_esm_01": {
+      "etag": "\"1784092018.6095335-16064-1232540933\"",
+      "last_modified": "Wed, 15 Jul 2026 05:06:58 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_files.js?v=20260729_multi_transfer_02": {
+      "etag": "\"1785308883.919529-64894-182064053\"",
+      "last_modified": "Wed, 29 Jul 2026 07:08:03 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01": {
+      "etag": "\"1785221479.509608-19914-3922466786\"",
+      "last_modified": "Tue, 28 Jul 2026 06:51:19 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12": {
+      "etag": "\"1785223353.608288-19498-3115259669\"",
+      "last_modified": "Tue, 28 Jul 2026 07:22:33 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_admin_papi_scope.js?v=20260726_esm_01": {
+      "etag": "\"1785049027.75664-13474-4291762221\"",
+      "last_modified": "Sun, 26 Jul 2026 06:57:07 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/sidebar_brand_navigation.js?v=20260809_learning_tab_hide_01": {
+      "etag": "\"1786298232.9990375-5703-1275074930\"",
+      "last_modified": "Sun, 09 Aug 2026 17:57:12 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_input.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786390238.8641188-1824-193008594\"",
+      "last_modified": "Mon, 10 Aug 2026 19:30:38 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_image_viewer.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786434937.721881-10060-2705725078\"",
+      "last_modified": "Tue, 11 Aug 2026 07:55:37 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_render.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786389909.5456717-15499-525997090\"",
+      "last_modified": "Mon, 10 Aug 2026 19:25:09 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_notes.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786444586.574696-146980-192156619\"",
+      "last_modified": "Tue, 11 Aug 2026 10:36:26 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_workflow.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786386254.4023483-22417-1248400669\"",
+      "last_modified": "Mon, 10 Aug 2026 18:24:14 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_avatar.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786388050.2427685-11716-523899937\"",
+      "last_modified": "Mon, 10 Aug 2026 18:54:10 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_nexoracode.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786386173.5064964-25389-1965168074\"",
+      "last_modified": "Mon, 10 Aug 2026 18:22:53 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_wss_sync.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786386205.1492882-13983-1250825499\"",
+      "last_modified": "Mon, 10 Aug 2026 18:23:25 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_lifecycle.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786386118.2712524-6732-1583289682\"",
+      "last_modified": "Mon, 10 Aug 2026 18:21:58 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_app.js?v=20260810_chatjs_split_01": {
+      "etag": "\"1786446681.0371912-42612-3816231651\"",
+      "last_modified": "Tue, 11 Aug 2026 11:11:21 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat.js?v=20260731_profile_center_01": {
+      "etag": "\"1786446722.3737013-930809-2580025667\"",
+      "last_modified": "Tue, 11 Aug 2026 11:12:02 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/chat_token_details.js?v=20260726_esm_01": {
+      "etag": "\"1784097150.1723208-10850-3108574984\"",
+      "last_modified": "Wed, 15 Jul 2026 06:32:30 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/global_search.js?v=20260726_esm_01": {
+      "etag": "\"1783850568.8005378-14545-1226839273\"",
+      "last_modified": "Sun, 12 Jul 2026 10:02:48 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/workspace.js?v=20260726_esm_01": {
+      "etag": "\"1785090775.603069-218104-4175893362\"",
+      "last_modified": "Sun, 26 Jul 2026 18:32:55 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/notification.js?v=20260726_esm_01": {
+      "etag": "\"1783156310.266497-35417-898962602\"",
+      "last_modified": "Sat, 04 Jul 2026 09:11:50 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/message_avatar.js?v=20260726_esm_01": {
+      "etag": "\"1782791426.7798576-1814-1601443174\"",
+      "last_modified": "Tue, 30 Jun 2026 03:50:26 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/nexora_map_renderer.js?v=20260726_esm_01": {
+      "etag": "\"1784525381.627848-25936-3531544451\"",
+      "last_modified": "Mon, 20 Jul 2026 05:29:41 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/admin_map_settings.js?v=20260726_esm_01": {
+      "etag": "\"1782642513.691636-20760-3111589657\"",
+      "last_modified": "Sun, 28 Jun 2026 10:28:33 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
+    },
+    "http://127.0.0.1:27700/static/js/learning_course_workspace.js?v=20260731_course_context_01": {
+      "etag": "\"1785484343.3662717-29344-1781275153\"",
+      "last_modified": "Fri, 31 Jul 2026 07:52:23 GMT",
+      "content_length": "0",
+      "status_code": 200,
+      "checked_at": 1786630191
     }
   }
 }

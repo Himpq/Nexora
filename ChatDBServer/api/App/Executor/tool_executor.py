@@ -22,9 +22,9 @@ from basis.Model.Provider import create_provider_adapter
 from basis.Tool import canonicalize_tool_name
 from App.Components import LearningRuntimeExecutor, get_learning_tools
 from .longdoc_skills import read_longdoc_skill
-from map.baidu import BaiduMapToolService
-from map.tianditu import create_map_tool_service
-from basis.Permission import build_permission_question_id, normalize_project_permission_request
+from Map.baidu import BaiduMapToolService
+from Map.tianditu import create_map_tool_service
+from basis.Permission import build_permission_question_payload
 
 
 class ToolExecutor:
@@ -384,64 +384,14 @@ class ToolExecutor:
         if not reason:
             return "错误：reason 为必填"
 
-        requested_path = path
-        project_root = str(getattr(self.model, "_runtime_nexoracode_project_path", "") or "").strip()
-        path, operation, scope, project_scoped = normalize_project_permission_request(
+        payload = build_permission_question_payload(
             path=path,
             operation=operation,
             scope=scope,
-            project_root=project_root,
+            reason=reason,
             sensitive=sensitive,
+            project_root=str(getattr(self.model, "_runtime_nexoracode_project_path", "") or "").strip(),
         )
-
-        if project_scoped:
-            print(
-                "[LOCAL_PERMISSION_REQUEST] normalized Project permission "
-                f"requested_path={requested_path} project_root={path} access={operation} scope={scope}"
-            )
-
-        operation_text = {
-            "read": "读取",
-            "write": "写入",
-            "read_write": "读取和写入",
-        }.get(operation, operation)
-        scope_text = "目录" if scope == "dir" else "文件"
-        content_lines = [
-            f"模型需要临时{operation_text}这个本地{scope_text}:",
-            path,
-            "",
-            f"原因: {reason}",
-        ]
-
-        if sensitive:
-            content_lines.extend([
-                "",
-                "这个路径可能包含密钥、令牌、Cookie 或其他隐私信息。请确认你真的允许本次对话访问。",
-            ])
-
-        payload = {
-            "success": True,
-            "question": {
-                "track_answer": True,
-                "question_id": build_permission_question_id(path, operation, scope),
-                "question_card_id": f"permission_request_{uuid.uuid4().hex}",
-                "question_title": "请求本次对话临时访问权限",
-                "question_content": "\n".join(content_lines),
-                "choices": [
-                    f"允许本次对话访问此{scope_text}",
-                    "拒绝访问",
-                ],
-                "allow_other": False,
-                "permission_request": {
-                    "path": path,
-                    "operation": operation,
-                    "scope": scope,
-                    "reason": reason,
-                    "sensitive": sensitive,
-                },
-            },
-            "await": True,
-        }
         return json.dumps(payload, ensure_ascii=False)
 
     def _is_learning_runtime_tool(self, function_name: str) -> bool:

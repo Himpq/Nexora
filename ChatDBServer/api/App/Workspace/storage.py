@@ -10,7 +10,7 @@ from basis.Database import get_path_lock, safe_read_json, safe_write_json
 from App.Utils import apply_text_patch, build_preview_diff
 
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 WORKSPACE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,48}$")
 USER_ID_RE = re.compile(r"^[^/\\\s][^/\\]{0,127}$")

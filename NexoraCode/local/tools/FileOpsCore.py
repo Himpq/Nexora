@@ -889,6 +889,58 @@ def apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]:
     return content, stats, ""
 
 
+def _collect_target_match_status(original: str, edits) -> list[dict]:
+    """对 structured edits 的每个 target 检查其当前内容中的匹配状态，供失败自愈使用。"""
+
+    status = []
+
+    if not isinstance(edits, list):
+        return status
+
+    for edit_index, edit in enumerate(edits, start=1):
+
+        if not isinstance(edit, dict):
+            continue
+
+        target = str(edit.get("target") or "").strip()
+
+        if not target:
+            status.append({"index": edit_index, "matched": None, "note": "target 为空"})
+            continue
+
+        if target in original:
+            status.append({"index": edit_index, "matched": True, "note": "target 已精确匹配当前内容"})
+            continue
+
+        normalized_content, _, _ = _normalize_newlines_with_offsets(original)
+        normalized_target, _, _ = _normalize_newlines_with_offsets(target)
+
+        if normalized_target in normalized_content:
+            status.append({"index": edit_index, "matched": True, "note": "换行归一化后可匹配当前内容"})
+            continue
+
+        prefix = re.sub(r"\s+", "", target)[:24]
+
+        if prefix:
+            flat = re.sub(r"\s+", "", original)
+            index = flat.find(prefix)
+
+            if index >= 0:
+                line_no = original[:index].count("\n") + 1
+                status.append({
+                    "index": edit_index,
+                    "matched": False,
+                    "closest_line": line_no,
+                    "note": f"当前内容中未精确命中，最近近似片段位于第 {line_no} 行附近",
+                })
+            else:
+                status.append({"index": edit_index, "matched": False, "note": "当前内容中未找到近似片段"})
+        else:
+            status.append({"index": edit_index, "matched": False, "note": "target 过短，无法近似定位"})
+
+    return status
+
+
 def build_patch_preview_locked(
     p: Path,
     patch_text: str,
@@ -903,12 +955,20 @@ def build_patch_preview_locked(
     old_sha256 = sha256_bytes(old_raw_content)
     old_content_sha256 = sha256_text(original, encoding)
 
+    # SHA 软校验：不匹配时不直接拒绝写入路径，而是返回当前文件状态与 target 匹配情况，
+    # 让模型基于最新内容重新发起修改，避免"编造 SHA 导致永久卡死"。
     if expected_sha256 and str(expected_sha256).strip().lower() != old_sha256:
         return {
             "success": False,
-            "error": "文件内容 SHA256 与 expected_sha256 不一致，已拒绝修改。",
+            "error": (
+                "文件内容 SHA256 与 expected_sha256 不一致，已拒绝基于旧内容修改。"
+                "请先重新 local_file_read 获取最新 sha256 与内容，再基于最新内容重试。"
+            ),
             "actual_sha256": old_sha256,
             "expected_sha256": str(expected_sha256).strip().lower(),
+            "content_head": original[:800],
+            "line_count": len(original.splitlines()),
+            "target_match": _collect_target_match_status(original, edits),
         }
 
     if has_patch:
@@ -926,6 +986,9 @@ def build_patch_preview_locked(
             "old_content_sha256": old_content_sha256,
             "line_separator": line_separator_name(original),
             "bom": detect_bom(old_raw_content),
+            "content_head": original[:800],
+            "line_count": len(original.splitlines()),
+            "target_match": _collect_target_match_status(original, edits),
         }
 
     new_raw_content = encode_text(new_content, encoding)

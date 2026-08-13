@@ -243,20 +243,19 @@ class FileListTool(LocalTool):
 class FilePatchTool(LocalTool):
     name = "local_file_patch"
     description = (
-        "对用户本地计算机上的单个文件执行精确 patch（NexoraCode 本地工具）。"
-        "\n\n重要：local_file_patch 必须两步调用，这不是建议，是强制流程。"
-        "\n1. 预览阶段：传 path，并且必须提供 patch 或 edits 其中一种；同时设置 dry_run=true。"
-        "本阶段只校验和生成 preview_id，不写入文件。"
-        "\n2. 确认阶段：只传 path 和 confirm_preview_id。confirm_preview_id 必须来自第 1 步返回的 preview_id。"
-        "本阶段禁止重新传 patch、edits、expected_sha256 或 dry_run=true。"
-        "\n如果首次写入直接传 dry_run=false 且没有 confirm_preview_id，工具会拒绝执行，并提示必须先 dry_run=true 获取 preview_id。"
+        "对用户本地计算机上的单个文件执行精确修改（NexoraCode 本地工具）。"
+        "\n\n默认一步写入：传 path + patch 或 edits 即直接修改并返回结果，不需要两步流程。"
+        "可选 dry_run=true 只预览不写入（返回 diff 与 preview_id，适合先确认再改）；"
+        "预览后可用 path + confirm_preview_id（来自 dry_run 的 preview_id）按预览内容确认写入。"
         "\n\n输入要求：必须且只能提供 patch 或 edits 其中一种。patch 使用统一 diff 格式；"
         "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
         "edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。"
         "target 会先精确匹配；未命中时允许 CRLF/CR/LF 换行归一化后的唯一匹配。"
         "replace 必须使用 replacement，insert_before/insert_after 必须使用 content。"
         "replacement/content 写入时会跟随文件原有换行类型，避免引入混合换行。"
-        "建议先调用 local_file_read 获取 sha256，再通过 expected_sha256 防止基于旧内容写入。"
+        "\n\n建议先调用 local_file_read 获取最新 sha256 与内容。若提供 expected_sha256 且与当前文件不一致，"
+        "工具会拒绝基于旧内容修改，并返回当前实际 sha256、文件开头与各 target 的匹配状态，"
+        "请据此重新读取最新内容后重试。"
     )
     parameters = {
         "type": "object",
@@ -291,16 +290,16 @@ class FilePatchTool(LocalTool):
             "encoding": {"type": "string", "description": "文件编码，默认 utf-8", "default": "utf-8"},
             "expected_sha256": {
                 "type": "string",
-                "description": "可选。修改前文件原始字节 SHA256，建议使用 local_file_read 返回的 sha256。不一致时拒绝修改。",
+                "description": "可选。修改前文件原始字节 SHA256，建议使用 local_file_read 返回的 sha256。不一致时拒绝修改并返回当前文件状态。",
             },
             "dry_run": {
                 "type": "boolean",
-                "description": "第 1 步必须设置为 true，用于生成 preview_id 且不写入文件。第 2 步确认写入时不要传 dry_run=true，只传 path 和 confirm_preview_id。",
+                "description": "可选。为 true 时只校验并返回 diff 与 preview_id，不写入文件；确认写入用 path + confirm_preview_id。不传则直接一步写入。",
                 "default": False,
             },
             "confirm_preview_id": {
                 "type": "string",
-                "description": "第 2 步确认写入使用，值必须来自第 1 步 dry_run=true 返回的 preview_id。传入 confirm_preview_id 时只能同时传 path，不能重新传 patch、edits、expected_sha256 或 dry_run=true。",
+                "description": "可选。dry_run=true 返回的 preview_id，传入时按该预览内容写入，只能同时传 path。",
             },
         },
         "required": ["path"],
@@ -359,15 +358,11 @@ class FilePatchTool(LocalTool):
         if has_patch == has_edits:
             return {"success": False, "error": "必须且只能提供 patch 或 edits 其中一种输入。"}
 
-        if not dry_run:
-            return {
-                "success": False,
-                "error": "local_file_patch 写入必须先 dry_run=true 获取 preview_id，再传 confirm_preview_id 确认写入。",
-            }
-
+        # 单步写入：未指定 dry_run 时在同一文件锁内「校验 + 写入」一步完成；
+        # dry_run=true 只生成预览不写入，供模型确认后再用 confirm_preview_id 提交。
         try:
             with core.get_file_lock(p):
-                return core.build_patch_preview_locked(
+                preview_result = core.build_patch_preview_locked(
                     p,
                     patch_text,
                     has_patch,
@@ -375,6 +370,23 @@ class FilePatchTool(LocalTool):
                     encoding,
                     str(args.get("expected_sha256") or ""),
                 )
+
+                if not preview_result.get("success"):
+                    return preview_result
+
+                if dry_run:
+                    return preview_result
+
+                return core.confirm_patch_preview_locked(
+                    p,
+                    preview_result.get("preview_id"),
+                    cancel_checker=context.cancelled,
+                )
+        except RuntimeError as e:
+            if str(e) == "stream_cancelled":
+                return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
+
+            return {"success": False, "error": str(e)}
         except UnicodeDecodeError as e:
             return {
                 "success": False,

@@ -12,7 +12,7 @@ from App.Utils import safe_join_path
 
 notification_bp = Blueprint('notification', __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 USERS_PATH = os.path.join(DATA_DIR, 'user.json')
 PUBLIC_NOTIFICATIONS_PATH = os.path.join(DATA_DIR, 'public_notifications.jsonl')

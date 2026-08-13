@@ -1080,23 +1080,26 @@
 
                 resetUserPromptInlineEditor({ keepEditedContent: true, editedText: nextText });
 
-                const afterSaveSnapshot = await renderConversationSnapshotFromServer(currentConversationId, { instant: true, silent: true });
+                // 编辑只改动最后一条用户消息的内容，消息结构（角色与顺序）不变，
+                // 可直接复用保存前已拉取的快照，避免重新拉取并全量渲染整个会话。
+                const updatedMessages = Array.isArray(beforeSaveMessages)
+                    ? beforeSaveMessages.map((msg, msgIndex) => (msgIndex === idx ? { ...msg, content: nextText } : msg))
+                    : [];
+                const preloadedSnapshot = beforeSaveSnapshot
+                    ? { ...beforeSaveSnapshot, messages: updatedMessages }
+                    : null;
 
                 if (!regenerateAfterSave) {
                     showToast('提示词已更新');
                     return;
                 }
 
-                const assistantIndex = afterSaveSnapshot
-                    ? findAssistantIndexAfterUserMessageInMessages(afterSaveSnapshot.messages, idx)
+                const assistantIndex = updatedMessages.length
+                    ? findAssistantIndexAfterUserMessageInMessages(updatedMessages, idx)
                     : -1;
 
                 if (assistantIndex < 0) {
-                    const afterSaveMessages = afterSaveSnapshot && Array.isArray(afterSaveSnapshot.messages)
-                        ? afterSaveSnapshot.messages
-                        : [];
-
-                    if (idx === afterSaveMessages.length - 1) {
+                    if (idx === updatedMessages.length - 1) {
                         showToast('提示词已更新，正在生成回答');
                         await sendMessage({
                             textOverride: nextText,
@@ -1111,7 +1114,7 @@
                 }
 
                 showToast('提示词已更新，正在重新回答');
-                await startRegenerate(assistantIndex);
+                await startRegenerate(assistantIndex, { preloadedSnapshot });
             } catch (_) {
                 showToast('保存失败');
             } finally {
@@ -1594,12 +1597,20 @@
             return modelName;
         }
 
-        async function startRegenerate(index) {
+        async function startRegenerate(index, options = {}) {
+            const opts = (options && typeof options === 'object') ? options : {};
+
+            // 调用方（如保存编辑提示词后重答）已拉取并渲染最新快照时，可传入 preloadedSnapshot
+            // 复用已获取的数据，避免重复全量拉取 conversation 导致进入发送状态延迟。
+            const preloadedSnapshot = opts.preloadedSnapshot || null;
+
             syncGenerationStateForCurrentConversation();
 
-            const operationReady = await ensureConversationPanelReadyForMutation(getCurrentConversationId(), 'regenerate');
+            if (!preloadedSnapshot) {
+                const operationReady = await ensureConversationPanelReadyForMutation(getCurrentConversationId(), 'regenerate');
 
-            if (!operationReady) return;
+                if (!operationReady) return;
+            }
 
             const regenerateConversationId = String(getCurrentConversationId() || '').trim();
             syncGenerationStateForCurrentConversation();
@@ -1613,7 +1624,7 @@
                 return;
             }
 
-            const targetSnapshot = await fetchConversationMessagesSnapshot(regenerateConversationId);
+            const targetSnapshot = preloadedSnapshot || await fetchConversationMessagesSnapshot(regenerateConversationId);
             const serverMessages = targetSnapshot && Array.isArray(targetSnapshot.messages) ? targetSnapshot.messages : [];
             const targetMessage = serverMessages[normalizedRegenerateIndex] || null;
             const sourceUserMessage = normalizedRegenerateIndex > 0 ? serverMessages[normalizedRegenerateIndex - 1] : null;

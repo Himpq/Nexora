@@ -97,7 +97,9 @@ class VolcengineProvider(ProviderInterface):
         }
 
     def supports_tokenization(self) -> bool:
-        return True
+        # volcengine 的 tokenize 端点响应极慢（单次 ~7s），且 sendMessage 在 PROMPT_PROFILE
+        # 阶段会对 system+tools 多次调用，累计超时导致对话卡住。改用本地估算（_estimate_token_count）。
+        return False
 
     def tokenize_texts(
         self,

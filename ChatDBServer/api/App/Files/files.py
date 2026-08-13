@@ -17,7 +17,7 @@ from App.Utils import safe_filename
 
 files_bp = Blueprint("files", __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 TRANSFER_INDEX_PATH = os.path.join(BASE_DIR, "data", "file_transfers.json")
 LIVE_TRANSFER_DIR = os.path.join(BASE_DIR, "data", "live_transfers")
 

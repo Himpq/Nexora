@@ -45,7 +45,7 @@ from App.Components import (
 import prompts
 
 # 配置文件路径
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 ROOT_CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 ROOT_MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
@@ -337,6 +337,8 @@ class Model(MailMixin):
         # NexoraCode 项目上下文由 server 层写入此 runtime block，随每次请求重建拼接。
         self._runtime_project_context_block = ""
         self._runtime_nexoracode_project_path = ""
+        self._runtime_project_excluded_tool_names: Set[str] = set()
+        self._runtime_project_force_tools = False
         self.system_prompt_template = str(system_prompt or "").strip() if system_prompt else self._get_default_system_prompt_template()
         self.system_prompt = self._build_effective_system_prompt()
 
@@ -3841,6 +3843,18 @@ class Model(MailMixin):
             if restored_external_tools:
                 print(f"[NexoraCode ToolsRestore] count={len(restored_external_tools)} tools={restored_external_tools}")
 
+            # NexoraCode 项目模式：剔除远程业务工具（知识库/云盘/记忆/地图/生图/邮件/搜索等），
+            # 聚焦本地编码任务；本地工具与权限链路不受影响。
+            project_excluded_names = set(getattr(self, "_runtime_project_excluded_tool_names", set()) or set())
+
+            if project_excluded_names:
+                self.tools = [
+                    tool
+                    for tool in (self.tools or [])
+                    if str((self._extract_function_tool_spec(tool) or {}).get("name") or "").strip()
+                    not in project_excluded_names
+                ]
+
             exclusive_external_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
 
             if exclusive_external_names:
@@ -4323,6 +4337,11 @@ class Model(MailMixin):
             normalized_longdoc_skills = self._normalize_longdoc_skills(longdoc_skills)
             self._longdoc_skill_catalog = normalized_longdoc_skills
             if normalized_conversation_mode == "longterm":
+                normalized_tool_mode = "force"
+
+            # NexoraCode 项目模式强制 force：直接下发（裁剪后的）业务工具，
+            # 无需 runtime_tool_enable 逃生门。
+            if bool(getattr(self, "_runtime_project_force_tools", False)):
                 normalized_tool_mode = "force"
 
             effective_enable_tools = normalized_tool_mode != "off"

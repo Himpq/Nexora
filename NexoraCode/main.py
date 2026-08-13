@@ -459,9 +459,10 @@ _WINDOW_MODE = _resolve_window_mode()
 _USE_FRAMELESS = (_WINDOW_MODE == "frameless")
 _USE_CUSTOM_TITLEBAR = (_WINDOW_MODE in {"frameless", "custom"})
 _PERSISTENT_OUTER_SHELL = str(config.get("persistent_outer_shell", True)).strip().lower() in {"1", "true", "on", "yes"}
-# Render a lightweight bootstrap document first for any custom titlebar mode,
-# then navigate to real URL after native frame hooks are stable.
-_USE_BOOTSTRAP_SHELL = _USE_CUSTOM_TITLEBAR
+# 去壳直载模式：主窗口直接加载本地代理 URL（http://127.0.0.1:27700/chat），
+# 不再经过 bootstrap shell + iframe 壳，避免 3p-cookie / SameSite / 登录环 hack。
+# 标题栏由 startup script（_TITLEBAR_JS）注入页面，窗口控制走 wintitle。
+_USE_BOOTSTRAP_SHELL = False
 
 _BOOTSTRAP_HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -3349,16 +3350,25 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
 
 
 def main():
+    # 项目模式照搬云端页面：窗口直载本地代理 /chat（云端渲染），
+    # 由 _PROJECT_MODE_PATCH_JS 裁剪掉与项目无关的 UI 模块，聚焦项目内容。
+    global _USE_FRAMELESS, _USE_CUSTOM_TITLEBAR
+    _LOCAL_UI_ENABLED = str(config.get("local_ui", False)).strip().lower() in {"1", "true", "on", "yes"}
+    if _LOCAL_UI_ENABLED:
+        _USE_FRAMELESS = False
+        _USE_CUSTOM_TITLEBAR = False
     registry = build_default_executor()
     js_api = NexoraWindowApi()
     print(f"[NexoraWindow] mode={_WINDOW_MODE} frameless={_USE_FRAMELESS} custom_titlebar={_USE_CUSTOM_TITLEBAR}")
     runtime_base_url = _resolve_runtime_base_url()
     print(f"[NexoraProxy] runtime_base_url={runtime_base_url}")
     runtime_host = str(urlsplit(runtime_base_url).hostname or "chat.himpqblog.cn").strip().lower()
-    _allow_iframe_3p_cookie = str(config.get("allow_iframe_third_party_cookies", True)).strip().lower() in {"1", "true", "on", "yes"}
-    _unsafe_disable_web_security = str(config.get("unsafe_disable_web_security", True)).strip().lower() in {"1", "true", "on", "yes"}
-    _relax_iframe_samesite = str(config.get("relax_iframe_samesite", True)).strip().lower() in {"1", "true", "on", "yes"}
+    _allow_iframe_3p_cookie = str(config.get("allow_iframe_third_party_cookies", False)).strip().lower() in {"1", "true", "on", "yes"}
+    _unsafe_disable_web_security = str(config.get("unsafe_disable_web_security", False)).strip().lower() in {"1", "true", "on", "yes"}
+    _relax_iframe_samesite = str(config.get("relax_iframe_samesite", False)).strip().lower() in {"1", "true", "on", "yes"}
     _auto_escape_iframe_login_loop = str(config.get("auto_escape_iframe_login_loop", False)).strip().lower() in {"1", "true", "on", "yes"}
+    # 去壳直载模式为同源本地代理，无需 3p-cookie / SameSite / 关闭安全等 iframe hack；
+    # 仅当显式开启 persistent_outer_shell 且开启对应开关时才注入（旧模式回退）。
     _disable_features = []
     if _PERSISTENT_OUTER_SHELL and _allow_iframe_3p_cookie:
         _disable_features.extend(["BlockThirdPartyCookies", "ThirdPartyStoragePartitioning"])
@@ -4543,6 +4553,45 @@ def main():
   ensureStyle();
 })();"""
 
+    # 项目模式裁剪：隐藏与项目无关的云端 UI 入口（学习/工作区 tab、知识库/云盘/邮件/笔记面板），
+    # 保留聊天 + 会话 + 项目侧栏 + 模型选择等核心框架。持续观察防前端重排后恢复。
+    _PROJECT_MODE_PATCH_JS = r"""(function() {
+    const HIDE_SELECTORS = [
+        '#sidebarBrandLearningTab',
+        '#sidebarBrandWorkspaceTab',
+        '#toggleKnowledgePanel',
+        '#toggleFilePanel',
+        '#toggleMailView',
+        '#toggleNotesPanel'
+    ];
+    const STRIP_CLASSES = ['learning-mode-enabled', 'learning-workspace-active'];
+    function apply() {
+        try {
+            for (const cls of STRIP_CLASSES) {
+                document.documentElement && document.documentElement.classList.remove(cls);
+                document.body && document.body.classList.remove(cls);
+            }
+        } catch (_) {}
+        try {
+            HIDE_SELECTORS.forEach(function(sel) {
+                const el = document.querySelector(sel);
+                if (el) el.style.display = 'none';
+            });
+        } catch (_) {}
+    }
+    apply();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply, { once: true });
+    }
+    setTimeout(apply, 300);
+    setTimeout(apply, 1200);
+    setTimeout(apply, 3000);
+    try {
+        const mo = new MutationObserver(function() { apply(); });
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
+})();"""
+
     def on_shown():
         if not _USE_CUSTOM_TITLEBAR:
             return
@@ -4609,6 +4658,11 @@ def main():
         except Exception:
             pass
         threading.Thread(target=_titlebar_keepalive_loop, args=(win, _TITLEBAR_JS, 1.2), daemon=True).start()
+        # 项目模式裁剪 JS：每次页面加载注入，隐藏与项目无关的云端 UI 入口。
+        try:
+            wintitle.add_startup_script(win, _PROJECT_MODE_PATCH_JS)
+        except Exception:
+            pass
         if _WINDOW_MODE == "custom":
             try:
                 wintitle.add_startup_script(win, _PAGE_PATCH_JS)

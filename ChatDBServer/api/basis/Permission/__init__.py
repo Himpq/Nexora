@@ -119,3 +119,83 @@ def get_user_permission_hint_by_username(
 
 # 权限请求工具（Requests）
 from .Requests import build_permission_question_id, normalize_project_permission_request
+
+
+def build_permission_question_payload(
+    *,
+    path: str,
+    operation: str = "read",
+    scope: str = "file",
+    reason: str = "",
+    sensitive: bool = False,
+    project_root: str = "",
+) -> Dict[str, Any]:
+    """构建本地路径临时访问的授权询问 payload（question card）。
+
+    供两个入口复用：模型显式调用 ask_for_permission 工具，以及本地工具返回
+    permission_required 时服务端自动发起询问（NexoraCode 项目模式）。
+    """
+    import uuid
+
+    clean_path = str(path or "").strip()
+    clean_operation = str(operation or "read").strip().lower()
+    clean_scope = str(scope or "file").strip().lower()
+    clean_reason = str(reason or "").strip()
+
+    requested_path, clean_operation, clean_scope, project_scoped = normalize_project_permission_request(
+        path=clean_path,
+        operation=clean_operation,
+        scope=clean_scope,
+        project_root=str(project_root or "").strip(),
+        sensitive=bool(sensitive),
+    )
+
+    if project_scoped:
+        print(
+            "[LOCAL_PERMISSION_REQUEST] normalized Project permission "
+            f"requested_path={clean_path} project_root={requested_path} "
+            f"access={clean_operation} scope={clean_scope}"
+        )
+
+    operation_text = {
+        "read": "读取",
+        "write": "写入",
+        "read_write": "读取和写入",
+    }.get(clean_operation, clean_operation)
+    scope_text = "目录" if clean_scope == "dir" else "文件"
+    content_lines = [
+        f"模型需要临时{operation_text}这个本地{scope_text}:",
+        requested_path,
+        "",
+        f"原因: {clean_reason}",
+    ]
+
+    if bool(sensitive):
+        content_lines.extend([
+            "",
+            "这个路径可能包含密钥、令牌、Cookie 或其他隐私信息。请确认你真的允许本次对话访问。",
+        ])
+
+    return {
+        "success": True,
+        "question": {
+            "track_answer": True,
+            "question_id": build_permission_question_id(requested_path, clean_operation, clean_scope),
+            "question_card_id": f"permission_request_{uuid.uuid4().hex}",
+            "question_title": "请求本次对话临时访问权限",
+            "question_content": "\n".join(content_lines),
+            "choices": [
+                f"允许本次对话访问此{scope_text}",
+                "拒绝访问",
+            ],
+            "allow_other": False,
+            "permission_request": {
+                "path": requested_path,
+                "operation": clean_operation,
+                "scope": clean_scope,
+                "reason": clean_reason,
+                "sensitive": bool(sensitive),
+            },
+        },
+        "await": True,
+    }

@@ -130,6 +130,54 @@ MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES = {
 }
 
 
+# NexoraCode 项目模式下不注入的远程业务工具：
+# 项目会话聚焦本地编码，裁剪知识库/云盘/记忆/地图/生图/邮件/联网搜索等无关工具，
+# 减少 token 开销与误用；同时移除控制工具（runtime_tool_enable/ask_for_permission，
+# 项目模式强制 force 并自动询问权限，无需模型显式调用）。
+NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
+    "knowledge_list",
+    "knowledge_basis_create",
+    "knowledge_basis_delete",
+    "knowledge_basis_update",
+    "knowledge_basis_read",
+    "knowledge_search_keyword",
+    "knowledge_search_vector",
+    "knowledge_graph_read",
+    "cloud_file_create",
+    "cloud_file_read",
+    "cloud_file_write",
+    "cloud_doc_write",
+    "cloud_file_apply_diff",
+    "cloud_file_edit",
+    "cloud_file_find",
+    "cloud_file_list",
+    "cloud_file_remove",
+    "cloud_file_search_semantic",
+    "memory_profile_read",
+    "memory_short_update",
+    "memory_short_add",
+    "map_render",
+    "map_calc_distance",
+    "map_calc_route",
+    "map_geocode",
+    "map_poi_search",
+    "generate_image",
+    "send_email",
+    "get_email",
+    "get_email_list",
+    "search",
+    "server_render_page",
+    "arxiv_search",
+    "temp_context_read",
+    "temp_context_search",
+    "temp_context_list",
+    "temp_context_clear",
+    "client_js_exec",
+    "runtime_tool_enable",
+    "ask_for_permission",
+}
+
+
 def _function_tool_name(tool):
     if not isinstance(tool, dict):
         return ""

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from format_convert.word import MarkdownWordConverter, WORD_MIMETYPE
+from App.Convert import MarkdownWordConverter, WORD_MIMETYPE
 
 
 class KnowledgeWordExporter:

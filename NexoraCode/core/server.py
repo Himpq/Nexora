@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, render_template
 
 try:
     from flask_sock import Sock as _FlaskSock
@@ -28,11 +28,14 @@ except Exception as _ws_client_import_error:
     print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
 
 from local import build_default_executor
-from core.config import config
+from core.config import config, get_app_root
 
 LOCAL_PORT = 27700
 
 app = Flask(__name__, static_folder=None)
+# 本地精简云端前端模板（NexoraCode/ui/chat.html）
+app.template_folder = str(get_app_root() / "ui")
+_LOCAL_STATIC_ROOT = Path(__file__).resolve().parents[2] / "ChatDBServer" / "static"
 sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
 registry = build_default_executor()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
@@ -745,7 +748,49 @@ def nc_select_folder():
         return jsonify({"success": False, "message": str(e)})
 
 
-@app.route("/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def _serve_file(path: Path, cache_seconds: int = 300) -> Response:
+    try:
+        mime, _ = mimetypes.guess_type(str(path))
+        data = path.read_bytes()
+        resp = Response(data, status=200, mimetype=(mime or "application/octet-stream"))
+        if cache_seconds > 0:
+            resp.headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+        else:
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
+    except Exception:
+        return Response(status=500)
+
+
+@app.route("/static/<path:filename>")
+def local_cloud_static(filename: str):
+    """本地精简前端的静态资源（js/css/img），直接读取 ChatDBServer/static。"""
+    safe_parts = [part for part in str(filename or "").replace("\\", "/").split("/") if part not in {"", ".", ".."}]
+    if not safe_parts:
+        return Response(status=404)
+    target = _LOCAL_STATIC_ROOT.joinpath(*safe_parts)
+    if not str(target.resolve()).startswith(str(_LOCAL_STATIC_ROOT.resolve())):
+        return Response(status=404)
+    if not target.is_file():
+        return Response(status=404)
+    return _serve_file(target)
+
+
+@app.route("/")
+@app.route("/chat")
+def local_cloud_chat():
+    """本地精简云端前端入口；Jinja 变量取默认值（项目模式关闭邮件/地图），API 走本地代理。"""
+    try:
+        return render_template(
+            "chat.html",
+            username="",
+            nexora_mail_enabled=False,
+            map_renderer_config={},
+        )
+    except Exception as e:
+        return Response(f"chat template render failed: {e}", status=500, mimetype="text/plain")
+
+
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def proxy_all(path: str):
     # 已有精确路由会优先命中；其余统一走远端代理。
