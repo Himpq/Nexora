@@ -1,6 +1,13 @@
 /**
  * settings.js — 本地设置页逻辑
- * 通过本地 server API 读写 Provider 列表与对话配置；自绘标题栏控制窗口。
+ *
+ * 状态模型：state 是唯一数据源（providers / defaultId / editingId）。
+ * 统一同步机制：
+ *   1) 表单写入 state（applyForm）
+ *   2) POST 持久化（persist）
+ *   3) 从服务端刷新 state（reload）
+ *   4) 同步主窗口模型下拉（syncMainWindow）
+ * 两个保存按钮都走同一入口，可复用于后续新增配置项。
  */
 (function () {
     "use strict";
@@ -14,6 +21,8 @@
         defaultId: "",
         editingId: ""
     };
+
+    // ===== API =====
 
     async function api(url, method, body) {
         var opts = { method: method, credentials: "include", headers: {} };
@@ -34,6 +43,8 @@
 
         return { ok: resp.ok, data: data };
     }
+
+    // ===== 标题栏 =====
 
     function bindTitlebar() {
         var bar = document.getElementById("nc-titlebar");
@@ -94,55 +105,36 @@
         });
     }
 
-    // ===== Provider 列表 =====
+    // ===== 工具 =====
 
-    function renderProviderList() {
-        var listEl = $("provider-list");
-        listEl.innerHTML = "";
+    function esc(text) {
+        var div = document.createElement("div");
+        div.textContent = String(text == null ? "" : text);
+        return div.innerHTML;
+    }
 
-        if (!state.providers.length) {
-            listEl.innerHTML = '<div class="provider-empty">尚未配置 Provider，点击下方按钮新增。</div>';
-            return;
-        }
+    function setStatus(text, ok) {
+        var el = $("save-status");
+        el.textContent = text;
+        el.className = "status " + (ok ? "ok" : "err");
+    }
 
-        state.providers.forEach(function (provider) {
-            var item = document.createElement("div");
-            item.className = "provider-item" + (provider.id === state.defaultId ? " default" : "");
-            item.innerHTML =
-                '<div class="pi-main">' +
-                '  <div class="pi-name">' + esc(provider.name || provider.id) + (provider.id === state.defaultId ? ' <span class="pi-default">默认</span>' : "") + "</div>" +
-                '  <div class="pi-meta">' + esc(provider.base_url || "") + " · " + esc(provider.model || "") + "</div>" +
-                "</div>" +
-                '<div class="pi-actions">' +
-                (provider.id !== state.defaultId ? '<button type="button" class="pi-btn" data-act="default" data-id="' + esc(provider.id) + '">设为默认</button>' : "") +
-                '<button type="button" class="pi-btn" data-act="edit" data-id="' + esc(provider.id) + '">编辑</button>' +
-                '<button type="button" class="pi-btn danger" data-act="remove" data-id="' + esc(provider.id) + '">删除</button>' +
-                "</div>";
-            item.querySelectorAll(".pi-btn").forEach(function (btn) {
-                btn.addEventListener("click", function () {
-                    var act = String(btn.dataset.act || "");
-                    var id = String(btn.dataset.id || "");
+    // ===== Provider 表单 =====
 
-                    if (act === "default") {
-                        state.defaultId = id;
-                        renderProviderList();
-                    } else if (act === "edit") {
-                        openEdit(id);
-                    } else if (act === "remove") {
-                        state.providers = state.providers.filter(function (p) {
-                            return p.id !== id;
-                        });
-
-                        if (state.defaultId === id) {
-                            state.defaultId = "";
-                        }
-
-                        renderProviderList();
-                    }
-                });
-            });
-            listEl.appendChild(item);
-        });
+    function openCreate() {
+        state.editingId = "";
+        $("pf-title").textContent = "新增 Provider";
+        $("pf-name").value = "";
+        $("pf-base-url").value = "";
+        $("pf-api-key").value = "";
+        $("pf-api-key").placeholder = "API Key";
+        $("pf-key-hint").textContent = "";
+        $("pf-model").value = "";
+        $("pf-temperature").value = 0.7;
+        $("pf-max-tokens").value = 4096;
+        $("pf-context-window").value = 128000;
+        $("provider-form").classList.remove("hidden");
+        $("pf-name").focus();
     }
 
     function openEdit(providerId) {
@@ -164,21 +156,9 @@
         $("pf-model").value = provider.model || "";
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
+        $("pf-context-window").value = provider.context_window || 0;
         $("provider-form").classList.remove("hidden");
-    }
-
-    function openCreate() {
-        state.editingId = "";
-        $("pf-title").textContent = "新增 Provider";
-        $("pf-name").value = "";
-        $("pf-base-url").value = "";
-        $("pf-api-key").value = "";
-        $("pf-api-key").placeholder = "API Key";
-        $("pf-key-hint").textContent = "";
-        $("pf-model").value = "";
-        $("pf-temperature").value = 0.7;
-        $("pf-max-tokens").value = 4096;
-        $("provider-form").classList.remove("hidden");
+        $("pf-name").focus();
     }
 
     function closeForm() {
@@ -186,7 +166,8 @@
         state.editingId = "";
     }
 
-    function collectProviderForm() {
+    /** 从表单读取字段（id 使用 editingId，新增时生成临时 id）。 */
+    function collectForm() {
         var id = state.editingId;
 
         if (!id) {
@@ -200,58 +181,111 @@
             api_key: $("pf-api-key").value.trim(),
             model: $("pf-model").value.trim(),
             temperature: parseFloat($("pf-temperature").value) || 0.7,
-            max_tokens: parseInt($("pf-max-tokens").value, 10) || 4096
+            max_tokens: parseInt($("pf-max-tokens").value, 10) || 4096,
+            context_window: parseInt($("pf-context-window").value, 10) || 0
         };
     }
 
-    // ===== 通用 =====
-
-    function renderSettings(data) {
-        if (!data || !data.success) {
+    /** 把表单写回 state：仅当表单打开（正在编辑/新增）时执行，避免隐藏表单残留被误写。 */
+    function applyForm() {
+        if ($("provider-form").classList.contains("hidden")) {
             return;
         }
 
-        var provider = data.provider || {};
-        state.providers = provider.providers || [];
-        state.defaultId = provider.default_id || "";
+        var edited = collectForm();
 
-        var general = data.general || {};
-        $("g-username").value = general.username || "local";
+        if (state.editingId) {
+            var index = state.providers.findIndex(function (p) {
+                return p.id === state.editingId;
+            });
+
+            if (index >= 0) {
+                var old = state.providers[index];
+                state.providers[index] = Object.assign({}, old, {
+                    name: edited.name,
+                    base_url: edited.base_url,
+                    model: edited.model,
+                    temperature: edited.temperature,
+                    max_tokens: edited.max_tokens,
+                    context_window: edited.context_window
+                });
+
+                if (edited.api_key) {
+                    state.providers[index].api_key = edited.api_key;
+                }
+            }
+        } else {
+            state.providers.push(edited);
+
+            if (!state.defaultId) {
+                state.defaultId = edited.id;
+            }
+        }
+    }
+
+    // ===== Provider 列表 =====
+
+    function renderProviderList() {
+        var listEl = $("provider-list");
+        listEl.innerHTML = "";
+
+        if (!state.providers.length) {
+            listEl.innerHTML = '<div class="provider-empty">尚未配置 Provider，点击下方按钮新增。</div>';
+            return;
+        }
+
+        state.providers.forEach(function (provider) {
+            var item = document.createElement("div");
+            item.className = "provider-item" + (provider.id === state.defaultId ? " default" : "");
+            item.innerHTML =
+                '<div class="pi-main">' +
+                '  <div class="pi-name">' + esc(provider.name || provider.id) + (provider.id === state.defaultId ? ' <span class="pi-default">默认</span>' : "") + "</div>" +
+                '  <div class="pi-model">' + esc(provider.model || "") + "</div>" +
+                '  <div class="pi-url">' + esc(provider.base_url || "") + "</div>" +
+                "</div>" +
+                '<div class="pi-actions">' +
+                (provider.id !== state.defaultId ? '<button type="button" class="pi-btn" data-act="default" data-id="' + esc(provider.id) + '">设为默认</button>' : "") +
+                '<button type="button" class="pi-btn" data-act="edit" data-id="' + esc(provider.id) + '">编辑</button>' +
+                '<button type="button" class="pi-btn danger" data-act="remove" data-id="' + esc(provider.id) + '">删除</button>' +
+                "</div>";
+
+            item.querySelectorAll(".pi-btn").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    var act = String(btn.dataset.act || "");
+                    var id = String(btn.dataset.id || "");
+
+                    if (act === "default") {
+                        state.defaultId = id;
+                        renderProviderList();
+                    } else if (act === "edit") {
+                        openEdit(id);
+                    } else if (act === "remove") {
+                        removeProvider(id);
+                    }
+                });
+            });
+
+            listEl.appendChild(item);
+        });
+    }
+
+    function removeProvider(id) {
+        closeForm();
+        state.providers = state.providers.filter(function (p) {
+            return p.id !== id;
+        });
+
+        if (state.defaultId === id) {
+            state.defaultId = state.providers.length ? state.providers[0].id : "";
+        }
 
         renderProviderList();
     }
 
-    function setStatus(text, ok) {
-        var el = $("save-status");
-        el.textContent = text;
-        el.className = "status " + (ok ? "ok" : "err");
-    }
+    // ===== 持久化 + 同步（统一机制，可复用） =====
 
-    async function save() {
-        var provider = state.providers.find(function (p) {
-            return p.id === state.editingId;
-        });
-
-        if (state.editingId && provider) {
-            var edited = collectProviderForm();
-            var idx = state.providers.indexOf(provider);
-            state.providers[idx] = Object.assign({}, provider, {
-                name: edited.name,
-                base_url: edited.base_url,
-                model: edited.model,
-                temperature: edited.temperature,
-                max_tokens: edited.max_tokens,
-                api_key: edited.api_key
-            });
-        }
-
-        closeForm();
-
-        var btn = $("btn-save");
-        btn.disabled = true;
-        setStatus("保存中…", true);
-
-        var payload = {
+    function persistPayload() {
+        return {
             provider: {
                 providers: state.providers,
                 default_id: state.defaultId
@@ -260,28 +294,65 @@
                 username: $("g-username").value.trim()
             }
         };
+    }
 
-        var res = await api("/api/local/settings", "POST", payload);
-        btn.disabled = false;
+    function syncMainWindow() {
+        var bridge = window.pywebview && window.pywebview.api;
 
-        if (res.ok && res.data && res.data.success) {
-            setStatus("已保存 ✓", true);
-            await load();
-        } else {
-            setStatus((res.data && res.data.message) || "保存失败", false);
+        if (bridge && bridge.refresh_main_window) {
+            bridge.refresh_main_window();
         }
     }
 
-    async function load() {
-        var res = await api("/api/local/settings", "GET");
-        renderSettings(res.data);
+    async function persist() {
+        var res = await api("/api/local/settings", "POST", persistPayload());
+
+        if (!(res.ok && res.data && res.data.success)) {
+            setStatus((res.data && res.data.message) || "保存失败", false);
+            return false;
+        }
+
+        return true;
     }
 
-    function esc(text) {
-        var div = document.createElement("div");
-        div.textContent = String(text == null ? "" : text);
-        return div.innerHTML;
+    /** 从服务端刷新 state 并渲染。 */
+    async function reload() {
+        var res = await api("/api/local/settings", "GET");
+
+        if (!(res.ok && res.data && res.data.success)) {
+            return;
+        }
+
+        var provider = res.data.provider || {};
+        state.providers = provider.providers || [];
+        state.defaultId = provider.default_id || "";
+        $("g-username").value = (res.data.general || {}).username || "local";
+        renderProviderList();
     }
+
+    /** 统一保存入口：写回 state → 持久化 → 刷新 → 同步主窗口。 */
+    async function save() {
+        var btn = $("btn-save");
+        btn.disabled = true;
+        setStatus("保存中…", true);
+
+        applyForm();
+        closeForm();
+        renderProviderList();
+
+        var ok = await persist();
+
+        if (ok) {
+            await reload();
+            setStatus("已保存 ✓", true);
+            $("pf-api-key").value = "";
+            syncMainWindow();
+        }
+
+        btn.disabled = false;
+    }
+
+    // ===== 初始化 =====
 
     function init() {
         bindTitlebar();
@@ -290,26 +361,9 @@
         $("btn-save").addEventListener("click", save);
         $("btn-add-provider").addEventListener("click", openCreate);
         $("pf-cancel").addEventListener("click", closeForm);
-        $("pf-save").addEventListener("click", function () {
-            var provider = state.providers.find(function (p) {
-                return p.id === state.editingId;
-            });
+        $("pf-save").addEventListener("click", save);
 
-            if (!state.editingId || !provider) {
-                var created = collectProviderForm();
-                state.providers.push(created);
-
-                if (!state.defaultId) {
-                    state.defaultId = created.id;
-                }
-
-                renderProviderList();
-            }
-
-            save();
-        });
-
-        load();
+        reload();
     }
 
     document.addEventListener("DOMContentLoaded", init);

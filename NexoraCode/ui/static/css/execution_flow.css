@@ -1,0 +1,403 @@
+/* Compact execution flow for Thinking and ToolCall rows. */
+
+.message-content .execution-flow-item {
+    position: relative;
+    margin: 7px 0 7px -16px;
+    padding: 0;
+    width: calc(100% + 16px);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: #6b7280;
+}
+
+.message-content {
+    container-type: inline-size;
+}
+
+.message-content .content-body + .execution-flow-item {
+    margin-top: 17px;
+}
+
+.message-content .execution-flow-item:has(+ .content-body) {
+    margin-bottom: 17px;
+}
+
+.message-content .execution-flow-item::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 18px;
+    bottom: -10px;
+    width: 1px;
+    background: #e5e7eb;
+}
+
+.message-content .execution-flow-item:last-of-type::before,
+.message-content .execution-flow-item:has(+ .content-body)::before,
+.message-content .execution-flow-item:has(+ .msg-actions)::before,
+.message-content .execution-flow-item:has(+ .model-badge)::before,
+.message-content .execution-flow-item:has(+ .question-tool-card)::before,
+.message-content .execution-flow-item:has(+ .puzzle-tool-card)::before {
+    display: none;
+}
+
+.message-content .execution-flow-header {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto 14px;
+    align-items: center;
+    gap: 10px;
+    min-height: 26px;
+    width: 100%;
+    padding: 1px 8px 1px 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: #6b7280;
+    font-family: inherit;
+    cursor: pointer;
+    user-select: none;
+    box-sizing: border-box;
+}
+
+.message-content .execution-flow-header:hover {
+    opacity: 1;
+}
+
+.message-content .execution-flow-node {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 0;
+    background: #d1d5db;
+    color: transparent;
+    box-sizing: border-box;
+    margin-left: 0;
+}
+
+.message-content .execution-flow-node svg,
+.message-content .execution-flow-node i {
+    display: none;
+}
+
+.message-content .execution-flow-main {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    grid-column: 2 / 3;
+}
+
+.message-content .execution-flow-title,
+.message-content .tool-name.execution-flow-title,
+.message-content .thinking-title.execution-flow-title {
+    min-width: 0;
+    color: #6b7280;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.6;
+    text-transform: none;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.message-content .execution-flow-summary,
+.message-content .tool-status.execution-flow-summary,
+.message-content .thinking-summary.execution-flow-summary {
+    display: none;
+    min-width: 0;
+    margin: 0;
+    color: #8a97a8;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+    text-align: left;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.message-content .tool-status.execution-flow-summary.has-change-stats {
+    display: inline-flex;
+    grid-column: 3 / 4;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    overflow: visible;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.message-content .tool-change-count.is-added {
+    color: #15803d;
+}
+
+.message-content .tool-change-count.is-removed {
+    color: #b91c1c;
+}
+
+.message-content .execution-flow-item .tool-toggle,
+.message-content .execution-flow-item .chevron-icon {
+    grid-column: 4 / 5;
+    justify-self: end;
+    width: 12px;
+    height: 12px;
+    margin: 0;
+    color: #c0c7d1;
+    opacity: 0;
+    transition: transform 0.18s ease, color 0.18s ease;
+}
+
+.message-content .tool-usage.execution-flow-item.has-output .tool-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.9;
+}
+
+.message-content .thinking-block.execution-flow-item .chevron-icon {
+    opacity: 0.9;
+}
+
+.message-content .tool-usage.execution-flow-item.expanded .tool-toggle {
+    transform: rotate(90deg);
+}
+
+.message-content .thinking-block.execution-flow-item:not(.collapsed) .chevron-icon {
+    transform: rotate(180deg);
+}
+
+.message-content .thinking-block.execution-flow-item.collapsed .chevron-icon {
+    transform: rotate(0deg);
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output,
+.message-content .thinking-block.execution-flow-item .thinking-content {
+    display: none;
+    margin: 7px 8px 8px 18px;
+    padding: 12px 14px;
+    border: 1px solid #eceff3;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #4b5563;
+    font-size: 13px;
+    line-height: 1.65;
+    box-sizing: border-box;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output {
+    display: block;
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+    opacity: 0;
+    visibility: hidden;
+    overflow: hidden;
+    transform: translateY(-4px);
+    transition:
+        max-height 0.24s ease,
+        margin 0.24s ease,
+        padding 0.24s ease,
+        opacity 0.18s ease,
+        transform 0.24s ease,
+        visibility 0s linear 0.24s;
+}
+
+.message-content .tool-usage.execution-flow-item.expanded .tool-output,
+.message-content .thinking-block.execution-flow-item:not(.collapsed) .thinking-content {
+    display: block;
+}
+
+.message-content .tool-usage.execution-flow-item.expanded .tool-output {
+    max-height: min(46vh, 420px);
+    margin-top: 7px;
+    margin-bottom: 8px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+    opacity: 1;
+    visibility: visible;
+    overflow: auto;
+    transform: translateY(0);
+    transition-delay: 0s;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content {
+    border-left: 1px solid #eceff3;
+    max-height: none !important;
+    overflow: visible !important;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    white-space: normal;
+    font-family: inherit;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output {
+    white-space: pre-wrap;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output.tool-output-markdown {
+    white-space: normal;
+    font-family: inherit;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output.tool-output-markdown > :first-child,
+.message-content .thinking-block.execution-flow-item .thinking-content > :first-child {
+    margin-top: 0;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output.tool-output-markdown > :last-child,
+.message-content .thinking-block.execution-flow-item .thinking-content > :last-child {
+    margin-bottom: 0;
+}
+
+.message-content .tool-usage.execution-flow-item .tool-output pre {
+    max-height: none;
+    margin: 8px 0;
+    border-radius: 8px;
+    overflow-y: visible !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-content .tool-usage.execution-flow-item .tool-output,
+    .message-content .tool-usage.execution-flow-item .tool-toggle {
+        transition: none;
+    }
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content pre {
+    max-height: none !important;
+    margin: 8px 0;
+    border-radius: 8px;
+    overflow: visible !important;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content pre code,
+.message-content .thinking-block.execution-flow-item .thinking-content pre.nc-code-block,
+.message-content .thinking-block.execution-flow-item .thinking-content pre.nc-code-block code,
+.message-content .thinking-block.execution-flow-item .thinking-content pre.nc-code-block code.hljs {
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content pre code {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+}
+
+.message-content .execution-flow-item[data-flow-kind="file"] .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item[data-flow-kind="shell"] .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item[data-flow-kind="web"] .execution-flow-node,
+.message-content .execution-flow-item[data-flow-kind="browser"] .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item[data-flow-kind="knowledge"] .execution-flow-node,
+.message-content .execution-flow-item[data-flow-kind="context"] .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item[data-flow-kind="image"] .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item[data-flow-kind="error"] .execution-flow-node,
+.message-content .tool-usage.tool-error.execution-flow-item .execution-flow-node {
+    background: #fca5a5;
+}
+
+.message-content .thinking-block.execution-flow-item .execution-flow-node {
+    background: #d1d5db;
+}
+
+.message-content .execution-flow-item.is-running .execution-flow-node,
+.message-content .thinking-block.execution-flow-item.is-live .execution-flow-node {
+    background: #9ca3af;
+    box-shadow: 0 0 0 3px rgba(156, 163, 175, 0.12);
+}
+
+@container (max-width: 720px) {
+    .message-content .execution-flow-item {
+        margin-left: 8px;
+        width: calc(100% - 8px);
+    }
+
+    .message-content .content-body + .execution-flow-item {
+        margin-top: 14px;
+    }
+
+    .message-content .execution-flow-item:has(+ .content-body) {
+        margin-bottom: 14px;
+    }
+}
+
+@media (max-width: 900px) {
+    .message-content .execution-flow-item {
+        margin-left: 8px;
+        width: calc(100% - 8px);
+    }
+}
+
+@media (max-width: 640px) {
+    .message-content .execution-flow-item {
+        margin-left: 8px;
+        width: calc(100% - 8px);
+    }
+
+    .message-content .content-body + .execution-flow-item {
+        margin-top: 14px;
+    }
+
+    .message-content .execution-flow-item:has(+ .content-body) {
+        margin-bottom: 14px;
+    }
+
+    .message-content .execution-flow-header {
+        grid-template-columns: 10px minmax(0, 1fr) auto 14px;
+        gap: 9px;
+    }
+
+    .message-content .execution-flow-summary,
+    .message-content .tool-status.execution-flow-summary,
+    .message-content .thinking-summary.execution-flow-summary {
+        grid-column: 2 / 3;
+        text-align: left;
+        white-space: normal;
+    }
+
+    .message-content .tool-usage.execution-flow-item .tool-output,
+    .message-content .thinking-block.execution-flow-item .thinking-content {
+        margin-left: 18px;
+        margin-right: 6px;
+    }
+}

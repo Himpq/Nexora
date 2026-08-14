@@ -76,6 +76,11 @@
                                 <input id="pf-max-tokens" type="number" step="128" min="256" value="4096"/>
                             </label>
                         </div>
+                        <label class="field">
+                            <span>上下文长度</span>
+                            <input id="pf-context-window" type="number" step="1024" min="0" value="128000"/>
+                            <small class="hint">模型的上下文窗口（token），用于 token 预算展示，0 表示不限制</small>
+                        </label>
                     </div>
                     <div class="pf-actions">
                         <button id="pf-cancel" type="button" class="secondary">取消</button>

@@ -1,0 +1,458 @@
+/* ==================== Skill 子标签 ==================== */
+
+.skill-subtabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 0 14px 0;
+    border-bottom: 1px solid var(--border-color, #e2e2e2);
+    margin-bottom: 14px;
+}
+
+.skill-subtab {
+    padding: 7px 16px;
+    border: none;
+    background: transparent;
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.skill-subtab:hover {
+    background: var(--hover-bg, #f5f5f5);
+    color: var(--text-primary, #333);
+}
+
+.skill-subtab.active {
+    background: var(--primary-bg, #e8f0fe);
+    color: var(--primary-color, #1a73e8);
+    font-weight: 600;
+}
+
+.skill-subtab-content {
+    display: none;
+}
+
+.skill-subtab-content.active {
+    display: block;
+}
+
+/* ==================== 我的 Skill 工具栏 ==================== */
+
+.skill-my-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.btn-skill-create {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+    background: var(--card-bg, #fff);
+    color: var(--text-primary, #333);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-skill-create:hover {
+    border-color: var(--primary-color, #1a73e8);
+    color: var(--primary-color, #1a73e8);
+    background: var(--primary-bg, #f0f6ff);
+}
+
+/* ==================== Skill 卡片来源标记 ==================== */
+
+.settings-skill-origin {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+.settings-skill-origin[data-origin="global"] {
+    background: #f0f0f0;
+    color: #666;
+}
+
+.settings-skill-origin[data-origin="self"] {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.settings-skill-origin[data-origin="market"] {
+    background: #e3f2fd;
+    color: #1565c0;
+}
+
+/* ==================== Skill 卡片操作按钮 ==================== */
+
+.settings-skill-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.btn-skill-small {
+    padding: 3px 8px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 6px;
+    background: transparent;
+    font-size: 11.5px;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+
+.btn-skill-small:hover {
+    border-color: var(--primary-color, #1a73e8);
+    color: var(--primary-color, #1a73e8);
+}
+
+.btn-skill-small.danger:hover {
+    border-color: #e53935;
+    color: #e53935;
+}
+
+/* ==================== 市场工具栏 ==================== */
+
+.skill-market-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.skill-market-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+    background: var(--card-bg, #fff);
+    transition: border-color 0.15s ease;
+}
+
+.skill-market-search:focus-within {
+    border-color: var(--primary-color, #1a73e8);
+}
+
+.skill-market-search svg {
+    flex-shrink: 0;
+    color: var(--text-tertiary, #999);
+}
+
+.skill-market-search input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 13.5px;
+    color: var(--text-primary, #333);
+}
+
+.skill-market-search input::placeholder {
+    color: var(--text-tertiary, #aaa);
+}
+
+.skill-market-sort {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+    background: var(--card-bg, #fff);
+    font-size: 13px;
+    color: var(--text-primary, #333);
+    cursor: pointer;
+    outline: none;
+}
+
+.skill-market-sort:focus {
+    border-color: var(--primary-color, #1a73e8);
+}
+
+/* ==================== 市场列表 ==================== */
+
+.skill-market-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 480px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.skill-market-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--border-color, #e8e8e8);
+    border-radius: 12px;
+    background: var(--card-bg, #fff);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.skill-market-card:hover {
+    border-color: var(--primary-color, #1a73e8);
+    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.08);
+}
+
+.skill-market-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.skill-market-card-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text-primary, #222);
+    margin-bottom: 4px;
+}
+
+.skill-market-card-desc {
+    font-size: 12.5px;
+    color: var(--text-secondary, #666);
+    margin-bottom: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.skill-market-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.skill-market-tag {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--hover-bg, #f5f5f5);
+    font-size: 11px;
+    color: var(--text-secondary, #555);
+}
+
+.skill-market-card-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 11.5px;
+    color: var(--text-tertiary, #999);
+}
+
+.skill-market-card-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.btn-skill-detail {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 7px;
+    background: transparent;
+    font-size: 12.5px;
+    color: var(--text-secondary, #555);
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+
+.btn-skill-detail:hover {
+    border-color: var(--primary-color, #1a73e8);
+    color: var(--primary-color, #1a73e8);
+}
+
+.btn-skill-install {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 7px;
+    background: var(--primary-color, #1a73e8);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: #fff;
+    cursor: pointer;
+    transition: opacity 0.12s ease;
+}
+
+.btn-skill-install:hover {
+    opacity: 0.85;
+}
+
+.btn-skill-installed {
+    padding: 6px 14px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 7px;
+    background: var(--hover-bg, #f5f5f5);
+    font-size: 12.5px;
+    color: var(--text-tertiary, #999);
+    cursor: default;
+}
+
+/* ==================== 市场详情弹窗 ==================== */
+
+#skillMarketDetailModal {
+    z-index: 9600;
+}
+
+#skillMarketDetailModal .modal {
+    width: 720px;
+    max-width: 92vw;
+    padding: 0;
+}
+
+.skill-detail-meta {
+    font-size: 12.5px;
+    color: var(--text-secondary, #666);
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color, #eee);
+    margin-bottom: 12px;
+}
+
+.skill-detail-content {
+    width: 100%;
+    min-height: 280px;
+    max-height: 400px;
+    padding: 12px;
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 8px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    resize: vertical;
+    background: var(--card-bg, #fafafa);
+    color: var(--text-primary, #333);
+}
+
+/* ==================== 个人 Skill 编辑器弹窗 ==================== */
+
+#personalSkillEditorModal {
+    z-index: 9600;
+}
+
+#personalSkillEditorModal .modal {
+    width: 780px;
+    max-width: 94vw;
+    padding: 0;
+}
+
+.ps-editor-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.ps-editor-grid .form-group {
+    margin-bottom: 0;
+}
+
+.ps-editor-grid .form-group.full-width {
+    grid-column: 1 / -1;
+}
+
+.ps-editor-grid label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-secondary, #555);
+    margin-bottom: 5px;
+}
+
+.ps-editor-grid input,
+.ps-editor-grid select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 7px;
+    font-size: 13px;
+    color: var(--text-primary, #333);
+    background: var(--card-bg, #fff);
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.ps-editor-grid input:focus,
+.ps-editor-grid select:focus {
+    border-color: var(--primary-color, #1a73e8);
+}
+
+.ps-editor-content {
+    width: 100%;
+    min-height: 240px;
+    max-height: 360px;
+    padding: 12px;
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 8px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    resize: vertical;
+    background: var(--card-bg, #fafafa);
+    color: var(--text-primary, #333);
+    outline: none;
+}
+
+.ps-editor-content:focus {
+    border-color: var(--primary-color, #1a73e8);
+}
+
+.ps-editor-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border-color, #eee);
+}
+
+.btn-skill-publish {
+    padding: 8px 16px;
+    border: 1px solid #43a047;
+    border-radius: 8px;
+    background: transparent;
+    font-size: 13px;
+    font-weight: 500;
+    color: #43a047;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    margin-right: auto;
+}
+
+.btn-skill-publish:hover {
+    background: #e8f5e9;
+}
+
+/* ==================== 响应式 ==================== */
+
+@media (max-width: 768px) {
+    .skill-market-card {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .skill-market-card-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .ps-editor-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .skill-market-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}

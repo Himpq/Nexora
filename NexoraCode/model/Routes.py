@@ -22,13 +22,20 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 from core.config import config, get_app_root
 from local import build_default_executor
 from local.PathGuard import grant_temporary_permission
-from .Provider import ProviderClient, load_provider
+from .Provider import ProviderClient, load_provider, load_providers
 from .ConversationStore import ConversationStore
 from .AgentLoop import AgentLoop
 
 
 _local_bp = Blueprint("local_agent", __name__)
 _EXECUTOR = None
+
+
+@_local_bp.after_request
+def _local_no_store(resp):
+    """本地动态 API 一律不缓存，避免模型/会话修改后拉到旧数据。"""
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def set_default_executor(executor) -> None:
@@ -79,7 +86,56 @@ def _sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
+def _translate_event(event: dict) -> dict:
+    """把 AgentLoop 事件转换为 SSE 对前端友好的格式。"""
+    event_type = str(event.get("type") or "")
+
+    if event_type == "function_call":
+        return {
+            "type": "function_call",
+            "name": event.get("name"),
+            "call_id": event.get("call_id"),
+            "arguments": json.dumps(event.get("arguments") or {}, ensure_ascii=False),
+        }
+
+    if event_type == "function_result":
+        return {
+            "type": "function_result",
+            "name": event.get("name"),
+            "call_id": event.get("call_id"),
+            "result": event.get("result"),
+            "success": bool(event.get("success")),
+        }
+
+    if event_type == "question":
+        return {
+            "type": "question",
+            "question": event.get("question"),
+            "await": True,
+        }
+
+    if event_type == "conversation_id":
+        return {
+            "type": "conversation_id",
+            "conversation_id": event.get("conversation_id"),
+        }
+
+    if event_type == "content":
+        return {"type": "content", "content": event.get("content")}
+
+    if event_type == "error":
+        return {"type": "error", "message": event.get("message")}
+
+    if event_type == "done":
+        return {"type": "done"}
+
+    return event
+
+
 def _stream_chat_generator(body: dict) -> Generator[str, None, None]:
+    import queue as _queue
+    import threading as _threading
+
     message = str(body.get("message") or "").strip()
     conversation_id = str(body.get("conversation_id") or "").strip()
     model_name = str(body.get("model_name") or "").strip()
@@ -106,61 +162,49 @@ def _stream_chat_generator(body: dict) -> Generator[str, None, None]:
 
         return
 
-    try:
-        for event in loop.stream_send(conversation_id, message, system_prompt=system_prompt):
-            event_type = str(event.get("type") or "")
+    cancel_event = _threading.Event()
+    event_queue: _queue.Queue = _queue.Queue()
 
-            if event_type == "function_call":
-                yield _sse_event({
-                    "type": "function_call",
-                    "name": event.get("name"),
-                    "call_id": event.get("call_id"),
-                    "arguments": json.dumps(event.get("arguments") or {}, ensure_ascii=False),
-                })
-
-            elif event_type == "function_result":
-                yield _sse_event({
-                    "type": "function_result",
-                    "name": event.get("name"),
-                    "call_id": event.get("call_id"),
-                    "result": event.get("result"),
-                    "success": bool(event.get("success")),
-                })
-
-            elif event_type == "question":
-                yield _sse_event({
-                    "type": "question",
-                    "question": event.get("question"),
-                    "await": True,
-                })
-
-            elif event_type == "conversation_id":
-                yield _sse_event({
-                    "type": "conversation_id",
-                    "conversation_id": event.get("conversation_id"),
-                })
-
-            elif event_type == "content":
-                yield _sse_event({
-                    "type": "content",
-                    "content": event.get("content"),
-                })
-
-            elif event_type == "error":
-                yield _sse_event({"type": "error", "message": event.get("message")})
-
-            elif event_type == "done":
-                yield _sse_event({"type": "done"})
-
-            else:
-                yield _sse_event(event)
-    except Exception as exc:
+    def _run_loop() -> None:
         try:
-            print(f"[LocalAgent] stream error: {exc}")
-        except Exception:
-            pass
+            for event in loop.stream_send(
+                conversation_id,
+                message,
+                system_prompt=system_prompt,
+                cancel_checker=lambda: cancel_event.is_set(),
+            ):
+                event_queue.put(event)
+        except Exception as exc:
+            try:
+                print(f"[LocalAgent] stream error: {exc}")
+            except Exception:
+                pass
 
-        yield _sse_event({"type": "error", "message": f"本地对话失败: {exc}"})
+            event_queue.put({"type": "error", "message": f"本地对话失败: {exc}"})
+        finally:
+            event_queue.put(None)
+
+    worker = _threading.Thread(target=_run_loop, daemon=True, name="nc-agent-loop")
+    worker.start()
+
+    try:
+        while True:
+            try:
+                event = event_queue.get(timeout=0.5)
+            except _queue.Empty:
+                if cancel_event.is_set():
+                    break
+
+                continue
+
+            if event is None:
+                break
+
+            yield _sse_event(_translate_event(event))
+    finally:
+        # 客户端断开/生成器结束：取消并中断 Provider 流
+        cancel_event.set()
+        loop.cancel()
 
     yield "data: [DONE]\n\n"
 
@@ -203,6 +247,17 @@ def local_agent_get_conversation(conv_id: str):
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
     return jsonify({"success": True, "conversation": conversation})
+
+
+@_local_bp.route("/api/conversations/<conv_id>", methods=["DELETE"])
+def local_agent_delete_conversation(conv_id: str):
+    store = ConversationStore()
+    deleted = store.delete(conv_id)
+
+    if not deleted:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    return jsonify({"success": True, "conversation_id": conv_id})
 
 
 @_local_bp.route("/api/conversations/<conv_id>/messages", methods=["GET"])
@@ -274,9 +329,9 @@ def local_agent_config():
         model_id = f"{provider.provider_id}/{provider.model}"
         models.append({
             "id": model_id,
-            "name": f"{provider.name} · {provider.model}",
+            "name": provider.model,
             "provider": provider.name,
-            "context_window": 0,
+            "context_window": provider.context_window,
         })
 
     default = get_default_provider()
@@ -290,9 +345,49 @@ def local_agent_config():
     })
 
 
+@_local_bp.route("/api/local_agent/register", methods=["POST"])
+def local_agent_register():
+    """本地模式：工具注册即时返回，不依赖云端 WSS/register，避免阻塞本地加载。"""
+    return jsonify({"success": True, "registered_tools": [], "local": True})
+
+
+@_local_bp.route("/api/agent/status", methods=["GET"])
+def local_agent_status():
+    """本地模式：NexoraCode 本地工具始终在线，无需依赖云端 WSS。"""
+    return jsonify({"online": True, "source": "local"})
+
+
 @_local_bp.route("/api/chat/stream/cancel", methods=["POST"])
 def local_agent_cancel_stream():
     return jsonify({"success": True})
+
+
+@_local_bp.route("/api/chat/stream/status", methods=["GET", "POST"])
+def local_agent_stream_status():
+    return jsonify({"success": True, "status": "idle", "streaming": False})
+
+
+@_local_bp.route("/api/user/preferences", methods=["GET", "POST"])
+def local_agent_preferences():
+    if request.method == "POST":
+        return jsonify({"success": True})
+
+    return jsonify({"success": True, "preferences": {}})
+
+
+@_local_bp.route("/api/user/profile", methods=["GET"])
+def local_agent_profile():
+    return jsonify({"success": True, "profile": {}})
+
+
+@_local_bp.route("/api/notifications", methods=["GET"])
+def local_agent_notifications():
+    return jsonify({"success": True, "notifications": []})
+
+
+@_local_bp.route("/api/tokens/stats", methods=["GET"])
+def local_agent_token_stats():
+    return jsonify({"success": True, "total_tokens": 0, "today_tokens": 0})
 
 
 def register_local_routes(app, executor=None) -> None:

@@ -191,7 +191,8 @@ h1 { font-size: 19px; margin: 0 0 6px; color: var(--text-main); }
 .pi-main { min-width: 0; }
 .pi-name { font-size: 13px; font-weight: 600; color: var(--text-main); }
 .pi-default { color: var(--accent-strong); font-size: 11px; font-weight: 500; margin-left: 6px; }
-.pi-meta { color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pi-model { color: var(--accent-strong); font-size: 12px; font-family: var(--mono); margin-top: 2px; }
+.pi-url { color: var(--text-secondary); font-size: 11px; font-family: var(--mono); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pi-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .pi-btn {
     padding: 5px 10px;

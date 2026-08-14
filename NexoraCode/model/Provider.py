@@ -36,6 +36,7 @@ class ProviderConfig:
         model: str = "",
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        context_window: int = 128000,
         timeout_seconds: float = 120.0,
     ):
         self.provider_id = str(provider_id or "").strip() or f"p_{uuid.uuid4().hex[:8]}"
@@ -45,6 +46,7 @@ class ProviderConfig:
         self.model = str(model or "").strip()
         self.temperature = float(temperature or 0.7)
         self.max_tokens = int(max_tokens or 4096)
+        self.context_window = int(context_window or 0)
         self.timeout_seconds = float(timeout_seconds or 120.0)
 
     def is_configured(self) -> bool:
@@ -59,6 +61,7 @@ class ProviderConfig:
             "model": self.model,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "context_window": self.context_window,
             "timeout_seconds": self.timeout_seconds,
         }
 
@@ -71,6 +74,7 @@ class ProviderConfig:
             "model": self.model,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "context_window": self.context_window,
             "has_api_key": bool(self.api_key),
         }
 
@@ -85,6 +89,7 @@ class ProviderConfig:
             model=str(payload.get("model") or ""),
             temperature=payload.get("temperature", 0.7),
             max_tokens=payload.get("max_tokens", 4096),
+            context_window=payload.get("context_window", 128000),
             timeout_seconds=payload.get("timeout_seconds", 120.0),
         )
 
@@ -204,6 +209,25 @@ class ProviderClient:
     def __init__(self, config: ProviderConfig):
         self.config = config
         self._session = requests.Session()
+        self._cancel_event = threading.Event()
+        self._current_response = None
+        self._response_lock = threading.Lock()
+
+    def cancel(self) -> None:
+        """请求外部中止：关闭当前流式响应，使阻塞读立即返回。"""
+        self._cancel_event.set()
+
+        with self._response_lock:
+            response = self._current_response
+
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def reset(self) -> None:
+        self._cancel_event = threading.Event()
 
     def _completions_url(self) -> str:
         base = self.config.base_url.rstrip("/")
@@ -269,7 +293,15 @@ class ProviderClient:
         if not getattr(upstream, "raw", None):
             raise ProviderError("Provider 未返回流式响应")
 
-        yield from self._iter_sse(upstream)
+        with self._response_lock:
+            self._current_response = upstream
+
+        try:
+            yield from self._iter_sse(upstream)
+        finally:
+            with self._response_lock:
+                if self._current_response is upstream:
+                    self._current_response = None
 
     def _iter_sse(self, upstream: requests.Response) -> Generator[dict, None, None]:
         raw = getattr(upstream, "raw", None)
@@ -278,9 +310,15 @@ class ProviderClient:
         def _read_chunks():
             if raw is not None and hasattr(raw, "stream"):
                 for chunk in raw.stream(amt=1, decode_content=False):
+                    if self._cancel_event.is_set():
+                        break
+
                     yield chunk
             else:
                 for chunk in upstream.iter_content(chunk_size=1):
+                    if self._cancel_event.is_set():
+                        break
+
                     yield chunk
 
         try:

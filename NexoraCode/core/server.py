@@ -39,6 +39,21 @@ _LOCAL_STATIC_ROOT = Path(__file__).resolve().parents[2] / "ChatDBServer" / "sta
 sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
 registry = build_default_executor()
 
+
+@app.after_request
+def _api_global_no_store(resp):
+    """所有 /api/* 与页面路由一律不缓存，避免浏览器缓存导致本地数据更新后读到旧值。"""
+    try:
+        path = str(request.path or "")
+
+        if path.startswith("/api/") or path in ("/", "/chat", "/settings"):
+            resp.headers["Cache-Control"] = "no-store"
+    except Exception:
+        pass
+
+    return resp
+
+
 # 本地对话与会话路由（会话一律存本地，不依赖云端引擎）
 from model.Routes import register_local_routes
 
@@ -55,7 +70,13 @@ import sys
 
 def _get_vendor_roots():
     roots = []
-    
+
+    # 本地独立副本优先（拷贝自 ChatDBServer/static/vendor）
+    local_vendor = get_app_root() / "ui" / "static" / "vendor"
+
+    if local_vendor.is_dir():
+        roots.append(local_vendor)
+
     workspace = Path(__file__).resolve().parents[2]
     roots.append(workspace / "ChatDBServer" / "static" / "vendor")
     
@@ -625,6 +646,40 @@ def nc_vendor_asset(asset_path: str):
 
 
 if sock is not None:
+    def _local_browser_ws(client_ws) -> None:
+        """本地模式 /ws/browser：保持连接，周期推送 agent 在线状态，不依赖云端。"""
+        import json as _json
+        import threading as _threading
+
+        stop = _threading.Event()
+        send_lock = _threading.Lock()
+
+        def _safe_send(message: str) -> bool:
+            try:
+                with send_lock:
+                    client_ws.send(message)
+                return True
+            except Exception:
+                return False
+
+        def _pump() -> None:
+            while not stop.is_set():
+                if not _safe_send(_json.dumps({"type": "agent_status", "online": True})):
+                    break
+                stop.wait(15)
+
+        pump_thread = _threading.Thread(target=_pump, daemon=True, name="nc-local-browser-ws")
+        pump_thread.start()
+
+        try:
+            while not stop.is_set():
+                data = client_ws.receive()
+
+                if data is None:
+                    break
+        finally:
+            stop.set()
+
     @sock.route("/ws/<path:ws_path>")
     def ws_bridge(client_ws, ws_path: str):
         """将浏览器侧 WebSocket 透明转发到远端 ChatDBServer。
@@ -632,6 +687,11 @@ if sock is not None:
         本地代理原本只能转发普通 HTTP，/ws/browser 等升级请求会被以 400 拒绝，
         导致 iframe 内页面收不到 agent_status / knowledge_changed 等实时事件。
         """
+        # 本地模式：/ws/browser 由本地直接应答（agent 在线状态），不依赖云端 WSS
+        if str(ws_path or "").strip() == "browser":
+            _local_browser_ws(client_ws)
+            return
+
         remote_base = _remote_base_url()
         parts = urlsplit(remote_base)
         ws_scheme = "wss" if parts.scheme == "https" else "ws"
@@ -769,15 +829,26 @@ def _serve_file(path: Path, cache_seconds: int = 300) -> Response:
 
 @app.route("/static/<path:filename>")
 def local_cloud_static(filename: str):
-    """本地精简前端的静态资源（js/css/img），直接读取 ChatDBServer/static。"""
+    """本地精简前端的静态资源（js/css/img）：优先本地副本，否则读 ChatDBServer/static。"""
     safe_parts = [part for part in str(filename or "").replace("\\", "/").split("/") if part not in {"", ".", ".."}]
     if not safe_parts:
         return Response(status=404)
+
+    # 本地可改副本（如 chat.js）优先
+    local_root = get_app_root() / "ui" / "static"
+    local_target = local_root.joinpath(*safe_parts)
+
+    if str(local_target.resolve()).startswith(str(local_root.resolve())) and local_target.is_file():
+        return _serve_file(local_target)
+
     target = _LOCAL_STATIC_ROOT.joinpath(*safe_parts)
+
     if not str(target.resolve()).startswith(str(_LOCAL_STATIC_ROOT.resolve())):
         return Response(status=404)
+
     if not target.is_file():
         return Response(status=404)
+
     return _serve_file(target)
 
 
@@ -848,7 +919,7 @@ def local_settings_get():
         "general": {
             "username": str(config.get("local_username", "local") or "local"),
         },
-    })
+    }), 200, {"Cache-Control": "no-store"}
 
 
 @app.route("/api/local/settings", methods=["POST"])
@@ -887,6 +958,11 @@ def local_settings_save():
             except (TypeError, ValueError):
                 max_tokens = 4096
 
+            try:
+                context_window = int(item.get("context_window", 128000))
+            except (TypeError, ValueError):
+                context_window = 128000
+
             new_list.append(ProviderConfig(
                 provider_id=provider_id or "",
                 name=str(item.get("name") or "").strip(),
@@ -895,6 +971,7 @@ def local_settings_save():
                 model=str(item.get("model") or "").strip(),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                context_window=context_window,
             ))
 
         default_id = str(provider_payload.get("default_id") or "").strip()

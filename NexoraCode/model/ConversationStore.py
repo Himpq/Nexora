@@ -58,6 +58,17 @@ class ConversationStore:
     def list(self) -> list[dict]:
         with self._lock:
             index = self._load_index()
+            cleaned = False
+
+            # 会话文件缺失时清理 index，避免显示幽灵会话
+            for conversation_id in list(index.keys()):
+                if not self._conversation_path(conversation_id).is_file():
+                    index.pop(conversation_id, None)
+                    cleaned = True
+
+            if cleaned:
+                self._save_index(index)
+
             items = []
 
             for conversation_id, meta in index.items():

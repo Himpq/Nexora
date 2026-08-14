@@ -40,7 +40,7 @@ class AgentLoop:
         self.executor = executor
         self.store = store
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "") -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -56,6 +56,9 @@ class AgentLoop:
         tool_calls_seen = 0
 
         while True:
+            if self._is_cancelled(cancel_checker):
+                break
+
             if tool_calls_seen >= MAX_TOOL_ROUNDS:
                 yield {"type": "error", "message": f"工具调用轮次超过上限（{MAX_TOOL_ROUNDS}）"}
 
@@ -101,6 +104,9 @@ class AgentLoop:
             self.store.append_message(conversation_id, assistant_message)
 
             for tool_call in grouped_tool_calls:
+                if self._is_cancelled(cancel_checker):
+                    break
+
                 call_id = str(tool_call.get("id") or "")
                 tool_name = str(tool_call.get("name") or "")
                 arguments = tool_call.get("arguments")
@@ -137,6 +143,19 @@ class AgentLoop:
                 )
 
             tool_calls_seen += 1
+
+    def _is_cancelled(self, cancel_checker) -> bool:
+        if callable(cancel_checker):
+            try:
+                return bool(cancel_checker())
+            except Exception:
+                return False
+
+        return False
+
+    def cancel(self) -> None:
+        """中断当前 Provider 请求，使阻塞读取立即返回。"""
+        self.provider.cancel()
 
     def _build_messages(self, conversation_id: str, system_prompt: str) -> list[dict]:
         conversation = self.store.get(conversation_id) or {}

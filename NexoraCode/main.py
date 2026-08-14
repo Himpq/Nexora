@@ -1624,6 +1624,35 @@ class NexoraWindowApi:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    def refresh_main_window(self):
+        """设置保存后刷新主窗口模型列表：优先热调用 loadModels，失败再整页重载。"""
+        if not self._window:
+            return {"success": False, "message": "main window not found"}
+        try:
+            reloaded = bool(
+                self._window.evaluate_js(
+                    "(function(){ if (window.__ncLoadModels) { window.__ncLoadModels(); return true; } return false; })();"
+                )
+            )
+
+            if reloaded:
+                return {"success": True, "mode": "models"}
+        except Exception:
+            pass
+
+        try:
+            current_url = str(getattr(self._window, "url", "") or "")
+
+            if not current_url:
+                return {"success": False, "message": "main window url empty"}
+
+            separator = "&" if "?" in current_url else "?"
+            next_url = f"{current_url}{separator}_nc_ts={int(time.time())}"
+            self._window.load_url(next_url)
+            return {"success": True, "mode": "page", "url": next_url}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     def minimize_settings_window(self):
         sw = self._get_settings_window()
         if not sw:

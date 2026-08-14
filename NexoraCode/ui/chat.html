@@ -47,9 +47,7 @@
         .sidebar-brand-tab .logo .dot::after { content: none !important; }
         /* toast 避开自绘标题栏 */
         .toast-notification { top: calc(var(--nc-titlebar-h) + 20px) !important; }
-        /* 只保留项目侧栏 section，隐藏普通会话项与无关面板 */
-        #conversationList { display: block !important; }
-        #conversationList > :not(.nexoracode-sidebar-section) { display: none !important; }
+        /* 学习/工作区面板隐藏 */
         #learningSidebarPanel, #learningCourseWorkspacePanel { display: none !important; }
         /* titlebar 与页面重叠修复：强制标题栏 36px，body 顶部预留同高 */
         #nc-titlebar { height: 36px !important; min-height: 36px !important; max-height: 36px !important; }
