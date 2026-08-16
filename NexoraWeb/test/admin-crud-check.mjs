@@ -91,7 +91,7 @@ async function confirmDeleteViaPrompt() {
 
 async function openTab(label) {
     await page.evaluate((t) => {
-        const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === t)
+        const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === t)
         btn?.click()
     }, label)
     await page.waitForTimeout(800)
@@ -100,7 +100,7 @@ async function openTab(label) {
 // ===== 1. 添加模型(模型管理 tab) =====
 await openTab('模型管理')
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].find((b) => b.textContent.includes('添加模型'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].find((b) => b.textContent.includes('添加模型'))
     btn?.click()
 })
 await page.waitForTimeout(500)
@@ -123,7 +123,7 @@ console.log('2 model saved:', JSON.stringify(modelSaved))
 
 // ===== 3. 新增供应商 =====
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].find((b) => b.textContent.includes('添加供应商'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].find((b) => b.textContent.includes('添加供应商'))
     btn?.click()
 })
 await page.waitForTimeout(500)
@@ -150,12 +150,12 @@ console.log('4 provider saved:', JSON.stringify(providerSaved))
 // ===== 5. 编辑供应商(改 Base URL) =====
 await page.evaluate(() => {
     // 选中 zzz_e2e_provider 行,点击“编辑供应商”
-    const row = [...document.querySelectorAll('#settingsModal .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('zzz_e2e_provider'))
+    const row = [...document.querySelectorAll('.settings-modal-shell .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('zzz_e2e_provider'))
     row?.click()
 })
 await page.waitForTimeout(400)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .admin-system-toolbar-row button')].find((b) => b.textContent.includes('编辑供应商'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .admin-system-toolbar-row button')].find((b) => b.textContent.includes('编辑供应商'))
     btn?.click()
 })
 await page.waitForTimeout(500)
@@ -173,7 +173,7 @@ console.log('5 provider edited:', JSON.stringify(providerEdited))
 
 // ===== 6. 删除供应商(UI 确认文本) =====
 await page.evaluate(() => {
-    const row = [...document.querySelectorAll('#settingsModal .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('zzz_e2e_provider'))
+    const row = [...document.querySelectorAll('.settings-modal-shell .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('zzz_e2e_provider'))
     row?.querySelector('.admin-item-delete')?.click()
 })
 const providerDeletePrompt = await confirmDeleteViaPrompt()
@@ -191,12 +191,12 @@ console.log('6 provider deleted:', JSON.stringify({ promptShown: providerDeleteP
 // ===== 7. 删除模型(UI 确认文本) =====
 await page.evaluate(() => {
     // 选择含测试模型的 provider(LLMFaker),再删行内模型
-    const row = [...document.querySelectorAll('#settingsModal .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('LLMFaker'))
+    const row = [...document.querySelectorAll('.settings-modal-shell .settings-management-list .admin-user-item')].find((el) => el.textContent.includes('LLMFaker'))
     row?.click()
 })
 await page.waitForTimeout(400)
 await page.evaluate(() => {
-    const modelRow = [...document.querySelectorAll('#settingsModal .admin-model-row')].find((el) => el.textContent.includes('zzz_e2e_test_model'))
+    const modelRow = [...document.querySelectorAll('.settings-modal-shell .admin-model-row')].find((el) => el.textContent.includes('zzz_e2e_test_model'))
     modelRow?.querySelector('.admin-item-delete')?.click()
 })
 const modelDeletePrompt = await confirmDeleteViaPrompt()
@@ -214,7 +214,7 @@ console.log('7 model deleted:', JSON.stringify({ promptShown: modelDeletePrompt,
 // ===== 8. 添加生图接口 =====
 await openTab('生图 API')
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].find((b) => b.textContent.includes('添加接口'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].find((b) => b.textContent.includes('添加接口'))
     btn?.click()
 })
 await page.waitForTimeout(500)
@@ -256,7 +256,7 @@ console.log('10 gen-image cleaned:', genCleaned)
 // ===== 11. 添加邮箱用户 =====
 await openTab('邮箱管理')
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].find((b) => b.textContent.includes('添加邮箱用户'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].find((b) => b.textContent.includes('添加邮箱用户'))
     btn?.click()
 })
 await page.waitForTimeout(500)

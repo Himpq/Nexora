@@ -34,7 +34,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(800)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-nav button')].find((b) => b.textContent.trim() === 'Skill')
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === 'Skill')
     btn?.click()
 })
 await page.waitForTimeout(800)
@@ -50,7 +50,7 @@ console.log('1 my skills list:', JSON.stringify(myList))
 
 // 2. 新建 Skill
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .skill-my-toolbar button')].find((b) => b.textContent.includes('新建 Skill'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .skill-my-toolbar button')].find((b) => b.textContent.includes('新建 Skill'))
     btn?.click()
 })
 await page.waitForTimeout(600)
@@ -104,7 +104,7 @@ console.log('3 skill created:', JSON.stringify(created))
 
 // 3. 发布到市场
 await page.evaluate(() => {
-    const item = [...document.querySelectorAll('#settingsModal .settings-skill-item')].find((el) => el.textContent.includes('zzz_e2e_skill'))
+    const item = [...document.querySelectorAll('.settings-modal-shell .settings-skill-item')].find((el) => el.textContent.includes('zzz_e2e_skill'))
     const btn = [...(item?.querySelectorAll('button') || [])].find((b) => b.title === '发布到市场' || b.textContent.includes('发布'))
     btn?.click()
 })
@@ -149,15 +149,15 @@ console.log('4 published to market:', JSON.stringify(published))
 
 // 4. 市场 tab:列表展示
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .skill-subtab')].find((b) => b.textContent.includes('Skill 市场'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .skill-subtab')].find((b) => b.textContent.includes('Skill 市场'))
     btn?.click()
 })
 await page.waitForTimeout(1200)
 
 const marketView = await page.evaluate(() => {
-    const cards = document.querySelectorAll('#settingsModal .skill-market-card').length
-    const search = !!document.querySelector('#settingsModal .skill-market-search input')
-    const sortBtn = !!document.querySelector('#settingsModal .skill-market-sort')
+    const cards = document.querySelectorAll('.settings-modal-shell .skill-market-card').length
+    const search = !!document.querySelector('.settings-modal-shell .skill-market-search input')
+    const sortBtn = !!document.querySelector('.settings-modal-shell .skill-market-sort')
 
     return { cards, search, sortBtn }
 })
@@ -165,7 +165,7 @@ console.log('5 market view:', JSON.stringify(marketView))
 
 // 5. 详情弹窗
 await page.evaluate(() => {
-    const card = [...document.querySelectorAll('#settingsModal .skill-market-card')].find((el) => el.textContent.includes('zzz_e2e_skill'))
+    const card = [...document.querySelectorAll('.settings-modal-shell .skill-market-card')].find((el) => el.textContent.includes('zzz_e2e_skill'))
     const btn = [...(card?.querySelectorAll('button') || [])].find((b) => b.textContent.includes('详情'))
     btn?.click()
 })
@@ -194,7 +194,7 @@ await page.waitForTimeout(400)
 
 // 6. 从市场安装(自身发布的也可安装)
 await page.evaluate(() => {
-    const card = [...document.querySelectorAll('#settingsModal .skill-market-card')].find((el) => el.textContent.includes('zzz_e2e_skill'))
+    const card = [...document.querySelectorAll('.settings-modal-shell .skill-market-card')].find((el) => el.textContent.includes('zzz_e2e_skill'))
     const btn = [...(card?.querySelectorAll('button') || [])].find((b) => b.textContent.includes('安装'))
     btn?.click()
 })

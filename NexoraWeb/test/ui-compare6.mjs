@@ -112,8 +112,8 @@ await page.waitForTimeout(300)
 await page.click('#userMenu .menu-item')
 await page.waitForTimeout(800)
 const settingsState = await page.evaluate(() => ({
-    tabs: document.querySelectorAll('.settings-nav .admin-tab').length,
-    active: document.querySelector('.settings-nav .admin-tab.active')?.textContent.trim(),
+    tabs: document.querySelectorAll('.settings-nav-item').length,
+    active: document.querySelector('.settings-nav-item.active')?.textContent.trim(),
     width: document.querySelector('.settings-modal-custom')?.getBoundingClientRect().width,
 }))
 console.log('6 settings:', JSON.stringify(settingsState))
@@ -121,17 +121,17 @@ console.log('6 settings:', JSON.stringify(settingsState))
 // 切换每个 tab
 for (const label of ['偏好设置', 'Skill', '使用统计', '我的 API Key']) {
     await page.evaluate((lbl) => {
-        const btn = Array.from(document.querySelectorAll('.settings-nav .admin-tab')).find((b) => b.textContent.trim() === lbl)
+        const btn = Array.from(document.querySelectorAll('.settings-nav-item')).find((b) => b.textContent.trim() === lbl)
         if (btn) btn.click()
     }, label)
     await page.waitForTimeout(300)
-    const active = await page.evaluate(() => document.querySelector('.settings-nav .admin-tab.active')?.textContent.trim())
+    const active = await page.evaluate(() => document.querySelector('.settings-nav-item.active')?.textContent.trim())
     console.log(`   tab -> ${active}`)
 }
 
 // 7. 统计 tab 数据
 await page.evaluate(() => {
-    const btn = Array.from(document.querySelectorAll('.settings-nav .admin-tab')).find((b) => b.textContent.trim() === '使用统计')
+    const btn = Array.from(document.querySelectorAll('.settings-nav-item')).find((b) => b.textContent.trim() === '使用统计')
     if (btn) btn.click()
 })
 await page.waitForTimeout(500)

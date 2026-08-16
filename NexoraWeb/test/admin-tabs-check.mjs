@@ -51,7 +51,7 @@ await page.waitForTimeout(1000)
 
 async function openTab(label) {
     await page.evaluate((t) => {
-        const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === t)
+        const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === t)
         btn?.click()
     }, label)
     await page.waitForTimeout(800)
@@ -59,50 +59,58 @@ async function openTab(label) {
 
 await openTab('用户管理')
 const usersTab = await page.evaluate(() => {
-    const items = document.querySelectorAll('#settingsModal .admin-user-item')
+    const items = document.querySelectorAll('.settings-modal-shell .admin-user-item')
 
     return {
         userCount: items.length,
         firstName: items[0]?.querySelector('.admin-user-name')?.textContent || null,
-        hasDetail: !!document.querySelector('#settingsModal .admin-user-detail .admin-user-detail-content, #settingsModal .admin-user-detail .admin-user-detail-empty'),
-        hasAddBtn: [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].some((b) => b.textContent.includes('添加新用户')),
+        hasDetail: !!document.querySelector('.settings-modal-shell .admin-user-detail .admin-user-detail-content, .settings-modal-shell .admin-user-detail .admin-user-detail-empty'),
+        hasAddBtn: [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].some((b) => b.textContent.includes('添加新用户')),
     }
 })
 console.log('2 users tab:', JSON.stringify(usersTab))
 
 await openTab('统计信息')
 const statsTab = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('#settingsModal .stat-card')]
+    const cards = [...document.querySelectorAll('.settings-modal-shell .stat-card')]
+    const trendChart = document.querySelector('.settings-modal-shell .admin-token-trend-chart canvas')
+    const userQuery = document.querySelector('.settings-modal-shell .admin-user-token-query')
 
     return {
         cardCount: cards.length,
         labels: cards.map((c) => c.querySelector('.label')?.textContent),
-        values: cards.map((c) => c.querySelector('.value')?.textContent),
+        hasTrendChart: !!trendChart,
+        hasUserQuery: !!userQuery,
     }
 })
 console.log('3 stats tab:', JSON.stringify(statsTab))
 
 await openTab('系统设置')
 const systemTab = await page.evaluate(() => {
-    const cards = document.querySelectorAll('#settingsModal .admin-system-card')
+    const modules = document.querySelectorAll('.settings-modal-shell .admin-system-module-item')
+    const sections = document.querySelectorAll('.settings-modal-shell .admin-system-section-head')
 
     return {
-        cardCount: cards.length,
-        titles: [...cards].map((c) => c.querySelector('h4')?.textContent),
-        hasSave: [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].some((b) => b.textContent.includes('保存设置')),
+        moduleCount: modules.length,
+        moduleNames: [...modules].map((m) => m.querySelector('.admin-user-name')?.textContent),
+        hasSave: [...document.querySelectorAll('.settings-modal-shell .admin-system-section-actions button')].some((b) => b.textContent.includes('保存')),
+        hasHealth: [...document.querySelectorAll('.settings-modal-shell .admin-system-section-health')].length > 0,
         baseUrl: document.querySelector('#sysPublicBaseUrl')?.value ?? null,
+        activeSection: document.querySelector('.settings-modal-shell .admin-system-section-head h4')?.textContent,
     }
 })
 console.log('4 system tab:', JSON.stringify(systemTab))
 
 await openTab('向量库')
 const chromaTab = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('#settingsModal .stat-card')]
+    const cards = [...document.querySelectorAll('.settings-modal-shell .stat-card')]
+    const table = document.querySelector('.settings-modal-shell .admin-table')
 
     return {
         cardCount: cards.length,
-        hasRefresh: [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].some((b) => b.textContent.includes('刷新')),
-        emptyOrStats: document.querySelector('#settingsModal .admin-chroma-collections, #settingsModal .admin-user-detail-empty')?.textContent?.slice(0, 30) || null,
+        hasSearch: !!document.querySelector('.settings-modal-shell .admin-search-bar input'),
+        hasTable: !!table,
+        tableHeaders: table ? [...table.querySelectorAll('th')].map((t) => t.textContent) : [],
     }
 })
 console.log('5 chroma tab:', JSON.stringify(chromaTab))

@@ -90,8 +90,8 @@ await page.click('#userMenu .menu-item')
 await page.waitForTimeout(800)
 
 const settings = await page.evaluate(() => {
-    const modal = document.querySelector('#settingsModal .settings-modal-custom')
-    const backdrop = document.getElementById('settingsModal')
+    const modal = document.querySelector('.settings-modal-shell .settings-modal-custom')
+    const backdrop = document.querySelector('.settings-modal-shell')
     const rect = modal.getBoundingClientRect()
 
     return {
@@ -101,7 +101,7 @@ const settings = await page.evaluate(() => {
         maxWidth: getComputedStyle(modal).maxWidth,
         maxHeight: getComputedStyle(modal).maxHeight,
         viewport: { w: window.innerWidth, h: window.innerHeight },
-        navTabs: document.querySelectorAll('.settings-nav .admin-tab').length,
+        navTabs: document.querySelectorAll('.settings-nav-item').length,
         hasProfile: !!document.querySelector('#settings-profile-tab'),
     }
 })

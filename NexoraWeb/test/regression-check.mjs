@@ -84,7 +84,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(600)
 await page.evaluate(() => {
-    const btn = Array.from(document.querySelectorAll('.settings-nav .admin-tab')).find((b) => b.textContent.trim() === '用户管理')
+    const btn = Array.from(document.querySelectorAll('.settings-nav-item')).find((b) => b.textContent.trim() === '用户管理')
     if (btn) btn.click()
 })
 await page.waitForTimeout(400)
@@ -94,7 +94,7 @@ const adminPanel = await page.evaluate(() => ({
     layout: !!document.querySelector('.settings-management-layout'),
     list: !!document.querySelector('.settings-management-list'),
     detail: !!document.querySelector('.settings-management-detail'),
-    activeTab: document.querySelector('.settings-nav .admin-tab.active')?.textContent.trim(),
+    activeTab: document.querySelector('.settings-nav-item.active')?.textContent.trim(),
 }))
 console.log('2 admin panel:', JSON.stringify(adminPanel))
 

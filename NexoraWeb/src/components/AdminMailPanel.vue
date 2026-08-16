@@ -2,28 +2,13 @@
     AdminMailPanel.vue — 管理员:邮箱管理(对齐原版 settings-admin-mail-tab)
 
     设计:
-      - 服务状态卡片(启用 / 连接 / 服务地址)
-      - AdminPanel 布局:左邮箱用户列表 + 右详情(权限)
+      - AdminPanel 布局:工具栏(添加 + 筛选)+ 左邮箱用户列表 + 右详情(权限)
+      - 服务状态等杂项不再展示(原版即无)
 -->
 
 <template>
     <div class="admin-mail-panel">
-        <div v-if="status" class="admin-stats-grid">
-            <div class="stat-card">
-                <span class="label">邮件服务</span>
-                <span class="value mono">{{ status.enabled ? '启用' : '停用' }}</span>
-            </div>
-            <div class="stat-card">
-                <span class="label">连接状态</span>
-                <span class="value mono">{{ status.connected ? '已连接' : '未连接' }}</span>
-            </div>
-            <div class="stat-card">
-                <span class="label">服务地址</span>
-                <span class="value mono">{{ status.service_url || '-' }}</span>
-            </div>
-        </div>
-
-        <AdminPanel style="margin-top:16px;">
+        <AdminPanel>
             <template #toolbar>
                 <button class="btn-primary" type="button" @click="handleAdd">+ 添加邮箱用户</button>
                 <input v-model="query" class="input-modern" placeholder="筛选邮箱用户:用户名 / 权限">
@@ -102,14 +87,13 @@
     import { computed, onMounted, reactive, ref } from 'vue'
 
     import type { MailUser } from '@/api/admin-mail'
-    import { createMailUser, fetchMailStatus, fetchMailUsers } from '@/api/admin-mail'
+    import { createMailUser, fetchMailUsers } from '@/api/admin-mail'
     import { showError, showToast } from '@/stores/notify'
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
 
     const users = ref<MailUser[]>([])
-    const status = ref<{ enabled?: boolean; connected?: boolean; service_url?: string } | null>(null)
     const loading = ref(false)
     const query = ref('')
     const selectedName = ref('')
@@ -153,17 +137,9 @@
         loading.value = true
 
         try {
-            const [mailUsers, mailStatus] = await Promise.all([
-                fetchMailUsers(),
-                fetchMailStatus(),
-            ])
+            const mailUsers = await fetchMailUsers()
 
             users.value = mailUsers
-            status.value = {
-                enabled: !!mailStatus.enabled,
-                connected: !!mailStatus.connected,
-                service_url: mailStatus.service_url,
-            }
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载邮箱用户失败')
         } finally {

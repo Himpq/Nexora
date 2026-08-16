@@ -55,10 +55,7 @@
                 <div class="admin-user-detail-grid">
                     <div class="form-group">
                         <label>角色</label>
-                        <select v-model="detailRole" class="input-modern" @change="handleRoleChange">
-                            <option value="admin">管理员</option>
-                            <option value="member">成员</option>
-                        </select>
+                        <SettingSelect v-model="detailRole" :options="roleOptions" width="140px" @update:model-value="handleRoleChange" />
                     </div>
                     <div class="form-group">
                         <label>最近登录</label>
@@ -121,11 +118,8 @@
             >
         </div>
         <div class="form-group">
-            <label for="adminUserCreateRole">角色</label>
-            <select id="adminUserCreateRole" v-model="createRole" class="input-modern">
-                <option value="member">成员</option>
-                <option value="admin">管理员</option>
-            </select>
+            <label>角色</label>
+            <SettingSelect v-model="createRole" :options="roleOptions" width="140px" />
         </div>
         <template #footer>
             <button class="btn-cancel" type="button" @click="createOpen = false">取消</button>
@@ -169,6 +163,12 @@
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
+
+    const roleOptions = [
+        { value: 'member', label: '成员' },
+        { value: 'admin', label: '管理员' },
+    ]
 
     const users = ref<AdminUser[]>([])
     const loading = ref(false)

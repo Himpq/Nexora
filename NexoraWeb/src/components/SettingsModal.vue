@@ -1,203 +1,154 @@
 <!--
-    SettingsModal.vue — 设置窗口(原版 #settingsModal 结构,legacy Modal 模式)
+    SettingsModal.vue — 设置窗口(全新 UI,替换原版 #settingsModal 旧框架)
 
-    布局(与原版 chat.html 完全一致):
-      #settingsModal.modal-backdrop > .modal.settings-modal-custom
-        > .modal-head(设置 + ×)
-        > .modal-body > .admin-shell.settings-shell
-          > aside.admin-nav.settings-nav(基础 tab + 管理员 tab,按角色显示)
-          > section.admin-content.settings-content(各 tab 详情)
-
-    依赖原版 CSS:style.css / chat_settings_dialog.css / chat_settings_management.css / chat_papi_keys.css
-    (原版所有规则都挂在 #settingsModal 下,因此 Modal 组件以 legacy + rootId 模式渲染)
+    设计:
+      - GDDP Modal(现代遮罩/圆角),宽度 1060px
+      - 左侧栏分组导航(SettingsNav 复用组件):常规 / 管理(仅管理员)
+      - 右侧:页头(标题 + 说明)+ 可滚动内容区
+      - 个人资料 / 偏好 / 统计等使用 SettingCard + SettingRow 复用左右布局
+      - 头像一律 background-cover 圆形 div,杜绝 img 溢出
+      - 管理面板(AdminPanel 系)放同壳内,视觉由 settings.css 统一接管
 -->
 
 <template>
     <Modal
         :open="open"
-        legacy
-        root-id="settingsModal"
+        width="1060px"
+        modal-class="settings-modal"
         title="设置"
-        modal-class="settings-modal-custom"
-        :show-close="false"
         @close="emit('close')"
     >
-        <!-- 原版 modal-head:设置 + × -->
-        <template #head>
-            <h3>设置</h3>
-            <button class="btn-modal-close" type="button" title="关闭" @click="emit('close')">×</button>
-        </template>
+        <div class="settings-modal-shell">
+            <SettingsNav :groups="navGroups" :active="activeTab" @select="activeTab = $event" />
 
-        <div class="admin-shell settings-shell">
-            <aside class="admin-nav settings-nav">
-                <button
-                    v-for="tab in baseTabs"
-                    :key="tab.key"
-                    type="button"
-                    class="admin-tab"
-                    :class="{ active: activeTab === tab.key }"
-                    :data-tab="tab.key"
-                    @click="activeTab = tab.key"
-                >
-                    {{ tab.label }}
-                </button>
+            <section class="settings-main">
+                <header class="settings-page-head">
+                    <h2>{{ activeTabMeta?.title }}</h2>
+                    <p>{{ activeTabMeta?.description }}</p>
+                </header>
 
-                <!-- 基础与管理员 tab 之间的虚线分隔(对齐原版 settings-nav-gap) -->
-                <div v-if="isAdmin" class="settings-nav-gap"></div>
+                <div class="settings-page-body">
+                    <!-- 个人资料 -->
+                    <template v-if="activeTab === 'profile'">
+                        <SettingCard title="个人资料" description="与账号相关的基本信息与头像">
+                            <div class="settings-profile-head">
+                                <div class="settings-avatar-panel">
+                                    <div
+                                        v-if="userStore.avatarUrl"
+                                        id="settingsAvatarImg"
+                                        class="settings-avatar"
+                                        :style="avatarBackground"
+                                        alt="avatar"
+                                    ></div>
+                                    <div v-else id="settingsAvatarImg" class="settings-avatar settings-avatar-placeholder">{{ avatarChar }}</div>
+                                    <div class="settings-avatar-actions">
+                                        <button class="btn-primary-outline btn-compact" type="button" @click="openAvatarPicker">上传头像</button>
+                                        <input ref="avatarFileInput" type="file" accept="image/*" style="display:none" @change="handleAvatarFile" />
+                                    </div>
+                                </div>
+                                <div class="settings-profile-meta">
+                                    <SettingRow label="用户名" hint="登录与展示所用名称">
+                                        <input
+                                            id="set-username-input"
+                                            v-model="profileName"
+                                            class="input-modern"
+                                            style="width: 240px;"
+                                            type="text"
+                                            maxlength="60"
+                                        >
+                                    </SettingRow>
+                                    <SettingRow label="角色">
+                                        <span class="settings-field" style="background:transparent;border:none;padding:0;">{{ roleLabel }}</span>
+                                    </SettingRow>
+                                    <SettingRow label="UserID" hint="系统内部标识,不可修改">
+                                        <span class="mono" style="font-size:12.5px;color:#8b95a7;">{{ userStore.userId || '-' }}</span>
+                                    </SettingRow>
+                                </div>
+                            </div>
+                            <div class="settings-profile-actions" style="justify-content:flex-end;">
+                                <button class="btn-primary" type="button" @click="saveProfile">保存资料</button>
+                            </div>
+                        </SettingCard>
 
-                <button
-                    v-for="tab in adminTabs"
-                    :key="tab.key"
-                    type="button"
-                    class="admin-tab settings-admin-entry"
-                    :class="{ active: activeTab === tab.key }"
-                    :data-tab="tab.key"
-                    @click="activeTab = tab.key"
-                >
-                    {{ tab.label }}
-                </button>
-            </aside>
+                        <SettingCard title="账号概览" description="账号使用情况统计">
+                            <SettingRow label="创建时间">
+                                <span class="settings-field" style="min-width:160px;">{{ formatUserTime(userStore.user?.created_at) }}</span>
+                            </SettingRow>
+                            <SettingRow label="最后登录">
+                                <span class="settings-field" style="min-width:160px;">{{ formatUserTime(userStore.user?.last_login) }}</span>
+                            </SettingRow>
+                        </SettingCard>
+                    </template>
 
-            <section class="admin-content settings-content">
-                <!-- 个人资料(对齐原版 settings-profile-tab:头像面板 + 资料 + 统计) -->
-                <div v-if="activeTab === 'profile'" id="settings-profile-tab" class="admin-tab-content active">
-                    <div class="settings-placeholder">个人资料</div>
-                    <div class="settings-profile-head">
-                        <div class="settings-avatar-panel">
-                            <img
-                                v-if="userStore.avatarUrl"
-                                id="settingsAvatarImg"
-                                class="settings-avatar"
-                                :src="userStore.avatarUrl"
-                                alt="avatar"
-                                @error="userStore.avatarUrl = ''"
-                            >
-                            <div v-else id="settingsAvatarImg" class="settings-avatar settings-avatar-placeholder">{{ avatarChar }}</div>
-                            <div class="settings-avatar-actions">
-                                <button class="btn-primary-outline" type="button" @click="openAvatarPicker">上传头像</button>
-                                <input ref="avatarFileInput" type="file" accept="image/*" style="display:none" @change="handleAvatarFile" />
+                    <!-- 偏好设置 -->
+                    <template v-else-if="activeTab === 'preferences'">
+                        <PreferencesPanel />
+                    </template>
+
+                    <!-- Skill -->
+                    <template v-else-if="activeTab === 'skills'">
+                        <SkillsPanel />
+                    </template>
+
+                    <!-- 使用统计 -->
+                    <template v-else-if="activeTab === 'statistics'">
+                        <div class="settings-stat-summary-grid">
+                            <div class="settings-stat-card">
+                                <span class="label">对话数</span>
+                                <span class="value">{{ stats.total_conversations ?? '-' }}</span>
+                            </div>
+                            <div class="settings-stat-card">
+                                <span class="label">Token 消耗</span>
+                                <span class="value">{{ formatTokens(stats.total_tokens) }}</span>
+                            </div>
+                            <div class="settings-stat-card">
+                                <span class="label">知识点数</span>
+                                <span class="value">{{ stats.total_knowledge ?? '-' }}</span>
                             </div>
                         </div>
-                        <div class="settings-profile-meta">
-                            <div class="form-group">
-                                <label>用户名</label>
-                                <input
-                                    id="set-username-input"
-                                    v-model="profileName"
-                                    class="input-modern"
-                                    type="text"
-                                    maxlength="60"
-                                    placeholder="输入用户名"
-                                >
-                            </div>
-                            <div class="settings-userid-inline">UserID: {{ userStore.userId || '-' }}</div>
-                            <div class="form-group">
-                                <label>角色</label>
-                                <div class="settings-field">{{ roleLabel }}</div>
-                            </div>
-                            <div class="form-group settings-profile-actions">
-                                <button class="btn-primary btn-compact" type="button" @click="saveProfile">保存资料</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-profile-stats-grid">
-                        <div class="form-group">
-                            <label>创建时间</label>
-                            <div class="settings-field">{{ formatUserTime(userStore.user?.created_at) }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>最后登录</label>
-                            <div class="settings-field">{{ formatUserTime(userStore.user?.last_login) }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>对话数</label>
-                            <div class="settings-field">{{ stats.total_conversations ?? '-' }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>Token 消耗</label>
-                            <div class="settings-field">{{ formatTokens(stats.total_tokens) }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>知识点数</label>
-                            <div class="settings-field">{{ stats.total_knowledge ?? '-' }}</div>
-                        </div>
-                    </div>
-                </div>
+                    </template>
 
-                <!-- 偏好设置 -->
-                <div v-if="activeTab === 'preferences'" class="admin-tab-content active">
-                    <div class="settings-placeholder">偏好设置</div>
-                    <PreferencesPanel />
-                </div>
+                    <!-- 我的 API Key -->
+                    <template v-else-if="activeTab === 'user-api-keys'">
+                        <UserApiKeysPanel />
+                    </template>
 
-                <!-- Skill -->
-                <div v-if="activeTab === 'skills'" class="admin-tab-content active">
-                    <div class="settings-placeholder">Skill</div>
-                    <SkillsPanel />
-                </div>
+                    <!-- 管理员面板 -->
+                    <template v-else-if="activeTab === 'admin-users'">
+                        <AdminUsersPanel />
+                    </template>
 
-                <!-- 使用统计 -->
-                <div v-if="activeTab === 'statistics'" class="admin-tab-content active">
-                    <div class="settings-placeholder">使用统计</div>
-                    <div class="settings-stat-summary-grid">
-                        <div class="form-group">
-                            <label>对话数</label>
-                            <div class="settings-stat">{{ stats.total_conversations ?? '-' }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>Token 消耗</label>
-                            <div class="settings-stat">{{ formatTokens(stats.total_tokens) }}</div>
-                        </div>
-                        <div class="form-group">
-                            <label>知识点数</label>
-                            <div class="settings-stat">{{ stats.total_knowledge ?? '-' }}</div>
-                        </div>
-                    </div>
-                </div>
+                    <template v-else-if="activeTab === 'admin-system'">
+                        <AdminSystemPanel />
+                    </template>
 
-                <!-- 我的 API Key -->
-                <div v-if="activeTab === 'user-api-keys'" class="admin-tab-content active settings-management-panel active">
-                    <UserApiKeysPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-stats'">
+                        <AdminStatsPanel />
+                    </template>
 
-                <!-- ===== 管理员面板(统一 AdminPanel 布局,GDDP 可复用组件) ===== -->
-                <!-- 已实现:用户管理 / 系统设置 / 统计信息 / 向量库 / 模型管理 / 认证管理;其余 tab 待接入 -->
-                <div v-if="activeTab === 'admin-users'" class="admin-tab-content active settings-management-panel active">
-                    <AdminUsersPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-chroma'">
+                        <AdminChromaPanel />
+                    </template>
 
-                <div v-if="activeTab === 'admin-system'" class="admin-tab-content active settings-management-panel active">
-                    <AdminSystemPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-models'">
+                        <AdminModelsPanel />
+                    </template>
 
-                <div v-if="activeTab === 'admin-stats'" class="admin-tab-content active">
-                    <div class="settings-placeholder">统计信息</div>
-                    <AdminStatsPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-auth'">
+                        <AdminAuthPanel />
+                    </template>
 
-                <div v-if="activeTab === 'admin-chroma'" class="admin-tab-content active">
-                    <div class="settings-placeholder">向量库</div>
-                    <AdminChromaPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-gen-image'">
+                        <AdminGenImagePanel />
+                    </template>
 
-                <div v-if="activeTab === 'admin-models'" class="admin-tab-content active settings-management-panel active">
-                    <AdminModelsPanel />
-                </div>
+                    <template v-else-if="activeTab === 'admin-map'">
+                        <AdminMapPanel />
+                    </template>
 
-                <div v-if="activeTab === 'admin-auth'" class="admin-tab-content active settings-management-panel active">
-                    <AdminAuthPanel />
-                </div>
-
-                <div v-if="activeTab === 'admin-gen-image'" class="admin-tab-content active settings-management-panel active">
-                    <AdminGenImagePanel />
-                </div>
-
-                <div v-if="activeTab === 'admin-map'" class="admin-tab-content active settings-management-panel active">
-                    <AdminMapPanel />
-                </div>
-
-                <div v-if="activeTab === 'admin-mail'" class="admin-tab-content active settings-management-panel active">
-                    <AdminMailPanel />
+                    <template v-else-if="activeTab === 'admin-mail'">
+                        <AdminMailPanel />
+                    </template>
                 </div>
             </section>
         </div>
@@ -219,6 +170,9 @@
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import Modal from '@/ui/Modal.vue'
+    import SettingCard from '@/ui/settings/SettingCard.vue'
+    import SettingRow from '@/ui/settings/SettingRow.vue'
+    import SettingsNav, { type SettingsNavGroup } from '@/ui/settings/SettingsNav.vue'
 
     import AvatarCropModal from './AvatarCropModal.vue'
     import AdminAuthPanel from './AdminAuthPanel.vue'
@@ -251,6 +205,82 @@
 
     /** 个人资料:用户名编辑值 */
     const profileName = ref('')
+
+    /** 头像背景(background-cover,杜绝 img 溢出,对齐侧栏头像方案) */
+    const avatarBackground = computed(() => {
+        return userStore.avatarUrl ? { backgroundImage: `url("${userStore.avatarUrl}")` } : {}
+    })
+
+    /** 是否管理员(对齐原版 checkUserRole:管理员显示 admin 入口) */
+    const isAdmin = computed(() => {
+        return String(userStore.user?.role || '').toLowerCase() === 'admin'
+    })
+
+    /** 头像首字符 */
+    const avatarChar = computed(() => {
+        const name = userStore.username || 'U'
+
+        return name.charAt(0).toUpperCase()
+    })
+
+    /** 角色友好显示 */
+    const roleLabel = computed(() => {
+        const role = userStore.user?.role || 'member'
+        const labels: Record<string, string> = {
+            admin: '管理员',
+            member: '成员',
+        }
+
+        return labels[String(role)] || String(role)
+    })
+
+    /** 常规菜单 */
+    const baseTabs = [
+        { key: 'profile', label: '个人资料', icon: 'fa-solid fa-user', title: '个人资料', description: '管理你的头像、用户名与账号概览' },
+        { key: 'preferences', label: '偏好设置', icon: 'fa-solid fa-sliders', title: '偏好设置', description: '界面主题、语言与交互偏好' },
+        { key: 'skills', label: 'Skill', icon: 'fa-solid fa-wand-magic-sparkles', title: 'Skill', description: '管理个人 Skill 与浏览 Skill 市场' },
+        { key: 'statistics', label: '使用统计', icon: 'fa-solid fa-chart-column', title: '使用统计', description: '你的使用情况概览' },
+        { key: 'user-api-keys', label: '我的 API Key', icon: 'fa-solid fa-key', title: '我的 API Key', description: '管理对外公开的 API 密钥' },
+    ]
+
+    /** 管理员菜单 */
+    const adminTabs = [
+        { key: 'admin-system', label: '系统设置', icon: 'fa-solid fa-gear', title: '系统设置', description: '平台级系统参数与功能开关' },
+        { key: 'admin-users', label: '用户管理', icon: 'fa-solid fa-users', title: '用户管理', description: '查看与管理平台用户' },
+        { key: 'admin-mail', label: '邮箱管理', icon: 'fa-solid fa-envelope', title: '邮箱管理', description: '管理 NexoraMail 邮箱用户' },
+        { key: 'admin-models', label: '模型管理', icon: 'fa-solid fa-cube', title: '模型管理', description: '供应商与模型配置维护' },
+        { key: 'admin-gen-image', label: '生图 API', icon: 'fa-solid fa-image', title: '生图 API', description: '图片生成接口配置' },
+        { key: 'admin-map', label: '地图 API', icon: 'fa-solid fa-map-location-dot', title: '地图 API', description: '地图服务接口配置' },
+        { key: 'admin-auth', label: '认证管理', icon: 'fa-solid fa-shield-halved', title: '认证管理', description: '公开 API 认证与密钥配置' },
+        { key: 'admin-stats', label: '统计信息', icon: 'fa-solid fa-chart-pie', title: '统计信息', description: 'Token 用量与系统统计数据' },
+        { key: 'admin-chroma', label: '向量库', icon: 'fa-solid fa-database', title: '向量库', description: '向量数据库状态与集合' },
+    ]
+
+    /** 导航分组(常规 + 管理) */
+    const navGroups = computed<SettingsNavGroup[]>(() => {
+        const groups: SettingsNavGroup[] = [
+            {
+                label: '常规',
+                items: baseTabs.map((tab) => ({ key: tab.key, label: tab.label, icon: tab.icon })),
+            },
+        ]
+
+        if (isAdmin.value) {
+            groups.push({
+                label: '管理',
+                items: adminTabs.map((tab) => ({ key: tab.key, label: tab.label, icon: tab.icon })),
+            })
+        }
+
+        return groups
+    })
+
+    /** 当前激活 tab 的页头元信息 */
+    const activeTabMeta = computed(() => {
+        const all = [...baseTabs, ...adminTabs]
+
+        return all.find((tab) => tab.key === activeTab.value) || baseTabs[0]
+    })
 
     /** 保存资料(显示名;对齐原版 saveProfileBtn → PUT /api/user/profile) */
     async function saveProfile(): Promise<void> {
@@ -319,51 +349,6 @@
 
         input.value = ''
     }
-
-    /** 是否管理员(对齐原版 checkUserRole:管理员显示 admin 入口) */
-    const isAdmin = computed(() => {
-        return String(userStore.user?.role || '').toLowerCase() === 'admin'
-    })
-
-    /** 头像首字符 */
-    const avatarChar = computed(() => {
-        const name = userStore.username || 'U'
-
-        return name.charAt(0).toUpperCase()
-    })
-
-    /** 角色友好显示 */
-    const roleLabel = computed(() => {
-        const role = userStore.user?.role || 'member'
-        const labels: Record<string, string> = {
-            admin: '管理员',
-            member: '成员',
-        }
-
-        return labels[String(role)] || String(role)
-    })
-
-    /** 基础菜单(与原版 settings-nav 一致) */
-    const baseTabs = [
-        { key: 'profile', label: '个人资料', admin: false },
-        { key: 'preferences', label: '偏好设置', admin: false },
-        { key: 'skills', label: 'Skill', admin: false },
-        { key: 'statistics', label: '使用统计', admin: false },
-        { key: 'user-api-keys', label: '我的 API Key', admin: false },
-    ]
-
-    /** 管理员菜单(对齐原版 settings-admin-entry 列表) */
-    const adminTabs = [
-        { key: 'admin-system', label: '系统设置', admin: true },
-        { key: 'admin-users', label: '用户管理', admin: true },
-        { key: 'admin-mail', label: '邮箱管理', admin: true },
-        { key: 'admin-models', label: '模型管理', admin: true },
-        { key: 'admin-gen-image', label: '生图 API', admin: true },
-        { key: 'admin-map', label: '地图 API', admin: true },
-        { key: 'admin-auth', label: '认证管理', admin: true },
-        { key: 'admin-stats', label: '统计信息', admin: true },
-        { key: 'admin-chroma', label: '向量库', admin: true },
-    ]
 
     /** 使用统计 */
     const stats = ref<{

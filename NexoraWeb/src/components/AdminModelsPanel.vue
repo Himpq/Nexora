@@ -20,6 +20,46 @@
                 <span>添加模型</span>
             </button>
             <input v-model="query" class="input-modern model-admin-search" placeholder="筛选:Provider / 模型ID / 名称 / 状态">
+            <div class="model-admin-toolbar-unit">
+                <label>单位</label>
+                <SettingSelect
+                    v-model="quotaUnit"
+                    :options="quotaUnitOptions"
+                    width="110px"
+                />
+            </div>
+        </div>
+
+        <!-- 额度策略卡(对齐原版 quotaProviderList:Provider 用量 + 超额策略) -->
+        <div v-if="quotaProviders.length" class="admin-quota-card">
+            <div class="admin-quota-card-head">
+                <h4><i class="fa-solid fa-gauge" aria-hidden="true"></i> 模型额度</h4>
+                <button class="btn-primary-outline btn-compact" type="button" @click="loadQuota">
+                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                    <span>刷新额度</span>
+                </button>
+            </div>
+            <div class="admin-quota-providers">
+                <div v-for="provider in quotaProviders" :key="provider.name" class="admin-quota-provider">
+                    <span class="provider-icon provider-icon-sm">
+                        <img v-if="providerIconUrl(provider.name)" :src="providerIconUrl(provider.name)" alt="">
+                        <template v-else>{{ providerIconFallback(provider.name) }}</template>
+                    </span>
+                    <span class="admin-quota-provider-name">{{ provider.name }}</span>
+                    <span class="admin-quota-provider-stats">
+                        用 {{ fmtQuota(provider.tokens) }} · 负债满刻度 {{ fmtQuota(provider.max_model_overage_tokens) }}
+                    </span>
+                    <div class="admin-quota-provider-action">
+                        <span class="admin-quota-action-label">超额</span>
+                        <SettingSelect
+                            :model-value="overageAction(provider.name)"
+                            :options="overageActionOptions"
+                            width="130px"
+                            @update:model-value="saveOverageAction(provider.name, String($event))"
+                        />
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="admin-users-layout model-admin-users-layout settings-management-layout">
@@ -36,6 +76,10 @@
                     @click="selectProvider(provider)"
                     @keydown.enter="selectProvider(provider)"
                 >
+                    <span class="provider-icon">
+                        <img v-if="providerIconUrl(provider)" :src="providerIconUrl(provider)" alt="">
+                        <template v-else>{{ providerIconFallback(provider) }}</template>
+                    </span>
                     <span class="admin-user-name">{{ provider }}</span>
                     <span class="admin-user-meta">{{ modelCountByProvider(provider) }} 个模型</span>
                     <button
@@ -69,20 +113,81 @@
                         @click="handleEditModel(model)"
                         @keydown.enter="handleEditModel(model)"
                     >
-                        <span class="admin-model-name">{{ model.name }}</span>
-                        <span class="admin-model-status" :class="`model-status-${normalizeStatus(model.status)}`">
-                            {{ statusLabel(model.status) }}
-                        </span>
-                        <span v-if="model.context_window" class="admin-model-ctx">{{ model.context_window.toLocaleString() }} ctx</span>
-                        <button
-                            class="admin-item-delete"
-                            type="button"
-                            title="删除模型"
-                            @click.stop="requestDeleteModel(model.id, model.name)"
-                        >
-                            <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                        </button>
+                        <div class="admin-model-row-main">
+                            <span class="provider-icon provider-icon-sm">
+                                <img v-if="providerIconUrl(selectedProvider)" :src="providerIconUrl(selectedProvider)" alt="">
+                                <template v-else>{{ providerIconFallback(selectedProvider) }}</template>
+                            </span>
+                            <span class="admin-model-name">{{ model.name }}</span>
+                            <span class="admin-model-status" :class="`model-status-${normalizeStatus(model.status)}`">
+                                {{ statusLabel(model.status) }}
+                            </span>
+                            <span class="admin-model-ctx">{{ quotaCtx(model) }}</span>
+                            <button
+                                class="admin-item-delete"
+                                type="button"
+                                title="删除模型"
+                                @click.stop="requestDeleteModel(model.id, model.name)"
+                            >
+                                <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <!-- 额度计量条(对齐原版 quota-meter-shell;点击调整额度) -->
+                        <div v-if="quotaByModel(model)?.quota_set" class="quota-meter-wrap" @click.stop="openQuotaAdjust(model)">
+                            <div class="quota-meter-shell">
+                                <div class="quota-meter-track">
+                                    <div
+                                        v-if="meterOverage(model) > 0"
+                                        class="quota-meter-seg quota-meter-seg-overage"
+                                        :style="{ right: '50%', width: `${meterOverage(model)}%` }"
+                                    ></div>
+                                    <div
+                                        v-if="!meterHasDebt(model) && meterRemaining(model) > 0"
+                                        class="quota-meter-seg quota-meter-seg-remaining"
+                                        :style="{ left: '50%', width: `${meterRemaining(model)}%` }"
+                                    ></div>
+                                    <div
+                                        v-if="!meterHasDebt(model) && meterUsed(model) > 0"
+                                        class="quota-meter-seg quota-meter-seg-used"
+                                        :style="{ left: `${50 + meterRemaining(model)}%`, width: `${meterUsed(model)}%` }"
+                                    ></div>
+                                    <div class="quota-meter-midline"></div>
+                                </div>
+                                <div class="quota-meter-label-row">
+                                    <span class="quota-meter-label debt" v-if="(quotaByModel(model)?.overage_tokens ?? 0) > 0">负{{ fmtQuota(quotaByModel(model)?.overage_tokens) }}</span>
+                                    <span class="quota-meter-label remaining" v-if="!meterHasDebt(model) && (quotaByModel(model)?.remaining_tokens ?? 0) > 0">剩{{ fmtQuota(quotaByModel(model)?.remaining_tokens) }}</span>
+                                    <span class="quota-meter-label used" v-if="!meterHasDebt(model) && meterUsed(model) > 0">已用{{ fmtQuota(quotaByModel(model)?.tokens) }}</span>
+                                    <span class="quota-meter-label total">共{{ fmtQuota(quotaByModel(model)?.quota_total_tokens) }}</span>
+                                </div>
+                            </div>
+                            <span class="quota-adjust-hint">点击调整额度</span>
+                        </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 额度调整弹层(对齐原版 quotaAdjustPopover) -->
+        <div v-if="adjustPopover.open" class="quota-adjust-popover" @click.self="adjustPopover.open = false">
+            <div class="quota-adjust-popover-card">
+                <div class="quota-adjust-title">{{ adjustPopover.provider }} / {{ adjustPopover.model }}</div>
+                <div class="quota-adjust-meta">用 {{ fmtQuota(adjustPopover.used) }} / 共 {{ fmtQuota(adjustPopover.total) }}</div>
+                <div class="quota-adjust-mode">
+                    <span class="quota-adjust-mode-label">调整</span>
+                    <SettingSelect
+                        :model-value="adjustPopover.mode"
+                        :options="adjustModeOptions"
+                        width="110px"
+                        @update:model-value="switchAdjustMode(String($event) as 'total' | 'remaining')"
+                    />
+                </div>
+                <div class="quota-adjust-input">
+                    <input v-model="adjustPopover.input" class="input-modern" type="number" min="0" placeholder="输入额度数值" @keydown.enter="submitQuotaAdjust">
+                </div>
+                <div class="quota-adjust-hint-text">{{ adjustHint }}</div>
+                <div class="quota-adjust-actions">
+                    <button class="btn-cancel" type="button" @click="adjustPopover.open = false">取消</button>
+                    <button class="btn-confirm" type="button" :disabled="adjustPopover.submitting" @click="submitQuotaAdjust">确认</button>
                 </div>
             </div>
         </div>
@@ -90,10 +195,8 @@
         <!-- 添加/编辑模型弹窗 -->
         <Modal :open="modelFormOpen" :title="editingModel ? '编辑模型' : '添加模型'" size="sm" @close="modelFormOpen = false">
             <div class="form-group">
-                <label for="adminModelProvider">供应商</label>
-                <select id="adminModelProvider" v-model="modelForm.provider" class="input-modern">
-                    <option v-for="provider in providers" :key="provider" :value="provider">{{ provider }}</option>
-                </select>
+                <label>供应商</label>
+                <SettingSelect v-model="modelForm.provider" :options="providerSelectOptions" width="100%" />
             </div>
             <div class="form-group">
                 <label for="adminModelId">模型 ID</label>
@@ -108,12 +211,8 @@
                 <input id="adminModelCtx" v-model="modelForm.context_window" class="input-modern" type="number" min="0" placeholder="例如:128000">
             </div>
             <div class="form-group">
-                <label for="adminModelStatus">状态</label>
-                <select id="adminModelStatus" v-model="modelForm.status" class="input-modern">
-                    <option value="normal">正常</option>
-                    <option value="error">异常</option>
-                    <option value="disabled">停用</option>
-                </select>
+                <label>状态</label>
+                <SettingSelect v-model="modelForm.status" :options="modelStatusOptions" width="100%" />
             </div>
             <template #footer>
                 <button class="btn-cancel" type="button" @click="modelFormOpen = false">取消</button>
@@ -128,13 +227,8 @@
                 <input id="adminProviderName" v-model="providerForm.provider" class="input-modern" type="text" maxlength="80" placeholder="例如:openai">
             </div>
             <div class="form-group">
-                <label for="adminProviderType">接口类型</label>
-                <select id="adminProviderType" v-model="providerForm.api_type" class="input-modern" @change="syncProviderType">
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="azure">Azure</option>
-                    <option value="dashscope">DashScope</option>
-                    <option value="ollama">Ollama</option>
-                </select>
+                <label>接口类型</label>
+                <SettingSelect v-model="providerForm.api_type" :options="providerTypeOptions" width="100%" @update:model-value="syncProviderType" />
             </div>
             <div class="form-group">
                 <label for="adminProviderBaseUrl">Base URL</label>
@@ -165,10 +259,14 @@
 
     import type { ModelInfo } from '@/api/admin-models'
     import { deleteModel, deleteProvider, fetchModelsConfig, upsertModel, upsertProvider } from '@/api/admin-models'
+    import type { QuotaModelStatus, QuotaProvider } from '@/api/admin-quota'
+    import { fetchAdminQuota, formatQuota, saveProviderOverageAction, updateModelQuota } from '@/api/admin-quota'
+    import { providerIconFallbackText, resolveProviderIconUrl } from '@/api/providerIcons'
     import { showError, showToast } from '@/stores/notify'
     import { showPrompt } from '@/stores/confirm'
 
     import Modal from '@/ui/Modal.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     interface ProviderInfo {
         api_key?: string
@@ -183,6 +281,91 @@
     const providersRecord = ref<Record<string, ProviderInfo>>({})
     const query = ref('')
     const selectedProvider = ref('')
+
+    /** 额度计量(对齐原版 model-admin-item-meter) */
+    const quotaMap = ref<Record<string, QuotaModelStatus>>({})
+    const quotaProviders = ref<QuotaProvider[]>([])
+    const quotaOverageActions = ref<Record<string, string>>({})
+    const quotaDefaultAction = ref('disable_model')
+    const quotaUnit = ref('auto')
+
+    const quotaUnitOptions = [
+        { value: 'auto', label: '自动' },
+        { value: 'k', label: 'K' },
+        { value: 'w', label: 'w' },
+        { value: 'm', label: 'M' },
+        { value: 'token', label: 'token' },
+    ]
+
+    /** Provider 超额策略选项(对齐原版 resolveAdminProviderOverageAction) */
+    const overageActionOptions = [
+        { value: 'no_op', label: '无操作' },
+        { value: 'disable_model', label: '停用模型' },
+        { value: 'notify_admin', label: '发送通知' },
+        { value: 'disable_and_notify', label: '停用并通知' },
+    ]
+
+    /** 额度调整弹层状态(对齐原版 quotaAdjustPopover) */
+    const adjustPopover = ref<{
+        open: boolean
+        x: number
+        y: number
+        provider: string
+        model: string
+        used: number
+        total: number
+        mode: 'total' | 'remaining'
+        input: string
+        submitting: boolean
+    }>({
+        open: false,
+        x: 0,
+        y: 0,
+        provider: '',
+        model: '',
+        used: 0,
+        total: 0,
+        mode: 'total',
+        input: '',
+        submitting: false,
+    })
+
+    /** 弹窗下拉选项 */
+    const providerSelectOptions = computed(() => {
+        return providers.value.map((provider) => ({ value: provider, label: provider }))
+    })
+
+    const modelStatusOptions = [
+        { value: 'normal', label: '正常' },
+        { value: 'error', label: '异常' },
+        { value: 'disabled', label: '停用' },
+    ]
+
+    const providerTypeOptions = [
+        { value: 'openai', label: 'OpenAI 兼容' },
+        { value: 'azure', label: 'Azure' },
+        { value: 'dashscope', label: 'DashScope' },
+        { value: 'ollama', label: 'Ollama' },
+    ]
+
+    const adjustModeOptions = [
+        { value: 'total', label: '总量' },
+        { value: 'remaining', label: '剩余' },
+    ]
+
+    /** 调整弹层提示(对齐原版 _refreshQuotaAdjustPopoverHint) */
+    const adjustHint = computed(() => {
+        const state = adjustPopover.value
+        const input = Number(state.input)
+        const nextTotal = state.mode === 'remaining' ? state.used + (Number.isFinite(input) ? input : 0) : (Number.isFinite(input) ? input : 0)
+        const delta = nextTotal - state.total
+
+        if (state.mode === 'remaining') {
+            return `剩余 ${fmtQuota(input)} => 总量 ${fmtQuota(nextTotal)}(较当前${delta >= 0 ? `增加 ${fmtQuota(delta)}` : `减少 ${fmtQuota(-delta)}`})`
+        }
+
+        return `总量设为 ${fmtQuota(input)}(较当前${delta >= 0 ? `增加 ${fmtQuota(delta)}` : `减少 ${fmtQuota(-delta)}`})`
+    })
 
     /** provider 名列表 */
     const providers = computed(() => Object.keys(providersRecord.value))
@@ -233,10 +416,14 @@
         loading.value = true
 
         try {
-            const config = await fetchModelsConfig()
+            const [config, quota] = await Promise.all([
+                fetchModelsConfig(),
+                fetchAdminQuota().catch(() => null),
+            ])
 
             models.value = config.models
             providersRecord.value = config.providers as Record<string, ProviderInfo>
+            applyQuota(quota)
 
             // 默认选中第一个 provider
             if (providers.value.length && !providers.value.includes(selectedProvider.value)) {
@@ -251,6 +438,212 @@
 
     function selectProvider(provider: string): void {
         selectedProvider.value = provider
+    }
+
+    /** Provider 图标 URL(对齐原版 resolveProviderSimpleIconSlug) */
+    function providerIconUrl(provider: string): string {
+        return resolveProviderIconUrl(provider)
+    }
+
+    /** Provider 图标 fallback 字符(取首字母大写) */
+    function providerIconFallback(provider: string): string {
+        return providerIconFallbackText(provider)
+    }
+
+    /** 应用额度数据(对齐原版 get_server_quota_status) */
+    function applyQuota(quota: Awaited<ReturnType<typeof fetchAdminQuota>> | null): void {
+        quotaMap.value = quota?.model_status_map || {}
+        quotaProviders.value = (Array.isArray(quota?.providers) ? quota.providers : []).filter((provider) => {
+            const name = String(provider.name || '').trim().toLowerCase()
+
+            return !!name && name !== 'unknown'
+        })
+        quotaOverageActions.value = quota?.provider_overage_actions || {}
+        quotaDefaultAction.value = String(quota?.on_exhausted || 'disable_model')
+    }
+
+    /** 仅刷新额度(不影响模型列表) */
+    async function loadQuota(): Promise<void> {
+        try {
+            const quota = await fetchAdminQuota()
+
+            applyQuota(quota)
+            showToast('额度已刷新', 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '刷新额度失败')
+        }
+    }
+
+    /** Provider 超额策略当前值 */
+    function overageAction(provider: string): string {
+        return quotaOverageActions.value[provider] || quotaDefaultAction.value
+    }
+
+    /** 保存 Provider 超额策略 */
+    async function saveOverageAction(provider: string, action: string): Promise<void> {
+        try {
+            await saveProviderOverageAction(provider, action)
+
+            quotaOverageActions.value[provider] = action
+            showToast(`${provider} 超额策略已保存`, 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '保存失败')
+        }
+    }
+
+    /** 某 provider 的债务满刻度(最大超额,对齐原版 providerDebtScaleTokens) */
+    function providerDebtScale(provider: string): number {
+        const row = quotaProviders.value.find((item) => item.name === provider)
+
+        return Number(row?.max_model_overage_tokens || 0)
+    }
+
+    /** 按 provider + 模型名定位额度记录(键为 provider::model 规范化形式,故按值匹配) */
+    function quotaByModel(model: { id: string; context_window?: number }): QuotaModelStatus | null {
+        const provider = String(selectedProvider.value || '').toLowerCase()
+        const name = String(model.id || '').toLowerCase()
+
+        for (const row of Object.values(quotaMap.value)) {
+            if (String(row.provider || '').toLowerCase() === provider && String(row.name || '').toLowerCase() === name) {
+                return row
+            }
+        }
+
+        return null
+    }
+
+    /** 当前单位下的额度格式化(模板用) */
+    function fmtQuota(value: number | null | undefined): string {
+        return formatQuota(value ?? 0, quotaUnit.value)
+    }
+
+    /** 是否存在债务(超额) */
+    function meterHasDebt(model: { id: string; context_window?: number }): boolean {
+        const quota = quotaByModel(model)
+
+        return Boolean(quota && quota.overage_tokens > 0)
+    }
+
+    /** 右侧剩余段宽度(占总额度 50% 内的百分比;有债务时不显示) */
+    function meterRemaining(model: { id: string; context_window?: number }): number {
+        const quota = quotaByModel(model)
+
+        if (!quota || meterHasDebt(model) || !quota.quota_total_tokens || quota.remaining_tokens === null) {
+            return 0
+        }
+
+        return Math.max(0, Math.min(50, (quota.remaining_tokens / quota.quota_total_tokens) * 50))
+    }
+
+    /** 右侧已用段宽度(有债务时不显示;与剩余段合计不超过 50%) */
+    function meterUsed(model: { id: string; context_window?: number }): number {
+        const quota = quotaByModel(model)
+
+        if (!quota || meterHasDebt(model) || !quota.quota_total_tokens) {
+            return 0
+        }
+
+        const remaining = meterRemaining(model)
+
+        return Math.max(0, Math.min(50 - remaining, (quota.tokens / quota.quota_total_tokens) * 50))
+    }
+
+    /** 左侧超额段宽度(按 provider 债务满刻度缩放,最多 50%) */
+    function meterOverage(model: { id: string; context_window?: number }): number {
+        const quota = quotaByModel(model)
+        const debtScale = providerDebtScale(String(selectedProvider.value || ''))
+
+        if (!quota || debtScale <= 0 || quota.overage_tokens <= 0) {
+            return 0
+        }
+
+        return Math.max(0, Math.min(50, (quota.overage_tokens / debtScale) * 50))
+    }
+
+    /** 打开额度调整弹层(对齐原版 _openQuotaAdjustPopover) */
+    function openQuotaAdjust(model: { id: string; context_window?: number }): void {
+        const quota = quotaByModel(model)
+
+        if (!quota) {
+            return
+        }
+
+        const remaining = Math.max(0, (quota.quota_total_tokens || 0) - quota.tokens)
+
+        adjustPopover.value = {
+            open: true,
+            x: 0,
+            y: 0,
+            provider: String(selectedProvider.value || ''),
+            model: model.id,
+            used: quota.tokens,
+            total: quota.quota_total_tokens,
+            mode: 'total',
+            input: String(quota.quota_total_tokens || 0),
+            submitting: false,
+        }
+        void remaining
+    }
+
+    /** 调整模式切换时预填输入 */
+    function switchAdjustMode(mode: 'total' | 'remaining'): void {
+        const state = adjustPopover.value
+
+        if (mode === 'total') {
+            state.input = String(state.total)
+        } else {
+            state.input = String(Math.max(0, state.total - state.used))
+        }
+
+        state.mode = mode
+    }
+
+    /** 提交额度调整(对齐原版 admin_model_quota_update) */
+    async function submitQuotaAdjust(): Promise<void> {
+        const state = adjustPopover.value
+        const value = Number(state.input)
+
+        if (!Number.isFinite(value) || value < 0) {
+            showToast('请输入有效的额度数值', 'warning')
+
+            return
+        }
+
+        state.submitting = true
+
+        try {
+            const total = state.mode === 'remaining' ? state.used + Math.round(value) : Math.round(value)
+
+            await updateModelQuota({
+                provider: state.provider,
+                model: state.model,
+                op: 'set',
+                total_tokens: total,
+            })
+
+            showToast('额度已更新', 'success')
+            state.open = false
+            await loadQuota()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '额度调整失败')
+        } finally {
+            state.submitting = false
+        }
+    }
+
+    /** 上下文/额度展示(定宽对齐) */
+    function quotaCtx(model: { id: string; context_window: number }): string {
+        const quota = quotaByModel(model)
+
+        if (quota?.quota_set) {
+            return quota.is_exhausted ? '已耗尽' : `${formatQuota(quota.tokens, quotaUnit.value)}/${formatQuota(quota.quota_total_tokens, quotaUnit.value)}`
+        }
+
+        if (model.context_window) {
+            return `${model.context_window.toLocaleString()} ctx`
+        }
+
+        return ''
     }
 
     /** 某 provider 的模型数 */

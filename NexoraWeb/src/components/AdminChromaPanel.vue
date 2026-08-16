@@ -1,20 +1,13 @@
 <!--
     AdminChromaPanel.vue — 管理员:向量库(对齐原版 settings-admin-chroma-tab)
 
-    设计:
-      - 顶部状态卡片(启用 / 模式 / 服务地址 / 向量总数)
-      - 下方集合列表(每个集合的名称与向量数)
+    结构:
+      - 状态卡(ChromaDB 状态 / 向量总数 / 集合数)
+      - 搜索框 + admin-table(Collection / 向量数)
 -->
 
 <template>
     <div class="admin-chroma-panel">
-        <div class="admin-users-toolbar admin-system-toolbar-row settings-management-toolbar">
-            <button class="btn-primary-outline" type="button" @click="load">
-                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-                <span>刷新</span>
-            </button>
-        </div>
-
         <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
         <div v-else-if="!stats.enabled" class="admin-user-detail-empty">
             向量库未启用{{ stats.message ? `:${stats.message}` : '' }}
@@ -22,32 +15,43 @@
         <div v-else>
             <div class="admin-stats-grid">
                 <div class="stat-card">
-                    <span class="label">模式</span>
-                    <span class="value mono">{{ stats.mode || '-' }}</span>
-                </div>
-                <div class="stat-card">
-                    <span class="label">服务地址</span>
-                    <span class="value mono">{{ stats.service_url || '-' }}</span>
-                </div>
-                <div class="stat-card">
-                    <span class="label">集合数</span>
-                    <span class="value mono">{{ collections.length }}</span>
+                    <span class="label">ChromaDB 状态</span>
+                    <span class="value mono" style="font-size:14px;">{{ stats.mode || 'service' }}</span>
                 </div>
                 <div class="stat-card">
                     <span class="label">向量总数</span>
-                    <span class="value mono">{{ totalVectors.toLocaleString() }}</span>
+                    <span class="value mono" style="font-size:14px;">{{ totalVectors.toLocaleString() }}</span>
+                </div>
+                <div class="stat-card">
+                    <span class="label">集合数</span>
+                    <span class="value mono" style="font-size:14px;">{{ filteredCollections.length }}</span>
                 </div>
             </div>
 
-            <div class="admin-chroma-collections">
-                <div class="admin-users-toolbar admin-system-toolbar-row">
-                    <h4 style="margin:0;">集合列表</h4>
-                </div>
-                <div v-if="!collections.length" class="admin-user-detail-empty">暂无集合</div>
-                <div v-for="collection in collections" :key="String(collection.name || collection.id || '')" class="admin-chroma-collection">
-                    <span class="admin-chroma-collection-name">{{ String(collection.name || collection.id || '未命名') }}</span>
-                    <span class="admin-user-meta">{{ formatVectorCount(collection) }}</span>
-                </div>
+            <div class="admin-search-bar">
+                <input v-model="query" class="input-modern" placeholder="搜索向量库..." style="flex:1;" @keydown.enter="applyFilter">
+                <button class="btn-primary" type="button" @click="applyFilter">搜索</button>
+            </div>
+            <div v-if="searchHint" class="chroma-search-hint">{{ searchHint }}</div>
+
+            <div class="admin-table-wrapper">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Collection</th>
+                            <th>向量数</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-if="!filteredCollections.length">
+                            <td colspan="2">暂无集合</td>
+                        </tr>
+                        <tr v-for="collection in filteredCollections" :key="String(collection.name || collection.id || '')">
+                            <td>{{ String(collection.name || collection.id || '未命名') }}</td>
+                            <td class="mono">{{ formatVectorCount(collection) }}</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -61,6 +65,8 @@
     import { showError } from '@/stores/notify'
 
     const loading = ref(false)
+    const query = ref('')
+    const searchHint = ref('')
     const stats = ref<ChromaStats>({
         enabled: false,
         collections: [],
@@ -69,6 +75,18 @@
 
     const collections = computed(() => {
         return Array.isArray(stats.value.collections) ? stats.value.collections : []
+    })
+
+    const filteredCollections = computed(() => {
+        const keyword = query.value.trim().toLowerCase()
+
+        if (!keyword) {
+            return collections.value
+        }
+
+        return collections.value.filter((collection) => {
+            return String(collection.name || collection.id || '').toLowerCase().includes(keyword)
+        })
     })
 
     const totalVectors = computed(() => Number(stats.value.total_vectors || 0))
@@ -94,10 +112,67 @@
         }
     }
 
+    /** 搜索按钮(输入即过滤,此处给即时反馈) */
+    function applyFilter(): void {
+        searchHint.value = query.value.trim()
+            ? `匹配 ${filteredCollections.value.length} 个集合`
+            : ''
+    }
+
     /** 集合向量数显示 */
     function formatVectorCount(collection: Record<string, unknown>): string {
         const count = Number(collection.count || collection.vector_count || 0)
 
-        return Number.isFinite(count) && count > 0 ? `${count.toLocaleString()} 个向量` : ''
+        return Number.isFinite(count) && count > 0 ? `${count.toLocaleString()}` : '0'
     }
 </script>
+
+<style scoped>
+    .admin-chroma-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    .admin-search-bar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 4px;
+    }
+
+    .chroma-search-hint {
+        font-size: 12px;
+        color: #7a7a7a;
+        margin-bottom: 8px;
+    }
+
+    .admin-table-wrapper {
+        border: 1px solid #e8e8e8;
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .admin-table th,
+    .admin-table td {
+        padding: 10px 14px;
+        text-align: left;
+        border-bottom: 1px solid #f4f4f4;
+    }
+
+    .admin-table th {
+        background: #fafafa;
+        font-size: 12px;
+        font-weight: 600;
+        color: #7a7a7a;
+    }
+
+    .admin-table tr:last-child td {
+        border-bottom: none;
+    }
+</style>

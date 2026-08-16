@@ -1,5 +1,5 @@
-// settings-layout-check.mjs — 设置窗口布局回归测试
-// 验证:legacy Modal + #settingsModal 原版样式生效 → 导航在左侧(grid) → 原版按钮类 → 头像用 user_id
+// settings-layout-check.mjs — 设置窗口全新布局回归测试
+// 验证:新 Modal(非 legacy)+ 左右壳布局 → 分组导航在左 → 页头 → 圆形头像(无 img 溢出)→ API Key 面板
 import { chromium } from 'playwright-core'
 import fs from 'node:fs'
 
@@ -35,65 +35,63 @@ await page.evaluate(() => {
 await page.waitForTimeout(1200)
 
 const layout = await page.evaluate(() => {
-    const backdrop = document.querySelector('#settingsModal')
-    const card = document.querySelector('#settingsModal .settings-modal-custom')
-    const shell = document.querySelector('#settingsModal .admin-shell.settings-shell')
-    const nav = document.querySelector('#settingsModal .admin-nav.settings-nav')
-    const content = document.querySelector('#settingsModal .admin-content.settings-content')
-    const head = document.querySelector('#settingsModal .modal-head')
+    const card = document.querySelector('.g-modal.settings-modal')
+    const shell = document.querySelector('.settings-modal-shell')
+    const nav = document.querySelector('.settings-nav')
+    const main = document.querySelector('.settings-main')
+    const head = document.querySelector('.g-modal-head')
+    const body = card?.querySelector('.g-modal-body')
 
     const shellDisplay = shell ? getComputedStyle(shell).display : ''
-    const shellCols = shell ? getComputedStyle(shell).gridTemplateColumns : ''
-    const navDisplay = nav ? getComputedStyle(nav).display : ''
     const navRect = nav?.getBoundingClientRect()
-    const contentRect = content?.getBoundingClientRect()
+    const mainRect = main?.getBoundingClientRect()
+    const bodyPadding = body ? getComputedStyle(body).padding : ''
 
     return {
-        hasBackdrop: !!backdrop,
         hasCard: !!card,
-        hasShell: !!shell,
-        hasHead: !!head,
-        headText: head?.querySelector('h3')?.textContent || null,
-        closeBtn: head?.querySelector('.btn-modal-close')?.textContent || null,
-        shellDisplay,
-        shellCols,
-        navDisplay,
-        navLeft: navRect ? Math.round(navRect.left) : null,
-        contentLeft: contentRect ? Math.round(contentRect.left) : null,
-        // 导航在内容左侧(原版 grid 220px 1fr)
-        navIsLeftOfContent: navRect && contentRect ? navRect.left < contentRect.left : false,
         cardSize: card ? { w: Math.round(card.getBoundingClientRect().width), h: Math.round(card.getBoundingClientRect().height) } : null,
+        hasShell: !!shell,
+        shellDisplay,
+        navWidth: navRect ? Math.round(navRect.width) : null,
+        mainLeft: mainRect ? Math.round(mainRect.left) : null,
+        navIsLeftOfMain: navRect && mainRect ? navRect.left < mainRect.left : false,
+        headText: head?.querySelector('h3')?.textContent || null,
+        bodyPadding,
+        legacyClasses: !!document.querySelector('#settingsModal, .modal-backdrop.active'),
     }
 })
 console.log('1 settings layout:', JSON.stringify(layout))
 
-// 2. profile tab:原版按钮类 + 头像 URL 基于 user_id
+// 2. profile tab:圆形头像(div + background-cover,无 img 溢出)
 const profile = await page.evaluate(() => {
-    const uploadBtn = document.querySelector('.settings-avatar-actions .btn-primary-outline')
-    const avatarImg = document.querySelector('#settingsAvatarImg')
-    const useridLine = document.querySelector('.settings-userid-inline')
+    const avatar = document.querySelector('#settingsAvatarImg')
+    const style = avatar ? getComputedStyle(avatar) : null
 
     return {
-        uploadBtnClass: uploadBtn ? uploadBtn.className : null,
-        uploadBtnText: uploadBtn?.textContent?.trim() || null,
-        avatarSrc: avatarImg?.getAttribute('src') || null,
-        avatarIsImg: avatarImg?.tagName === 'IMG',
-        useridText: useridLine?.textContent || null,
+        avatarTag: avatar?.tagName || null,
+        isDiv: avatar?.tagName === 'DIV',
+        size: avatar ? `${Math.round(avatar.getBoundingClientRect().width)}x${Math.round(avatar.getBoundingClientRect().height)}` : null,
+        radius: style?.borderRadius || null,
+        bgSize: style?.backgroundSize || null,
+        uploadBtn: document.querySelector('.settings-avatar-actions .btn-primary-outline')?.textContent?.trim() || null,
+        rows: document.querySelectorAll('.setting-row').length,
+        cards: document.querySelectorAll('.setting-card').length,
+        pageHead: document.querySelector('.settings-page-head h2')?.textContent || null,
     }
 })
 console.log('2 profile tab:', JSON.stringify(profile))
 
-// 3. 我的 API Key tab:toolbar 按钮类 + 列表/详情布局
+// 3. 我的 API Key tab:toolbar + 列表/详情布局
 await page.evaluate(() => {
-    const tabs = [...document.querySelectorAll('.settings-nav .admin-tab')]
+    const tabs = [...document.querySelectorAll('.settings-nav-item')]
     const target = tabs.find((b) => b.textContent.trim() === '我的 API Key')
     target?.click()
 })
 await page.waitForTimeout(800)
 
 const apiKeysTab = await page.evaluate(() => {
-    const toolbar = document.querySelector('#settingsModal .settings-management-toolbar')
-    const layout = document.querySelector('#settingsModal .settings-management-layout')
+    const toolbar = document.querySelector('.settings-management-toolbar')
+    const layout = document.querySelector('.settings-management-layout')
     const createBtn = toolbar ? [...toolbar.querySelectorAll('button')].find((b) => b.textContent.includes('新建 Key')) : null
     const layoutCols = layout ? getComputedStyle(layout).gridTemplateColumns : ''
 
@@ -109,7 +107,7 @@ console.log('3 api keys tab:', JSON.stringify(apiKeysTab))
 await page.keyboard.press('Escape')
 await page.waitForTimeout(400)
 
-const closed = await page.evaluate(() => !document.querySelector('#settingsModal'))
+const closed = await page.evaluate(() => !document.querySelector('.g-modal.settings-modal'))
 console.log('4 closed:', closed)
 
 await browser.close()

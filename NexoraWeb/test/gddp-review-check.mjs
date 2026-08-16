@@ -47,13 +47,13 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(1000)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === '用户管理')
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === '用户管理')
     btn?.click()
 })
 await page.waitForTimeout(800)
 
 const userItems = await page.evaluate(() => {
-    const items = [...document.querySelectorAll('#settingsModal .admin-user-item')]
+    const items = [...document.querySelectorAll('.settings-modal-shell .admin-user-item')]
     const first = items[0]
 
     return {
@@ -68,7 +68,7 @@ console.log('2 admin-user-item:', JSON.stringify(userItems))
 
 // 3. profile tab:用户名输入框 + 保存按钮 + 创建/最后登录
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === '个人资料')
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === '个人资料')
     btn?.click()
 })
 await page.waitForTimeout(600)
@@ -77,9 +77,10 @@ const profile = await page.evaluate(() => {
     return {
         hasNameInput: !!document.querySelector('#set-username-input'),
         nameValue: document.querySelector('#set-username-input')?.value,
-        hasSave: [...document.querySelectorAll('#settingsModal .settings-profile-actions button')].some((b) => b.textContent.includes('保存资料')),
-        hasCreated: [...document.querySelectorAll('#settingsModal .settings-field')].some((el) => el.textContent.trim() !== '-' && el.textContent.trim() !== ''),
-        fieldCount: document.querySelectorAll('#settingsModal .settings-profile-stats-grid .form-group').length,
+        hasSave: [...document.querySelectorAll('.settings-modal-shell .settings-profile-actions button')].some((b) => b.textContent.includes('保存资料')),
+        hasCreated: [...document.querySelectorAll('.settings-modal-shell .settings-field')].some((el) => el.textContent.trim() !== '-' && el.textContent.trim() !== ''),
+        fieldCount: document.querySelectorAll('.settings-modal-shell .setting-row').length,
+        avatarIsCircle: document.querySelector('.settings-modal-shell .settings-avatar')?.tagName === 'DIV',
     }
 })
 console.log('3 profile:', JSON.stringify(profile))

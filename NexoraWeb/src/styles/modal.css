@@ -144,15 +144,15 @@
     flex-shrink: 0;
 }
 
-/* ---------- 按钮(通用,视觉对齐原版 Nexora:主按钮黑色、次按钮白底灰边) ---------- */
+/* ---------- 按钮(通用,统一白底描边——Nexora 克制风格) ---------- */
 .g-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
+    width: auto;
     padding: 8px 16px;
-    border: none;
-    border-radius: 6px;
+    border-radius: 7px;
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
@@ -164,32 +164,35 @@
 }
 
 .g-btn-primary {
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #111111;
+    border: 1px solid #111111;
 }
 
 .g-btn-primary:hover {
-    background: #333333;
+    background: #f5f5f5;
 }
 
 .g-btn-ghost {
-    background: #f5f5f5;
-    color: #666666;
-    border: 1px solid transparent;
+    background: #ffffff;
+    color: #5a5a5a;
+    border: 1px solid #d9d9d9;
 }
 
 .g-btn-ghost:hover {
-    background: #eeeeee;
-    color: #333333;
+    background: #f5f5f5;
+    color: #111111;
+    border-color: #111111;
 }
 
 .g-btn-danger {
-    background: #ff4d4f;
-    color: #ffffff;
+    background: #ffffff;
+    color: #c0392b;
+    border: 1px solid #e0a0a0;
 }
 
 .g-btn-danger:hover {
-    background: #ff7875;
+    background: #fdecec;
 }
 
 /* ---------- 输入(通用) ---------- */

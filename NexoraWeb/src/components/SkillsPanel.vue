@@ -10,24 +10,24 @@
 
 <template>
     <div>
-        <div class="skill-subtabs">
-            <button
-                class="skill-subtab"
-                :class="{ active: subTab === 'my' }"
-                type="button"
-                @click="switchSubTab('my')"
-            >我的 Skill</button>
-            <button
-                class="skill-subtab"
-                :class="{ active: subTab === 'market' }"
-                type="button"
-                @click="switchSubTab('market')"
-            >Skill 市场</button>
-        </div>
+        <div class="skill-subtabs-row">
+            <div class="skill-subtabs">
+                <button
+                    class="skill-subtab"
+                    :class="{ active: subTab === 'my' }"
+                    type="button"
+                    @click="switchSubTab('my')"
+                >我的 Skill</button>
+                <button
+                    class="skill-subtab"
+                    :class="{ active: subTab === 'market' }"
+                    type="button"
+                    @click="switchSubTab('market')"
+                >Skill 市场</button>
+            </div>
 
-        <!-- 我的 Skill -->
-        <div v-if="subTab === 'my'" class="skill-subtab-content active">
-            <div class="skill-my-toolbar">
+            <!-- 我的 Skill 工具栏与子 tab 同行 -->
+            <div v-if="subTab === 'my'" class="skill-my-toolbar">
                 <button class="btn-skill-create" type="button" title="上传 Skill 文件" @click="triggerUpload">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     上传 Skill
@@ -38,7 +38,10 @@
                 </button>
                 <input ref="skillFileInput" type="file" accept=".skill,.md,.txt,.json" style="display:none" @change="handleSkillFile">
             </div>
+        </div>
 
+        <!-- 我的 Skill -->
+        <div v-if="subTab === 'my'" class="skill-subtab-content active">
             <div class="settings-skill-list">
                 <div v-if="loading" class="settings-skill-empty">加载中...</div>
                 <div v-else-if="!skills.length" class="settings-skill-empty">暂无自定义 Skill</div>
@@ -117,7 +120,15 @@
             <div class="skill-market-list" id="skillMarketList">
                 <div v-if="marketLoading" class="settings-skill-empty">加载中...</div>
                 <div v-else-if="!marketSkills.length" class="settings-skill-empty">市场暂无 Skill</div>
-                <div v-for="item in marketSkills" :key="item.id" class="skill-market-card">
+                <div
+                    v-for="item in marketSkills"
+                    :key="item.id"
+                    class="skill-market-card"
+                    role="button"
+                    tabindex="0"
+                    @click="openMarketDetail(item.id)"
+                    @keydown.enter="openMarketDetail(item.id)"
+                >
                     <div class="skill-market-card-body">
                         <div class="skill-market-card-title">{{ item.title || item.id }}</div>
                         <div class="skill-market-card-desc">{{ item.description || '暂无描述' }}</div>
@@ -130,7 +141,7 @@
                             <span>{{ Number(item.install_count || 0).toLocaleString() }} 次安装</span>
                         </div>
                     </div>
-                    <div class="skill-market-card-actions">
+                    <div class="skill-market-card-actions" @click.stop>
                         <button class="btn-skill-detail" type="button" @click="openMarketDetail(item.id)">详情</button>
                         <button
                             v-if="item.installed"
@@ -181,46 +192,48 @@
 
         <!-- 个人 Skill 编辑器 -->
         <Modal :open="editorOpen" :title="editorMode === 'edit' ? '编辑 Skill' : (editorFromUpload ? '上传 Skill' : '新建 Skill')" size="lg" @close="editorOpen = false">
-            <div class="form-group">
-                <label for="psEditorTitle">标题</label>
-                <input id="psEditorTitle" v-model="editorForm.title" class="input-modern" type="text" maxlength="120" placeholder="Skill 标题">
-            </div>
-            <div class="form-group">
-                <label for="psEditorId">ID(可选;建议英文短横线命名)</label>
-                <input id="psEditorId" v-model="editorForm.id" class="input-modern" type="text" maxlength="80" :readonly="editorMode === 'edit'" placeholder="例如:code-reviewer">
-            </div>
-            <div class="form-group">
-                <label for="psEditorDesc">描述</label>
-                <input id="psEditorDesc" v-model="editorForm.description" class="input-modern" type="text" maxlength="300" placeholder="一句话描述用途">
-            </div>
-            <div class="form-group">
-                <label for="psEditorTags">标签(逗号分隔)</label>
-                <input id="psEditorTags" v-model="editorTagsText" class="input-modern" type="text" maxlength="200" placeholder="例如:代码,审查">
-            </div>
-            <div class="form-group">
-                <label for="psEditorTools">依赖工具(逗号分隔)</label>
-                <input id="psEditorTools" v-model="editorToolsText" class="input-modern" type="text" maxlength="300" placeholder="例如:web_search, code_exec">
-            </div>
-            <div class="form-group">
-                <label>模式</label>
-                <div class="skill-mode-select-wrap">
-                    <button class="skill-mode-select" type="button" :aria-expanded="modeOpen" @click.stop="modeOpen = !modeOpen">
-                        {{ modeLabel(editorForm.mode || 'auto') }}
-                        <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                    </button>
-                    <div class="skill-mode-menu" :class="{ open: modeOpen }">
-                        <button
-                            v-for="option in modeOptions"
-                            :key="option.value"
-                            type="button"
-                            :class="{ active: (editorForm.mode || 'auto') === option.value }"
-                            @click="selectMode(option.value)"
-                        >{{ option.label }}</button>
+            <div class="ps-editor-grid">
+                <div class="form-group">
+                    <label for="psEditorTitle">标题 *</label>
+                    <input id="psEditorTitle" v-model="editorForm.title" class="input-modern" type="text" maxlength="120" placeholder="Skill 标题">
+                </div>
+                <div class="form-group">
+                    <label for="psEditorId">ID</label>
+                    <input id="psEditorId" v-model="editorForm.id" class="input-modern" type="text" maxlength="80" :readonly="editorMode === 'edit'" placeholder="留空自动生成">
+                </div>
+                <div class="form-group full-width">
+                    <label for="psEditorDesc">描述</label>
+                    <input id="psEditorDesc" v-model="editorForm.description" class="input-modern" type="text" maxlength="300" placeholder="一句话描述(市场展示用)">
+                </div>
+                <div class="form-group">
+                    <label for="psEditorTags">标签(逗号分隔)</label>
+                    <input id="psEditorTags" v-model="editorTagsText" class="input-modern" type="text" maxlength="200" placeholder="例如:开发, 写作">
+                </div>
+                <div class="form-group">
+                    <label for="psEditorTools">绑定工具(逗号分隔)</label>
+                    <input id="psEditorTools" v-model="editorToolsText" class="input-modern" type="text" maxlength="300" placeholder="留空为全局 Skill">
+                </div>
+                <div class="form-group">
+                    <label>默认模式</label>
+                    <div class="skill-mode-select-wrap">
+                        <button class="skill-mode-select" type="button" :aria-expanded="modeOpen" @click.stop="modeOpen = !modeOpen">
+                            {{ modeLabel(editorForm.mode || 'auto') }}
+                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                        </button>
+                        <div class="skill-mode-menu" :class="{ open: modeOpen }">
+                            <button
+                                v-for="option in modeOptions"
+                                :key="option.value"
+                                type="button"
+                                :class="{ active: (editorForm.mode || 'auto') === option.value }"
+                                @click="selectMode(option.value)"
+                            >{{ option.label }}</button>
+                        </div>
                     </div>
                 </div>
             </div>
             <div class="form-group">
-                <label for="psEditorContent">正文</label>
+                <label for="psEditorContent">指令内容</label>
                 <textarea id="psEditorContent" v-model="editorForm.main_content" class="input-modern skill-content-textarea" rows="8" placeholder="Skill 提示词/指令正文..."></textarea>
             </div>
             <template #footer>

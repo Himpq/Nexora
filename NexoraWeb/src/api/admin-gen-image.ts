@@ -70,3 +70,39 @@ export async function upsertGenImageApi(options: {
         throw new Error(data.message || '保存接口失败')
     }
 }
+
+/** 启用接口(同一时间仅一个接口可用) */
+export async function enableGenImageApi(apiId: string): Promise<void> {
+    const data = await apiFetch<MutationResponse>('/api/admin/gen-image/apis/enable', {
+        method: 'POST',
+        body: JSON.stringify({ api_id: apiId }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '启用失败')
+    }
+}
+
+/** 停用接口 */
+export async function disableGenImageApi(apiId: string): Promise<void> {
+    const data = await apiFetch<MutationResponse>('/api/admin/gen-image/apis/disable', {
+        method: 'POST',
+        body: JSON.stringify({ api_id: apiId }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '停用失败')
+    }
+}
+
+/** 删除接口 */
+export async function deleteGenImageApi(apiId: string): Promise<void> {
+    const data = await apiFetch<MutationResponse>('/api/admin/gen-image/apis/delete', {
+        method: 'POST',
+        body: JSON.stringify({ api_id: apiId }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '删除失败')
+    }
+}

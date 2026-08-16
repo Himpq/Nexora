@@ -1,42 +1,29 @@
 <!--
     PreferencesPanel.vue — 偏好设置(对齐原版 settings-preferences-tab)
 
-    设计:
-      - 复用原版 .settings-preferences-grid / .settings-mode-toggle / .settings-help-text 样式
-      - 主题 / 流式输出 / 语言 / 学习模式开关,保存走统一按钮
+    结构:
+      - SettingCard 分组 + SettingRow/SettingSelect/SettingToggle 统一组件
+      - 主题 / 语言(自建下拉,定宽)/ 流式输出开关
+      - 学习模式(开关)+ 默认打开视图(学习模式开启时显示)
+      - 用户记忆:只读文本 + 刷新 + 记忆更新模型
 -->
 
 <template>
     <div class="settings-preferences-grid">
-        <div class="form-group">
-            <label>主题</label>
-            <select v-model="form.theme" class="input-modern settings-pref-select">
-                <option value="light">浅色</option>
-                <option value="dark">深色</option>
-                <option value="system">跟随系统</option>
-            </select>
-        </div>
+        <SettingCard title="外观与行为">
+            <SettingRow label="主题">
+                <SettingSelect v-model="form.theme" :options="themeOptions" width="150px" />
+            </SettingRow>
+            <SettingRow label="语言">
+                <SettingSelect v-model="form.language" :options="languageOptions" width="150px" />
+            </SettingRow>
+            <SettingRow label="流式输出" hint="回复时逐字流式显示">
+                <SettingToggle v-model="form.streaming" label="" />
+            </SettingRow>
+        </SettingCard>
 
-        <div class="form-group">
-            <label>流式输出</label>
-            <label class="settings-toggle-row">
-                <input v-model="form.streaming" type="checkbox">
-                <span>回复时逐字流式显示</span>
-            </label>
-        </div>
-
-        <div class="form-group">
-            <label>语言</label>
-            <select v-model="form.language" class="input-modern settings-pref-select">
-                <option value="zh">中文</option>
-                <option value="en">English</option>
-                <option value="ja">日本語</option>
-            </select>
-        </div>
-
-        <div class="form-group settings-pref-card settings-pref-card-wide">
-            <label>学习模式</label>
-            <div class="settings-pref-inline">
+        <SettingCard title="学习模式" description="学习模式开关与默认视图">
+            <SettingRow label="学习模式" hint="开启后默认进入 Learning 侧边栏">
                 <div class="settings-mode-toggle" role="tablist" aria-label="学习模式">
                     <button
                         class="settings-mode-toggle-btn"
@@ -51,9 +38,56 @@
                         @click="form.learning_mode = 'on'"
                     >Learning</button>
                 </div>
+            </SettingRow>
+            <SettingRow v-if="form.learning_mode === 'on'" label="默认打开" hint="学习模式开启时,默认打开的视图">
+                <div class="settings-mode-toggle" role="tablist" aria-label="默认打开">
+                    <button
+                        class="settings-mode-toggle-btn"
+                        :class="{ active: form.default_open_view !== 'learning' }"
+                        type="button"
+                        @click="form.default_open_view = 'nexora'"
+                    >Nexora</button>
+                    <button
+                        class="settings-mode-toggle-btn"
+                        :class="{ active: form.default_open_view === 'learning' }"
+                        type="button"
+                        @click="form.default_open_view = 'learning'"
+                    >NexoraLearning</button>
+                </div>
+            </SettingRow>
+        </SettingCard>
+
+        <SettingCard title="用户记忆" description="模型可读取的个人记忆内容">
+            <div class="setting-row no-control">
+                <div class="setting-row-main">
+                    <div class="setting-row-label">记忆内容</div>
+                    <div class="setting-row-hint">模型生成回复时可读取;只读展示</div>
+                </div>
             </div>
-            <div class="settings-help-text">开启后默认进入 Learning 侧边栏;点击侧边栏里的 New Chat 可打开 NexoraLearning 学习界面。</div>
-        </div>
+            <textarea
+                id="settingsMemoryProfile"
+                v-model="memoryText"
+                class="input-modern settings-memory-textarea"
+                rows="7"
+                readonly
+                placeholder="加载中..."
+            ></textarea>
+            <div class="settings-memory-row">
+                <div class="settings-memory-model-field">
+                    <div class="settings-memory-model-label">记忆更新模型</div>
+                    <SettingSelect
+                        v-model="form.memory_update_model"
+                        :options="memoryModelOptions"
+                        placeholder="使用当前对话模型"
+                        width="220px"
+                    />
+                </div>
+                <button class="btn-primary-outline btn-compact" type="button" title="刷新用户记忆" @click="loadMemory">
+                    <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                    <span>刷新</span>
+                </button>
+            </div>
+        </SettingCard>
 
         <div class="settings-pref-actions">
             <button class="btn-primary" type="button" @click="handleSave">
@@ -65,31 +99,62 @@
 </template>
 
 <script setup lang="ts">
-    import { onMounted, reactive, ref } from 'vue'
+    import { computed, onMounted, reactive, ref } from 'vue'
 
+    import { apiFetch } from '@/api/client'
+    import { fetchModelsConfig } from '@/api/admin-models'
     import type { UserPreferences } from '@/api/preferences'
     import { fetchUserPreferences, saveUserPreferences } from '@/api/preferences'
     import { showError, showToast } from '@/stores/notify'
 
+    import SettingCard from '@/ui/settings/SettingCard.vue'
+    import SettingRow from '@/ui/settings/SettingRow.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
+    import SettingToggle from '@/ui/settings/SettingToggle.vue'
+
     const loading = ref(false)
+    const memoryText = ref('')
+
+    const themeOptions = [
+        { value: 'light', label: '浅色' },
+        { value: 'dark', label: '深色' },
+        { value: 'system', label: '跟随系统' },
+    ]
+
+    const languageOptions = [
+        { value: 'zh', label: '中文' },
+        { value: 'en', label: 'English' },
+        { value: 'ja', label: '日本語' },
+    ]
+
+    /** 记忆更新模型选项(空值 = 使用当前对话模型) */
+    const memoryModelOptions = computed(() => {
+        return [{ value: '', label: '使用当前对话模型' }, ...modelOptions.value]
+    })
+
+    const modelOptions = ref<Array<{ value: string; label: string }>>([])
 
     const form = reactive<{
         theme: string
         streaming: boolean
         language: string
         learning_mode: string
+        default_open_view: string
+        memory_update_model: string
     }>({
         theme: 'system',
         streaming: true,
         language: 'zh',
         learning_mode: 'off',
+        default_open_view: 'learning',
+        memory_update_model: '',
     })
 
     onMounted(() => {
         void load()
     })
 
-    /** 拉取偏好并填充表单 */
+    /** 拉取偏好 + 模型列表 + 用户记忆 */
     async function load(): Promise<void> {
         if (loading.value) {
             return
@@ -98,7 +163,7 @@
         loading.value = true
 
         try {
-            const preferences = await fetchUserPreferences()
+            const [preferences] = await Promise.all([fetchUserPreferences(), loadModels()])
 
             if (preferences) {
                 applyPreferences(preferences)
@@ -107,6 +172,30 @@
             showError(error instanceof Error ? error.message : '加载偏好失败')
         } finally {
             loading.value = false
+        }
+
+        void loadMemory()
+    }
+
+    /** 模型列表(记忆更新模型下拉) */
+    async function loadModels(): Promise<void> {
+        try {
+            const config = await fetchModelsConfig()
+
+            modelOptions.value = Object.keys(config.models).map((id) => ({ value: id, label: id }))
+        } catch {
+            // 模型列表不可用时保持空
+        }
+    }
+
+    /** 拉取用户记忆(只读) */
+    async function loadMemory(): Promise<void> {
+        try {
+            const data = await apiFetch<{ success: boolean; profile?: string }>('/api/memory/profile')
+
+            memoryText.value = String(data.profile || '(暂无记忆内容)')
+        } catch {
+            memoryText.value = '(加载失败)'
         }
     }
 
@@ -127,6 +216,14 @@
         if (typeof preferences.learning_mode === 'string') {
             form.learning_mode = preferences.learning_mode
         }
+
+        if (typeof preferences.default_open_view === 'string') {
+            form.default_open_view = preferences.default_open_view
+        }
+
+        if (typeof preferences.memory_update_model === 'string') {
+            form.memory_update_model = preferences.memory_update_model
+        }
     }
 
     /** 保存偏好 */
@@ -137,6 +234,8 @@
                 streaming: form.streaming,
                 language: form.language,
                 learning_mode: form.learning_mode,
+                default_open_view: form.default_open_view,
+                memory_update_model: form.memory_update_model,
             })
 
             showToast('偏好已保存', 'success')
@@ -145,3 +244,45 @@
         }
     }
 </script>
+
+<style scoped>
+    .settings-preferences-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .settings-memory-textarea {
+        width: 100%;
+        min-height: 140px;
+        font-family: inherit;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #3c3c3c;
+        margin-bottom: 12px;
+    }
+
+    .settings-memory-row {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .settings-memory-model-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .settings-memory-model-label {
+        font-size: 12px;
+        color: #7a7a7a;
+    }
+
+    .settings-pref-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 6px;
+    }
+</style>

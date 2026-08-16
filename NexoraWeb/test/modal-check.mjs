@@ -24,7 +24,7 @@ await page.waitForTimeout(1500)
 await page.goto('http://127.0.0.1:5000/new', { waitUntil: 'networkidle' })
 await page.waitForTimeout(2500)
 
-// 1. 设置弹窗(原版 ID + 现代视觉)
+// 1. 设置弹窗(全新 UI:现代 Modal + 分组导航)
 await page.click('#usernameBtn')
 await page.waitForTimeout(300)
 await page.evaluate(() => {
@@ -35,19 +35,21 @@ await page.evaluate(() => {
 await page.waitForTimeout(800)
 
 const settingsModal = await page.evaluate(() => {
-    const backdrop = document.querySelector('#settingsModal')
-    const modal = backdrop?.querySelector('.modal')
-    const cs = modal ? getComputedStyle(modal) : null
-    const inner = backdrop?.querySelector('.modal-body')?.getBoundingClientRect()
+    const card = document.querySelector('.g-modal.settings-modal')
+    const shell = document.querySelector('.settings-modal-shell')
+    const nav = document.querySelector('.settings-nav')
+    const cs = card ? getComputedStyle(card) : null
+    const body = card?.querySelector('.g-modal-body')
 
     return {
-        exists: !!backdrop,
-        active: backdrop?.classList.contains('active') || false,
+        exists: !!card,
+        shell: !!shell,
         borderRadius: cs ? cs.borderRadius : null,
-        width: inner ? Math.round(inner.width) : 0,
-        height: inner ? Math.round(inner.height) : 0,
-        tabs: document.querySelectorAll('#settingsModal .settings-nav button').length,
-        adminTabs: document.querySelectorAll('#settingsModal .settings-nav .admin-tab').length,
+        width: card ? Math.round(card.getBoundingClientRect().width) : 0,
+        height: card ? Math.round(card.getBoundingClientRect().height) : 0,
+        bodyPadding: body ? getComputedStyle(body).padding : null,
+        navItems: nav ? nav.querySelectorAll('.settings-nav-item').length : 0,
+        groups: nav ? nav.querySelectorAll('.settings-nav-group-label').length : 0,
     }
 })
 console.log('1 settings modal:', JSON.stringify(settingsModal))

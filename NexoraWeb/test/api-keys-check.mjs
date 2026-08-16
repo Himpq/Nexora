@@ -47,7 +47,7 @@ await page.evaluate(() => {
 await page.waitForTimeout(800)
 
 await page.evaluate(() => {
-    const tabs = [...document.querySelectorAll('.settings-nav .admin-tab')]
+    const tabs = [...document.querySelectorAll('.settings-nav-item')]
     const target = tabs.find((b) => b.textContent.trim() === '我的 API Key')
     target?.click()
 })

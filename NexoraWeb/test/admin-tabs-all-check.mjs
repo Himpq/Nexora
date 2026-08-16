@@ -39,13 +39,13 @@ const results = []
 
 for (const tab of tabs) {
     await page.evaluate((t) => {
-        const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === t)
+        const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === t)
         btn?.click()
     }, tab)
     await page.waitForTimeout(700)
 
     const info = await page.evaluate(() => {
-        const content = document.querySelector('#settingsModal .settings-content')
+        const content = document.querySelector('.settings-modal-shell .settings-page-body')
         const text = content ? content.textContent.replace(/\s+/g, ' ').trim() : ''
         const hasPlaceholder = text.includes('功能将在后续版本接入')
         const hasItems = !!content?.querySelector('.admin-user-item, .stat-card, .admin-system-card, .settings-skill-list, .settings-preferences-grid, .admin-model-row, .admin-chroma-collection, .admin-mail-permissions, .papi-key-list-item')

@@ -32,7 +32,7 @@ await page.waitForTimeout(300)
 await page.click('#userMenu .menu-item')
 await page.waitForTimeout(800)
 const r = await page.evaluate(() => ({
-    tabs: Array.from(document.querySelectorAll('.settings-nav .admin-tab')).map((t) => t.textContent.trim()),
+    tabs: Array.from(document.querySelectorAll('.settings-nav-item')).map((t) => t.textContent.trim()),
     width: document.querySelector('.settings-modal-custom')?.getBoundingClientRect().width,
     height: document.querySelector('.settings-modal-custom')?.getBoundingClientRect().height,
 }))

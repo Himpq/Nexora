@@ -35,7 +35,7 @@ await page.waitForTimeout(1000)
 
 async function openTab(label) {
     await page.evaluate((t) => {
-        const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === t)
+        const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === t)
         btn?.click()
     }, label)
     await page.waitForTimeout(800)
@@ -44,15 +44,17 @@ async function openTab(label) {
 // 偏好设置
 await openTab('偏好设置')
 const preferences = await page.evaluate(() => {
-    const selects = [...document.querySelectorAll('#settingsModal .settings-preferences-grid select')]
-    const checkboxes = [...document.querySelectorAll('#settingsModal .settings-preferences-grid input[type=checkbox]')]
-    const toggles = [...document.querySelectorAll('#settingsModal .settings-mode-toggle-btn')]
+    const selects = [...document.querySelectorAll('.settings-modal-shell .settings-preferences-grid .setting-select')]
+    const checkboxes = [...document.querySelectorAll('.settings-modal-shell .settings-preferences-grid input[type=checkbox]')]
+    const toggles = [...document.querySelectorAll('.settings-modal-shell .settings-mode-toggle-btn')]
+    const memoryTextarea = document.querySelector('.settings-modal-shell #settingsMemoryProfile')
 
     return {
         selectCount: selects.length,
         checkboxCount: checkboxes.length,
         modeToggles: toggles.map((t) => t.textContent.trim()),
-        hasSave: [...document.querySelectorAll('#settingsModal button')].some((b) => b.textContent.includes('保存偏好')),
+        hasSave: [...document.querySelectorAll('.settings-modal-shell button')].some((b) => b.textContent.includes('保存偏好')),
+        hasMemory: !!memoryTextarea,
     }
 })
 console.log('1 preferences:', JSON.stringify(preferences))
@@ -60,13 +62,13 @@ console.log('1 preferences:', JSON.stringify(preferences))
 // Skill
 await openTab('Skill')
 const skills = await page.evaluate(() => {
-    const subtabs = [...document.querySelectorAll('#settingsModal .skill-subtab')]
-    const toolbarBtns = [...document.querySelectorAll('#settingsModal .skill-my-toolbar .btn-skill-create')]
+    const subtabs = [...document.querySelectorAll('.settings-modal-shell .skill-subtab')]
+    const toolbarBtns = [...document.querySelectorAll('.settings-modal-shell .skill-my-toolbar .btn-skill-create')]
 
     return {
         subtabs: subtabs.map((t) => t.textContent.trim()),
         toolbarBtns: toolbarBtns.map((b) => b.textContent.trim()),
-        hasList: !!document.querySelector('#settingsModal .settings-skill-list'),
+        hasList: !!document.querySelector('.settings-modal-shell .settings-skill-list'),
     }
 })
 console.log('2 skills:', JSON.stringify(skills))
@@ -74,7 +76,7 @@ console.log('2 skills:', JSON.stringify(skills))
 // 使用统计
 await openTab('使用统计')
 const statistics = await page.evaluate(() => {
-    const stats = [...document.querySelectorAll('#settingsModal .settings-stat')]
+    const stats = [...document.querySelectorAll('.settings-modal-shell .settings-stat')]
 
     return {
         statCount: stats.length,
@@ -83,13 +85,18 @@ const statistics = await page.evaluate(() => {
 })
 console.log('3 statistics:', JSON.stringify(statistics))
 
-// 保存偏好测试:切换主题
+// 保存偏好测试:切换主题(经自建下拉选中 dark)
 await openTab('偏好设置')
 await page.evaluate(() => {
-    const select = document.querySelector('#settingsModal .settings-preferences-grid select')
-    select.value = 'dark'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    const save = [...document.querySelectorAll('#settingsModal button')].find((b) => b.textContent.includes('保存偏好'))
+    const trigger = document.querySelector('.settings-modal-shell .settings-preferences-grid .setting-select-trigger')
+    trigger?.click()
+})
+await page.waitForTimeout(300)
+await page.evaluate(() => {
+    const menu = document.querySelector('.settings-modal-shell .setting-select-menu.open')
+    const dark = [...(menu?.querySelectorAll('button') || [])].find((b) => b.textContent.trim() === '深色')
+    dark?.click()
+    const save = [...document.querySelectorAll('.settings-modal-shell button')].find((b) => b.textContent.includes('保存偏好'))
     save?.click()
 })
 await page.waitForTimeout(1200)

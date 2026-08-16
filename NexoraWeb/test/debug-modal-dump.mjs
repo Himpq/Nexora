@@ -32,13 +32,13 @@ await page.evaluate(() => {
 await page.waitForTimeout(1000)
 
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-nav .admin-tab')].find((b) => b.textContent.trim() === '模型管理')
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-nav-item')].find((b) => b.textContent.trim() === '模型管理')
     btn?.click()
 })
 await page.waitForTimeout(800)
 
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('#settingsModal .settings-management-toolbar button')].find((b) => b.textContent.includes('添加模型'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar button')].find((b) => b.textContent.includes('添加模型'))
     btn?.click()
 })
 await page.waitForTimeout(800)
