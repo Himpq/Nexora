@@ -57,8 +57,7 @@ export async function deleteAdminUser(username: string): Promise<void> {
 }
 
 /** 修改角色 */
-export async function setAdminUserRole(username: string, role: string): Promise<void> {
-    await apiFetch<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(username)}/role`, {
+export async function setAdminUserRole(username: string, role: string): Promise<void> {    await apiFetch<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(username)}/role`, {
         method: 'PATCH',
         body: JSON.stringify({ role }),
     })
@@ -69,5 +68,38 @@ export async function resetAdminUserPassword(username: string, password: string)
     await apiFetch<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(username)}/password`, {
         method: 'PATCH',
         body: JSON.stringify({ password }),
+    })
+}
+
+/** 更新用户资料(显示名;对齐原版 PATCH /api/admin/users/<id>/profile) */
+export async function updateAdminUserProfile(userId: string, displayName: string): Promise<void> {
+    await apiFetch<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({ display_name: displayName }),
+    })
+}
+
+/** 用户可用模型列表(对齐原版 GET /api/admin/user/models) */
+export interface UserModelEntry {
+    id: string
+    name: string
+    provider: string
+    status: string
+    is_blocked: boolean
+}
+
+export async function fetchUserModels(username: string): Promise<UserModelEntry[]> {
+    const data = await apiFetch<{ success: boolean; models?: UserModelEntry[] }>(
+        `/api/admin/user/models?username=${encodeURIComponent(username)}`
+    )
+
+    return Array.isArray(data.models) ? data.models : []
+}
+
+/** 更新用户模型黑名单(对齐原版 POST /api/admin/user/models/update) */
+export async function updateUserModelBlacklist(username: string, blockedModels: string[]): Promise<void> {
+    await apiFetch<{ success: boolean }>('/api/admin/user/models/update', {
+        method: 'POST',
+        body: JSON.stringify({ username, blocked_models: blockedModels }),
     })
 }

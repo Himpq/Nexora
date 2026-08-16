@@ -666,6 +666,20 @@
     line-height: 1.2;
 }
 
+.settings-stat-empty {
+    padding: 18px 0;
+    text-align: center;
+    font-size: 13px;
+    color: #a0a0a0;
+}
+
+.settings-stat-count {
+    font-size: 13px;
+    font-weight: 550;
+    color: #3c3c3c;
+    font-variant-numeric: tabular-nums;
+}
+
 /* 系统设置卡片 */
 .settings-modal-shell .admin-system-card {
     border: 1px solid #e8e8e8;
@@ -1655,6 +1669,62 @@
     height: 16px;
     accent-color: #111111;
     cursor: pointer;
+}
+
+/* ==================== 模型权限弹窗 ==================== */
+
+.model-perm-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+}
+
+.model-perm-row {
+    padding: 8px 14px;
+    border-bottom: 1px solid #f4f4f4;
+}
+
+.model-perm-row:last-child {
+    border-bottom: none;
+}
+
+.model-perm-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #222222;
+}
+
+.model-perm-id {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: #999999;
+}
+
+.model-perm-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 550;
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+.model-perm-badge.provider-ollama {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.model-perm-badge.status-error {
+    background: #fdecea;
+    color: #b03a2e;
+}
+
+.model-perm-badge.status-disabled {
+    background: #f2f2f2;
+    color: #7a7a7a;
 }
 
 /* ==================== 通用滚动条(设置壳内浅色) ==================== */

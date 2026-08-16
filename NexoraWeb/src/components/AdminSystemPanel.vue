@@ -122,6 +122,7 @@
                                     class="input-modern"
                                     type="number"
                                     min="1"
+                                    :max="field.key === 'port' ? 65535 : 3600"
                                 >
                                 <input
                                     v-else-if="field.type === 'password'"
@@ -213,12 +214,15 @@
         nexora_learning: [
             { key: 'host', label: 'Host' },
             { key: 'port', label: 'Port', type: 'number' },
+            { key: 'request_timeout', label: 'Request Timeout', type: 'number' },
             { key: 'frontend_url', label: 'Frontend URL', wide: true },
             { key: 'api_key', label: 'API Key', type: 'password', wide: true },
         ],
         nexora_mail: [
             { key: 'host', label: 'Host' },
             { key: 'port', label: 'Port', type: 'number' },
+            { key: 'timeout', label: 'Timeout', type: 'number' },
+            { key: 'send_timeout', label: 'Send Timeout', type: 'number' },
             { key: 'service_url', label: 'Service URL', wide: true },
             { key: 'api_key', label: 'API Key', type: 'password', wide: true },
             { key: 'default_group', label: '默认分组' },

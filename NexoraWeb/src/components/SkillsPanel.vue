@@ -36,7 +36,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     新建 Skill
                 </button>
-                <input ref="skillFileInput" type="file" accept=".skill,.md,.txt,.json" style="display:none" @change="handleSkillFile">
+                <input ref="skillFileInput" type="file" accept=".skill,.txt,.md,.markdown,.json,.yaml,.yml,.prompt" style="display:none" @change="handleSkillFile">
             </div>
         </div>
 
@@ -56,8 +56,15 @@
                         </div>
                     </div>
                     <div class="settings-skill-item-actions">
+                        <!-- 运行模式切换(对齐原版 settings-skill-mode-trigger) -->
+                        <SettingSelect
+                            :model-value="skillMode(skill)"
+                            :options="modeSelectOptions"
+                            width="96px"
+                            @update:model-value="changeSkillMode(skill, String($event))"
+                        />
                         <button
-                            v-if="skill.origin === 'self'"
+                            v-if="isEditableSkill(skill)"
                             class="btn-skill-small"
                             type="button"
                             title="编辑"
@@ -75,7 +82,7 @@
                             <i class="fa-solid fa-upload" aria-hidden="true"></i>
                         </button>
                         <button
-                            v-if="skill.origin === 'self'"
+                            v-if="isEditableSkill(skill)"
                             class="btn-skill-small danger"
                             type="button"
                             title="删除"
@@ -169,6 +176,7 @@
                     <span v-if="detailSkill.version">v{{ detailSkill.version }}</span>
                     <span>{{ Number(detailSkill.install_count || 0).toLocaleString() }} 次安装</span>
                     <span v-if="detailSkill.mode">{{ modeLabel(detailSkill.mode) }}</span>
+                    <span v-if="detailSkill.required_tools?.length">工具:{{ detailSkill.required_tools.join(',') }}</span>
                 </div>
                 <div v-if="detailSkill.tags?.length" class="skill-market-tags">
                     <span v-for="tag in detailSkill.tags" :key="tag" class="skill-market-tag">{{ tag }}</span>
@@ -265,6 +273,7 @@
         installMarketSkill,
         parseSkillText,
         publishMarketSkill,
+        saveSkillModes,
         updateMySkill,
     } from '@/api/skills'
     import { showConfirm } from '@/stores/confirm'
@@ -272,9 +281,11 @@
 
     import MarkdownView from './MarkdownView.vue'
     import Modal from '@/ui/Modal.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const subTab = ref<'my' | 'market'>('my')
     const skills = ref<SkillItem[]>([])
+    const skillModes = ref<Record<string, string>>({})
     const loading = ref(false)
 
     /** 市场状态 */
@@ -307,6 +318,13 @@
     const editorFromUpload = ref(false)
     const modeOpen = ref(false)
     const modeOptions = [
+        { value: 'off', label: 'Off' },
+        { value: 'auto', label: 'Auto' },
+        { value: 'force', label: 'Force' },
+    ]
+
+    /** 列表行 mode 下拉选项(带原版说明) */
+    const modeSelectOptions = [
         { value: 'off', label: 'Off' },
         { value: 'auto', label: 'Auto' },
         { value: 'force', label: 'Force' },
@@ -365,6 +383,11 @@
         return '全局'
     }
 
+    /** 可编辑/可删除的 skill(自建 + 市场安装,对齐原版 isPersonal) */
+    function isEditableSkill(skill: SkillItem): boolean {
+        return skill.origin === 'self' || skill.origin === 'market'
+    }
+
     /** 运行时 Skill 的展示名(对齐后端 title 字段;兼容 name) */
     function skillTitle(skill: SkillItem): string {
         return String(skill.name || skill.title || skill.id || '')
@@ -401,11 +424,35 @@
         loading.value = true
 
         try {
-            skills.value = await fetchMySkills()
+            const data = await fetchMySkills()
+
+            skills.value = data.skills
+            skillModes.value = data.skillModes
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载 Skill 失败')
         } finally {
             loading.value = false
+        }
+    }
+
+    /** 某 skill 的当前运行模式(对齐原版 skill_modes 联动) */
+    function skillMode(skill: SkillItem): string {
+        const mode = skillModes.value[String(skill.id || '')]
+
+        return String(mode || skill.mode || 'off').toLowerCase()
+    }
+
+    /** 切换 skill 运行模式(对齐原版 saveSkillModesState → /api/skills/settings) */
+    async function changeSkillMode(skill: SkillItem, mode: string): Promise<void> {
+        try {
+            const next = { ...skillModes.value, [String(skill.id || '')]: mode }
+
+            await saveSkillModes(next)
+
+            skillModes.value = next
+            showToast(`Skill 已设为 ${modeLabel(mode)}`, 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '保存失败')
         }
     }
 

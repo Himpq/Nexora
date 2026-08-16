@@ -40,22 +40,38 @@
 
         <template #detail>
             <div v-if="!selectedKey" class="admin-user-detail-empty">请选择左侧 Key 查看详情</div>
-            <div v-else class="admin-user-detail-grid">
-                <div class="form-group">
-                    <label>Key Name</label>
-                    <input v-model="detailName" class="input-modern" type="text" maxlength="120">
+            <div v-else>
+                <div class="admin-user-detail-grid">
+                    <div class="form-group">
+                        <label>Key Name</label>
+                        <input v-model="detailName" class="input-modern" type="text" maxlength="120">
+                    </div>
+                    <div class="form-group">
+                        <label>Key 预览</label>
+                        <div class="admin-info-text mono">{{ selectedKey.key_preview || '-' }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>创建时间</label>
+                        <div class="admin-info-text mono">{{ formatDateTime(selectedKey.created_at) }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>过期时间</label>
+                        <div class="admin-info-text mono">{{ formatDateTime(selectedKey.expires_at) || '永久有效' }}</div>
+                    </div>
                 </div>
                 <div class="form-group">
-                    <label>Key 预览</label>
-                    <div class="admin-info-text mono">{{ selectedKey.key_preview || '-' }}</div>
+                    <label>有效期</label>
+                    <SettingSelect v-model="detailExpire" :options="expireSelectOptions" width="160px" />
                 </div>
                 <div class="form-group">
-                    <label>创建时间</label>
-                    <div class="admin-info-text mono">{{ formatDateTime(selectedKey.created_at) }}</div>
-                </div>
-                <div class="form-group">
-                    <label>过期时间</label>
-                    <div class="admin-info-text mono">{{ formatDateTime(selectedKey.expires_at) || '永久' }}</div>
+                    <label>权限</label>
+                    <div class="settings-toggle-grid">
+                        <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">
+                            <input v-model="detailPermissions[key]" type="checkbox">
+                            <span>{{ label }}</span>
+                        </label>
+                        <span v-if="!Object.keys(permissionLabels).length" class="admin-user-meta">无可用权限</span>
+                    </div>
                 </div>
                 <div class="papi-action-row">
                     <button class="btn-primary-outline" type="button" @click="saveDetail">
@@ -89,7 +105,7 @@
             >
         </div>
         <div class="form-group">
-            <label for="userPapiKeyCreateExpire">有效期</label>
+            <label>有效期</label>
             <div class="chat-announcement-level-select">
                 <button
                     id="userPapiKeyCreateExpire"
@@ -113,6 +129,16 @@
                 </div>
             </div>
         </div>
+        <div class="form-group">
+            <label>权限</label>
+            <div class="settings-toggle-grid">
+                <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">
+                    <input v-model="createPermissions[key]" type="checkbox">
+                    <span>{{ label }}</span>
+                </label>
+                <span v-if="!Object.keys(permissionLabels).length" class="admin-user-meta">无可用权限</span>
+            </div>
+        </div>
         <template #footer>
             <button class="btn-cancel" type="button" @click="createOpen = false">取消</button>
             <button class="btn-confirm" type="button" @click="submitCreate">创建</button>
@@ -133,7 +159,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onMounted, ref, watch } from 'vue'
+    import { computed, onMounted, reactive, ref, watch } from 'vue'
 
     import type { ExpireOption, UserApiKey } from '@/api/user-keys'
     import {
@@ -148,24 +174,34 @@
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const keys = ref<UserApiKey[]>([])
     const expireOptions = ref<ExpireOption[]>([])
+    const permissionLabels = ref<Record<string, string>>({})
     const loading = ref(false)
     const selectedId = ref('')
 
     const createOpen = ref(false)
     const createName = ref('')
-    const createExpire = ref('1m')
+    const createExpire = ref('forever')
     const expireMenuOpen = ref(false)
+    const createPermissions = reactive<Record<string, boolean>>({})
 
     const plainKeyOpen = ref(false)
     const plainKey = ref('')
 
     const detailName = ref('')
+    const detailExpire = ref('forever')
+    const detailPermissions = reactive<Record<string, boolean>>({})
 
     const selectedKey = computed(() => {
         return keys.value.find((key) => key.id === selectedId.value) || null
+    })
+
+    /** 详情有效期下拉选项(对齐原版 renderExpirySlider 选项) */
+    const expireSelectOptions = computed(() => {
+        return expireOptions.value.map((option) => ({ value: option.id, label: option.label }))
     })
 
     const expireLabel = computed(() => {
@@ -178,12 +214,17 @@
         void load()
     })
 
-    /** 选中变化时同步详情名称 */
+    /** 选中变化时同步详情状态 */
     watch(selectedKey, (key) => {
         detailName.value = key ? key.name : ''
+        detailExpire.value = key?.expire_option || 'forever'
+
+        for (const permKey of Object.keys(permissionLabels.value)) {
+            detailPermissions[permKey] = Array.isArray(key?.permissions) ? key.permissions.includes(permKey) : true
+        }
     })
 
-    /** 拉取列表(对齐原版 loadUserApiKeys) */
+    /** 拉取列表(对齐原版 loadUserApiKeys;自动选中第一个) */
     async function load(): Promise<void> {
         if (loading.value) {
             return
@@ -196,6 +237,18 @@
 
             keys.value = data.keys
             expireOptions.value = data.expireOptions
+            permissionLabels.value = data.permissionLabels
+
+            // 初始化创建权限默认全选
+            for (const key of Object.keys(data.permissionLabels)) {
+                createPermissions[key] = true
+                detailPermissions[key] = true
+            }
+
+            // 自动选中第一个 Key(对齐原版 applyPayload)
+            if (!selectedId.value && keys.value.length) {
+                selectedId.value = keys.value[0].id
+            }
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载 API Key 失败')
         } finally {
@@ -207,14 +260,26 @@
         selectedId.value = keyId
     }
 
-    /** 打开创建弹窗 */
+    /** 收集勾选的权限键 */
+    function collectPermissions(source: Record<string, boolean>): string[] {
+        return Object.entries(source)
+            .filter(([, enabled]) => enabled)
+            .map(([key]) => key)
+    }
+
+    /** 打开创建弹窗(默认永久 + 权限全选) */
     function openCreate(): void {
         createName.value = ''
-        createExpire.value = '1m'
+        createExpire.value = 'forever'
+
+        for (const key of Object.keys(permissionLabels.value)) {
+            createPermissions[key] = true
+        }
+
         createOpen.value = true
     }
 
-    /** 提交创建(对齐原版 submitCreate) */
+    /** 提交创建(对齐原版 submitCreate:name+expire+permissions) */
     async function submitCreate(): Promise<void> {
         const name = createName.value.trim()
 
@@ -228,6 +293,7 @@
             const result = await createUserApiKey({
                 name,
                 expire: createExpire.value,
+                permissions: collectPermissions(createPermissions),
             })
 
             createOpen.value = false
@@ -240,7 +306,7 @@
         }
     }
 
-    /** 保存详情(名称) */
+    /** 保存详情(名称 + 有效期 + 权限,对齐原版 saveSelectedKey) */
     async function saveDetail(): Promise<void> {
         const key = selectedKey.value
 
@@ -250,12 +316,18 @@
 
         const name = detailName.value.trim()
 
-        if (!name || name === key.name) {
+        if (!name) {
+            showToast('名称不能为空', 'warning')
+
             return
         }
 
         try {
-            await updateUserApiKey(key.id, { name })
+            await updateUserApiKey(key.id, {
+                name,
+                expire: detailExpire.value,
+                permissions: collectPermissions(detailPermissions),
+            })
 
             showToast('已保存', 'success')
             await load()
@@ -264,7 +336,7 @@
         }
     }
 
-    /** 轮换 Key(对齐原版 rotateSelectedKey) */
+    /** 轮换 Key(对齐原版 rotateSelectedKey:携带当前有效期) */
     async function handleRotate(): Promise<void> {
         const key = selectedKey.value
 
@@ -285,7 +357,7 @@
         }
 
         try {
-            const result = await regenerateUserApiKey(key.id)
+            const result = await regenerateUserApiKey(key.id, { expire: detailExpire.value })
 
             plainKey.value = result.plainKey
             plainKeyOpen.value = true

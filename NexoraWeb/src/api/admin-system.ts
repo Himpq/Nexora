@@ -35,13 +35,14 @@ export async function fetchAdminSystemSettings(): Promise<AdminSystemSettings | 
     return data.settings || null
 }
 
-/** 保存系统总设置(整体覆盖 services 与 runtime) */
+/** 保存系统总设置(整体覆盖 services / runtime / default_models) */
 export async function saveAdminSystemSettings(settings: AdminSystemSettings): Promise<void> {
     const data = await apiFetch<SystemSettingsResponse>('/api/admin/system/settings', {
         method: 'POST',
         body: JSON.stringify({
             runtime: settings.runtime,
             services: settings.services,
+            default_models: settings.default_models,
         }),
     })
 

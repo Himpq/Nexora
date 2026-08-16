@@ -107,10 +107,11 @@ export async function updateUserApiKey(keyId: string, options: {
     return data.key
 }
 
-/** 轮换 API Key */
-export async function regenerateUserApiKey(keyId: string): Promise<{ key: UserApiKey; plainKey: string }> {
+/** 轮换 API Key(对齐原版 rotateSelectedKey:携带有效期) */
+export async function regenerateUserApiKey(keyId: string, options: { expire?: string } = {}): Promise<{ key: UserApiKey; plainKey: string }> {
     const data = await apiFetch<UserApiKeyMutationResponse>(`/api/user/papi-keys/${encodeURIComponent(keyId)}/regenerate`, {
         method: 'POST',
+        body: JSON.stringify({ expire: options.expire }),
     })
 
     if (!data.key) {

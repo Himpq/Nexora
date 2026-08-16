@@ -54,8 +54,13 @@
 
                 <div class="admin-user-detail-grid">
                     <div class="form-group">
+                        <label>用户名</label>
+                        <input v-model="detailDisplayName" class="input-modern" type="text" maxlength="32" placeholder="显示名称">
+                    </div>
+                    <div class="form-group">
                         <label>角色</label>
-                        <SettingSelect v-model="detailRole" :options="roleOptions" width="140px" @update:model-value="handleRoleChange" />
+                        <SettingSelect v-if="!isSelf" v-model="detailRole" :options="roleOptions" width="140px" />
+                        <div v-else class="admin-info-text">{{ roleLabel(detailRole) }}(本人不可改)</div>
                     </div>
                     <div class="form-group">
                         <label>最近登录</label>
@@ -80,11 +85,19 @@
                 </div>
 
                 <div class="papi-action-row">
+                    <button class="btn-primary" type="button" @click="saveProfile">
+                        <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                        <span>保存资料</span>
+                    </button>
+                    <button class="btn-primary-outline" type="button" @click="openModelPerm">
+                        <i class="fa-solid fa-lock" aria-hidden="true"></i>
+                        <span>模型权限</span>
+                    </button>
                     <button class="btn-primary-outline" type="button" @click="openResetPassword">
                         <i class="fa-solid fa-key" aria-hidden="true"></i>
                         <span>重置密码</span>
                     </button>
-                    <button class="btn-danger-small" type="button" @click="handleDelete">
+                    <button v-if="!isSelf" class="btn-danger-small" type="button" @click="handleDelete">
                         <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                         <span>删除用户</span>
                     </button>
@@ -92,6 +105,32 @@
             </div>
         </template>
     </AdminPanel>
+
+    <!-- 模型权限弹窗(对齐原版 modelPermModal) -->
+    <Modal :open="modelPermOpen" title="模型权限" size="lg" @close="modelPermOpen = false">
+        <div class="settings-help-text" style="margin-bottom:12px;">
+            为「{{ permTargetUser }}」设置可用模型:取消勾选表示禁止该模型。
+        </div>
+        <div v-if="permLoading" class="admin-user-detail-empty">加载中...</div>
+        <div v-else class="model-perm-list">
+            <div v-for="model in permModels" :key="model.id" class="model-perm-row">
+                <label class="settings-toggle-row">
+                    <input v-model="model.allowed" type="checkbox">
+                    <span>
+                        <span class="model-perm-name">{{ model.name }}</span>
+                        <span class="model-perm-id mono">{{ model.id }}</span>
+                        <span class="model-perm-badge" :class="`provider-${String(model.provider || '').toLowerCase()}`">{{ model.provider }}</span>
+                        <span class="model-perm-badge" :class="`status-${String(model.status || 'normal').toLowerCase()}`">{{ model.status }}</span>
+                    </span>
+                </label>
+            </div>
+            <div v-if="!permModels.length" class="admin-user-detail-empty">暂无模型</div>
+        </div>
+        <template #footer>
+            <button class="btn-cancel" type="button" @click="modelPermOpen = false">取消</button>
+            <button class="btn-confirm" type="button" :disabled="permSaving" @click="saveModelPerm">保存更改</button>
+        </template>
+    </Modal>
 
     <!-- 添加用户弹窗 -->
     <Modal :open="createOpen" title="添加新用户" size="sm" @close="createOpen = false">
@@ -150,20 +189,26 @@
 <script setup lang="ts">
     import { computed, onMounted, ref } from 'vue'
 
-    import type { AdminUser } from '@/api/admin-users'
+    import type { AdminUser, UserModelEntry } from '@/api/admin-users'
     import {
         addAdminUser,
         deleteAdminUser,
+        fetchUserModels,
         listAdminUsers,
         resetAdminUserPassword,
         setAdminUserRole,
+        updateAdminUserProfile,
+        updateUserModelBlacklist,
     } from '@/api/admin-users'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
+
+    const userStore = useUserStore()
 
     const roleOptions = [
         { value: 'member', label: '成员' },
@@ -184,12 +229,25 @@
     const resetPassword = ref('')
 
     const detailRole = ref('member')
+    const detailDisplayName = ref('')
+
+    /** 模型权限弹窗状态(对齐原版 modelPermModal) */
+    const modelPermOpen = ref(false)
+    const permTargetUser = ref('')
+    const permLoading = ref(false)
+    const permSaving = ref(false)
+    const permModels = ref<Array<UserModelEntry & { allowed: boolean }>>([])
 
     const selected = computed(() => {
         return users.value.find((user) => user.user_id === selectedId.value) || null
     })
 
-    /** 筛选后的用户列表(对齐原版 adminUserFilterInput) */
+    /** 当前登录用户是否为被查看用户(对齐原版 isSelf:本人角色/删除受限) */
+    const isSelf = computed(() => {
+        return String(selected.value?.user_id || '') === String(userStore.userId || '')
+    })
+
+    /** 筛选后的用户列表(对齐原版 adminUserFilterInput:匹配用户名/ID/角色中文/IP) */
     const filteredUsers = computed(() => {
         const keyword = query.value.trim().toLowerCase()
 
@@ -198,10 +256,12 @@
         }
 
         return users.value.filter((user) => {
+            const roleText = user.role === 'admin' ? 'admin 管理员' : 'member 普通用户'
             const haystack = [
                 user.user_id,
                 user.username,
                 user.role,
+                roleText,
                 user.last_ip,
             ].join(' ').toLowerCase()
 
@@ -213,7 +273,7 @@
         void load()
     })
 
-    /** 拉取用户列表(对齐原版 adminGetUsers) */
+    /** 拉取用户列表(对齐原版 adminGetUsers;自动选中第一个) */
     async function load(): Promise<void> {
         if (loading.value) {
             return
@@ -223,6 +283,10 @@
 
         try {
             users.value = await listAdminUsers()
+
+            if (!selectedId.value && users.value.length) {
+                selectUser(users.value[0])
+            }
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载用户失败')
         } finally {
@@ -237,6 +301,84 @@
     function selectUser(user: AdminUser): void {
         selectedId.value = user.user_id
         detailRole.value = String(user.role || 'member')
+        detailDisplayName.value = String(user.username || user.user_id)
+    }
+
+    /** 保存资料(显示名 + 非本人角色,对齐原版 saveAdminUserProfile) */
+    async function saveProfile(): Promise<void> {
+        if (!selected.value) {
+            return
+        }
+
+        const displayName = detailDisplayName.value.trim()
+
+        if (!displayName) {
+            showToast('用户名不能为空', 'warning')
+
+            return
+        }
+
+        try {
+            const currentRole = String(selected.value.role || 'member')
+            const tasks: Promise<unknown>[] = []
+
+            if (displayName !== String(selected.value.username || selected.value.user_id)) {
+                tasks.push(updateAdminUserProfile(selected.value.user_id, displayName))
+            }
+
+            if (!isSelf.value && detailRole.value !== currentRole) {
+                tasks.push(setAdminUserRole(selected.value.user_id, detailRole.value))
+            }
+
+            await Promise.all(tasks)
+
+            showToast('资料已保存', 'success')
+            await load()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '保存失败')
+        }
+    }
+
+    /** 打开模型权限弹窗(对齐原版 openUserModelPerm) */
+    async function openModelPerm(): Promise<void> {
+        if (!selected.value) {
+            return
+        }
+
+        permTargetUser.value = selected.value.username || selected.value.user_id
+        modelPermOpen.value = true
+        permLoading.value = true
+
+        try {
+            const models = await fetchUserModels(permTargetUser.value)
+
+            permModels.value = models.map((model) => ({
+                ...model,
+                allowed: !model.is_blocked,
+            }))
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '加载模型权限失败')
+        } finally {
+            permLoading.value = false
+        }
+    }
+
+    /** 保存模型权限(对齐原版 saveUserModelPermissions) */
+    async function saveModelPerm(): Promise<void> {
+        permSaving.value = true
+
+        try {
+            const blocked = permModels.value.filter((model) => !model.allowed).map((model) => model.id)
+
+            await updateUserModelBlacklist(permTargetUser.value, blocked)
+
+            showToast('模型权限已保存', 'success')
+            modelPermOpen.value = false
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '保存失败')
+        } finally {
+            permSaving.value = false
+        }
     }
 
     /** 角色中文标签 */
@@ -275,29 +417,6 @@
             await load()
         } catch (error) {
             showError(error instanceof Error ? error.message : '创建失败')
-        }
-    }
-
-    /** 修改角色 */
-    async function handleRoleChange(): Promise<void> {
-        if (!selected.value) {
-            return
-        }
-
-        const nextRole = detailRole.value
-        const currentRole = String(selected.value.role || 'member')
-
-        if (nextRole === currentRole) {
-            return
-        }
-
-        try {
-            await setAdminUserRole(selected.value.user_id, nextRole)
-
-            showToast('角色已更新', 'success')
-            await load()
-        } catch (error) {
-            showError(error instanceof Error ? error.message : '更新失败')
         }
     }
 

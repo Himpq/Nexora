@@ -106,6 +106,17 @@
                                 <span class="value">{{ stats.total_knowledge ?? '-' }}</span>
                             </div>
                         </div>
+
+                        <SettingCard title="模型使用统计" description="各模型调用次数">
+                            <div v-if="!modelUsageRows.length" class="settings-stat-empty">暂无数据</div>
+                            <SettingRow
+                                v-for="row in modelUsageRows"
+                                :key="row.model"
+                                :label="row.model"
+                            >
+                                <span class="settings-stat-count">{{ row.count }} 次调用</span>
+                            </SettingRow>
+                        </SettingCard>
                     </template>
 
                     <!-- 我的 API Key -->
@@ -355,8 +366,21 @@
         total_conversations?: number
         total_tokens?: number
         total_knowledge?: number
-        model_usage?: Record<string, unknown>
+        model_usage?: Record<string, number>
     }>({})
+
+    /** 模型使用统计行(按调用次数降序,对齐原版 modelUsageStats) */
+    const modelUsageRows = computed(() => {
+        const usage = stats.value.model_usage
+
+        if (!usage || typeof usage !== 'object') {
+            return []
+        }
+
+        return Object.entries(usage)
+            .map(([model, count]) => ({ model, count: Number(count || 0) }))
+            .sort((a, b) => b.count - a.count)
+    })
 
     function formatTokens(value: unknown): string {
         const num = Number(value || 0)

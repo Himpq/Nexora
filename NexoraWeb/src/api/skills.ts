@@ -31,6 +31,7 @@ export interface MarketSkillItem {
     version?: string
     install_count?: number
     tags?: string[]
+    required_tools?: string[]
     installed?: boolean
     mode?: string
     main_content?: string
@@ -53,6 +54,7 @@ interface MySkillsResponse {
     success: boolean
     skills?: SkillItem[]
     personal_skills?: SkillItem[]
+    skill_modes?: Record<string, string>
     [key: string]: unknown
 }
 
@@ -64,11 +66,28 @@ interface MarketListResponse {
     [key: string]: unknown
 }
 
-/** 获取我的 Skill 列表(合并视图) */
-export async function fetchMySkills(): Promise<SkillItem[]> {
+/** 获取我的 Skill 列表 + 运行模式(合并视图) */
+export async function fetchMySkills(): Promise<{ skills: SkillItem[]; skillModes: Record<string, string> }> {
     const data = await apiFetch<MySkillsResponse>('/api/skills/my')
 
-    return Array.isArray(data.skills) ? data.skills : []
+    return {
+        skills: Array.isArray(data.skills) ? data.skills : [],
+        skillModes: data.skill_modes && typeof data.skill_modes === 'object'
+            ? data.skill_modes as Record<string, string>
+            : {},
+    }
+}
+
+/** 保存 Skill 运行模式(对齐原版 POST /api/skills/settings) */
+export async function saveSkillModes(skillModes: Record<string, string>): Promise<void> {
+    const data = await apiFetch<{ success: boolean; message?: string }>('/api/skills/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ skill_modes: skillModes }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '保存失败')
+    }
 }
 
 /** 创建个人 Skill */
