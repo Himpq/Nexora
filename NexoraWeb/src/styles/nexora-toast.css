@@ -1,0 +1,54 @@
+/**
+ * nexora-toast.css — 全局 toast 样式
+ *
+ * 职责:
+ *   - 与 Nexora 原版 Notification 视觉保持一致(白底、左侧色条、图标)
+ */
+
+#nexora-toast-root {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: var(--z-toast, 40000);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.nexora-toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid #2080f0;
+    border-radius: 8px;
+    padding: 10px 16px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+    font-size: 14px;
+    color: #334155;
+    max-width: 420px;
+    animation: nexora-toast-in 0.2s ease-out;
+    pointer-events: auto;
+}
+
+.nexora-toast.is-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: all 0.25s ease-in;
+}
+
+@keyframes nexora-toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

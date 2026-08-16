@@ -1,0 +1,234 @@
+/**
+ * modal.css — 现代窗口组件样式(General Design Development Package)
+ *
+ * 设计语言:
+ *   - Modern:柔和阴影 + 大圆角 + 背景模糊
+ *   - Simplify:清晰层级(遮罩 → 卡片 → 头部/正文/底部),减少视觉噪音
+ *   - Interactive:入场/出场动画、hover/active 反馈、键盘交互(Esc 关闭)
+ *
+ * 统一由 ui/Modal.vue 与 stores/confirm.ts 使用,禁止组件各自写弹窗样式。
+ */
+
+/* ---------- 遮罩 ---------- */
+.g-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal, 4000);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+/*
+ * legacy 模式(复用原版 Nexora CSS 的弹窗,如设置窗口):
+ * 原版 .modal-backdrop 默认 display:none、.active 才显示;
+ * 本文件后加载,覆盖 display 使 v-if 显示与 .active 一致。
+ */
+.g-modal-backdrop.modal-backdrop {
+    display: flex;
+}
+
+.g-modal-backdrop.modal-backdrop.active {
+    display: flex;
+}
+
+/* legacy 模式淡入动画(原版无动画,补一个极简过渡,避免生硬) */
+.g-modal-fade-enter-active,
+.g-modal-fade-leave-active {
+    transition: opacity 0.15s ease;
+}
+
+.g-modal-fade-enter-from,
+.g-modal-fade-leave-to {
+    opacity: 0;
+}
+
+/* legacy 卡片:原版 .modal 自带圆角/阴影,这里确保 display 与 flex 方向正确 */
+.g-modal-backdrop.modal-backdrop .modal {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+}
+
+/* legacy 头部:原版 #settingsModal .modal-head 有 !important 规则,此处只兜底非 settings 弹窗 */
+.g-modal-backdrop.modal-backdrop .modal-head {
+    flex-shrink: 0;
+}
+
+.g-modal-backdrop.modal-backdrop .modal-body {
+    flex: 1;
+    min-height: 0;
+}
+
+.g-modal-backdrop.modal-backdrop .modal-footer {
+    flex-shrink: 0;
+}
+
+/* ---------- 卡片 ---------- */
+.g-modal {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 440px;
+    max-height: calc(100vh - 40px);
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
+    overflow: hidden;
+    transform-origin: center;
+}
+
+.g-modal-sm {
+    max-width: 360px;
+}
+
+.g-modal-lg {
+    max-width: 640px;
+}
+
+/* ---------- 头部 ---------- */
+.g-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px 12px;
+    flex-shrink: 0;
+}
+
+.g-modal-head h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.g-modal-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.g-modal-close:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+/* ---------- 正文 ---------- */
+.g-modal-body {
+    padding: 4px 20px 16px;
+    overflow-y: auto;
+    font-size: 14px;
+    color: #334155;
+    line-height: 1.6;
+}
+
+/* ---------- 底部 ---------- */
+.g-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 20px 16px;
+    border-top: 1px solid #f1f5f9;
+    flex-shrink: 0;
+}
+
+/* ---------- 按钮(通用,视觉对齐原版 Nexora:主按钮黑色、次按钮白底灰边) ---------- */
+.g-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.g-btn:active {
+    transform: scale(0.97);
+}
+
+.g-btn-primary {
+    background: #000000;
+    color: #ffffff;
+}
+
+.g-btn-primary:hover {
+    background: #333333;
+}
+
+.g-btn-ghost {
+    background: #f5f5f5;
+    color: #666666;
+    border: 1px solid transparent;
+}
+
+.g-btn-ghost:hover {
+    background: #eeeeee;
+    color: #333333;
+}
+
+.g-btn-danger {
+    background: #ff4d4f;
+    color: #ffffff;
+}
+
+.g-btn-danger:hover {
+    background: #ff7875;
+}
+
+/* ---------- 输入(通用) ---------- */
+.g-input {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #0f172a;
+    background: #fff;
+    outline: none;
+    transition: all 0.15s ease;
+    box-sizing: border-box;
+}
+
+.g-input:focus {
+    border-color: #94a3b8;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}
+
+/* ---------- 动画 ---------- */
+.g-modal-enter-active,
+.g-modal-leave-active {
+    transition: opacity 0.2s ease;
+}
+
+.g-modal-enter-active .g-modal,
+.g-modal-leave-active .g-modal {
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.g-modal-enter-from,
+.g-modal-leave-to {
+    opacity: 0;
+}
+
+.g-modal-enter-from .g-modal,
+.g-modal-leave-to .g-modal {
+    transform: scale(0.96) translateY(8px);
+}
