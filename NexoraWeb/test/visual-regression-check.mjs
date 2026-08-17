@@ -47,9 +47,9 @@ const turn = await page.evaluate(() => {
 })
 console.log('1 turn indicator:', JSON.stringify(turn))
 
-// 2. 点击轮次线跳转
+// 2. 点击预览项跳转(对齐原版:跳转入口是 popup 项,线条本身无点击)
 await page.evaluate(() => {
-    document.querySelector('#turnIndicatorLines .turn-indicator-line')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    document.querySelector('.turn-indicator-popup .turn-indicator-popup-item')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 })
 await page.waitForTimeout(600)
 
@@ -60,10 +60,9 @@ const jump = await page.evaluate(() => {
 })
 console.log('2 jump highlight:', JSON.stringify(jump))
 
-// 3. hover popup
+// 3. hover 面板 → popup(对齐原版:mouseenter 绑定在面板上)
 await page.evaluate(() => {
-    const line = document.querySelector('#turnIndicatorLines .turn-indicator-line')
-    line?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+    document.querySelector('#turnIndicatorPanel')?.dispatchEvent(new MouseEvent('mouseenter'))
 })
 await page.waitForTimeout(300)
 
@@ -73,7 +72,7 @@ const popup = await page.evaluate(() => {
     return {
         visible: popup?.classList.contains('visible') || false,
         items: popup?.querySelectorAll('.turn-indicator-popup-item').length || 0,
-        text: popup?.querySelector('.turn-indicator-popup-text')?.textContent?.slice(0, 30) || null,
+        text: popup?.querySelector('.turn-indicator-popup-item')?.textContent?.trim().slice(0, 30) || null,
     }
 })
 console.log('3 popup:', JSON.stringify(popup))

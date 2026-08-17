@@ -8,6 +8,7 @@ from App.Observability import create_user_notification
 from basis.Database import safe_read_json
 from App.Storage import UserFileSandbox
 from App.Utils import safe_filename
+from App.errors import json_error
 
 from .storage import (
     DATA_DIR,
@@ -33,13 +34,6 @@ def current_username() -> str:
         raise PermissionError("login required")
 
     return validate_username(username)
-
-
-def json_error(message: str, status: int = 400):
-    return jsonify({
-        "success": False,
-        "message": message,
-    }), status
 
 
 def parse_json_body() -> Dict[str, Any]:

@@ -322,7 +322,9 @@ let adminOllamaStatusModalState = { provider: '', model: '', status: null, loadi
 const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
-let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
+// 学习服务地址必须以后端 /api/user/preferences 下发的 frontend_url 为准（loadCurrentUserPreferences 中赋值）。
+// 初始值仅作缺失配置时的兜底，与后端 _derive_frontend_url 的默认一致，严禁用 ChatDB backend host 猜测。
+let NEXORA_LEARNING_FRONTEND_URL = 'http://127.0.0.1:5001/api/frontend/';
 const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260731_profile_center_01';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260731_profile_center_01';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
@@ -2725,10 +2727,11 @@ function normalizeLatexSyntax(text) {
     src = src.replace(/\\\s*\$\s*\\text\{/g, '\\ \\text{');
 
     // 单美元符跨多行时，仅对“纯数学内容”提升为块公式；混排文本则去掉外层美元符，避免整段渲染失败。
-    src = src.replace(/\$([^$\n]*\n[\s\S]*?)\$/g, (_, body) => {
+    // 只匹配未转义的 $（已转义的 \$ 属于金额/字面量），避免把相邻货币符号吞进公式区间。
+    src = src.replace(/(^|[^\\])\$([^$\n]*\n[\s\S]*?)(?<!\\)\$/g, (match, pre, body) => {
         const b = String(body || '');
-        if (isLikelyPureMathSpan(b)) return `$$${b.trim()}$$`;
-        return b;
+        if (isLikelyPureMathSpan(b)) return `${pre}$$${b.trim()}$$`;
+        return `${pre}${b}`;
     });
     // 行内公式美元符不成对时，先去掉孤立 `$`，后续再走裸公式兜底包裹。
     src = stripUnbalancedInlineDollarsByLine(src);
@@ -8199,10 +8202,10 @@ async function loadCurrentUserPreferences() {
         ? prefsData.learning_runtime
         : {};
     learningRuntimeEnabled = learningRuntime.enabled !== false;
+    // 以后端下发的 frontend_url 为准；取不到时回退到与后端 _derive_frontend_url 一致的默认值，
+    // 确保学习 iframe 永远不使用 ChatDB backend host 猜测出的错误地址。
     const frontendUrl = String(learningRuntime.frontend_url || '').trim();
-    if (frontendUrl) {
-        NEXORA_LEARNING_FRONTEND_URL = frontendUrl.endsWith('/') ? frontendUrl : `${frontendUrl}/`;
-    }
+    NEXORA_LEARNING_FRONTEND_URL = `${(frontendUrl || 'http://127.0.0.1:5001/api/frontend').replace(/\/+$/, '')}/`;
 
     if (!learningRuntimeEnabled) {
         currentUserPreferences.learning_mode = false;
@@ -8994,6 +8997,87 @@ function applyTokenBudgetFromConversationMessages(messages) {
     renderTokenBudgetUi();
 }
 
+function formatBadgeDuration(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 1000) return `${Math.round(n)}ms`;
+    return `${(n / 1000).toFixed(1)}s`;
+}
+
+function formatBadgeTokensPerSec(outputTokens, elapsedMs) {
+    const out = safeTokenInt(outputTokens);
+    const ms = Number(elapsedMs);
+    if (out <= 0 || !Number.isFinite(ms) || ms < 100) return '';
+    const tps = out / (ms / 1000);
+    if (tps < 10) return `${tps.toFixed(1)} tok/s`;
+    return `${Math.round(tps)} tok/s`;
+}
+
+function buildModelBadgeTimingText(timing) {
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const startedAt = Number(t.startedAt) || 0;
+    if (startedAt <= 0) return '';
+
+    const now = Number(t.endedAt) || Date.now();
+    const totalMs = Math.max(0, now - startedAt);
+    if (totalMs <= 0) return '';
+
+    const firstTokenMs = Number(t.firstTokenAt) > 0 ? Math.max(0, Number(t.firstTokenAt) - startedAt) : 0;
+    const outputTokens = safeTokenInt(t.outputTokens);
+    const tpsText = formatBadgeTokensPerSec(outputTokens, totalMs);
+    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
+        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        : '';
+
+    const parts = [`总耗时 ${formatBadgeDuration(totalMs)}`];
+    if (firstTokenMs > 0) parts.push(`首token ${formatBadgeDuration(firstTokenMs)}`);
+    if (tpsText) parts.push(`速率 ${tpsText}`);
+    if (cacheRate) parts.push(`缓存 ${cacheRate}`);
+
+    return parts.length ? ` - ${parts.join(' · ')}` : '';
+}
+
+function buildModelBadgeTimingTitle(timing) {
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const startedAt = Number(t.startedAt) || 0;
+    if (startedAt <= 0) return '';
+
+    const now = Number(t.endedAt) || Date.now();
+    const totalMs = Math.max(0, now - startedAt);
+    if (totalMs <= 0) return '';
+
+    const firstTokenMs = Number(t.firstTokenAt) > 0 ? Math.max(0, Number(t.firstTokenAt) - startedAt) : 0;
+    const outputTokens = safeTokenInt(t.outputTokens);
+    const tpsText = formatBadgeTokensPerSec(outputTokens, totalMs);
+    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
+        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        : '';
+
+    const parts = [`总耗时: ${formatBadgeDuration(totalMs)}`];
+    if (firstTokenMs > 0) parts.push(`首token耗时: ${formatBadgeDuration(firstTokenMs)}`);
+    if (tpsText) parts.push(`生成速率: ${tpsText}`);
+    if (cacheRate) parts.push(`缓存命中: ${cacheRate}`);
+
+    return parts.join('\n');
+}
+
+function buildModelBadgeDetailTitle(modelName, inputTokens, outputTokens, memoryInputTokens, memoryOutputTokens, memoryReady, timing) {
+    const lines = [`模型: ${String(modelName || '-').trim() || '-'}`];
+    const ioLine = `输入: ${safeTokenInt(inputTokens).toLocaleString()} | 输出: ${safeTokenInt(outputTokens).toLocaleString()}`;
+    lines.push(ioLine);
+
+    if (memoryReady) {
+        lines.push(`记忆 I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`);
+    }
+
+    const timingTitle = buildModelBadgeTimingTitle(timing);
+    if (timingTitle) {
+        lines.push(timingTitle);
+    }
+
+    return lines.join('\n');
+}
+
 function buildModelBadgeText(
     modelName,
     searchFlag,
@@ -9001,16 +9085,16 @@ function buildModelBadgeText(
     outputTokens,
     memoryInputTokens,
     memoryOutputTokens,
-    memoryReady
+    memoryReady,
+    timing
 ) {
     const model = String(modelName || '-').trim() || '-';
-    const search = (typeof searchFlag === 'boolean') ? String(searchFlag) : String(searchFlag || 'unknown');
     const input = safeTokenInt(inputTokens).toLocaleString();
     const output = safeTokenInt(outputTokens).toLocaleString();
     const memoryText = memoryReady
         ? ` - mem I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`
         : '';
-    return `${model} - search: ${search} - I/O: ${input}/${output}${memoryText}`;
+    return `${model} - I/O: ${input}/${output}${memoryText}${buildModelBadgeTimingText(timing)}`;
 }
 
 function ensureMessageModelBadge(messageDiv) {
@@ -9048,7 +9132,8 @@ function renderMessageModelBadgeText(messageDiv) {
             outputTokens: 0,
             memoryInputTokens: 0,
             memoryOutputTokens: 0,
-            memoryReady: false
+            memoryReady: false,
+            timing: {}
         };
     const expanded = badge.dataset.expanded === '1';
     const compactText = String(state.modelName || '-').trim() || '-';
@@ -9059,10 +9144,21 @@ function renderMessageModelBadgeText(messageDiv) {
         state.outputTokens,
         state.memoryInputTokens,
         state.memoryOutputTokens,
-        state.memoryReady
+        state.memoryReady,
+        state.timing
     );
     badge.textContent = expanded ? fullText : compactText;
-    badge.title = expanded ? '点击折叠模型信息' : fullText;
+    badge.title = expanded
+        ? '点击折叠模型信息'
+        : buildModelBadgeDetailTitle(
+            state.modelName,
+            state.inputTokens,
+            state.outputTokens,
+            state.memoryInputTokens,
+            state.memoryOutputTokens,
+            state.memoryReady,
+            state.timing
+        );
     badge.classList.toggle('collapsed', !expanded);
 }
 
@@ -9086,7 +9182,8 @@ function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = 
             safeTokenInt(state && state.outputTokens),
             safeTokenInt(tokenMiniState.streamOutput),
             safeTokenInt(tokenMiniState.estimatedStreamOutput)
-        )
+        ),
+        timing: (state && state.timing) ? state.timing : {}
     };
     updateMessageModelBadge(messageDiv, nextState);
 }
@@ -9101,7 +9198,8 @@ function updateMessageModelBadge(messageDiv, state = {}) {
         outputTokens: safeTokenInt(state && state.outputTokens),
         memoryInputTokens: safeTokenInt(state && state.memoryInputTokens),
         memoryOutputTokens: safeTokenInt(state && state.memoryOutputTokens),
-        memoryReady: !!(state && state.memoryReady)
+        memoryReady: !!(state && state.memoryReady),
+        timing: (state && state.timing && typeof state.timing === 'object') ? state.timing : {}
     };
     messageDiv.__modelBadgeState = nextState;
     renderMessageModelBadgeText(messageDiv);
@@ -12443,7 +12541,15 @@ async function sendMessage(options = {}) {
         modelName: String(model || ''),
         searchFlag: 'unknown',
         inputTokens: 0,
-        outputTokens: 0
+        outputTokens: 0,
+        timing: {
+            startedAt: Date.now(),
+            firstTokenAt: 0,
+            endedAt: 0,
+            cachedInput: 0,
+            rawInput: 0,
+            outputTokens: 0
+        }
     };
     const modelBadgeUsageState = {
         input: 0,
@@ -12801,6 +12907,9 @@ async function sendMessage(options = {}) {
                         
                         else if (chunk.type === 'content') {
                             aiMsgDiv.__reasoningSegmentOpen = false;
+                            if (!modelBadgeState.timing.firstTokenAt) {
+                                modelBadgeState.timing.firstTokenAt = Date.now();
+                            }
                             let chunkContent = String(chunk.content || '');
 
                             if (!currentFullContent && !currentSegmentContent) {
@@ -13001,6 +13110,9 @@ async function sendMessage(options = {}) {
                             applyUsageChunkToBadgeState(modelBadgeUsageState, chunk);
                             modelBadgeState.inputTokens = modelBadgeUsageState.input;
                             modelBadgeState.outputTokens = modelBadgeUsageState.output;
+                            modelBadgeState.timing.cachedInput = safeTokenInt(chunk.cached_input_tokens);
+                            modelBadgeState.timing.rawInput = safeTokenInt(chunk.raw_input_tokens);
+                            modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
                             updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                         }
                         else if (chunk.type === 'title') {
@@ -13045,6 +13157,9 @@ async function sendMessage(options = {}) {
              }
 
              if (done) {
+                            modelBadgeState.timing.endedAt = Date.now();
+                            modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
+                            updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                             const finalPlanInfo = applyLongtermPlanFromText(currentFullContent, { source: 'done', messageDiv: aiMsgDiv });
                             const finalDisplayContent = String(finalPlanInfo && finalPlanInfo.text !== undefined ? finalPlanInfo.text : currentFullContent || '');
                             if (finalDisplayContent !== currentFullContent) {

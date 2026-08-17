@@ -230,31 +230,6 @@
                                         <span class="check-label check-label-text">Thinking</span>
                                     </span>
                                 </label>
-                                <label class="check-box" title="Web Search">
-                                    <input type="checkbox" id="enableWebSearch" checked>
-                                    <span class="check-label-wrap">
-                                        <i class="fa-solid fa-magnifying-glass check-label-icon" aria-hidden="true"></i>
-                                        <span class="check-label check-label-text">Search</span>
-                                    </span>
-                                </label>
-                                <label class="check-box tool-mode-box" title="Tool Use Mode">
-                                    <span class="check-label-wrap">
-                                        <i class="fa-solid fa-screwdriver-wrench check-label-icon" aria-hidden="true"></i>
-                                        <span class="check-label check-label-text">Tools</span>
-                                    </span>
-                                    <div class="tool-mode-dropdown" id="toolsModeDropdown">
-                                        <input type="hidden" id="toolsMode" value="auto_off">
-                                        <button type="button" class="tool-mode-trigger" id="toolsModeTrigger" aria-haspopup="listbox" aria-expanded="false">
-                                            <span id="toolsModeLabel">Auto(OFF)</span>
-                                            <i class="fa-solid fa-chevron-up"></i>
-                                        </button>
-                                        <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
-                                            <button type="button" class="tool-mode-item" data-mode="off" role="option">Off</button>
-                                            <button type="button" class="tool-mode-item active" data-mode="auto_off" role="option" aria-selected="true">Auto(OFF)</button>
-                                            <button type="button" class="tool-mode-item" data-mode="force" role="option">Force</button>
-                                        </div>
-                                    </div>
-                                </label>
                             </div>
                         </div>
                         <button type="button" class="btn-icon-small input-collapse-btn" id="inputCollapseBtn" title="折叠输入框" aria-label="折叠输入框" aria-expanded="true">
@@ -275,17 +250,10 @@
                         <div class="token-footer-left">
                             <div class="token-budget-mini" id="tokenBudgetMini">
                                 <span class="token-budget-ring" id="tokenBudgetRing"></span>
-                                <button
-                                    type="button"
-                                    class="token-budget-context-toggle"
-                                    id="tokenBudgetContextToggle"
-                                    aria-label="切换是否传入历史上下文"
-                                    aria-pressed="true"
-                                ></button>
                             </div>
                             <div class="token-budget-usage" id="tokenBudgetUsage">CTX --/--</div>
                             <div class="token-mini" id="tokenDisplay">
-                                TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
+                                TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span><span id="tokenCacheHitRate" class="token-cache-hit-rate" style="display:none;"> 缓存命中 0%</span>
                             </div>
                             <div id="desktopAgentIndicator" title="本地计算节点状态校验中..." style="display:inline-block; width:6px; height:6px; flex-shrink:0; background:#9e9e9e; border-radius:50%; margin-left:2px; box-shadow: 0 0 4px rgba(0,0,0,0.2);"></div>
                         </div>
@@ -747,7 +715,7 @@
     <script type="module" src="/static/js/chat_settings_management.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_admin.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/chat_skill_market.js?v=20260726_esm_01"></script>
-    <script type="module" src="/static/js/chat_markdown.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_markdown.js?v=20260815_table_fix_01"></script>
     <script type="module" src="/static/js/chat_files.js?v=20260729_multi_transfer_02"></script>
     <script type="module" src="/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01"></script>
     <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>

@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request, session
 
 from basis.Database import safe_append_jsonl, safe_write_text, get_path_lock
 from App.Utils import safe_join_path
+from App.errors import json_error as _json_error
 
 
 notification_bp = Blueprint('notification', __name__)
@@ -515,10 +516,6 @@ def _update_user_notification(username: str, notification_id: str, updater) -> T
     unread_count = sum(1 for row in visible_rows if not bool(row.get('read')))
 
     return updated_row, unread_count
-
-
-def _json_error(message: str, status: int):
-    return jsonify({'success': False, 'message': message}), status
 
 
 @notification_bp.route('/api/notifications', methods=['GET'])

@@ -168,6 +168,46 @@ def build_file_metadata(path: Path, content: str, raw_content: bytes, encoding: 
     }
 
 
+def build_file_not_found_error(path: str, *, limit: int = 3) -> dict:
+    """文件不存在时返回自愈提示：同目录下编辑距离最近的文件名候选，引导模型修正路径。
+
+    目录本身不存在或不可读时不给出候选（避免误导），只返回基础错误。
+    """
+
+    base_error = {"success": False, "error": f"File not found: {path}"}
+    raw_path = str(path or "").strip()
+
+    if not raw_path:
+        return base_error
+
+    target = Path(raw_path)
+    parent = target.parent
+
+    if not parent.is_dir():
+        return base_error
+
+    try:
+        siblings = [item.name for item in parent.iterdir() if item.is_file()]
+    except OSError:
+        return base_error
+
+    if not siblings:
+        return base_error
+
+    matched = difflib.get_close_matches(target.name, siblings, n=limit, cutoff=0.5)
+
+    if not matched:
+        return base_error
+
+    hint = "；".join(f"`{item}`" for item in matched)
+
+    return {
+        "success": False,
+        "error": f"File not found: {path}。同目录下是否有这些文件？{hint}",
+        "suggestions": matched,
+    }
+
+
 def _build_probe_line_separator(line_endings: dict) -> str:
     active_endings = [
         name
@@ -380,33 +420,48 @@ def slice_read_content(
     offset,
     limit,
 ) -> tuple[str, str, dict, str]:
-    """根据显式范围读取文件内容，范围非法时直接返回错误。"""
+    """根据显式范围读取文件内容；范围超出时自动截断到实际可用范围并附提示，不再报错。
 
+    契约（放宽后）：
+    - start_line/end_line 与 offset/limit 两组范围不能混用。
+    - 按行：start_line 可单独提供（从该行读到文件末尾）；end_line 可单独提供（从第 1 行读到该行）。
+    - 按字符：offset 可单独提供（从该位置读到文件末尾）；limit 可单独提供（读取开头 limit 个字符）。
+    - 未提供的边界使用默认值（行从 1 开始，字符从 0 开始），超出文件总长自动截断并附提示。
+
+    返回 (selected_content, mode, slice_meta, error)：
+    - 超出范围的读取不会失败，而是返回实际存在的内容，并在 slice_meta 里提示截断与总长度，
+      让模型据此继续分段调用获取完整信息。
+    """
     line_range_requested = has_argument_value(start_line) or has_argument_value(end_line)
     char_range_requested = has_argument_value(offset) or has_argument_value(limit)
 
     if line_range_requested and char_range_requested:
-        return "", "", {}, "start_line/end_line 不能和 offset/limit 同时使用。"
+        return "", "", {}, "start_line/end_line 不能和 offset/limit 同时使用，请只提供其中一种范围。"
 
     if not line_range_requested and not char_range_requested:
         return content, "full", {}, ""
 
     if line_range_requested:
-        if not has_argument_value(start_line) or not has_argument_value(end_line):
-            return "", "", {}, "start_line 和 end_line 必须同时提供。"
+        start = 1
+        end = None
 
-        start, start_error = parse_integer_argument(start_line, "start_line", 1)
+        if has_argument_value(start_line):
+            start, start_error = parse_integer_argument(start_line, "start_line", 1)
 
-        if start_error:
-            return "", "", {}, start_error
+            if start_error:
+                return "", "", {}, start_error
 
-        end, end_error = parse_integer_argument(end_line, "end_line", 1)
+        if has_argument_value(end_line):
+            end, end_error = parse_integer_argument(end_line, "end_line", 1)
 
-        if end_error:
-            return "", "", {}, end_error
+            if end_error:
+                return "", "", {}, end_error
 
-        if end < start:
-            return "", "", {}, "end_line 必须大于等于 start_line。"
+            if end < start:
+                return "", "", {}, (
+                    f"end_line {end} 小于 start_line {start}，请提供 end_line >= start_line；"
+                    "只传 start_line 可读到文件末尾。"
+                )
 
         lines = content.splitlines(keepends=True)
         total_lines = len(lines)
@@ -415,53 +470,83 @@ def slice_read_content(
             return "", "", {}, "空文件无法按行范围读取。"
 
         if start > total_lines:
-            return "", "", {}, f"start_line 超出文件总行数: {total_lines}。"
+            return "", "", {}, (
+                f"start_line {start} 超出文件总行数 {total_lines}，文件只有 {total_lines} 行，"
+                "请提供 start_line <= total_lines；只传 end_line 可从头读取。"
+            )
 
-        if end > total_lines:
-            return "", "", {}, f"end_line 超出文件总行数: {total_lines}。"
-
-        selected_content = "".join(lines[start - 1:end])
+        effective_end = total_lines if end is None else min(end, total_lines)
+        truncated = end is not None and effective_end < end
+        selected_content = "".join(lines[start - 1:effective_end])
         slice_meta = {
             "type": "line_range",
             "start_line": start,
-            "end_line": end,
-            "returned_lines": end - start + 1,
+            "end_line": effective_end,
+            "returned_lines": effective_end - start + 1,
             "total_lines": total_lines,
         }
 
+        if end is None:
+            slice_meta["to_eof"] = True
+            slice_meta["hint"] = (
+                f"只提供了 start_line，已返回第 {start} 行到文件末尾（共 {effective_end} 行）。"
+            )
+        elif truncated:
+            slice_meta["requested_end_line"] = end
+            slice_meta["truncated"] = True
+            slice_meta["hint"] = (
+                f"end_line {end} 超出文件总行数 {total_lines}，已自动截断返回第 {start} 到第 {effective_end} 行。"
+            )
+
         return selected_content, "line_range", slice_meta, ""
 
-    if not has_argument_value(offset) or not has_argument_value(limit):
-        return "", "", {}, "offset 和 limit 必须同时提供。"
+    start = 0
+    read_limit = None
 
-    start, start_error = parse_integer_argument(offset, "offset", 0)
+    if has_argument_value(offset):
+        start, start_error = parse_integer_argument(offset, "offset", 0)
 
-    if start_error:
-        return "", "", {}, start_error
+        if start_error:
+            return "", "", {}, start_error
 
-    read_limit, limit_error = parse_integer_argument(limit, "limit", 1)
+    if has_argument_value(limit):
+        read_limit, limit_error = parse_integer_argument(limit, "limit", 1)
 
-    if limit_error:
-        return "", "", {}, limit_error
+        if limit_error:
+            return "", "", {}, limit_error
 
     total_chars = len(content)
-    end = start + read_limit
 
     if start > total_chars:
-        return "", "", {}, f"offset 超出文件总字符数: {total_chars}。"
+        return "", "", {}, (
+            f"offset {start} 超出文件总字符数 {total_chars}，请提供 offset <= total_chars；"
+            "只传 limit 可从头读取。"
+        )
 
-    if end > total_chars:
-        return "", "", {}, f"offset + limit 超出文件总字符数: {total_chars}。"
-
-    selected_content = content[start:end]
+    effective_end = total_chars if read_limit is None else min(start + read_limit, total_chars)
+    truncated = read_limit is not None and effective_end < start + read_limit
+    selected_content = content[start:effective_end]
     slice_meta = {
         "type": "char_range",
         "offset": start,
-        "limit": read_limit,
-        "end_offset": end,
+        "end_offset": effective_end,
         "returned_chars": len(selected_content),
         "total_chars": total_chars,
     }
+
+    if read_limit is None:
+        slice_meta["to_eof"] = True
+        slice_meta["hint"] = (
+            f"只提供了 offset，已返回第 {start} 字符到文件末尾（共 {total_chars} 字符）。"
+        )
+    else:
+        slice_meta["limit"] = read_limit
+
+        if truncated:
+            slice_meta["truncated"] = True
+            slice_meta["hint"] = (
+                f"offset+limit 超出文件总字符数 {total_chars}，已自动截断返回第 {start} 到第 {effective_end} 字符。"
+            )
 
     return selected_content, "char_range", slice_meta, ""
 

@@ -76,9 +76,9 @@ const authDetail = await page.evaluate(() => {
 })
 await page.waitForTimeout(500)
 const authFields = await page.evaluate(() => {
-    const perms = [...document.querySelectorAll('.settings-modal-shell .settings-toggle-grid input[type=checkbox]')].length
+    const perms = [...document.querySelectorAll('.settings-modal-shell .papi-permission-toggle-row input[type=checkbox]')].length
     const segments = [...document.querySelectorAll('.settings-modal-shell .papi-segment-button')].map((b) => b.textContent.trim())
-    const hasRemaining = [...document.querySelectorAll('.settings-modal-shell .settings-field')].some((el) => el.textContent.includes('永久') || el.textContent.includes('天') || el.textContent.includes('分钟') || el.textContent.includes('已过期'))
+    const hasRemaining = [...document.querySelectorAll('.settings-modal-shell .admin-user-detail-grid .admin-info-text')].some((el) => el.textContent.includes('永久') || el.textContent.includes('天') || el.textContent.includes('分钟') || el.textContent.includes('已过期'))
 
     return { permissionCheckboxes: perms, segments, hasRemaining }
 })

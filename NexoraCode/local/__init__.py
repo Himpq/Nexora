@@ -6,7 +6,6 @@ NexoraCode.local — NexoraCode 本地基础层
 - Tool: 工具基类（schema 与实现合一）
 - ToolExecutor: 工具执行器（注册 / 校验 / 线程池 / 大输出 / 取消）
 - PathGuard: 路径准入与隐私守卫
-- LongContext: 长文本上下文存储
 - tools: 全部本地工具实例
 
 对外提供：

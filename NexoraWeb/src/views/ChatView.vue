@@ -243,24 +243,28 @@
         showToast('已附加到输入框', 'success')
     }
 
-    /** 点击轮次线:跳转到该轮 + 高亮消息(对齐原版) */
-    function handleTurnIndicatorJump(lineIndex: number): void {
-        const userMessages = conversationStore.messages.filter((message) => message.role === 'user')
-        const message = userMessages[lineIndex - 1] || null
+    /**
+     * 轮次预览点击跳转(对齐原版 scrollToAndHighlight):
+     * 目标消息居中于消息视口(而非顶部对齐),跳转后临时高亮 3 秒;
+     * 跳转期间的滚动跟随屏蔽由 TurnIndicatorPanel 内部 _isJumping 等价逻辑处理
+     */
+    function handleTurnIndicatorJump(messageIndex: number): void {
+        const container = document.getElementById('messagesContainer')
+        const target = container
+            ? container.querySelector<HTMLElement>(`.message.user[data-index="${messageIndex}"]`)
+            : null
 
-        if (!message) {
+        if (!container || !target) {
             return
         }
 
-        const target = document.querySelector(`.message.user[data-index="${message.index}"]`)
+        const targetTop = Math.max(0, target.offsetTop - (container.clientHeight / 2) + (target.offsetHeight / 2))
 
-        if (!target) {
-            return
-        }
+        container.scrollTo({
+            top: targetTop,
+            behavior: 'smooth'
+        })
 
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
-
-        // 跳转后临时高亮目标消息(3 秒后移除)
         target.classList.add('turn-jump-highlight')
 
         window.setTimeout(() => {

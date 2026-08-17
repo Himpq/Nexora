@@ -1018,9 +1018,21 @@
     
     
         if (compact.includes('fileread') || /file read/i.test(title)) {
-    
-            return fileName ? `读取文件 ${fileName}` : '读取文件';
-    
+
+            const startLine = readExecutionFlowArg(args, ['start_line', 'startLine']);
+            const endLine = readExecutionFlowArg(args, ['end_line', 'endLine']);
+            const offset = readExecutionFlowArg(args, ['offset']);
+            const limit = readExecutionFlowArg(args, ['limit']);
+            let rangeText = '';
+
+            if (startLine && endLine) {
+                rangeText = `，第 ${startLine} 行至第 ${endLine} 行`;
+            } else if (offset !== '' && limit !== '') {
+                rangeText = `，从第 ${offset} 字符起读取 ${limit} 字符`;
+            }
+
+            return fileName ? `阅读文件 ${fileName}${rangeText}` : '阅读文件';
+
         }
     
     
@@ -1050,9 +1062,9 @@
     
     
         if (compact.includes('filelist')) {
-    
-            return fileName ? `读取目录 ${fileName}` : '读取目录';
-    
+
+            return path ? `阅读目录 ${clipExecutionFlowText(path, 48)}` : '阅读目录';
+
         }
     
     
@@ -1130,9 +1142,16 @@
     
     
         if (compact.includes('shell') || compact.includes('terminal')) {
-    
-            return command ? `执行命令 ${clipExecutionFlowText(command, 34)}` : '执行命令';
-    
+
+            if (command) {
+                const commandText = String(command || '').replace(/\s+/g, ' ').trim();
+                const shown = clipExecutionFlowText(commandText, 34);
+                const partial = commandText.length > 34 ? '（部分命令）' : '';
+                return `执行命令 ${shown}${partial}`;
+            }
+
+            return '执行命令';
+
         }
     
     
@@ -2335,11 +2354,6 @@
                     : formatToolArgsForOutput(nextRaw);
                 if (outDiv.textContent) {
                     row.classList.add('has-output');
-
-                    if (row.dataset.userToggled !== 'true') {
-                        row.classList.add('expanded');
-                    }
-
                     scrollToolOutputToBottom(outDiv);
                 }
             }
@@ -2353,7 +2367,6 @@
                 ? Number(options.toolIndex)
                 : null;
             const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
-            const autoExpand = !(options && options.autoExpand === false);
 
             let row = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
                 || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false)
@@ -2392,13 +2405,7 @@
                     ? formatToolArgsForOutput(row.dataset.argsRaw)
                     : '';
                 row.classList.toggle('has-output', !!outDiv.textContent.trim());
-                if (autoExpand) {
-                    row.classList.add('is-running');
-
-                    if (row.dataset.userToggled !== 'true') {
-                        row.classList.toggle('expanded', !!outDiv.textContent.trim());
-                    }
-                }
+                row.classList.add('is-running');
                 if (outDiv.textContent.trim()) {
                     scrollToolOutputToBottom(outDiv);
                 }
@@ -2468,19 +2475,9 @@
             if (outDiv && progressText) {
                 outDiv.textContent = progressText;
                 row.classList.toggle('has-output', !!outDiv.textContent.trim());
-
-                if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
-                    row.classList.add('expanded');
-                    scrollToolOutputToBottom(outDiv);
-                }
             } else if (outDiv && row.dataset.argsRaw) {
                 outDiv.textContent = formatToolArgsForOutput(row.dataset.argsRaw);
                 row.classList.toggle('has-output', !!outDiv.textContent.trim());
-
-                if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
-                    row.classList.add('expanded');
-                    scrollToolOutputToBottom(outDiv);
-                }
             }
         }
 
@@ -2993,6 +2990,10 @@
                 const renderedMap = renderMapResultInMessage(aiMsgDiv, safeName, result, safeCallId, target);
                 const outputMarkdown = renderedMap ? stripMapSceneSection(displayMarkdown) : displayMarkdown;
                 const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
+                // 文件读取只保留折叠摘要，不渲染正文（大段代码/文本会撑爆页面且无查看价值），
+                // 也不标记 has-output，展开箭头不显示、点击无效。
+                const isFileReadTool = /(?:^|_)(?:local_|cloud_)?file_read$/i.test(safeName)
+                    || /file_read/i.test(String(name || ''));
 
                 const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
 
@@ -3000,7 +3001,7 @@
                     renderGenerateImageResultInMessage(aiMsgDiv, result, safeCallId, target);
                 }
 
-                if (!renderedGenerateImage) {
+                if (!renderedGenerateImage && !isFileReadTool) {
                     const displayedMarkdownSource = setToolResultMarkdownSource(outDiv, outputMarkdown);
                     if (!displayedMarkdownSource) {
                         outDiv.classList.remove('tool-output-markdown');
@@ -3009,13 +3010,8 @@
                     }
                 }
 
-                if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
+                if (!isFileReadTool && (outDiv.textContent.trim() || outDiv.querySelector('img'))) {
                     target.classList.add('has-output');
-
-                    if (target.dataset.userToggled !== 'true') {
-                        target.classList.add('expanded');
-                        deps.scrollToolOutputToTop(outDiv);
-                    }
                 }
 
                 if (!renderedGenerateImage) {

@@ -14,6 +14,7 @@ export interface UserPreferences {
     streaming?: boolean
     language?: string
     learning_mode?: string
+    learning_runtime?: { enabled?: boolean; frontend_url?: string }
     memory_update_model?: string
     default_open_view?: string
     [key: string]: unknown

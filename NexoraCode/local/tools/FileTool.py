@@ -20,12 +20,23 @@ from ..Tool import LocalTool, ToolContext
 from . import FileOpsCore as core
 
 
+DEFAULT_READ_CHAR_LIMIT = 2000
+
+
 class FileReadTool(LocalTool):
     name = "local_file_read"
     description = (
         "读取用户本地计算机上指定文件的内容（NexoraCode 本地工具）。"
         "可读取全文，也可使用 start_line/end_line 按行读取，或使用 offset/limit 按字符读取。"
-        "两种范围不能混用；范围读取仍返回整个文件的 sha256 作为版本锁。"
+        "两种范围不能混用。"
+        "范围参数可单独提供：start_line 单独提供表示从该行读到文件末尾；"
+        "end_line 单独提供表示从第 1 行读到该行；"
+        "offset 单独提供表示从该字符位置读到文件末尾；"
+        "limit 单独提供表示读取开头 limit 个字符。"
+        "范围超出文件总长时会自动截断到可用范围并在 slice 元信息中提示，不会报错。"
+        "无范围参数读取全文时，默认只返回前 2000 字符；若文件更长会在返回中标注已截断与总长度，"
+        "请按 start_line/end_line 或 offset/limit 分段继续读取以获取完整信息。"
+        "读取结果始终返回整个文件的 sha256 作为版本锁。"
     )
     parameters = {
         "type": "object",
@@ -38,19 +49,19 @@ class FileReadTool(LocalTool):
             },
             "start_line": {
                 "type": "integer",
-                "description": "可选。按行读取的起始行，1 表示第一行，必须和 end_line 同时提供。",
+                "description": "可选。按行读取的起始行，1 表示第一行；单独提供时从该行读到文件末尾。",
             },
             "end_line": {
                 "type": "integer",
-                "description": "可选。按行读取的结束行，包含该行，必须和 start_line 同时提供。",
+                "description": "可选。按行读取的结束行，包含该行；单独提供时从第 1 行读到该行。",
             },
             "offset": {
                 "type": "integer",
-                "description": "可选。按字符读取的起始位置，0 表示第一个字符，必须和 limit 同时提供。",
+                "description": "可选。按字符读取的起始位置，0 表示第一个字符；单独提供时从该位置读到文件末尾。",
             },
             "limit": {
                 "type": "integer",
-                "description": "可选。按字符读取的字符数量，必须和 offset 同时提供。",
+                "description": "可选。按字符读取的字符数量；单独提供时读取开头 limit 个字符。",
             },
         },
         "required": ["path"],
@@ -66,7 +77,7 @@ class FileReadTool(LocalTool):
             return permission_error
 
         if not p.exists():
-            return {"success": False, "error": f"File not found: {path}"}
+            return core.build_file_not_found_error(path)
 
         if not p.is_file():
             return {"success": False, "error": f"Not a file: {path}"}
@@ -89,6 +100,21 @@ class FileReadTool(LocalTool):
                     "encoding": encoding,
                     **core.build_file_metadata(p, content, raw_content, encoding),
                 }
+
+            if mode == "full" and len(content) > DEFAULT_READ_CHAR_LIMIT:
+                slice_meta = {
+                    "type": "truncated_head",
+                    "returned_chars": DEFAULT_READ_CHAR_LIMIT,
+                    "total_chars": len(content),
+                    "truncated": True,
+                    "hint": (
+                        f"文件总长度 {len(content)} 字符，超过单次读取上限 {DEFAULT_READ_CHAR_LIMIT} 字符，"
+                        "以下仅返回开头部分。如需完整内容，请使用 local_file_read 按 "
+                        "start_line/end_line 或 offset/limit 分段读取。"
+                    ),
+                }
+                selected_content = content[:DEFAULT_READ_CHAR_LIMIT]
+                mode = "truncated_head"
 
             return {
                 "success": True,
@@ -134,7 +160,7 @@ class FileProbeTool(LocalTool):
             return permission_error
 
         if not p.exists():
-            return {"success": False, "error": f"File not found: {path}"}
+            return core.build_file_not_found_error(path)
 
         if not p.is_file():
             return {"success": False, "error": f"Not a file: {path}"}
@@ -244,30 +270,38 @@ class FilePatchTool(LocalTool):
     name = "local_file_patch"
     description = (
         "对用户本地计算机上的单个文件执行精确修改（NexoraCode 本地工具）。"
-        "\n\n默认一步写入：传 path + patch 或 edits 即直接修改并返回结果，不需要两步流程。"
-        "可选 dry_run=true 只预览不写入（返回 diff 与 preview_id，适合先确认再改）；"
-        "预览后可用 path + confirm_preview_id（来自 dry_run 的 preview_id）按预览内容确认写入。"
-        "\n\n输入要求：必须且只能提供 patch 或 edits 其中一种。patch 使用统一 diff 格式；"
-        "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
-        "edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。"
-        "target 会先精确匹配；未命中时允许 CRLF/CR/LF 换行归一化后的唯一匹配。"
-        "replace 必须使用 replacement，insert_before/insert_after 必须使用 content。"
-        "replacement/content 写入时会跟随文件原有换行类型，避免引入混合换行。"
+        "\n\n最简单用法（推荐）：传 path + old_string + new_string 直接替换，一步写入，"
+        "old_string 必须精确唯一匹配文件中的一段文本，new_string 为替换后的内容。"
+        "old_string 出现多次时传 occurrence 指定第几处（1 表示第一处）。"
+        "\n\n高级用法：传 path + edits（结构化编辑数组，支持 replace / insert_before / insert_after / delete，"
+        "按顺序串行执行，replace 用 target+replacement）；或传 path + patch（统一 diff 格式）。"
+        "可选 dry_run=true 只预览不写入（返回 diff 与 preview_id），预览后可用 path + confirm_preview_id 确认写入。"
         "\n\n建议先调用 local_file_read 获取最新 sha256 与内容。若提供 expected_sha256 且与当前文件不一致，"
-        "工具会拒绝基于旧内容修改，并返回当前实际 sha256、文件开头与各 target 的匹配状态，"
-        "请据此重新读取最新内容后重试。"
+        "工具会拒绝基于旧内容修改，并返回当前实际 sha256 与匹配状态，请重新读取最新内容后重试。"
     )
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "文件绝对路径"},
+            "old_string": {
+                "type": "string",
+                "description": "可选。文件中必须精确唯一匹配的旧文本（推荐用 old_string+new_string 做简单替换，不需要构造 edits 数组）。",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "可选。替换 old_string 的新文本；提供 old_string 时必须提供 new_string（可为空字符串表示删除）。",
+            },
+            "occurrence": {
+                "type": "integer",
+                "description": "可选。old_string 出现多次时指定第几处，1 表示第一处。",
+            },
             "patch": {
                 "type": "string",
-                "description": "统一 diff 内容。提供 patch 时不能同时提供 edits。",
+                "description": "统一 diff 内容。提供 patch 时不能同时提供 edits 或 old_string。",
             },
             "edits": {
                 "type": "array",
-                "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch。",
+                "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch 或 old_string。",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -315,15 +349,43 @@ class FilePatchTool(LocalTool):
             return permission_error
 
         if not p.exists():
-            return {"success": False, "error": f"File not found: {path}"}
+            return core.build_file_not_found_error(path)
 
         if not p.is_file():
             return {"success": False, "error": f"Not a file: {path}"}
 
-        patch_text = str(args.get("patch") or "")
-        has_patch = bool(patch_text.strip())
+        # 扁平 old_string/new_string → 单条 replace edit，简化模型调用（DSH edit 风格）。
+        old_string = str(args.get("old_string") or "")
+        new_string = str(args.get("new_string") or "")
+        has_old_string = "old_string" in args
+        has_new_string_arg = "new_string" in args
         edits = args.get("edits")
         has_edits = isinstance(edits, list) and len(edits) > 0
+        patch_text = str(args.get("patch") or "")
+        has_patch = bool(patch_text.strip())
+
+        if has_old_string or has_new_string_arg:
+            if has_patch or has_edits:
+                return {"success": False, "error": "old_string/new_string 不能和 patch 或 edits 同时使用。"}
+
+            if not has_old_string or not str(old_string):
+                return {"success": False, "error": "提供 new_string 时必须同时提供非空 old_string。"}
+
+            occurrence = args.get("occurrence")
+
+            try:
+                occurrence_int = int(occurrence) if occurrence is not None else None
+            except (TypeError, ValueError):
+                occurrence_int = None
+
+            edits = [{
+                "action": "replace",
+                "target": old_string,
+                "replacement": new_string,
+                "occurrence": occurrence_int,
+            }]
+            has_edits = True
+
         confirm_preview_id = str(args.get("confirm_preview_id") or "").strip()
         has_confirm_preview = bool(confirm_preview_id)
         dry_run = bool(args.get("dry_run", False))

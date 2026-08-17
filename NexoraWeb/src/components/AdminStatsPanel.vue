@@ -55,18 +55,29 @@
                         autocomplete="off"
                         @focus="openUserMenu"
                         @input="openUserMenu"
-                        @keydown.enter="submitUserQuery"
+                        @keydown="onUserKeydown"
                     >
                     <button class="admin-user-token-clear" type="button" title="清空" @click="clearUserQuery">
                         <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                     </button>
                     <div v-if="userMenuOpen && filteredUsers.length" class="admin-user-token-menu" role="listbox">
                         <button
-                            v-for="user in filteredUsers"
-                            :key="user.username"
+                            v-for="(user, index) in filteredUsers"
+                            :key="user.user_id"
                             type="button"
-                            @click="pickUser(user.username)"
-                        >{{ user.username }}<span v-if="user.role === 'admin'"> · 管理员</span></button>
+                            class="admin-user-token-item"
+                            :class="{ 'is-active': index === userActiveIndex }"
+                            @click="pickUser(user)"
+                        >
+                            <span class="admin-user-token-avatar">
+                                <img v-if="user.avatar_url" :src="user.avatar_url" alt="">
+                                <i v-else class="fa-solid fa-user" aria-hidden="true"></i>
+                            </span>
+                            <span class="admin-user-token-meta">
+                                <span class="admin-user-token-name">{{ user.username || user.user_id }}</span>
+                                <span class="admin-user-token-handle">@{{ user.user_id }} · {{ roleText(user.role) }}</span>
+                            </span>
+                        </button>
                     </div>
                 </div>
                 <SettingSelect
@@ -119,6 +130,30 @@
                         </tr>
                     </tbody>
                 </table>
+            </div>
+
+            <!-- Top Providers / Top Models(对齐原版 renderAdminUserTokenStats topEl) -->
+            <div v-if="userStats" class="admin-user-token-top-blocks">
+                <div class="admin-user-token-top-block">
+                    <div class="admin-user-token-top-title">Top Providers</div>
+                    <div v-if="userStats.top_providers.length" class="admin-user-token-top-rows">
+                        <div v-for="row in userStats.top_providers.slice(0, 5)" :key="row.name" class="admin-user-token-top-row">
+                            <span>{{ row.name }}</span>
+                            <span class="mono">{{ formatNumber(row.tokens) }}</span>
+                        </div>
+                    </div>
+                    <div v-else class="admin-user-token-top-empty">-</div>
+                </div>
+                <div class="admin-user-token-top-block">
+                    <div class="admin-user-token-top-title">Top Models</div>
+                    <div v-if="userStats.top_models.length" class="admin-user-token-top-rows">
+                        <div v-for="row in userStats.top_models.slice(0, 5)" :key="row.name" class="admin-user-token-top-row">
+                            <span>{{ row.name }}</span>
+                            <span class="mono">{{ formatNumber(row.tokens) }}</span>
+                        </div>
+                    </div>
+                    <div v-else class="admin-user-token-top-empty">-</div>
+                </div>
             </div>
         </div>
 
@@ -183,6 +218,7 @@
     const userQueryInput = ref('')
     const userQueryRange = ref('30d')
     const userMenuOpen = ref(false)
+    const userActiveIndex = ref(0)
     const userQueryMeta = ref('请选择用户')
     const userStats = ref<UserTokenStats | null>(null)
     const allUsers = ref<AdminUser[]>([])
@@ -209,8 +245,19 @@
             return allUsers.value.slice(0, 8)
         }
 
-        return allUsers.value.filter((user) => user.username.toLowerCase().includes(keyword)).slice(0, 8)
+        return allUsers.value.filter((user) => {
+            return [
+                String(user.user_id || ''),
+                String(user.username || ''),
+                String(user.role || ''),
+            ].join(' ').toLowerCase().includes(keyword)
+        }).slice(0, 8)
     })
+
+    /** 角色友好文案(对齐原版菜单 handle) */
+    function roleText(role: string): string {
+        return String(role || 'member').toLowerCase() === 'admin' ? '管理员' : '成员'
+    }
 
     onMounted(() => {
         void loadAll()
@@ -256,7 +303,7 @@
 
                 trendChart.setOption({
                     grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
-                    tooltip: { trigger: 'axis' },
+                    tooltip: { trigger: 'axis', confine: true },
                     legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: '#7a7a7a' } },
                     xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: '#e2e2e2' } }, axisLabel: { fontSize: 10, color: '#999' } },
                     yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
@@ -282,11 +329,50 @@
 
     function openUserMenu(): void {
         userMenuOpen.value = true
+        userActiveIndex.value = 0
         document.addEventListener('click', onPageClick)
     }
 
-    function pickUser(username: string): void {
-        userQueryInput.value = username
+    /** 用户选择器键盘导航(对齐原版 papi-scope bindSelector keydown) */
+    function onUserKeydown(event: KeyboardEvent): void {
+        const rows = filteredUsers.value
+
+        if (event.key === 'Escape') {
+            event.preventDefault()
+            userMenuOpen.value = false
+
+            return
+        }
+
+        if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            userActiveIndex.value = (userActiveIndex.value + 1) % Math.max(rows.length, 1)
+
+            return
+        }
+
+        if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            userActiveIndex.value = (userActiveIndex.value - 1 + Math.max(rows.length, 1)) % Math.max(rows.length, 1)
+
+            return
+        }
+
+        if (event.key === 'Enter') {
+            event.preventDefault()
+            const user = rows[userActiveIndex.value]
+
+            if (user) {
+                pickUser(user)
+            } else if (!userMenuOpen.value) {
+                void submitUserQuery()
+            }
+        }
+    }
+
+    /** 选中用户:填入 user_id(后端按 user_id 查,对齐原版 selectAdminUserTokenUser) */
+    function pickUser(user: AdminUser): void {
+        userQueryInput.value = String(user.user_id || user.username || '')
         userMenuOpen.value = false
         void submitUserQuery()
     }
@@ -298,9 +384,9 @@
     }
 
     async function submitUserQuery(): Promise<void> {
-        const username = userQueryInput.value.trim()
+        const userId = userQueryInput.value.trim()
 
-        if (!username) {
+        if (!userId) {
             userQueryMeta.value = '请先输入用户 ID'
 
             return
@@ -310,10 +396,10 @@
         userMenuOpen.value = false
 
         try {
-            const stats = await fetchUserTokenStats(username, userQueryRange.value)
+            const stats = await fetchUserTokenStats(userId, userQueryRange.value)
 
             userStats.value = stats
-            userQueryMeta.value = `${username} · ${stats.matched_logs} 条记录`
+            userQueryMeta.value = `${userId} · ${stats.matched_logs} 条记录`
         } catch (error) {
             userStats.value = null
             userQueryMeta.value = '查询失败'
@@ -345,7 +431,7 @@
 
                 toolChart.setOption({
                     grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
-                    tooltip: { trigger: 'axis' },
+                    tooltip: { trigger: 'axis', confine: true },
                     legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: '#7a7a7a' } },
                     xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: '#e2e2e2' } }, axisLabel: { fontSize: 10, color: '#999' } },
                     yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
@@ -511,7 +597,9 @@
     }
 
     .admin-user-token-menu button {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 10px;
         width: 100%;
         padding: 8px 10px;
         border: none;
@@ -523,7 +611,56 @@
         cursor: pointer;
     }
 
+    .admin-user-token-avatar {
+        flex: none;
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: #f1f1f1;
+        color: #7a7a7a;
+        font-size: 11px;
+        overflow: hidden;
+    }
+
+    .admin-user-token-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+
+    .admin-user-token-meta {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }
+
+    .admin-user-token-name {
+        font-size: 12.5px;
+        font-weight: 550;
+        color: #222222;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .admin-user-token-handle {
+        font-size: 11px;
+        color: #999999;
+        font-variant-numeric: tabular-nums;
+    }
+
     .admin-user-token-menu button:hover {
+        background: #f1f1f1;
+        color: #111111;
+    }
+
+    .admin-user-token-menu button.is-active {
         background: #f1f1f1;
         color: #111111;
     }
@@ -568,6 +705,61 @@
 
     .admin-user-token-recent-table tr:last-child td {
         border-bottom: none;
+    }
+
+    /* Top Providers / Top Models(对齐原版 trend-block) */
+    .admin-user-token-top-blocks {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-top: 14px;
+    }
+
+    .admin-user-token-top-block {
+        border: 1px solid #eeeeee;
+        border-radius: 8px;
+        padding: 10px 12px;
+        min-width: 0;
+    }
+
+    .admin-user-token-top-title {
+        font-size: 11.5px;
+        font-weight: 650;
+        color: #7a7a7a;
+        margin-bottom: 6px;
+    }
+
+    .admin-user-token-top-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .admin-user-token-top-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 12px;
+        color: #3c3c3c;
+        min-width: 0;
+    }
+
+    .admin-user-token-top-row span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .admin-user-token-top-row .mono {
+        flex: none;
+        color: #111111;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .admin-user-token-top-empty {
+        font-size: 12px;
+        color: #999999;
     }
 
     /* Tool 观测 */

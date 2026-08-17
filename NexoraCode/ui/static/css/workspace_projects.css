@@ -2279,10 +2279,8 @@
     justify-content: flex-end;
 }
 
-.workspace-shared-conversation-readonly .btn-action[data-action="edit-user-prompt"],
 .workspace-shared-conversation-readonly .btn-action.btn-del,
 .workspace-shared-conversation-readonly .btn-action[onclick^="confirmRegenerate"],
-.workspace-shared-conversation-readonly .btn-action[onclick^="toggleEditUserPrompt"],
 .workspace-shared-conversation-readonly .version-switcher {
     display: none !important;
 }

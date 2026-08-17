@@ -913,7 +913,7 @@ def local_settings_get():
     return jsonify({
         "success": True,
         "provider": {
-            "providers": [provider.to_public_dict() for provider in providers],
+            "providers": [provider.to_dict() for provider in providers],
             "default_id": default_id,
         },
         "general": {

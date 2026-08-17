@@ -102,29 +102,112 @@
 
 .settings-page-head {
     flex: none;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
     padding: 20px 28px 14px;
     border-bottom: 1px solid #f2f2f2;
 }
 
+.settings-page-head-main {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 标题/说明单行省略,防止窄窗口下中文换行撑高页头 */
 .settings-page-head h2 {
     margin: 0 0 4px;
     font-size: 17px;
     font-weight: 700;
     color: #111111;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .settings-page-head p {
     margin: 0;
     font-size: 12.5px;
     color: #7a7a7a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
+.settings-page-head-actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+/* 页头按钮 subtab 条件显隐:visibility 隐藏保留占位,切换时 tabs 位置不跳动 */
+.settings-page-head-actions .is-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* ==================== 胶囊分段(GDDP 统一:页头 subtabs / 模式切换 / 分段选择共用一套视觉) ==================== */
+
+.settings-page-head-tabs,
+.settings-mode-toggle,
+.setting-segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: #f3f3f3;
+    border-radius: 8px;
+}
+
+.settings-page-head-tab,
+.settings-mode-toggle-btn,
+.setting-segmented-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 550;
+    color: #7a7a7a;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.settings-page-head-tab:hover:not(.active),
+.settings-mode-toggle-btn:hover:not(.active),
+.setting-segmented-btn:hover:not(.active) {
+    color: #111111;
+}
+
+.settings-page-head-tab.active,
+.settings-mode-toggle-btn.active,
+.setting-segmented-btn.active {
+    background: #ffffff;
+    color: #111111;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.settings-mode-toggle-btn:disabled,
+.setting-segmented-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* 页头自带 padding-bottom + 发丝线,body 顶部不再叠加留白(修复双倍间距) */
 .settings-page-body {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    padding: 22px 28px 26px;
+    padding: 0 28px 20px;
     overflow-y: auto;
 }
 
@@ -260,122 +343,23 @@
     line-height: 1.6;
 }
 
-/* ==================== 按钮(Nexora 黑白克制) ==================== */
+/* ==================== 按钮:已上收 GDDP 全局层 buttons.css(白底描边,禁止黑底) ==================== */
+/* 全应用统一按钮语言,设置壳不再单独定义;操作行布局见下方 .setting-action-row */
 
-.settings-modal-shell .btn-primary,
-.settings-modal-shell .btn-confirm {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: auto;
+/* ==================== 操作按钮行(GDDP 统一:等宽 flex:1,全设置壳唯一操作行语言) ==================== */
+/* 统一替换 mail-actions / auth-actions / papi-action-row / admin-user-action-row 等历史写法 */
+
+.settings-modal-shell .setting-action-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.settings-modal-shell .setting-action-row > button {
+    flex: 1;
+    min-width: 0;
     height: 34px;
-    padding: 0 16px;
-    border: none;
-    border-radius: 7px;
-    background: #111111;
-    color: #ffffff;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s ease, transform 0.1s ease;
-}
-
-.settings-modal-shell .btn-primary:hover,
-.settings-modal-shell .btn-confirm:hover {
-    background: #333333;
-}
-
-.settings-modal-shell .btn-primary:active,
-.settings-modal-shell .btn-confirm:active {
-    transform: scale(0.97);
-}
-
-/* 关键修复:全局 .btn-primary-outline 是 width:100%,这里还原为内容宽度 */
-.settings-modal-shell .btn-primary-outline {
-    display: inline-flex;
-    align-items: center;
     justify-content: center;
-    gap: 6px;
-    width: auto;
-    height: 34px;
-    padding: 0 16px;
-    border: 1px solid #c9c9c9;
-    border-radius: 7px;
-    background: #ffffff;
-    color: #2e2e2e;
-    font-size: 13px;
-    font-weight: 550;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
-}
-
-.settings-modal-shell .btn-primary-outline:hover {
-    border-color: #111111;
-    color: #111111;
-    background: #fafafa;
-}
-
-.settings-modal-shell .btn-cancel {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: auto;
-    height: 34px;
-    padding: 0 16px;
-    border: 1px solid #e2e2e2;
-    border-radius: 7px;
-    background: #f7f7f7;
-    color: #5a5a5a;
-    font-size: 13px;
-    font-weight: 550;
-    cursor: pointer;
-    transition: background 0.15s ease;
-}
-
-.settings-modal-shell .btn-cancel:hover {
-    background: #eeeeee;
-}
-
-.settings-modal-shell .btn-danger-small {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: auto;
-    height: 30px;
-    padding: 0 12px;
-    border: 1px solid #f0c4c4;
-    border-radius: 7px;
-    background: #fff7f7;
-    color: #c0392b;
-    font-size: 12.5px;
-    font-weight: 550;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s ease;
-}
-
-.settings-modal-shell .btn-danger-small:hover {
-    background: #fdecec;
-}
-
-.settings-modal-shell .btn-compact {
-    height: 30px;
-    padding: 0 12px;
-    font-size: 12.5px;
-}
-
-.settings-modal-shell .btn-primary:disabled,
-.settings-modal-shell .btn-confirm:disabled,
-.settings-modal-shell .btn-primary-outline:disabled,
-.settings-modal-shell .btn-cancel:disabled,
-.settings-modal-shell .btn-danger-small:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
 }
 
 /* ==================== 开关行 / 模式切换 ==================== */
@@ -397,44 +381,10 @@
     cursor: pointer;
 }
 
-.settings-mode-toggle {
-    display: inline-flex;
-    border: 1px solid #dddddd;
-    border-radius: 7px;
-    overflow: hidden;
-}
+/* 分段切换视觉已并入上方"胶囊分段"统一规则组(settings-mode-toggle 与 setting-segmented 共用) */
 
-.settings-mode-toggle-btn {
-    padding: 7px 14px;
-    border: none;
-    background: #fff;
-    font-size: 12.5px;
-    font-weight: 550;
-    color: #7a7a7a;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-}
-
-.settings-mode-toggle-btn + .settings-mode-toggle-btn {
-    border-left: 1px solid #dddddd;
-}
-
-.settings-mode-toggle-btn.active {
-    background: #f1f1f1;
-    color: #111111;
-}
-
-/* ==================== 管理面板(工具栏 + 左列表 + 右详情,撑满高度) ==================== */
-
-.settings-modal-shell .admin-users-toolbar,
-.settings-modal-shell .settings-management-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: none;
-    margin-bottom: 14px;
-}
+/* ==================== 管理面板(左列表 + 右详情,撑满高度) ==================== */
+/* 页面级工具栏已全部上移 settings-page-head,面板内不再有 toolbar */
 
 .settings-modal-shell .admin-system-toolbar-row {
     display: flex;
@@ -495,7 +445,7 @@
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 10px 12px;
+    padding: 7px 12px;
     border: none;
     border-bottom: 1px solid #f4f4f4;
     background: #fff;
@@ -717,14 +667,15 @@
     color: #7a7a7a;
 }
 
+/* 模型行(对齐原版 model-admin-item:grid 36px icon + 1fr 内容,hover 显示编辑/删除) */
 .settings-modal-shell .admin-model-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
     border-bottom: 1px solid #f4f4f4;
     border-radius: 7px;
-    cursor: pointer;
     transition: background 0.15s ease;
 }
 
@@ -732,11 +683,45 @@
     background: #fafafa;
 }
 
+/* 内容列(名称行 + 上下文 + 额度条) */
 .settings-modal-shell .admin-model-row-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* 名称行(对齐原版 model-admin-item-name-row:flex space-between) */
+.settings-modal-shell .admin-model-name-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 10px;
     min-width: 0;
+}
+
+.settings-modal-shell .admin-model-name-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+/* hover 显示编辑/删除按钮(对齐原版 model-admin-item-actions;按钮样式走通用 .model-icon-btn) */
+.settings-modal-shell .admin-model-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.settings-modal-shell .admin-model-row:hover .admin-model-row-actions,
+.settings-modal-shell .admin-model-row:focus-within .admin-model-row-actions {
+    opacity: 1;
+    pointer-events: auto;
 }
 
 .settings-modal-shell .admin-model-name {
@@ -786,14 +771,222 @@
     color: #7a7a7a;
 }
 
+/* Ollama 模型状态点(对齐原版 model-status-btn,点击打开状态弹窗) */
+.settings-modal-shell .model-status-btn {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.15s ease;
+}
+
+.settings-modal-shell .model-status-btn:hover {
+    background: #f5f5f5;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-loading {
+    color: #94a3b8;
+    background: #fafafa;
+    border-color: #eeeeee;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-warn {
+    color: #b7791f;
+    background: #fdf6e3;
+    border-color: #f3e2b3;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-success {
+    color: #2e7d32;
+    background: #e8f5e9;
+    border-color: #c8e6c9;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-danger {
+    color: #c0392b;
+    background: #fdecea;
+    border-color: #f5c6c0;
+}
+
+/* Ollama 状态弹窗详情(对齐原版 ollama-status-grid / -row / -message) */
+.settings-modal-shell .ollama-status-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-modal-shell .ollama-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 0;
+    border-bottom: 1px solid #f4f4f4;
+    font-size: 13px;
+}
+
+.settings-modal-shell .ollama-status-row span {
+    color: #7a7a7a;
+}
+
+.settings-modal-shell .ollama-status-row strong {
+    color: #222222;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.settings-modal-shell .ollama-status-empty {
+    padding: 24px 0;
+    text-align: center;
+    font-size: 13px;
+    color: #999999;
+}
+
+.settings-modal-shell .ollama-status-message {
+    margin-top: 10px;
+    padding: 9px 12px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    border: 1px solid #eeeeee;
+    background: #fafafa;
+    color: #3c3c3c;
+    word-break: break-word;
+}
+
+.settings-modal-shell .ollama-status-message.level-success {
+    background: #e8f5e9;
+    border-color: #c8e6c9;
+    color: #2e7d32;
+}
+
+.settings-modal-shell .ollama-status-message.level-warning {
+    background: #fdf6e3;
+    border-color: #f3e2b3;
+    color: #8a6116;
+}
+
+.settings-modal-shell .ollama-status-message.level-danger {
+    background: #fdecea;
+    border-color: #f5c6c0;
+    color: #c0392b;
+}
+
+/* ==================== 额度策略(对齐原版 model-provider-quota-row:provider 行内下拉) ==================== */
+
+.settings-modal-shell .model-provider-quota-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.settings-modal-shell .model-provider-quota-label {
+    font-size: 11px;
+    color: #999999;
+    white-space: nowrap;
+}
+
+/* 通用小图标按钮(模型行/provider 列表 hover 操作复用) */
+.settings-modal-shell .model-icon-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    background: #fff;
+    color: #111827;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.settings-modal-shell .model-icon-btn:hover {
+    background: #f3f4f6;
+}
+
+.settings-modal-shell .model-icon-btn-danger {
+    color: #dc2626;
+    border-color: #fecaca;
+}
+
+.settings-modal-shell .model-icon-btn-danger:hover {
+    background: #fef2f2;
+}
+
+/* 列表项 hover 操作:provider 编辑/删除仅在 hover(含键盘 focus)时展示 */
+.settings-modal-shell .model-provider-item-actions {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.settings-modal-shell .model-provider-item:hover .model-provider-item-actions,
+.settings-modal-shell .model-provider-item:focus-within .model-provider-item-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 模型行头部 quota 区(对齐原版 quota-model-head / quota-total-icon-btn) */
+.settings-modal-shell .quota-model-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.settings-modal-shell .quota-model-head-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.settings-modal-shell .quota-total-icon-btn {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    color: #3c3c3c;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.settings-modal-shell .quota-total-icon-btn:hover {
+    border-color: #111111;
+    color: #111111;
+}
+
 /* 额度计量条(对齐原版 quota-meter-shell) */
 .settings-modal-shell .quota-meter-wrap {
     width: 100%;
+    margin-top: 6px;
+    cursor: pointer;
 }
 
 .settings-modal-shell .quota-meter-track {
     position: relative;
-    height: 10px;
+    height: 12px;
     border-radius: 999px;
     background: rgba(148, 163, 184, 0.18);
     overflow: hidden;
@@ -824,185 +1017,105 @@
     bottom: -2px;
     width: 2px;
     background: #334155;
-    opacity: 0.85;
+    opacity: 0.9;
 }
 
+/* 标签行:绝对定位,由 JS 布局引擎计算 left 防重叠(对齐原版 data-role="quota-meter-label-row") */
 .settings-modal-shell .quota-meter-label-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    height: 16px;
-    margin-top: 3px;
+    position: relative;
+    height: 18px;
+    margin-top: 4px;
     font-size: 11px;
-    line-height: 16px;
+    line-height: 18px;
+}
+
+.settings-modal-shell .quota-meter-label-item {
+    position: absolute;
+    top: 0;
     white-space: nowrap;
 }
 
-.settings-modal-shell .quota-meter-label.debt {
+.settings-modal-shell .quota-meter-label-item.debt {
     color: #b91c1c;
 }
 
-.settings-modal-shell .quota-meter-label.remaining {
+.settings-modal-shell .quota-meter-label-item.remaining {
     color: #166534;
 }
 
-.settings-modal-shell .quota-meter-label.used {
+.settings-modal-shell .quota-meter-label-item.used {
     color: #a16207;
 }
 
-.settings-modal-shell .quota-meter-label.total {
-    margin-left: auto;
+.settings-modal-shell .quota-meter-label-item.total {
     color: #0f172a;
 }
 
-/* 点击调整提示 */
-.settings-modal-shell .quota-adjust-hint {
-    float: right;
-    margin-top: -16px;
-    font-size: 10.5px;
-    color: #b0b0b0;
-    cursor: pointer;
-}
-
-/* ==================== 额度策略卡 ==================== */
-
-.settings-modal-shell .admin-quota-card {
-    flex: none;
-    margin-bottom: 14px;
-    border: 1px solid #e8e8e8;
-    border-radius: 10px;
-    background: #fff;
-    padding: 12px 14px;
-}
-
-.settings-modal-shell .admin-quota-card-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 10px;
-}
-
-.settings-modal-shell .admin-quota-card-head h4 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    font-size: 13.5px;
-    font-weight: 650;
-    color: #111111;
-}
-
-.settings-modal-shell .admin-quota-card-head h4 i {
-    color: #7a7a7a;
-    font-size: 13px;
-}
-
-.settings-modal-shell .admin-quota-providers {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px 16px;
-}
-
-.settings-modal-shell .admin-quota-provider {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 8px;
-    background: #fafafa;
-}
-
-.settings-modal-shell .admin-quota-provider-name {
-    flex: 1;
-    min-width: 0;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: #222222;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.settings-modal-shell .admin-quota-provider-stats {
-    flex: none;
-    font-size: 11px;
-    color: #999999;
-    font-variant-numeric: tabular-nums;
-}
-
-.settings-modal-shell .admin-quota-provider-action {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.settings-modal-shell .admin-quota-action-label {
-    font-size: 11px;
-    color: #999999;
-}
-
-/* ==================== 额度调整弹层 ==================== */
-
-.quota-adjust-popover {
+/* 额度调整 popover(fixed 锚点跟随,对齐原版 quotaAdjustPopover) */
+.quota-adjust-popover-fixed {
     position: fixed;
-    inset: 0;
-    z-index: 50000;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 15vh;
-    background: rgba(15, 23, 42, 0.25);
-}
-
-.quota-adjust-popover-card {
-    width: 320px;
-    padding: 16px;
+    z-index: 12020;
+    min-width: 340px;
+    max-width: calc(100vw - 24px);
+    padding: 12px;
     border: 1px solid #e2e2e2;
-    border-radius: 12px;
-    background: #fff;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+    border-radius: 10px;
+    background: #ffffff;
+    box-shadow: 0 14px 34px rgba(2, 6, 23, 0.18);
 }
 
 .quota-adjust-title {
-    font-size: 13.5px;
-    font-weight: 650;
+    font-size: 13px;
     color: #111111;
-    margin-bottom: 4px;
+    font-weight: 700;
 }
 
 .quota-adjust-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
     font-size: 12px;
-    color: #7a7a7a;
-    margin-bottom: 12px;
+    color: #3c3c3c;
+    white-space: nowrap;
 }
 
 .quota-adjust-mode {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 10px;
+    gap: 8px;
+    margin-top: 10px;
 }
 
 .quota-adjust-mode-label {
-    font-size: 12.5px;
+    font-size: 12px;
     color: #3c3c3c;
-    font-weight: 550;
+    white-space: nowrap;
+}
+
+.quota-adjust-save-btn {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #111111;
+    cursor: pointer;
+}
+
+.quota-adjust-save-btn:hover {
+    border-color: #111111;
 }
 
 .quota-adjust-hint-text {
     margin-top: 8px;
-    font-size: 11.5px;
+    font-size: 11px;
     color: #8b95a7;
-    line-height: 1.5;
-}
-
-.quota-adjust-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 12px;
+    line-height: 1.4;
 }
 
 /* ==================== 个人资料 ==================== */
@@ -1120,17 +1233,7 @@
     color: #999999;
 }
 
-.settings-modal-shell .papi-action-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 4px;
-    flex-wrap: wrap;
-}
-
-/* 操作行按钮统一高度(避免大小不一) */
-.settings-modal-shell .papi-action-row button {
-    height: 34px;
-}
+/* 操作按钮行已统一为 .setting-action-row(见上方 GDDP 按钮区),papi-action-row 历史写法已移除 */
 
 .settings-modal-shell .papi-key-plain {
     display: flex;
@@ -1157,136 +1260,133 @@
 }
 
 /* ==================== Skill(原生全局类,在设置壳内统一风格) ==================== */
+/* 子 tab 与工具栏已上移 settings-page-head(见 .settings-page-head-tabs) */
 
-.settings-modal-shell .skill-subtabs {
-    display: inline-flex;
-    gap: 2px;
-    padding: 3px;
-    background: #f3f3f3;
+/* 我的 Skill 卡片 (2 列网格;min-height 允许长内容自然撑高,杜绝固定高溢出) */
+.settings-modal-shell .settings-skill-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding-right: 6px;
+}
+
+.settings-modal-shell .settings-skill-card {
+    /* min-height:内容超出 140px 时自然撑高,杜绝固定高裁切溢出 */
+    min-height: 140px;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 14px 14px 12px;
+    background: #ffffff;
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-modal-shell .settings-skill-top {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 92px;
+    gap: 10px;
+    align-items: start;
+}
+
+.settings-modal-shell .settings-skill-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 10px;
+    background: #fafafa;
+    border: 1px solid #eeeeee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7a7a7a;
+}
+
+.settings-modal-shell .settings-skill-main {
+    min-width: 0;
+    cursor: pointer;
+    outline: none;
+}
+
+.settings-modal-shell .settings-skill-main:focus-visible {
+    box-shadow: 0 0 0 2px #d0d0d0;
     border-radius: 8px;
 }
 
-/* 子 tab 与我的 Skill 工具栏同行 */
-.settings-modal-shell .skill-subtabs-row {
+.settings-modal-shell .settings-skill-title {
+    font-size: 14px;
+    color: #111111;
+    font-weight: 700;
+    line-height: 1.3;
+    margin-bottom: 3px;
+    word-break: break-word;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-modal-shell .settings-skill-preview {
+    color: #7a7a7a;
+    font-size: 12px;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 100%;
+}
+
+.settings-modal-shell .settings-skill-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+}
+
+.settings-modal-shell .settings-skill-mode-label {
+    font-size: 10px;
+    color: #999999;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.settings-modal-shell .settings-skill-divider {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 10px 0;
+}
+
+.settings-modal-shell .settings-skill-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 16px;
+    gap: 10px;
+    margin-top: auto;
 }
 
-.settings-modal-shell .skill-my-toolbar {
-    display: flex;
-    gap: 8px;
+.settings-modal-shell .settings-skill-badge {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+    border-radius: 999px;
+    background: #f5f5f5;
+    color: #3c3c3c;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 6px 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.settings-modal-shell .skill-subtab {
-    padding: 7px 16px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    font-size: 12.5px;
-    font-weight: 550;
-    color: #7a7a7a;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-}
-
-.settings-modal-shell .skill-subtab.active {
-    background: #ffffff;
-    color: #111111;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-
-.settings-modal-shell .skill-my-toolbar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 14px;
-}
-
-.settings-modal-shell .btn-skill-create {
+.settings-modal-shell .settings-skill-actions {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 32px;
-    padding: 0 14px;
-    border: 1px solid #dddddd;
-    border-radius: 7px;
-    background: #fff;
-    color: #3c3c3c;
-    font-size: 12.5px;
-    font-weight: 550;
-    cursor: pointer;
-    transition: border-color 0.15s ease, color 0.15s ease;
-}
-
-.settings-modal-shell .btn-skill-create:hover {
-    border-color: #111111;
-    color: #111111;
-}
-
-.settings-modal-shell .settings-skill-list {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid #e8e8e8;
-    border-radius: 10px;
-    background: #fff;
-    overflow: hidden;
-}
-
-.settings-modal-shell .settings-skill-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-    border-bottom: 1px solid #f4f4f4;
-}
-
-.settings-modal-shell .settings-skill-item:last-child {
-    border-bottom: none;
-}
-
-.settings-modal-shell .settings-skill-item-main {
-    flex: 1;
-    min-width: 0;
-}
-
-.settings-modal-shell .settings-skill-item-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: #222222;
-}
-
-.settings-modal-shell .settings-skill-item-desc {
-    font-size: 12px;
-    color: #7a7a7a;
-    margin-top: 2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.settings-modal-shell .settings-skill-item-meta {
-    margin-top: 4px;
-}
-
-.settings-modal-shell .settings-skill-origin {
-    display: inline-block;
-    padding: 1px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 550;
-}
-
-.settings-modal-shell .settings-skill-origin-self {
-    background: #f1f1f1;
-    color: #111111;
-}
-
-.settings-modal-shell .settings-skill-origin-global,
-.settings-modal-shell .settings-skill-origin-market {
-    background: #f4f4f4;
-    color: #7a7a7a;
+    flex: none;
 }
 
 .settings-modal-shell .settings-skill-empty {
@@ -1391,6 +1491,18 @@
     grid-column: 1 / -1;
 }
 
+/* Skill 编辑器正文文本域(防止溢出) */
+.settings-modal-shell .skill-content-textarea {
+    width: 100%;
+    min-height: 120px;
+    max-height: 300px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    box-sizing: border-box;
+}
+
 .settings-modal-shell .skill-market-card-desc {
     margin-top: 3px;
     font-size: 12.5px;
@@ -1434,10 +1546,10 @@
 .settings-modal-shell .btn-skill-install {
     height: 30px;
     padding: 0 14px;
-    border: none;
+    border: 1px solid #111111;
     border-radius: 7px;
-    background: #111111;
-    color: #fff;
+    background: #ffffff;
+    color: #111111;
     font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
@@ -1445,7 +1557,7 @@
 }
 
 .settings-modal-shell .btn-skill-install:hover {
-    background: #333333;
+    background: #f5f5f5;
 }
 
 .settings-modal-shell .btn-skill-installed {
@@ -1525,6 +1637,161 @@
     background: #fff7f7;
     color: #b03a2e;
     font-size: 12.5px;
+}
+
+/* 地图 provider 徽标(对齐原版 model-status-pill) */
+.settings-modal-shell .model-status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+.settings-modal-shell .model-status-pill.ok {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.settings-modal-shell .model-status-pill.warn {
+    background: #fdf6e3;
+    color: #8a6116;
+}
+
+.settings-modal-shell .model-status-pill.muted {
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+/* 邮箱用户绑定对(对齐原版 admin-bind-pair / -card / -arrow) */
+.settings-modal-shell .admin-bind-pair {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.settings-modal-shell .admin-bind-pair-single {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-modal-shell .admin-bind-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+    min-width: 0;
+}
+
+.settings-modal-shell .admin-bind-arrow {
+    color: #999999;
+    font-size: 16px;
+    user-select: none;
+}
+
+.settings-modal-shell .admin-mail-bind-row {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-modal-shell .admin-mail-bind-row .input-modern {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 头像裁切(对齐原版 chat_avatar.js 布局) */
+.avatar-crop-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px;
+    gap: 16px;
+    align-items: stretch;
+    min-height: 360px;
+}
+
+.avatar-crop-main {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+}
+
+.avatar-crop-canvas-wrap {
+    min-width: 0;
+    min-height: 360px;
+    overflow: hidden;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    background: #9ca3af;
+}
+
+.avatar-crop-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+}
+
+.avatar-crop-controls {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    background: #fafafa;
+}
+
+.avatar-crop-controls label {
+    color: #3c3c3c;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.avatar-crop-controls input[type="range"] {
+    width: 100%;
+    min-width: 0;
+}
+
+.avatar-crop-preview-wrap {
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fafafa;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.avatar-crop-preview-title {
+    font-size: 12px;
+    color: #3c3c3c;
+    font-weight: 600;
+}
+
+.avatar-crop-preview {
+    width: 140px;
+    height: 140px;
+    border-radius: 999px;
+    border: 1px solid #dbeafe;
+    background: #ffffff;
+}
+
+.avatar-crop-tip {
+    font-size: 11px;
+    color: #7a7a7a;
+    line-height: 1.5;
+    text-align: center;
 }
 
 /* ==================== 向量库 ==================== */
@@ -1612,6 +1879,41 @@
 
 .setting-select-menu.open {
     display: block;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+/* 菜单内搜索框(search 模式:认证 owner 用户选择等长列表过滤) */
+.setting-select-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 4px 6px;
+    padding: 0 8px;
+    height: 30px;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+    background: #fafafa;
+}
+
+.setting-select-search i {
+    flex: none;
+    font-size: 11px;
+    color: #a0a0a0;
+}
+
+.setting-select-search input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 12.5px;
+    color: #111111;
+}
+
+.setting-select-search input::placeholder {
+    color: #b0b0b0;
 }
 
 .setting-select-menu button {
@@ -1632,6 +1934,18 @@
     background: #f1f1f1;
     color: #111111;
     font-weight: 550;
+}
+
+/* 分组标题(对齐原版 admin-system-model-group-title) */
+.setting-select-group-title {
+    padding: 6px 10px 4px;
+    font-size: 11px;
+    font-weight: 650;
+    color: #999999;
+}
+
+.setting-select-group-title:first-child {
+    padding-top: 4px;
 }
 
 /* ==================== 通用开关(SettingToggle) ==================== */
@@ -1727,6 +2041,126 @@
     color: #7a7a7a;
 }
 
+/* ==================== 通用模型选择(SettingModelSelect) ==================== */
+/* 浮层回退源版 #memoryModelOptions 实现:外层 fixed + max-height 300 + overflow hidden,
+ * 内层滚动区继承 max-height 滚动(不占用父元素体积,组件以 inline style 注入 fixed 坐标) */
+
+.setting-model-select {
+    position: relative;
+    flex: none;
+}
+
+.setting-model-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 60;
+    width: min(340px, calc(100vw - 24px));
+    max-height: 300px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+    overflow: hidden;
+    display: none;
+}
+
+.setting-model-menu.open {
+    display: block;
+}
+
+/* 内层滚动区复用源版 .model-options-scroll 命名(max-height inherit + padding 12 自滚动) */
+.setting-model-menu .model-options-scroll {
+    max-height: inherit;
+    padding: 12px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
+}
+
+.setting-model-group + .setting-model-group {
+    border-top: 1px solid #f2f2f2;
+    margin-top: 4px;
+    padding-top: 4px;
+}
+
+.setting-model-group-label {
+    padding: 4px 10px 2px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #a0a0a0;
+}
+
+.setting-model-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12.5px;
+    color: #3c3c3c;
+    text-align: left;
+    cursor: pointer;
+}
+
+.setting-model-menu button:hover,
+.setting-model-menu button.active {
+    background: #f1f1f1;
+    color: #111111;
+    font-weight: 550;
+}
+
+.setting-model-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.setting-model-provider {
+    flex: none;
+    font-size: 11px;
+    color: #999999;
+}
+
+.setting-model-status {
+    flex: none;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 550;
+}
+
+.setting-model-status.status-normal {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.setting-model-status.status-error {
+    background: #fdecea;
+    color: #b03a2e;
+}
+
+.setting-model-status.status-disabled {
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+.setting-model-menu-state {
+    padding: 14px 10px;
+    text-align: center;
+    font-size: 12.5px;
+    color: #a0a0a0;
+}
+
 /* ==================== 通用滚动条(设置壳内浅色) ==================== */
 
 .settings-modal-shell ::-webkit-scrollbar {
@@ -1744,5 +2178,108 @@
 }
 
 .settings-modal-shell ::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* ==================== ModelSelect 浮层下拉(对齐原版 chat_memory_settings.css) ==================== */
+
+/* 触发按钮:像按钮而非纯文本 */
+.settings-modal-shell .custom-select-container .select-selected {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid #d8dee7;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #1a1a1a;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    text-align: left;
+    width: 100%;
+    max-width: 320px;
+}
+
+.settings-modal-shell .custom-select-container .select-selected:hover {
+    border-color: #b8c2cf;
+    background: #f8fafc;
+}
+
+.settings-modal-shell .custom-select-container .select-selected.select-arrow-active {
+    border-color: #111111;
+    background: #f1f5f9;
+}
+
+.settings-modal-shell .custom-select-container .select-selected:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.18);
+    outline-offset: 1px;
+}
+
+/* 按钮文字(截断) */
+.settings-modal-shell .custom-select-container .select-selected-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 下拉箭头(SVG chevron) */
+.settings-modal-shell .custom-select-container .select-chevron {
+    flex: 0 0 10px;
+    width: 10px;
+    height: 10px;
+    background-image: url('data:image/svg+xml,%3Csvg width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22 fill=%22none%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M1 1.5L5 4.5L9 1.5%22 stroke=%22%23666666%22 stroke-width=%221.8%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E');
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s ease;
+    opacity: 0.6;
+}
+
+.settings-modal-shell .custom-select-container .select-arrow-active .select-chevron {
+    transform: rotate(180deg);
+    opacity: 1;
+}
+
+/* 浮层下拉:position:fixed 脱离父容器裁剪;视觉完全继承原版 .select-items(style.css:radius 16 大菜单) */
+/* 仅在此声明定位与响应式钳制,禁止再覆盖 model-* 内部样式(历史紧凑化覆盖已删) */
+.select-items.select-items-floating {
+    position: fixed !important;
+    z-index: 20010 !important;
+    min-width: min(600px, calc(100vw - 24px));
+    max-width: min(600px, calc(100vw - 24px));
+    max-height: min(540px, calc(100vh - 24px));
+}
+
+/* 原版 webkit 滚动条绑 #modelOptions id,浮层菜单需按原值重新声明 */
+.select-items-floating .model-options-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.select-items-floating .model-options-scroll::-webkit-scrollbar-track {
+    margin: 10px 0;
+    border-radius: 999px;
+    background: transparent;
+}
+
+.select-items-floating .model-options-scroll::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(100, 116, 139, 0.42);
+    background-clip: content-box;
+}
+
+.select-items-floating .model-options-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(71, 85, 105, 0.56);
+    background-clip: content-box;
+}
+
+.select-items-floating .model-options-scroll::-webkit-scrollbar-corner {
     background: transparent;
 }

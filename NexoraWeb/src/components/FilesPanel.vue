@@ -19,8 +19,8 @@
                         @keydown.enter="loadFiles"
                     />
                     <button
-                        class="btn-primary"
-                        style="padding: 4px 10px; height: 28px; background:#111; color:#fff; border:1px solid #111;"
+                        class="btn-primary btn-compact"
+                        type="button"
                         @click="loadFiles"
                     >
                         搜索

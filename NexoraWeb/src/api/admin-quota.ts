@@ -96,44 +96,66 @@ export async function saveProviderOverageAction(provider: string, action: string
     }
 }
 
-/** 额度单位格式化(对齐原版单位:auto/k/w/m/token,其中 w=万) */
+/**
+ * 额度显示单位换算(对齐原版 _pickQuotaDisplayUnit + _formatQuotaScaledNumber + _formatQuotaTokens)
+ *
+ * - auto:按数值大小自动选单位:>=1e6→M, >=1e4→w, >=1e3→K, 否则 token
+ * - 固定单位(k/w/m):除以对应除数
+ * - 小数位智能:换算后 <10 → 2 位,<100 → 1 位,否则 0 位(避免 100000000 这种长串)
+ */
 export function formatQuota(value: number | undefined, unit: string): string {
-    const num = Number(value || 0)
+    const numeric = Math.max(0, parseInt(String(value || 0), 10) || 0)
 
-    if (!Number.isFinite(num)) {
+    if (!Number.isFinite(numeric)) {
         return '0'
     }
 
-    const u = String(unit || 'auto').toLowerCase()
+    const mode = String(unit || 'auto').toLowerCase()
+    const picked = mode === 'auto' ? pickQuotaUnit(numeric) : mode
 
-    if (u === 'token') {
-        return num.toLocaleString()
+    if (picked === 'token') {
+        return numeric.toLocaleString()
     }
 
-    if (u === 'k') {
-        return `${(num / 1000).toFixed(1)}K`
+    const divisor = picked === 'k' ? 1000 : (picked === 'w' ? 10000 : 1000000)
+
+    return `${formatQuotaScaledNumber(numeric, divisor)}${picked === 'k' ? 'K' : (picked === 'w' ? 'w' : 'M')}`
+}
+
+/** auto 模式按数值大小选单位(对齐原版 _pickQuotaDisplayUnit) */
+export function pickQuotaUnit(value: number): 'm' | 'w' | 'k' | 'token' {
+    const numeric = Math.max(0, Number(value || 0))
+
+    if (numeric >= 1000000) {
+        return 'm'
     }
 
-    if (u === 'w') {
-        return `${(num / 10000).toFixed(2)}w`
+    if (numeric >= 10000) {
+        return 'w'
     }
 
-    if (u === 'm') {
-        return `${(num / 1000000).toFixed(2)}M`
+    if (numeric >= 1000) {
+        return 'k'
     }
 
-    // auto:按数量级自动选择
-    if (num >= 100000000) {
-        return `${(num / 1000000).toFixed(1)}M`
+    return 'token'
+}
+
+/** 换算后的数字文本(对齐原版 _formatQuotaScaledNumber:按大小决定小数位) */
+export function formatQuotaScaledNumber(value: number, divisor: number): string {
+    const numeric = Math.max(0, Number(value || 0))
+    const scaled = divisor > 0 ? numeric / divisor : numeric
+    const absScaled = Math.abs(scaled)
+    let digits = 0
+
+    if (absScaled < 10) {
+        digits = 2
+    } else if (absScaled < 100) {
+        digits = 1
     }
 
-    if (num >= 10000) {
-        return `${(num / 10000).toFixed(1)}w`
-    }
-
-    if (num >= 1000) {
-        return `${(num / 1000).toFixed(1)}K`
-    }
-
-    return String(num)
+    return scaled.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: digits,
+    })
 }

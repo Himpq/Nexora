@@ -63,21 +63,21 @@ async function openTab(label) {
     await page.waitForTimeout(1200)
 }
 
-// 1. 我的 API Key:权限网格 + 自动选中 + 详情有效期
+// 1. 我的 API Key:权限网格 + 自动选中 + 详情有效期滑条
 await openTab('我的 API Key')
 const userKey = await page.evaluate(() => {
     const perms = [...document.querySelectorAll('.settings-modal-shell .settings-toggle-grid input[type=checkbox]')].length
     const autoSelected = !!document.querySelector('.settings-modal-shell .papi-key-list-item.active')
-    const expireSelects = document.querySelectorAll('.settings-modal-shell .settings-toggle-grid + .form-group .setting-select-trigger, .settings-modal-shell .papi-key-list-item.active ~ * .setting-select-trigger').length
+    const expireSlider = document.querySelectorAll('.settings-modal-shell .setting-expiry-slider').length
 
-    return { permissionCheckboxes: perms, autoSelected, expireSelects }
+    return { permissionCheckboxes: perms, autoSelected, expireSlider }
 })
 console.log('1 user api keys:', JSON.stringify(userKey))
 
 // 2. 用户管理:保存资料/模型权限按钮 + 自删隐藏(当前用户=自己)
 await openTab('用户管理')
 const userMgmt = await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('.settings-modal-shell .papi-action-row button')].map((b) => b.textContent.trim())
+    const buttons = [...document.querySelectorAll('.settings-modal-shell .setting-action-row button')].map((b) => b.textContent.trim())
     const selfItem = document.querySelector('.settings-modal-shell .admin-user-item.active')
     const isSelfShown = !!selfItem && selfItem.textContent.includes('test_user')
 
@@ -85,50 +85,73 @@ const userMgmt = await page.evaluate(() => {
 })
 console.log('2 user mgmt:', JSON.stringify(userMgmt))
 
-// 打开模型权限弹窗
+// 打开模型权限弹窗(行数据异步拉取,轮询等待渲染;排除设置壳 backdrop 误匹配)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.settings-modal-shell .papi-action-row button')].find((b) => b.textContent.includes('模型权限'))
+    const btn = [...document.querySelectorAll('.settings-modal-shell .setting-action-row button')].find((b) => b.textContent.includes('模型权限'))
     btn?.click()
 })
-await page.waitForTimeout(800)
+await page.waitForFunction(
+    () => {
+        const backdrop = [...document.querySelectorAll('.g-modal-backdrop')]
+            .filter((el) => !el.querySelector('.settings-modal-shell'))
+            .find((el) => el.textContent.includes('模型权限'))
+
+        return backdrop && backdrop.querySelectorAll('.model-perm-row').length > 0
+    },
+    null,
+    { timeout: 4000 }
+).catch(() => {})
 const modelPerm = await page.evaluate(() => {
-    const backdrop = [...document.querySelectorAll('.g-modal-backdrop')].find((el) => el.textContent.includes('模型权限'))
+    const backdrop = [...document.querySelectorAll('.g-modal-backdrop')]
+        .filter((el) => !el.querySelector('.settings-modal-shell'))
+        .find((el) => el.textContent.includes('模型权限'))
     const rows = backdrop ? backdrop.querySelectorAll('.model-perm-row').length : 0
 
     return { opened: !!backdrop, modelRows: rows }
 })
 console.log('3 model perm modal:', JSON.stringify(modelPerm))
 await page.evaluate(() => {
-    document.querySelector('.g-modal-backdrop .g-modal-close')?.click()
+    const backdrop = [...document.querySelectorAll('.g-modal-backdrop')]
+        .filter((el) => !el.querySelector('.settings-modal-shell'))
+        .find((el) => el.textContent.includes('模型权限'))
+
+    backdrop?.querySelector('.g-modal-close')?.click()
 })
 await page.waitForTimeout(400)
 
-// 3. 邮箱管理:分组下拉 + 重置/删除按钮
+// 3. 邮箱管理:分组下拉(页头) + 点选用户后详情按钮
 await openTab('邮箱管理')
+await page.evaluate(() => {
+    document.querySelector('.settings-modal-shell .mail-list-item')?.click()
+})
+await page.waitForTimeout(500)
 const mail = await page.evaluate(() => {
-    const triggers = [...document.querySelectorAll('.settings-modal-shell .settings-management-toolbar .setting-select-trigger')]
-    const detailBtns = [...document.querySelectorAll('.settings-modal-shell .papi-action-row button')].map((b) => b.textContent.trim())
+    const headSelects = document.querySelectorAll('.settings-page-head-actions .setting-select-trigger').length
+    const detailBtns = [...document.querySelectorAll('.settings-modal-shell .setting-action-row button')].map((b) => b.textContent.trim())
 
-    return { toolbarSelects: triggers.length, detailButtons: detailBtns }
+    return { headSelects, detailButtons: detailBtns }
 })
 console.log('4 mail:', JSON.stringify(mail))
 
 // 4. Skill:mode 下拉存在
 await openTab('Skill')
 const skill = await page.evaluate(() => {
-    const items = document.querySelectorAll('.settings-modal-shell .settings-skill-item').length
-    const modeSelects = document.querySelectorAll('.settings-modal-shell .settings-skill-item-actions .setting-select-trigger').length
+    const items = document.querySelectorAll('.settings-modal-shell .settings-skill-card').length
+    const modeSelects = document.querySelectorAll('.settings-modal-shell .settings-skill-controls .setting-select-trigger').length
 
     return { items, modeSelects }
 })
 console.log('5 skill modes:', JSON.stringify(skill))
 
-// 5. 使用统计:模型使用统计卡片
-await openTab('使用统计')
+// 5. 统计信息(管理员):Token 趋势/单用户查询/工具观测卡片
+await openTab('统计信息')
 const stats = await page.evaluate(() => {
-    const card = [...document.querySelectorAll('.settings-modal-shell .setting-card')].find((c) => c.textContent.includes('模型使用统计'))
+    const cards = [...document.querySelectorAll('.settings-modal-shell .admin-token-trend-card')]
 
-    return { hasModelUsageCard: !!card }
+    return {
+        trendCards: cards.length,
+        labels: cards.map((c) => c.querySelector('.admin-token-trend-head')?.textContent?.trim().slice(0, 20) || ''),
+    }
 })
 console.log('6 stats model usage:', JSON.stringify(stats))
 

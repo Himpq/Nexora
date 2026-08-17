@@ -195,6 +195,9 @@
     background: #fdecec;
 }
 
+/* GDDP 弹窗内 btn-* 按钮语言已上收全局层 buttons.css(单一按钮体系,
+ * Teleport 到 body 的弹窗同样生效),此处不再重复定义。 */
+
 /* ---------- 输入(通用) ---------- */
 .g-input {
     width: 100%;

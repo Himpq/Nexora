@@ -6,15 +6,14 @@
  *   - 本文件仅补充迁移版特有的组件样式:模型行、行内删除按钮,配色对齐原版
  */
 
-/* 模型行(供应商详情内) */
+/* 模型行(供应商详情内;settings.css 内覆盖为 grid 布局) */
 .admin-model-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 12px;
+    padding: 8px 12px;
     border-bottom: 1px solid #f1f5f9;
     border-radius: 8px;
-    cursor: pointer;
     transition: background 0.15s ease;
 }
 
@@ -62,31 +61,4 @@
     font-size: 11px;
     color: #64748b;
     font-variant-numeric: tabular-nums;
-}
-
-/* 行内删除按钮(hover 显示) */
-.admin-item-delete {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: #94a3b8;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-
-.admin-user-item:hover .admin-item-delete,
-.admin-model-row:hover .admin-item-delete {
-    opacity: 1;
-}
-
-.admin-item-delete:hover {
-    background: #fee2e2;
-    color: #dc2626;
 }

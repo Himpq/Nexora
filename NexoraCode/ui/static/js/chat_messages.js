@@ -46,7 +46,6 @@
         const clearLearningWelcomeState = requireMessagesDependency(deps, 'clearLearningWelcomeState');
         const captureMessagesScrollAnchor = requireMessagesDependency(deps, 'captureMessagesScrollAnchor');
         const restoreMessagesScrollAnchor = requireMessagesDependency(deps, 'restoreMessagesScrollAnchor');
-        const refreshLastUserPromptEditButtons = requireMessagesDependency(deps, 'refreshLastUserPromptEditButtons');
         const getShouldAutoScroll = requireMessagesDependency(deps, 'getShouldAutoScroll');
         const scrollMessagesToBottomNow = requireMessagesDependency(deps, 'scrollMessagesToBottomNow');
         const setMessagesLastObservedScrollTop = requireMessagesDependency(deps, 'setMessagesLastObservedScrollTop');
@@ -64,7 +63,6 @@
         const formatFileSize = requireMessagesDependency(deps, 'formatFileSize');
         const escapeHtml = requireMessagesDependency(deps, 'escapeHtml');
         const collectContentMarkdownBeforeNode = requireMessagesDependency(deps, 'collectContentMarkdownBeforeNode');
-        const resetUserPromptInlineEditor = requireMessagesDependency(deps, 'resetUserPromptInlineEditor');
         const renderMarkdownWithNewTabLinks = requireMessagesDependency(deps, 'renderMarkdownWithNewTabLinks');
         const bindSourceMarkdown = requireMessagesDependency(deps, 'bindSourceMarkdown');
         const renderMathSafe = requireMessagesDependency(deps, 'renderMathSafe');
@@ -254,22 +252,9 @@
                     content.appendChild(bubble);
                 }
 
-                const canRenderEditBtn = !message.pending && !!textContent && (
-                    (getRenderLastUserMessageIndexHint() >= 0 && Number(index) === Number(getRenderLastUserMessageIndexHint()))
-                    || (!getIsBatchRenderingMessages())
-                );
-
                 const actions = document.createElement('div');
                 actions.className = 'msg-actions';
                 actions.innerHTML = `
-            ${canRenderEditBtn ? `
-            <button class="btn-action" data-action="edit-user-prompt" onclick="toggleEditUserPrompt(${index})" title="编辑提示词">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 20h9"></path>
-                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
-                </svg>
-            </button>
-            ` : ''}
             <button class="btn-action" onclick="copyUserMessage(${index})" title="复制消息">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -354,7 +339,8 @@
                             const callId = allocateToolCallId(div, toolName, 'result', step.call_id || '', step.index);
                             updateLastToolResult(div, toolName, step.result, callId, {
                                 toolIndex: step.index,
-                                modelVisibleResult: step.model_visible_result
+                                modelVisibleResult: step.model_visible_result,
+                                autoExpand: false
                             });
 
                             if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
@@ -445,10 +431,17 @@
                 }
 
                 const modelName = (message.metadata && message.metadata.model_name) || message.model_name;
+                // 中间工具轮（带非空 tool_calls）不显示 model badge，只有最终答复才展示，
+                // 避免重进对话后每个工具调用 turn 都出现 badge。
+                const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
 
-                if (modelName) {
+                if (modelName && !hasToolCalls) {
                     const ioMeta = readMessageIoTokens(message.metadata || {}, false);
                     const memoryIoMeta = readMessageMemoryIoTokens(message.metadata || {});
+                    const badgeTiming = (message.metadata && message.metadata.badge_timing
+                        && typeof message.metadata.badge_timing === 'object')
+                        ? message.metadata.badge_timing
+                        : {};
                     updateMessageModelBadge(div, {
                         modelName,
                         searchFlag: (message.metadata && typeof message.metadata.search_enabled === 'boolean')
@@ -458,7 +451,23 @@
                         outputTokens: safeTokenInt(ioMeta.output),
                         memoryInputTokens: safeTokenInt(memoryIoMeta.input),
                         memoryOutputTokens: safeTokenInt(memoryIoMeta.output),
-                        memoryReady: !!memoryIoMeta.ready
+                        memoryReady: !!memoryIoMeta.ready,
+                        timing: {
+                            startedAt: safeTokenInt(badgeTiming.startedAt),
+                            firstTokenAt: safeTokenInt(badgeTiming.firstTokenAt),
+                            endedAt: safeTokenInt(badgeTiming.endedAt),
+                            // badge_timing 缺失时（老数据/云端迁移消息未写 badge_timing），
+                            // 缓存命中回退到 io_tokens 累计口径，保证有缓存数据就展示。
+                            cachedInput: badgeTiming.cachedInput != null
+                                ? safeTokenInt(badgeTiming.cachedInput)
+                                : safeTokenInt(ioMeta.cachedInput),
+                            rawInput: badgeTiming.rawInput != null
+                                ? safeTokenInt(badgeTiming.rawInput)
+                                : safeTokenInt(ioMeta.rawInput),
+                            outputTokens: badgeTiming.outputTokens != null
+                                ? safeTokenInt(badgeTiming.outputTokens)
+                                : safeTokenInt(ioMeta.output)
+                        }
                     });
                 }
 
@@ -538,7 +547,6 @@
             }
 
             if (!getIsBatchRenderingMessages()) {
-                refreshLastUserPromptEditButtons();
                 rememberVisibleMessageInWindow(message, index);
             }
 
@@ -631,6 +639,78 @@
             return visibleRows;
         }
 
+        function isToolOnlyAssistantRow(message) {
+            // 中间工具轮：assistant 但无正文 content，只有 process_steps 里的工具步骤。
+            if (!message || typeof message !== 'object') return false;
+            if (String(message.role || '').trim() !== 'assistant') return false;
+            if (String(message.content || '').trim()) return false;
+
+            const steps = (message.metadata && Array.isArray(message.metadata.process_steps))
+                ? message.metadata.process_steps
+                : [];
+            const hasToolStep = steps.some((step) => step && (step.type === 'function_call' || step.type === 'function_result'));
+            const hasContentStep = steps.some((step) => step && step.type === 'content' && String(step.content || '').trim());
+
+            return hasToolStep && !hasContentStep;
+        }
+
+        function mergeToolOnlyAssistantRows(rows) {
+            // 本地 AgentLoop 每个工具轮落盘成独立 assistant 消息（无正文、只含工具步骤），
+            // 逐条渲染会产生 .message 之间的 24px 间隔。这里把连续的无正文工具轮
+            // 合并进下一个有正文的 assistant（或保留在末尾），工具链保持连贯且不丢消息。
+            const src = Array.isArray(rows) ? rows : [];
+            const merged = [];
+            let pendingSteps = [];
+
+            for (const row of src) {
+                if (isToolOnlyAssistantRow(row)) {
+                    const steps = (row.metadata && Array.isArray(row.metadata.process_steps))
+                        ? row.metadata.process_steps
+                        : [];
+                    pendingSteps = pendingSteps.concat(steps);
+                    continue;
+                }
+
+                // pending 工具步骤只允许并入 assistant 消息，禁止并进 user/其他角色。
+                if (pendingSteps.length && row && typeof row === 'object' && String(row.role || '').trim() === 'assistant') {
+                    const existing = (row.metadata && Array.isArray(row.metadata.process_steps))
+                        ? row.metadata.process_steps
+                        : [];
+                    const mergedRow = Object.assign({}, row);
+                    mergedRow.metadata = Object.assign({}, row.metadata || {}, {
+                        process_steps: pendingSteps.concat(existing)
+                    });
+                    merged.push(mergedRow);
+                    pendingSteps = [];
+                    continue;
+                }
+
+                // 非 assistant 消息（如 user）不能承接工具步骤：先把 pending 单独落成一条，
+                // 保持消息顺序（工具轮仍在 user 之前），再渲染当前消息。
+                if (pendingSteps.length) {
+                    merged.push({
+                        role: 'assistant',
+                        content: '',
+                        metadata: { process_steps: pendingSteps }
+                    });
+                    pendingSteps = [];
+                }
+
+                merged.push(row);
+            }
+
+            if (pendingSteps.length) {
+                // 请求以工具轮收尾（如权限弹卡中断）：无后续正文 assistant，工具步骤单独成条，避免丢失。
+                merged.push({
+                    role: 'assistant',
+                    content: '',
+                    metadata: { process_steps: pendingSteps }
+                });
+            }
+
+            return merged;
+        }
+
         function resetAssistantMessageForLiveStream(messageDiv, options = {}) {
             if (!messageDiv) return null;
 
@@ -692,12 +772,13 @@
         }
 
         function renderMessages(messages, noScroll, options = {}) {
-            resetUserPromptInlineEditor();
-
             const container = requireMessagesContainer();
             const opts = (options && typeof options === 'object') ? options : {};
             const indexedRows = buildIndexedMessageRows(messages, opts.indexOffset);
-            const renderRows = resolveMessagesForActiveStreamRender(indexedRows);
+            const activeRows = resolveMessagesForActiveStreamRender(indexedRows);
+            // 本地 AgentLoop 每工具轮一条独立 assistant 消息，逐条渲染会产生消息间距；
+            // 渲染前把无正文的中间工具轮合并进最终答复，保持工具链连贯。
+            const renderRows = mergeToolOnlyAssistantRows(activeRows);
 
             refreshConversationImageHistoryFlag(renderRows);
 
@@ -741,8 +822,7 @@
             }
 
             let stepStart = performance.now();
-            refreshLastUserPromptEditButtons();
-            renderMessagesLogger.debug(`[renderMessages] refreshEditBtns = ${(performance.now() - stepStart).toFixed(1)}ms`);
+            renderMessagesLogger.debug(`[renderMessages] render complete = ${(performance.now() - stepStart).toFixed(1)}ms`);
             stepStart = performance.now();
 
             let shouldPinBottom = false;
@@ -861,392 +941,6 @@
             applyRegenerateStreamDomWindow,
             renderMessages,
             resolveContentBodyForFullTextUpdate,
-        };
-    }
-
-    function createUserPromptEditController(deps = {}) {
-        const getMessagesContainer = requireMessagesDependency(deps, 'getMessagesContainer');
-        const getCurrentConversationId = requireMessagesDependency(deps, 'getCurrentConversationId');
-        const getChatInputDraftMaxLen = requireMessagesDependency(deps, 'getChatInputDraftMaxLen');
-        const showToast = requireMessagesDependency(deps, 'showToast');
-        const renderMarkdownWithNewTabLinks = requireMessagesDependency(deps, 'renderMarkdownWithNewTabLinks');
-        const bindSourceMarkdown = requireMessagesDependency(deps, 'bindSourceMarkdown');
-        const renderMathSafe = requireMessagesDependency(deps, 'renderMathSafe');
-        const highlightCode = requireMessagesDependency(deps, 'highlightCode');
-        const ensureConversationPanelReadyForMutation = requireMessagesDependency(deps, 'ensureConversationPanelReadyForMutation');
-        const fetchConversationMessagesSnapshot = requireMessagesDependency(deps, 'fetchConversationMessagesSnapshot');
-        const getLastUserMessageIndexFromMessages = requireMessagesDependency(deps, 'getLastUserMessageIndexFromMessages');
-        const renderMessages = requireMessagesDependency(deps, 'renderMessages');
-        const renderConversationSnapshotFromServer = requireMessagesDependency(deps, 'renderConversationSnapshotFromServer');
-        const findAssistantIndexAfterUserMessageInMessages = requireMessagesDependency(deps, 'findAssistantIndexAfterUserMessageInMessages');
-        const sendMessage = requireMessagesDependency(deps, 'sendMessage');
-        const startRegenerate = requireMessagesDependency(deps, 'startRegenerate');
-        const isChatMobileLayout = requireMessagesDependency(deps, 'isChatMobileLayout');
-
-        let userPromptEditState = {
-            index: null,
-            messageDiv: null,
-            bubbleEl: null,
-            editorEl: null,
-            hintEl: null,
-            editBtn: null,
-            originalText: '',
-            saving: false
-        };
-
-        function getLastUserMessageIndexFromDom() {
-            const container = getMessagesContainer();
-
-            if (!container) return -1;
-
-            let last = -1;
-            const rows = Array.from(container.querySelectorAll('.message.user'));
-
-            rows.forEach((row) => {
-                const idx = Number(row.dataset.index);
-
-                if (Number.isFinite(idx) && idx > last) last = idx;
-            });
-
-            return last;
-        }
-
-        function resetUserPromptInlineEditor(options = {}) {
-            const opts = (options && typeof options === 'object') ? options : {};
-            const keepEditedContent = !!opts.keepEditedContent;
-            const state = userPromptEditState || {};
-            const bubble = state.bubbleEl;
-            const editor = state.editorEl;
-            const hint = state.hintEl;
-            const btn = state.editBtn;
-
-            if (editor && editor.parentNode) editor.remove();
-            if (hint && hint.parentNode) hint.remove();
-
-            if (bubble) {
-                bubble.style.display = '';
-
-                if (keepEditedContent && typeof opts.editedText === 'string') {
-                    const text = String(opts.editedText || '').trim();
-
-                    if (text) {
-                        bubble.innerHTML = renderMarkdownWithNewTabLinks(text);
-                        bindSourceMarkdown(bubble, text);
-                        renderMathSafe(bubble);
-                        highlightCode(bubble);
-                    }
-                }
-            }
-
-            if (btn) {
-                btn.classList.remove('is-editing');
-                btn.title = '编辑提示词';
-                btn.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 20h9"></path>
-                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
-            </svg>
-        `;
-            }
-
-            userPromptEditState = {
-                index: null,
-                messageDiv: null,
-                bubbleEl: null,
-                editorEl: null,
-                hintEl: null,
-                editBtn: null,
-                originalText: '',
-                saving: false
-            };
-        }
-
-        function refreshLastUserPromptEditButtons() {
-            const container = getMessagesContainer();
-
-            if (!container) return;
-
-            const userRows = Array.from(container.querySelectorAll('.message.user'));
-
-            if (!userRows.length) return;
-
-            let lastRow = null;
-            let lastIdx = -1;
-
-            userRows.forEach((row) => {
-                const idx = Number(row.dataset.index);
-
-                if (Number.isFinite(idx) && idx >= lastIdx) {
-                    lastIdx = idx;
-                    lastRow = row;
-                }
-            });
-
-            userRows.forEach((row) => {
-                const editBtn = row.querySelector('.btn-action[data-action="edit-user-prompt"]');
-
-                if (!editBtn) return;
-
-                const isLast = row === lastRow;
-                editBtn.style.display = isLast ? '' : 'none';
-                editBtn.disabled = !isLast;
-
-                if (!isLast && Number(userPromptEditState.index) === Number(row.dataset.index)) {
-                    resetUserPromptInlineEditor();
-                }
-            });
-        }
-
-        async function saveEditedUserPrompt(index, options = {}) {
-            const idx = Number(index);
-            const opts = (options && typeof options === 'object') ? options : {};
-            const regenerateAfterSave = !!opts.regenerateAfterSave;
-            const state = userPromptEditState;
-
-            if (!Number.isFinite(idx) || !state || Number(state.index) !== idx || !state.editorEl) return;
-            if (state.saving) return;
-
-            if (idx !== getLastUserMessageIndexFromDom()) {
-                showToast('仅支持修改最后一条用户消息');
-                resetUserPromptInlineEditor();
-                return;
-            }
-
-            const nextText = String(state.editorEl.value || '').trim();
-
-            if (!nextText) {
-                showToast('提示词不能为空');
-                state.editorEl.focus();
-                return;
-            }
-
-            const maxLen = Number(getChatInputDraftMaxLen() || 0);
-
-            if (maxLen > 0 && nextText.length > maxLen) {
-                showToast(`提示词不能超过 ${maxLen} 字符`);
-                state.editorEl.focus();
-                return;
-            }
-
-            if (nextText === String(state.originalText || '').trim()) {
-                resetUserPromptInlineEditor();
-                return;
-            }
-
-            const currentConversationId = String(getCurrentConversationId() || '').trim();
-
-            if (!currentConversationId) {
-                showToast('当前会话无效');
-                return;
-            }
-
-            const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
-
-            if (!operationReady) return;
-
-            state.saving = true;
-
-            if (state.editBtn) state.editBtn.disabled = true;
-
-            try {
-                const beforeSaveSnapshot = await fetchConversationMessagesSnapshot(currentConversationId);
-                const beforeSaveMessages = beforeSaveSnapshot ? beforeSaveSnapshot.messages : [];
-                const serverLastUserIndex = getLastUserMessageIndexFromMessages(beforeSaveMessages);
-                const serverTarget = (idx >= 0 && idx < beforeSaveMessages.length) ? beforeSaveMessages[idx] : null;
-                const serverTargetRole = String((serverTarget && serverTarget.role) || '').trim().toLowerCase();
-
-                if (!beforeSaveSnapshot || serverTargetRole !== 'user' || serverLastUserIndex !== idx) {
-                    resetUserPromptInlineEditor();
-
-                    if (beforeSaveSnapshot) {
-                        renderMessages(beforeSaveMessages, true, { instant: true });
-                    }
-
-                    showToast('对话已同步，请重新编辑最后一条用户消息');
-                    return;
-                }
-
-                const res = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}/messages/${idx}/content`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: nextText })
-                });
-                const data = await res.json().catch(() => ({}));
-
-                if (!res.ok || !data.success) {
-                    showToast((data && data.message) ? data.message : '保存失败');
-                    return;
-                }
-
-                resetUserPromptInlineEditor({ keepEditedContent: true, editedText: nextText });
-
-                // 编辑只改动最后一条用户消息的内容，消息结构（角色与顺序）不变，
-                // 可直接复用保存前已拉取的快照，避免重新拉取并全量渲染整个会话。
-                const updatedMessages = Array.isArray(beforeSaveMessages)
-                    ? beforeSaveMessages.map((msg, msgIndex) => (msgIndex === idx ? { ...msg, content: nextText } : msg))
-                    : [];
-                const preloadedSnapshot = beforeSaveSnapshot
-                    ? { ...beforeSaveSnapshot, messages: updatedMessages }
-                    : null;
-
-                if (!regenerateAfterSave) {
-                    showToast('提示词已更新');
-                    return;
-                }
-
-                const assistantIndex = updatedMessages.length
-                    ? findAssistantIndexAfterUserMessageInMessages(updatedMessages, idx)
-                    : -1;
-
-                if (assistantIndex < 0) {
-                    if (idx === updatedMessages.length - 1) {
-                        showToast('提示词已更新，正在生成回答');
-                        await sendMessage({
-                            textOverride: nextText,
-                            displayContentOverride: nextText,
-                            useExistingUserMessage: true
-                        });
-                        return;
-                    }
-
-                    showToast('提示词已更新，但后端未找到可重答的模型回复');
-                    return;
-                }
-
-                showToast('提示词已更新，正在重新回答');
-                await startRegenerate(assistantIndex, { preloadedSnapshot });
-            } catch (_) {
-                showToast('保存失败');
-            } finally {
-                if (state.editBtn) state.editBtn.disabled = false;
-                if (userPromptEditState) userPromptEditState.saving = false;
-            }
-        }
-
-        async function toggleEditUserPrompt(index) {
-            const idx = Number(index);
-
-            if (!Number.isFinite(idx)) return;
-
-            if (Number(userPromptEditState.index) === idx && userPromptEditState.editorEl) {
-                await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
-                return;
-            }
-
-            const currentConversationId = String(getCurrentConversationId() || '').trim();
-            const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
-
-            if (!operationReady) return;
-
-            const messageDiv = document.querySelector(`.message.user[data-index="${idx}"]`);
-
-            if (!messageDiv) return;
-
-            if (idx !== getLastUserMessageIndexFromDom()) {
-                showToast('仅支持修改最后一条用户消息');
-                return;
-            }
-
-            if (userPromptEditState.editorEl) {
-                resetUserPromptInlineEditor();
-            }
-
-            const bubble = messageDiv.querySelector('.message-bubble');
-
-            if (!bubble) {
-                showToast('未找到可编辑内容');
-                return;
-            }
-
-            const editBtn = messageDiv.querySelector('.btn-action[data-action="edit-user-prompt"]');
-
-            if (!editBtn) return;
-
-            const sourceText = String((typeof bubble.__sourceMarkdown === 'string') ? bubble.__sourceMarkdown : (bubble.innerText || '')).trim();
-            const editor = document.createElement('textarea');
-            editor.className = 'user-prompt-inline-editor';
-            editor.value = sourceText;
-            editor.setAttribute('aria-label', '编辑用户提示词');
-
-            const hint = document.createElement('div');
-            hint.className = 'user-prompt-inline-hint';
-            hint.textContent = 'Enter 保存并重答，Shift+Enter 换行，Esc 取消';
-
-            const bubbleRect = bubble.getBoundingClientRect();
-            const targetWidth = Math.max(120, Math.round(bubbleRect.width || bubble.offsetWidth || 120));
-            const targetHeight = Math.max(44, Math.round(bubbleRect.height || bubble.offsetHeight || 44));
-            editor.style.width = `${targetWidth}px`;
-            editor.style.height = `${targetHeight}px`;
-
-            bubble.style.display = 'none';
-            bubble.insertAdjacentElement('afterend', editor);
-            editor.insertAdjacentElement('afterend', hint);
-
-            editBtn.classList.add('is-editing');
-            editBtn.title = '保存修改';
-            editBtn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="20 6 9 17 4 12"></polyline>
-        </svg>
-    `;
-
-            userPromptEditState = {
-                index: idx,
-                messageDiv,
-                bubbleEl: bubble,
-                editorEl: editor,
-                hintEl: hint,
-                editBtn,
-                originalText: sourceText,
-                saving: false
-            };
-
-            editor.addEventListener('keydown', async (e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-                    e.preventDefault();
-                    await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
-                    return;
-                }
-
-                if (e.key === 'Escape') {
-                    e.preventDefault();
-                    resetUserPromptInlineEditor();
-                }
-            });
-
-            const focusEditorFromGesture = () => {
-                if (!isChatMobileLayout()) return;
-
-                try {
-                    editor.focus({ preventScroll: true });
-                } catch (_) {
-                    editor.focus();
-                }
-            };
-
-            editor.addEventListener('touchstart', focusEditorFromGesture, { passive: true });
-            editor.addEventListener('pointerdown', (e) => {
-                if (e.pointerType && e.pointerType !== 'touch') return;
-
-                focusEditorFromGesture();
-            }, { passive: true });
-
-            requestAnimationFrame(() => {
-                try {
-                    editor.focus({ preventScroll: true });
-                    editor.setSelectionRange(editor.value.length, editor.value.length);
-                } catch (_) {
-                    editor.focus();
-                }
-            });
-        }
-
-        return {
-            getLastUserMessageIndexFromDom,
-            resetUserPromptInlineEditor,
-            refreshLastUserPromptEditButtons,
-            saveEditedUserPrompt,
-            toggleEditUserPrompt,
         };
     }
 
@@ -1733,7 +1427,15 @@
                 modelName: String(modelName || ''),
                 searchFlag: 'unknown',
                 inputTokens: 0,
-                outputTokens: 0
+                outputTokens: 0,
+                timing: {
+                    startedAt: Date.now(),
+                    firstTokenAt: 0,
+                    endedAt: 0,
+                    cachedInput: 0,
+                    rawInput: 0,
+                    outputTokens: 0
+                }
             };
             const modelBadgeUsageState = {
                 input: 0,
@@ -1818,7 +1520,7 @@
                             },
                         } : {}),
                         enable_thinking: els.checkThinking.checked,
-                        enable_web_search: els.checkSearch.checked,
+                        enable_web_search: true,
                         enable_tools: enableTools,
                         tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
                         debug_mode: isDebugConsoleEnabled(),
@@ -2012,6 +1714,9 @@
                             } else if (data.type === 'debug_trace') {
                                 appendDebugTraceChunk(data, debugScopeKey);
                             } else if (data.type === 'content') {
+                                if (!modelBadgeState.timing.firstTokenAt) {
+                                    modelBadgeState.timing.firstTokenAt = Date.now();
+                                }
                                 let contentDelta = String(data.content || '');
 
                                 if (!accumulatedContent && !currentSegmentContent) {
@@ -2109,6 +1814,9 @@
                                 applyUsageChunkToBadgeState(modelBadgeUsageState, data);
                                 modelBadgeState.inputTokens = modelBadgeUsageState.input;
                                 modelBadgeState.outputTokens = modelBadgeUsageState.output;
+                                modelBadgeState.timing.cachedInput = safeTokenInt(data.cached_input_tokens);
+                                modelBadgeState.timing.rawInput = safeTokenInt(data.raw_input_tokens);
+                                modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
                                 updateMessageModelBadge(regenMessageDiv, modelBadgeState);
                             } else if (data.type === 'error') {
                                 streamEndedWithError = true;
@@ -2139,6 +1847,9 @@
                     }
 
                     if (done) {
+                        modelBadgeState.timing.endedAt = Date.now();
+                        modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
+                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
                         streamCompleted = true;
                         break;
                     }
@@ -2360,7 +2071,6 @@
 
     getShared().registerModule(MODULE_NAME, {
         createMessagesController,
-        createUserPromptEditController,
         createMessageActionsController,
     });
 })();

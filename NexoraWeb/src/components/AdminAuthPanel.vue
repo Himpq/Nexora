@@ -1,138 +1,138 @@
 <!--
-    AdminAuthPanel.vue — 管理员:认证管理(对齐原版 settings-admin-auth-tab)
+    AdminAuthPanel.vue — 管理员:认证管理(Public API Keys)
 
     功能:
-      - 工具栏:生成 Public API Key + 按用户筛选
-      - 左列表 / 右详情
-      - 详情:Key Name 编辑 / 访问范围(用户私有·全局)/ 所属用户选择器 / 权限 7 项 / 剩余时长
-      - 操作:保存当前 Key 设置 / 重新生成 / 删除(吊销)
+      - 页头操作(生成/筛选/刷新)由 SettingsModal pageActionsMap 提供,面板不再自带 toolbar
+      - 左列表(带 scope 徽标 + 过期状态)/ 右详情
+      - 详情:可编辑区(名称/范围/所属用户 SettingSelect 搜索)+ 只读信息卡 + 权限开关 + 操作按钮
+      - 弹窗:生成/重新生成 Key + 明文展示
 -->
 
 <template>
     <div class="admin-auth-panel">
-        <div class="admin-users-toolbar settings-management-toolbar">
-            <button class="btn-primary-outline" type="button" @click="openCreate">
-                <i class="fa-solid fa-key" aria-hidden="true"></i>
-                <span>生成 Public API Key</span>
-            </button>
-            <div class="admin-user-token-selector" ref="filterRef">
-                <input
-                    v-model="ownerFilter"
-                    class="input-modern"
-                    placeholder="按用户筛选"
-                    autocomplete="off"
-                    @focus="openFilterMenu"
-                    @input="openFilterMenu"
-                >
-                <div v-if="filterMenuOpen && filteredOwnerOptions.length" class="admin-user-token-menu" role="listbox">
-                    <button
-                        v-for="user in filteredOwnerOptions"
-                        :key="user.username"
-                        type="button"
-                        @click="pickOwnerFilter(user.username)"
-                    >{{ user.username }}</button>
-                </div>
-            </div>
-            <button v-if="ownerFilter" class="admin-user-token-clear-inline" type="button" title="清除筛选" @click="ownerFilter = ''">
-                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-            </button>
-            <button class="btn-primary-outline" type="button" @click="load">
-                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-                <span>刷新</span>
-            </button>
-        </div>
-
-        <div class="admin-users-layout settings-management-layout">
-            <div class="admin-users-list settings-management-list">
-                <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
-                <div v-else-if="!filteredKeys.length" class="admin-user-detail-empty">暂无 Public API Key</div>
+        <!-- 主体:左列表 + 右详情 -->
+        <div class="settings-management-layout">
+            <!-- 左列表 -->
+            <div class="settings-management-list auth-key-list">
+                <div v-if="loading" class="auth-empty">加载中...</div>
+                <div v-else-if="!filteredKeys.length" class="auth-empty">暂无 Public API Key</div>
                 <button
                     v-for="key in filteredKeys"
                     :key="key.id"
-                    class="admin-user-item papi-key-list-item"
+                    class="auth-key-item"
                     :class="{ active: selectedId === key.id }"
                     type="button"
                     @click="selectKey(key)"
                 >
-                    <span class="admin-user-avatar admin-public-api-key-icon"><i class="fa-solid fa-key" aria-hidden="true"></i></span>
-                    <span class="papi-key-list-main">
-                        <span class="admin-user-name">{{ key.name || key.id }}</span>
-                        <span class="admin-user-meta mono">{{ key.key_preview || '-' }}</span>
+                    <span class="auth-key-avatar">
+                        <i class="fa-solid fa-key" aria-hidden="true"></i>
+                    </span>
+                    <span class="auth-key-main">
+                        <span class="auth-key-name-row">
+                            <span class="auth-key-name">{{ key.name || key.id }}</span>
+                            <span class="auth-scope-badge" :class="key.scope === 'global' ? 'global' : 'owner'">
+                                {{ key.scope === 'global' ? '全局' : '私有' }}
+                            </span>
+                        </span>
+                        <span class="auth-key-meta-row">
+                            <span class="auth-key-preview">{{ key.key_preview || '-' }}</span>
+                            <span class="auth-key-expiry" :class="{ expired: key.is_expired }">
+                                {{ key.is_expired ? '已过期' : (key.expires_at ? remainingShort(key) : '永久' ) }}
+                            </span>
+                        </span>
                     </span>
                 </button>
             </div>
 
-            <div class="admin-user-detail settings-management-detail">
-                <div v-if="!selectedKey" class="admin-user-detail-empty">请选择左侧 Key 查看详情</div>
-                <div v-else>
-                    <div class="form-group">
-                        <label for="adminPublicApiNameInput">Key Name</label>
-                        <input id="adminPublicApiNameInput" v-model="detailName" class="input-modern" type="text" maxlength="120" placeholder="Key Name">
-                    </div>
-                    <div class="form-group">
-                        <label>Key 预览</label>
-                        <div class="settings-field mono">{{ selectedKey.key_preview || '-' }}</div>
-                    </div>
-                    <div class="form-group">
-                        <label>访问范围</label>
-                        <div class="papi-segment" role="group" aria-label="访问范围">
-                            <button
-                                type="button"
-                                class="papi-segment-button"
-                                :class="{ active: detailScope === 'owner' }"
-                                @click="detailScope = 'owner'"
-                            >用户私有</button>
-                            <button
-                                type="button"
-                                class="papi-segment-button"
-                                :class="{ active: detailScope === 'global' }"
-                                @click="detailScope = 'global'"
-                            >全局访问</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>所属用户</label>
-                        <div class="admin-user-token-selector" ref="ownerRef">
-                            <input
-                                v-model="detailOwner"
-                                class="input-modern"
-                                placeholder="选择用户"
-                                autocomplete="off"
-                                @focus="openOwnerMenu"
-                                @input="openOwnerMenu"
-                            >
-                            <div v-if="ownerMenuOpen && filteredOwnerOptions.length" class="admin-user-token-menu" role="listbox">
-                                <button
-                                    v-for="user in filteredOwnerOptions"
-                                    :key="user.username"
-                                    type="button"
-                                    @click="pickOwner(user.username)"
-                                >{{ user.username }}</button>
+            <!-- 右详情 -->
+            <div class="settings-management-detail auth-detail">
+                <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
+                    <i class="fa-solid fa-key auth-empty-icon" aria-hidden="true"></i>
+                    <span>请选择一个 API Key 查看详情</span>
+                </div>
+                <div v-else class="auth-detail-inner">
+                    <!-- 可编辑区 -->
+                    <div class="auth-card">
+                        <div class="auth-card-title">基本设置</div>
+                        <div class="auth-edit-grid">
+                            <div class="form-group">
+                                <label for="adminPublicApiNameInput">Key 名称</label>
+                                <input id="adminPublicApiNameInput" v-model="detailName" class="input-modern" type="text" maxlength="120" placeholder="Key 名称">
+                            </div>
+                            <div class="form-group">
+                                <label>访问范围</label>
+                                <SettingSegmented
+                                    :model-value="detailScope"
+                                    :options="scopeOptions"
+                                    @update:model-value="detailScope = $event as 'owner' | 'global'"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label>所属用户</label>
+                                <SettingSelect
+                                    v-model="detailOwner"
+                                    :options="ownerOptions"
+                                    search
+                                    search-placeholder="搜索用户..."
+                                    width="220px"
+                                />
                             </div>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label>创建时间</label>
-                        <div class="settings-field mono">{{ formatTime(selectedKey.created_at) }}</div>
-                    </div>
-                    <div class="form-group">
-                        <label>过期时间</label>
-                        <div class="settings-field mono">{{ formatTime(selectedKey.expires_at) || '永久' }}</div>
-                    </div>
-                    <div class="form-group">
-                        <label>剩余时长</label>
-                        <div class="settings-field mono">{{ remainingText }}</div>
-                    </div>
-                    <div class="form-group">
-                        <label>权限</label>
-                        <div class="settings-toggle-grid">
-                            <label v-for="perm in permissionOptions" :key="perm.key" class="settings-toggle-row">
-                                <input v-model="detailPermissions[perm.key]" type="checkbox">
-                                <span>{{ perm.label }}</span>
-                            </label>
+
+                    <!-- 只读信息卡 -->
+                    <div class="auth-card">
+                        <div class="auth-card-title">密钥信息</div>
+                        <div class="auth-info-grid">
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">Key 预览</span>
+                                <span class="auth-info-value mono">{{ selectedKey.key_preview || '-' }}</span>
+                            </div>
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">生成者</span>
+                                <span class="auth-info-value">{{ selectedKey.created_by || '-' }}</span>
+                            </div>
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">创建时间</span>
+                                <span class="auth-info-value mono">{{ formatTime(selectedKey.created_at) }}</span>
+                            </div>
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">过期时间</span>
+                                <span class="auth-info-value mono">{{ formatTime(selectedKey.expires_at) || '永久' }}</span>
+                            </div>
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">剩余时长</span>
+                                <span class="auth-info-value mono" :class="{ 'auth-expired': selectedKey.is_expired }">{{ remainingText }}</span>
+                            </div>
+                            <div class="auth-info-cell">
+                                <span class="auth-info-label">最后使用</span>
+                                <span class="auth-info-value mono">{{ formatTime(selectedKey.last_used_at) || '从未使用' }}</span>
+                            </div>
                         </div>
                     </div>
-                    <div class="papi-action-row">
+
+                    <!-- 权限开关 -->
+                    <div class="auth-card">
+                        <div class="auth-card-title">权限配置</div>
+                        <div class="auth-perm-grid">
+                            <button
+                                v-for="perm in permissionOptions"
+                                :key="perm.key"
+                                type="button"
+                                class="auth-perm-toggle"
+                                :class="{ active: detailPermissions[perm.key] }"
+                                @click="detailPermissions[perm.key] = !detailPermissions[perm.key]"
+                            >
+                                <span class="auth-perm-label">{{ perm.label }}</span>
+                                <span class="auth-perm-track">
+                                    <span class="auth-perm-thumb"></span>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 操作按钮 -->
+                    <SettingActionRow>
                         <button class="btn-primary-outline" type="button" @click="handleSaveSettings">
                             <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
                             <span>保存设置</span>
@@ -145,14 +145,14 @@
                             <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                             <span>删除 Key</span>
                         </button>
-                    </div>
+                    </SettingActionRow>
                 </div>
             </div>
         </div>
 
         <!-- 生成 / 重新生成 Key 弹窗 -->
         <Modal :open="keyModalOpen" :title="keyModalMode === 'regenerate' ? '重新生成 Public API Key' : '生成 Public API Key'" size="sm" @close="keyModalOpen = false">
-            <p v-if="keyModalMode === 'regenerate'" class="papi-key-plain-tip" style="margin-top:0;">
+            <p v-if="keyModalMode === 'regenerate'" class="auth-modal-tip">
                 将为当前选中的 Key 重新生成明文 key,旧 key 会立即失效。
             </p>
             <div class="form-group">
@@ -161,16 +161,7 @@
             </div>
             <div class="form-group">
                 <label>有效期</label>
-                <div class="settings-mode-toggle" role="tablist" aria-label="有效期">
-                    <button
-                        v-for="option in expireOptions"
-                        :key="option.value"
-                        type="button"
-                        class="settings-mode-toggle-btn"
-                        :class="{ active: expire === option.value }"
-                        @click="expire = option.value"
-                    >{{ option.label }}</button>
-                </div>
+                <SettingExpirySlider v-model="expire" :options="expireOptions" />
             </div>
             <template #footer>
                 <button class="btn-cancel" type="button" @click="keyModalOpen = false">取消</button>
@@ -182,9 +173,9 @@
 
         <!-- 明文 Key 展示 -->
         <Modal :open="plainKeyOpen" title="复制你的 Key" size="sm" @close="plainKeyOpen = false">
-            <div class="papi-key-plain">
-                <code>{{ plainKey }}</code>
-                <div class="papi-key-plain-tip">请立即复制保存,关闭后将无法再次查看。</div>
+            <div class="auth-plain-key">
+                <code class="auth-plain-key-value">{{ plainKey }}</code>
+                <div class="auth-plain-key-tip">请立即复制保存,关闭后将无法再次查看。</div>
             </div>
             <template #footer>
                 <button class="btn-confirm" type="button" @click="copyPlainKey">复制</button>
@@ -195,7 +186,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+    import { computed, onMounted, reactive, ref } from 'vue'
 
     import { PUBLIC_API_PERMISSIONS, fetchPublicApiKeys, generatePublicApiKey, regeneratePublicApiKey, revokePublicApiKey, savePublicApiKeySettings, type PublicApiKey } from '@/api/admin-auth'
     import type { AdminUser } from '@/api/admin-users'
@@ -205,6 +196,10 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
+    import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
+    import SettingExpirySlider from '@/ui/settings/SettingExpirySlider.vue'
+    import SettingSegmented from '@/ui/settings/SettingSegmented.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const userStore = useUserStore()
 
@@ -219,13 +214,15 @@
     const detailOwner = ref('')
     const detailPermissions = reactive<Record<string, boolean>>({})
 
-    /** 用户列表(所属用户/筛选) */
+    /** 访问范围分段选项(GDDP SettingSegmented) */
+    const scopeOptions = [
+        { value: 'owner', label: '用户私有', icon: 'fa-solid fa-user' },
+        { value: 'global', label: '全局访问', icon: 'fa-solid fa-globe' },
+    ]
+
+    /** 用户列表(所属用户候选) */
     const allUsers = ref<AdminUser[]>([])
     const ownerFilter = ref('')
-    const filterRef = ref<HTMLElement | null>(null)
-    const ownerRef = ref<HTMLElement | null>(null)
-    const filterMenuOpen = ref(false)
-    const ownerMenuOpen = ref(false)
 
     const permissionOptions = PUBLIC_API_PERMISSIONS
 
@@ -239,14 +236,21 @@
         return keys.value.filter((key) => String(key.owner || '') === filter)
     })
 
-    const filteredOwnerOptions = computed(() => {
-        const keyword = ownerFilter.value.trim().toLowerCase() || detailOwner.value.trim().toLowerCase()
+    /** 详情所属用户下拉候选:全部用户 + 当前值不在列表时补入(历史遗留 owner 保证回显) */
+    const ownerOptions = computed(() => {
+        const options = allUsers.value.map((user) => {
+            const name = String(user.username || user.user_id || '')
 
-        if (!keyword) {
-            return allUsers.value.slice(0, 8)
+            return { value: name, label: name }
+        })
+
+        const current = detailOwner.value.trim()
+
+        if (current && !options.some((option) => option.value === current)) {
+            options.unshift({ value: current, label: current })
         }
 
-        return allUsers.value.filter((user) => user.username.toLowerCase().includes(keyword)).slice(0, 8)
+        return options
     })
 
     /** 剩余时长文案 */
@@ -301,23 +305,33 @@
 
     onMounted(() => {
         void load()
-        document.addEventListener('click', onPageClick)
     })
 
-    onBeforeUnmount(() => {
-        document.removeEventListener('click', onPageClick)
-    })
+    /** 列表项的简短过期文案(用于列表内展示) */
+    function remainingShort(key: PublicApiKey): string {
+        const seconds = Number(key.expires_in_seconds ?? 0)
 
-    function onPageClick(event: MouseEvent): void {
-        const target = event.target as Node
-
-        if (filterRef.value && !filterRef.value.contains(target)) {
-            filterMenuOpen.value = false
+        if (!seconds) {
+            return '永久'
         }
 
-        if (ownerRef.value && !ownerRef.value.contains(target)) {
-            ownerMenuOpen.value = false
+        const days = Math.floor(seconds / 86400)
+
+        if (days > 30) {
+            return `${Math.floor(days / 30)} 月`
         }
+
+        if (days > 0) {
+            return `${days} 天`
+        }
+
+        const hours = Math.floor((seconds % 86400) / 3600)
+
+        if (hours > 0) {
+            return `${hours} 小时`
+        }
+
+        return `${Math.max(1, Math.floor(seconds / 60))} 分钟`
     }
 
     /** 拉取 key 列表 + 用户列表 */
@@ -364,22 +378,9 @@
         }
     }
 
-    function openFilterMenu(): void {
-        filterMenuOpen.value = true
-    }
-
-    function pickOwnerFilter(username: string): void {
-        ownerFilter.value = username
-        filterMenuOpen.value = false
-    }
-
-    function openOwnerMenu(): void {
-        ownerMenuOpen.value = true
-    }
-
-    function pickOwner(username: string): void {
-        detailOwner.value = username
-        ownerMenuOpen.value = false
+    /** 页头筛选输入转发(按用户筛选 key 列表) */
+    function setOwnerFilter(value?: string): void {
+        ownerFilter.value = String(value || '')
     }
 
     /** 打开生成弹窗 */
@@ -519,9 +520,17 @@
             return raw
         }
     }
+
+    defineExpose({
+        openCreate,
+        load,
+        setOwnerFilter,
+    })
 </script>
 
 <style scoped>
+    /* ==================== 面板容器 ==================== */
+
     .admin-auth-panel {
         display: flex;
         flex-direction: column;
@@ -529,92 +538,336 @@
         min-height: 0;
     }
 
-    .admin-user-token-selector {
-        position: relative;
-        width: 180px;
+    /* ==================== 列表项(增强:scope 徽标 + 过期状态) ==================== */
+
+    .auth-key-list {
+        /* 使用框架 .settings-management-list 基础样式 */
     }
 
-    .admin-user-token-menu {
-        position: absolute;
-        top: calc(100% + 4px);
-        left: 0;
-        right: 0;
-        z-index: 60;
-        max-height: 220px;
-        overflow-y: auto;
-        padding: 4px;
-        border: 1px solid #e2e2e2;
-        border-radius: 8px;
-        background: #fff;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
-    }
-
-    .admin-user-token-menu button {
-        display: block;
+    .auth-key-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         width: 100%;
-        padding: 8px 10px;
+        padding: 9px 12px;
         border: none;
-        border-radius: 6px;
-        background: transparent;
-        font-size: 12.5px;
-        color: #3c3c3c;
+        border-bottom: 1px solid #f0f0f0;
+        background: #fff;
         text-align: left;
         cursor: pointer;
+        box-sizing: border-box;
+        transition: background 0.15s ease;
     }
 
-    .admin-user-token-menu button:hover {
-        background: #f1f1f1;
-        color: #111111;
+    .auth-key-item:hover {
+        background: #fafafa;
     }
 
-    .admin-user-token-clear-inline {
+    .auth-key-item.active {
+        background: #f3f3f3;
+    }
+
+    .auth-key-avatar {
         flex: none;
-        width: 30px;
-        height: 30px;
-        border: 1px solid #dddddd;
-        border-radius: 7px;
-        background: #fff;
-        color: #999999;
-        cursor: pointer;
-    }
-
-    .admin-user-token-clear-inline:hover {
-        color: #b03a2e;
-        border-color: #e0a0a0;
-    }
-
-    /* 访问范围 segment(对齐原版 papi-segment) */
-    .papi-segment {
         display: inline-flex;
-        border: 1px solid #dddddd;
-        border-radius: 7px;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: #f5f5f5;
+        color: #888888;
+        font-size: 13px;
+    }
+
+    .auth-key-item.active .auth-key-avatar {
+        background: #111111;
+        color: #ffffff;
+    }
+
+    .auth-key-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .auth-key-name-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .auth-key-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: #222222;
         overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
-    .papi-segment-button {
-        padding: 7px 16px;
-        border: none;
-        background: #fff;
-        font-size: 12.5px;
-        font-weight: 550;
-        color: #7a7a7a;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
-    }
-
-    .papi-segment-button + .papi-segment-button {
-        border-left: 1px solid #dddddd;
-    }
-
-    .papi-segment-button.active {
-        background: #f1f1f1;
+    .auth-key-item.active .auth-key-name {
         color: #111111;
     }
 
-    /* 权限网格 */
-    .settings-toggle-grid {
+    /* scope 徽标 */
+    .auth-scope-badge {
+        flex: none;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+    }
+
+    .auth-scope-badge.owner {
+        background: #eef2ff;
+        color: #4f46e5;
+    }
+
+    .auth-scope-badge.global {
+        background: #ecfdf5;
+        color: #059669;
+    }
+
+    .auth-key-meta-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #999999;
+    }
+
+    .auth-key-preview {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .auth-key-expiry {
+        flex: none;
+        color: #999999;
+    }
+
+    .auth-key-expiry.expired {
+        color: #dc2626;
+        font-weight: 600;
+    }
+
+    /* ==================== 空状态 ==================== */
+
+    .auth-empty {
+        padding: 28px 16px;
+        text-align: center;
+        font-size: 13px;
+        color: #a0a0a0;
+    }
+
+    .auth-detail-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        height: 100%;
+        min-height: 200px;
+    }
+
+    .auth-empty-icon {
+        font-size: 24px;
+        color: #d0d0d0;
+    }
+
+    /* ==================== 详情区 ==================== */
+
+    .auth-detail {
+        /* 使用框架 .settings-management-detail 基础样式 */
+    }
+
+    .auth-detail-inner {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    /* 卡片容器(可编辑区 / 只读信息 / 权限) */
+    .auth-card {
+        padding: 14px 16px;
+        border: 1px solid #eeeeee;
+        border-radius: 8px;
+        background: #ffffff;
+    }
+
+    .auth-card-title {
+        font-size: 11.5px;
+        font-weight: 650;
+        color: #888888;
+        letter-spacing: 0.03em;
+        margin-bottom: 12px;
+        text-transform: uppercase;
+    }
+
+    /* 可编辑字段网格 */
+    .auth-edit-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px 20px;
+    }
+
+    .auth-edit-grid .form-group:last-child {
+        grid-column: 1 / -1;
+    }
+
+    /* 只读信息网格 */
+    .auth-info-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+    }
+
+    .auth-info-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .auth-info-label {
+        font-size: 11px;
+        font-weight: 550;
+        color: #999999;
+    }
+
+    .auth-info-value {
+        font-size: 13px;
+        color: #222222;
+        padding: 6px 10px;
+        background: #fafafa;
+        border-radius: 6px;
+        border: 1px solid #f0f0f0;
+        word-break: break-all;
+    }
+
+    .auth-info-value.auth-expired {
+        color: #dc2626;
+        background: #fef2f2;
+        border-color: #fecaca;
+    }
+
+    /* ==================== 权限 toggle 开关 ==================== */
+
+    .auth-perm-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px 20px;
+        gap: 8px;
+    }
+
+    .auth-perm-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 9px 12px;
+        border: 1px solid #eeeeee;
+        border-radius: 7px;
+        background: #fafafa;
+        cursor: pointer;
+        transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .auth-perm-toggle:hover {
+        border-color: #d0d0d0;
+    }
+
+    .auth-perm-toggle.active {
+        border-color: #111111;
+        background: #f7f7f7;
+    }
+
+    .auth-perm-label {
+        font-size: 12.5px;
+        color: #3c3c3c;
+        font-weight: 500;
+    }
+
+    .auth-perm-toggle.active .auth-perm-label {
+        color: #111111;
+    }
+
+    /* toggle 滑轨 */
+    .auth-perm-track {
+        position: relative;
+        flex: none;
+        width: 32px;
+        height: 18px;
+        border-radius: 9px;
+        background: #d1d5db;
+        transition: background 0.2s ease;
+    }
+
+    .auth-perm-toggle.active .auth-perm-track {
+        background: #111111;
+    }
+
+    .auth-perm-thumb {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #ffffff;
+        transition: transform 0.2s ease;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    }
+
+    .auth-perm-toggle.active .auth-perm-thumb {
+        transform: translateX(14px);
+    }
+
+    /* ==================== 明文 Key 展示 ==================== */
+
+    .auth-plain-key {
+        padding: 12px;
+        background: #f8f8f8;
+        border-radius: 8px;
+        border: 1px solid #e8e8e8;
+    }
+
+    .auth-plain-key-value {
+        display: block;
+        padding: 10px 12px;
+        background: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        font-size: 13px;
+        word-break: break-all;
+        user-select: all;
+        line-height: 1.5;
+    }
+
+    .auth-plain-key-tip {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #999999;
+    }
+
+    /* ==================== 弹窗提示 ==================== */
+
+    .auth-modal-tip {
+        margin: 0 0 14px;
+        padding: 10px 12px;
+        border-radius: 7px;
+        background: #fef3cd;
+        border: 1px solid #fde68a;
+        font-size: 12.5px;
+        color: #92400e;
+        line-height: 1.5;
     }
 </style>

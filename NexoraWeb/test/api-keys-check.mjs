@@ -55,15 +55,15 @@ await page.waitForTimeout(800)
 
 const panel = await page.evaluate(() => {
     return {
-        hasCreateBtn: [...document.querySelectorAll('.settings-management-toolbar button')].some((b) => b.textContent.includes('新建 Key')),
+        hasCreateBtn: [...document.querySelectorAll('.settings-page-head-actions button')].some((b) => b.textContent.includes('新建 Key')),
         emptyText: document.querySelector('.settings-management-list-state')?.textContent || null,
     }
 })
 console.log('1 panel:', JSON.stringify(panel))
 
-// 2. 创建 Key
+// 2. 创建 Key(页头统一操作)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.settings-management-toolbar button')].find((b) => b.textContent.includes('新建 Key'))
+    const btn = [...document.querySelectorAll('.settings-page-head-actions button')].find((b) => b.textContent.includes('新建 Key'))
     btn?.click()
 })
 await page.waitForTimeout(600)
@@ -75,7 +75,7 @@ const createModal = await page.evaluate(() => {
     return {
         visible: !!modal,
         hasName: !!modal?.querySelector('input'),
-        hasExpire: !!modal?.querySelector('.chat-announcement-level-select'),
+        hasExpire: !!modal?.querySelector('.setting-expiry-slider'),
     }
 })
 console.log('2 create modal:', JSON.stringify(createModal))
@@ -101,7 +101,7 @@ const plain = await page.evaluate(() => {
     return {
         visible: !!modal,
         keyLen: modal?.querySelector('code')?.textContent?.length || 0,
-        hasCopy: !!modal?.querySelector('.g-btn-primary'),
+        hasCopy: !!modal?.querySelector('.btn-confirm'),
     }
 })
 console.log('3 plain key modal:', JSON.stringify(plain))
@@ -126,7 +126,7 @@ const listAfterCreate = await page.evaluate(() => {
 })
 console.log('4 list after create:', JSON.stringify(listAfterCreate))
 
-// 5. 选中 → 详情(原版 papi-action-row + admin-info-text)
+// 5. 选中 → 详情(setting-action-row + admin-info-text)
 await page.evaluate(() => {
     document.querySelector('.papi-key-list-item')?.click()
 })
@@ -135,16 +135,16 @@ await page.waitForTimeout(500)
 const detail = await page.evaluate(() => {
     return {
         hasName: !!document.querySelector('.admin-user-detail-grid input'),
-        hasActions: document.querySelectorAll('.papi-action-row button').length,
+        hasActions: document.querySelectorAll('.setting-action-row button').length,
         preview: document.querySelector('.admin-user-detail-grid .admin-info-text')?.textContent || null,
-        actionLabels: [...document.querySelectorAll('.papi-action-row button span')].map((b) => b.textContent),
+        actionLabels: [...document.querySelectorAll('.setting-action-row button span')].map((b) => b.textContent),
     }
 })
 console.log('5 detail:', JSON.stringify(detail))
 
 // 6. 删除
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.papi-action-row button')].find((b) => b.textContent.includes('删除'))
+    const btn = [...document.querySelectorAll('.setting-action-row button')].find((b) => b.textContent.includes('删除'))
     btn?.click()
 })
 await page.waitForTimeout(600)

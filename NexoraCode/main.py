@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import requests
 import webview
 
-from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html
+from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html, _local_agent_enabled_value
 from core.tray import run_tray
 from core.config import config, get_app_root
 from local import build_default_executor
@@ -3186,6 +3186,10 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
     ws_scheme = "wss" if parsed.scheme == "https" else "ws"
     ws_url = f"{ws_scheme}://{parsed.netloc}/ws/agent"
 
+    # 连接失败退避状态：避免云端不可达时每 3 秒刷屏
+    retry_printed: dict = {}
+    backoff_seconds = 3.0
+
     while not _STOP_POLL.is_set():
         try:
             ws = websocket.WebSocket()
@@ -3212,6 +3216,8 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 continue
 
             print("[NexoraCode WSS] Tunnel Connected and Authenticated!")
+            retry_printed.clear()
+            backoff_seconds = 3.0
 
             # 2. 注册工具
             tools = registry.list_tools_llm_format()
@@ -3369,8 +3375,19 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             ws.close()
 
         except Exception as e:
-            print(f"[NexoraCode WSS] Disconnected or error: {e}")
-            time.sleep(3)
+            # 云端不可达时静默退避，避免每 3 秒刷屏 [WinError 10061]；
+            # 首次失败仍打印一次便于排查，之后进入退避循环。
+            if retry_printed.get("first_failure") is not True:
+                retry_printed["first_failure"] = True
+                print(f"[NexoraCode WSS] Disconnected or error: {e} (will retry with backoff)")
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(30.0, backoff_seconds * 2)
+            if backoff_seconds >= 30.0:
+                backoff_seconds = 30.0
+            # 退避达到上限后重置首次失败标记，每 30 秒提示一次连接状态
+            if backoff_seconds >= 30.0 and retry_printed.get("last_warn_at", 0) + 30 < time.time():
+                retry_printed["last_warn_at"] = time.time()
+                print(f"[NexoraCode WSS] still disconnected from {base_url}, retrying every 30s")
 
 
 def main():
@@ -5004,12 +5021,17 @@ def main():
                 remote_base_url = str(config.get("nexora_url", DEFAULT_NEXORA_URL) or DEFAULT_NEXORA_URL).strip()
                 if not remote_base_url: remote_base_url = DEFAULT_NEXORA_URL
                 
-                poll_thread = threading.Thread(
-                    target=_agent_tunnel_loop,
-                    args=(registry, agent_token, remote_base_url),
-                    daemon=True,
-                )
-                poll_thread.start()
+                # local_agent 模式下对话由本地 AgentLoop 驱动，不需要连远端 WSS 工具隧道；
+                # 若仍去连云端地址（如 127.0.0.1:5000），云端未启动时会反复刷 WinError 10061。
+                if _local_agent_enabled_value():
+                    print("[NexoraCode WSS] local_agent mode enabled, skip remote agent tunnel")
+                else:
+                    poll_thread = threading.Thread(
+                        target=_agent_tunnel_loop,
+                        args=(registry, agent_token, remote_base_url),
+                        daemon=True,
+                    )
+                    poll_thread.start()
             finally:
                 _release_bootstrap_slot()
 

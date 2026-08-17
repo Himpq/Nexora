@@ -2,101 +2,96 @@
     SkillsPanel.vue — Skill(对齐原版 chat_skill_market.js)
 
     设计:
-      - 复用原版 .skill-subtabs / .skill-market-* / .settings-skill-* 样式
-      - 我的 Skill:列表 + 新建/上传/编辑/删除/发布
-      - Skill 市场:搜索 + 排序 + 卡片列表 + 详情弹窗 + 安装
-      - 弹窗统一 GDDP Modal,下拉为自建(禁用原生 select)
+      - 子标签(我的 Skill / Skill 市场)+ 上传/新建按钮由 SettingsModal 页头提供(pageActionsMap['skills'])
+      - 我的 Skill:列表 + 统一完整编辑器(个人/市场/全局管理员同入口)
+      - Skill 市场:搜索 + SettingSelect 排序 + 卡片列表 + 详情弹窗 + 安装
+      - 弹窗统一 GDDP Modal,下拉统一 SettingSelect
 -->
 
 <template>
     <div>
-        <div class="skill-subtabs-row">
-            <div class="skill-subtabs">
-                <button
-                    class="skill-subtab"
-                    :class="{ active: subTab === 'my' }"
-                    type="button"
-                    @click="switchSubTab('my')"
-                >我的 Skill</button>
-                <button
-                    class="skill-subtab"
-                    :class="{ active: subTab === 'market' }"
-                    type="button"
-                    @click="switchSubTab('market')"
-                >Skill 市场</button>
-            </div>
-
-            <!-- 我的 Skill 工具栏与子 tab 同行 -->
-            <div v-if="subTab === 'my'" class="skill-my-toolbar">
-                <button class="btn-skill-create" type="button" title="上传 Skill 文件" @click="triggerUpload">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    上传 Skill
-                </button>
-                <button class="btn-skill-create" type="button" title="新建 Skill" @click="openEditor()">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    新建 Skill
-                </button>
-                <input ref="skillFileInput" type="file" accept=".skill,.txt,.md,.markdown,.json,.yaml,.yml,.prompt" style="display:none" @change="handleSkillFile">
-            </div>
-        </div>
+        <!-- 隐藏文件选择(页头"上传 Skill"经 expose triggerUpload 触发) -->
+        <input ref="skillFileInput" type="file" accept=".skill,.txt,.md,.markdown,.json,.yaml,.yml,.prompt" style="display:none" @change="handleSkillFile">
 
         <!-- 我的 Skill -->
-        <div v-if="subTab === 'my'" class="skill-subtab-content active">
+        <div v-if="subTab === 'my'">
             <div class="settings-skill-list">
                 <div v-if="loading" class="settings-skill-empty">加载中...</div>
                 <div v-else-if="!skills.length" class="settings-skill-empty">暂无自定义 Skill</div>
-                <div v-for="skill in skills" :key="skill.id" class="settings-skill-item">
-                    <div class="settings-skill-item-main">
-                        <div class="settings-skill-item-name">{{ skillTitle(skill) }}</div>
-                        <div class="settings-skill-item-desc">{{ skill.description || '(无描述)' }}</div>
-                        <div class="settings-skill-item-meta">
-                            <span :class="`settings-skill-origin settings-skill-origin-${skill.origin || 'global'}`">
-                                {{ originLabel(skill.origin) }}
-                            </span>
+                <div
+                    v-for="skill in skills"
+                    :key="skill.id"
+                    class="settings-skill-card"
+                    :data-skill-id="skill.id"
+                    :data-skill-origin="skill.origin || 'global'"
+                >
+                    <div class="settings-skill-top">
+                        <div class="settings-skill-icon" aria-hidden="true">
+                            <i :class="skillIconClass(skill)" style="font-size:20px;"></i>
+                        </div>
+                        <div
+                            class="settings-skill-main"
+                            role="button"
+                            tabindex="0"
+                            @click="openEditor(skill)"
+                            @keydown.enter="openEditor(skill)"
+                        >
+                            <div class="settings-skill-title">
+                                {{ skillTitle(skill) }}
+                            </div>
+                            <div class="settings-skill-preview">{{ skillPreview(skill) }}</div>
+                        </div>
+                        <div class="settings-skill-controls">
+                            <span class="settings-skill-mode-label">Mode</span>
+                            <SettingSelect
+                                :model-value="skillMode(skill)"
+                                :options="modeSelectOptions"
+                                width="88px"
+                                @update:model-value="changeSkillMode(skill, String($event))"
+                            />
                         </div>
                     </div>
-                    <div class="settings-skill-item-actions">
-                        <!-- 运行模式切换(对齐原版 settings-skill-mode-trigger) -->
-                        <SettingSelect
-                            :model-value="skillMode(skill)"
-                            :options="modeSelectOptions"
-                            width="96px"
-                            @update:model-value="changeSkillMode(skill, String($event))"
-                        />
-                        <button
-                            v-if="isEditableSkill(skill)"
-                            class="btn-skill-small"
-                            type="button"
-                            title="编辑"
-                            @click="openEditor(skill)"
-                        >
-                            <i class="fa-solid fa-pen" aria-hidden="true"></i>
-                        </button>
-                        <button
-                            v-if="skill.origin === 'self'"
-                            class="btn-skill-small"
-                            type="button"
-                            title="发布到市场"
-                            @click="handlePublish(skill)"
-                        >
-                            <i class="fa-solid fa-upload" aria-hidden="true"></i>
-                        </button>
-                        <button
-                            v-if="isEditableSkill(skill)"
-                            class="btn-skill-small danger"
-                            type="button"
-                            title="删除"
-                            @click="handleDelete(skill.id)"
-                        >
-                            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
-                        </button>
+                    <div class="settings-skill-divider"></div>
+                    <div class="settings-skill-footer">
+                        <span class="settings-skill-badge" :title="skillTools(skill).join(', ') || '无工具约束'">
+                            {{ skillBadgeText(skill) }}
+                        </span>
+                        <div class="settings-skill-actions">
+                            <button
+                                v-if="canEditSkill(skill)"
+                                class="btn-skill-small"
+                                type="button"
+                                title="编辑"
+                                @click="openEditor(skill)"
+                            >
+                                <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                            </button>
+                            <button
+                                v-if="skill.origin === 'self'"
+                                class="btn-skill-small"
+                                type="button"
+                                title="发布到市场"
+                                @click="handlePublish(skill)"
+                            >
+                                <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                            </button>
+                            <button
+                                v-if="isEditableSkill(skill)"
+                                class="btn-skill-small danger"
+                                type="button"
+                                title="删除"
+                                @click="handleDelete(skill.id)"
+                            >
+                                <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Skill 市场 -->
-        <div v-else class="skill-subtab-content active">
+        <div v-else>
             <div class="skill-market-toolbar">
                 <div class="skill-market-search">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -106,22 +101,12 @@
                         @input="debouncedSearch"
                     >
                 </div>
-                <!-- 自建排序下拉(禁用原生 select) -->
-                <div class="skill-market-sort-wrap" ref="sortWrapRef">
-                    <button class="skill-market-sort" type="button" :aria-expanded="sortOpen" @click.stop="sortOpen = !sortOpen">
-                        {{ sortLabel }}
-                        <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                    </button>
-                    <div class="skill-market-sort-menu" :class="{ open: sortOpen }">
-                        <button
-                            v-for="option in sortOptions"
-                            :key="option.value"
-                            type="button"
-                            :class="{ active: marketSort === option.value }"
-                            @click="selectSort(option.value)"
-                        >{{ option.label }}</button>
-                    </div>
-                </div>
+                <SettingSelect
+                    :model-value="marketSort"
+                    :options="sortOptions"
+                    width="130px"
+                    @update:model-value="selectSort"
+                />
             </div>
 
             <div class="skill-market-list" id="skillMarketList">
@@ -165,6 +150,25 @@
                         >{{ installingId === item.id ? '安装中...' : '安装' }}</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- 市场分页(对齐原版 loadMarketSkills page/page_size=20) -->
+            <div v-if="marketTotal > 0" class="skill-market-pagination">
+                <button
+                    class="btn-skill-detail"
+                    type="button"
+                    :disabled="marketPage <= 1 || marketLoading"
+                    @click="goMarketPage(marketPage - 1)"
+                >上一页</button>
+                <span class="skill-market-page-info">
+                    第 {{ marketPage }} / {{ marketTotalPages }} 页 · 共 {{ marketTotal }} 个
+                </span>
+                <button
+                    class="btn-skill-detail"
+                    type="button"
+                    :disabled="marketPage >= marketTotalPages || marketLoading"
+                    @click="goMarketPage(marketPage + 1)"
+                >下一页</button>
             </div>
         </div>
 
@@ -223,21 +227,12 @@
                 </div>
                 <div class="form-group">
                     <label>默认模式</label>
-                    <div class="skill-mode-select-wrap">
-                        <button class="skill-mode-select" type="button" :aria-expanded="modeOpen" @click.stop="modeOpen = !modeOpen">
-                            {{ modeLabel(editorForm.mode || 'auto') }}
-                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                        </button>
-                        <div class="skill-mode-menu" :class="{ open: modeOpen }">
-                            <button
-                                v-for="option in modeOptions"
-                                :key="option.value"
-                                type="button"
-                                :class="{ active: (editorForm.mode || 'auto') === option.value }"
-                                @click="selectMode(option.value)"
-                            >{{ option.label }}</button>
-                        </div>
-                    </div>
+                    <SettingSelect
+                        :model-value="editorForm.mode || 'auto'"
+                        :options="modeSelectOptions"
+                        width="130px"
+                        @update:model-value="selectMode"
+                    />
                 </div>
             </div>
             <div class="form-group">
@@ -247,7 +242,7 @@
             <template #footer>
                 <button class="btn-cancel" type="button" @click="editorOpen = false">取消</button>
                 <button
-                    v-if="editorMode === 'edit'"
+                    v-if="editorMode === 'edit' && !editingGlobalSkill"
                     class="btn-primary-outline"
                     type="button"
                     @click="handlePublishFromEditor"
@@ -261,7 +256,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+    import { computed, onMounted, reactive, ref } from 'vue'
 
     import type { MarketSkillItem, SkillItem, SkillPayload } from '@/api/skills'
     import {
@@ -275,13 +270,17 @@
         publishMarketSkill,
         saveSkillModes,
         updateMySkill,
+        upsertCatalogSkill,
     } from '@/api/skills'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { useUserStore } from '@/stores/user'
 
     import MarkdownView from './MarkdownView.vue'
     import Modal from '@/ui/Modal.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
+
+    const userStore = useUserStore()
 
     const subTab = ref<'my' | 'market'>('my')
     const skills = ref<SkillItem[]>([])
@@ -294,18 +293,21 @@
     const marketQuery = ref('')
     const marketSort = ref('installs')
     const installingId = ref('')
-    const sortOpen = ref(false)
-    const sortWrapRef = ref<HTMLElement | null>(null)
+    /** 市场分页(对齐原版 loadMarketSkills:page + page_size=20 + total) */
+    const marketPage = ref(1)
+    const marketTotal = ref(0)
+    const MARKET_PAGE_SIZE = 20
+
+    /** 市场总页数 */
+    const marketTotalPages = computed(() => {
+        return Math.max(1, Math.ceil(marketTotal.value / MARKET_PAGE_SIZE))
+    })
 
     const sortOptions = [
         { value: 'installs', label: '按安装量' },
         { value: 'newest', label: '最新发布' },
         { value: 'title', label: '按标题' },
     ]
-
-    const sortLabel = computed(() => {
-        return sortOptions.find((option) => option.value === marketSort.value)?.label || '按安装量'
-    })
 
     /** 市场详情 */
     const detailOpen = ref(false)
@@ -316,19 +318,16 @@
     const editorSaving = ref(false)
     const editorMode = ref<'create' | 'edit'>('create')
     const editorFromUpload = ref(false)
-    const modeOpen = ref(false)
-    const modeOptions = [
-        { value: 'off', label: 'Off' },
-        { value: 'auto', label: 'Auto' },
-        { value: 'force', label: 'Force' },
-    ]
+    /** 正在编辑的全局 Skill 原始数据(管理员经 upsert 保存;个人 Skill 编辑时为 null) */
+    const editingGlobalSkill = ref<SkillItem | null>(null)
 
-    /** 列表行 mode 下拉选项(带原版说明) */
+    /** mode 下拉选项(列表行与编辑器共用) */
     const modeSelectOptions = [
         { value: 'off', label: 'Off' },
         { value: 'auto', label: 'Auto' },
         { value: 'force', label: 'Force' },
     ]
+
     const editorForm = reactive({
         id: '',
         title: '',
@@ -355,42 +354,84 @@
 
     onMounted(() => {
         void load()
-        document.addEventListener('click', onPageClick)
     })
-
-    onBeforeUnmount(() => {
-        document.removeEventListener('click', onPageClick)
-    })
-
-    /** 页面点击:关闭自建下拉 */
-    function onPageClick(event: MouseEvent): void {
-        const target = event.target as Node
-
-        if (sortWrapRef.value && !sortWrapRef.value.contains(target)) {
-            sortOpen.value = false
-        }
-    }
-
-    function originLabel(origin?: string): string {
-        if (origin === 'market') {
-            return '市场安装'
-        }
-
-        if (origin === 'self') {
-            return '自建'
-        }
-
-        return '全局'
-    }
 
     /** 可编辑/可删除的 skill(自建 + 市场安装,对齐原版 isPersonal) */
     function isEditableSkill(skill: SkillItem): boolean {
         return skill.origin === 'self' || skill.origin === 'market'
     }
 
+    /** 当前用户是否为管理员(全局 Skill 编辑权限,对齐原版 canEditCatalog) */
+    function isAdmin(): boolean {
+        return String(userStore.user?.role || 'member').toLowerCase() === 'admin'
+    }
+
+    /** 可打开编辑器的 skill(个人/市场安装 + 全局管理员;统一完整编辑器) */
+    function canEditSkill(skill: SkillItem): boolean {
+        return isEditableSkill(skill) || (skill.origin === 'global' && isAdmin())
+    }
+
+    /** skill 绑定工具列表(对齐原版 required_tools 徽标) */
+    function skillTools(skill: SkillItem): string[] {
+        const tools = skill.required_tools
+
+        return Array.isArray(tools) ? (tools as string[]) : []
+    }
+
     /** 运行时 Skill 的展示名(对齐后端 title 字段;兼容 name) */
     function skillTitle(skill: SkillItem): string {
         return String(skill.name || skill.title || skill.id || '')
+    }
+
+    /**
+     * 卡片预览(对齐原版 buildSkillPreviewText:优先 description,缺失时用 main_content 裁切片段)
+     * 确保无描述元信息的 Skill 也展示可读摘要,而不是"(无描述)"
+     */
+    function skillPreview(skill: SkillItem): string {
+        const desc = String(skill.description || '').replace(/\s+/g, ' ').trim()
+        const raw = desc || String(skill.main_content || '').replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim()
+
+        if (!raw) {
+            return '(暂无内容)'
+        }
+
+        return raw.length <= 180 ? raw : `${raw.slice(0, 180)}...`
+    }
+
+    /** 卡片图标(对齐原版 resolveSkillCardIcon:按标题/绑定工具推断,用 fa 图标替代 emoji) */
+    function skillIconClass(skill: SkillItem): string {
+        const title = String(skill.title || skill.name || '').toLowerCase()
+        const tools = skillTools(skill).map((t) => String(t).toLowerCase())
+        const merged = `${title} ${tools.join(' ')}`
+
+        if (/mail|email|smtp|imap/.test(merged)) {
+            return 'fa-regular fa-envelope'
+        }
+
+        if (/web|search|crawl|browser/.test(merged)) {
+            return 'fa-solid fa-magnifying-glass'
+        }
+
+        if (/file|upload|sandbox|document/.test(merged)) {
+            return 'fa-solid fa-folder-open'
+        }
+
+        if (/code|python|js|tool/.test(merged)) {
+            return 'fa-solid fa-code'
+        }
+
+        return 'fa-solid fa-wand-magic-sparkles'
+    }
+
+    /** 卡片底部工具徽标(对齐原版 settings-skill-badge:首工具 +N 或无工具约束) */
+    function skillBadgeText(skill: SkillItem): string {
+        const tools = skillTools(skill)
+
+        if (!tools.length) {
+            return '无工具约束'
+        }
+
+        return tools.length > 1 ? `${tools[0]} +${tools.length - 1}` : tools[0]
     }
 
     function modeLabel(mode?: string): string {
@@ -407,6 +448,7 @@
         return 'Auto'
     }
 
+    /** 切换子标签(页头 subtabs 转发;首次进入市场时拉取列表) */
     function switchSubTab(tab: 'my' | 'market'): void {
         subTab.value = tab
 
@@ -456,7 +498,7 @@
         }
     }
 
-    /** 拉取市场列表 */
+    /** 拉取市场列表(对齐原版 loadMarketSkills:分页参数) */
     async function loadMarket(): Promise<void> {
         if (marketLoading.value) {
             return
@@ -465,9 +507,16 @@
         marketLoading.value = true
 
         try {
-            const data = await fetchMarketSkills({ q: marketQuery.value.trim(), sort: marketSort.value })
+            const data = await fetchMarketSkills({
+                q: marketQuery.value.trim(),
+                sort: marketSort.value,
+                page: marketPage.value,
+                pageSize: MARKET_PAGE_SIZE,
+            })
 
             marketSkills.value = data.skills
+            marketTotal.value = data.total
+            marketPage.value = Math.max(1, data.page || marketPage.value)
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载 Skill 市场失败')
         } finally {
@@ -475,22 +524,36 @@
         }
     }
 
+    /** 翻页 */
+    async function goMarketPage(page: number): Promise<void> {
+        const target = Math.max(1, Math.min(page, marketTotalPages.value))
+
+        if (target === marketPage.value) {
+            return
+        }
+
+        marketPage.value = target
+        await loadMarket()
+    }
+
     let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
-    /** 搜索防抖(对齐原版 400ms) */
+    /** 搜索防抖(对齐原版 400ms;搜索重置回第 1 页) */
     function debouncedSearch(): void {
         if (searchDebounceTimer) {
             clearTimeout(searchDebounceTimer)
         }
 
         searchDebounceTimer = setTimeout(() => {
+            marketPage.value = 1
             void loadMarket()
         }, 400)
     }
 
-    function selectSort(value: string): void {
-        marketSort.value = value
-        sortOpen.value = false
+    /** 市场排序切换(SettingSelect 转发;重置回第 1 页) */
+    function selectSort(value: string | number): void {
+        marketSort.value = String(value)
+        marketPage.value = 1
         void loadMarket()
     }
 
@@ -547,10 +610,11 @@
         }
     }
 
-    /** 打开编辑器(新建或编辑) */
+    /** 打开编辑器(新建或编辑;全局 Skill 仅管理员可达,记录原始数据供 upsert 保存) */
     function openEditor(skill?: SkillItem): void {
         editorMode.value = skill ? 'edit' : 'create'
         editorFromUpload.value = false
+        editingGlobalSkill.value = skill && skill.origin === 'global' ? skill : null
         editorForm.id = String(skill?.id || '')
         editorForm.title = skill ? skillTitle(skill) : ''
         editorForm.description = String(skill?.description || '')
@@ -583,6 +647,7 @@
 
             editorMode.value = 'create'
             editorFromUpload.value = true
+            editingGlobalSkill.value = null
             editorForm.id = parsed.id || ''
             editorForm.title = parsed.title || file.name
             editorForm.description = parsed.description || ''
@@ -596,12 +661,29 @@
         }
     }
 
-    function selectMode(value: string): void {
-        editorForm.mode = value
-        modeOpen.value = false
+    /** 编辑器默认模式下拉(SettingSelect 转发) */
+    function selectMode(value: string | number): void {
+        editorForm.mode = String(value)
     }
 
-    /** 保存个人 Skill(对齐原版 savePersonalSkill) */
+    /** 描述派生 (对齐原版 buildSkillPreviewText:若 description 为空则从 main_content 裁剪 180 字符) */
+    function deriveDescription(description: string, mainContent: string): string {
+        const desc = String(description || '').replace(/\s+/g, ' ').trim()
+
+        if (desc) {
+            return desc
+        }
+
+        const raw = String(mainContent || '').replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim()
+
+        if (!raw) {
+            return ''
+        }
+
+        return raw.length <= 180 ? raw : `${raw.slice(0, 180)}...`
+    }
+
+    /** 保存 Skill(全局走目录 upsert 尽传字段;个人走 my 接口,对齐原版 savePersonalSkill) */
     async function handleSaveEditor(): Promise<void> {
         const title = editorForm.title.trim()
 
@@ -614,22 +696,44 @@
         editorSaving.value = true
 
         try {
-            const payload: SkillPayload = {
-                id: editorForm.id.trim() || undefined,
-                title,
-                description: editorForm.description.trim(),
-                tags: editorForm.tags,
-                required_tools: editorForm.required_tools,
-                mode: editorForm.mode,
-                main_content: editorForm.main_content,
-            }
+            if (editorMode.value === 'edit' && editingGlobalSkill.value) {
+                const skill = editingGlobalSkill.value
 
-            if (editorMode.value === 'edit') {
-                await updateMySkill(editorForm.id.trim(), payload)
+                await upsertCatalogSkill({
+                    id: editorForm.id.trim(),
+                    title,
+                    required_tools: editorForm.required_tools,
+                    mode: editorForm.mode,
+                    author: String(skill.author || ''),
+                    release_date: String(skill.release_date || ''),
+                    version: String(skill.version || ''),
+                    update_date: String(skill.update_date || ''),
+                    main_content: editorForm.main_content,
+                })
+
+                showToast('Skill 已更新', 'success')
+            } else if (editorMode.value === 'edit') {
+                await updateMySkill(editorForm.id.trim(), {
+                    id: editorForm.id.trim(),
+                    title,
+                    description: deriveDescription(editorForm.description, editorForm.main_content),
+                    tags: editorForm.tags,
+                    required_tools: editorForm.required_tools,
+                    mode: editorForm.mode,
+                    main_content: editorForm.main_content,
+                })
 
                 showToast('Skill 已更新', 'success')
             } else {
-                await createMySkill(payload)
+                await createMySkill({
+                    id: editorForm.id.trim() || undefined,
+                    title,
+                    description: deriveDescription(editorForm.description, editorForm.main_content),
+                    tags: editorForm.tags,
+                    required_tools: editorForm.required_tools,
+                    mode: editorForm.mode,
+                    main_content: editorForm.main_content,
+                })
 
                 showToast('Skill 已创建', 'success')
             }
@@ -668,7 +772,7 @@
             const payload: SkillPayload = {
                 id: String(skill.id || ''),
                 title,
-                description: String(skill.description || ''),
+                description: deriveDescription(String(skill.description || ''), String(skill.main_content || '')),
                 tags: Array.isArray(skill.tags) ? (skill.tags as string[]) : [],
                 required_tools: Array.isArray(skill.required_tools) ? (skill.required_tools as string[]) : [],
                 mode: String(skill.mode || 'auto'),
@@ -709,7 +813,7 @@
             const payload: SkillPayload = {
                 id: editorForm.id.trim() || undefined,
                 title,
-                description: editorForm.description.trim(),
+                description: deriveDescription(editorForm.description, editorForm.main_content),
                 tags: editorForm.tags,
                 required_tools: editorForm.required_tools,
                 mode: editorForm.mode,
@@ -724,74 +828,18 @@
             showError(error instanceof Error ? error.message : '发布失败')
         }
     }
+
+    /** 页头操作转发入口(switchSubTab/openEditor/triggerUpload) */
+    defineExpose({
+        switchSubTab,
+        openEditor,
+        triggerUpload,
+    })
 </script>
 
 <style scoped>
-    /* 自建排序下拉(对齐原版 .skill-market-sort 视觉) */
-    .skill-market-sort-wrap {
-        position: relative;
-        flex: none;
-    }
-
-    .skill-market-sort {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 8px 12px;
-        border: 1px solid var(--border-color, #ddd);
-        border-radius: 8px;
-        background: var(--card-bg, #fff);
-        font-size: 13px;
-        color: var(--text-primary, #333);
-        cursor: pointer;
-        outline: none;
-        white-space: nowrap;
-    }
-
-    .skill-market-sort i {
-        font-size: 11px;
-        color: var(--text-tertiary, #999);
-    }
-
-    .skill-market-sort-menu {
-        position: absolute;
-        top: calc(100% + 4px);
-        right: 0;
-        z-index: 30;
-        min-width: 130px;
-        padding: 4px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        background: #fff;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10);
-        display: none;
-    }
-
-    .skill-market-sort-menu.open {
-        display: block;
-    }
-
-    .skill-market-sort-menu button {
-        display: block;
-        width: 100%;
-        padding: 7px 10px;
-        border: none;
-        border-radius: 6px;
-        background: transparent;
-        font-size: 12.5px;
-        color: #334155;
-        text-align: left;
-        cursor: pointer;
-    }
-
-    .skill-market-sort-menu button:hover,
-    .skill-market-sort-menu button.active {
-        background: #eef2ff;
-        color: #4f46e5;
-    }
-
-    /* 列表行操作按钮 */
-    .settings-skill-item-actions {
+    /* 列表行操作按钮(与 SettingSelect 34px 同高,对齐原版 settings-skill-actions) */
+    .settings-skill-actions {
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -799,28 +847,28 @@
     }
 
     .btn-skill-small {
-        width: 28px;
-        height: 28px;
+        width: 34px;
+        height: 34px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid #e2e8f0;
-        border-radius: 6px;
+        border: 1px solid #dddddd;
+        border-radius: 7px;
         background: #fff;
-        color: #64748b;
+        color: #3c3c3c;
         font-size: 12px;
         cursor: pointer;
         transition: border-color 0.15s ease, color 0.15s ease;
     }
 
     .btn-skill-small:hover {
-        border-color: #4f46e5;
-        color: #4f46e5;
+        border-color: #111111;
+        color: #111111;
     }
 
     .btn-skill-small.danger:hover {
-        border-color: #e53935;
-        color: #e53935;
+        border-color: #e0a0a0;
+        color: #c0392b;
     }
 
     /* 详情弹窗 */
@@ -851,67 +899,27 @@
         word-break: break-word;
     }
 
-    /* 编辑器模式自建下拉 */
-    .skill-mode-select-wrap {
-        position: relative;
-        display: inline-block;
-    }
-
-    .skill-mode-select {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 130px;
-        padding: 8px 12px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        background: #fff;
-        font-size: 13px;
-        color: #0f172a;
-        cursor: pointer;
-    }
-
-    .skill-mode-menu {
-        position: absolute;
-        top: calc(100% + 4px);
-        left: 0;
-        z-index: 30;
-        min-width: 130px;
-        padding: 4px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        background: #fff;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10);
-        display: none;
-    }
-
-    .skill-mode-menu.open {
-        display: block;
-    }
-
-    .skill-mode-menu button {
-        display: block;
-        width: 100%;
-        padding: 7px 10px;
-        border: none;
-        border-radius: 6px;
-        background: transparent;
-        font-size: 12.5px;
-        color: #334155;
-        text-align: left;
-        cursor: pointer;
-    }
-
-    .skill-mode-menu button:hover,
-    .skill-mode-menu button.active {
-        background: #eef2ff;
-        color: #4f46e5;
-    }
-
     .skill-content-textarea {
         width: 100%;
         resize: vertical;
         font-family: inherit;
         line-height: 1.6;
+    }
+
+    /* 市场分页 */
+    .skill-market-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #eeeeee;
+    }
+
+    .skill-market-page-info {
+        font-size: 12px;
+        color: #7a7a7a;
+        font-variant-numeric: tabular-nums;
     }
 </style>

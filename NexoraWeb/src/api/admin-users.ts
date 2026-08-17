@@ -22,6 +22,14 @@ export interface AdminUser {
     created_at?: number
     total_token_usage: number
     avatar_url?: string
+    /** 本地邮箱绑定(对齐原版 get_local_mail_profile) */
+    local_mail?: {
+        provider?: string
+        group?: string
+        username?: string
+        address?: string
+        linked_at?: number | null
+    }
     [key: string]: unknown
 }
 

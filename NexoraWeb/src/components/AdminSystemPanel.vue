@@ -9,14 +9,6 @@
 
 <template>
     <div class="admin-system-panel">
-        <div class="admin-users-toolbar admin-system-toolbar-row settings-management-toolbar">
-            <button class="btn-primary-outline" type="button" @click="load">
-                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-                <span>重新加载</span>
-            </button>
-            <span class="settings-field" style="margin-left: auto;">{{ statusText }}</span>
-        </div>
-
         <div class="admin-users-layout settings-management-layout">
             <!-- 模块列表 -->
             <div class="admin-users-list settings-management-list">
@@ -164,7 +156,6 @@
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const loading = ref(false)
-    const statusText = ref('未加载')
     const activeModule = ref('runtime')
 
     /** 模块定义(对齐原版 admin-system-module-item 列表) */
@@ -185,7 +176,7 @@
         { key: 'websearch', label: '联网搜索模型' },
     ]
 
-    const modelSelectOptions = ref<Array<{ value: string; label: string }>>([{ value: '', label: '不指定' }])
+    const modelSelectOptions = ref<Array<{ value: string; label: string; group?: string }>>([{ value: '', label: '不指定' }])
 
     /** 服务字段配置(对齐原版 admin-system-form-grid) */
     interface ServiceField {
@@ -276,31 +267,54 @@
         }
 
         loading.value = true
-        statusText.value = '加载中...'
 
         try {
             const settings = await fetchAdminSystemSettings()
 
             if (settings) {
                 applySettings(settings)
-                statusText.value = '已加载'
-            } else {
-                statusText.value = '无配置'
             }
 
-            // 模型选项(默认模型下拉)
+            // 模型选项(默认模型下拉,按 Provider 分组,对齐原版 appendAdminSystemModelSelectGroups)
             try {
                 const config = await fetchModelsConfig()
 
-                modelSelectOptions.value = [
-                    { value: '', label: '不指定' },
-                    ...Object.keys(config.models).map((id) => ({ value: id, label: id })),
-                ]
+                const groups = new Map<string, Array<{ value: string; label: string; group: string }>>()
+
+                for (const [modelId, info] of Object.entries(config.models)) {
+                    const provider = String(info?.provider || '').trim()
+                    const groupName = provider || '默认'
+
+                    if (!groups.has(groupName)) {
+                        groups.set(groupName, [])
+                    }
+
+                    groups.get(groupName)!.push({ value: modelId, label: modelId, group: groupName })
+                }
+
+                const providerOrder = Array.from(groups.keys()).sort((a, b) => {
+                    if (a === '默认') {
+                        return -1
+                    }
+
+                    if (b === '默认') {
+                        return 1
+                    }
+
+                    return a.localeCompare(b)
+                })
+
+                const modelOptions: Array<{ value: string; label: string; group: string }> = [{ value: '', label: '不指定', group: '默认' }]
+
+                for (const provider of providerOrder) {
+                    modelOptions.push(...(groups.get(provider) || []))
+                }
+
+                modelSelectOptions.value = modelOptions
             } catch {
                 // 模型选项加载失败不影响系统设置展示
             }
         } catch (error) {
-            statusText.value = '加载失败'
             showError(error instanceof Error ? error.message : '加载系统设置失败')
         } finally {
             loading.value = false
@@ -381,6 +395,10 @@
             healthTesting.value = false
         }
     }
+
+    defineExpose({
+        load,
+    })
 </script>
 
 <style scoped>
@@ -389,12 +407,6 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
-    }
-
-    .admin-system-panel .admin-users-toolbar .settings-field {
-        flex: none;
-        font-size: 12px;
-        padding: 6px 12px;
     }
 
     .admin-system-module-item {

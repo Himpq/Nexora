@@ -147,6 +147,41 @@ function registerAddedModalBackdrops(node) {
     });
 }
 
+function unregisterModalBackdrop(node) {
+    if (!(node instanceof HTMLElement) || !node.classList.contains('modal-backdrop')) {
+        return;
+    }
+
+    const state = registeredModalBackdrops.get(node);
+
+    if (state && state.observer) {
+        try {
+            state.observer.disconnect();
+        } catch (_) {
+            // ignore disconnect failures
+        }
+    }
+
+    registeredModalBackdrops.delete(node);
+    removeActiveModalBackdrop(node);
+    delete node.dataset.settingsDialogStackIndex;
+}
+
+function registerRemovedModalBackdrops(node) {
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+
+    if (node.classList.contains('modal-backdrop')) {
+        unregisterModalBackdrop(node);
+        return;
+    }
+
+    node.querySelectorAll('.modal-backdrop').forEach((backdrop) => {
+        unregisterModalBackdrop(backdrop);
+    });
+}
+
 function initializeModalBackdropStacking() {
     if (!(document.body instanceof HTMLBodyElement)) {
         throw new Error('统一弹窗栈初始化时缺少 document.body');
@@ -163,6 +198,7 @@ function initializeModalBackdropStacking() {
     modalBackdropDocumentObserver = new MutationObserver((records) => {
         records.forEach((record) => {
             record.addedNodes.forEach(registerAddedModalBackdrops);
+            record.removedNodes.forEach(registerRemovedModalBackdrops);
         });
     });
     modalBackdropDocumentObserver.observe(document.body, { childList: true, subtree: true });

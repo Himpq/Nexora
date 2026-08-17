@@ -112,6 +112,11 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = timedelta(hours=1)
 sock = Sock(app)
 CORS(app)
 
+# 统一错误模板系统：全局 404 / 500 / ApiError / HTTPException 均返回统一 JSON
+from api.App.errors import register_error_handlers
+
+register_error_handlers(app)
+
 
 @app.before_request
 def disable_websocket_compression_extensions():
@@ -17948,6 +17953,23 @@ from App.Collaboration import global_search_bp
 app.register_blueprint(global_search_bp)
 from App.Observability import create_testapi_blueprint
 app.register_blueprint(create_testapi_blueprint(require_admin))
+
+
+@app.route('/new')
+def new_frontend_page():
+    """新前端(第 0 期骨架)入口页
+
+    直接返回前端构建产物 static/new/index.html;
+    登录态由前端自身守卫处理(未登录跳转 #/login),后端不做重定向。
+    """
+    new_index = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'new', 'index.html')
+
+    try:
+        with open(new_index, 'r', encoding='utf-8') as f:
+            return Response(f.read(), mimetype='text/html')
+    except Exception:
+        return jsonify({'success': False, 'message': '新前端尚未构建,请先执行前端构建'}), 404
+
 
 if __name__ == '__main__':
     # 确保必要的目录存在

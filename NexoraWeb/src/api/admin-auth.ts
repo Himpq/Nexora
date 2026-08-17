@@ -18,10 +18,15 @@ export interface PublicApiKey {
     scope?: string
     key_preview?: string
     created_at?: string
+    updated_at?: string
     expires_at?: string
     expire_option?: string
     is_expired?: boolean
     expires_in_seconds?: number | null
+    created_by?: string
+    updated_by?: string
+    last_regenerated_by?: string
+    last_used_at?: string
     permissions?: Record<string, boolean>
     [key: string]: unknown
 }

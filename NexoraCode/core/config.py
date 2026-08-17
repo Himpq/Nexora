@@ -28,6 +28,7 @@ _DEFAULTS = {
     "local_text_search_max_results": 100,
     "local_file_tree_max_entries": 500,
     "local_process_output_max_chars": 20000,
+    "local_agent_max_tool_rounds": 24,
     "renderer_timeout": 20,
     "window_mode": "custom",
     "force_frameless_borderless": False,

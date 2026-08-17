@@ -26,10 +26,12 @@ class ToolContext:
         conversation_id: str = "",
         username: str = "",
         cancel_checker: Callable[[], bool] | None = None,
+        project_root: str = "",
     ):
         self.task_id = str(task_id or "").strip()
         self.conversation_id = str(conversation_id or "").strip()
         self.username = str(username or "").strip()
+        self.project_root = str(project_root or "").strip()
         self._cancel_checker = cancel_checker
 
     def cancelled(self) -> bool:
@@ -50,6 +52,7 @@ class ToolContext:
             "task_id": self.task_id,
             "conversation_id": self.conversation_id,
             "username": self.username,
+            "project_root": self.project_root,
             "is_cancelled": self.cancelled,
         }
 
@@ -66,6 +69,7 @@ class ToolContext:
                 or ""
             ).strip(),
             username=str(payload.get("username") or "").strip(),
+            project_root=str(payload.get("project_root") or "").strip(),
             cancel_checker=cancel_checker if callable(cancel_checker) else None,
         )
 

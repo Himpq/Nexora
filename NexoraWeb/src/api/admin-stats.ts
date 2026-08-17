@@ -74,6 +74,7 @@ export interface UserTokenStats {
         papi_output_tokens: number
         papi_total_tokens: number
     }
+    top_providers: Array<{ name: string; tokens: number; requests: number }>
     top_models: Array<{ name: string; tokens: number; requests: number }>
     sources: Array<{ name: string; tokens: number; requests: number }>
     recent: Array<{
@@ -93,6 +94,7 @@ interface UserTokenStatsResponse {
     success: boolean
     matched_logs?: number
     summary?: UserTokenStats['summary']
+    top_providers?: UserTokenStats['top_providers']
     top_models?: UserTokenStats['top_models']
     sources?: UserTokenStats['sources']
     recent?: UserTokenStats['recent']
@@ -123,6 +125,7 @@ export async function fetchUserTokenStats(username: string, range = '30d'): Prom
             papi_output_tokens: Number(data.summary?.papi_output_tokens || 0),
             papi_total_tokens: Number(data.summary?.papi_total_tokens || 0),
         },
+        top_providers: Array.isArray(data.top_providers) ? data.top_providers : [],
         top_models: Array.isArray(data.top_models) ? data.top_models : [],
         sources: Array.isArray(data.sources) ? data.sources : [],
         recent: Array.isArray(data.recent) ? data.recent : [],

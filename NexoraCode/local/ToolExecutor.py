@@ -15,6 +15,7 @@ NexoraCode.local.ToolExecutor — 本地工具执行器
 
 from __future__ import annotations
 
+import difflib
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -22,7 +23,20 @@ from typing import Any, Optional
 
 from .Schema import validate_parameters
 from .Tool import LocalTool, ToolContext
-from .LongContext import process_large_output
+
+
+def _truncate_for_display(content: str, limit: int) -> str:
+    """超长内容直接截断显示，附明确提示告知模型已截断与总长度，要求其按需继续读取。"""
+    text = str(content or "")
+    total = len(text)
+
+    if total <= limit:
+        return text
+
+    return (
+        f"[内容过长已截断：总长度 {total} 字符，以下仅显示前 {limit} 字符。"
+        "如需完整内容请使用 local_file_read 按 start_line/end_line 或 offset/limit 分段读取。]\n"
+    ) + text[:limit]
 
 
 class ToolExecutor:
@@ -79,6 +93,26 @@ class ToolExecutor:
 
         return self._tools.get(name)
 
+    def suggest_tools(self, raw_name: str, limit: int = 3) -> list[str]:
+        """对未命中的工具名返回编辑距离最近的候选名（含别名），供错误提示自愈。"""
+
+        name = str(raw_name or "").strip()
+
+        if not name:
+            return []
+
+        candidates = []
+
+        for tool in self._tools.values():
+            candidates.append(str(tool.name or ""))
+
+            for alias in tool.aliases:
+                candidates.append(str(alias or ""))
+
+        matched = difflib.get_close_matches(name, candidates, n=limit, cutoff=0.6)
+
+        return matched
+
     def list_tools(self) -> list[dict]:
         """返回全部非隐藏工具的原始 manifest（调试 / 内部用）。"""
 
@@ -128,6 +162,16 @@ class ToolExecutor:
         tool = self.resolve(tool_name)
 
         if tool is None:
+            suggestions = self.suggest_tools(tool_name)
+
+            if suggestions:
+                hint = "；".join(f"`{item}`" for item in suggestions)
+                return {
+                    "success": False,
+                    "error": f"Unknown tool: {tool_name}。是否想调用 {hint}？",
+                    "suggestions": suggestions,
+                }
+
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
         payload = args if isinstance(args, dict) else {}
@@ -202,7 +246,7 @@ class ToolExecutor:
         """递归截断超长字符串：content 字段阈值更低，其余字段按通用阈值。"""
 
         if isinstance(value, str):
-            return process_large_output(value) if len(value) > self._output_limit else value
+            return _truncate_for_display(value, self._output_limit) if len(value) > self._output_limit else value
 
         if isinstance(value, list):
             return [self._cap_large_values(item) for item in value]
@@ -212,7 +256,7 @@ class ToolExecutor:
 
             for key, item in value.items():
                 if key == "content" and isinstance(item, str):
-                    output[key] = process_large_output(item) if len(item) > self._content_output_limit else item
+                    output[key] = _truncate_for_display(item, self._content_output_limit) if len(item) > self._content_output_limit else item
                 else:
                     output[key] = self._cap_large_values(item)
 

@@ -1561,7 +1561,12 @@
                     modelName: getStreamingModelBadgeName(),
                     searchFlag: 'unknown',
                     inputTokens: safeTokenInt(chunk.input_tokens),
-                    outputTokens: buildStreamingModelBadgeOutputTokens(chunk.output_tokens)
+                    outputTokens: buildStreamingModelBadgeOutputTokens(chunk.output_tokens),
+                    // timing 由 updateMessageModelBadge 叠加合并，只覆盖缓存命中字段。
+                    timing: {
+                        cachedInput: safeTokenInt(chunk.cached_input_tokens),
+                        rawInput: safeTokenInt(chunk.raw_input_tokens)
+                    }
                 });
 
                 return false;

@@ -3,23 +3,12 @@
 
     设计:
       - 复用 AdminPanel 布局:左接口列表 + 右详情
-      - 显示接口 id / 名称 / 启用状态;详情含 base_url / model
+      - 详情为完整可编辑表单(标识/名称/类型/Key/BaseURL/模型/尺寸/质量/返回格式/超时/启用)
+      - 保存走 upsert(original_api_id 支持重命名),启用/停用/删除与后端一致
 -->
 
 <template>
     <AdminPanel>
-        <template #toolbar>
-            <button class="btn-primary-outline" type="button" @click="handleAdd">
-                <i class="fa-solid fa-plus" aria-hidden="true"></i>
-                <span>添加接口</span>
-            </button>
-            <input v-model="query" class="input-modern model-admin-search" placeholder="筛选接口:名称 / BaseURL / 模型 / 状态">
-            <button class="btn-primary-outline" type="button" @click="load">
-                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-                <span>刷新</span>
-            </button>
-        </template>
-
         <template #list>
             <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
             <div v-else-if="!filteredApis.length" class="admin-user-detail-empty">暂无生图接口</div>
@@ -36,7 +25,7 @@
                 <span class="admin-user-main">
                     <span class="admin-user-name">{{ api.name || api.id }}</span>
                     <span class="admin-user-meta">
-                        {{ api.enabled === false ? '停用' : '启用' }}
+                        {{ api.enabled ? '启用' : '停用' }}
                         <template v-if="api.id === enabledApi"> · 当前</template>
                     </span>
                 </span>
@@ -44,106 +33,123 @@
         </template>
 
         <template #detail>
-            <div v-if="!selectedApi" class="admin-user-detail-empty">请选择左侧接口查看详情</div>
-            <div v-else>
-                <div class="form-group">
-                    <label>接口标识</label>
-                    <div class="admin-info-text mono">{{ selectedApi.id }}</div>
-                </div>
-                <div class="form-group">
-                    <label>名称</label>
-                    <div class="admin-info-text">{{ selectedApi.name || '-' }}</div>
-                </div>
-                <div class="form-group">
-                    <label>Base URL</label>
-                    <div class="admin-info-text mono">{{ selectedApi.base_url || '-' }}</div>
-                </div>
-                <div class="form-group">
-                    <label>模型</label>
-                    <div class="admin-info-text">{{ selectedApi.model || '-' }}</div>
-                </div>
-                <div class="form-group">
-                    <label>状态</label>
-                    <div class="admin-info-text">
-                        <span v-if="selectedApi.id === enabledApi">当前启用</span>
-                        <span v-else>{{ selectedApi.enabled === false ? '停用' : '启用' }}</span>
+            <div v-if="!selectedApi && !addingNew" class="admin-user-detail-empty">请选择左侧接口查看详情</div>
+            <div v-else class="gen-image-detail">
+                <div class="admin-user-detail-head">
+                    <span class="admin-user-avatar">
+                        <i class="fa-regular fa-image" aria-hidden="true"></i>
+                    </span>
+                    <div>
+                        <div class="admin-user-name">{{ isEditingExisting ? (form.name || form.api_id) : '新增生图接口' }}</div>
+                        <div class="admin-user-meta">{{ isEditingExisting ? `ID: ${form.api_id}` : '填写接口数据后保存' }}</div>
                     </div>
                 </div>
-                <div class="papi-action-row">
+
+                <div class="admin-user-detail-grid">
+                    <div class="form-group">
+                        <label for="genDetailId">接口标识</label>
+                        <input id="genDetailId" v-model="form.api_id" class="input-modern" type="text" maxlength="80" placeholder="openai_image">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailName">接口名称</label>
+                        <input id="genDetailName" v-model="form.name" class="input-modern" type="text" maxlength="120" placeholder="OpenAI Image">
+                    </div>
+                    <div class="form-group">
+                        <label>API Type</label>
+                        <SettingSelect v-model="form.api_type" :options="genApiTypeOptions" width="100%" />
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailKey">API Key</label>
+                        <input
+                            id="genDetailKey"
+                            v-model="form.api_key"
+                            class="input-modern"
+                            type="password"
+                            autocomplete="off"
+                            :placeholder="selectedApi?.api_key_masked || 'api key'"
+                        >
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label for="genDetailBaseUrl">Base URL</label>
+                        <input id="genDetailBaseUrl" v-model="form.base_url" class="input-modern" type="text" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailModel">模型 ID</label>
+                        <input id="genDetailModel" v-model="form.model" class="input-modern" type="text" maxlength="120" placeholder="gpt-image-1">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailSize">尺寸</label>
+                        <input id="genDetailSize" v-model="form.size" class="input-modern" type="text" placeholder="1024x1024">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailQuality">质量</label>
+                        <input id="genDetailQuality" v-model="form.quality" class="input-modern" type="text" placeholder="auto">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailFormat">返回格式</label>
+                        <input id="genDetailFormat" v-model="form.response_format" class="input-modern" type="text" placeholder="b64_json">
+                    </div>
+                    <div class="form-group">
+                        <label for="genDetailTimeout">超时秒数</label>
+                        <input id="genDetailTimeout" v-model="form.timeout" class="input-modern" type="number" min="10" max="600" placeholder="120">
+                    </div>
+                    <label class="settings-toggle-row">
+                        <input v-model="form.enabled" type="checkbox">
+                        <span>保存后作为当前启用接口</span>
+                    </label>
+                    <div class="form-group">
+                        <label>创建时间</label>
+                        <div class="admin-info-text">{{ formatTs(selectedApi?.created_at) }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>更新时间</label>
+                        <div class="admin-info-text">{{ formatTs(selectedApi?.updated_at) }}</div>
+                    </div>
+                </div>
+
+                <SettingActionRow>
+                    <button class="btn-primary-outline" type="button" @click="saveDetail">
+                        <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                        <span>保存</span>
+                    </button>
                     <button
-                        v-if="selectedApi.id !== enabledApi"
+                        v-if="isEditingExisting"
                         class="btn-primary-outline"
                         type="button"
-                        @click="handleEnable(selectedApi.id)"
-                    ><i class="fa-solid fa-play" aria-hidden="true"></i>启用</button>
-                    <button
-                        v-else
-                        class="btn-primary-outline"
-                        type="button"
-                        @click="handleDisable(selectedApi.id)"
-                    ><i class="fa-solid fa-pause" aria-hidden="true"></i>停用</button>
-                    <button class="btn-danger-small" type="button" @click="handleDelete(selectedApi.id)">
+                        @click="handleEnableOrDisable"
+                    >
+                        <i :class="form.enabled ? 'fa-solid fa-pause' : 'fa-solid fa-play'" aria-hidden="true"></i>
+                        <span>{{ form.enabled ? '停用' : '启用' }}</span>
+                    </button>
+                    <button v-if="isEditingExisting" class="btn-danger-small" type="button" @click="handleDelete">
                         <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                         <span>删除</span>
                     </button>
-                </div>
+                    <button v-if="addingNew" class="btn-cancel" type="button" @click="cancelAdd">
+                        <span>取消</span>
+                    </button>
+                </SettingActionRow>
             </div>
         </template>
     </AdminPanel>
-
-    <!-- 添加生图接口弹窗 -->
-    <Modal :open="addOpen" title="添加生图接口" size="sm" @close="addOpen = false">
-        <div class="form-group">
-            <label for="genApiId">接口标识</label>
-            <input id="genApiId" v-model="addForm.api_id" class="input-modern" type="text" maxlength="80" placeholder="例如:openai-image">
-        </div>
-        <div class="form-group">
-            <label for="genApiName">名称</label>
-            <input id="genApiName" v-model="addForm.name" class="input-modern" type="text" maxlength="120" placeholder="例如:OpenAI 图像">
-        </div>
-        <div class="form-group">
-            <label>类型</label>
-            <SettingSelect v-model="addForm.api_type" :options="genApiTypeOptions" width="100%" />
-        </div>
-        <div class="form-group">
-            <label for="genApiBaseUrl">Base URL</label>
-            <input id="genApiBaseUrl" v-model="addForm.base_url" class="input-modern" type="text" placeholder="https://api.example.com/v1">
-        </div>
-        <div class="form-group">
-            <label for="genApiModel">模型</label>
-            <input id="genApiModel" v-model="addForm.model" class="input-modern" type="text" maxlength="120" placeholder="例如:gpt-image-1">
-        </div>
-        <div class="form-group">
-            <label for="genApiKey">API Key</label>
-            <input id="genApiKey" v-model="addForm.api_key" class="input-modern" type="password">
-        </div>
-        <label class="settings-toggle-row">
-            <input v-model="addForm.enabled" type="checkbox">
-            <span>设为启用接口</span>
-        </label>
-        <template #footer>
-            <button class="btn-cancel" type="button" @click="addOpen = false">取消</button>
-            <button class="btn-confirm" type="button" @click="submitAdd">添加</button>
-        </template>
-    </Modal>
 </template>
 
 <script setup lang="ts">
-    import { computed, onMounted, reactive, ref } from 'vue'
+    import { computed, reactive, ref, watch } from 'vue'
 
-    import type { GenImageApi } from '@/api/admin-gen-image'
+    import type { GenImageApi, GenImageApiForm } from '@/api/admin-gen-image'
     import { deleteGenImageApi, disableGenImageApi, enableGenImageApi, fetchGenImageApis, upsertGenImageApi } from '@/api/admin-gen-image'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
 
-    import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
+    import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
+    /** API 类型(对齐原版 openai / openai_compatible 二选一) */
     const genApiTypeOptions = [
-        { value: 'openai', label: 'OpenAI' },
-        { value: 'dashscope', label: 'DashScope' },
-        { value: 'custom', label: '自定义' },
+        { value: 'openai', label: 'openai' },
+        { value: 'openai_compatible', label: 'openai_compatible' },
     ]
 
     const apis = ref<GenImageApi[]>([])
@@ -151,6 +157,21 @@
     const loading = ref(false)
     const selectedId = ref('')
     const query = ref('')
+
+    /** 详情编辑表单(与后端 record 字段一一对应) */
+    const form = reactive<GenImageApiForm>({
+        api_id: '',
+        name: '',
+        api_type: 'openai',
+        api_key: '',
+        base_url: '',
+        model: '',
+        size: '1024x1024',
+        quality: 'auto',
+        response_format: 'b64_json',
+        timeout: '120',
+        enabled: false,
+    })
 
     /** 搜索过滤后的接口列表 */
     const filteredApis = computed(() => {
@@ -166,30 +187,50 @@
                 api.name,
                 api.base_url,
                 api.model,
-                api.enabled === false ? '停用' : '启用',
+                api.enabled ? '启用' : '停用',
             ].join(' ').toLowerCase().includes(keyword)
         })
-    })
-
-    /** 添加接口弹窗状态 */
-    const addOpen = ref(false)
-    const addForm = reactive({
-        api_id: '',
-        name: '',
-        api_type: 'openai',
-        base_url: '',
-        model: '',
-        api_key: '',
-        enabled: false,
     })
 
     const selectedApi = computed(() => {
         return apis.value.find((api) => api.id === selectedId.value) || null
     })
 
-    onMounted(() => {
-        void load()
+    const isEditingExisting = computed(() => Boolean(selectedApi.value))
+    const addingNew = ref(false)
+
+    watch(selectedApi, (api) => {
+        if (!api) {
+            return
+        }
+
+        addingNew.value = false
+
+        form.api_id = api.api_id || api.id || ''
+        form.name = api.name || ''
+        form.api_type = api.api_type === 'openai_compatible' ? 'openai_compatible' : 'openai'
+        form.api_key = ''
+        form.base_url = api.base_url || ''
+        form.model = api.model || ''
+        form.size = api.size || '1024x1024'
+        form.quality = api.quality || 'auto'
+        form.response_format = api.response_format || 'b64_json'
+        form.timeout = String(api.timeout ?? 120)
+        form.enabled = Boolean(api.enabled)
     })
+
+    /** 时间戳格式化 */
+    function formatTs(ts: number | undefined): string {
+        if (!ts) {
+            return '-'
+        }
+
+        try {
+            return new Date(Number(ts) * 1000).toLocaleString()
+        } catch {
+            return '-'
+        }
+    }
 
     /** 拉取生图接口列表 */
     async function load(): Promise<void> {
@@ -204,6 +245,14 @@
 
             apis.value = data.apis
             enabledApi.value = data.enabledApi
+
+            if (selectedId.value && !apis.value.some((api) => api.id === selectedId.value)) {
+                selectedId.value = ''
+            }
+
+            if (!selectedId.value && apis.value.length) {
+                selectedId.value = apis.value[0].id
+            }
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载生图接口失败')
         } finally {
@@ -215,32 +264,37 @@
         selectedId.value = apiId
     }
 
-    /** 启用接口 */
-    async function handleEnable(apiId: string): Promise<void> {
-        try {
-            await enableGenImageApi(apiId)
+    /** 启用/停用当前接口 */
+    async function handleEnableOrDisable(): Promise<void> {
+        const apiId = selectedApi.value?.id
 
-            showToast('接口已启用', 'success')
-            await load()
-        } catch (error) {
-            showError(error instanceof Error ? error.message : '启用失败')
+        if (!apiId) {
+            return
         }
-    }
 
-    /** 停用接口 */
-    async function handleDisable(apiId: string): Promise<void> {
         try {
-            await disableGenImageApi(apiId)
+            if (form.enabled) {
+                await disableGenImageApi(apiId)
+                showToast('接口已停用', 'success')
+            } else {
+                await enableGenImageApi(apiId)
+                showToast('接口已启用', 'success')
+            }
 
-            showToast('接口已停用', 'success')
             await load()
         } catch (error) {
-            showError(error instanceof Error ? error.message : '停用失败')
+            showError(error instanceof Error ? error.message : '操作失败')
         }
     }
 
     /** 删除接口 */
-    async function handleDelete(apiId: string): Promise<void> {
+    async function handleDelete(): Promise<void> {
+        const apiId = selectedApi.value?.id
+
+        if (!apiId) {
+            return
+        }
+
         const confirmed = await showConfirm({
             title: '删除生图接口',
             content: '确定删除这个生图接口吗?',
@@ -264,21 +318,35 @@
         }
     }
 
-    /** 打开添加接口弹窗 */
+    /** 打开新增模式:清空表单并保持编辑态 */
     function handleAdd(): void {
-        addForm.api_id = ''
-        addForm.name = ''
-        addForm.api_type = 'openai'
-        addForm.base_url = ''
-        addForm.model = ''
-        addForm.api_key = ''
-        addForm.enabled = false
-        addOpen.value = true
+        form.api_id = ''
+        form.name = ''
+        form.api_type = 'openai'
+        form.api_key = ''
+        form.base_url = ''
+        form.model = ''
+        form.size = '1024x1024'
+        form.quality = 'auto'
+        form.response_format = 'b64_json'
+        form.timeout = '120'
+        form.enabled = false
+        selectedId.value = ''
+        addingNew.value = true
     }
 
-    /** 提交新增生图接口(对齐原版 admin_upsert_gen_image_api) */
-    async function submitAdd(): Promise<void> {
-        const apiId = addForm.api_id.trim()
+    /** 取消新增:回到列表选中态 */
+    function cancelAdd(): void {
+        addingNew.value = false
+
+        if (apis.value.length) {
+            selectedId.value = apis.value[0].id
+        }
+    }
+
+    /** 保存详情(对齐原版 saveAdminGenImageApiDetail:upsert 支持重命名) */
+    async function saveDetail(): Promise<void> {
+        const apiId = form.api_id.trim()
 
         if (!apiId) {
             showToast('接口标识不能为空', 'warning')
@@ -286,22 +354,46 @@
             return
         }
 
+        const timeoutValue = /^\d+$/.test(form.timeout) ? Number.parseInt(form.timeout, 10) : NaN
+
+        if (!Number.isFinite(timeoutValue)) {
+            showToast('超时秒数必须是数字', 'warning')
+
+            return
+        }
+
         try {
             await upsertGenImageApi({
+                original_api_id: isEditingExisting.value ? selectedApi.value?.id : undefined,
                 api_id: apiId,
-                name: addForm.name.trim() || apiId,
-                api_type: addForm.api_type,
-                base_url: addForm.base_url.trim(),
-                model: addForm.model.trim(),
-                api_key: addForm.api_key,
-                enabled: addForm.enabled,
+                name: form.name.trim() || apiId,
+                api_type: form.api_type,
+                api_key: form.api_key.trim(),
+                base_url: form.base_url.trim(),
+                model: form.model.trim(),
+                size: form.size.trim(),
+                quality: form.quality.trim(),
+                response_format: form.response_format.trim(),
+                timeout: timeoutValue,
+                enabled: form.enabled,
             })
 
-            showToast('接口已保存', 'success')
-            addOpen.value = false
+            showToast('生图接口已保存', 'success')
+            selectedId.value = apiId
             await load()
         } catch (error) {
             showError(error instanceof Error ? error.message : '保存失败')
         }
     }
+
+    /** 页头筛选输入转发 */
+    function setQuery(value?: string): void {
+        query.value = String(value || '')
+    }
+
+    defineExpose({
+        handleAdd,
+        load,
+        setQuery,
+    })
 </script>

@@ -252,6 +252,14 @@ const chatMessageVersionsApi = getNexoraChatMessageVersions();
 const conversationMessageWindowState = chatMessageWindowApi.state;
 
 let shouldAutoScroll = true; // Auto-scroll control
+
+// 发送防重入锁：sendMessage 在首个 await 前同步置位，避免快速连按回车/按钮并发触发两次对话
+let sendMessageInFlight = false;
+
+function releaseSendMessageLock() {
+    sendMessageInFlight = false;
+}
+
 let _isJumping = false; // Temporarily block scroll listener during jump
 const MESSAGES_AUTO_SCROLL_NEAR_BOTTOM_PX = 50;
 const MESSAGES_AUTO_SCROLL_BREAK_UP_PX = 0;
@@ -349,11 +357,18 @@ let tokenMiniState = {
     conversationId: null,
     baseInput: 0,
     baseOutput: 0,
+    // 最近一轮的缓存命中统计（流式结束时由 stream 承接，对话结束后持续展示）。
+    lastRoundRawInput: 0,
+    lastRoundCachedInput: 0,
     streamInput: 0,
     streamOutput: 0,
+    streamRawInput: 0,
+    streamCachedInput: 0,
     estimatedStreamOutput: 0,
     usageSnapshotInput: 0,
     usageSnapshotOutput: 0,
+    usageSnapshotRawInput: 0,
+    usageSnapshotCachedInput: 0,
     usageSnapshotInitialized: false,
     requestSeq: 0,
     streaming: false
@@ -492,25 +507,6 @@ const streamStatusSyncController = getNexoraChatStreaming().createStreamStatusSy
     getStoredRunningStreamStates,
     attachStreamSessionMonitor,
     getCurrentConversationId: () => currentConversationId
-});
-const userPromptEditController = getNexoraChatMessages().createUserPromptEditController({
-    getMessagesContainer: () => els.messagesContainer,
-    getCurrentConversationId: () => currentConversationId,
-    getChatInputDraftMaxLen: () => CHAT_INPUT_DRAFT_MAX_LEN,
-    showToast,
-    renderMarkdownWithNewTabLinks,
-    bindSourceMarkdown,
-    renderMathSafe,
-    highlightCode,
-    ensureConversationPanelReadyForMutation,
-    fetchConversationMessagesSnapshot,
-    getLastUserMessageIndexFromMessages,
-    renderMessages,
-    renderConversationSnapshotFromServer,
-    findAssistantIndexAfterUserMessageInMessages,
-    sendMessage,
-    startRegenerate,
-    isChatMobileLayout,
 });
 // --- Knowledge View Logic ---
 let knowledgeMetaCache = {};
@@ -753,7 +749,6 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     clearLearningWelcomeState,
     captureMessagesScrollAnchor,
     restoreMessagesScrollAnchor,
-    refreshLastUserPromptEditButtons,
     getShouldAutoScroll: () => shouldAutoScroll,
     scrollMessagesToBottomNow,
     setMessagesLastObservedScrollTop,
@@ -773,7 +768,6 @@ const messagesController = getNexoraChatMessages().createMessagesController({
     formatFileSize,
     escapeHtml,
     collectContentMarkdownBeforeNode,
-    resetUserPromptInlineEditor,
     renderMarkdownWithNewTabLinks,
     bindSourceMarkdown,
     renderMathSafe,
@@ -2725,10 +2719,11 @@ function normalizeLatexSyntax(text) {
     src = src.replace(/\\\s*\$\s*\\text\{/g, '\\ \\text{');
 
     // 单美元符跨多行时，仅对“纯数学内容”提升为块公式；混排文本则去掉外层美元符，避免整段渲染失败。
-    src = src.replace(/\$([^$\n]*\n[\s\S]*?)\$/g, (_, body) => {
+    // 只匹配未转义的 $（已转义的 \$ 属于金额/字面量），避免把相邻货币符号吞进公式区间。
+    src = src.replace(/(^|[^\\])\$([^$\n]*\n[\s\S]*?)(?<!\\)\$/g, (match, pre, body) => {
         const b = String(body || '');
-        if (isLikelyPureMathSpan(b)) return `$$${b.trim()}$$`;
-        return b;
+        if (isLikelyPureMathSpan(b)) return `${pre}$$${b.trim()}$$`;
+        return `${pre}${b}`;
     });
     // 行内公式美元符不成对时，先去掉孤立 `$`，后续再走裸公式兜底包裹。
     src = stripUnbalancedInlineDollarsByLine(src);
@@ -6508,9 +6503,9 @@ const els = {
     cloudFileList: document.getElementById('cloudFileList'),
     tokenBudgetMini: document.getElementById('tokenBudgetMini'),
     tokenBudgetRing: document.getElementById('tokenBudgetRing'),
-    tokenBudgetContextToggle: document.getElementById('tokenBudgetContextToggle'),
     tokenBudgetUsage: document.getElementById('tokenBudgetUsage'),
     tokenDisplay: document.getElementById('tokenDisplay'),
+    tokenCacheHitRate: document.getElementById('tokenCacheHitRate'),
     modalTotalTokens: document.getElementById('modalTotalTokens'),
     modalTodayTokens: document.getElementById('modalTodayTokens'),
     tokenModal: document.getElementById('tokenModal'),
@@ -6584,12 +6579,6 @@ const els = {
     totalOutputTokens: document.getElementById('totalOutputTokens'),
     // Options
     checkThinking: document.getElementById('enableThinking'),
-    checkSearch: document.getElementById('enableWebSearch'),
-    toolsMode: document.getElementById('toolsMode'),
-    toolsModeDropdown: document.getElementById('toolsModeDropdown'),
-    toolsModeTrigger: document.getElementById('toolsModeTrigger'),
-    toolsModeMenu: document.getElementById('toolsModeMenu'),
-    toolsModeLabel: document.getElementById('toolsModeLabel'),
     inputCollapseBtn: document.getElementById('inputCollapseBtn'),
     // Admin & User Menu
     userMenu: document.getElementById('userMenu'),
@@ -8862,7 +8851,6 @@ function renderTokenBudgetUi() {
     const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
     const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
     const mini = els.tokenBudgetMini || document.getElementById('tokenBudgetMini');
-    const toggle = els.tokenBudgetContextToggle || document.getElementById('tokenBudgetContextToggle');
     if (!ring || !usage || !mini) return;
 
     const configuredLimit = normalizeContextWindow(tokenBudgetState.contextWindow);
@@ -8883,10 +8871,6 @@ function renderTokenBudgetUi() {
     mini.classList.toggle('context-enabled', !!tokenBudgetState.includeContext);
     mini.classList.toggle('context-disabled', !tokenBudgetState.includeContext);
     usage.style.color = color;
-    if (toggle) {
-        toggle.setAttribute('aria-pressed', tokenBudgetState.includeContext ? 'true' : 'false');
-        toggle.setAttribute('aria-label', tokenBudgetState.includeContext ? '关闭历史上下文传入' : '开启历史上下文传入');
-    }
 
     const remain = hasContextWindow ? Math.max(0, limit - used) : 0;
     const prefix = tokenBudgetState.estimated ? '~' : '';
@@ -8962,6 +8946,8 @@ function resetComposerConversationContextUsage() {
     tokenMiniState.streaming = false;
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
+    tokenMiniState.lastRoundRawInput = 0;
+    tokenMiniState.lastRoundCachedInput = 0;
     tokenBudgetState.roundInput = 0;
     resetTokenMiniStreamPart();
     resetTokenBudgetBreakdown();
@@ -8987,11 +8973,119 @@ function estimateTokenBudgetUsedFromConversationMessages(messages) {
     return 0;
 }
 
+function applyLastRoundCacheFromConversationMessages(messages) {
+    const arr = Array.isArray(messages) ? messages : [];
+
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const msg = arr[i];
+        if (!msg || typeof msg !== 'object') continue;
+        if (String(msg.role || '').trim() !== 'assistant') continue;
+
+        const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
+        // 累计口径（与 model badge 的 badge_timing 一致），无 usage 时继续向前找最后一条有数据的消息。
+        const io = readMessageIoTokens(md, false);
+        const rawN = safeTokenInt(io.rawInput);
+
+        if (rawN > 0) {
+            tokenMiniState.lastRoundRawInput = rawN;
+            tokenMiniState.lastRoundCachedInput = safeTokenInt(io.cachedInput);
+            return;
+        }
+    }
+
+    tokenMiniState.lastRoundRawInput = 0;
+    tokenMiniState.lastRoundCachedInput = 0;
+}
+
 function applyTokenBudgetFromConversationMessages(messages) {
     const est = estimateTokenBudgetUsedFromConversationMessages(messages);
     tokenBudgetState.roundInput = est;
+    applyLastRoundCacheFromConversationMessages(messages);
     applyTokenBudgetPromptBreakdownFromConversationMessages(messages);
     renderTokenBudgetUi();
+}
+
+function formatBadgeDuration(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 1000) return `${Math.round(n)}ms`;
+    return `${(n / 1000).toFixed(1)}s`;
+}
+
+function formatBadgeTokensPerSec(outputTokens, elapsedMs) {
+    const out = safeTokenInt(outputTokens);
+    const ms = Number(elapsedMs);
+    if (out <= 0 || !Number.isFinite(ms) || ms < 100) return '';
+    const tps = out / (ms / 1000);
+    if (tps < 10) return `${tps.toFixed(1)} tok/s`;
+    return `${Math.round(tps)} tok/s`;
+}
+
+function buildModelBadgeTimingText(timing) {
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const startedAt = Number(t.startedAt) || 0;
+    const now = Number(t.endedAt) || Date.now();
+    const totalMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+
+    // startedAt 未知（如重连回放重建的 badge）时只展示可恢复的信息，
+    // 缓存命中来自 usage 快照，与计时无关，必须独立于 startedAt 展示。
+    const firstTokenMs = (startedAt > 0 && Number(t.firstTokenAt) > 0)
+        ? Math.max(0, Number(t.firstTokenAt) - startedAt)
+        : 0;
+    const outputTokens = safeTokenInt(t.outputTokens);
+    const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
+    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
+        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        : '';
+
+    const parts = [];
+    if (totalMs > 0) parts.push(`总耗时 ${formatBadgeDuration(totalMs)}`);
+    if (firstTokenMs > 0) parts.push(`首token ${formatBadgeDuration(firstTokenMs)}`);
+    if (tpsText) parts.push(`速率 ${tpsText}`);
+    if (cacheRate) parts.push(`缓存 ${cacheRate}`);
+
+    return parts.length ? ` - ${parts.join(' · ')}` : '';
+}
+
+function buildModelBadgeTimingTitle(timing) {
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const startedAt = Number(t.startedAt) || 0;
+    const now = Number(t.endedAt) || Date.now();
+    const totalMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+
+    const firstTokenMs = (startedAt > 0 && Number(t.firstTokenAt) > 0)
+        ? Math.max(0, Number(t.firstTokenAt) - startedAt)
+        : 0;
+    const outputTokens = safeTokenInt(t.outputTokens);
+    const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
+    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
+        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        : '';
+
+    const parts = [];
+    if (totalMs > 0) parts.push(`总耗时: ${formatBadgeDuration(totalMs)}`);
+    if (firstTokenMs > 0) parts.push(`首token耗时: ${formatBadgeDuration(firstTokenMs)}`);
+    if (tpsText) parts.push(`生成速率: ${tpsText}`);
+    if (cacheRate) parts.push(`缓存命中: ${cacheRate}`);
+
+    return parts.join('\n');
+}
+
+function buildModelBadgeDetailTitle(modelName, inputTokens, outputTokens, memoryInputTokens, memoryOutputTokens, memoryReady, timing) {
+    const lines = [`模型: ${String(modelName || '-').trim() || '-'}`];
+    const ioLine = `输入: ${safeTokenInt(inputTokens).toLocaleString()} | 输出: ${safeTokenInt(outputTokens).toLocaleString()}`;
+    lines.push(ioLine);
+
+    if (memoryReady) {
+        lines.push(`记忆 I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`);
+    }
+
+    const timingTitle = buildModelBadgeTimingTitle(timing);
+    if (timingTitle) {
+        lines.push(timingTitle);
+    }
+
+    return lines.join('\n');
 }
 
 function buildModelBadgeText(
@@ -9001,16 +9095,16 @@ function buildModelBadgeText(
     outputTokens,
     memoryInputTokens,
     memoryOutputTokens,
-    memoryReady
+    memoryReady,
+    timing
 ) {
     const model = String(modelName || '-').trim() || '-';
-    const search = (typeof searchFlag === 'boolean') ? String(searchFlag) : String(searchFlag || 'unknown');
     const input = safeTokenInt(inputTokens).toLocaleString();
     const output = safeTokenInt(outputTokens).toLocaleString();
     const memoryText = memoryReady
         ? ` - mem I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`
         : '';
-    return `${model} - search: ${search} - I/O: ${input}/${output}${memoryText}`;
+    return `${model} - I/O: ${input}/${output}${memoryText}${buildModelBadgeTimingText(timing)}`;
 }
 
 function ensureMessageModelBadge(messageDiv) {
@@ -9048,7 +9142,8 @@ function renderMessageModelBadgeText(messageDiv) {
             outputTokens: 0,
             memoryInputTokens: 0,
             memoryOutputTokens: 0,
-            memoryReady: false
+            memoryReady: false,
+            timing: {}
         };
     const expanded = badge.dataset.expanded === '1';
     const compactText = String(state.modelName || '-').trim() || '-';
@@ -9059,10 +9154,21 @@ function renderMessageModelBadgeText(messageDiv) {
         state.outputTokens,
         state.memoryInputTokens,
         state.memoryOutputTokens,
-        state.memoryReady
+        state.memoryReady,
+        state.timing
     );
     badge.textContent = expanded ? fullText : compactText;
-    badge.title = expanded ? '点击折叠模型信息' : fullText;
+    badge.title = expanded
+        ? '点击折叠模型信息'
+        : buildModelBadgeDetailTitle(
+            state.modelName,
+            state.inputTokens,
+            state.outputTokens,
+            state.memoryInputTokens,
+            state.memoryOutputTokens,
+            state.memoryReady,
+            state.timing
+        );
     badge.classList.toggle('collapsed', !expanded);
 }
 
@@ -9086,7 +9192,8 @@ function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = 
             safeTokenInt(state && state.outputTokens),
             safeTokenInt(tokenMiniState.streamOutput),
             safeTokenInt(tokenMiniState.estimatedStreamOutput)
-        )
+        ),
+        timing: (state && state.timing) ? state.timing : {}
     };
     updateMessageModelBadge(messageDiv, nextState);
 }
@@ -9094,6 +9201,17 @@ function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = 
 function updateMessageModelBadge(messageDiv, state = {}) {
     if (!messageDiv) return;
     if (!ensureMessageModelBadge(messageDiv)) return;
+    // timing 属于补充信息，采用“叠加合并”语义：传入的 timing 只覆盖已有字段，
+    // 未携带的字段（含整段未传）沿用上一状态，避免重连/prefill 的部分更新
+    // 清空缓存命中与计时信息。
+    const prevTiming = (
+        messageDiv.__modelBadgeState
+        && messageDiv.__modelBadgeState.timing
+        && typeof messageDiv.__modelBadgeState.timing === 'object'
+    ) ? messageDiv.__modelBadgeState.timing : {};
+    const incomingTiming = (state && state.timing && typeof state.timing === 'object')
+        ? state.timing
+        : {};
     const nextState = {
         modelName: String((state && state.modelName) || ''),
         searchFlag: (state && Object.prototype.hasOwnProperty.call(state, 'searchFlag')) ? state.searchFlag : 'unknown',
@@ -9101,7 +9219,8 @@ function updateMessageModelBadge(messageDiv, state = {}) {
         outputTokens: safeTokenInt(state && state.outputTokens),
         memoryInputTokens: safeTokenInt(state && state.memoryInputTokens),
         memoryOutputTokens: safeTokenInt(state && state.memoryOutputTokens),
-        memoryReady: !!(state && state.memoryReady)
+        memoryReady: !!(state && state.memoryReady),
+        timing: { ...prevTiming, ...incomingTiming }
     };
     messageDiv.__modelBadgeState = nextState;
     renderMessageModelBadgeText(messageDiv);
@@ -9142,25 +9261,49 @@ function estimateStreamTokensByText(text) {
     return Math.max(1, Math.ceil(nonAscii / 1.25 + ascii / 4));
 }
 
-function applyTokenMiniDisplay(inputTokens, outputTokens) {
+function applyTokenMiniDisplay(inputTokens, outputTokens, cachedInputTokens = 0, rawInputTokens = 0) {
     if (els.totalInputTokens) els.totalInputTokens.textContent = safeTokenInt(inputTokens).toLocaleString();
     if (els.totalOutputTokens) els.totalOutputTokens.textContent = safeTokenInt(outputTokens).toLocaleString();
+    const rateEl = els.tokenCacheHitRate || document.getElementById('tokenCacheHitRate');
+    if (!rateEl) return;
+    const cachedN = safeTokenInt(cachedInputTokens);
+    const rawN = safeTokenInt(rawInputTokens);
+    if (rawN > 0 && cachedN > 0) {
+        const rate = Math.min(100, Math.round((cachedN / rawN) * 100));
+        rateEl.textContent = ` 缓存命中 ${rate}%`;
+        rateEl.style.display = '';
+    } else {
+        rateEl.style.display = 'none';
+    }
 }
 
 function renderTokenMiniFromState() {
     const inputNow = tokenMiniState.baseInput + tokenMiniState.streamInput;
     const outputStream = Math.max(tokenMiniState.streamOutput, tokenMiniState.estimatedStreamOutput);
     const outputNow = tokenMiniState.baseOutput + outputStream;
-    applyTokenMiniDisplay(inputNow, outputNow);
+    // 缓存命中展示当前轮（stream）口径，与 model badge 一致，不做会话累计叠加；
+    // 无进行中轮次时沿用上一轮统计，保证对话结束后缓存命中持续显示。
+    const hasActiveRound = tokenMiniState.streamRawInput > 0;
+    const cachedNow = hasActiveRound
+        ? tokenMiniState.streamCachedInput
+        : tokenMiniState.lastRoundCachedInput;
+    const rawNow = hasActiveRound
+        ? tokenMiniState.streamRawInput
+        : tokenMiniState.lastRoundRawInput;
+    applyTokenMiniDisplay(inputNow, outputNow, cachedNow, rawNow);
     renderTokenBudgetUi();
 }
 
 function resetTokenMiniStreamPart() {
     tokenMiniState.streamInput = 0;
     tokenMiniState.streamOutput = 0;
+    tokenMiniState.streamRawInput = 0;
+    tokenMiniState.streamCachedInput = 0;
     tokenMiniState.estimatedStreamOutput = 0;
     tokenMiniState.usageSnapshotInput = 0;
     tokenMiniState.usageSnapshotOutput = 0;
+    tokenMiniState.usageSnapshotRawInput = 0;
+    tokenMiniState.usageSnapshotCachedInput = 0;
     tokenMiniState.usageSnapshotInitialized = false;
 }
 
@@ -9217,6 +9360,8 @@ function onTokenStreamUsageChunk(chunk) {
     if (!tokenMiniState.usageSnapshotInitialized) {
         tokenMiniState.streamInput += inTokens;
         tokenMiniState.streamOutput += outTokens;
+        tokenMiniState.streamRawInput += normalizedRawInput;
+        tokenMiniState.streamCachedInput += cachedInTokens;
         tokenMiniState.usageSnapshotInput = inTokens;
         tokenMiniState.usageSnapshotOutput = outTokens;
         tokenMiniState.usageSnapshotInitialized = true;
@@ -9236,8 +9381,22 @@ function onTokenStreamUsageChunk(chunk) {
         tokenMiniState.streamOutput += outTokens;
     }
 
+    // raw/cached 同样按快照做增量累计；累计值通常单调增长，回退时直接累加兜底。
+    if (normalizedRawInput >= tokenMiniState.usageSnapshotRawInput) {
+        tokenMiniState.streamRawInput += (normalizedRawInput - tokenMiniState.usageSnapshotRawInput);
+    } else {
+        tokenMiniState.streamRawInput += normalizedRawInput;
+    }
+    if (cachedInTokens >= tokenMiniState.usageSnapshotCachedInput) {
+        tokenMiniState.streamCachedInput += (cachedInTokens - tokenMiniState.usageSnapshotCachedInput);
+    } else {
+        tokenMiniState.streamCachedInput += cachedInTokens;
+    }
+
     tokenMiniState.usageSnapshotInput = inTokens;
     tokenMiniState.usageSnapshotOutput = outTokens;
+    tokenMiniState.usageSnapshotRawInput = normalizedRawInput;
+    tokenMiniState.usageSnapshotCachedInput = cachedInTokens;
     renderTokenMiniFromState();
 }
 
@@ -9255,6 +9414,8 @@ async function refreshTokenMiniForConversation(conversationId, options = {}) {
     if (!cid) {
         tokenMiniState.baseInput = 0;
         tokenMiniState.baseOutput = 0;
+        tokenMiniState.lastRoundRawInput = 0;
+        tokenMiniState.lastRoundCachedInput = 0;
         if (!keepStreamPart) {
             tokenBudgetState.roundInput = 0;
             resetTokenBudgetBreakdown();
@@ -9284,6 +9445,9 @@ async function finishTokenMiniStreaming(conversationId = null) {
     }
 
     tokenMiniState.streaming = false;
+    // 对话结束前把本轮流式统计承接为 lastRound，对话结束后输入框仍持续展示当前轮缓存命中。
+    tokenMiniState.lastRoundRawInput = tokenMiniState.streamRawInput;
+    tokenMiniState.lastRoundCachedInput = tokenMiniState.streamCachedInput;
     const cid = requestedCid || currentConversationId || tokenMiniState.conversationId;
     await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
 }
@@ -9868,6 +10032,8 @@ function resetLearningStateForNewConversation(resolvedMode, preserveLearningMain
 function resetTokenUiForNewConversation() {
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
+    tokenMiniState.lastRoundRawInput = 0;
+    tokenMiniState.lastRoundCachedInput = 0;
     resetTokenMiniStreamPart();
     tokenBudgetState.roundInput = 0;
     resetTokenBudgetBreakdown();
@@ -11683,21 +11849,6 @@ async function findAssistantIndexAfterEditedUserFromServer(conversationId, prefe
         return { index: -1, userIndex: -1, reason: 'fetch_failed', messages: [] };
     }
 }
-function normalizeToolsMode(raw) {
-    const m = String(raw || '').trim().toLowerCase();
-    if (m === 'off' || m === 'force') return m;
-    if (m === 'auto' || m === 'auto_select' || m === 'auto-select' || m === 'autoselect') return 'auto_off';
-    if (m === 'auto_off' || m === 'auto-off' || m === 'autooff') return 'auto_off';
-    return 'auto_off';
-}
-
-function formatToolsModeLabel(mode) {
-    const m = normalizeToolsMode(mode);
-    if (m === 'off') return 'Off';
-    if (m === 'force') return 'Force';
-    return 'Auto(OFF)';
-}
-
 function hasLikelyMathForThinkingStream(text) {
     return getNexoraChatStreaming().hasLikelyMathForThinkingStream(text);
 }
@@ -11726,7 +11877,7 @@ function saveComposerPrefsToStorage() {
     try {
         const payload = {
             thinking: !!(els.checkThinking && els.checkThinking.checked),
-            search: !!(els.checkSearch && els.checkSearch.checked),
+            search: getWebSearchEnabled(),
             toolsMode: getToolsMode(),
             includeContext: !!tokenBudgetState.includeContext
         };
@@ -11752,12 +11903,6 @@ function applyComposerPrefsFromStorage() {
     if (!prefs) return;
     if (els.checkThinking && typeof prefs.thinking === 'boolean') {
         els.checkThinking.checked = prefs.thinking;
-    }
-    if (els.checkSearch && typeof prefs.search === 'boolean') {
-        els.checkSearch.checked = prefs.search;
-    }
-    if (prefs.toolsMode !== undefined && prefs.toolsMode !== null) {
-        setToolsMode(String(prefs.toolsMode || 'auto_off'), { persist: false });
     }
     if (typeof prefs.includeContext === 'boolean') {
         tokenBudgetState.includeContext = !!prefs.includeContext;
@@ -11787,69 +11932,10 @@ function loadMessageDraftFromStorage() {
     }
 }
 
-function setToolsModeMenuClipState(open) {
-    const dropdown = els.toolsModeDropdown;
-    if (!dropdown) return;
-
-    const container = dropdown.closest('.input-container');
-    const toolsInner = dropdown.closest('.input-options-tools-inner');
-
-    if (container) {
-        container.classList.toggle('tools-mode-menu-open', !!open);
-    }
-
-    if (toolsInner) {
-        toolsInner.classList.toggle('tools-mode-menu-open', !!open);
-    }
-}
-
-function closeToolsModeDropdown() {
-    if (!els.toolsModeDropdown) return;
-    els.toolsModeDropdown.classList.remove('open');
-    setToolsModeMenuClipState(false);
-    if (els.toolsModeTrigger) els.toolsModeTrigger.setAttribute('aria-expanded', 'false');
-    if (els.toolsModeMenu) {
-        els.toolsModeMenu.style.position = '';
-        els.toolsModeMenu.style.left = '';
-        els.toolsModeMenu.style.top = '';
-        els.toolsModeMenu.style.right = '';
-        els.toolsModeMenu.style.bottom = '';
-        els.toolsModeMenu.style.zIndex = '';
-    }
-}
-
-function positionToolsModeMenuForMobile() {
-    if (!els.toolsModeMenu || !els.toolsModeTrigger || !els.toolsModeDropdown) return;
-    if (!isChatMobileLayout()) {
-        els.toolsModeMenu.style.position = '';
-        els.toolsModeMenu.style.left = '';
-        els.toolsModeMenu.style.top = '';
-        els.toolsModeMenu.style.right = '';
-        els.toolsModeMenu.style.bottom = '';
-        els.toolsModeMenu.style.zIndex = '';
-        return;
-    }
-    const menu = els.toolsModeMenu;
-    menu.style.position = 'absolute';
-    menu.style.left = 'auto';
-    menu.style.right = '0';
-    menu.style.top = 'auto';
-    menu.style.bottom = 'calc(100% + 8px)';
-    menu.style.zIndex = '9200';
-}
-
 function setToolsMode(mode, options = {}) {
+    // 工具模式选择器已移除，工具恒为 force 启用；保留函数签名兼容旧调用
     const opts = (options && typeof options === 'object') ? options : {};
-    const normalized = normalizeToolsMode(mode);
-    if (els.toolsMode) els.toolsMode.value = normalized;
-    if (els.toolsModeLabel) els.toolsModeLabel.textContent = formatToolsModeLabel(normalized);
-    if (els.toolsModeMenu) {
-        els.toolsModeMenu.querySelectorAll('.tool-mode-item').forEach((btn) => {
-            const active = String(btn.dataset.mode || '').trim().toLowerCase() === normalized;
-            btn.classList.toggle('active', active);
-            btn.setAttribute('aria-selected', active ? 'true' : 'false');
-        });
-    }
+
     if (opts.persist !== false) {
         saveComposerPrefsToStorage();
     }
@@ -11939,50 +12025,17 @@ function bindInputCollapseBtn() {
 }
 
 function bindToolsModeDropdown() {
-    if (!els.toolsModeDropdown || !els.toolsModeTrigger || !els.toolsModeMenu) return;
-    if (els.toolsModeDropdown.dataset.bindDone === '1') return;
-    els.toolsModeDropdown.dataset.bindDone = '1';
-    setToolsMode(els.toolsMode ? els.toolsMode.value : 'auto_off', { persist: false });
-
-    els.toolsModeTrigger.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const willOpen = !els.toolsModeDropdown.classList.contains('open');
-        closeToolsModeDropdown();
-        if (willOpen) {
-            els.toolsModeDropdown.classList.add('open');
-            setToolsModeMenuClipState(true);
-            els.toolsModeTrigger.setAttribute('aria-expanded', 'true');
-            requestAnimationFrame(() => positionToolsModeMenuForMobile());
-        }
-    });
-
-    els.toolsModeMenu.querySelectorAll('.tool-mode-item').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setToolsMode(btn.dataset.mode || 'auto_off');
-            closeToolsModeDropdown();
-        });
-    });
-
-    document.addEventListener('click', (e) => {
-        if (!els.toolsModeDropdown || !els.toolsModeDropdown.contains(e.target)) {
-            closeToolsModeDropdown();
-        }
-    });
-    window.addEventListener('resize', () => {
-        if (!els.toolsModeDropdown || !els.toolsModeDropdown.classList.contains('open')) return;
-        positionToolsModeMenuForMobile();
-    });
-    window.addEventListener('scroll', () => {
-        if (!els.toolsModeDropdown || !els.toolsModeDropdown.classList.contains('open')) return;
-        positionToolsModeMenuForMobile();
-    }, true);
+    // 工具模式选择器已移除，无需绑定下拉交互
 }
 
 function getToolsMode() {
-    return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'auto_off');
+    // 工具强制启用：移除前端工具模式选择器后恒为 force，避免模型可选禁用工具引发问题
+    return 'force';
+}
+
+function getWebSearchEnabled() {
+    // Web 搜索默认强制开启：移除前端 Search 开关后恒为 true
+    return true;
 }
 
 function buildContextCompressionPreflightInfo(modelId, forceRequested = false) {
@@ -12031,6 +12084,12 @@ async function maybeConfirmContextCompressionBeforeSend(modelId, forceRequested 
 }
 
 async function sendMessage(options = {}) {
+    if (sendMessageInFlight) {
+        return;
+    }
+
+    sendMessageInFlight = true;
+
     const isAutoContinue = !!(options && options.autoContinue);
     const isQuestionResponse = !!(options && options.questionResponse);
     const useExistingUserMessage = !!(options && options.useExistingUserMessage);
@@ -12064,6 +12123,7 @@ async function sendMessage(options = {}) {
         await submitLearningFeedPost(rawText);
         latencyProbe.mark('learning_feed_submit');
         latencyProbe.flush('learning_feed_submit');
+        releaseSendMessageLock();
         return;
     }
     const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
@@ -12104,12 +12164,18 @@ async function sendMessage(options = {}) {
             });
             renderLongtermPlanPanel();
             showToast('Longterm 模式已启用');
+            releaseSendMessageLock();
             return;
         }
     }
-    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue && !(options && options.puzzle_submission)) return;
+    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue && !(options && options.puzzle_submission)) {
+        releaseSendMessageLock();
+        return;
+    }
+
     if (isUploadingFiles && !isGenerating) {
         showToast('文件上传或向量化处理中，请稍候或手动中断后再发送');
+        releaseSendMessageLock();
         return;
     }
     
@@ -12118,17 +12184,20 @@ async function sendMessage(options = {}) {
     if (isQuestionResponse && isConversationStreamRunning(currentConversationId)) {
         showToast('上一条回复仍在收尾，请稍后重试');
         latencyProbe.flush('question_response_blocked_by_generation', { force: true });
+        releaseSendMessageLock();
         return;
     }
 
     if (workspaceRequestWorkspaceId && isGenerating) {
         showToast('当前仍有回复生成中，请稍候');
         latencyProbe.flush('workspace_send_blocked_by_generation', { force: true });
+        releaseSendMessageLock();
         return;
     }
 
     if (!workspaceRequestWorkspaceId && isConversationStreamRunning(currentConversationId)) {
         stopGeneration();
+        releaseSendMessageLock();
         return;
     }
 
@@ -12138,10 +12207,11 @@ async function sendMessage(options = {}) {
     if (!model) {
         showToast('当前账号无可用模型，请联系管理员');
         latencyProbe.flush('no_model', { force: true });
+        releaseSendMessageLock();
         return;
     }
     const enableThinking = els.checkThinking ? els.checkThinking.checked : true;
-    const enableSearch = els.checkSearch ? els.checkSearch.checked : true;
+    const enableSearch = getWebSearchEnabled();
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
     const allowHistoryImages = true;
@@ -12158,7 +12228,11 @@ async function sendMessage(options = {}) {
         ok: !!(compressionDecision && compressionDecision.ok),
         force: !!(compressionDecision && compressionDecision.forceCompression)
     });
-    if (!compressionDecision.ok) return;
+    if (!compressionDecision.ok) {
+        releaseSendMessageLock();
+        return;
+    }
+
     const forceContextCompression = !!compressionDecision.forceCompression;
 
     if (workspaceComposeWorkspaceId) {
@@ -12171,6 +12245,7 @@ async function sendMessage(options = {}) {
             console.error('resetWorkspaceDetailComposerSelection failed', error);
             showToast(String((error && error.message) || 'Workspace 对话创建失败'));
             latencyProbe.flush('workspace_reset_selection_failed', { force: true });
+            releaseSendMessageLock();
             return;
         }
     }
@@ -12201,6 +12276,7 @@ async function sendMessage(options = {}) {
 
         if (!registered) {
             latencyProbe.flush('workspace_register_failed', { force: true });
+            releaseSendMessageLock();
             return;
         }
     }
@@ -12211,6 +12287,9 @@ async function sendMessage(options = {}) {
     els.messageInput.value = '';
     resizeMessageInput();
     saveMessageDraftToStorage('');
+
+    // 消息已提交（输入框清空），防重入锁释放；后续重复发送由 isGenerating / 流状态保护
+    releaseSendMessageLock();
 
     // Prepare display content
     let displayContent = overrideDisplayContent || text;
@@ -12443,7 +12522,15 @@ async function sendMessage(options = {}) {
         modelName: String(model || ''),
         searchFlag: 'unknown',
         inputTokens: 0,
-        outputTokens: 0
+        outputTokens: 0,
+        timing: {
+            startedAt: Date.now(),
+            firstTokenAt: 0,
+            endedAt: 0,
+            cachedInput: 0,
+            rawInput: 0,
+            outputTokens: 0
+        }
     };
     const modelBadgeUsageState = {
         input: 0,
@@ -12801,6 +12888,9 @@ async function sendMessage(options = {}) {
                         
                         else if (chunk.type === 'content') {
                             aiMsgDiv.__reasoningSegmentOpen = false;
+                            if (!modelBadgeState.timing.firstTokenAt) {
+                                modelBadgeState.timing.firstTokenAt = Date.now();
+                            }
                             let chunkContent = String(chunk.content || '');
 
                             if (!currentFullContent && !currentSegmentContent) {
@@ -13001,6 +13091,9 @@ async function sendMessage(options = {}) {
                             applyUsageChunkToBadgeState(modelBadgeUsageState, chunk);
                             modelBadgeState.inputTokens = modelBadgeUsageState.input;
                             modelBadgeState.outputTokens = modelBadgeUsageState.output;
+                            modelBadgeState.timing.cachedInput = safeTokenInt(chunk.cached_input_tokens);
+                            modelBadgeState.timing.rawInput = safeTokenInt(chunk.raw_input_tokens);
+                            modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
                             updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                         }
                         else if (chunk.type === 'title') {
@@ -13012,7 +13105,7 @@ async function sendMessage(options = {}) {
                             streamEndedWithError = true;
                             streamErrorRetryable = !!chunk.retryable;
                             streamErrorCode = String(chunk.error_code || '').trim().toLowerCase();
-                            streamErrorMessage = String(chunk.content || 'Unknown error').trim() || 'Unknown error';
+                            streamErrorMessage = String(chunk.message || chunk.content || '').trim() || 'Unknown error';
                             appendDebugConsoleEntry({
                                 direction: 'model->server',
                                 stage: 'error',
@@ -13045,6 +13138,9 @@ async function sendMessage(options = {}) {
              }
 
              if (done) {
+                            modelBadgeState.timing.endedAt = Date.now();
+                            modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
+                            updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                             const finalPlanInfo = applyLongtermPlanFromText(currentFullContent, { source: 'done', messageDiv: aiMsgDiv });
                             const finalDisplayContent = String(finalPlanInfo && finalPlanInfo.text !== undefined ? finalPlanInfo.text : currentFullContent || '');
                             if (finalDisplayContent !== currentFullContent) {
@@ -13335,11 +13431,6 @@ function appendSearchMeta(aiMsgDiv, meta, isHistory = false) {
         outDiv.textContent = lines.join('\n').trim() || 'No search metadata';
         if (outDiv.textContent.trim()) {
             row.classList.add('has-output');
-
-            if (row.dataset.userToggled !== 'true') {
-                row.classList.add('expanded');
-                scrollToolOutputToTop(outDiv);
-            }
         }
     }
     row.dataset.pending = 'false';
@@ -13668,7 +13759,6 @@ function prependConversationMessageRows(indexedRows, options = {}) {
         renderLastUserMessageIndexHint = previousLastUserHint;
     }
 
-    refreshLastUserPromptEditButtons();
     bindTurnIndicatorDomElements(turnIndicatorState.userMessages || []);
     markTurnIndicatorLayoutDirty();
     scheduleTurnIndicatorLayoutRefresh({ animate: false, forceScroll: false });
@@ -13825,10 +13915,6 @@ function getLastUserMessageIndexFromMessages(messages) {
     return -1;
 }
 
-function getLastUserMessageIndexFromDom() {
-    return userPromptEditController.getLastUserMessageIndexFromDom();
-}
-
 function getNextVisibleMessageIndex() {
     if (!els.messagesContainer) return 0;
     let maxIndex = -1;
@@ -13842,22 +13928,6 @@ function getNextVisibleMessageIndex() {
 
     return maxIndex >= 0 ? maxIndex + 1 : els.messagesContainer.querySelectorAll('.message').length;
 }
-
-function resetUserPromptInlineEditor(options = {}) {
-    return userPromptEditController.resetUserPromptInlineEditor(options);
-}
-
-function refreshLastUserPromptEditButtons() {
-    return userPromptEditController.refreshLastUserPromptEditButtons();
-}
-
-async function saveEditedUserPrompt(index, options = {}) {
-    return userPromptEditController.saveEditedUserPrompt(index, options);
-}
-
-window.toggleEditUserPrompt = async function(index) {
-    return userPromptEditController.toggleEditUserPrompt(index);
-};
 
 function appendMessage(msg, index, options = {}) {
     return messagesController.appendMessage(msg, index, options);
@@ -16347,7 +16417,16 @@ function normalizeModelProviderKey(provider) {
 function getModelProviderLabel(provider) {
     const key = normalizeModelProviderKey(provider);
 
-    return MODEL_PROVIDER_LABEL_MAP[key] || (provider ? String(provider) : '其他');
+    if (MODEL_PROVIDER_LABEL_MAP[key]) {
+        return MODEL_PROVIDER_LABEL_MAP[key];
+    }
+
+    // 本地 provider_id 编码（p_xxxx）对用户无意义，隐藏为通用显示名。
+    if (/^p_[a-z0-9]{6,}$/i.test(String(provider || '').trim())) {
+        return '自定义供应商';
+    }
+
+    return provider ? String(provider) : '其他';
 }
 
 function compareModelProviderKeys(a, b) {

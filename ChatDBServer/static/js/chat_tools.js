@@ -2993,6 +2993,10 @@
                 const renderedMap = renderMapResultInMessage(aiMsgDiv, safeName, result, safeCallId, target);
                 const outputMarkdown = renderedMap ? stripMapSceneSection(displayMarkdown) : displayMarkdown;
                 const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
+                // 文件读取只保留折叠摘要，不渲染正文（大段代码/文本会撑爆页面且无查看价值），
+                // 也不标记 has-output，展开箭头不显示、点击无效。
+                const isFileReadTool = /(?:^|_)(?:local_|cloud_)?file_read$/i.test(safeName)
+                    || /file_read/i.test(String(name || ''));
 
                 const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
 
@@ -3000,7 +3004,7 @@
                     renderGenerateImageResultInMessage(aiMsgDiv, result, safeCallId, target);
                 }
 
-                if (!renderedGenerateImage) {
+                if (!renderedGenerateImage && !isFileReadTool) {
                     const displayedMarkdownSource = setToolResultMarkdownSource(outDiv, outputMarkdown);
                     if (!displayedMarkdownSource) {
                         outDiv.classList.remove('tool-output-markdown');
@@ -3009,7 +3013,7 @@
                     }
                 }
 
-                if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
+                if (!isFileReadTool && (outDiv.textContent.trim() || outDiv.querySelector('img'))) {
                     target.classList.add('has-output');
 
                     if (target.dataset.userToggled !== 'true') {

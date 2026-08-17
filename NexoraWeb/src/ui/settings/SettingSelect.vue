@@ -29,14 +29,38 @@
         </button>
 
         <div class="setting-select-menu" :class="{ open }" :style="menuStyle" role="listbox">
+            <div v-if="search" class="setting-select-search">
+                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                <input
+                    v-model="searchText"
+                    type="text"
+                    :placeholder="searchPlaceholder || '搜索...'"
+                    autocomplete="off"
+                >
+            </div>
+            <template v-if="hasGroups">
+                <template v-for="group in filteredGroups" :key="group.name">
+                    <div class="setting-select-group-title">{{ group.name }}</div>
+                    <button
+                        v-for="option in group.options"
+                        :key="String(option.value)"
+                        type="button"
+                        role="option"
+                        :class="{ active: String(option.value) === String(modelValue) }"
+                        @click="select(option.value)"
+                    >{{ option.label }}</button>
+                </template>
+            </template>
             <button
-                v-for="option in options"
+                v-for="option in filteredOptions"
+                v-else
                 :key="String(option.value)"
                 type="button"
                 role="option"
                 :class="{ active: String(option.value) === String(modelValue) }"
                 @click="select(option.value)"
             >{{ option.label }}</button>
+            <div v-if="searchEmpty" class="setting-model-menu-state">无匹配项</div>
         </div>
     </div>
 </template>
@@ -47,6 +71,8 @@
     export interface SettingSelectOption {
         value: string | number
         label: string
+        /** 分组名:设置后该选项按组渲染(对齐原版 admin-system-model-group) */
+        group?: string
     }
 
     const props = defineProps<{
@@ -54,6 +80,9 @@
         options: SettingSelectOption[]
         width?: string
         placeholder?: string
+        /** 菜单内搜索过滤(长列表场景,如认证 owner 用户选择) */
+        search?: boolean
+        searchPlaceholder?: string
     }>()
 
     const emit = defineEmits<{
@@ -64,8 +93,70 @@
     const wrapRef = ref<HTMLElement | null>(null)
     const triggerRef = ref<HTMLElement | null>(null)
 
+    /** 菜单内搜索词(打开时重置) */
+    const searchText = ref('')
+
     /** 菜单定位(fixed,避免被滚动容器裁剪) */
     const menuStyle = ref<Record<string, string>>({})
+
+    /** 是否有分组(任意选项带 group 即启用分组渲染) */
+    const hasGroups = computed(() => {
+        return props.options.some((option) => Boolean(option.group))
+    })
+
+    /** 按 group 分组的选项(保持原顺序,组内顺序不变) */
+    const groupedOptions = computed(() => {
+        const groups: Array<{ name: string; options: SettingSelectOption[] }> = []
+
+        for (const option of props.options) {
+            const name = option.group || '默认'
+            const last = groups[groups.length - 1]
+
+            if (last && last.name === name) {
+                last.options.push(option)
+            } else {
+                groups.push({ name, options: [option] })
+            }
+        }
+
+        return groups
+    })
+
+    /** 搜索过滤后的平铺选项 */
+    const filteredOptions = computed(() => {
+        const keyword = searchText.value.trim().toLowerCase()
+
+        if (!props.search || !keyword) {
+            return props.options
+        }
+
+        return props.options.filter((option) => String(option.label).toLowerCase().includes(keyword))
+    })
+
+    /** 搜索过滤后的分组选项(空组剔除) */
+    const filteredGroups = computed(() => {
+        const keyword = searchText.value.trim().toLowerCase()
+
+        if (!props.search || !keyword) {
+            return groupedOptions.value
+        }
+
+        return groupedOptions.value
+            .map((group) => ({
+                name: group.name,
+                options: group.options.filter((option) => String(option.label).toLowerCase().includes(keyword)),
+            }))
+            .filter((group) => group.options.length > 0)
+    })
+
+    /** 搜索无匹配(用于空态提示) */
+    const searchEmpty = computed(() => {
+        if (!props.search || !searchText.value.trim()) {
+            return false
+        }
+
+        return hasGroups.value ? filteredGroups.value.length === 0 : filteredOptions.value.length === 0
+    })
 
     const selectedLabel = computed(() => {
         const matched = props.options.find((option) => String(option.value) === String(props.modelValue))
@@ -97,17 +188,24 @@
         }
     }
 
-    /** 页面滚动时关闭浮层,避免错位 */
-    function onScroll(): void {
-        if (open.value) {
-            open.value = false
+    /** 外部滚动时关闭浮层避免错位;浮层自身滚动(仍在 wrap DOM 子树内)不关闭 */
+    function onScroll(event: Event): void {
+        if (!open.value) {
+            return
         }
+
+        if (wrapRef.value && event.target instanceof Node && wrapRef.value.contains(event.target)) {
+            return
+        }
+
+        open.value = false
     }
 
     function toggle(): void {
         open.value = !open.value
 
         if (open.value) {
+            searchText.value = ''
             positionMenu()
         }
     }

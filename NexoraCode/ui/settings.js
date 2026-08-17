@@ -122,19 +122,36 @@
     // ===== Provider 表单 =====
 
     function openCreate() {
+        var source = state.providers[0] || null;
         state.editingId = "";
-        $("pf-title").textContent = "新增 Provider";
-        $("pf-name").value = "";
-        $("pf-base-url").value = "";
-        $("pf-api-key").value = "";
-        $("pf-api-key").placeholder = "API Key";
-        $("pf-key-hint").textContent = "";
-        $("pf-model").value = "";
-        $("pf-temperature").value = 0.7;
-        $("pf-max-tokens").value = 4096;
-        $("pf-context-window").value = 128000;
+        $("pf-title").textContent = source ? "新增模型（复用接入信息）" : "新增 Provider";
+
+        if (source) {
+            // 复用已有 Provider 的接入信息，只需改 Model 名即可添加同服务商的新模型
+            $("pf-name").value = source.name || "";
+            $("pf-base-url").value = source.base_url || "";
+            $("pf-api-key").value = source.api_key || "";
+            $("pf-api-key").placeholder = "可沿用已配置 Key，也可覆盖";
+            $("pf-key-hint").textContent = source.api_key ? "已预填同服务商 Key，可直接使用" : "";
+            $("pf-model").value = "";
+            $("pf-temperature").value = source.temperature != null ? source.temperature : 0.7;
+            $("pf-max-tokens").value = source.max_tokens || 4096;
+            $("pf-context-window").value = source.context_window || 128000;
+            $("pf-model").focus();
+        } else {
+            $("pf-name").value = "";
+            $("pf-base-url").value = "";
+            $("pf-api-key").value = "";
+            $("pf-api-key").placeholder = "API Key";
+            $("pf-key-hint").textContent = "";
+            $("pf-model").value = "";
+            $("pf-temperature").value = 0.7;
+            $("pf-max-tokens").value = 4096;
+            $("pf-context-window").value = 128000;
+            $("pf-name").focus();
+        }
+
         $("provider-form").classList.remove("hidden");
-        $("pf-name").focus();
     }
 
     function openEdit(providerId) {
@@ -150,9 +167,9 @@
         $("pf-title").textContent = "编辑 Provider";
         $("pf-name").value = provider.name || "";
         $("pf-base-url").value = provider.base_url || "";
-        $("pf-api-key").value = "";
-        $("pf-api-key").placeholder = "留空保持不变";
-        $("pf-key-hint").textContent = provider.has_api_key ? "已配置，留空保持不变" : "未配置";
+        $("pf-api-key").value = provider.api_key || "";
+        $("pf-api-key").placeholder = "可沿用原 Key，也可覆盖";
+        $("pf-key-hint").textContent = provider.api_key ? "已回显原 Key，留空/不清空则保持不变" : "未配置 Key";
         $("pf-model").value = provider.model || "";
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
@@ -164,6 +181,31 @@
     function closeForm() {
         $("provider-form").classList.add("hidden");
         state.editingId = "";
+    }
+
+    /** 基于指定 Provider 复用接入信息添加新模型（只需改 Model 名）。 */
+    function openCreateFromProvider(providerId) {
+        var provider = state.providers.find(function (p) {
+            return p.id === providerId;
+        });
+
+        if (!provider) {
+            return;
+        }
+
+        state.editingId = "";
+        $("pf-title").textContent = "新增模型";
+        $("pf-name").value = provider.name || "";
+        $("pf-base-url").value = provider.base_url || "";
+        $("pf-api-key").value = provider.api_key || "";
+        $("pf-api-key").placeholder = "可沿用已配置 Key，也可覆盖";
+        $("pf-key-hint").textContent = provider.api_key ? "已预填同服务商 Key，可直接使用" : "";
+        $("pf-model").value = "";
+        $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
+        $("pf-max-tokens").value = provider.max_tokens || 4096;
+        $("pf-context-window").value = provider.context_window || 128000;
+        $("provider-form").classList.remove("hidden");
+        $("pf-model").focus();
     }
 
     /** 从表单读取字段（id 使用 editingId，新增时生成临时 id）。 */
@@ -245,9 +287,11 @@
                 "</div>" +
                 '<div class="pi-actions">' +
                 (provider.id !== state.defaultId ? '<button type="button" class="pi-btn" data-act="default" data-id="' + esc(provider.id) + '">设为默认</button>' : "") +
+                '<button type="button" class="pi-btn" data-act="add-model" data-id="' + esc(provider.id) + '" title="基于此服务商添加新模型">添加模型</button>' +
                 '<button type="button" class="pi-btn" data-act="edit" data-id="' + esc(provider.id) + '">编辑</button>' +
                 '<button type="button" class="pi-btn danger" data-act="remove" data-id="' + esc(provider.id) + '">删除</button>' +
-                "</div>";
+
+            "</div>";
 
             item.querySelectorAll(".pi-btn").forEach(function (btn) {
                 btn.addEventListener("click", function () {
@@ -261,10 +305,11 @@
                         openEdit(id);
                     } else if (act === "remove") {
                         removeProvider(id);
+                    } else if (act === "add-model") {
+                        openCreateFromProvider(id);
                     }
                 });
             });
-
             listEl.appendChild(item);
         });
     }

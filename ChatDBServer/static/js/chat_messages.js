@@ -445,10 +445,17 @@
                 }
 
                 const modelName = (message.metadata && message.metadata.model_name) || message.model_name;
+                // 中间工具轮（带非空 tool_calls）不显示 model badge，只有最终答复才展示，
+                // 避免重进对话后每个工具调用 turn 都出现 badge。
+                const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
 
-                if (modelName) {
+                if (modelName && !hasToolCalls) {
                     const ioMeta = readMessageIoTokens(message.metadata || {}, false);
                     const memoryIoMeta = readMessageMemoryIoTokens(message.metadata || {});
+                    const badgeTiming = (message.metadata && message.metadata.badge_timing
+                        && typeof message.metadata.badge_timing === 'object')
+                        ? message.metadata.badge_timing
+                        : {};
                     updateMessageModelBadge(div, {
                         modelName,
                         searchFlag: (message.metadata && typeof message.metadata.search_enabled === 'boolean')
@@ -458,7 +465,15 @@
                         outputTokens: safeTokenInt(ioMeta.output),
                         memoryInputTokens: safeTokenInt(memoryIoMeta.input),
                         memoryOutputTokens: safeTokenInt(memoryIoMeta.output),
-                        memoryReady: !!memoryIoMeta.ready
+                        memoryReady: !!memoryIoMeta.ready,
+                        timing: {
+                            startedAt: safeTokenInt(badgeTiming.startedAt),
+                            firstTokenAt: safeTokenInt(badgeTiming.firstTokenAt),
+                            endedAt: safeTokenInt(badgeTiming.endedAt),
+                            cachedInput: safeTokenInt(badgeTiming.cachedInput),
+                            rawInput: safeTokenInt(badgeTiming.rawInput),
+                            outputTokens: safeTokenInt(badgeTiming.outputTokens)
+                        }
                     });
                 }
 
@@ -631,6 +646,78 @@
             return visibleRows;
         }
 
+        function isToolOnlyAssistantRow(message) {
+            // 中间工具轮：assistant 但无正文 content，只有 process_steps 里的工具步骤。
+            if (!message || typeof message !== 'object') return false;
+            if (String(message.role || '').trim() !== 'assistant') return false;
+            if (String(message.content || '').trim()) return false;
+
+            const steps = (message.metadata && Array.isArray(message.metadata.process_steps))
+                ? message.metadata.process_steps
+                : [];
+            const hasToolStep = steps.some((step) => step && (step.type === 'function_call' || step.type === 'function_result'));
+            const hasContentStep = steps.some((step) => step && step.type === 'content' && String(step.content || '').trim());
+
+            return hasToolStep && !hasContentStep;
+        }
+
+        function mergeToolOnlyAssistantRows(rows) {
+            // 本地 AgentLoop 每个工具轮落盘成独立 assistant 消息（无正文、只含工具步骤），
+            // 逐条渲染会产生 .message 之间的 24px 间隔。这里把连续的无正文工具轮
+            // 合并进下一个有正文的 assistant（或保留在末尾），工具链保持连贯且不丢消息。
+            const src = Array.isArray(rows) ? rows : [];
+            const merged = [];
+            let pendingSteps = [];
+
+            for (const row of src) {
+                if (isToolOnlyAssistantRow(row)) {
+                    const steps = (row.metadata && Array.isArray(row.metadata.process_steps))
+                        ? row.metadata.process_steps
+                        : [];
+                    pendingSteps = pendingSteps.concat(steps);
+                    continue;
+                }
+
+                // pending 工具步骤只允许并入 assistant 消息，禁止并进 user/其他角色。
+                if (pendingSteps.length && row && typeof row === 'object' && String(row.role || '').trim() === 'assistant') {
+                    const existing = (row.metadata && Array.isArray(row.metadata.process_steps))
+                        ? row.metadata.process_steps
+                        : [];
+                    const mergedRow = Object.assign({}, row);
+                    mergedRow.metadata = Object.assign({}, row.metadata || {}, {
+                        process_steps: pendingSteps.concat(existing)
+                    });
+                    merged.push(mergedRow);
+                    pendingSteps = [];
+                    continue;
+                }
+
+                // 非 assistant 消息（如 user）不能承接工具步骤：先把 pending 单独落成一条，
+                // 保持消息顺序（工具轮仍在 user 之前），再渲染当前消息。
+                if (pendingSteps.length) {
+                    merged.push({
+                        role: 'assistant',
+                        content: '',
+                        metadata: { process_steps: pendingSteps }
+                    });
+                    pendingSteps = [];
+                }
+
+                merged.push(row);
+            }
+
+            if (pendingSteps.length) {
+                // 请求以工具轮收尾（如权限弹卡中断）：无后续正文 assistant，工具步骤单独成条，避免丢失。
+                merged.push({
+                    role: 'assistant',
+                    content: '',
+                    metadata: { process_steps: pendingSteps }
+                });
+            }
+
+            return merged;
+        }
+
         function resetAssistantMessageForLiveStream(messageDiv, options = {}) {
             if (!messageDiv) return null;
 
@@ -697,7 +784,10 @@
             const container = requireMessagesContainer();
             const opts = (options && typeof options === 'object') ? options : {};
             const indexedRows = buildIndexedMessageRows(messages, opts.indexOffset);
-            const renderRows = resolveMessagesForActiveStreamRender(indexedRows);
+            const activeRows = resolveMessagesForActiveStreamRender(indexedRows);
+            // 本地 AgentLoop 每工具轮一条独立 assistant 消息，逐条渲染会产生消息间距；
+            // 渲染前把无正文的中间工具轮合并进最终答复，保持工具链连贯。
+            const renderRows = mergeToolOnlyAssistantRows(activeRows);
 
             refreshConversationImageHistoryFlag(renderRows);
 
@@ -1733,7 +1823,15 @@
                 modelName: String(modelName || ''),
                 searchFlag: 'unknown',
                 inputTokens: 0,
-                outputTokens: 0
+                outputTokens: 0,
+                timing: {
+                    startedAt: Date.now(),
+                    firstTokenAt: 0,
+                    endedAt: 0,
+                    cachedInput: 0,
+                    rawInput: 0,
+                    outputTokens: 0
+                }
             };
             const modelBadgeUsageState = {
                 input: 0,
@@ -2012,6 +2110,9 @@
                             } else if (data.type === 'debug_trace') {
                                 appendDebugTraceChunk(data, debugScopeKey);
                             } else if (data.type === 'content') {
+                                if (!modelBadgeState.timing.firstTokenAt) {
+                                    modelBadgeState.timing.firstTokenAt = Date.now();
+                                }
                                 let contentDelta = String(data.content || '');
 
                                 if (!accumulatedContent && !currentSegmentContent) {
@@ -2109,6 +2210,9 @@
                                 applyUsageChunkToBadgeState(modelBadgeUsageState, data);
                                 modelBadgeState.inputTokens = modelBadgeUsageState.input;
                                 modelBadgeState.outputTokens = modelBadgeUsageState.output;
+                                modelBadgeState.timing.cachedInput = safeTokenInt(data.cached_input_tokens);
+                                modelBadgeState.timing.rawInput = safeTokenInt(data.raw_input_tokens);
+                                modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
                                 updateMessageModelBadge(regenMessageDiv, modelBadgeState);
                             } else if (data.type === 'error') {
                                 streamEndedWithError = true;
@@ -2139,6 +2243,9 @@
                     }
 
                     if (done) {
+                        modelBadgeState.timing.endedAt = Date.now();
+                        modelBadgeState.timing.outputTokens = modelBadgeUsageState.output;
+                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
                         streamCompleted = true;
                         break;
                     }

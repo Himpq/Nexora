@@ -19,12 +19,54 @@
         @close="emit('close')"
     >
         <div class="settings-modal-shell">
-            <SettingsNav :groups="navGroups" :active="activeTab" @select="activeTab = $event" />
+            <SettingsNav :groups="navGroups" :active="activeTab" @select="onTabSelect" />
 
             <section class="settings-main">
                 <header class="settings-page-head">
-                    <h2>{{ activeTabMeta?.title }}</h2>
-                    <p>{{ activeTabMeta?.description }}</p>
+                    <div class="settings-page-head-main">
+                        <h2>{{ activeTabMeta?.title }}</h2>
+                        <p>{{ activeTabMeta?.description }}</p>
+                    </div>
+                    <!-- 页面级操作(页头统一:按钮/筛选/下拉/subtabs 子标签) -->
+                    <div v-if="activeTabActions.length" class="settings-page-head-actions">
+                        <template v-for="action in activeTabActions" :key="action.method">
+                            <div v-if="action.type === 'subtabs'" class="settings-page-head-tabs" role="tablist">
+                                <button
+                                    v-for="option in action.options || []"
+                                    :key="option.value"
+                                    class="settings-page-head-tab"
+                                    :class="{ active: headSubTabs[action.method] === option.value }"
+                                    type="button"
+                                    @click="onHeadSubTab(action.method, option.value)"
+                                >{{ option.label }}</button>
+                            </div>
+                            <input
+                                v-else-if="action.type === 'filter'"
+                                v-model="headFilters[action.method]"
+                                class="input-modern settings-page-head-filter"
+                                :placeholder="action.placeholder || '筛选...'"
+                                @input="onHeadFilterInput(action.method)"
+                            >
+                            <SettingSelect
+                                v-else-if="action.type === 'select'"
+                                :model-value="headSelects[action.method]"
+                                :options="action.options || []"
+                                :placeholder="action.placeholder"
+                                :width="action.width || '120px'"
+                                @update:model-value="onHeadSelect(action.method, String($event))"
+                            />
+                            <button
+                                v-else
+                                class="btn-primary-outline btn-compact"
+                                :class="{ 'is-hidden': !isActionVisible(action) }"
+                                type="button"
+                                @click="runPanelAction(action.method)"
+                            >
+                                <i :class="action.icon" aria-hidden="true"></i>
+                                <span>{{ action.label }}</span>
+                            </button>
+                        </template>
+                    </div>
                 </header>
 
                 <div class="settings-page-body">
@@ -87,7 +129,7 @@
 
                     <!-- Skill -->
                     <template v-else-if="activeTab === 'skills'">
-                        <SkillsPanel />
+                        <SkillsPanel :ref="(el) => setPanelRef('skills', el)" />
                     </template>
 
                     <!-- 使用统计 -->
@@ -121,16 +163,16 @@
 
                     <!-- 我的 API Key -->
                     <template v-else-if="activeTab === 'user-api-keys'">
-                        <UserApiKeysPanel />
+                        <UserApiKeysPanel :ref="(el) => setPanelRef('user-api-keys', el)" />
                     </template>
 
                     <!-- 管理员面板 -->
                     <template v-else-if="activeTab === 'admin-users'">
-                        <AdminUsersPanel />
+                        <AdminUsersPanel :ref="(el) => setPanelRef('admin-users', el)" />
                     </template>
 
                     <template v-else-if="activeTab === 'admin-system'">
-                        <AdminSystemPanel />
+                        <AdminSystemPanel :ref="(el) => setPanelRef('admin-system', el)" />
                     </template>
 
                     <template v-else-if="activeTab === 'admin-stats'">
@@ -142,15 +184,15 @@
                     </template>
 
                     <template v-else-if="activeTab === 'admin-models'">
-                        <AdminModelsPanel />
+                        <AdminModelsPanel :ref="(el) => setPanelRef('admin-models', el)" />
                     </template>
 
                     <template v-else-if="activeTab === 'admin-auth'">
-                        <AdminAuthPanel />
+                        <AdminAuthPanel :ref="(el) => setPanelRef('admin-auth', el)" />
                     </template>
 
                     <template v-else-if="activeTab === 'admin-gen-image'">
-                        <AdminGenImagePanel />
+                        <AdminGenImagePanel :ref="(el) => setPanelRef('admin-gen-image', el)" />
                     </template>
 
                     <template v-else-if="activeTab === 'admin-map'">
@@ -158,7 +200,7 @@
                     </template>
 
                     <template v-else-if="activeTab === 'admin-mail'">
-                        <AdminMailPanel />
+                        <AdminMailPanel :ref="(el) => setPanelRef('admin-mail', el)" />
                     </template>
                 </div>
             </section>
@@ -169,7 +211,7 @@
             ref="avatarCropRef"
             :open="avatarCropOpen"
             @close="avatarCropOpen = false"
-            @saved="userStore.refreshAvatar()"
+            @cropped="onAvatarCropped"
         />
     </Modal>
 </template>
@@ -178,11 +220,13 @@
     import { computed, onMounted, ref, watch } from 'vue'
 
     import { apiFetch } from '@/api/client'
+    import { fetchMailGroups } from '@/api/admin-mail'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import Modal from '@/ui/Modal.vue'
     import SettingCard from '@/ui/settings/SettingCard.vue'
     import SettingRow from '@/ui/settings/SettingRow.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import SettingsNav, { type SettingsNavGroup } from '@/ui/settings/SettingsNav.vue'
 
     import AvatarCropModal from './AvatarCropModal.vue'
@@ -214,12 +258,17 @@
     const avatarCropRef = ref<InstanceType<typeof AvatarCropModal> | null>(null)
     const avatarFileInput = ref<HTMLInputElement | null>(null)
 
+    /** 裁切暂存的头像 base64(对齐原版 pendingAvatarDataUrl:点击保存资料后统一上传) */
+    const pendingAvatarBase64 = ref('')
+
     /** 个人资料:用户名编辑值 */
     const profileName = ref('')
 
-    /** 头像背景(background-cover,杜绝 img 溢出,对齐侧栏头像方案) */
+    /** 头像背景(优先展示暂存裁切图,其次当前头像;background-cover 杜绝 img 溢出) */
     const avatarBackground = computed(() => {
-        return userStore.avatarUrl ? { backgroundImage: `url("${userStore.avatarUrl}")` } : {}
+        const src = pendingAvatarBase64.value || userStore.avatarUrl
+
+        return src ? { backgroundImage: `url("${src}")` } : {}
     })
 
     /** 是否管理员(对齐原版 checkUserRole:管理员显示 admin 入口) */
@@ -293,18 +342,171 @@
         return all.find((tab) => tab.key === activeTab.value) || baseTabs[0]
     })
 
-    /** 保存资料(显示名;对齐原版 saveProfileBtn → PUT /api/user/profile) */
+    /** 面板实例注册(页头操作通过实例方法触发) */
+    const panelRefs = ref<Record<string, { [key: string]: (value?: string) => unknown } | null>>({})
+
+    function setPanelRef(key: string, el: unknown): void {
+        panelRefs.value[key] = (el as { [key: string]: (value?: string) => unknown }) || null
+    }
+
+    /** 邮箱分组选项(页头下拉数据源;切到邮箱 tab 时拉取) */
+    const mailGroupOptions = ref<Array<{ value: string; label: string }>>([])
+
+    /** 页头动作:button=按钮 / filter=筛选输入 / select=下拉 / subtabs=胶囊子标签(对齐原版 toolbar 全部内容提升到页头) */
+    interface PageHeadAction {
+        type?: 'button' | 'filter' | 'select' | 'subtabs'
+        label?: string
+        icon?: string
+        method: string
+        placeholder?: string
+        options?: Array<{ value: string; label: string }>
+        width?: string
+        /** 按钮仅在指定子标签激活时显示(subtabs 的 value) */
+        subTab?: string
+    }
+
+    /** 各 tab 页头操作:原版 toolbar 的所有内容(主按钮 + 筛选输入 + 单位下拉 + 子标签)统一放在页头 */
+    const pageActionsMap = computed<Record<string, PageHeadAction[]>>(() => ({
+        'skills': [
+            { type: 'subtabs', method: 'switchSubTab', options: [
+                { value: 'my', label: '我的 Skill' },
+                { value: 'market', label: 'Skill 市场' },
+            ] },
+            { label: '上传 Skill', icon: 'fa-solid fa-upload', method: 'triggerUpload', subTab: 'my' },
+            { label: '新建 Skill', icon: 'fa-solid fa-plus', method: 'openEditor', subTab: 'my' },
+        ],
+        'user-api-keys': [
+            { label: '新建 Key', icon: 'fa-solid fa-plus', method: 'openCreate' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-users': [
+            { type: 'filter', method: 'setQuery', placeholder: '筛选用户:用户名 / ID / 角色 / IP' },
+            { label: '添加用户', icon: 'fa-solid fa-user-plus', method: 'openCreate' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-models': [
+            { type: 'filter', method: 'setQuery', placeholder: '筛选:Provider / 模型ID / 名称 / 状态' },
+            { type: 'select', method: 'setQuotaUnit', placeholder: '自动', width: '110px', options: [
+                { value: 'auto', label: '自动' },
+                { value: 'k', label: 'K' },
+                { value: 'w', label: 'w' },
+                { value: 'm', label: 'M' },
+                { value: 'token', label: 'token' },
+            ] },
+            { label: '添加供应商', icon: 'fa-solid fa-plus', method: 'handleAddProvider' },
+            { label: '添加模型', icon: 'fa-solid fa-plus', method: 'handleAddModel' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-auth': [
+            { type: 'filter', method: 'setOwnerFilter', placeholder: '按用户筛选' },
+            { label: '生成 Public API Key', icon: 'fa-solid fa-key', method: 'openCreate' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-gen-image': [
+            { type: 'filter', method: 'setQuery', placeholder: '筛选接口:名称 / BaseURL / 模型 / 状态' },
+            { label: '添加接口', icon: 'fa-solid fa-plus', method: 'handleAdd' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-map': [
+            { label: '刷新状态', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-mail': [
+            // options 经 computed 读取 mailGroupOptions.value,拉取后自动更新
+            { type: 'select', method: 'setGroup', placeholder: '分组', width: '150px', options: mailGroupOptions.value },
+            { type: 'filter', method: 'setQuery', placeholder: '筛选邮箱用户:用户名 / 权限 / 路径' },
+            { label: '添加邮箱用户', icon: 'fa-solid fa-user-plus', method: 'handleAdd' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-system': [{ label: '重新加载', icon: 'fa-solid fa-rotate-right', method: 'load' }],
+    }))
+
+    const activeTabActions = computed(() => pageActionsMap.value[activeTab.value] || [])
+
+    /** 切 tab:重置页头筛选/下拉/子标签值,并按需拉取动态选项 */
+    function onTabSelect(tab: string): void {
+        activeTab.value = tab
+        headFilters.value = {}
+        headSelects.value = {}
+        headSubTabs.value = {}
+
+        // skills 页头子标签默认"我的 Skill"
+        if (tab === 'skills') {
+            headSubTabs.value = { switchSubTab: 'my' }
+        }
+
+        if (tab === 'admin-mail') {
+            void loadMailGroupOptions()
+        }
+    }
+
+    /** 拉取邮箱分组(对齐原版 fetchMailGroups → domains) */
+    async function loadMailGroupOptions(): Promise<void> {
+        try {
+            const groups = await fetchMailGroups()
+
+            mailGroupOptions.value = groups.map((group) => ({ value: group, label: group }))
+        } catch {
+            mailGroupOptions.value = [{ value: 'default', label: 'default' }]
+        }
+    }
+
+    /** 页头筛选输入值(按 action.method 索引,切 tab 时重置) */
+    const headFilters = ref<Record<string, string>>({})
+    /** 页头下拉值(按 action.method 索引) */
+    const headSelects = ref<Record<string, string>>({})
+    /** 页头子标签激活值(按 action.method 索引,切 tab 时重置) */
+    const headSubTabs = ref<Record<string, string>>({})
+
+    /** 页头筛选输入:转发给面板 setQuery 等方法 */
+    function onHeadFilterInput(method: string): void {
+        runPanelAction(method, headFilters.value[method] || '')
+    }
+
+    /** 页头下拉选择:转发给面板 setQuotaUnit / setGroup 等方法 */
+    function onHeadSelect(method: string, value: string): void {
+        headSelects.value[method] = value
+        runPanelAction(method, value)
+    }
+
+    /** 页头子标签切换:记录激活值并转发给面板 switchSubTab 等方法 */
+    function onHeadSubTab(method: string, value: string): void {
+        headSubTabs.value[method] = value
+        runPanelAction(method, value)
+    }
+
+    /** 按钮可见性:未声明 subTab 恒显示;声明了则仅在对应子标签激活时显示 */
+    function isActionVisible(action: PageHeadAction): boolean {
+        if (!action.subTab) {
+            return true
+        }
+
+        return Object.values(headSubTabs.value).includes(action.subTab)
+    }
+
+    /** 执行面板页头操作(可携带筛选/下拉值) */
+    function runPanelAction(method: string, value?: string): void {
+        const panel = panelRefs.value[activeTab.value]
+
+        if (panel && typeof panel[method] === 'function') {
+            void panel[method](value)
+        }
+    }
+
+    /** 保存资料(显示名 + 暂存头像;对齐原版 saveUserProfile → PUT /api/user/profile) */
     async function saveProfile(): Promise<void> {
         const name = profileName.value.trim()
 
-        if (!name || name === userStore.username) {
+        if (!name || (name === userStore.username && !pendingAvatarBase64.value)) {
             return
         }
 
         try {
             const data = await apiFetch<{ success: boolean; user?: { username?: string } }>('/api/user/profile', {
                 method: 'PUT',
-                body: JSON.stringify({ display_name: name }),
+                body: JSON.stringify({
+                    display_name: name,
+                    avatar_base64: pendingAvatarBase64.value || null,
+                }),
             })
 
             if (data.user?.username) {
@@ -314,10 +516,18 @@
                 } as typeof userStore.user
             }
 
+            pendingAvatarBase64.value = ''
+            userStore.refreshAvatar()
             showToast('资料已保存', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '保存失败')
         }
+    }
+
+    /** 裁切暂存:预览立即切换,等待保存资料时上传(对齐原版 pendingAvatarDataUrl + toast) */
+    function onAvatarCropped(avatarBase64: string): void {
+        pendingAvatarBase64.value = avatarBase64
+        showToast('头像已裁切,点击「保存资料」后生效', 'info')
     }
 
     /** 用户时间格式化(秒时间戳 → 本地时间) */
@@ -393,10 +603,12 @@
         () => props.open,
         (opened) => {
             if (opened) {
-                activeTab.value = 'profile'
+                onTabSelect('profile')
                 profileName.value = userStore.username
+                pendingAvatarBase64.value = ''
 
-                // 打开时刷新头像(带版本号防缓存)
+                // 打开时刷新用户信息 + 头像(带版本号防缓存;对齐原版 loadUserSettings)
+                void userStore.init()
                 userStore.refreshAvatar()
             }
         }

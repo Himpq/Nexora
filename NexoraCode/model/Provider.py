@@ -14,8 +14,10 @@ NexoraCode.model.Provider — 本地模型 Provider（OpenAI 兼容）
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
+import re
 import threading
 import uuid
 from typing import Any, Generator, List, Optional
@@ -23,6 +25,26 @@ from typing import Any, Generator, List, Optional
 import requests
 
 from core.config import get_app_root
+
+
+def _infer_provider_name(base_url: str, model: str) -> str:
+    """name 为空时，用 base_url 域名（或模型名）作为默认显示名，避免落到 provider_id 编码。"""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url or "").hostname or "").strip()
+
+        if host:
+            return host.replace("www.", "")
+    except Exception:
+        pass
+
+    model_text = str(model or "").strip()
+
+    if model_text:
+        return model_text.split("/")[-1].split(":")[0]
+
+    return "自定义供应商"
 
 
 class ProviderConfig:
@@ -40,10 +62,10 @@ class ProviderConfig:
         timeout_seconds: float = 120.0,
     ):
         self.provider_id = str(provider_id or "").strip() or f"p_{uuid.uuid4().hex[:8]}"
-        self.name = str(name or "").strip() or self.provider_id
         self.base_url = str(base_url or "").strip().rstrip("/")
         self.api_key = str(api_key or "").strip()
         self.model = str(model or "").strip()
+        self.name = str(name or "").strip() or _infer_provider_name(self.base_url, self.model)
         self.temperature = float(temperature or 0.7)
         self.max_tokens = int(max_tokens or 4096)
         self.context_window = int(context_window or 0)
@@ -197,6 +219,117 @@ class ProviderError(Exception):
     pass
 
 
+def _extract_cached_tokens(u: dict) -> int:
+    """从 usage 提取缓存命中 token，覆盖主流 provider 字段。
+
+    - OpenAI / OpenRouter: prompt_tokens_details.cached_tokens、input_tokens_details.cached_tokens
+    - DeepSeek:            prompt_cache_hit_tokens
+    - Anthropic 风格:      cache_read_input_tokens / cache_read_tokens（顶层或 input_tokens_details 内）
+    - 部分网关:            顶层 cached_tokens / input_cached_tokens
+    """
+    prompt_details = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
+    input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+    candidates = (
+        ("prompt_details", prompt_details.get("cached_tokens")),
+        ("input_details", input_details.get("cached_tokens")),
+        ("input_details", input_details.get("cache_read_input_tokens")),
+        ("input_details", input_details.get("cache_read_tokens")),
+        ("top", u.get("cached_tokens")),
+        ("top", u.get("input_cached_tokens")),
+        ("top", u.get("prompt_cache_hit_tokens")),
+        ("top", u.get("cache_read_input_tokens")),
+        ("top", u.get("cache_read_tokens")),
+    )
+
+    for _, value in candidates:
+        if value is None:
+            continue
+
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if number > 0:
+            return number
+
+    return 0
+
+
+def _extract_uncached_tokens(u: dict) -> int:
+    """提取缓存未命中（新增计费）token，DeepSeek / Anthropic 风格字段。"""
+    input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+    candidates = (
+        ("top", u.get("prompt_cache_miss_tokens")),
+        ("top", u.get("cache_creation_input_tokens")),
+        ("top", u.get("cache_write_input_tokens")),
+        ("input_details", input_details.get("cache_creation_input_tokens")),
+        ("input_details", input_details.get("cache_write_input_tokens")),
+    )
+
+    for _, value in candidates:
+        if value is None:
+            continue
+
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if number > 0:
+            return number
+
+    return 0
+
+
+def _extract_usage_io(raw_usage_obj) -> dict:
+    """从上游 usage 对象提取 input/output/cached/cost 统计（对齐云端口径）。"""
+    u = raw_usage_obj if isinstance(raw_usage_obj, dict) else {}
+
+    def _safe_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    raw_input = _safe_int(u.get("prompt_tokens", u.get("input_tokens", 0)))
+    output = _safe_int(u.get("completion_tokens", u.get("output_tokens", 0)))
+    total = _safe_int(u.get("total_tokens", 0))
+    cached = _extract_cached_tokens(u)
+    uncached = _extract_uncached_tokens(u)
+    reasoning = 0
+
+    completion_details = u.get("completion_tokens_details") if isinstance(u.get("completion_tokens_details"), dict) else {}
+    output_details = u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {}
+    reasoning = _safe_int(completion_details.get("reasoning_tokens", 0))
+    if reasoning <= 0:
+        reasoning = _safe_int(output_details.get("reasoning_tokens", 0))
+
+    cost = _safe_float(u.get("total_cost", u.get("cost", 0.0)))
+
+    if cached <= 0 and uncached > 0:
+        cached = max(0, raw_input - uncached)
+
+    return {
+        "raw_input": max(0, raw_input),
+        "cached_input": max(0, cached),
+        "uncached_input": max(0, uncached),
+        "effective_input": max(0, raw_input - cached),
+        "output": max(0, output),
+        "total": max(0, total),
+        "reasoning_tokens": max(0, reasoning),
+        "cost": max(0.0, cost),
+    }
+
+
 class ProviderClient:
     """OpenAI 兼容流式 chat 客户端。
 
@@ -235,7 +368,9 @@ class ProviderClient:
         if base.endswith("/chat/completions"):
             return base
 
-        if base.endswith("/v1"):
+        # 火山方舟等供应商 base_url 自带版本段（/api/v3、/v1、/v2），
+        # 直接拼 /chat/completions，避免重复追加 /v1 导致 404。
+        if re.search(r"/v\d+$", base):
             return f"{base}/chat/completions"
 
         return f"{base}/v1/chat/completions"
@@ -263,6 +398,7 @@ class ProviderClient:
             "stream": True,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
+            "stream_options": {"include_usage": True},
         }
 
         if tools:
@@ -284,7 +420,7 @@ class ProviderClient:
 
         if int(upstream.status_code or 0) >= 400:
             try:
-                detail = upstream.text[:400]
+                detail = upstream.text[:2000]
             except Exception:
                 detail = ""
 
@@ -306,6 +442,8 @@ class ProviderClient:
     def _iter_sse(self, upstream: requests.Response) -> Generator[dict, None, None]:
         raw = getattr(upstream, "raw", None)
         buffer = ""
+        # 增量解码：避免逐字节 decode 丢多字节 UTF-8（中文 3 字节会被单字节 decode 丢弃）。
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
 
         def _read_chunks():
             if raw is not None and hasattr(raw, "stream"):
@@ -326,7 +464,7 @@ class ProviderClient:
                 if not chunk:
                     continue
 
-                buffer += chunk.decode("utf-8", errors="ignore")
+                buffer += decoder.decode(chunk)
 
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
@@ -344,6 +482,11 @@ class ProviderClient:
                         event = json.loads(data)
                     except Exception:
                         continue
+
+                    usage = event.get("usage")
+
+                    if usage:
+                        yield {"type": "usage", "usage": usage}
 
                     choices = event.get("choices") or []
 

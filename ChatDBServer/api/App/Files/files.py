@@ -13,6 +13,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, send_f
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
 from App.Storage import UserFileSandbox
 from App.Utils import safe_filename
+from App.errors import json_error
 
 
 files_bp = Blueprint("files", __name__)
@@ -52,13 +53,6 @@ def current_username() -> str:
         raise PermissionError("login required")
 
     return username
-
-
-def json_error(message: str, status: int = 400):
-    return jsonify({
-        "success": False,
-        "message": message,
-    }), status
 
 
 def normalize_transfer_code(code: Any) -> str:

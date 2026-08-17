@@ -37,9 +37,12 @@ await page.waitForTimeout(2500)
 const configCache = await page.evaluate(() => localStorage.getItem('nexora.config'))
 console.log('1 config cache:', configCache ? `cached(${configCache.length} chars)` : 'NOT CACHED')
 
-// 2. 打开会话,检查消息操作/turn/avatar
+// 2. 打开有消息的会话,检查消息操作/turn/avatar
 const firstItem = await page.evaluate(() => {
-    const item = document.querySelector('.conversation-item')
+    const items = [...document.querySelectorAll('.conversation-item')]
+    const item = items.find((el) => el.textContent.includes('测试会话'))
+        || items.find((el) => !el.textContent.includes('新对话'))
+        || items[0]
     const r = item.getBoundingClientRect()
 
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
@@ -86,8 +89,23 @@ const popupState = await page.evaluate(() => {
 })
 console.log('3 turn popup:', JSON.stringify(popupState))
 
-// 4. 点击轮次线 → 高亮
-await page.mouse.click(turnLine.x, turnLine.y)
+// 4. 点击预览项 → 跳转高亮(对齐原版:跳转入口是 popup 项,线条本身无点击)
+const popupItemPos = await page.evaluate(() => {
+    const item = document.querySelector('.turn-indicator-popup.visible .turn-indicator-popup-item')
+
+    if (!item) {
+        return null
+    }
+
+    const r = item.getBoundingClientRect()
+
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+})
+
+if (popupItemPos) {
+    await page.mouse.click(popupItemPos.x, popupItemPos.y)
+}
+
 await page.waitForTimeout(500)
 const highlightState = await page.evaluate(() => {
     return {
@@ -106,15 +124,19 @@ const kbState = await page.evaluate(() => ({
 }))
 console.log('5 knowledge panel:', JSON.stringify(kbState))
 
-// 6. 设置 5 tab
+// 6. 设置各 tab
 await page.click('#usernameBtn')
 await page.waitForTimeout(300)
-await page.click('#userMenu .menu-item')
+await page.evaluate(() => {
+    const items = [...document.querySelectorAll('#userMenu .menu-item')]
+    const target = items.find((el) => el.textContent.includes('设置'))
+    target?.click()
+})
 await page.waitForTimeout(800)
 const settingsState = await page.evaluate(() => ({
     tabs: document.querySelectorAll('.settings-nav-item').length,
     active: document.querySelector('.settings-nav-item.active')?.textContent.trim(),
-    width: document.querySelector('.settings-modal-custom')?.getBoundingClientRect().width,
+    width: document.querySelector('.g-modal.settings-modal')?.getBoundingClientRect().width,
 }))
 console.log('6 settings:', JSON.stringify(settingsState))
 
@@ -136,7 +158,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(500)
 const statsText = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll('.settings-stat')).map((el) => el.textContent.trim())
+    return Array.from(document.querySelectorAll('.settings-stat-card')).map((el) => el.textContent.trim().replace(/\s+/g, ' '))
 })
 console.log('7 stats values:', JSON.stringify(statsText))
 

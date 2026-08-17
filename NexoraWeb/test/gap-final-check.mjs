@@ -57,7 +57,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(500)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.papi-action-row button')].find((b) => b.textContent.includes('模型权限'))
+    const btn = [...document.querySelectorAll('.setting-action-row button')].find((b) => b.textContent.includes('模型权限'))
     btn?.click()
 })
 await page.waitForTimeout(1500)
@@ -70,7 +70,13 @@ const perm = await page.evaluate(() => {
     }
 })
 console.log('2 model perm:', JSON.stringify(perm))
-await page.keyboard.press('Escape')
+await page.evaluate(() => {
+    const backdrop = [...document.querySelectorAll('.g-modal-backdrop')]
+        .filter((el) => !el.querySelector('.settings-modal-shell'))
+        .find((el) => el.textContent.includes('为「'))
+
+    backdrop?.querySelector('.g-modal-close')?.click()
+})
 await page.waitForTimeout(400)
 
 // 3. 邮箱管理:种子用户 → 详情按钮 + 分组下拉
@@ -83,19 +89,18 @@ await page.evaluate(async () => {
 })
 await openTab('邮箱管理')
 const mail = await page.evaluate(() => {
-    const triggers = [...document.querySelectorAll('.settings-management-toolbar .setting-select-trigger')]
-    const first = document.querySelector('.admin-user-item')
+    const triggers = [...document.querySelectorAll('.settings-page-head-actions .setting-select-trigger')]
 
-    return { toolbarSelects: triggers.length, groupLabel: triggers[0]?.textContent?.trim() || '' }
+    return { headSelects: triggers.length, groupLabel: triggers[0]?.textContent?.trim() || '' }
 })
 await page.waitForTimeout(300)
 await page.evaluate(() => {
-    const item = [...document.querySelectorAll('.admin-user-item')].find((el) => el.textContent.includes('gap_mail_v2'))
+    const item = [...document.querySelectorAll('.mail-list-item')].find((el) => el.textContent.includes('gap_mail_v2'))
     item?.click()
 })
 await page.waitForTimeout(500)
 const mailDetail = await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('.papi-action-row button')].map((b) => b.textContent.trim())
+    const btns = [...document.querySelectorAll('.setting-action-row button')].map((b) => b.textContent.trim())
 
     return { detailButtons: btns }
 })

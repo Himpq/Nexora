@@ -16,6 +16,7 @@ import './styles/tokens.css'
 import './styles/nexora-toast.css'
 import './styles/modal.css'
 import './styles/admin.css'
+import './styles/buttons.css'
 import './styles/settings.css'
 
 const app = createApp(App)

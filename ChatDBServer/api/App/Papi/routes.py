@@ -109,6 +109,30 @@ def _build_over_budget_unavailable_response(extra_payload):
     return _server_attr('_build_over_budget_unavailable_response')(extra_payload)
 
 
+def _build_papi_error_payload(
+    exc: Exception,
+    *,
+    model_name: str,
+    provider_name: str,
+    username: str,
+    status_code: int,
+    is_rate_limit: bool = False,
+) -> tuple[dict, int]:
+    """统一构建 PAPI 错误响应：提取核心可读 message，附带结构化错误码。"""
+    from App.errors import json_error as _json_error
+
+    return _json_error(
+        exc,
+        status=status_code,
+        error_type='rate_limit' if is_rate_limit else ('provider_error' if status_code >= 500 else 'invalid_request'),
+        extras={
+            'model': model_name,
+            'provider': provider_name,
+            'username': username,
+        },
+    )
+
+
 def _build_quota_block_message(quota_gate, model_name):
     return _server_attr('_build_quota_block_message')(quota_gate, model_name)
 
@@ -1033,17 +1057,14 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             _papi_log(f"[PAPI_COMPLETIONS_STREAM] model={model_name} provider={provider_name} error={e}", level='error')
             is_rate_limit_error = _is_rate_limit_exception(e)
             status_code = 429 if is_rate_limit_error else 502
-            message_text = str(e or '').strip()
-            if is_rate_limit_error and not message_text:
-                message_text = '请求触发模型限流或额度不足。'
-            return jsonify({
-                'success': False,
-                'message': message_text,
-                'error_type': 'rate_limit' if is_rate_limit_error else 'provider_error',
-                'model': model_name,
-                'provider': provider_name,
-                'username': request_username or (username or ''),
-            }), status_code
+            return _build_papi_error_payload(
+                e,
+                model_name=model_name,
+                provider_name=provider_name,
+                username=request_username or (username or ''),
+                status_code=status_code,
+                is_rate_limit=is_rate_limit_error,
+            )
 
     # ---- 非流式响应 ----
     try:
@@ -1145,17 +1166,14 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         _papi_log(f"[PAPI_COMPLETIONS] model={model_name} provider={provider_name} error={e}", level='error')
         is_rate_limit_error = _is_rate_limit_exception(e)
         status_code = 429 if is_rate_limit_error else 502
-        message_text = str(e or '').strip()
-        if is_rate_limit_error and not message_text:
-            message_text = '请求触发模型限流或额度不足。'
-        return jsonify({
-            'success': False,
-            'message': message_text,
-            'error_type': 'rate_limit' if is_rate_limit_error else 'provider_error',
-            'model': model_name,
-            'provider': provider_name,
-            'username': request_username or (username or ''),
-        }), status_code
+        return _build_papi_error_payload(
+            e,
+            model_name=model_name,
+            provider_name=provider_name,
+            username=request_username or (username or ''),
+            status_code=status_code,
+            is_rate_limit=is_rate_limit_error,
+        )
 
 @papi_bp.route('/api/papi/completions', methods=['POST'])
 @papi_bp.route('/api/papi/chat/completions', methods=['POST'])

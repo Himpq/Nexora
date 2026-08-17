@@ -142,6 +142,18 @@
             return `| ${cells.map((cell) => escapeMarkdownTableCellPipes(cell)).join(' | ')} |`;
         };
 
+        // 模型经常在最后一个单元格里使用未转义的管道符；超出表头列数时，将多出的内容保留在最后一列。
+        const fitMarkdownTableCells = (cells, expectedCount) => {
+            if (!Array.isArray(cells) || expectedCount < 2 || cells.length <= expectedCount) {
+                return cells;
+            }
+
+            return [
+                ...cells.slice(0, expectedCount - 1),
+                cells.slice(expectedCount - 1).join(' | '),
+            ];
+        };
+
         const collectMarkdownTableBlock = (start) => {
             const header = getMarkdownTableRow(lines[start]);
 
@@ -159,16 +171,22 @@
 
             const next = getMarkdownTableRow(lines[nextIndex]);
 
-            if (!next || next.cells.length !== header.cells.length) return null;
+            if (!next) return null;
 
             if (next.isSeparator) {
+                if (next.cells.length !== header.cells.length) return null;
+
                 const rows = [];
                 let endIndex = nextIndex;
 
                 for (let i = nextIndex + 1; i < lines.length; i += 1) {
                     const row = getMarkdownTableRow(lines[i]);
 
-                    if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
+                    if (!row || row.isSeparator) break;
+
+                    row.cells = fitMarkdownTableCells(row.cells, header.cells.length);
+
+                    if (row.cells.length !== header.cells.length) break;
 
                     rows.push(row);
                     endIndex = i;
@@ -182,13 +200,21 @@
                 };
             }
 
+            next.cells = fitMarkdownTableCells(next.cells, header.cells.length);
+
+            if (next.cells.length !== header.cells.length) return null;
+
             const rows = [next];
             let endIndex = nextIndex;
 
             for (let i = nextIndex + 1; i < lines.length; i += 1) {
                 const row = getMarkdownTableRow(lines[i]);
 
-                if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
+                if (!row || row.isSeparator) break;
+
+                row.cells = fitMarkdownTableCells(row.cells, header.cells.length);
+
+                if (row.cells.length !== header.cells.length) break;
 
                 rows.push(row);
                 endIndex = i;

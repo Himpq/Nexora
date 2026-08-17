@@ -102,15 +102,101 @@
         return cleaned.join('\n');
     }
 
+    function escapeCurrencyDollarsInLine(line) {
+        const src = String(line || '');
+
+        if (!src.includes('$')) return src;
+
+        const isEscaped = (index) => {
+            let count = 0;
+
+            for (let i = index - 1; i >= 0 && src[i] === '\\'; i -= 1) {
+                count += 1;
+            }
+
+            return count % 2 === 1;
+        };
+
+        const readBacktickRun = (index) => {
+            let end = index;
+
+            while (end < src.length && src[end] === '`') {
+                end += 1;
+            }
+
+            return end - index;
+        };
+
+        let out = '';
+        let i = 0;
+
+        while (i < src.length) {
+            if (src[i] === '`') {
+                const run = readBacktickRun(i);
+                const end = src.indexOf('`'.repeat(run), i + run);
+
+                if (end >= 0) {
+                    const next = end + run;
+                    out += src.slice(i, next);
+                    i = next;
+                    continue;
+                }
+            }
+
+            if (src[i] === '$' && !isEscaped(i)) {
+                const nextChar = src[i + 1] || '';
+                const signNext = src[i + 2] || '';
+
+                if (/[+-]?\d/.test(nextChar + ((nextChar === '+' || nextChar === '-') ? signNext : ''))) {
+                    out += '\\$';
+                    i += 1;
+                    continue;
+                }
+            }
+
+            out += src[i];
+            i += 1;
+        }
+
+        return out;
+    }
+
     function escapeLikelyCurrencyDollars(text) {
         const src = String(text || '');
 
         if (!src) return src;
 
-        return src.replace(
-            /(^|[^\w\\])\$([+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?=($|[\s，,。；;：:、%\])）】>]|[㐀-鿿]))/g,
-            (_, pre, num) => `${pre}\\$${num}`
-        );
+        // 金额规则：$ 后紧跟数字（可带 +/-）即视为货币符号，转义为 \$，
+        // 避免触发 LaTeX 分隔符；围栏代码块与行内代码内的 $ 属于代码内容，一律不转义。
+        const lines = src.split('\n');
+        const out = [];
+        let activeFence = null;
+
+        for (const line of lines) {
+            const fence = String(line || '').match(/^\s*(`{3,}|~{3,})/);
+
+            if (activeFence) {
+                out.push(line);
+
+                if (fence && fence[1][0] === activeFence.char && fence[1].length >= activeFence.length) {
+                    activeFence = null;
+                }
+                continue;
+            }
+
+            if (fence) {
+                activeFence = {
+                    char: fence[1][0],
+                    length: fence[1].length
+                };
+                out.push(line);
+                continue;
+            }
+
+            out.push(escapeCurrencyDollarsInLine(line));
+        }
+
+        return out.join('\n');
     }
 
     function isLikelyPureMathSpan(body) {

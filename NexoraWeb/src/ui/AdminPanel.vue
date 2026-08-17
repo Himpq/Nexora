@@ -1,17 +1,16 @@
 <!--
     AdminPanel.vue — 管理面板通用布局(General Design Development Package)
 
-    提取自原版设置窗口大量重复的"工具栏 + 左列表 + 右详情"结构:
-      admin-users-toolbar(工具栏,如搜索/刷新/新增)
-        + admin-users-layout
-          > admin-users-list(左侧列表)
-          > admin-user-detail(右侧详情)
+    提取自设置窗口大量重复的"左列表 + 右详情"结构:
+      settings-management-layout
+        > settings-management-list(左侧列表)
+        > settings-management-detail(右侧详情)
+
+    页面级操作(筛选/新增/刷新)已全部上移 settings-page-head,
+    面板不再包含工具栏。
 
     用法:
       <AdminPanel>
-          <template #toolbar>
-              <input class="input-modern" placeholder="搜索..." />
-          </template>
           <template #list>
               <div class="admin-user-item">...</div>
           </template>
@@ -22,16 +21,12 @@
 -->
 
 <template>
-    <div class="admin-users-toolbar settings-management-toolbar">
-        <slot name="toolbar" />
-    </div>
-
-    <div class="admin-users-layout settings-management-layout">
-        <div class="admin-users-list settings-management-list">
+    <div class="settings-management-layout">
+        <div class="settings-management-list">
             <slot name="list" />
         </div>
 
-        <div class="admin-user-detail settings-management-detail">
+        <div class="settings-management-detail">
             <slot name="detail" />
         </div>
     </div>

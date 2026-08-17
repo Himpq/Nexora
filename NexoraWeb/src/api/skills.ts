@@ -185,6 +185,31 @@ export async function publishMarketSkill(skill: SkillPayload): Promise<void> {
 }
 
 /**
+ * 管理员更新全局 Skill 目录(对齐原版 saveSkillContentById → PUT /api/skills/upsert)
+ * 仅管理员可调用;用于编辑全局(非个人)Skill 的内容
+ */
+export async function upsertCatalogSkill(skill: {
+    id: string
+    title?: string
+    required_tools?: string[]
+    mode?: string
+    author?: string
+    release_date?: string
+    version?: string
+    update_date?: string
+    main_content: string
+}): Promise<void> {
+    const data = await apiFetch<{ success: boolean; skill?: unknown; message?: string }>('/api/skills/upsert', {
+        method: 'PUT',
+        body: JSON.stringify({ skill }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '保存失败')
+    }
+}
+
+/**
  * 解析 .skill 文件文本(对齐原版 parseSkillText):
  *   1. 标准 .skill 格式(title:/id:/mode: 头部 + ---content--- 正文) → 结构化
  *   2. 普通文本 → 全文作为正文,文件名作为标题

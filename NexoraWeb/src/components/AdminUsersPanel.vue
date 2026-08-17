@@ -9,11 +9,6 @@
 
 <template>
     <AdminPanel>
-        <template #toolbar>
-            <button class="btn-primary" type="button" @click="openCreate">+ 添加新用户</button>
-            <input v-model="query" class="input-modern" placeholder="筛选用户:用户名 / ID / 角色 / IP" @input="applyFilter">
-        </template>
-
         <template #list>
             <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
             <div v-else-if="!filteredUsers.length" class="admin-user-detail-empty">暂无用户</div>
@@ -84,7 +79,7 @@
                     </div>
                 </div>
 
-                <div class="papi-action-row">
+                <SettingActionRow>
                     <button class="btn-primary" type="button" @click="saveProfile">
                         <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
                         <span>保存资料</span>
@@ -101,7 +96,7 @@
                         <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                         <span>删除用户</span>
                     </button>
-                </div>
+                </SettingActionRow>
             </div>
         </template>
     </AdminPanel>
@@ -206,6 +201,7 @@
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
+    import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const userStore = useUserStore()
@@ -294,8 +290,9 @@
         }
     }
 
-    function applyFilter(): void {
-        // 输入即筛选(computed 自动响应)
+    /** 页头筛选输入转发(computed 自动响应) */
+    function setQuery(value?: string): void {
+        query.value = String(value || '')
     }
 
     function selectUser(user: AdminUser): void {
@@ -495,4 +492,10 @@
             return '-'
         }
     }
+
+    defineExpose({
+        openCreate,
+        load,
+        setQuery,
+    })
 </script>

@@ -41,16 +41,16 @@ async function openTab(label) {
     await page.waitForTimeout(800)
 }
 
-// 1. 我的 API Key:工具栏按钮宽度(应 < 300px,非 100%)
+// 1. 我的 API Key:页头按钮宽度(应 < 300px,非 100%)
 await openTab('我的 API Key')
 const btnWidth = await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('.settings-management-toolbar button')]
+    const buttons = [...document.querySelectorAll('.settings-page-head-actions button')]
     const width = buttons.map((b) => Math.round(b.getBoundingClientRect().width))
-    const toolbarWidth = Math.round(document.querySelector('.settings-management-toolbar').getBoundingClientRect().width)
+    const actionsWidth = Math.round(document.querySelector('.settings-page-head-actions').getBoundingClientRect().width)
 
-    return { buttonWidths: width, toolbarWidth, allNarrow: width.every((w) => w < toolbarWidth * 0.5) }
+    return { buttonWidths: width, actionsWidth, allNarrow: width.every((w) => w < actionsWidth * 0.5) }
 })
-console.log('1 toolbar button widths:', JSON.stringify(btnWidth))
+console.log('1 head action button widths:', JSON.stringify(btnWidth))
 
 // 2. 用户管理:布局撑满高度(列表高度 ≈ 布局高度,非 fit-content)
 await openTab('用户管理')
@@ -115,8 +115,8 @@ console.log('4 provider icons:', JSON.stringify(providerIcons))
 // 5. 认证管理:生成 key 全流程(expire + scope 已修复)
 await openTab('认证管理')
 const authUI = await page.evaluate(() => {
-    const hasGenerate = [...document.querySelectorAll('.settings-management-toolbar button')].some((b) => b.textContent.includes('生成'))
-    const hasRegenerate = [...document.querySelectorAll('.papi-action-row button')].some((b) => b.textContent.includes('重新生成'))
+    const hasGenerate = [...document.querySelectorAll('.settings-page-head-actions button')].some((b) => b.textContent.includes('生成'))
+    const hasRegenerate = [...document.querySelectorAll('.auth-detail .setting-action-row button')].some((b) => b.textContent.includes('重新生成'))
 
     return { hasGenerate, hasRegenerate }
 })
@@ -124,7 +124,7 @@ console.log('5 auth UI:', JSON.stringify(authUI))
 
 // 生成一个 key
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.settings-management-toolbar button')].find((b) => b.textContent.includes('生成'))
+    const btn = [...document.querySelectorAll('.settings-page-head-actions button')].find((b) => b.textContent.includes('生成'))
     btn?.click()
 })
 await page.waitForTimeout(500)
@@ -197,18 +197,18 @@ console.log('8 regen seed key:', regenKey)
 if (regenKey) {
     // 刷新列表并选中
     await page.evaluate(() => {
-        const btn = [...document.querySelectorAll('.settings-management-toolbar button')].find((b) => b.textContent.includes('刷新'))
+        const btn = [...document.querySelectorAll('.settings-page-head-actions button')].find((b) => b.textContent.includes('刷新'))
         btn?.click()
     })
     await page.waitForTimeout(800)
     await page.evaluate(() => {
-        const item = [...document.querySelectorAll('.papi-key-list-item')].find((el) => el.textContent.includes('zzz_e2e_regen_key'))
+        const item = [...document.querySelectorAll('.auth-key-list .auth-key-item')].find((el) => el.textContent.includes('zzz_e2e_regen_key'))
         item?.click()
     })
     await page.waitForTimeout(400)
 
     await page.evaluate(() => {
-        const btn = [...document.querySelectorAll('.papi-action-row button')].find((b) => b.textContent.includes('重新生成'))
+        const btn = [...document.querySelectorAll('.auth-detail .setting-action-row button')].find((b) => b.textContent.includes('重新生成'))
         btn?.click()
     })
     await page.waitForTimeout(500)
@@ -221,7 +221,7 @@ if (regenKey) {
             opened: !!backdrop,
             prefilled: input?.value || '',
             title: backdrop?.querySelector('.g-modal-head h3')?.textContent || '',
-            hasExpire: backdrop ? backdrop.querySelectorAll('.settings-mode-toggle-btn').length : 0,
+            hasExpire: backdrop ? backdrop.querySelectorAll('.setting-expiry-slider-mark').length : 0,
         }
     })
     console.log('9 regen modal:', JSON.stringify(regenModal))

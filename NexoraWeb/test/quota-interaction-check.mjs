@@ -1,5 +1,5 @@
-// quota-interaction-check.mjs — 模型额度完整交互验证
-// 单位切换、额度策略卡、种子额度 → 计量条渲染 → 点击弹层 → 调整额度 → 验证持久化
+// quota-interaction-check.mjs — 模型额度完整交互验证(新结构)
+// 单位切换、provider 行内超额策略、种子额度 → 计量条 → 点击铅笔/计量条 → 锚点跟随弹层 → 调整 → 持久化
 import { chromium } from 'playwright-core'
 import fs from 'node:fs'
 
@@ -38,21 +38,26 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(1200)
 
-// 1. 额度策略卡渲染
-const quotaCard = await page.evaluate(() => {
-    const card = document.querySelector('.settings-modal-shell .admin-quota-card')
-    const providers = [...document.querySelectorAll('.settings-modal-shell .admin-quota-provider')].map((p) => ({
-        name: p.querySelector('.admin-quota-provider-name')?.textContent,
-        stats: p.querySelector('.admin-quota-provider-stats')?.textContent,
-        hasActionSelect: !!p.querySelector('.setting-select-trigger'),
-    }))
+// 1. provider 行内超额策略下拉(替代旧额度策略卡)
+const quotaRows = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.settings-modal-shell .model-provider-quota-row')]
+    const providers = rows.map((r) => {
+        const item = r.closest('.admin-user-item')
+        const name = item?.querySelector('.admin-user-name')?.textContent || ''
 
-    return { card: !!card, providers: providers.slice(0, 6), providerCount: providers.length }
+        return {
+            name,
+            hasLabel: r.querySelector('.model-provider-quota-label')?.textContent || '',
+            hasSelect: !!r.querySelector('.setting-select-trigger'),
+        }
+    })
+
+    return { rowCount: rows.length, providers: providers.slice(0, 4) }
 })
-console.log('1 quota card:', JSON.stringify(quotaCard))
+console.log('1 provider quota rows:', JSON.stringify(quotaRows))
 
-// 2. 单位切换:选择 w,验证策略卡统计文案变化
-const beforeUnit = await page.evaluate(() => document.querySelector('.settings-modal-shell .admin-quota-provider-stats')?.textContent || '')
+// 2. 单位切换:切到 w,验证模型行 ctx 文案变化
+const beforeUnit = await page.evaluate(() => document.querySelector('.settings-modal-shell .admin-model-ctx')?.textContent || '')
 await page.evaluate(() => {
     const triggers = [...document.querySelectorAll('.settings-modal-shell .setting-select-trigger')]
     const unitTrigger = triggers.find((t) => t.textContent.trim().startsWith('自动'))
@@ -65,12 +70,11 @@ await page.evaluate(() => {
     w?.click()
 })
 await page.waitForTimeout(300)
-const afterUnit = await page.evaluate(() => document.querySelector('.settings-modal-shell .admin-quota-provider-stats')?.textContent || '')
+const afterUnit = await page.evaluate(() => document.querySelector('.settings-modal-shell .admin-model-ctx')?.textContent || '')
 console.log('2 unit switch:', JSON.stringify({ before: beforeUnit, after: afterUnit, changed: beforeUnit !== afterUnit }))
 
-// 3. 超额策略选择器存在 + 种子额度 → 计量条
+// 3. 种子额度 → 计量条(债务状态)
 const seed = await page.evaluate(async () => {
-    // 找第一个真实模型(LLMFaker)
     const modelsRes = await fetch('/api/admin/models/config')
     const modelsData = await modelsRes.json()
     const firstModel = Object.entries(modelsData.models || {})[0]
@@ -80,7 +84,6 @@ const seed = await page.evaluate(async () => {
     const [modelId, info] = firstModel
     const provider = String(info.provider || 'LLMFaker')
 
-    // 设总额度为 1 token → 制造超额(债务)状态
     await fetch('/api/admin/quota/model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -91,16 +94,16 @@ const seed = await page.evaluate(async () => {
 })
 console.log('3 seed quota:', JSON.stringify(seed))
 
-// 重新加载页面数据(刷新额度)
+// 刷新额度(页头刷新)
 await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.settings-modal-shell .admin-quota-card-head button')].find((b) => b.textContent.includes('刷新额度'))
+    const btn = [...document.querySelectorAll('.settings-page-head-actions button')].find((b) => b.textContent.includes('刷新'))
     btn?.click()
 })
 await page.waitForTimeout(1000)
 
 // 选中该 provider,检查计量条
 await page.evaluate((p) => {
-    const item = [...document.querySelectorAll('.settings-modal-shell .settings-management-list .admin-user-item')].find((el) => el.textContent.includes(p))
+    const item = [...document.querySelectorAll('.settings-modal-shell .model-provider-item')].find((el) => el.textContent.includes(p))
     item?.click()
 }, seed.provider || 'LLMFaker')
 await page.waitForTimeout(600)
@@ -109,41 +112,45 @@ const meter = await page.evaluate(() => {
     const wraps = document.querySelectorAll('.settings-modal-shell .quota-meter-wrap')
     const first = wraps[0]
     const debtSeg = first?.querySelector('.quota-meter-seg-overage')
-    const labels = first ? [...first.querySelectorAll('.quota-meter-label')].map((l) => ({ cls: l.className.split(' ')[1], text: l.textContent })) : []
+    const labels = first ? [...first.querySelectorAll('.quota-meter-label-item')].map((l) => ({ cls: l.className.split(' ')[1] || '', text: l.textContent.trim(), visible: l.style.display !== 'none' })) : []
 
     return { meterCount: wraps.length, hasDebtSeg: !!debtSeg, labels }
 })
 console.log('4 meter with debt:', JSON.stringify(meter))
 
-// 5. 点击计量条 → 调整弹层 → 改为 1000000
+// 5. 点击铅笔按钮 → 锚点跟随弹层 → 改为 1000000
 if (meter.meterCount > 0) {
     await page.evaluate(() => {
-        document.querySelector('.settings-modal-shell .quota-meter-wrap')?.click()
+        document.querySelector('.settings-modal-shell .quota-total-icon-btn')?.click()
     })
     await page.waitForTimeout(400)
 
     const popover = await page.evaluate(() => {
-        const card = document.querySelector('.quota-adjust-popover-card')
+        const el = document.querySelector('.quota-adjust-popover-fixed')
+        const rect = el ? el.getBoundingClientRect() : null
+
         return {
-            open: !!card,
-            title: card?.querySelector('.quota-adjust-title')?.textContent || '',
-            meta: card?.querySelector('.quota-adjust-meta')?.textContent || '',
-            hasInput: !!card?.querySelector('input'),
-            hasMode: !!card?.querySelector('.setting-select-trigger'),
+            open: !!el,
+            position: el ? getComputedStyle(el).position : '',
+            x: rect ? Math.round(rect.left) : -1,
+            y: rect ? Math.round(rect.top) : -1,
+            title: el?.querySelector('.quota-adjust-title')?.textContent || '',
+            meta: el?.querySelector('.quota-adjust-meta')?.textContent || '',
+            hasInput: !!el?.querySelector('input'),
+            hasMode: !!el?.querySelector('select'),
         }
     })
     console.log('5 adjust popover:', JSON.stringify(popover))
 
-    // 输入新总量并确认
+    // 输入新总量并保存
     await page.evaluate(() => {
-        const card = document.querySelector('.quota-adjust-popover-card')
-        const input = card?.querySelector('input')
+        const el = document.querySelector('.quota-adjust-popover-fixed')
+        const input = el?.querySelector('input')
         if (input) {
             input.value = '1000000'
             input.dispatchEvent(new Event('input', { bubbles: true }))
         }
-        const confirm = [...(card?.querySelectorAll('button') || [])].find((b) => b.textContent.includes('确认'))
-        confirm?.click()
+        el?.querySelector('.quota-adjust-save-btn')?.click()
     })
     await page.waitForTimeout(1500)
 
@@ -157,7 +164,7 @@ if (meter.meterCount > 0) {
     })
     console.log('6 quota persisted:', JSON.stringify(persisted))
 
-    // 清理:设回 1e12(宽松,无门控影响)
+    // 清理:设回 1e12
     await page.evaluate(async (p) => {
         await fetch('/api/admin/quota/model', {
             method: 'POST',
@@ -168,6 +175,5 @@ if (meter.meterCount > 0) {
     console.log('7 cleanup done')
 }
 
-await page.keyboard.press('Escape')
 await browser.close()
 console.log('\ndone')

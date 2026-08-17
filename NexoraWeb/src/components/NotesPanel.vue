@@ -10,6 +10,7 @@
 
 <template>
     <div
+        ref="panelEl"
         class="notes-panel"
         :class="{ active: open, dragging, resizing }"
         role="dialog"
@@ -102,6 +103,7 @@
     import { fetchNotesStore, saveNotesStore } from '@/api/notes'
     import { showConfirm, showPrompt } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { usePanelDrag } from '@/ui/usePanelDrag'
 
     import MarkdownView from './MarkdownView.vue'
 
@@ -126,31 +128,36 @@
     })
     const loading = ref(false)
     const notebookMenuOpen = ref(false)
-    const dragging = ref(false)
-    const resizing = ref(false)
     const notebookSelectWrapRef = ref<HTMLElement | null>(null)
 
-    const layout = ref({
-        left: 0,
-        top: 78,
-        width: 360,
-        height: Math.min(Math.round(window.innerHeight * 0.62), 560),
-    })
+    /** 面板根元素(模板 ref 绑定;拖拽中由 usePanelDrag 直写 style) */
+    const panelEl = ref<HTMLElement | null>(null)
 
-    const dragStart = { x: 0, y: 0, left: 0, top: 0 }
-    const resizeStart = { x: 0, y: 0, width: 0, height: 0 }
+    /**
+     * 面板拖拽/缩放(抽象自 GDDP usePanelDrag)
+     * 默认对齐原版 right:20px top:78px width:360px height:min(62vh,560px)
+     */
+    const {
+        dragging,
+        resizing,
+        panelStyle,
+        restoreLayout,
+        startDrag,
+        startResize,
+        resetDragState,
+    } = usePanelDrag(
+        LAYOUT_KEY,
+        {
+            left: 0,
+            top: 78,
+            width: 360,
+            height: Math.min(Math.round(window.innerHeight * 0.62), 560),
+        },
+        panelEl,
+        { minWidthCap: 280, minWidthFloor: 240 }
+    )
 
     let syncTimer: ReturnType<typeof setTimeout> | null = null
-    let dragHandler: ((event: PointerEvent) => void) | null = null
-    let resizeHandler: ((event: PointerEvent) => void) | null = null
-    let stopHandler: ((event: PointerEvent) => void) | null = null
-
-    const panelStyle = computed(() => ({
-        left: `${layout.value.left}px`,
-        top: `${layout.value.top}px`,
-        width: `${layout.value.width}px`,
-        height: `${layout.value.height}px`,
-    }))
 
     const notebooks = computed(() => store.value.notebooks)
     const activeNotebookId = computed(() => store.value.activeNotebookId)
@@ -178,8 +185,7 @@
                 document.addEventListener('click', handleOutsideClick)
             } else {
                 stopPolling()
-                dragging.value = false
-                resizing.value = false
+                resetDragState()
                 notebookMenuOpen.value = false
 
                 document.removeEventListener('click', handleOutsideClick)
@@ -189,7 +195,7 @@
 
     onBeforeUnmount(() => {
         stopPolling()
-        detachDragHandlers()
+        resetDragState()
         document.removeEventListener('click', handleOutsideClick)
     })
 
@@ -489,158 +495,4 @@
     }
 
     defineExpose({ addNoteFromSelection })
-
-    /** 从 localStorage 恢复位置/尺寸 */
-    function restoreLayout(): void {
-        try {
-            const raw = localStorage.getItem(LAYOUT_KEY)
-
-            if (!raw) {
-                return
-            }
-
-            const saved = JSON.parse(raw)
-            const left = Number(saved && saved.left)
-            const top = Number(saved && saved.top)
-            const width = Number(saved && saved.width)
-            const height = Number(saved && saved.height)
-
-            if (![left, top, width, height].every(Number.isFinite)) {
-                return
-            }
-
-            const minWidth = Math.min(280, Math.max(240, window.innerWidth - 24))
-            const minHeight = 180
-            const maxWidth = Math.max(minWidth, window.innerWidth - 24)
-            const maxHeight = Math.max(minHeight, window.innerHeight - 24)
-            const nextWidth = Math.max(minWidth, Math.min(maxWidth, width))
-            const nextHeight = Math.max(minHeight, Math.min(maxHeight, height))
-            const maxLeft = Math.max(8, window.innerWidth - nextWidth - 8)
-            const maxTop = Math.max(8, window.innerHeight - nextHeight - 8)
-
-            layout.value.left = Math.max(8, Math.min(maxLeft, left))
-            layout.value.top = Math.max(8, Math.min(maxTop, top))
-            layout.value.width = nextWidth
-            layout.value.height = nextHeight
-        } catch {
-            // localStorage 不可用时使用默认位置
-        }
-    }
-
-    /** 持久化位置/尺寸 */
-    function saveLayout(): void {
-        try {
-            localStorage.setItem(LAYOUT_KEY, JSON.stringify({
-                left: Math.round(layout.value.left),
-                top: Math.round(layout.value.top),
-                width: Math.round(layout.value.width),
-                height: Math.round(layout.value.height),
-            }))
-        } catch {
-            // localStorage 不可用时忽略
-        }
-    }
-
-    /** 头部拖拽移动 */
-    function startDrag(event: PointerEvent): void {
-        if (event.button !== 0) {
-            return
-        }
-
-        dragging.value = true
-        dragStart.x = event.clientX
-        dragStart.y = event.clientY
-        dragStart.left = layout.value.left
-        dragStart.top = layout.value.top
-
-        detachDragHandlers()
-
-        dragHandler = (moveEvent: PointerEvent) => {
-            if (!dragging.value) {
-                return
-            }
-
-            const maxLeft = Math.max(8, window.innerWidth - layout.value.width - 8)
-            const maxTop = Math.max(8, window.innerHeight - layout.value.height - 8)
-
-            layout.value.left = Math.max(8, Math.min(maxLeft, dragStart.left + moveEvent.clientX - dragStart.x))
-            layout.value.top = Math.max(8, Math.min(maxTop, dragStart.top + moveEvent.clientY - dragStart.y))
-        }
-
-        stopHandler = () => {
-            if (!dragging.value) {
-                return
-            }
-
-            dragging.value = false
-            saveLayout()
-            detachDragHandlers()
-        }
-
-        window.addEventListener('pointermove', dragHandler)
-        window.addEventListener('pointerup', stopHandler)
-        window.addEventListener('pointercancel', stopHandler)
-    }
-
-    /** 右下角缩放 */
-    function startResize(event: PointerEvent): void {
-        if (event.button !== 0) {
-            return
-        }
-
-        resizing.value = true
-        resizeStart.x = event.clientX
-        resizeStart.y = event.clientY
-        resizeStart.width = layout.value.width
-        resizeStart.height = layout.value.height
-
-        detachDragHandlers()
-
-        resizeHandler = (moveEvent: PointerEvent) => {
-            if (!resizing.value) {
-                return
-            }
-
-            const minWidth = Math.min(280, Math.max(240, window.innerWidth - 24))
-            const minHeight = 180
-            const maxWidth = Math.max(minWidth, window.innerWidth - 24)
-            const maxHeight = Math.max(minHeight, window.innerHeight - 24)
-
-            layout.value.width = Math.max(minWidth, Math.min(maxWidth, resizeStart.width + moveEvent.clientX - resizeStart.x))
-            layout.value.height = Math.max(minHeight, Math.min(maxHeight, resizeStart.height + moveEvent.clientY - resizeStart.y))
-        }
-
-        stopHandler = () => {
-            if (!resizing.value) {
-                return
-            }
-
-            resizing.value = false
-            saveLayout()
-            detachDragHandlers()
-        }
-
-        window.addEventListener('pointermove', resizeHandler)
-        window.addEventListener('pointerup', stopHandler)
-        window.addEventListener('pointercancel', stopHandler)
-    }
-
-    /** 移除拖拽/缩放全局监听 */
-    function detachDragHandlers(): void {
-        if (dragHandler) {
-            window.removeEventListener('pointermove', dragHandler)
-            dragHandler = null
-        }
-
-        if (resizeHandler) {
-            window.removeEventListener('pointermove', resizeHandler)
-            resizeHandler = null
-        }
-
-        if (stopHandler) {
-            window.removeEventListener('pointerup', stopHandler)
-            window.removeEventListener('pointercancel', stopHandler)
-            stopHandler = null
-        }
-    }
 </script>

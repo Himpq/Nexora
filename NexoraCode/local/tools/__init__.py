@@ -32,9 +32,8 @@ from .BrowserTool import (
     BrowserListTool,
     BrowserOpenTool,
     BrowserReadTool,
-    BrowserScrollTool,
+    # BrowserScrollTool,
 )
-from .LongContextTool import ContextClearTool, ContextReadTool
 
 
 TOOLS = [
@@ -51,17 +50,15 @@ TOOLS = [
     CodeScanTool(),
     PermissionGrantTool(),
     PermissionListTool(),
-    ImageSearchTool(),
+    # ImageSearchTool(),
     BrowserOpenTool(),
     BrowserReadTool(),
     BrowserClickTool(),
     BrowserInputTool(),
     BrowserEvalTool(),
-    BrowserScrollTool(),
+    # BrowserScrollTool(),
     BrowserListTool(),
     BrowserCloseTool(),
-    ContextReadTool(),
-    ContextClearTool(),
 ]
 
 # 旧名兼容映射集中在各工具类 aliases 上（见工具定义）；

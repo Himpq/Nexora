@@ -805,7 +805,12 @@
                                     safeTokenInt(chunk.output_tokens),
                                     getCurrentStreamOutputTokens(),
                                     getCurrentEstimatedStreamOutputTokens()
-                                )
+                                ),
+                                // timing 由 updateMessageModelBadge 叠加合并，只覆盖缓存命中字段。
+                                timing: {
+                                    cachedInput: safeTokenInt(chunk.cached_input_tokens),
+                                    rawInput: safeTokenInt(chunk.raw_input_tokens)
+                                }
                             });
                         } else if (chunk.type === 'title') {
                             const titleEl = getConversationTitleElement();
@@ -817,7 +822,7 @@
                             streamEndedWithError = true;
                             streamErrorRetryable = !!chunk.retryable;
                             streamErrorCode = String(chunk.error_code || '').trim().toLowerCase();
-                            streamErrorMessage = String(chunk.content || '').trim() || 'Unknown error';
+                            streamErrorMessage = String(chunk.message || chunk.content || '').trim() || 'Unknown error';
 
                             if (streamErrorRetryable || streamErrorCode === 'network_error') {
                                 appendErrorEvent(assistantDiv, streamErrorMessage);

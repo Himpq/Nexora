@@ -965,7 +965,75 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
     return ''
 
 
-def _papi_extract_usage(response_obj: Any) -> Dict[str, int]:
+def _papi_merge_usage_extra(result: Dict[str, Any], usage_obj: Any) -> None:
+    """把上游 usage 中的缓存命中 / 成本等增强字段合并进透传结果。
+
+    对齐 NexoraCode 本地 Provider 的提取口径：
+    - 缓存命中：prompt_tokens_details.cached_tokens / input_tokens_details.cached_tokens /
+      prompt_cache_hit_tokens / cache_read_input_tokens / cache_read_tokens / 顶层 cached_tokens
+    - 成本：total_cost / cost
+    """
+    raw = usage_obj if isinstance(usage_obj, dict) else {}
+
+    def _pick_int(*keys: str) -> int:
+        for key in keys:
+            value = raw.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _pick_nested_int(source: Any, *keys: str) -> int:
+        if not isinstance(source, dict):
+            return 0
+        for key in keys:
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _pick_number(*keys: str):
+        for key in keys:
+            value = raw.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    prompt_details = raw.get('prompt_tokens_details')
+    input_details = raw.get('input_tokens_details')
+    cached = 0
+    if isinstance(prompt_details, dict):
+        cached = _pick_nested_int(prompt_details, 'cached_tokens', 'cache_read_input_tokens', 'cached_input_tokens')
+    if cached <= 0:
+        cached = _pick_int('prompt_cache_hit_tokens')
+    if cached <= 0 and isinstance(input_details, dict):
+        cached = _pick_nested_int(input_details, 'cached_tokens', 'cache_read_input_tokens', 'cached_input_tokens')
+    if cached <= 0:
+        cached = _pick_int('cached_tokens', 'input_cached_tokens', 'cache_read_input_tokens', 'cache_read_tokens')
+    if cached > 0:
+        result['cached_tokens'] = cached
+
+    uncached = _pick_int('prompt_cache_miss_tokens', 'cache_creation_input_tokens', 'cache_write_input_tokens')
+    if uncached > 0:
+        result['uncached_tokens'] = uncached
+
+    cost = _pick_number('total_cost', 'cost')
+    if cost is not None:
+        result['cost'] = cost
+
+
+def _papi_extract_usage(response_obj: Any) -> Dict[str, Any]:
     usage_obj = None
     if isinstance(response_obj, dict):
         usage_obj = response_obj.get('usage')
@@ -988,11 +1056,14 @@ def _papi_extract_usage(response_obj: Any) -> Dict[str, int]:
     prompt_tokens = _read_usage('prompt_tokens', _read_usage('input_tokens', 0))
     completion_tokens = _read_usage('completion_tokens', _read_usage('output_tokens', 0))
     total_tokens = _read_usage('total_tokens', prompt_tokens + completion_tokens)
-    return {
+    result = {
         'prompt_tokens': prompt_tokens,
         'completion_tokens': completion_tokens,
         'total_tokens': total_tokens,
     }
+    # 透传缓存命中与成本等增强字段，供下游（NexoraCode 本地 Agent）展示缓存命中率/费用。
+    _papi_merge_usage_extra(result, usage_obj)
+    return result
 
 
 def _papi_extract_finish_reason(response_obj: Any) -> str:
@@ -1738,6 +1809,7 @@ def _papi_stream_openai_chat(
                     'completion_tokens': int(ev.get('output_tokens', 0) or 0),
                     'total_tokens': int(ev.get('total_tokens', 0) or 0),
                 }
+                _papi_merge_usage_extra(usage_payload, ev.get('usage'))
             elif ev_type == 'finish_reason':
                 reason = str(ev.get('finish_reason') or '').strip()
                 if reason:
@@ -2616,6 +2688,7 @@ def _papi_stream_openai_responses(
                         'output_tokens': int(ev.get('output_tokens', 0) or 0),
                         'total_tokens': int(ev.get('total_tokens', 0) or 0),
                     }
+                    _papi_merge_usage_extra(usage_payload, ev.get('usage'))
 
                     continue
 

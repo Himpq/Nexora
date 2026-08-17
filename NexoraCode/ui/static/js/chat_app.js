@@ -380,16 +380,6 @@ function initUI() {
     if (els.checkThinking) {
         els.checkThinking.addEventListener('change', () => saveComposerPrefsToStorage());
     }
-    if (els.checkSearch) {
-        els.checkSearch.addEventListener('change', () => saveComposerPrefsToStorage());
-    }
-    if (els.tokenBudgetContextToggle) {
-        els.tokenBudgetContextToggle.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleContextIncludeMode();
-        });
-    }
     
     // File Input
     if(els.fileInput) els.fileInput.addEventListener('change', handleFileUpload);
@@ -494,6 +484,15 @@ function initUI() {
             }
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
+
+                // 防止快速连按回车重复触发发送：300ms 内忽略第二次
+                const now = Date.now();
+
+                if (window.__ncLastSendAttemptTs && (now - window.__ncLastSendAttemptTs) < 300) {
+                    return;
+                }
+
+                window.__ncLastSendAttemptTs = now;
                 sendMessage();
             }
         });

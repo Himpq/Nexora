@@ -9,16 +9,6 @@
 
 <template>
     <AdminPanel>
-        <template #toolbar>
-            <button class="btn-primary" type="button" @click="openCreate">
-                <i class="fa-solid fa-plus" aria-hidden="true"></i>
-                <span>新建 Key</span>
-            </button>
-            <button class="btn-primary-outline btn-compact settings-management-icon-button" type="button" title="刷新 Key 列表" aria-label="刷新 Key 列表" @click="load">
-                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-            </button>
-        </template>
-
         <template #list>
             <div v-if="loading" class="admin-user-detail-empty settings-management-list-state">加载中...</div>
             <div v-else-if="!keys.length" class="admin-user-detail-empty settings-management-list-state">暂无 API Key</div>
@@ -61,7 +51,7 @@
                 </div>
                 <div class="form-group">
                     <label>有效期</label>
-                    <SettingSelect v-model="detailExpire" :options="expireSelectOptions" width="160px" />
+                    <SettingExpirySlider v-model="detailExpire" :options="expireSliderOptions" />
                 </div>
                 <div class="form-group">
                     <label>权限</label>
@@ -73,7 +63,7 @@
                         <span v-if="!Object.keys(permissionLabels).length" class="admin-user-meta">无可用权限</span>
                     </div>
                 </div>
-                <div class="papi-action-row">
+                <SettingActionRow>
                     <button class="btn-primary-outline" type="button" @click="saveDetail">
                         <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
                         <span>保存设置</span>
@@ -86,7 +76,7 @@
                         <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                         <span>删除 Key</span>
                     </button>
-                </div>
+                </SettingActionRow>
             </div>
         </template>
     </AdminPanel>
@@ -106,28 +96,7 @@
         </div>
         <div class="form-group">
             <label>有效期</label>
-            <div class="chat-announcement-level-select">
-                <button
-                    id="userPapiKeyCreateExpire"
-                    class="chat-announcement-level-button"
-                    type="button"
-                    :aria-expanded="expireMenuOpen"
-                    @click="expireMenuOpen = !expireMenuOpen"
-                >
-                    <span>{{ expireLabel }}</span>
-                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                </button>
-                <div class="chat-announcement-level-menu" role="listbox" :hidden="!expireMenuOpen">
-                    <button
-                        v-for="option in expireOptions"
-                        :key="option.id"
-                        type="button"
-                        role="option"
-                        :aria-selected="createExpire === option.id"
-                        @click="createExpire = option.id; expireMenuOpen = false"
-                    >{{ option.label }}</button>
-                </div>
-            </div>
+            <SettingExpirySlider v-model="createExpire" :options="expireSliderOptions" />
         </div>
         <div class="form-group">
             <label>权限</label>
@@ -174,7 +143,8 @@
 
     import Modal from '@/ui/Modal.vue'
     import AdminPanel from '@/ui/AdminPanel.vue'
-    import SettingSelect from '@/ui/settings/SettingSelect.vue'
+    import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
+    import SettingExpirySlider from '@/ui/settings/SettingExpirySlider.vue'
 
     const keys = ref<UserApiKey[]>([])
     const expireOptions = ref<ExpireOption[]>([])
@@ -185,7 +155,6 @@
     const createOpen = ref(false)
     const createName = ref('')
     const createExpire = ref('forever')
-    const expireMenuOpen = ref(false)
     const createPermissions = reactive<Record<string, boolean>>({})
 
     const plainKeyOpen = ref(false)
@@ -199,15 +168,9 @@
         return keys.value.find((key) => key.id === selectedId.value) || null
     })
 
-    /** 详情有效期下拉选项(对齐原版 renderExpirySlider 选项) */
-    const expireSelectOptions = computed(() => {
+    /** 有效期滑条选项(id → value 映射) */
+    const expireSliderOptions = computed(() => {
         return expireOptions.value.map((option) => ({ value: option.id, label: option.label }))
-    })
-
-    const expireLabel = computed(() => {
-        const option = expireOptions.value.find((item) => item.id === createExpire.value)
-
-        return option ? option.label : createExpire.value
     })
 
     onMounted(() => {
@@ -426,4 +389,9 @@
             return ''
         }
     }
+
+    defineExpose({
+        openCreate,
+        load,
+    })
 </script>

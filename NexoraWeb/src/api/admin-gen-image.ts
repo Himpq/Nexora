@@ -4,19 +4,44 @@
  * 对应后端路由:
  *   GET  /api/admin/gen-image/apis          接口列表
  *   POST /api/admin/gen-image/apis          新增接口
- *   PUT  /api/admin/gen-image/apis/<id>     更新接口
+ *   PUT  /api/admin/gen-image/apis/<id>     更新接口(original_api_id 重命名)
  */
 
 import { apiFetch } from './client'
 
 export interface GenImageApi {
     id: string
+    api_id?: string
     name?: string
-    base_url?: string
+    api_type?: string
     api_key?: string
+    /** 后端脱敏后的 API Key(仅展示) */
+    api_key_masked?: string
+    base_url?: string
     model?: string
+    size?: string
+    quality?: string
+    response_format?: string
+    timeout?: number
     enabled?: boolean
+    created_at?: number
+    updated_at?: number
     [key: string]: unknown
+}
+
+/** 生图接口编辑表单(与后端 record 字段一一对应) */
+export interface GenImageApiForm {
+    api_id: string
+    name: string
+    api_type: string
+    api_key: string
+    base_url: string
+    model: string
+    size: string
+    quality: string
+    response_format: string
+    timeout: string
+    enabled: boolean
 }
 
 interface GenImageListResponse {
@@ -50,8 +75,12 @@ export async function fetchGenImageApis(): Promise<{ apis: GenImageApi[]; enable
     }
 }
 
-/** 新增/更新生图接口(对齐原版 admin_upsert_gen_image_api) */
+/**
+ * 新增/更新生图接口(对齐原版 saveAdminGenImageApiDetail)
+ * 传 original_api_id 表示重命名/更新已有接口,否则新增
+ */
 export async function upsertGenImageApi(options: {
+    original_api_id?: string
     api_id: string
     name?: string
     api_type?: string
@@ -59,6 +88,9 @@ export async function upsertGenImageApi(options: {
     base_url?: string
     model?: string
     size?: string
+    quality?: string
+    response_format?: string
+    timeout?: number
     enabled?: boolean
 }): Promise<void> {
     const data = await apiFetch<MutationResponse>('/api/admin/gen-image/apis/upsert', {

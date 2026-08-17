@@ -61,6 +61,21 @@ def allowed_roots() -> list[Path]:
     return roots
 
 
+def _project_root_from_context(context: dict | None) -> Path | None:
+    if not isinstance(context, dict):
+        return None
+
+    root_text = str(context.get("project_root") or context.get("projectRoot") or "").strip()
+
+    if not root_text:
+        return None
+
+    try:
+        return Path(root_text).resolve()
+    except Exception:
+        return None
+
+
 def resolve_allowed_path(
     raw_path: str,
     context: dict | None = None,
@@ -73,6 +88,7 @@ def resolve_allowed_path(
         return None, "path is required."
 
     roots = allowed_roots()
+    project_root = _project_root_from_context(context)
 
     try:
         resolved = Path(text).resolve()
@@ -85,7 +101,16 @@ def resolve_allowed_path(
         if _is_temporarily_allowed(resolved, context, access=access, sensitive=True):
             return resolved, ""
 
+        print(f"[LocalAgent] permission_required (sensitive): path={resolved} op={access} conv={_conversation_id_from_context(context)}")
         return None, _build_permission_required_error(raw_path, resolved, access)
+
+    # 会话绑定项目根路径内视为可信根，非敏感路径直接放行。
+    if project_root is not None:
+        try:
+            resolved.relative_to(project_root)
+            return resolved, ""
+        except ValueError:
+            pass
 
     for root in roots:
         try:
@@ -98,8 +123,10 @@ def resolve_allowed_path(
         return resolved, ""
 
     if not roots:
+        print(f"[LocalAgent] permission_required (no allowed_dirs): path={resolved} op={access} conv={_conversation_id_from_context(context)} project_root={project_root}")
         return None, _build_permission_required_error(raw_path, resolved, access)
 
+    print(f"[LocalAgent] permission_required (outside allowed_dirs): path={resolved} op={access} conv={_conversation_id_from_context(context)}")
     return None, f"Path not in allowed_dirs: {raw_path}"
 
 

@@ -62,12 +62,12 @@ console.log('1 preferences:', JSON.stringify(preferences))
 // Skill
 await openTab('Skill')
 const skills = await page.evaluate(() => {
-    const subtabs = [...document.querySelectorAll('.settings-modal-shell .skill-subtab')]
-    const toolbarBtns = [...document.querySelectorAll('.settings-modal-shell .skill-my-toolbar .btn-skill-create')]
+    const headTabs = [...document.querySelectorAll('.settings-modal-shell .settings-page-head-tab')]
+    const headBtns = [...document.querySelectorAll('.settings-modal-shell .settings-page-head-actions button')]
 
     return {
-        subtabs: subtabs.map((t) => t.textContent.trim()),
-        toolbarBtns: toolbarBtns.map((b) => b.textContent.trim()),
+        headTabs: headTabs.map((t) => t.textContent.trim()),
+        headButtons: headBtns.map((b) => b.textContent.trim()),
         hasList: !!document.querySelector('.settings-modal-shell .settings-skill-list'),
     }
 })
@@ -76,7 +76,7 @@ console.log('2 skills:', JSON.stringify(skills))
 // 使用统计
 await openTab('使用统计')
 const statistics = await page.evaluate(() => {
-    const stats = [...document.querySelectorAll('.settings-modal-shell .settings-stat')]
+    const stats = [...document.querySelectorAll('.settings-modal-shell .settings-stat-card .value')]
 
     return {
         statCount: stats.length,

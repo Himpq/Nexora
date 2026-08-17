@@ -4,13 +4,8 @@
  * 职责：NexoraCode 本地项目列表/选择/隐藏/代理在线状态；从 chat.js 批量迁移。
  * 共享可变状态通过 window.xxx live-binding 读写（exposeLiveState 桥接）。
  *
- * 对外 window 桥接清单：
- *   - 无
- *
- * 依赖 store 子域：
- *   - store.user
- *
- * 设计形态：class NexoraCodeProjectStore（有状态域）
+ * 项目列表以对话数据为唯一事实来源：对话 metadata.nexoracode_project 中携带项目，
+ * 欢迎页与侧边栏 Projects 面板均从对话列表缓存提取，无需独立持久化。
  */
 import { store } from './store/index.js';
 import {
@@ -88,9 +83,58 @@ function readNexoraCodeProjectNameFromPath(path) {
     return parts.length ? parts[parts.length - 1] : text;
 }
 
+// 从对话列表缓存中提取项目（与侧边栏 Projects 面板同源：对话 metadata.nexoracode_project）
+function collectNexoraCodeProjectsFromConversations() {
+    const cache = (typeof window !== 'undefined' && Array.isArray(window.conversationListCache))
+        ? window.conversationListCache
+        : [];
+    const byId = new Map();
+
+    cache.forEach((item) => {
+        const source = (item && typeof item === 'object') ? item : {};
+        const project = (source.nexoracode_project && typeof source.nexoracode_project === 'object')
+            ? source.nexoracode_project
+            : ((source.metadata && source.metadata.nexoracode_project && typeof source.metadata.nexoracode_project === 'object')
+                ? source.metadata.nexoracode_project
+                : null);
+
+        if (!project) return;
+
+        const path = String(project.path || '').trim();
+        const name = String(project.name || '').trim() || readNexoraCodeProjectNameFromPath(path);
+        const projectId = String(project.project_id || project.id || path || name || '').trim();
+
+        if (!projectId) return;
+
+        byId.set(projectId, {
+            project_id: projectId,
+            name: name || 'NexoraCode Project',
+            path,
+            subtitle: String(project.subtitle || path || '本地项目').trim(),
+            tree_scanned_at: String(project.tree_scanned_at || '').trim()
+        });
+    });
+
+    return Array.from(byId.values());
+}
+
 function getNexoraCodeProjects(options = {}) {
-    ensureNexoraCodeProjectsLoaded();
-    const records = Array.isArray(window.nexoraCodeProjectRecords) ? window.nexoraCodeProjectRecords.slice() : [];
+    // 项目 = 本会话显式添加 + 对话列表携带的项目（跨会话稳定存在）
+    const explicit = Array.isArray(window.nexoraCodeProjectRecords) ? window.nexoraCodeProjectRecords.slice() : [];
+    const conversationProjects = collectNexoraCodeProjectsFromConversations();
+    const merged = new Map();
+
+    explicit.forEach((project) => {
+        if (project && project.project_id) merged.set(project.project_id, project);
+    });
+
+    conversationProjects.forEach((project) => {
+        if (project && project.project_id && !merged.has(project.project_id)) {
+            merged.set(project.project_id, project);
+        }
+    });
+
+    const records = Array.from(merged.values());
 
     if (options && options.includeHidden === true) {
         return records;
@@ -100,7 +144,6 @@ function getNexoraCodeProjects(options = {}) {
 }
 
 function getNexoraCodeHiddenProjectIds() {
-    ensureNexoraCodeProjectsLoaded();
     return new Set(window.nexoraCodeHiddenProjectIds);
 }
 
@@ -114,73 +157,21 @@ function setActiveNexoraCodeProject(projectId) {
     window.activeNexoraCodeProjectId = String(projectId || '').trim();
 }
 
+// 项目列表以对话数据为唯一事实来源，不单独持久化；以下兼容旧函数名，保持内存语义。
 function loadNexoraCodeProjectsFromStorage() {
-    const key = getNexoraCodeProjectStorageKey();
-    const hiddenKey = getNexoraCodeHiddenProjectStorageKey();
-    window.nexoraCodeProjectsLoadedForUser = String(currentUsername || '').trim();
-    window.nexoraCodeHiddenProjectIds = new Set();
-
-    if (!key) {
-        window.nexoraCodeProjectRecords = [];
-        return;
-    }
-
-    try {
-        const hiddenRaw = hiddenKey ? localStorage.getItem(hiddenKey) : '';
-        const hiddenList = hiddenRaw ? JSON.parse(hiddenRaw) : [];
-
-        if (Array.isArray(hiddenList)) {
-            window.nexoraCodeHiddenProjectIds = new Set(
-                hiddenList.map((item) => String(item || '').trim()).filter(Boolean)
-            );
-        }
-
-        const raw = localStorage.getItem(key);
-        const parsed = raw ? JSON.parse(raw) : [];
-        const list = Array.isArray(parsed) ? parsed : [];
-        const seen = new Set();
-        window.nexoraCodeProjectRecords = list
-            .map((item) => normalizeNexoraCodeProjectRecord(item))
-            .filter((item) => {
-                if (!item || seen.has(item.project_id)) return false;
-                seen.add(item.project_id);
-                return true;
-            });
-    } catch (err) {
-        console.warn('[NexoraCode] 读取本地项目失败', err);
-        window.nexoraCodeProjectRecords = [];
-    }
+    return Promise.resolve(Array.isArray(window.nexoraCodeProjectRecords) ? window.nexoraCodeProjectRecords.slice() : []);
 }
 
 function persistNexoraCodeProjects() {
-    const key = getNexoraCodeProjectStorageKey();
-    if (!key) return;
-
-    try {
-        localStorage.setItem(key, JSON.stringify(getNexoraCodeProjects({ includeHidden: true })));
-    } catch (err) {
-        console.warn('[NexoraCode] 保存本地项目失败', err);
-    }
+    // 显式项目仅存内存；对话创建时会写入 conversation metadata，跨会话自动恢复
 }
 
 function persistNexoraCodeHiddenProjectIds() {
-    const key = getNexoraCodeHiddenProjectStorageKey();
-
-    if (!key) {
-        return;
-    }
-
-    try {
-        localStorage.setItem(key, JSON.stringify(Array.from(window.nexoraCodeHiddenProjectIds)));
-    } catch (err) {
-        console.warn('[NexoraCode] 项目隐藏状态保存失败', err);
-    }
+    // 隐藏状态仅存内存
 }
 
 function ensureNexoraCodeProjectsLoaded() {
-    if (window.nexoraCodeProjectsLoadedForUser !== String(currentUsername || '').trim()) {
-        loadNexoraCodeProjectsFromStorage();
-    }
+    // 无异步加载需求；项目由对话列表数据驱动
 }
 
 function upsertNexoraCodeProject(project) {
