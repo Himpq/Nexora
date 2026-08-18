@@ -60,13 +60,15 @@
                 :class="{ active: String(option.value) === String(modelValue) }"
                 @click="select(option.value)"
             >{{ option.label }}</button>
-            <div v-if="searchEmpty" class="setting-model-menu-state">无匹配项</div>
+            <div v-if="searchEmpty" class="setting-select-menu-state">无匹配项</div>
         </div>
     </div>
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+
+    import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
     export interface SettingSelectOption {
         value: string | number
@@ -75,7 +77,7 @@
         group?: string
     }
 
-    const props = defineProps<{
+    const props = withDefaults(defineProps<{
         modelValue: string | number
         options: SettingSelectOption[]
         width?: string
@@ -83,13 +85,15 @@
         /** 菜单内搜索过滤(长列表场景,如认证 owner 用户选择) */
         search?: boolean
         searchPlaceholder?: string
-    }>()
+        popoverKey?: string
+    }>(), {
+        popoverKey: 'setting-select',
+    })
 
     const emit = defineEmits<{
         'update:modelValue': [value: string | number]
     }>()
 
-    const open = ref(false)
     const wrapRef = ref<HTMLElement | null>(null)
     const triggerRef = ref<HTMLElement | null>(null)
 
@@ -164,50 +168,43 @@
         return matched ? matched.label : (props.placeholder || '请选择')
     })
 
-    onMounted(() => {
-        document.addEventListener('click', onPageClick)
-        document.addEventListener('keydown', onKeydown)
-        document.addEventListener('scroll', onScroll, true)
+    const open = computed(() => overlay.popover === props.popoverKey)
+
+    function updateMenuPosition(): void {
+        if (open.value) {
+            positionMenu()
+        }
+    }
+
+    watch(open, (isOpen) => {
+        if (isOpen) {
+            window.addEventListener('resize', updateMenuPosition)
+            window.addEventListener('scroll', updateMenuPosition, true)
+        } else {
+            window.removeEventListener('resize', updateMenuPosition)
+            window.removeEventListener('scroll', updateMenuPosition, true)
+        }
     })
 
     onBeforeUnmount(() => {
-        document.removeEventListener('click', onPageClick)
-        document.removeEventListener('keydown', onKeydown)
-        document.removeEventListener('scroll', onScroll, true)
-    })
-
-    function onPageClick(event: MouseEvent): void {
-        if (wrapRef.value && !wrapRef.value.contains(event.target as Node)) {
-            open.value = false
-        }
-    }
-
-    function onKeydown(event: KeyboardEvent): void {
-        if (event.key === 'Escape') {
-            open.value = false
-        }
-    }
-
-    /** 外部滚动时关闭浮层避免错位;浮层自身滚动(仍在 wrap DOM 子树内)不关闭 */
-    function onScroll(event: Event): void {
-        if (!open.value) {
-            return
-        }
-
-        if (wrapRef.value && event.target instanceof Node && wrapRef.value.contains(event.target)) {
-            return
-        }
-
-        open.value = false
-    }
-
-    function toggle(): void {
-        open.value = !open.value
+        window.removeEventListener('resize', updateMenuPosition)
+        window.removeEventListener('scroll', updateMenuPosition, true)
 
         if (open.value) {
-            searchText.value = ''
-            positionMenu()
+            closePopover(props.popoverKey)
         }
+    })
+
+    function toggle(): void {
+        if (open.value) {
+            closePopover(props.popoverKey)
+
+            return
+        }
+
+        searchText.value = ''
+        openPopover(props.popoverKey, wrapRef.value)
+        void nextTick(positionMenu)
     }
 
     /** 依据触发器位置定位菜单(覆盖 absolute 定位,防滚动容器裁剪) */
@@ -219,18 +216,27 @@
         }
 
         const rect = trigger.getBoundingClientRect()
+        const vw = window.innerWidth || document.documentElement.clientWidth
+        const vh = window.innerHeight || document.documentElement.clientHeight
+        const width = Math.min(Math.max(rect.width, 160), vw - 24)
+        const contentHeight = 300
+        const spaceBelow = vh - rect.bottom - 4
+        const spaceAbove = rect.top - 4
+        const openUp = spaceBelow < contentHeight && spaceAbove > spaceBelow
+        const rawTop = openUp ? rect.top - 4 - contentHeight : rect.bottom + 4
+        const left = Math.max(12, Math.min(rect.left, vw - width - 12))
 
         menuStyle.value = {
             position: 'fixed',
-            top: `${rect.bottom + 4}px`,
-            left: `${rect.left}px`,
+            top: `${Math.round(Math.max(12, rawTop))}px`,
+            left: `${Math.round(left)}px`,
             right: 'auto',
-            minWidth: `${rect.width}px`,
+            minWidth: `${Math.round(width)}px`,
         }
     }
 
     function select(value: string | number): void {
         emit('update:modelValue', value)
-        open.value = false
+        closePopover(props.popoverKey)
     }
 </script>

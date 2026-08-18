@@ -9,58 +9,54 @@
 <template>
     <div class="admin-mail-panel">
         <!-- 主体:左列表 + 右详情(GDDP 框架;分组/筛选/添加操作由 SettingsModal 页头提供) -->
-        <div class="settings-management-layout">
-            <div class="settings-management-list mail-key-list">
-                <div v-if="loading" class="mail-empty">加载中...</div>
-                <div v-else-if="!filteredUsers.length" class="mail-empty">暂无邮箱用户</div>
+        <AdminPanel>
+            <template #list>
+                <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
+                <div v-else-if="!filteredUsers.length" class="admin-user-detail-empty">暂无邮箱用户</div>
                 <button
                     v-for="user in filteredUsers"
                     :key="user.username"
-                    class="mail-list-item"
+                    class="admin-user-item"
                     :class="{ active: selectedName === user.username }"
                     type="button"
                     @click="selectUser(user.username)"
                 >
-                    <span class="mail-list-avatar">
+                    <span class="admin-user-avatar">
                         <i class="fa-regular fa-envelope" aria-hidden="true"></i>
                     </span>
-                    <span class="mail-list-main">
-                        <span class="mail-list-name">{{ user.username }}</span>
-                        <span class="mail-list-meta">{{ (user.permissions || []).length }} 项权限</span>
+                    <span class="admin-user-main">
+                        <span class="admin-user-name">{{ user.username }}</span>
+                        <span class="admin-user-meta">{{ (user.permissions || []).length }} 项权限</span>
                     </span>
                 </button>
-            </div>
+            </template>
 
-            <div class="settings-management-detail mail-detail">
-                <div v-if="!selectedUser" class="mail-empty mail-detail-empty">
+            <template #detail>
+                <div v-if="!selectedUser" class="admin-user-detail-empty mail-detail-empty">
                     <i class="fa-regular fa-envelope mail-empty-icon" aria-hidden="true"></i>
                     <span>请选择左侧邮箱用户查看详情</span>
                 </div>
                 <div v-else class="mail-detail-inner">
+                    <div class="admin-user-detail-head">
+                        <span class="admin-user-avatar">
+                            <i class="fa-regular fa-envelope" aria-hidden="true"></i>
+                        </span>
+                        <div>
+                            <div class="admin-user-name">{{ selectedUser.username }}</div>
+                            <div class="admin-user-meta">{{ currentGroup }}</div>
+                        </div>
+                    </div>
+
                     <!-- 绑定对:邮箱用户 ↔ Nexora 用户 -->
-                    <div class="mail-card">
-                        <div class="mail-card-title">用户绑定</div>
+                    <SettingDetailSection title="用户绑定">
                         <div class="mail-bind-pair" :class="{ 'mail-bind-single': !boundUser }">
-                            <div class="mail-bind-card">
-                                <span class="mail-bind-avatar">
-                                    <i class="fa-regular fa-envelope" aria-hidden="true"></i>
-                                </span>
-                                <div class="mail-bind-info">
-                                    <div class="mail-bind-name">{{ selectedUser.username }}</div>
-                                    <div class="mail-bind-meta">Mail User · {{ currentGroup }}</div>
-                                </div>
-                            </div>
-                            <div v-if="boundUser" class="mail-bind-arrow" aria-hidden="true">
-                                <i class="fa-solid fa-arrows-left-right"></i>
-                            </div>
-                            <div v-if="boundUser" class="mail-bind-card">
+                            <div v-if="boundUser" class="mail-bind-item">
                                 <span class="mail-bind-avatar">
                                     <img v-if="boundUser.avatar_url" :src="boundUser.avatar_url" alt="">
                                     <i v-else class="fa-solid fa-user" aria-hidden="true"></i>
                                 </span>
                                 <div class="mail-bind-info">
                                     <div class="mail-bind-name">{{ boundUser.username || boundUser.user_id }}</div>
-                                    <div class="mail-bind-meta">UserID: {{ boundUser.user_id }}</div>
                                 </div>
                             </div>
                         </div>
@@ -78,11 +74,10 @@
                                 解绑
                             </button>
                         </div>
-                    </div>
+                    </SettingDetailSection>
 
                     <!-- 用户信息 -->
-                    <div class="mail-card">
-                        <div class="mail-card-title">用户信息</div>
+                    <SettingDetailSection title="用户信息">
                         <div class="mail-info-grid">
                             <div class="mail-info-cell">
                                 <span class="mail-info-label">邮箱用户名</span>
@@ -97,7 +92,7 @@
                                 <span class="mail-info-value mono">{{ selectedUser.path || '-' }}</span>
                             </div>
                         </div>
-                    </div>
+                    </SettingDetailSection>
 
                     <!-- 操作 -->
                     <SettingActionRow>
@@ -111,8 +106,8 @@
                         </button>
                     </SettingActionRow>
                 </div>
-            </div>
-        </div>
+            </template>
+        </AdminPanel>
 
         <!-- 添加邮箱用户弹窗 -->
         <Modal :open="addOpen" title="添加邮箱用户" size="sm" @close="addOpen = false">
@@ -162,8 +157,10 @@
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
 
+    import AdminPanel from '@/ui/AdminPanel.vue'
     import Modal from '@/ui/Modal.vue'
     import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
+    import SettingDetailSection from '@/ui/settings/SettingDetailSection.vue'
 
     const users = ref<MailUser[]>([])
     const groups = ref<string[]>([])
@@ -463,84 +460,9 @@
 
     /* ==================== 列表项 ==================== */
 
-    .mail-list-item {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        width: 100%;
-        padding: 9px 12px;
-        border: none;
-        border-bottom: 1px solid #f0f0f0;
-        background: #fff;
-        text-align: left;
-        cursor: pointer;
-        box-sizing: border-box;
-        transition: background 0.15s ease;
-    }
-
-    .mail-list-item:hover {
-        background: #fafafa;
-    }
-
-    .mail-list-item.active {
-        background: #f3f3f3;
-    }
-
-    .mail-list-avatar {
-        flex: none;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 34px;
-        height: 34px;
-        border-radius: 50%;
-        background: #f5f5f5;
-        color: #888888;
-        font-size: 13px;
-    }
-
-    .mail-list-item.active .mail-list-avatar {
-        background: #111111;
-        color: #ffffff;
-    }
-
-    .mail-list-main {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-    }
-
-    .mail-list-name {
-        flex: 1;
-        min-width: 0;
-        font-size: 13px;
-        font-weight: 600;
-        color: #222222;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .mail-list-item.active .mail-list-name {
-        color: #111111;
-    }
-
-    .mail-list-meta {
-        flex: none;
-        font-size: 11px;
-        color: #999999;
-    }
+    /* 列表与详情基础布局、列表项视觉由 AdminPanel 与设置壳统一提供。 */
 
     /* ==================== 空状态 ==================== */
-
-    .mail-empty {
-        padding: 28px 16px;
-        text-align: center;
-        font-size: 13px;
-        color: #a0a0a0;
-    }
 
     .mail-detail-empty {
         display: flex;
@@ -562,23 +484,6 @@
     .mail-detail-inner {
         display: flex;
         flex-direction: column;
-        gap: 14px;
-    }
-
-    .mail-card {
-        padding: 14px 16px;
-        border: 1px solid #eeeeee;
-        border-radius: 8px;
-        background: #ffffff;
-    }
-
-    .mail-card-title {
-        font-size: 11.5px;
-        font-weight: 650;
-        color: #888888;
-        letter-spacing: 0.03em;
-        margin-bottom: 12px;
-        text-transform: uppercase;
     }
 
     /* ==================== 绑定对 ==================== */
@@ -594,7 +499,7 @@
         justify-content: center;
     }
 
-    .mail-bind-card {
+    .mail-bind-item {
         display: flex;
         align-items: center;
         gap: 10px;

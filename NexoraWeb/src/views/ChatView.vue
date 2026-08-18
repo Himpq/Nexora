@@ -14,6 +14,7 @@
             @open-settings="handleOpenSettings"
             @open-workspaces="handleOpenWorkspaces"
             @open-files="handleOpenFileCenter"
+            @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
             @open-trash="trashOpen = true"
             @open-timeline="timelineOpen = true"
         />
@@ -22,31 +23,19 @@
             <ChatHeader
                 :models="modelStore.models"
                 :view="activeView"
+                :knowledge-title="knowledgeTitle"
                 @toggle-sidebar="handleToggleSidebar"
                 @open-notes="notesOpen = true"
                 @open-files="handleOpenFiles"
                 @open-knowledge="handleOpenKnowledge"
-                @back-to-chat="backToChat"
+                @back-to-chat="handleHeaderBack"
+                @save-knowledge="saveKnowledgeDocument"
+                @vectorize-knowledge="vectorizeKnowledgeDocument"
             />
 
-            <!-- 文件中心视图(对齐原版 openFilesFrameView:header 保留,内容区替换) -->
-            <template v-if="filesCenterOpen">
-                <FilesCenterView
-                    :open="filesCenterOpen"
-                    @close="backToChat"
-                    @open-detail="openFileDetail"
-                />
-                <FileDetailView
-                    v-if="fileDetail !== null"
-                    :file="fileDetail"
-                    @back="fileDetail = null"
-                />
-            </template>
-
-            <!-- Workspaces 视图 -->
-            <WorkspacesView v-else-if="workspacesOpen" @close="backToChat" @open-conversation="handleOpenWorkspaceConversation" />
-
-            <template v-else>
+            <div class="gddp-view-stage">
+                <!-- 聊天节点常驻,Files/Workspace 仅覆盖显示,避免返回时重新渲染对话。 -->
+                <div v-show="activeView === 'chat'" class="gddp-chat-view">
                 <div id="messagesContainer" class="messages-area">
                     <div v-if="!conversationStore.messages.length" class="welcome-screen">
                         <h1>Hello, {{ userStore.username }}.</h1>
@@ -82,12 +71,52 @@
                     @stop="handleStop"
                     @remove-attachment="pendingAttachments.splice($event, 1)"
                 />
-            </template>
+                </div>
+
+                <div v-show="filesCenterOpen" class="gddp-content-view">
+                    <FilesCenterView
+                        v-if="fileDetail === null"
+                        :open="filesCenterOpen"
+                        @close="backToChat"
+                        @open-detail="openFileDetail"
+                    />
+                    <section v-else class="file-center-view" aria-label="Files">
+                        <div class="file-center-shell">
+                            <FileDetailView :file="fileDetail" />
+                        </div>
+                    </section>
+                </div>
+
+                <div v-show="workspacesOpen" class="gddp-content-view">
+                    <WorkspacesView
+                        :open="workspacesOpen"
+                        @close="backToChat"
+                        @open-conversation="handleOpenWorkspaceConversation"
+                        @open-file="handleOpenWorkspaceFile"
+                    />
+                </div>
+
+                <div v-show="knowledgeMgmtOpen" class="gddp-content-view">
+                    <KnowledgeManagementView
+                        :open="knowledgeMgmtOpen"
+                        @close="backToChat"
+                        @open-document="handleOpenKnowledgeDocument"
+                    />
+                </div>
+
+                <div v-show="knowledgeOpen" class="gddp-content-view">
+                    <KnowledgeViewer ref="knowledgeViewerRef" :open="knowledgeOpen" :title="knowledgeTitle" />
+                </div>
+            </div>
         </main>
 
         <FilesPanel :open="filesPanelOpen" @close="closePanel('files')" @attach="handleAttachFile" />
 
-        <KnowledgePanel :open="knowledgePanelOpen" @close="closePanel('knowledge')" />
+        <KnowledgePanel
+            :open="knowledgePanelOpen"
+            @close="closePanel('knowledge')"
+            @open-document="handleOpenKnowledgeDocument"
+        />
 
         <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
 
@@ -137,6 +166,8 @@
     import FilesPanel from '@/components/FilesPanel.vue'
     import ImageViewer from '@/components/ImageViewer.vue'
     import KnowledgePanel from '@/components/KnowledgePanel.vue'
+    import KnowledgeViewer from '@/components/KnowledgeViewer.vue'
+    import KnowledgeManagementView from '@/components/KnowledgeManagementView.vue'
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
@@ -164,12 +195,17 @@
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const filesCenterOpen = ref(false)
     const fileDetail = ref<CloudFileItem | null>(null)
+    const fileDetailReturnView = ref<'files' | 'workspace'>('files')
 
     /** Workspaces 项目视图:替换主内容区(对齐原版 openWorkspaceProjectsView) */
     const workspacesOpen = ref(false)
+    const knowledgeMgmtOpen = ref(false)
+    const knowledgeOpen = ref(false)
+    const knowledgeTitle = ref('')
+    const knowledgeViewerRef = ref<InstanceType<typeof KnowledgeViewer> | null>(null)
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt'>(() => {
         if (filesCenterOpen.value) {
             return 'files'
         }
@@ -178,14 +214,39 @@
             return 'workspaces'
         }
 
+        if (knowledgeMgmtOpen.value) {
+            return 'knowledge-mgmt'
+        }
+
+        if (knowledgeOpen.value) {
+            return 'knowledge'
+        }
+
         return 'chat'
     })
 
     /** 返回聊天视图(对齐原版 closeFileCenterOrReturn) */
     function backToChat(): void {
+        closeAllOverlays()
+
         filesCenterOpen.value = false
         workspacesOpen.value = false
+        knowledgeMgmtOpen.value = false
+        knowledgeOpen.value = false
+        knowledgeTitle.value = ''
         fileDetail.value = null
+        fileDetailReturnView.value = 'files'
+    }
+
+    /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。 */
+    function handleHeaderBack(): void {
+        if (filesCenterOpen.value && fileDetail.value !== null) {
+            handleFileDetailBack()
+
+            return
+        }
+
+        backToChat()
     }
 
     /** 从 Workspaces 详情点击对话:回到聊天并打开该会话(对齐原版 workspace 对话跳转) */
@@ -598,6 +659,36 @@
         openPanel('knowledge')
     }
 
+    function handleOpenKnowledgeDocument(title: string): void {
+        knowledgeMgmtOpen.value = false
+        knowledgeTitle.value = title
+        knowledgeOpen.value = true
+    }
+
+    /** 侧边栏 Knowledge 按钮:打开/关闭知识库管理视图(对齐原版独立管理页,内嵌为视图) */
+    function handleOpenKnowledgeMgmt(): void {
+        if (knowledgeMgmtOpen.value) {
+            backToChat()
+
+            return
+        }
+
+        closeAllOverlays()
+
+        filesCenterOpen.value = false
+        workspacesOpen.value = false
+        knowledgeOpen.value = false
+        knowledgeMgmtOpen.value = true
+    }
+
+    function saveKnowledgeDocument(): void {
+        void knowledgeViewerRef.value?.save()
+    }
+
+    function vectorizeKnowledgeDocument(): void {
+        void knowledgeViewerRef.value?.vectorize()
+    }
+
     /** 侧边栏 Files 按钮:打开/关闭文件中心视图(对齐原版 openFilesFrameView 的互斥切换) */
     function handleOpenFileCenter(): void {
         if (filesCenterOpen.value) {
@@ -605,6 +696,8 @@
 
             return
         }
+
+        closeAllOverlays()
 
         workspacesOpen.value = false
         filesCenterOpen.value = true
@@ -619,6 +712,8 @@
             return
         }
 
+        closeAllOverlays()
+
         filesCenterOpen.value = false
         workspacesOpen.value = true
     }
@@ -626,6 +721,28 @@
     /** 打开文件详情 */
     function openFileDetail(file: CloudFileItem): void {
         fileDetail.value = file
+        fileDetailReturnView.value = 'files'
+    }
+
+    /** Workspace 文件复用 Files 详情视图,返回时恢复原 Workspace 详情页。 */
+    function handleOpenWorkspaceFile(file: CloudFileItem): void {
+        closeAllOverlays()
+
+        workspacesOpen.value = false
+        filesCenterOpen.value = true
+        fileDetail.value = file
+        fileDetailReturnView.value = 'workspace'
+    }
+
+    function handleFileDetailBack(): void {
+        fileDetail.value = null
+
+        if (fileDetailReturnView.value === 'workspace') {
+            filesCenterOpen.value = false
+            workspacesOpen.value = true
+        }
+
+        fileDetailReturnView.value = 'files'
     }
 
     function handleOpenSettings(): void {

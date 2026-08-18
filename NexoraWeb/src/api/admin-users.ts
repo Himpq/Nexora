@@ -57,11 +57,20 @@ export async function addAdminUser(options: {
     })
 }
 
+interface AdminUserMutationResponse {
+    success: boolean
+    message?: string
+}
+
 /** 删除用户 */
 export async function deleteAdminUser(username: string): Promise<void> {
-    await apiFetch<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(username)}`, {
+    const data = await apiFetch<AdminUserMutationResponse>(`/api/admin/users/${encodeURIComponent(username)}`, {
         method: 'DELETE',
     })
+
+    if (!data.success) {
+        throw new Error(data.message || '删除用户失败')
+    }
 }
 
 /** 修改角色 */

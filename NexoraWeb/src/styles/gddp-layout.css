@@ -1,0 +1,170 @@
+/**
+ * gddp-layout.css — NexoraWeb GDDP 主布局契约。
+ *
+ * 该层覆盖原版同名布局规则，统一处理可伸缩区域、对称顶栏和 portal 浮层，
+ * 组件不再依赖页面宽度或视图名称编写特例布局。
+ */
+
+.app-container {
+    overflow: hidden;
+}
+
+.main-content {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.gddp-view-stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.gddp-chat-view,
+.gddp-content-view {
+    position: absolute;
+    inset: 0;
+    min-width: 0;
+    min-height: 0;
+}
+
+.gddp-chat-view {
+    display: flex;
+    flex-direction: column;
+}
+
+.gddp-content-view {
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-main, #fff);
+}
+
+.gddp-content-view > .file-center-view,
+.gddp-content-view > .knowledge-viewer,
+.gddp-content-view > .knowledge-mgmt-view {
+    flex: 1 1 auto;
+}
+
+.chat-header {
+    position: relative;
+    z-index: var(--z-header, 100);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    flex: 0 0 var(--gddp-header-height, 60px);
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow: visible;
+}
+
+.header-left,
+.header-right {
+    min-width: 0;
+    width: auto;
+    overflow: visible;
+}
+
+.header-left {
+    grid-column: 1;
+    justify-self: start;
+}
+
+.header-center {
+    grid-column: 2;
+    min-width: 0;
+    max-width: min(42vw, 520px);
+    padding: 0 16px;
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.header-right {
+    grid-column: 3;
+    justify-self: end;
+    flex: none;
+}
+
+.file-center-view {
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.file-center-head {
+    min-width: 0;
+}
+
+@media (max-width: 980px) {
+    .chat-header {
+        overflow: visible !important;
+    }
+
+    .header-left,
+    .header-right {
+        overflow: visible !important;
+    }
+
+    .header-left .gddp-model-select {
+        width: clamp(92px, 40vw, 146px) !important;
+        min-width: 92px;
+        max-width: 146px;
+    }
+
+    .header-left .gddp-model-select-trigger {
+        padding: 0 8px;
+    }
+}
+
+@media (max-width: 760px) {
+    .chat-header {
+        grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+        padding: 0 8px;
+        gap: 6px;
+        overflow: visible !important;
+    }
+
+    .header-center {
+        max-width: 36vw;
+        padding: 0 8px;
+    }
+
+    .header-right {
+        gap: 4px;
+    }
+
+    .chat-header .header-right > .btn-icon {
+        width: 30px;
+        height: 30px;
+        flex-basis: 30px;
+    }
+
+    .chat-header .header-right > .btn-icon svg,
+    .chat-header .header-right > .btn-icon i {
+        width: 18px;
+        height: 18px;
+        font-size: 18px;
+        line-height: 18px;
+    }
+
+    .file-center-view {
+        padding: 24px 16px 36px;
+    }
+
+    .file-center-head {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    .file-center-actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+}

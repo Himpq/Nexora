@@ -10,7 +10,7 @@ class KnowledgeWordExporter:
     mimetype = WORD_MIMETYPE
 
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = Path(base_dir or Path(__file__).resolve().parents[1]).resolve()
+        self.base_dir = Path(base_dir or Path(__file__).resolve().parents[3]).resolve()
         self.converter = MarkdownWordConverter(base_dir=str(self.base_dir))
 
     @classmethod

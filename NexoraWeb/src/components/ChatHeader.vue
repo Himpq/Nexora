@@ -16,6 +16,14 @@
                         <polyline points="12 19 5 12 12 5"></polyline>
                     </svg>
                 </button>
+                <template v-if="view === 'knowledge'">
+                    <button class="btn-icon knowledge-action" type="button" title="保存" @click="emit('save-knowledge')">
+                        <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                    </button>
+                    <button class="btn-icon knowledge-action" type="button" title="向量化" @click="emit('vectorize-knowledge')">
+                        <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                    </button>
+                </template>
             </template>
 
             <template v-else>
@@ -31,12 +39,11 @@
         </div>
 
         <div class="header-center" id="conversationTitle">
-            {{ view === 'files' ? 'Files' : (view === 'workspaces' ? 'Workspaces' : conversationTitle) }}
+            {{ view === 'files' ? 'Files' : (view === 'workspaces' ? 'Workspaces' : (view === 'knowledge' ? (knowledgeTitle || 'Knowledge') : (view === 'knowledge-mgmt' ? '知识库管理' : conversationTitle))) }}
         </div>
 
         <div class="header-right">
-            <!-- 非聊天视图隐藏右侧工具按钮(对齐原版 applyDesktopHeaderTools 精简) -->
-            <template v-if="view === 'chat'">
+            <!-- 右侧工具常驻,视图覆盖时仍可打开聊天快捷侧栏。 -->
                 <button class="btn-icon notes-toggle-btn" id="toggleNotesPanel" title="笔记" @click="emit('open-notes')">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M4 3h12a2 2 0 0 1 2 2v12l-4 4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path>
@@ -77,7 +84,6 @@
                         <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
                     </svg>
                 </button>
-            </template>
         </div>
     </header>
 </template>
@@ -99,14 +105,18 @@
         'open-knowledge': []
         /** 从文件中心/Workspaces 视图返回聊天 */
         'back-to-chat': []
+        'save-knowledge': []
+        'vectorize-knowledge': []
     }>()
 
     const props = withDefaults(defineProps<{
         models: ModelItem[]
-        /** 当前视图:chat(默认) | files(文件中心) | workspaces */
-        view?: 'chat' | 'files' | 'workspaces'
+        knowledgeTitle?: string
+        /** 当前视图:chat(默认) | files(文件中心) | workspaces | knowledge(正文编辑) | knowledge-mgmt(知识库管理) */
+        view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt'
     }>(), {
         view: 'chat',
+        knowledgeTitle: '',
     })
 
     const conversationStore = useConversationStore()

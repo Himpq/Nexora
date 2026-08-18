@@ -95,7 +95,7 @@
                     <template v-else>
                         <div
                             v-for="file in sortedFiles"
-                            :key="file.alias"
+                            :key="fileRef(file)"
                             class="file-center-card"
                             :class="{ active: selectedRef === fileRef(file) }"
                             role="option"

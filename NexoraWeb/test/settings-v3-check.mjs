@@ -245,7 +245,7 @@ const authPanel = await page.evaluate(() => {
     return { legacyToolbar, headInputs, headButtons, keyItems }
 })
 report('面板内 auth-toolbar/owner-menu 已删', authPanel.legacyToolbar === 0)
-report('页头有筛选输入', authPanel.headInputs >= 1)
+report('页头无筛选输入', authPanel.headInputs === 0)
 report('页头有生成/刷新按钮', authPanel.headButtons.some((b) => b.includes('生成')) && authPanel.headButtons.some((b) => b.includes('刷新')), JSON.stringify(authPanel.headButtons))
 report('Key 列表渲染', authPanel.keyItems > 0, `keys=${authPanel.keyItems}`)
 
@@ -323,7 +323,7 @@ const mailPanel = await page.evaluate(() => {
     return { legacy, headSelects, headInputs, headButtons, listItems, groupOptions }
 })
 report('面板内 mail-toolbar 已删', mailPanel.legacy === 0)
-report('页头有分组下拉+筛选输入', mailPanel.headSelects >= 1 && mailPanel.headInputs >= 1)
+report('邮箱页头仅保留分组下拉无筛选', mailPanel.headSelects >= 1 && mailPanel.headInputs === 0)
 report('分组下拉选项已拉取(响应式)', mailPanel.groupOptions.length > 0, JSON.stringify(mailPanel.groupOptions.slice(0, 4)))
 report('页头有添加/刷新按钮', mailPanel.headButtons.some((b) => b.includes('添加')) && mailPanel.headButtons.some((b) => b.includes('刷新')), JSON.stringify(mailPanel.headButtons))
 report('邮箱列表渲染', mailPanel.listItems > 0, `users=${mailPanel.listItems}`)
@@ -333,42 +333,43 @@ console.log('\n[6] 偏好设置')
 await openTab('偏好设置')
 const prefPanel = await page.evaluate(() => {
     const modelField = [...document.querySelectorAll('.form-group, .settings-memory-model-field')].find((g) => g.textContent.includes('记忆更新模型'))
-    const modelSelect = modelField?.querySelector('.setting-model-select .setting-select-trigger')
-    const legacyChips = document.querySelectorAll('.settings-modal-shell .model-chip, .settings-modal-shell #memoryModelOptions').length
+    const modelSelect = modelField?.querySelector('.gddp-model-select .gddp-model-select-trigger')
+    const legacySelectors = document.querySelectorAll('.settings-modal-shell .model-chip, .settings-modal-shell #memoryModelOptions, .settings-modal-shell .setting-model-menu, .settings-modal-shell .select-items').length
 
     return {
         found: !!modelField,
         isDropdown: !!modelSelect,
-        triggerLabel: modelSelect?.querySelector('.setting-select-label')?.textContent || '',
-        legacyChips,
+        triggerLabel: modelSelect?.querySelector('.gddp-model-select-label')?.textContent || '',
+        legacySelectors,
     }
 })
-report('记忆更新模型 = SettingModelSelect 下拉', prefPanel.found && prefPanel.isDropdown, `label=${prefPanel.triggerLabel}`)
-report('无 model-chips/门户容器残留', prefPanel.legacyChips === 0)
+report('记忆更新模型 = GDDP 单一下拉', prefPanel.found && prefPanel.isDropdown, `label=${prefPanel.triggerLabel}`)
+report('无旧模型选择器 DOM 残留', prefPanel.legacySelectors === 0)
 
-// 打开模型下拉验证源版结构(fixed + scroll 层 + 分组)
+// 打开模型下拉验证 GDDP 单一结构(fixed + scroll 层 + 分组)
 if (prefPanel.isDropdown) {
     await page.evaluate(() => {
-        document.querySelector('.setting-model-select .setting-select-trigger')?.click()
+        document.querySelector('.settings-memory-model-field .gddp-model-select-trigger')?.click()
     })
     await page.waitForTimeout(1200)
     const modelMenu = await page.evaluate(() => {
-        const menu = document.querySelector('.setting-model-menu.open')
+        const menus = document.querySelectorAll('body > .gddp-model-select-menu')
+        const menu = menus[0]
 
-        if (!menu) return { open: false }
+        if (!menu) return { open: false, count: menus.length }
 
-        menu.querySelector('.model-options-scroll')?.dispatchEvent(new Event('scroll', { bubbles: true }))
+        menu.querySelector('.gddp-model-select-scroll')?.dispatchEvent(new Event('scroll', { bubbles: true }))
 
         return {
             open: true,
-            hasScrollLayer: !!menu.querySelector('.model-options-scroll'),
-            groups: menu.querySelectorAll('.setting-model-group').length,
-            stillOpenAfterInnerScroll: menu.classList.contains('open'),
+            count: menus.length,
+            hasScrollLayer: !!menu.querySelector('.gddp-model-select-scroll'),
+            groups: menu.querySelectorAll('.gddp-model-select-group').length,
             position: getComputedStyle(menu).position,
         }
     })
-    report('模型菜单源版结构(scroll 层+分组)', modelMenu.open && modelMenu.hasScrollLayer && modelMenu.groups > 0, `groups=${modelMenu.groups || 0}`)
-    report('模型菜单内滚动不关闭', modelMenu.stillOpenAfterInnerScroll)
+    report('模型菜单仅渲染一个 GDDP 浮层', modelMenu.open && modelMenu.count === 1, `count=${modelMenu.count || 0}`)
+    report('模型菜单 GDDP 结构(scroll 层+分组)', modelMenu.open && modelMenu.hasScrollLayer && modelMenu.groups > 0, `groups=${modelMenu.groups || 0}`)
     report('模型菜单 fixed 浮层', modelMenu.position === 'fixed')
 
     // 点击外部关闭模型菜单(避免 Escape 冒泡关掉设置壳)

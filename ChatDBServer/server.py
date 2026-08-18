@@ -7553,7 +7553,10 @@ def get_user_stats(username, user_path):
         'total_conversations': 0,
         'total_tokens': 0,
         'total_knowledge': 0,
-        'model_usage': {}
+        'model_usage': {},
+        'source_usage': {},
+        'api_key_usage': {},
+        'daily_usage': {},
     }
     
     try:
@@ -7573,9 +7576,25 @@ def get_user_stats(username, user_path):
         token_usage_path = safe_join_path(user_path, 'token_usage.json')
         token_records = read_usage_log_records(token_usage_path)
 
+        papi_root = safe_join_path(os.path.dirname(__file__), 'data', 'papi')
+
+        if os.path.isdir(papi_root):
+            for key_slug in os.listdir(papi_root):
+                token_log = safe_join_path(papi_root, key_slug, 'token_log.jsonl')
+
+                if not os.path.isfile(token_log):
+                    continue
+
+                for record in read_usage_log_records(token_log):
+                    if str(record.get('username') or '').strip() == str(username or '').strip():
+                        token_records.append(record)
+
         if token_records:
             total_tokens = 0
             model_usage = {}
+            source_usage = {}
+            api_key_usage = {}
+            daily_usage = {}
             
             for record in token_records:
                 total_tokens += record.get('total_tokens', 0)
@@ -7586,9 +7605,26 @@ def get_user_stats(username, user_path):
                 if action not in model_usage:
                     model_usage[action] = 0
                 model_usage[action] += 1
+
+                source = str(record.get('source') or 'chat').strip() or 'chat'
+                source_usage[source] = source_usage.get(source, 0) + record.get('total_tokens', 0)
+
+                api_key = str(record.get('api_key_name') or record.get('api_key_id') or '').strip()
+
+                if api_key:
+                    api_key_usage[api_key] = api_key_usage.get(api_key, 0) + record.get('total_tokens', 0)
+
+                day = str(record.get('timestamp') or '')[:10]
+
+                if day:
+                    day_item = daily_usage.setdefault(day, {})
+                    day_item[source] = day_item.get(source, 0) + record.get('total_tokens', 0)
             
             stats['total_tokens'] = total_tokens
             stats['model_usage'] = model_usage
+            stats['source_usage'] = source_usage
+            stats['api_key_usage'] = api_key_usage
+            stats['daily_usage'] = daily_usage
             
     except Exception as e:
         print(f"Error getting user stats for {username}: {e}")

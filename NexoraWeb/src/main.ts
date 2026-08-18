@@ -12,12 +12,9 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 
-import './styles/tokens.css'
-import './styles/nexora-toast.css'
-import './styles/modal.css'
-import './styles/admin.css'
-import './styles/buttons.css'
-import './styles/settings.css'
+import './styles/gddp.css'
+import './styles/model-select.css'
+import './styles/gddp-layout.css'
 
 const app = createApp(App)
 

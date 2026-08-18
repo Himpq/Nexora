@@ -280,8 +280,14 @@
         try {
             users.value = await listAdminUsers()
 
-            if (!selectedId.value && users.value.length) {
-                selectUser(users.value[0])
+            const selectionExists = users.value.some((user) => user.user_id === selectedId.value)
+
+            if (!selectionExists && users.value.length) {
+                const firstDeletableUser = users.value.find((user) => {
+                    return String(user.user_id) !== String(userStore.userId || '')
+                })
+
+                selectUser(firstDeletableUser || users.value[0])
             }
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载用户失败')
@@ -450,6 +456,12 @@
     /** 删除用户 */
     async function handleDelete(): Promise<void> {
         if (!selected.value) {
+            return
+        }
+
+        if (isSelf.value) {
+            showToast('不能删除当前登录用户', 'warning')
+
             return
         }
 

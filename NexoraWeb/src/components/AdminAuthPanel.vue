@@ -3,7 +3,7 @@
 
     功能:
       - 页头操作(生成/筛选/刷新)由 SettingsModal pageActionsMap 提供,面板不再自带 toolbar
-      - 左列表(带 scope 徽标 + 过期状态)/ 右详情
+      - 左列表(带范围文字 + 过期状态)/ 右详情
       - 详情:可编辑区(名称/范围/所属用户 SettingSelect 搜索)+ 只读信息卡 + 权限开关 + 操作按钮
       - 弹窗:生成/重新生成 Key + 明文展示
 -->
@@ -30,7 +30,7 @@
                     <span class="auth-key-main">
                         <span class="auth-key-name-row">
                             <span class="auth-key-name">{{ key.name || key.id }}</span>
-                            <span class="auth-scope-badge" :class="key.scope === 'global' ? 'global' : 'owner'">
+                            <span class="auth-scope-text">
                                 {{ key.scope === 'global' ? '全局' : '私有' }}
                             </span>
                         </span>
@@ -538,7 +538,7 @@
         min-height: 0;
     }
 
-    /* ==================== 列表项(增强:scope 徽标 + 过期状态) ==================== */
+    /* ==================== 列表项(范围文字 + 过期状态) ==================== */
 
     .auth-key-list {
         /* 使用框架 .settings-management-list 基础样式 */
@@ -614,24 +614,12 @@
         color: #111111;
     }
 
-    /* scope 徽标 */
-    .auth-scope-badge {
+    /* 范围信息使用普通灰色文字,不再使用 owner/global 彩色胶囊。 */
+    .auth-scope-text {
         flex: none;
-        padding: 1px 7px;
-        border-radius: 999px;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-    }
-
-    .auth-scope-badge.owner {
-        background: #eef2ff;
-        color: #4f46e5;
-    }
-
-    .auth-scope-badge.global {
-        background: #ecfdf5;
-        color: #059669;
+        color: #999999;
+        font-size: 10.5px;
+        font-weight: 550;
     }
 
     .auth-key-meta-row {
@@ -717,7 +705,7 @@
     /* 可编辑字段网格 */
     .auth-edit-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) max-content;
         gap: 10px 20px;
     }
 

@@ -10,17 +10,11 @@
 -->
 
 <template>
-    <section class="workspace-projects-view" aria-label="Workspaces">
+    <section v-if="!detail" class="workspace-projects-view" aria-label="Workspaces">
         <div class="workspace-projects-shell">
             <!-- 列表视图 -->
-            <template v-if="!detail">
                 <div class="workspace-projects-head">
-                    <div class="workspace-projects-head-left">
-                        <button class="workspace-projects-back" type="button" title="返回" @click="emit('close')">
-                            <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                        </button>
-                        <h1>Workspaces</h1>
-                    </div>
+                    <h1>Workspaces</h1>
                     <div class="workspace-projects-actions">
                         <label class="workspace-projects-search">
                             <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
@@ -54,7 +48,7 @@
                         <div role="columnheader">修改时间</div>
                     </div>
 
-                    <div class="workspace-projects-list">
+                    <div id="workspaceProjectsList">
                         <div v-if="loading" class="workspace-projects-empty">加载中...</div>
                         <div v-else-if="!filteredWorkspaces.length" class="workspace-projects-empty">暂无 Workspaces</div>
 
@@ -76,49 +70,36 @@
                         </button>
                     </div>
                 </div>
-            </template>
+        </div>
+    </section>
 
             <!-- 详情视图 -->
-            <template v-else>
-                <div class="workspace-projects-head">
-                    <div class="workspace-projects-detail-head">
-                        <button class="workspace-projects-back" type="button" title="返回列表" @click="detail = null; void load()">
-                            <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                        </button>
-                        <div class="workspace-detail-title-editor">
-                            <h1 class="workspace-detail-title-text">{{ detail.title || 'Untitled Workspace' }}</h1>
-                            <button
-                                class="workspace-detail-title-edit-btn"
-                                type="button"
-                                title="修改名称"
-                                aria-label="修改名称"
-                                @click="handleRename"
-                            >
-                                <i class="fa-solid fa-pen" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                        <div class="workspace-projects-meta">
-                            创建者:{{ detail.owner_username || '-' }} · 更新:{{ formatWorkspaceDate(detail.updated_at) }}
-                        </div>
-                    </div>
-                    <div class="workspace-projects-actions">
-                        <button
-                            class="workspace-detail-share-btn"
-                            type="button"
-                            title="分享 Workspace"
-                            :disabled="!isOwner"
-                            @click="openShare"
-                        >
-                            <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
-                        </button>
-                        <button
-                            class="workspace-projects-create workspace-detail-delete-btn"
-                            type="button"
-                            :disabled="!isOwner"
-                            @click="handleDelete(detail)"
-                        >删除</button>
-                    </div>
+    <section v-else class="workspace-detail-view" aria-label="Workspace Detail">
+        <div class="workspace-detail-shell">
+            <div class="workspace-detail-header">
+                <div class="workspace-detail-title-row">
+                    <span class="workspace-detail-title-icon">
+                        <i class="fa-regular fa-folder" aria-hidden="true"></i>
+                    </span>
+                    <span class="workspace-detail-title-editor">
+                        <h1 class="workspace-detail-title-text">{{ detail.title || 'Untitled Workspace' }}</h1>
+                        <input class="workspace-detail-title-input" type="text" :value="detail.title || 'Untitled Workspace'" aria-label="Workspace 名称" hidden>
+                    </span>
+                    <button class="workspace-detail-title-edit-btn" type="button" title="修改 Workspace 名称" aria-label="修改 Workspace 名称" @click="handleRename">
+                        <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                    </button>
                 </div>
+                <div class="workspace-detail-actions" aria-label="Workspace 操作">
+                    <button class="workspace-detail-share-btn" type="button" title="分享 Workspace" aria-label="分享 Workspace" :disabled="!isOwner" @click="openShare">
+                        <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
+                    </button>
+                    <button class="workspace-detail-delete-btn" type="button" title="删除 Workspace" aria-label="删除 Workspace" :disabled="!isOwner" @click="handleDelete(detail)">
+                        <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="workspace-detail-input-slot" id="workspaceDetailInputSlot"></div>
 
                 <!-- 详情 tab 栏(对齐原版 workspace-detail-tabs) -->
                 <div class="workspace-detail-tabs" role="tablist" aria-label="Workspace 内容">
@@ -130,139 +111,160 @@
                         type="button"
                         role="tab"
                         :aria-selected="detailTab === tab"
+                        :data-workspace-detail-tab="tab"
                         @click="detailTab = tab"
-                    >{{ detailTabLabel(tab) }}</button>
+                    ><span>{{ detailTabLabel(tab) }}</span></button>
+                    <button v-if="detailTab === 'knowledge'" class="workspace-detail-create-knowledge" type="button" title="新建空白知识库" aria-label="新建空白知识库">
+                        <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                        <span>新建</span>
+                    </button>
+                    <span v-if="detailTab === 'files'" class="workspace-detail-file-actions">
+                        <button class="workspace-detail-file-action" type="button" title="添加已有云端文件" aria-label="添加已有云端文件" @click="openAddFile">
+                            <i class="fa-solid fa-link" aria-hidden="true"></i>
+                            <span>添加</span>
+                        </button>
+                    </span>
                 </div>
 
                 <div class="workspace-detail-panels">
                     <!-- 总览 -->
-                    <section v-show="detailTab === 'overview'" class="workspace-detail-panel">
-                        <div class="workspace-projects-stats">
-                            <div class="workspace-projects-stat">
-                                <span class="workspace-projects-stat-num">{{ detail.conversation_count ?? 0 }}</span>
-                                <span class="workspace-projects-stat-label">对话</span>
-                            </div>
-                            <div class="workspace-projects-stat">
-                                <span class="workspace-projects-stat-num">{{ detail.knowledge_document_count ?? 0 }}</span>
-                                <span class="workspace-projects-stat-label">知识库</span>
-                            </div>
-                            <div class="workspace-projects-stat">
-                                <span class="workspace-projects-stat-num">{{ detail.file_count ?? 0 }}</span>
-                                <span class="workspace-projects-stat-label">文件</span>
-                            </div>
-                            <div class="workspace-projects-stat">
-                                <span class="workspace-projects-stat-num">{{ detail.open_task_count ?? 0 }}</span>
-                                <span class="workspace-projects-stat-label">进行中任务</span>
-                            </div>
-                        </div>
-
-                        <div class="workspace-projects-activity">
-                            <h3>最近活动</h3>
-                            <div v-if="!activityItems.length" class="workspace-projects-empty">暂无活动记录</div>
-                            <div v-for="(item, index) in activityItems" :key="index" class="workspace-projects-activity-item">
-                                <i class="fa-solid fa-circle" aria-hidden="true"></i>
-                                <span class="workspace-projects-activity-title">{{ item.title }}</span>
-                                <span class="workspace-projects-activity-time">{{ formatWorkspaceDate(item.time) }}</span>
+                    <section v-show="detailTab === 'overview'" class="workspace-detail-panel" :class="{ active: detailTab === 'overview' }" data-workspace-detail-panel="overview">
+                        <div class="workspace-detail-panel-list">
+                            <div class="workspace-overview">
+                                <div class="workspace-overview-stats">
+                                    <div class="workspace-overview-stat">
+                                        <span class="workspace-overview-stat-icon"><i class="fa-regular fa-comments" aria-hidden="true"></i></span>
+                                        <span class="workspace-overview-stat-main"><span class="workspace-overview-stat-value">{{ detail.conversation_count ?? 0 }}</span><span class="workspace-overview-stat-label">聊天</span></span>
+                                    </div>
+                                    <div class="workspace-overview-stat">
+                                        <span class="workspace-overview-stat-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
+                                        <span class="workspace-overview-stat-main"><span class="workspace-overview-stat-value">{{ detail.knowledge_document_count ?? 0 }}</span><span class="workspace-overview-stat-label">知识库</span></span>
+                                    </div>
+                                    <div class="workspace-overview-stat">
+                                        <span class="workspace-overview-stat-icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></span>
+                                        <span class="workspace-overview-stat-main"><span class="workspace-overview-stat-value">{{ detail.workspace_file_count ?? detail.file_count ?? 0 }}</span><span class="workspace-overview-stat-label">文件</span></span>
+                                    </div>
+                                    <div class="workspace-overview-stat">
+                                        <span class="workspace-overview-stat-icon"><i class="fa-regular fa-circle-check" aria-hidden="true"></i></span>
+                                        <span class="workspace-overview-stat-main"><span class="workspace-overview-stat-value">{{ detail.open_task_count ?? 0 }}</span><span class="workspace-overview-stat-label">未完成任务</span></span>
+                                    </div>
+                                </div>
+                                <div class="workspace-overview-grid">
+                                    <section class="workspace-overview-section">
+                                        <div class="workspace-overview-section-head"><h2>待办</h2><span>{{ detailTasks.length }} 个任务</span></div>
+                                        <div v-if="!detailTasks.length" class="workspace-detail-empty">暂无任务</div>
+                                        <div v-for="task in detailTasks.slice(0, 8)" :key="String(task.task_id || task.title || '')" class="workspace-overview-task">
+                                            <span class="workspace-overview-task-main"><span class="workspace-overview-task-title">{{ task.title || '未命名任务' }}</span><span class="workspace-overview-task-meta">{{ taskStatusLabel(task.status) }}</span></span>
+                                        </div>
+                                    </section>
+                                    <section class="workspace-overview-section">
+                                        <div class="workspace-overview-section-head"><h2>活动流</h2></div>
+                                        <div v-if="!activityItems.length" class="workspace-detail-empty">暂无活动记录</div>
+                                        <div v-for="(item, index) in activityItems" :key="index" class="workspace-overview-activity">
+                                            <span class="workspace-overview-activity-main"><span class="workspace-overview-activity-title">{{ item.title }}</span><span class="workspace-overview-activity-meta">{{ formatWorkspaceDate(item.time) }}</span></span>
+                                        </div>
+                                    </section>
+                                </div>
                             </div>
                         </div>
                     </section>
 
                     <!-- 聊天 -->
-                    <section v-show="detailTab === 'chat'" class="workspace-detail-panel">
-                        <div class="workspace-detail-panel-list workspace-detail-conversations">
-                            <div v-if="!detailConversations.length" class="workspace-projects-empty">暂无对话</div>
-                            <button
+                    <section v-show="detailTab === 'chat'" class="workspace-detail-panel" :class="{ active: detailTab === 'chat' }" data-workspace-detail-panel="chat">
+                        <div class="workspace-detail-panel-list workspace-detail-conversations" id="workspaceProjectConversations">
+                            <div v-if="!detailConversations.length" class="workspace-detail-empty">暂无已加入的对话</div>
+                            <div
                                 v-for="conv in detailConversations"
                                 :key="conv.conversation_id"
-                                class="workspace-resource-row"
-                                :class="{ pinned: conv.pin }"
-                                type="button"
+                                class="workspace-detail-conversation is-clickable"
+                                :class="{ 'is-pinned': conv.pin }"
+                                role="button"
+                                tabindex="0"
                                 @click="openConversation(conv.conversation_id)"
                                 @contextmenu.prevent="openResourceMenu($event, 'conversation', conv.conversation_id, String(conv.title || ''), Boolean(conv.pin), String(conv.added_by || ''))"
                             >
-                                <i :class="conv.pin ? 'fa-solid fa-thumbtack' : 'fa-regular fa-comment'" aria-hidden="true"></i>
-                                <span class="workspace-resource-title">{{ conv.title || conv.conversation_id }}</span>
-                                <span class="workspace-resource-meta">
-                                    {{ conv.pin ? '已置顶 · ' : '' }}{{ formatWorkspaceDate(conv.added_at) }}
+                                <span class="workspace-detail-conversation-main">
+                                    <strong><i v-if="conv.pin" class="fa-solid fa-thumbtack workspace-detail-pin-icon" aria-hidden="true"></i>{{ conv.title || conv.conversation_id }}</strong>
+                                    <small>{{ conv.added_by ? `@${conv.added_by}` : '未知用户' }}</small>
                                 </span>
-                            </button>
+                                <span class="workspace-detail-row-side"><span class="workspace-detail-row-date">{{ formatWorkspaceDate(conv.added_at) }}</span></span>
+                            </div>
                         </div>
                     </section>
 
                     <!-- 知识库 -->
-                    <section v-show="detailTab === 'knowledge'" class="workspace-detail-panel">
-                        <div class="workspace-detail-panel-list">
-                            <div v-if="!detailKnowledge.length" class="workspace-projects-empty">暂无知识库</div>
-                            <button
+                    <section v-show="detailTab === 'knowledge'" class="workspace-detail-panel" :class="{ active: detailTab === 'knowledge' }" data-workspace-detail-panel="knowledge">
+                        <div class="workspace-detail-panel-list" id="workspaceProjectKnowledgeDocuments">
+                            <div v-if="!detailKnowledge.length" class="workspace-detail-empty">暂无知识库内容</div>
+                            <div
                                 v-for="doc in detailKnowledge"
                                 :key="doc.title"
-                                class="workspace-resource-row"
-                                :class="{ pinned: doc.pin }"
-                                type="button"
+                                class="workspace-detail-resource workspace-detail-knowledge is-clickable"
+                                :class="{ 'is-pinned': doc.pin }"
+                                role="button"
+                                tabindex="0"
                                 @contextmenu.prevent="openResourceMenu($event, 'knowledge', doc.title, doc.title, Boolean(doc.pin), String(doc.added_by || ''))"
                             >
-                                <i :class="doc.pin ? 'fa-solid fa-thumbtack' : 'fa-regular fa-book'" aria-hidden="true"></i>
-                                <span class="workspace-resource-title">{{ doc.title }}</span>
-                                <span class="workspace-resource-meta">
-                                    {{ visibilityLabel(doc.visibility) }} · {{ doc.pin ? '已置顶' : '未置顶' }}
-                                </span>
-                            </button>
+                                <span class="workspace-detail-resource-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
+                                <span class="workspace-detail-resource-main"><span class="workspace-detail-resource-title"><i v-if="doc.pin" class="fa-solid fa-thumbtack workspace-detail-pin-icon" aria-hidden="true"></i>{{ doc.title }}</span><span class="workspace-detail-resource-meta">{{ doc.added_by ? `@${doc.added_by}` : '未知用户' }}</span></span>
+                                <span class="workspace-detail-row-side"><span class="workspace-detail-row-date">{{ formatWorkspaceDate(String(doc.added_at || '')) }}</span></span>
+                            </div>
                         </div>
                     </section>
 
                     <!-- 文件 -->
-                    <section v-show="detailTab === 'files'" class="workspace-detail-panel">
-                        <div class="workspace-detail-panel-list">
-                            <div v-if="!detailFiles.length" class="workspace-projects-empty">暂无文件</div>
-                            <button
+                    <section v-show="detailTab === 'files'" class="workspace-detail-panel" :class="{ active: detailTab === 'files' }" data-workspace-detail-panel="files">
+                        <div class="workspace-detail-panel-list" id="workspaceProjectFiles">
+                            <div v-if="!detailFiles.length" class="workspace-detail-empty">暂无文件</div>
+                            <div
                                 v-for="file in detailFiles"
                                 :key="file.file_ref"
-                                class="workspace-resource-row"
-                                :class="{ pinned: file.pin }"
-                                type="button"
+                                class="file-center-card workspace-detail-file is-clickable"
+                                :class="{ 'is-pinned': file.pin }"
+                                role="button"
+                                tabindex="0"
+                                @click="openWorkspaceFile(file)"
                                 @contextmenu.prevent="openResourceMenu($event, 'file', file.file_ref, String(file.alias || file.file_ref), Boolean(file.pin), String(file.added_by || ''))"
                             >
-                                <i :class="file.pin ? 'fa-solid fa-thumbtack' : 'fa-regular fa-file'" aria-hidden="true"></i>
-                                <span class="workspace-resource-title">{{ file.alias || file.file_ref }}</span>
-                                <span class="workspace-resource-meta">
-                                    {{ visibilityLabel(file.visibility) }} · {{ file.pin ? '已置顶' : '未置顶' }}
-                                </span>
-                            </button>
-                            <button class="workspace-resource-add" type="button" @click="openAddFile">
-                                <i class="fa-solid fa-link" aria-hidden="true"></i>
-                                <span>添加云端文件</span>
-                            </button>
+                                <div class="file-center-card-icon-wrap"><span class="file-center-file-icon tone-file"><i class="fa-regular fa-file" aria-hidden="true"></i></span></div>
+                                <div class="file-center-card-name"><i v-if="file.pin" class="fa-solid fa-thumbtack workspace-detail-pin-icon" aria-hidden="true"></i>{{ file.title || file.original_name || file.alias || file.file_ref }}</div>
+                                <div class="workspace-file-card-meta">{{ visibilityLabel(file.visibility) }}</div>
+                            </div>
                         </div>
                     </section>
 
                     <!-- 任务 -->
-                    <section v-show="detailTab === 'tasks'" class="workspace-detail-panel">
+                    <section v-show="detailTab === 'tasks'" class="workspace-detail-panel" :class="{ active: detailTab === 'tasks' }" data-workspace-detail-panel="tasks">
                         <div class="workspace-detail-panel-list">
-                            <div v-if="!detailTasks.length" class="workspace-projects-empty">暂无任务</div>
-                            <div v-for="task in detailTasks" :key="String(task.task_id || task.title || '')" class="workspace-task-row">
-                                <i class="fa-regular fa-square-check" aria-hidden="true"></i>
-                                <span class="workspace-resource-title">{{ task.title || '未命名任务' }}</span>
-                                <span class="workspace-resource-meta">{{ taskStatusLabel(task.status) }} · {{ task.priority || '中' }}</span>
+                            <div class="workspace-tasks-panel">
+                                <div class="workspace-tasks-toolbar">
+                                    <div><h2>任务排期</h2><span>{{ detailTasks.length }} 个任务</span></div>
+                                    <button class="workspace-task-create-btn" type="button" @click="handleAddTask"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>新建任务</span></button>
+                                </div>
+                                <div class="workspace-task-list">
+                                    <div v-if="!detailTasks.length" class="workspace-detail-empty">暂无任务</div>
+                                    <div v-for="task in detailTasks" :key="String(task.task_id || task.title || '')" class="workspace-task-row is-todo">
+                                        <span class="workspace-task-row-icon"><i class="fa-regular fa-circle-check" aria-hidden="true"></i></span>
+                                        <span class="workspace-task-row-main"><strong>{{ task.title || '未命名任务' }}</strong><small>{{ taskStatusLabel(task.status) }} · {{ task.priority || '中' }}</small></span>
+                                        <span class="workspace-task-status-pill is-todo">{{ taskStatusLabel(task.status) }}</span>
+                                    </div>
+                                </div>
                             </div>
-                            <button class="workspace-resource-add" type="button" @click="handleAddTask">
-                                <i class="fa-solid fa-plus" aria-hidden="true"></i>
-                                <span>新建任务</span>
-                            </button>
                         </div>
                     </section>
 
                     <!-- 记忆 -->
-                    <section v-show="detailTab === 'memory'" class="workspace-detail-panel">
+                    <section v-show="detailTab === 'memory'" class="workspace-detail-panel" :class="{ active: detailTab === 'memory' }" data-workspace-detail-panel="memory">
                         <div class="workspace-detail-panel-list workspace-detail-memory">
-                            <div v-if="!memoryContent" class="workspace-projects-empty">暂无记忆沉淀</div>
+                            <div v-if="!memoryContent" class="workspace-detail-empty">暂无记忆沉淀</div>
                             <div v-else class="workspace-detail-memory-markdown">
                                 <MarkdownView :content="memoryContent" />
                             </div>
                         </div>
                     </section>
                 </div>
-            </template>
         </div>
+    </section>
 
         <!-- 资源右键菜单(对齐原版 workspaceResourceContextMenu) -->
         <div
@@ -312,16 +314,16 @@
                     @click="handleAddFile(file)"
                 >
                     <i class="fa-regular fa-file" aria-hidden="true"></i>
-                    <span class="workspace-resource-title">{{ String(file.alias || file.name) }}</span>
+                        <span class="workspace-resource-title">{{ String(file.original_name || file.file_name || file.alias || file.name || file.title || '未命名文件') }}</span>
                 </button>
             </div>
         </Modal>
-    </section>
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+    import type { CloudFileItem as FilesCenterCloudFileItem } from '@/api/files-center'
     import type { CloudFileItem } from '@/api/files'
     import { listCloudFiles } from '@/api/files'
     import type { WorkspaceConversation, WorkspaceDetail, WorkspaceFileEntry, WorkspaceKnowledgeDocument, WorkspaceSummary, WorkspaceTaskEntry } from '@/api/workspaces'
@@ -349,6 +351,12 @@
         close: []
         /** 点击项目内对话:回到聊天并打开该会话 */
         'open-conversation': [conversationId: string]
+        /** 点击项目文件:复用 Files 统一详情视图 */
+        'open-file': [file: FilesCenterCloudFileItem]
+    }>()
+
+    const props = defineProps<{
+        open: boolean
     }>()
 
     const userStore = useUserStore()
@@ -429,8 +437,19 @@
         return String(detail.value?.owner_username || '') === String(userStore.username || '')
     })
 
+    watch(
+        () => props.open,
+        (opened) => {
+            if (!opened) {
+                return
+            }
+
+            void load()
+        },
+        { immediate: true }
+    )
+
     onMounted(() => {
-        void load()
         document.addEventListener('click', hideResourceMenu)
         document.addEventListener('scroll', hideResourceMenu, true)
     })
@@ -598,6 +617,18 @@
     /** 点击项目内对话:回到聊天并打开该会话 */
     async function openConversation(conversationId: string): Promise<void> {
         emit('open-conversation', conversationId)
+    }
+
+    /** 将 Workspace 文件标记转换为 Files 详情所需的统一文件模型。 */
+    function openWorkspaceFile(file: WorkspaceFileEntry): void {
+        emit('open-file', {
+            alias: String(file.alias || file.file_ref || ''),
+            name: String(file.title || file.original_name || file.alias || file.file_ref || ''),
+            original_name: String(file.title || file.original_name || file.alias || file.file_ref || ''),
+            sandbox_path: String(file.file_ref || file.alias || ''),
+            size: Number(file.size || 0),
+            updated_at: Number(file.updated_at || 0),
+        })
     }
 
     /** ===== 资源右键菜单(置顶) ===== */
@@ -789,239 +820,3 @@
         }
     }
 </script>
-
-<style scoped>
-    /* 详情页可编辑标题 */
-    .workspace-detail-title-editor {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .workspace-detail-title-text {
-        margin: 0;
-        font-size: 20px;
-        color: #0f172a;
-    }
-
-    .workspace-detail-title-edit-btn {
-        width: 26px;
-        height: 26px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid #e2e8f0;
-        border-radius: 6px;
-        background: #fff;
-        color: #64748b;
-        font-size: 12px;
-        cursor: pointer;
-        transition: border-color 0.15s ease, color 0.15s ease;
-    }
-
-    .workspace-detail-title-edit-btn:hover {
-        border-color: #4f46e5;
-        color: #4f46e5;
-    }
-
-    .workspace-detail-tabs {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        border-bottom: 1px solid #e2e8f0;
-        margin-bottom: 14px;
-    }
-
-    .workspace-detail-tab {
-        padding: 9px 14px;
-        border: none;
-        background: transparent;
-        font-size: 13px;
-        color: #64748b;
-        cursor: pointer;
-        border-bottom: 2px solid transparent;
-        transition: color 0.15s ease, border-color 0.15s ease;
-    }
-
-    .workspace-detail-tab:hover {
-        color: #0f172a;
-    }
-
-    .workspace-detail-tab.active {
-        color: #4f46e5;
-        font-weight: 600;
-        border-bottom-color: #4f46e5;
-    }
-
-    /* 资源行(对话/知识库/文件) */
-    .workspace-resource-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        width: 100%;
-        padding: 10px 12px;
-        border: none;
-        border-bottom: 1px solid #f1f5f9;
-        background: #fff;
-        text-align: left;
-        cursor: pointer;
-        transition: background 0.15s ease;
-    }
-
-    .workspace-resource-row:hover {
-        background: #f8fafc;
-    }
-
-    .workspace-resource-row.pinned {
-        background: #f5f3ff;
-    }
-
-    .workspace-resource-row i {
-        flex: none;
-        width: 18px;
-        color: #94a3b8;
-        font-size: 13px;
-        text-align: center;
-    }
-
-    .workspace-resource-row.pinned i {
-        color: #4f46e5;
-    }
-
-    .workspace-resource-title {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 13px;
-        font-weight: 500;
-        color: #0f172a;
-    }
-
-    .workspace-resource-meta {
-        flex: none;
-        font-size: 11px;
-        color: #94a3b8;
-    }
-
-    .workspace-resource-add {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        margin: 10px 0 0;
-        padding: 8px 14px;
-        border: 1px dashed #c7d2fe;
-        border-radius: 8px;
-        background: #f8faff;
-        color: #4f46e5;
-        font-size: 12.5px;
-        cursor: pointer;
-        transition: background 0.15s ease;
-    }
-
-    .workspace-resource-add:hover {
-        background: #eef2ff;
-    }
-
-    /* 任务行(非按钮) */
-    .workspace-task-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 12px;
-        border-bottom: 1px solid #f1f5f9;
-    }
-
-    .workspace-task-row i {
-        flex: none;
-        color: #94a3b8;
-        font-size: 13px;
-    }
-
-    /* 右键菜单(对齐原版 workspace-resource-context-menu) */
-    .workspace-resource-context-menu {
-        position: fixed;
-        z-index: 30000;
-        min-width: 136px;
-        padding: 5px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #fff;
-        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
-        display: flex;
-        flex-direction: column;
-    }
-
-    .workspace-resource-context-menu button {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 10px;
-        border: none;
-        border-radius: 6px;
-        background: transparent;
-        font-size: 13px;
-        color: #334155;
-        cursor: pointer;
-    }
-
-    .workspace-resource-context-menu button:hover {
-        background: #eef2ff;
-        color: #4f46e5;
-    }
-
-    /* 分享 */
-    .workspace-share-empty {
-        padding: 8px 0;
-        font-size: 12.5px;
-        color: #94a3b8;
-    }
-
-    .workspace-share-user {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 6px 10px;
-        border-radius: 6px;
-        background: #f8fafc;
-        font-size: 13px;
-        color: #0f172a;
-    }
-
-    .workspace-share-user button {
-        border: none;
-        background: transparent;
-        color: #94a3b8;
-        cursor: pointer;
-        font-size: 12px;
-    }
-
-    .workspace-share-user button:hover {
-        color: #dc2626;
-    }
-
-    /* 文件选择器 */
-    .workspace-file-picker {
-        max-height: 340px;
-        overflow-y: auto;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-    }
-
-    .workspace-detail-panels {
-        min-height: 300px;
-    }
-
-    .workspace-detail-panel-list {
-        display: flex;
-        flex-direction: column;
-    }
-
-    .workspace-detail-memory-markdown {
-        padding: 14px;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        background: #f8fafc;
-    }
-</style>

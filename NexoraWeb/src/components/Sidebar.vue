@@ -36,6 +36,10 @@
                     <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                     <span>Files</span>
                 </button>
+                <button id="knowledgeMgmtBtn" class="toolbar-item" type="button" @click="emit('open-knowledge-mgmt')">
+                    <i class="fa-solid fa-book" aria-hidden="true"></i>
+                    <span>Knowledge</span>
+                </button>
             </div>
         </div>
 
@@ -162,6 +166,7 @@
         'open-settings': []
         'open-workspaces': []
         'open-files': []
+        'open-knowledge-mgmt': []
         'open-trash': []
         'open-timeline': []
     }>()

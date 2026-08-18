@@ -17,6 +17,9 @@ export interface CloudFileItem {
     original_name?: string
     filename?: string
     name?: string
+    file_name?: string
+    title?: string
+    display_name?: string
     size?: number
     file_size?: number
     updated_at?: number
@@ -198,7 +201,15 @@ export function fileDisplayName(file: CloudFileItem): string {
         return basename(alias)
     }
 
-    const original = String(file.original_name || file.filename || file.name || '').trim()
+    const original = String(
+        file.original_name
+        || file.file_name
+        || file.filename
+        || file.name
+        || file.title
+        || file.display_name
+        || ''
+    ).trim()
 
     if (original) {
         return basename(original)
@@ -224,6 +235,7 @@ export function fileExtension(file: CloudFileItem): string {
     const candidates = [
         file.alias,
         file.original_name || file.filename || file.name,
+        file.file_name || file.title || file.display_name,
         file.sandbox_path,
     ]
 

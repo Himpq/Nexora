@@ -6,37 +6,44 @@ Nexora(ChatDBServer)与 NexoraCode 共用的**单一前端源**工程。
 
 > **设计语言不可替换,实现方式可以重写。**
 
-原版 CSS 与 DOM 结构(class 名)作为**设计资产**完整保留,视觉与 Nexora 100% 一致;
-交互逻辑层(异步竞态、状态管理、错误处理)用 Vue + Pinia 重写,健康可调试可扩展。
+原版 CSS 与必要的 class 作为兼容资产保留；新设置页、模型选择器和管理面板的公共视觉由 GDDP 组件与样式统一管理。legacy CSS 仍由 `/new` 运行时加载，只承担旧聊天和迁移兼容规则，不再作为新组件的唯一设计来源。
 
-## 架构:设计资产层 + 逻辑层
+## 架构:应用层 + GDDP + 业务层
 
 ```
-设计资产层(视觉,不可替换)              逻辑层(Vue,可重写)
+GDDP(统一设计开发包)                    应用与业务层
 ─────────────────────────────          ─────────────────────────
-index.html 直接引用原版 CSS:            src/
-  /static/css/style.css                  api/      统一 HTTP + 端点
-  /static/css/sidebar_brand_navigation   stream/   StreamService(唯一发送入口+同步锁)
-  /static/css/notification.css           stores/   Pinia(user/conversation/model/notify)
-  /static/css/message_avatar.css         ui/       ★ 通用 UI 基础模块(General Design Package)
-  /static/vendor/fontawesome/...         components/ 原版 DOM 结构复刻组件
-  /static/vendor/katex/...               views/    页面
-  /static/styles/tokens.css(z-index 令牌) router/   hash 路由 + 登录守卫
-
-Vue 组件只负责数据绑定与事件,
-DOM 结构与 class 名与原版 chat.html 完全一致,
-原版 CSS 直接命中,无需重新设计样式。
+src/ui/index.ts                         api/      统一 HTTP + 端点
+  primitives: Button, Modal,            stores/   Pinia 状态与通知
+    ModelSelectBase, ProviderIcon       stream/   StreamService(聊天基础设施)
+  patterns: AdminPanel,                 components/ 页面业务组件
+    SettingCard, SettingActionRow,      views/    页面与路由
+    SettingDetailSection,
+    SettingsPageHeader
+  services: overlay                      
+src/styles/gddp.css                      
+  tokens + primitives + settings        
 ```
 
-## 通用 UI 基础模块(src/ui/,General Design Development Package)
+GDDP 只负责可复用的视觉组件、布局模式、设计令牌和浮层协调，不包含业务 API、Pinia 业务状态或聊天流服务。业务组件通过 `@/ui` 或 `@/ui/index.ts` 使用 GDDP，禁止为同一类按钮、详情布局、模型下拉重新实现视觉规则。
+
+生产环境的 `/new` 由 Flask 直接读取 `ChatDBServer/static/new/index.html`，源码变更必须执行 `npm run build` 才会进入实际页面。旧 `/chat` 模板与 NexoraWeb `/new` 是两条并行入口，旧入口不会自动获得 Vue GDDP 组件。
+
+## GDDP 基础模块
 
 | 模块 | 职责 |
 |---|---|
-| `ui/overlay.ts` | **浮层协调器**:统一管理所有下拉/菜单/右侧栏/弹窗的打开关闭;互斥(同组只开一个)、打开下拉自动关闭右侧栏、点击外部自动关闭。新浮层接入 = 分配 id + open/close 调用,不再各自手写 document click |
-| `styles/tokens.css` | z-index 层级令牌(禁止硬编码,组件按语义引用) |
-| `stores/confirm.ts` | 自建确认/输入小窗(Promise API,原版 modal 结构) |
-| `stores/notify.ts` | 全局 toast(统一错误提示,杜绝静默吞错) |
-| `stream/StreamService.ts` | 聊天流式唯一入口 + 同步发送锁 + 完整 SSE 协议 |
+| `ui/index.ts` | GDDP 统一内部导出入口 |
+| `ui/Button.vue` | 统一普通、危险、紧凑和图标按钮几何 |
+| `ui/model/ModelSelectBase.vue` | 主页与偏好设置共用的模型分组、Provider 图标、浮层定位 |
+| `ui/model/ProviderIcon.vue` | Provider 图标与首字符 fallback |
+| `ui/AdminPanel.vue` | 左列表 + 右详情管理布局 |
+| `ui/settings/SettingActionRow.vue` | 详情操作按钮行,内容宽度与稳定最小宽度 |
+| `ui/settings/SettingDetailSection.vue` | 无嵌套卡片的详情分区 |
+| `ui/settings/SettingsPageHeader.vue` | 页标题、筛选、页级命令和子标签 |
+| `ui/overlay.ts` | 浮层协调器,统一互斥与外部关闭 |
+| `styles/gddp.css` | GDDP 唯一样式入口 |
+| `styles/tokens.css` | z-index、控件高度、间距与圆角令牌 |
 
 **接入新浮层的规范**:
 1. 打开:调用 `openPopover('id', el)` / `openPanel('id')` / `openModal('id')`
@@ -50,7 +57,7 @@ DOM 结构与 class 名与原版 chat.html 完全一致,
 |---|---|
 | `Sidebar.vue` | 品牌 tabs + New Chat/Workspaces/Files 工具栏 + 会话列表(`conversation-item`)+ 用户区(`user-menu.active`) |
 | `ChatHeader.vue` | 折叠按钮 + 模型选择 + 会话标题 + 右侧按钮(笔记/通知/文件/知识库) |
-| `ModelSelect.vue` | `custom-select-container` + provider 分组(`model-group`)+ `model-chip` + 状态标签 |
+| `ModelSelect.vue` | 主页与偏好设置共用的 GDDP 模型选择器适配器 |
 | `ChatInput.vue` | `input-wrapper` + Thinking/Search 开关 + `#messageInput` + `sendBtn`(stop-mode) |
 | `MessageItem.vue` | `.message.user/.assistant > .message-content > .message-bubble/.content-body` + `.msg-actions` |
 
@@ -92,12 +99,6 @@ npm run build      # 产物输出到 ChatDBServer/static/new/
 
 ## 当前状态
 
-- [x] 设计资产层(原版 CSS 直接引用,视觉 100% 一致)
-- [x] 核心组件复刻(侧边栏/顶栏/模型选择/输入区/消息结构)
-- [x] 会话列表/切换/新建、流式发送(协议正确)、错误提示
-- [x] naive-ui 完全移除,登录页复刻原版视觉
-- [ ] 端到端真实验证(需账号)
-- [ ] Workspace / Files 页面(原版结构)
-- [ ] 设置窗口(保留左菜单右详情布局,内部重构)
-- [ ] 消息队列(状态机扩展示例)
-- [ ] 断线重连 / 消息编辑 / 重答
+- [x] GDDP 组件入口、设置页管理布局、模型选择器与偏好模型统一
+- [x] Skill/邮箱/按钮响应式与详情层级整理
+- [ ] legacy `/chat` 旧模板迁移到 NexoraWeb

@@ -43,7 +43,8 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
             ...options,
             credentials: 'include',
             headers: {
-                'Content-Type': 'application/json',
+                // FormData 请求由浏览器自动设置 multipart boundary,强制 JSON 头会导致上传失败
+                ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
                 ...(options.headers || {}),
             },
             signal: controller.signal,

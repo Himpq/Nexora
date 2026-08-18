@@ -10,9 +10,6 @@
 <template>
     <div v-if="file" class="file-center-detail">
         <div class="file-center-detail-head">
-            <button class="file-center-tool-btn" type="button" title="返回" aria-label="返回" @click="emit('back')">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-            </button>
             <span class="file-center-file-icon" :class="fileToneClass(file)" aria-hidden="true">
                 <i :class="fileIconClass(file)"></i>
             </span>
@@ -20,21 +17,18 @@
                 <h1 :title="fileDisplayName(file)">{{ fileDisplayName(file) }}</h1>
                 <div class="file-center-detail-meta">{{ metaText }}</div>
             </div>
-            <div class="file-center-detail-actions">
-                <button class="file-center-tool-btn" type="button" title="下载" aria-label="下载" @click="download">
-                    <i class="fa-solid fa-download" aria-hidden="true"></i>
-                </button>
-            </div>
         </div>
         <div class="file-center-detail-content" id="fileCenterDetailContent">
             <div v-if="loading" class="file-center-empty">加载中...</div>
-            <img
-                v-else-if="isImageFile(file)"
+            <div v-else-if="isImageFile(file)" class="file-center-detail-image-wrap">
+                <img
                 class="file-center-detail-image"
                 :src="fileDownloadUrl(fileRef(file), true)"
                 :alt="fileDisplayName(file)"
-            >
-            <pre v-else class="file-center-detail-text">{{ content || '(无文本内容)' }}</pre>
+                >
+            </div>
+            <pre v-else-if="content" class="file-center-detail-pre">{{ content }}</pre>
+            <div v-else class="file-center-detail-empty">文件内容为空</div>
         </div>
     </div>
 </template>
@@ -56,12 +50,9 @@
     } from '@/api/files-center'
     import { showError } from '@/stores/notify'
 
+
     const props = defineProps<{
         file: CloudFileItem | null
-    }>()
-
-    const emit = defineEmits<{
-        back: []
     }>()
 
     const content = ref('')
@@ -113,10 +104,4 @@
         }
     }
 
-    /** 下载文件 */
-    function download(): void {
-        if (props.file) {
-            window.location.href = fileDownloadUrl(fileRef(props.file))
-        }
-    }
 </script>

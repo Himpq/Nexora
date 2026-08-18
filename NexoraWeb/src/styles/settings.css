@@ -103,10 +103,11 @@
 .settings-page-head {
     flex: none;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 20px 28px 14px;
+    gap: 14px;
+    min-height: 58px;
+    padding: 10px 28px;
     border-bottom: 1px solid #f2f2f2;
 }
 
@@ -136,17 +137,38 @@
 }
 
 .settings-page-head-actions {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
     gap: 8px;
-    padding-top: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.settings-page-head-commands {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 8px;
+    min-width: max-content;
+}
+
+.settings-page-head-actions .settings-page-head-tabs {
+    flex: none;
 }
 
 /* 页头按钮 subtab 条件显隐:visibility 隐藏保留占位,切换时 tabs 位置不跳动 */
 .settings-page-head-actions .is-hidden {
     visibility: hidden;
     pointer-events: none;
+}
+
+.settings-page-head-actions .gddp-button.is-hidden {
+    min-width: var(--gddp-action-min-width);
 }
 
 /* ==================== 胶囊分段(GDDP 统一:页头 subtabs / 模式切换 / 分段选择共用一套视觉) ==================== */
@@ -159,6 +181,8 @@
     padding: 3px;
     background: #f3f3f3;
     border-radius: 8px;
+    width: max-content;
+    max-width: 100%;
 }
 
 .settings-page-head-tab,
@@ -346,20 +370,73 @@
 /* ==================== 按钮:已上收 GDDP 全局层 buttons.css(白底描边,禁止黑底) ==================== */
 /* 全应用统一按钮语言,设置壳不再单独定义;操作行布局见下方 .setting-action-row */
 
-/* ==================== 操作按钮行(GDDP 统一:等宽 flex:1,全设置壳唯一操作行语言) ==================== */
+/* ==================== 操作按钮行(GDDP 统一:内容宽度 + 稳定最小宽度) ==================== */
 /* 统一替换 mail-actions / auth-actions / papi-action-row / admin-user-action-row 等历史写法 */
 
 .settings-modal-shell .setting-action-row {
     display: flex;
-    gap: 10px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--gddp-action-gap);
     margin-top: 14px;
 }
 
 .settings-modal-shell .setting-action-row > button {
-    flex: 1;
-    min-width: 0;
-    height: 34px;
+    flex: 0 1 auto;
+    min-width: var(--gddp-action-min-width);
+    height: var(--gddp-control-height);
     justify-content: center;
+}
+
+/* GDDP 按钮组件与旧 class 共用同一套几何令牌。 */
+.gddp-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: var(--gddp-action-min-width);
+    height: var(--gddp-control-height);
+    padding: 0 16px;
+    border: 1px solid #c9c9c9;
+    border-radius: var(--gddp-border-radius);
+    background: #fff;
+    color: #2e2e2e;
+    font-size: 13px;
+    font-weight: 550;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.gddp-button-primary {
+    border-color: #111;
+    color: #111;
+    font-weight: 600;
+}
+
+.gddp-button-danger {
+    border-color: #f0c4c4;
+    background: #fff7f7;
+    color: #c0392b;
+}
+
+.gddp-button-quiet {
+    border-color: transparent;
+    background: transparent;
+    color: #6b7280;
+}
+
+.gddp-button-compact {
+    min-width: auto;
+    height: var(--gddp-control-height-compact);
+    padding: 0 12px;
+    font-size: 12.5px;
+}
+
+.gddp-button-icon {
+    min-width: var(--gddp-control-height);
+    width: var(--gddp-control-height);
+    padding: 0;
 }
 
 /* ==================== 开关行 / 模式切换 ==================== */
@@ -392,6 +469,13 @@
     justify-content: space-between;
     gap: 10px;
     margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e8e8e8;
+}
+
+.settings-modal-shell .admin-users-toolbar {
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e8e8e8;
 }
 
 .settings-modal-shell .admin-system-toolbar-row h4 {
@@ -1123,13 +1207,14 @@
 .settings-profile-head {
     display: flex;
     align-items: flex-start;
-    gap: 22px;
+    gap: 28px;
     padding-bottom: 14px;
     border-bottom: 1px solid #f4f4f4;
 }
 
 .settings-avatar-panel {
-    flex: none;
+    flex: 0 0 132px;
+    width: 132px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1137,8 +1222,8 @@
 }
 
 .settings-avatar {
-    width: 76px;
-    height: 76px;
+    width: 104px;
+    height: 104px;
     border-radius: 50%;
     background-size: cover;
     background-position: center;
@@ -1169,6 +1254,10 @@
 .settings-profile-meta .setting-row {
     border-bottom: none;
     min-height: 44px;
+}
+
+.settings-profile-name-input {
+    width: min(240px, 100%);
 }
 
 .settings-userid-inline {
@@ -1262,17 +1351,18 @@
 /* ==================== Skill(原生全局类,在设置壳内统一风格) ==================== */
 /* 子 tab 与工具栏已上移 settings-page-head(见 .settings-page-head-tabs) */
 
-/* 我的 Skill 卡片 (2 列网格;min-height 允许长内容自然撑高,杜绝固定高溢出) */
+/* 我的 Skill 卡片:响应式网格与内容驱动高度,不继承 legacy 固定高度。 */
 .settings-modal-shell .settings-skill-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
     gap: 14px;
     padding-right: 6px;
 }
 
 .settings-modal-shell .settings-skill-card {
-    /* min-height:内容超出 140px 时自然撑高,杜绝固定高裁切溢出 */
+    height: auto;
     min-height: 140px;
+    min-width: 0;
     border: 1px solid #e5e7eb;
     border-radius: 16px;
     padding: 14px 14px 12px;
@@ -1284,9 +1374,10 @@
 
 .settings-modal-shell .settings-skill-top {
     display: grid;
-    grid-template-columns: 52px minmax(0, 1fr) 92px;
+    grid-template-columns: 52px minmax(0, 1fr) minmax(76px, 92px);
     gap: 10px;
     align-items: start;
+    min-width: 0;
 }
 
 .settings-modal-shell .settings-skill-icon {
@@ -1339,8 +1430,14 @@
 .settings-modal-shell .settings-skill-controls {
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
+    align-items: stretch;
     gap: 5px;
+    min-width: 0;
+}
+
+.settings-modal-shell .settings-skill-controls .setting-select {
+    width: 100% !important;
+    min-width: 0;
 }
 
 .settings-modal-shell .settings-skill-mode-label {
@@ -1916,6 +2013,13 @@
     color: #b0b0b0;
 }
 
+.setting-select-menu-state {
+    padding: 12px 10px;
+    color: #999999;
+    font-size: 12px;
+    text-align: center;
+}
+
 .setting-select-menu button {
     display: block;
     width: 100%;
@@ -2041,127 +2145,89 @@
     color: #7a7a7a;
 }
 
-/* ==================== 通用模型选择(SettingModelSelect) ==================== */
-/* 浮层回退源版 #memoryModelOptions 实现:外层 fixed + max-height 300 + overflow hidden,
- * 内层滚动区继承 max-height 滚动(不占用父元素体积,组件以 inline style 注入 fixed 坐标) */
+/* ==================== 窄宽响应式规则 ==================== */
+@media (max-width: 760px) {
+    .settings-page-head {
+        gap: 10px;
+        padding-inline: 18px;
+    }
 
-.setting-model-select {
-    position: relative;
-    flex: none;
+    .settings-page-head-actions {
+        justify-content: flex-end;
+    }
+
+    .settings-profile-head {
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .settings-avatar-panel {
+        width: 100%;
+        flex-basis: auto;
+    }
+
+    .settings-profile-meta {
+        width: 100%;
+    }
+
+    .settings-modal-shell .settings-management-layout,
+    .settings-modal-shell .admin-users-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .settings-modal-shell .settings-management-list,
+    .settings-modal-shell .admin-users-list {
+        height: auto;
+        max-height: 220px;
+    }
+
+    .settings-modal-shell .settings-skill-top {
+        grid-template-columns: 44px minmax(0, 1fr);
+    }
+
+    .settings-modal-shell .settings-skill-controls {
+        grid-column: 2;
+        align-items: flex-start;
+    }
+
+    .settings-modal-shell .settings-skill-footer {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .mail-bind-pair {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .mail-bind-arrow {
+        transform: rotate(90deg);
+        align-self: center;
+    }
+
+    .mail-info-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mail-info-cell-full {
+        grid-column: auto;
+    }
 }
 
-.setting-model-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    z-index: 60;
-    width: min(340px, calc(100vw - 24px));
-    max-height: 300px;
-    padding: 0;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background: #fff;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-    overflow: hidden;
-    display: none;
-}
+@media (max-width: 480px) {
+    .settings-modal-shell .settings-page-head-main {
+        min-width: 120px;
+    }
 
-.setting-model-menu.open {
-    display: block;
-}
+    .settings-modal-shell .mail-bind-input-row {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
 
-/* 内层滚动区复用源版 .model-options-scroll 命名(max-height inherit + padding 12 自滚动) */
-.setting-model-menu .model-options-scroll {
-    max-height: inherit;
-    padding: 12px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
+    .settings-modal-shell .mail-bind-input-row .input-modern {
+        flex-basis: 100%;
+    }
 }
-
-.setting-model-group + .setting-model-group {
-    border-top: 1px solid #f2f2f2;
-    margin-top: 4px;
-    padding-top: 4px;
-}
-
-.setting-model-group-label {
-    padding: 4px 10px 2px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: #a0a0a0;
-}
-
-.setting-model-menu button {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 7px 10px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    font-size: 12.5px;
-    color: #3c3c3c;
-    text-align: left;
-    cursor: pointer;
-}
-
-.setting-model-menu button:hover,
-.setting-model-menu button.active {
-    background: #f1f1f1;
-    color: #111111;
-    font-weight: 550;
-}
-
-.setting-model-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.setting-model-provider {
-    flex: none;
-    font-size: 11px;
-    color: #999999;
-}
-
-.setting-model-status {
-    flex: none;
-    padding: 0 7px;
-    border-radius: 999px;
-    font-size: 10.5px;
-    font-weight: 550;
-}
-
-.setting-model-status.status-normal {
-    background: #e8f5e9;
-    color: #2e7d32;
-}
-
-.setting-model-status.status-error {
-    background: #fdecea;
-    color: #b03a2e;
-}
-
-.setting-model-status.status-disabled {
-    background: #f2f2f2;
-    color: #7a7a7a;
-}
-
-.setting-model-menu-state {
-    padding: 14px 10px;
-    text-align: center;
-    font-size: 12.5px;
-    color: #a0a0a0;
-}
-
-/* ==================== 通用滚动条(设置壳内浅色) ==================== */
 
 .settings-modal-shell ::-webkit-scrollbar {
     width: 8px;
@@ -2181,105 +2247,3 @@
     background: transparent;
 }
 
-/* ==================== ModelSelect 浮层下拉(对齐原版 chat_memory_settings.css) ==================== */
-
-/* 触发按钮:像按钮而非纯文本 */
-.settings-modal-shell .custom-select-container .select-selected {
-    appearance: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-height: 34px;
-    padding: 6px 12px;
-    border: 1px solid #d8dee7;
-    border-radius: 8px;
-    background: #ffffff;
-    color: #1a1a1a;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: border-color 0.15s ease, background 0.15s ease;
-    text-align: left;
-    width: 100%;
-    max-width: 320px;
-}
-
-.settings-modal-shell .custom-select-container .select-selected:hover {
-    border-color: #b8c2cf;
-    background: #f8fafc;
-}
-
-.settings-modal-shell .custom-select-container .select-selected.select-arrow-active {
-    border-color: #111111;
-    background: #f1f5f9;
-}
-
-.settings-modal-shell .custom-select-container .select-selected:focus-visible {
-    outline: 2px solid rgba(37, 99, 235, 0.18);
-    outline-offset: 1px;
-}
-
-/* 按钮文字(截断) */
-.settings-modal-shell .custom-select-container .select-selected-text {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* 下拉箭头(SVG chevron) */
-.settings-modal-shell .custom-select-container .select-chevron {
-    flex: 0 0 10px;
-    width: 10px;
-    height: 10px;
-    background-image: url('data:image/svg+xml,%3Csvg width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22 fill=%22none%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M1 1.5L5 4.5L9 1.5%22 stroke=%22%23666666%22 stroke-width=%221.8%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E');
-    background-repeat: no-repeat;
-    background-position: center;
-    transition: transform 0.2s ease;
-    opacity: 0.6;
-}
-
-.settings-modal-shell .custom-select-container .select-arrow-active .select-chevron {
-    transform: rotate(180deg);
-    opacity: 1;
-}
-
-/* 浮层下拉:position:fixed 脱离父容器裁剪;视觉完全继承原版 .select-items(style.css:radius 16 大菜单) */
-/* 仅在此声明定位与响应式钳制,禁止再覆盖 model-* 内部样式(历史紧凑化覆盖已删) */
-.select-items.select-items-floating {
-    position: fixed !important;
-    z-index: 20010 !important;
-    min-width: min(600px, calc(100vw - 24px));
-    max-width: min(600px, calc(100vw - 24px));
-    max-height: min(540px, calc(100vh - 24px));
-}
-
-/* 原版 webkit 滚动条绑 #modelOptions id,浮层菜单需按原值重新声明 */
-.select-items-floating .model-options-scroll::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-}
-
-.select-items-floating .model-options-scroll::-webkit-scrollbar-track {
-    margin: 10px 0;
-    border-radius: 999px;
-    background: transparent;
-}
-
-.select-items-floating .model-options-scroll::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
-    border-radius: 999px;
-    background: rgba(100, 116, 139, 0.42);
-    background-clip: content-box;
-}
-
-.select-items-floating .model-options-scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(71, 85, 105, 0.56);
-    background-clip: content-box;
-}
-
-.select-items-floating .model-options-scroll::-webkit-scrollbar-corner {
-    background: transparent;
-}

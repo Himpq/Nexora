@@ -9,7 +9,7 @@
 
 import { defineStore } from 'pinia'
 
-import { fetchAppConfig, type AppConfig, type ModelItem } from '@/api/config'
+import { fetchAppConfig, normalizeModelItems, type AppConfig, type ModelItem } from '@/api/config'
 
 /** localStorage 键:选中模型 */
 const SELECTED_MODEL_KEY = 'nexora.selectedModelId'
@@ -99,7 +99,7 @@ export const useModelStore = defineStore('model', {
 
         /** 应用 config:填充模型目录并恢复选中模型 */
         applyConfig(config: AppConfig): void {
-            this.models = Array.isArray(config.models) ? config.models : []
+            this.models = normalizeModelItems(config.models)
 
             const cached = localStorage.getItem(SELECTED_MODEL_KEY)
 

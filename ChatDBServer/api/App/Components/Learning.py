@@ -18,7 +18,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[3]
 CONFIG_PATH = ROOT_DIR / "data" / "config.json"
 
 

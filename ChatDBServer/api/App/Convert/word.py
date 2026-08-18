@@ -126,7 +126,7 @@ class MarkdownWordConverter:
     max_image_width_inches = 5.8
 
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = Path(base_dir or Path(__file__).resolve().parents[2]).resolve()
+        self.base_dir = Path(base_dir or Path(__file__).resolve().parents[3]).resolve()
 
     def build(self, contents: Iterable[str]) -> BytesIO:
         document = Document()

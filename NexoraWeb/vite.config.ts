@@ -22,12 +22,8 @@ export default defineConfig(({ command }) => ({
         emptyOutDir: true,
         rolldownOptions: {
             output: {
-                // 按依赖拆分 chunk:naive-ui 及其依赖独立成块,其余第三方进 vendor,减小首屏主包
+                // 第三方依赖统一进入 vendor,避免为已移除的 UI 框架保留无效 chunk。
                 manualChunks(id: string): string | undefined {
-                    if (/node_modules\/(naive-ui|vooks|vueuc|seemly|css-render|treemate|evtd|date-fns|async-validator|lodash-es|@css-render|@emotion|@juggle|@types)/.test(id)) {
-                        return 'naive-ui'
-                    }
-
                     if (id.includes('node_modules')) {
                         return 'vendor'
                     }

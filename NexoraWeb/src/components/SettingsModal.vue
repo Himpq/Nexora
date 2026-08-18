@@ -22,52 +22,16 @@
             <SettingsNav :groups="navGroups" :active="activeTab" @select="onTabSelect" />
 
             <section class="settings-main">
-                <header class="settings-page-head">
-                    <div class="settings-page-head-main">
-                        <h2>{{ activeTabMeta?.title }}</h2>
-                        <p>{{ activeTabMeta?.description }}</p>
-                    </div>
-                    <!-- 页面级操作(页头统一:按钮/筛选/下拉/subtabs 子标签) -->
-                    <div v-if="activeTabActions.length" class="settings-page-head-actions">
-                        <template v-for="action in activeTabActions" :key="action.method">
-                            <div v-if="action.type === 'subtabs'" class="settings-page-head-tabs" role="tablist">
-                                <button
-                                    v-for="option in action.options || []"
-                                    :key="option.value"
-                                    class="settings-page-head-tab"
-                                    :class="{ active: headSubTabs[action.method] === option.value }"
-                                    type="button"
-                                    @click="onHeadSubTab(action.method, option.value)"
-                                >{{ option.label }}</button>
-                            </div>
-                            <input
-                                v-else-if="action.type === 'filter'"
-                                v-model="headFilters[action.method]"
-                                class="input-modern settings-page-head-filter"
-                                :placeholder="action.placeholder || '筛选...'"
-                                @input="onHeadFilterInput(action.method)"
-                            >
-                            <SettingSelect
-                                v-else-if="action.type === 'select'"
-                                :model-value="headSelects[action.method]"
-                                :options="action.options || []"
-                                :placeholder="action.placeholder"
-                                :width="action.width || '120px'"
-                                @update:model-value="onHeadSelect(action.method, String($event))"
-                            />
-                            <button
-                                v-else
-                                class="btn-primary-outline btn-compact"
-                                :class="{ 'is-hidden': !isActionVisible(action) }"
-                                type="button"
-                                @click="runPanelAction(action.method)"
-                            >
-                                <i :class="action.icon" aria-hidden="true"></i>
-                                <span>{{ action.label }}</span>
-                            </button>
-                        </template>
-                    </div>
-                </header>
+                <SettingsPageHeader
+                    :title="activeTabMeta?.title"
+                    :description="activeTabMeta?.description"
+                    :actions="activeTabActions"
+                    :selects="headSelects"
+                    :subtabs="headSubTabs"
+                    @action="runPanelAction"
+                    @select="onHeadSelect"
+                    @subtab="onHeadSubTab"
+                />
 
                 <div class="settings-page-body">
                     <!-- 个人资料 -->
@@ -93,8 +57,7 @@
                                         <input
                                             id="set-username-input"
                                             v-model="profileName"
-                                            class="input-modern"
-                                            style="width: 240px;"
+                                            class="input-modern settings-profile-name-input"
                                             type="text"
                                             maxlength="60"
                                         >
@@ -134,31 +97,7 @@
 
                     <!-- 使用统计 -->
                     <template v-else-if="activeTab === 'statistics'">
-                        <div class="settings-stat-summary-grid">
-                            <div class="settings-stat-card">
-                                <span class="label">对话数</span>
-                                <span class="value">{{ stats.total_conversations ?? '-' }}</span>
-                            </div>
-                            <div class="settings-stat-card">
-                                <span class="label">Token 消耗</span>
-                                <span class="value">{{ formatTokens(stats.total_tokens) }}</span>
-                            </div>
-                            <div class="settings-stat-card">
-                                <span class="label">知识点数</span>
-                                <span class="value">{{ stats.total_knowledge ?? '-' }}</span>
-                            </div>
-                        </div>
-
-                        <SettingCard title="模型使用统计" description="各模型调用次数">
-                            <div v-if="!modelUsageRows.length" class="settings-stat-empty">暂无数据</div>
-                            <SettingRow
-                                v-for="row in modelUsageRows"
-                                :key="row.model"
-                                :label="row.model"
-                            >
-                                <span class="settings-stat-count">{{ row.count }} 次调用</span>
-                            </SettingRow>
-                        </SettingCard>
+                        <UserStatsPanel />
                     </template>
 
                     <!-- 我的 API Key -->
@@ -217,7 +156,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onMounted, ref, watch } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import { apiFetch } from '@/api/client'
     import { fetchMailGroups } from '@/api/admin-mail'
@@ -226,8 +165,8 @@
     import Modal from '@/ui/Modal.vue'
     import SettingCard from '@/ui/settings/SettingCard.vue'
     import SettingRow from '@/ui/settings/SettingRow.vue'
-    import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import SettingsNav, { type SettingsNavGroup } from '@/ui/settings/SettingsNav.vue'
+    import SettingsPageHeader from '@/ui/settings/SettingsPageHeader.vue'
 
     import AvatarCropModal from './AvatarCropModal.vue'
     import AdminAuthPanel from './AdminAuthPanel.vue'
@@ -242,6 +181,7 @@
     import PreferencesPanel from './PreferencesPanel.vue'
     import SkillsPanel from './SkillsPanel.vue'
     import UserApiKeysPanel from './UserApiKeysPanel.vue'
+    import UserStatsPanel from './UserStatsPanel.vue'
 
     const emit = defineEmits<{
         close: []
@@ -352,9 +292,9 @@
     /** 邮箱分组选项(页头下拉数据源;切到邮箱 tab 时拉取) */
     const mailGroupOptions = ref<Array<{ value: string; label: string }>>([])
 
-    /** 页头动作:button=按钮 / filter=筛选输入 / select=下拉 / subtabs=胶囊子标签(对齐原版 toolbar 全部内容提升到页头) */
+    /** 页头动作:button=按钮 / select=下拉 / subtabs=胶囊子标签 */
     interface PageHeadAction {
-        type?: 'button' | 'filter' | 'select' | 'subtabs'
+        type?: 'button' | 'select' | 'subtabs'
         label?: string
         icon?: string
         method: string
@@ -365,7 +305,7 @@
         subTab?: string
     }
 
-    /** 各 tab 页头操作:原版 toolbar 的所有内容(主按钮 + 筛选输入 + 单位下拉 + 子标签)统一放在页头 */
+    /** 各 tab 页头操作:页级下拉、按钮和 Skill 子标签 */
     const pageActionsMap = computed<Record<string, PageHeadAction[]>>(() => ({
         'skills': [
             { type: 'subtabs', method: 'switchSubTab', options: [
@@ -380,12 +320,10 @@
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
         'admin-users': [
-            { type: 'filter', method: 'setQuery', placeholder: '筛选用户:用户名 / ID / 角色 / IP' },
             { label: '添加用户', icon: 'fa-solid fa-user-plus', method: 'openCreate' },
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
         'admin-models': [
-            { type: 'filter', method: 'setQuery', placeholder: '筛选:Provider / 模型ID / 名称 / 状态' },
             { type: 'select', method: 'setQuotaUnit', placeholder: '自动', width: '110px', options: [
                 { value: 'auto', label: '自动' },
                 { value: 'k', label: 'K' },
@@ -398,12 +336,10 @@
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
         'admin-auth': [
-            { type: 'filter', method: 'setOwnerFilter', placeholder: '按用户筛选' },
             { label: '生成 Public API Key', icon: 'fa-solid fa-key', method: 'openCreate' },
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
         'admin-gen-image': [
-            { type: 'filter', method: 'setQuery', placeholder: '筛选接口:名称 / BaseURL / 模型 / 状态' },
             { label: '添加接口', icon: 'fa-solid fa-plus', method: 'handleAdd' },
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
@@ -413,7 +349,6 @@
         'admin-mail': [
             // options 经 computed 读取 mailGroupOptions.value,拉取后自动更新
             { type: 'select', method: 'setGroup', placeholder: '分组', width: '150px', options: mailGroupOptions.value },
-            { type: 'filter', method: 'setQuery', placeholder: '筛选邮箱用户:用户名 / 权限 / 路径' },
             { label: '添加邮箱用户', icon: 'fa-solid fa-user-plus', method: 'handleAdd' },
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
@@ -422,10 +357,9 @@
 
     const activeTabActions = computed(() => pageActionsMap.value[activeTab.value] || [])
 
-    /** 切 tab:重置页头筛选/下拉/子标签值,并按需拉取动态选项 */
+    /** 切 tab:重置页头下拉/子标签值,并按需拉取动态选项 */
     function onTabSelect(tab: string): void {
         activeTab.value = tab
-        headFilters.value = {}
         headSelects.value = {}
         headSubTabs.value = {}
 
@@ -450,17 +384,10 @@
         }
     }
 
-    /** 页头筛选输入值(按 action.method 索引,切 tab 时重置) */
-    const headFilters = ref<Record<string, string>>({})
     /** 页头下拉值(按 action.method 索引) */
     const headSelects = ref<Record<string, string>>({})
     /** 页头子标签激活值(按 action.method 索引,切 tab 时重置) */
     const headSubTabs = ref<Record<string, string>>({})
-
-    /** 页头筛选输入:转发给面板 setQuery 等方法 */
-    function onHeadFilterInput(method: string): void {
-        runPanelAction(method, headFilters.value[method] || '')
-    }
 
     /** 页头下拉选择:转发给面板 setQuotaUnit / setGroup 等方法 */
     function onHeadSelect(method: string, value: string): void {
@@ -472,15 +399,6 @@
     function onHeadSubTab(method: string, value: string): void {
         headSubTabs.value[method] = value
         runPanelAction(method, value)
-    }
-
-    /** 按钮可见性:未声明 subTab 恒显示;声明了则仅在对应子标签激活时显示 */
-    function isActionVisible(action: PageHeadAction): boolean {
-        if (!action.subTab) {
-            return true
-        }
-
-        return Object.values(headSubTabs.value).includes(action.subTab)
     }
 
     /** 执行面板页头操作(可携带筛选/下拉值) */
@@ -571,32 +489,6 @@
         input.value = ''
     }
 
-    /** 使用统计 */
-    const stats = ref<{
-        total_conversations?: number
-        total_tokens?: number
-        total_knowledge?: number
-        model_usage?: Record<string, number>
-    }>({})
-
-    /** 模型使用统计行(按调用次数降序,对齐原版 modelUsageStats) */
-    const modelUsageRows = computed(() => {
-        const usage = stats.value.model_usage
-
-        if (!usage || typeof usage !== 'object') {
-            return []
-        }
-
-        return Object.entries(usage)
-            .map(([model, count]) => ({ model, count: Number(count || 0) }))
-            .sort((a, b) => b.count - a.count)
-    })
-
-    function formatTokens(value: unknown): string {
-        const num = Number(value || 0)
-
-        return Number.isFinite(num) ? num.toLocaleString() : '-'
-    }
 
     /** 打开时重置到个人资料页 */
     watch(
@@ -614,13 +506,4 @@
         }
     )
 
-    onMounted(() => {
-        apiFetch<{ success: boolean; stats?: typeof stats.value }>('/api/user/stats')
-            .then((data) => {
-                if (data.stats) {
-                    stats.value = data.stats
-                }
-            })
-            .catch(() => undefined)
-    })
 </script>

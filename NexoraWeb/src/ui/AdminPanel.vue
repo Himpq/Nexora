@@ -6,7 +6,7 @@
         > settings-management-list(左侧列表)
         > settings-management-detail(右侧详情)
 
-    页面级操作(筛选/新增/刷新)已全部上移 settings-page-head,
+    页面级操作(新增/刷新/必要的下拉)已全部上移 settings-page-head,
     面板不再包含工具栏。
 
     用法:

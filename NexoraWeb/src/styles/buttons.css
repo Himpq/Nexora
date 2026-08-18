@@ -13,7 +13,7 @@
  *   .btn-primary / .btn-confirm — 主操作:黑边 + 白底 + 黑字,34px
  *   .btn-primary-outline        — 次操作:灰边 + 白底 + 深灰字,34px
  *   .btn-cancel                 — 取消操作:浅灰底,34px
- *   .btn-danger-small           — 危险操作:淡红底 + 红字,30px
+ *   .btn-danger-small           — 危险操作:淡红底 + 红字,34px
  *   .btn-compact                — 紧凑尺寸修饰:30px,可与上述按钮叠加
  */
 
@@ -101,7 +101,7 @@
     justify-content: center;
     gap: 6px;
     width: auto;
-    height: 30px;
+    height: var(--gddp-control-height);
     padding: 0 12px;
     border: 1px solid #f0c4c4;
     border-radius: 7px;
