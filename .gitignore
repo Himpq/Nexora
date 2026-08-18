@@ -46,3 +46,6 @@ NexoraLearning/frontend/assets/vendor/echarts/LICENSE
 data/
 NexoraSearch/storage
 .npm-cache/
+
+# NexoraWeb 构建产物(部署时构建,不纳入版本控制)
+ChatDBServer/static/new/
