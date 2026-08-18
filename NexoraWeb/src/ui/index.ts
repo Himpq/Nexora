@@ -1,5 +1,6 @@
 export { default as AdminPanel } from './AdminPanel.vue'
 export { default as Button } from './Button.vue'
+export { default as MarkdownEditor } from './editor/MarkdownEditor.vue'
 export { default as Modal } from './Modal.vue'
 export { default as ModelSelectBase } from './model/ModelSelectBase.vue'
 export { default as ProviderIcon } from './model/ProviderIcon.vue'

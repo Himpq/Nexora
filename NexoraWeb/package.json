@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@toast-ui/editor": "^3.2.2",
     "@types/katex": "^0.16.8",
     "@vicons/ionicons5": "^0.13.0",
     "echarts": "^6.1.0",

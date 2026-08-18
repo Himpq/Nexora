@@ -7,7 +7,9 @@
 
     /* 路径别名:@ 指向 src,与 vite.config.ts 保持一致 */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      /* @toast-ui/editor 的 exports 缺 types 条件,映射到类型文件 */
+      "@toast-ui/editor": ["./node_modules/@toast-ui/editor/types/index.d.ts"]
     },
 
     /* Linting */
