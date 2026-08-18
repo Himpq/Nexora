@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterator, Optional
 from basis.Database import safe_append_jsonl
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PAPI_LOG_ROOT = os.path.join(DATA_DIR, "papi")
 TOKEN_LOG_FILENAME = "token_log.jsonl"

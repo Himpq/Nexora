@@ -281,7 +281,7 @@ class OllamaProvider(OpenAIProvider):
 
     def _context_window_cache_path(self) -> str:
         return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))),
             "data",
             "res",
             "models_context_window.json",

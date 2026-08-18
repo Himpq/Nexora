@@ -48,7 +48,7 @@ class UserFileSandbox:
 
     def __init__(self, username: str):
         self.username = str(username or "").strip()
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.base_dir = base_dir
         self.temp_dir = os.path.join(base_dir, "data", "temp")
         self.user_dir = os.path.join(base_dir, "data", "users", self.username)

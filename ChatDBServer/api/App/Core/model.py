@@ -3072,7 +3072,7 @@ class Model(MailMixin):
         return content
 
     def _conversation_asset_dir(self, conversation_id: str) -> str:
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         return os.path.join(
             root_dir,
             "data",

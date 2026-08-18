@@ -29,7 +29,7 @@ ASSET_URL_PATTERN = re.compile(r"/api/conversations/([^/\s]+)/assets/([A-Za-z0-9
 
 def conversation_asset_root(username: str) -> str:
     return safe_join_path(
-        os.path.dirname(os.path.dirname(__file__)),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "data",
         "users",
         str(username or ""),
