@@ -13,10 +13,14 @@ import {
     createConversation,
     deleteConversation,
     fetchMessages,
+    fetchTurns,
+    INITIAL_MESSAGE_LIMIT,
     listConversations,
+    PREVIOUS_MESSAGE_LIMIT,
     type ChatMessage,
     type ConversationBranch,
     type ConversationSummary,
+    type ConversationTurn,
 } from '@/api/conversations'
 
 interface ConversationState {
@@ -35,6 +39,12 @@ interface ConversationState {
     loadingBefore: boolean
     /** 流式更新的目标助手消息索引(重答时指向被覆盖的历史回答;null 表示最后一条) */
     streamingTargetIndex: number | null
+    /** 消息加载中(切换会话期间为真;模板据此显示加载占位而非欢迎页/旧内容) */
+    messagesLoading: boolean
+    /** 会话完整用户轮次(单独从 /turns 拉取,与窗口化消息解耦) */
+    turns: ConversationTurn[]
+    /** 加载序号:并发切换时丢弃过期结果,避免旧会话内容覆盖新会话 */
+    loadSeq: number
 }
 
 /** 排队消息(生成中发送的内容进入队列,当前流结束后自动发送) */
@@ -63,6 +73,9 @@ export const useConversationStore = defineStore('conversation', {
         hasMoreBefore: false,
         loadingBefore: false,
         streamingTargetIndex: null,
+        messagesLoading: false,
+        turns: [],
+        loadSeq: 0,
     }),
 
     getters: {
@@ -106,6 +119,8 @@ export const useConversationStore = defineStore('conversation', {
             this.hasMoreBefore = false
             this.loadingBefore = false
             this.streamingTargetIndex = null
+            this.messagesLoading = false
+            this.turns = []
         },
 
         /** 确保存在会话 ID;为空时调用后端创建(发送路径使用) */
@@ -126,25 +141,48 @@ export const useConversationStore = defineStore('conversation', {
             return this.currentId
         },
 
-        /** 切换当前会话并加载消息 */
+        /** 切换当前会话并加载消息(不立即清空旧消息,避免欢迎页闪烁) */
         async openConversation(conversationId: string): Promise<void> {
             if (!conversationId || conversationId === this.currentId) {
                 return
             }
 
+            // 序号自增:本次加载期间若再次切换,过期结果将被丢弃
+            const seq = ++this.loadSeq
+
             this.currentId = conversationId
             this.hasMoreBefore = false
             this.loadingBefore = false
             this.streamingTargetIndex = null
+            this.messagesLoading = true
+            // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
+            this.turns = []
 
-            // 立即清空消息:避免网络窗口内残留旧会话内容(原版 renderMessages 先 innerHTML='' 再渲染)
-            this.messages = []
+            try {
+                await this.loadMessages(seq)
 
-            await this.loadMessages()
+                // 仅当本次加载未被更新的切换覆盖时才提交结果
+                if (seq === this.loadSeq) {
+                    await this.loadTurns()
+                }
+            } catch (error) {
+                // 加载失败:本次负责时清空,避免残留上一个会话的内容
+                if (seq === this.loadSeq) {
+                    this.messages = []
+                    this.turns = []
+                }
+
+                throw error
+            } finally {
+                // 仅当仍是本次加载负责时复位加载态,避免覆盖后续切换的加载中状态
+                if (seq === this.loadSeq) {
+                    this.messagesLoading = false
+                }
+            }
         },
 
-        /** 加载当前会话消息(最近 100 条作为初始窗口);补齐后端绝对索引 */
-        async loadMessages(): Promise<void> {
+        /** 加载当前会话消息(最近 INITIAL_MESSAGE_LIMIT 条作为初始窗口);补齐后端绝对索引 */
+        async loadMessages(seq?: number): Promise<void> {
             if (!this.currentId) {
                 this.messages = []
                 this.hasMoreBefore = false
@@ -154,7 +192,12 @@ export const useConversationStore = defineStore('conversation', {
                 return
             }
 
-            const data = await fetchMessages(this.currentId, { limit: 100 })
+            const data = await fetchMessages(this.currentId, { limit: INITIAL_MESSAGE_LIMIT })
+
+            // 加载期间发生切换:丢弃过期结果,避免旧会话内容覆盖当前会话
+            if (Number.isFinite(seq) && seq !== this.loadSeq) {
+                return
+            }
 
             const rawMessages = Array.isArray(data.messages) ? data.messages : []
             const startIndex = Number(data.start_index || 0)
@@ -167,12 +210,23 @@ export const useConversationStore = defineStore('conversation', {
             this.loadingBefore = false
         },
 
+        /** 拉取会话完整用户轮次(对齐原版 /turns 单独获取,与窗口化消息解耦) */
+        async loadTurns(): Promise<void> {
+            if (!this.currentId) {
+                this.turns = []
+
+                return
+            }
+
+            this.turns = await fetchTurns(this.currentId)
+        },
+
         /**
          * 加载更早消息并前置合并(对齐原版 loadPreviousConversationMessages):
          * 以当前最早消息索引为 before 拉取上一页,按后端绝对索引去重合并到头部。
          * 返回是否真正加载了新消息。
          */
-        async loadPreviousMessages(limit = 50): Promise<boolean> {
+        async loadPreviousMessages(limit = PREVIOUS_MESSAGE_LIMIT): Promise<boolean> {
             if (!this.currentId || !this.hasMoreBefore || this.loadingBefore || this.messages.length === 0) {
                 return false
             }
@@ -223,45 +277,6 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
-        /**
-         * 确保目标消息索引已加载(对齐原版 ensureConversationMessageIndexLoaded):
-         * 目标不在当前窗口时,循环向前分页直至加载到目标或没有更早消息。
-         * 返回目标消息是否已可定位。
-         */
-        async ensureMessageIndexLoaded(messageIndex: number): Promise<boolean> {
-            const targetIndex = Number(messageIndex)
-
-            if (!Number.isFinite(targetIndex) || targetIndex < 0) {
-                return false
-            }
-
-            const loaded = () => this.messages.some(
-                (message) => Number(message.index) === targetIndex
-            )
-
-            if (loaded()) {
-                return true
-            }
-
-            let guard = 0
-
-            while (
-                guard < 80
-                && this.hasMoreBefore
-                && this.messages.length > 0
-                && targetIndex < Number(this.messages[0].index)
-            ) {
-                guard += 1
-                const added = await this.loadPreviousMessages()
-
-                if (!added || loaded()) {
-                    break
-                }
-            }
-
-            return loaded()
-        },
-
         /** 删除会话(当前会话删除后清空选择) */
         async removeConversation(conversationId: string): Promise<void> {
             await deleteConversation(conversationId)
@@ -274,6 +289,8 @@ export const useConversationStore = defineStore('conversation', {
                 this.hasMoreBefore = false
                 this.loadingBefore = false
                 this.streamingTargetIndex = null
+                this.messagesLoading = false
+                this.turns = []
             }
         },
 

@@ -2,24 +2,22 @@
     <ModelSelectBase
         v-model="selectedModelValue"
         :models="models"
-        :loading="loading"
+        :loading="modelStore.loading"
         leading-label="自动"
         :leading-placeholder="placeholder"
         :width="width"
         popover-key="gddp-memory-model-select"
-        :empty-label="loading ? '正在读取可用模型...' : '暂无可用模型'"
+        :empty-label="modelStore.loading ? '正在读取可用模型...' : '暂无可用模型'"
     />
 </template>
 
 <script setup lang="ts">
-    import { computed, onMounted, ref } from 'vue'
+    import { computed } from 'vue'
 
-    import { fetchAppConfig, normalizeModelItems } from '@/api/config'
     import { toModelSelectOptions } from '@/ui/model/adapter'
-    import { showError } from '@/stores/notify'
+    import { useModelStore } from '@/stores/model'
 
     import ModelSelectBase from '@/ui/model/ModelSelectBase.vue'
-    import type { ModelSelectOption } from '@/ui/model/types'
 
     const props = defineProps<{
         modelValue: string | number
@@ -31,8 +29,9 @@
         'update:modelValue': [value: string]
     }>()
 
-    const loading = ref(true)
-    const models = ref<ModelSelectOption[]>([])
+    // 模型目录统一取自 modelStore 单一来源,不再自行拉取/规范化,避免重复取数
+    const modelStore = useModelStore()
+    const models = computed(() => toModelSelectOptions(modelStore.models))
     const placeholder = props.placeholder || '请选择'
     const width = props.width
     const modelValue = computed(() => String(props.modelValue))
@@ -40,20 +39,4 @@
         get: () => modelValue.value,
         set: (value: string) => emit('update:modelValue', value),
     })
-
-    onMounted(() => {
-        void loadModels()
-    })
-
-    async function loadModels(): Promise<void> {
-        try {
-            const config = await fetchAppConfig()
-
-            models.value = toModelSelectOptions(normalizeModelItems(config.models))
-        } catch (error) {
-            showError(error instanceof Error ? error.message : '加载可用模型失败')
-        } finally {
-            loading.value = false
-        }
-    }
 </script>

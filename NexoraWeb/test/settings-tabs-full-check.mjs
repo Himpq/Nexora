@@ -93,7 +93,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(300)
 await page.evaluate(() => {
-    const menu = document.querySelector('.settings-modal-shell .setting-select-menu.open')
+    const menu = document.querySelector('.setting-select-menu.open')
     const dark = [...(menu?.querySelectorAll('button') || [])].find((b) => b.textContent.trim() === '深色')
     dark?.click()
     const save = [...document.querySelectorAll('.settings-modal-shell button')].find((b) => b.textContent.includes('保存偏好'))

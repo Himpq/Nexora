@@ -12,10 +12,10 @@
     <div class="settings-preferences-grid">
         <SettingCard title="外观与行为">
             <SettingRow label="主题">
-                <SettingSelect v-model="form.theme" :options="themeOptions" width="150px" />
+                <SettingSelect v-model="form.theme" :options="themeOptions" width="150px" popover-key="preferences-theme" />
             </SettingRow>
             <SettingRow label="语言">
-                <SettingSelect v-model="form.language" :options="languageOptions" width="150px" />
+                <SettingSelect v-model="form.language" :options="languageOptions" width="150px" popover-key="preferences-language" />
             </SettingRow>
             <SettingRow label="流式输出" hint="回复时逐字流式显示">
                 <SettingToggle v-model="form.streaming" label="" />
@@ -46,36 +46,30 @@
                         :class="{ active: form.learning_mode !== 'on' }"
                         :disabled="form.learning_runtime === false"
                         type="button"
-                        @click="form.learning_mode = 'off'"
+                        @click="handleLearningModeChange('off')"
                     >Nexora</button>
                     <button
                         class="settings-mode-toggle-btn"
                         :class="{ active: form.learning_mode === 'on' }"
                         :disabled="form.learning_runtime === false"
                         type="button"
-                        @click="form.learning_mode = 'on'"
+                        @click="handleLearningModeChange('on')"
                     >Learning</button>
-                </div>
-            </SettingRow>
-            <SettingRow v-if="form.learning_mode === 'on' && form.learning_runtime !== false" label="默认打开" hint="学习模式开启时,默认打开的视图">
-                <div class="settings-mode-toggle" role="tablist" aria-label="默认打开">
-                    <button
-                        class="settings-mode-toggle-btn"
-                        :class="{ active: form.default_open_view !== 'learning' }"
-                        type="button"
-                        @click="form.default_open_view = 'nexora'"
-                    >Nexora</button>
-                    <button
-                        class="settings-mode-toggle-btn"
-                        :class="{ active: form.default_open_view === 'learning' }"
-                        type="button"
-                        @click="form.default_open_view = 'learning'"
-                    >NexoraLearning</button>
                 </div>
             </SettingRow>
         </SettingCard>
 
         <SettingCard title="用户记忆">
+            <div class="settings-memory-row">
+                <div class="settings-memory-model-field">
+                    <div class="settings-memory-model-label">记忆更新模型</div>
+                    <SettingModelSelect
+                        v-model="settingsModel"
+                        placeholder="使用当前对话模型"
+                        width="min(100%, 320px)"
+                    />
+                </div>
+            </div>
             <textarea
                 id="settingsMemoryProfile"
                 v-model="memoryText"
@@ -84,15 +78,7 @@
                 readonly
                 placeholder="正在读取用户记忆..."
             ></textarea>
-            <div class="settings-memory-row">
-                <div class="settings-memory-model-field">
-                    <div class="settings-memory-model-label">记忆更新模型</div>
-                    <SettingModelSelect
-                        v-model="form.memory_update_model"
-                        placeholder="使用当前对话模型"
-                        width="min(100%, 320px)"
-                    />
-                </div>
+            <div class="settings-memory-actions">
                 <button class="btn-primary-outline btn-compact" type="button" title="刷新用户记忆" @click="loadMemory">
                     <i class="fa-solid fa-rotate" aria-hidden="true"></i>
                     <span>刷新</span>
@@ -110,12 +96,14 @@
 </template>
 
 <script setup lang="ts">
-    import { onMounted, reactive, ref } from 'vue'
+    import { computed, onMounted, reactive, ref } from 'vue'
 
     import { apiFetch } from '@/api/client'
     import type { UserPreferences } from '@/api/preferences'
     import { fetchUserPreferences, saveUserPreferences } from '@/api/preferences'
     import { showError, showToast } from '@/stores/notify'
+
+    import { useModelStore } from '@/stores/model'
 
     import SettingCard from '@/ui/settings/SettingCard.vue'
     import SettingModelSelect from '@/ui/settings/SettingModelSelect.vue'
@@ -156,6 +144,24 @@
         memory_update_model: '',
     })
 
+    const modelStore = useModelStore()
+
+    /**
+     * 设置内模型选择统一到对话模型(modelStore 单一来源):
+     *   - 显示:优先记忆偏好,否则回退到当前对话模型,使设置框与头部保持一致
+     *   - 修改:写入记忆偏好(form)并同步到 modelStore.selectedId,头部实时更新、刷新保留
+     */
+    const settingsModel = computed<string>({
+        get: () => form.memory_update_model || modelStore.selectedId,
+        set: (value: string) => {
+            form.memory_update_model = value
+
+            if (value) {
+                modelStore.selectModel(value)
+            }
+        },
+    })
+
     onMounted(() => {
         void load()
     })
@@ -194,6 +200,12 @@
         }
     }
 
+    /** 学习模式切换时同步默认视图,消除原有两处重复控制 */
+    function handleLearningModeChange(value: string): void {
+        form.learning_mode = value
+        form.default_open_view = value === 'on' ? 'learning' : 'nexora'
+    }
+
     /** 填充表单(仅覆盖存在的键) */
     function applyPreferences(preferences: UserPreferences): void {
         if (typeof preferences.theme === 'string' && preferences.theme) {
@@ -225,8 +237,13 @@
         }
     }
 
-    /** 保存偏好 */
+    /** 保存偏好(默认视图与学习模式保持一致,消除重复配置) */
     async function handleSave(): Promise<void> {
+        const normalizedDefaultView = form.learning_mode === 'on' ? 'learning' : 'nexora'
+
+        // 保持表单内同步,避免下次读取仍显示旧值
+        form.default_open_view = normalizedDefaultView
+
         try {
             await saveUserPreferences({
                 theme: form.theme,
@@ -234,7 +251,7 @@
                 language: form.language,
                 learning_runtime: { enabled: form.learning_runtime },
                 learning_mode: form.learning_mode,
-                default_open_view: form.default_open_view,
+                default_open_view: normalizedDefaultView,
                 memory_update_model: form.memory_update_model,
             })
 
@@ -267,6 +284,7 @@
         align-items: flex-end;
         justify-content: space-between;
         gap: 12px;
+        margin-bottom: 12px;
     }
 
     .settings-memory-model-field {
@@ -278,6 +296,12 @@
     .settings-memory-model-label {
         font-size: 12px;
         color: #7a7a7a;
+    }
+
+    .settings-memory-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 8px;
     }
 
     .settings-pref-actions {

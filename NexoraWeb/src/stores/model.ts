@@ -28,6 +28,8 @@ interface ConfigCacheEntry {
 interface ModelState {
     models: ModelItem[]
     selectedId: string
+    /** 模型目录加载状态(供选择器显示读取中) */
+    loading: boolean
 }
 
 /** 读取 config 缓存;有效则直接返回 */
@@ -71,6 +73,7 @@ export const useModelStore = defineStore('model', {
     state: (): ModelState => ({
         models: [],
         selectedId: '',
+        loading: false,
     }),
 
     getters: {
@@ -82,19 +85,25 @@ export const useModelStore = defineStore('model', {
     actions: {
         /** 加载模型目录:优先读缓存,再恢复上次选中的模型 */
         async loadModels(): Promise<void> {
-            const cached = readConfigCache()
+            this.loading = true
 
-            if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
-                this.applyConfig(cached)
+            try {
+                const cached = readConfigCache()
 
-                return
+                if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
+                    this.applyConfig(cached)
+
+                    return
+                }
+
+                const config = await fetchAppConfig()
+
+                writeConfigCache(config)
+
+                this.applyConfig(config)
+            } finally {
+                this.loading = false
             }
-
-            const config = await fetchAppConfig()
-
-            writeConfigCache(config)
-
-            this.applyConfig(config)
         },
 
         /** 应用 config:填充模型目录并恢复选中模型 */

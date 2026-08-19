@@ -312,16 +312,28 @@ report('外部点击关闭下拉', ownerClosed)
 console.log('\n[5] 邮箱管理')
 await openTab('邮箱管理')
 await page.waitForTimeout(1500)
-const mailPanel = await page.evaluate(() => {
+const mailHead = await page.evaluate(() => {
     const legacy = document.querySelectorAll('.mail-toolbar, .mail-group-segment, .mail-group-btn, .mail-add-btn, .mail-filter-input').length
     const headSelects = document.querySelectorAll('.settings-page-head-actions .setting-select').length
     const headInputs = document.querySelectorAll('.settings-page-head-actions input').length
     const headButtons = [...document.querySelectorAll('.settings-page-head-actions button')].map((b) => b.textContent.trim())
     const listItems = document.querySelectorAll('.mail-key-list .mail-list-item').length
-    const groupOptions = [...document.querySelectorAll('.settings-page-head-actions .setting-select-menu button')].map((b) => b.textContent.trim())
 
-    return { legacy, headSelects, headInputs, headButtons, listItems, groupOptions }
+    return { legacy, headSelects, headInputs, headButtons, listItems }
 })
+// Teleport 后菜单在 body,通过打开下拉再查询(对齐 ModelSelectBase 的 body > .gddp-model-select-menu 校验)
+await page.evaluate(() => {
+    document.querySelector('.settings-page-head-actions .setting-select-trigger')?.click()
+})
+await page.waitForTimeout(300)
+const mailGroup = await page.evaluate(() => {
+    return [...document.querySelectorAll('.setting-select-menu.open button')].map((b) => b.textContent.trim())
+})
+await page.evaluate(() => {
+    document.querySelector('.settings-page-head-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+})
+await page.waitForTimeout(200)
+const mailPanel = { ...mailHead, groupOptions: mailGroup }
 report('面板内 mail-toolbar 已删', mailPanel.legacy === 0)
 report('邮箱页头仅保留分组下拉无筛选', mailPanel.headSelects >= 1 && mailPanel.headInputs === 0)
 report('分组下拉选项已拉取(响应式)', mailPanel.groupOptions.length > 0, JSON.stringify(mailPanel.groupOptions.slice(0, 4)))

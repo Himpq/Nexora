@@ -5358,43 +5358,52 @@ body.learning-workspace-active .input-dock {
 .input-wrapper {
     position: relative;
     /* padding: 0 40px 40px; */
-    margin: 0 40px 40px;
+    margin: 0 40px 40px auto;
+    max-width: 100%;
+    max-height: 320px;
     background: var(--bg-main);
     /* background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 20%); */
+    transition: max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .input-wrapper.input-wrapper-collapsed {
-    position: absolute;
-    right: 40px;
-    bottom: 24px;
-    z-index: 40;
-    width: 38px;
-    height: 38px;
+    position: relative;
+    width: auto;
+    height: auto;
+    max-width: 44px;
+    max-height: 44px;
     min-height: 0;
-    margin: 0;
+    margin: 0 40px 40px auto;
     background: transparent;
     pointer-events: none;
-}
-
-.input-wrapper.input-wrapper-collapsed .input-container,
-.input-wrapper.input-wrapper-collapsed .input-collapse-btn {
-    pointer-events: auto;
+    overflow: hidden;
+    transition: max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .input-wrapper.input-wrapper-collapsed .input-container {
-    transition: none;
+    pointer-events: auto;
 }
 
-@media (max-width: 980px) {
-    .input-wrapper.input-wrapper-collapsed {
-        right: 16px;
-        bottom: max(16px, env(safe-area-inset-bottom));
-    }
+.input-wrapper.input-wrapper-collapsed .input-collapse-btn {
+    pointer-events: auto;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    border-radius: 12px;
+    border: 1px solid var(--border-input);
+    background: #fff;
+    color: var(--text-main);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.input-wrapper.input-wrapper-collapsed .input-collapse-btn:hover {
+    background: #f5f5f5;
 }
 
 .input-container {
     width: 100%;
     max-width: var(--input-container-max-width, 800px);
+    max-height: 320px;
     margin: 0 auto;
     border: 1px solid var(--border-input);
     border-radius: 12px;
@@ -5404,10 +5413,11 @@ body.learning-workspace-active .input-dock {
     box-shadow: 0 5px 20px rgba(0,0,0,0.03);
     box-sizing: border-box;
     transition:
-        max-width 0.28s ease,
+        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
         border-color 0.2s,
         box-shadow 0.2s,
-        padding 0.26s ease;
+        padding 0.32s ease;
 }
 .input-container:focus-within {
     border-color: #999;
@@ -5427,15 +5437,15 @@ body.learning-workspace-active .input-dock {
     transition: margin 0.26s ease, padding 0.26s ease, border-color 0.26s ease;
 }
 
-/* 工具项容器：grid 行高过渡实现展开/收起动画 */
+/* 工具项容器：max-height 过渡实现展开/收起动画（原 grid 0fr 在部分场景下高度未归零） */
 .input-options-tools {
     flex: 1;
     min-width: 0;
-    display: grid;
-    grid-template-rows: 1fr;
+    max-height: 48px;
     opacity: 1;
     transform: translateY(0);
-    transition: grid-template-rows 0.26s ease, opacity 0.2s ease, transform 0.26s ease;
+    overflow: hidden;
+    transition: max-height 0.32s ease-in-out, opacity 0.2s ease, transform 0.32s ease-in-out;
 }
 
 .input-options-tools-inner {
@@ -5462,34 +5472,53 @@ body.learning-workspace-active .input-dock {
     opacity: 1;
     transform: translateY(0);
     transition:
-        max-height 0.28s ease,
-        min-height 0.28s ease,
-        margin 0.28s ease,
-        padding 0.28s ease,
+        max-height 0.32s ease-in-out,
+        min-height 0.32s ease-in-out,
+        margin 0.32s ease-in-out,
+        padding 0.32s ease-in-out,
         opacity 0.18s ease,
-        transform 0.28s ease;
+        transform 0.32s ease-in-out;
 }
 
 .input-container.input-collapsed .input-options {
-    overflow: hidden;
+    height: 100%;
+    margin: 0;
+    padding: 0;
     gap: 0;
-    justify-content: flex-end;
-    margin-bottom: 0;
-    padding-bottom: 0;
     border-bottom: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .input-container.input-collapsed {
-    max-width: 38px;
-    margin: 0 0 0 auto;
-    padding: 4px;
-    overflow: hidden !important;
+    max-width: 44px;
+    max-height: 44px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
     box-shadow: none;
+    background: transparent;
+    overflow: hidden !important;
+    /* 容器随外层 wrapper 同步收缩（宽度由 wrapper max-width 控制） */
+    transition:
+        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 0.2s,
+        box-shadow 0.2s,
+        padding 0.32s ease;
 }
 
 .input-container.input-collapsed .input-options-tools {
-    grid-template-rows: 0fr;
+    max-height: 0;
     opacity: 0;
+    flex: 0 0 0;
+    width: 0;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
     transform: translateY(14px);
     pointer-events: none;
 }

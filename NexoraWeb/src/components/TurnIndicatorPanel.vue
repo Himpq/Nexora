@@ -272,8 +272,8 @@
 
     /**
      * 计算并同步激活轮次(对齐原版 updateTurnIndicatorActive):
-     * 用视口"底边"(scrollTop + clientHeight)判定,指示器反映用户正在阅读的消息区域;
-     * 布局脏时先经 rAF 重建缓存再计算
+     * 以视口"中心"(scrollTop + clientHeight/2)为阈值,高亮用户正在阅读/居中的轮次,
+     * 使跳转后指示器与阅读位置一致;布局脏时先经 rAF 重建缓存再计算
      */
     function updateActive(options: TurnUpdateOptions = {}): void {
         const container = getMessagesContainer()
@@ -291,8 +291,8 @@
             return
         }
 
-        const viewportBottom = container.scrollTop + container.clientHeight
-        const nextIndex = findActiveTurnIndex(viewportBottom)
+        const viewportCenter = container.scrollTop + (container.clientHeight / 2)
+        const nextIndex = findActiveTurnIndex(viewportCenter)
 
         if (nextIndex !== activeTurnIndex.value) {
             setActiveTurnLine(nextIndex, options)
@@ -409,10 +409,13 @@
 
     /**
      * 消息内容变化(流式增长/编辑/删除):仅标记布局脏,不做 DOM 测量。
-     * 实际重建合并到下次 active 更新/轮次变化时的 rAF,避免流式期间逐帧重排
+     * 实际重建合并到下次 active 更新/轮次变化时的 rAF,避免流式期间逐帧重排。
+     * 注意:面板吃的是全量 turns,但中心点依赖"窗口化消息"的 DOM 元素;
+     * 仅监听 turns 会在向前补载(切换/跳转触发 conversationStore.messages 变化)时
+     * 漏掉重建,导致新加载区域的轮次中心点恒为 null、激活判定错位。故同时监听窗口消息。
      */
     watch(
-        () => props.messages,
+        () => [props.messages, conversationStore.messages],
         () => {
             state.layoutDirty = true
         },

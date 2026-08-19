@@ -54,6 +54,23 @@ interface ConversationCreateResponse {
     existed?: boolean
 }
 
+/**
+ * 消息窗口初始/向前分页大小(对齐原版 CONVERSATION_INITIAL_MESSAGE_LIMIT /
+ * CONVERSATION_PREVIOUS_MESSAGE_LIMIT):初始只拉最近若干轮,更早的在滚动或
+ * 跳转时按需补载,避免长对话首屏一次拉取过多。
+ * 1 轮 = 用户消息 + 助手消息两条,故轮数乘 2 转为消息条数。
+ */
+export const INITIAL_TURN_LIMIT = 10
+export const INITIAL_MESSAGE_LIMIT = INITIAL_TURN_LIMIT * 2
+export const PREVIOUS_MESSAGE_LIMIT = 30
+
+/** 轮次指示器条目(服务端 /turns 归一化后的形状,仅含用户轮次) */
+export interface ConversationTurn {
+    index: number
+    role: 'user'
+    content: string
+}
+
 interface MessagesResponse {
     success: boolean
     messages: ChatMessage[]
@@ -220,4 +237,25 @@ export async function fetchMessages(conversationId: string, options: {
     return apiFetch<MessagesResponse>(
         `/api/conversations/${encodeURIComponent(conversationId)}/messages${query ? `?${query}` : ''}`
     )
+}
+
+/**
+ * 拉取会话完整用户轮次列表(对齐原版 /turns 单独获取):
+ * 与窗口化消息解耦,使轮次指示器在消息仅加载部分窗口时仍保持完整。
+ * 服务端返回条目映射为 { index, role, content } 以复用消息类型。
+ */
+export async function fetchTurns(conversationId: string): Promise<ConversationTurn[]> {
+    const data = await apiFetch<{ success: boolean; turns?: unknown[] }>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/turns`
+    )
+
+    const rawTurns = Array.isArray(data.turns) ? data.turns : []
+
+    return rawTurns
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((item) => ({
+            index: Number(item.message_index),
+            role: 'user' as const,
+            content: String(item.content || ''),
+        }))
 }

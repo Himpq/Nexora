@@ -23,6 +23,7 @@
         type LiveTransferEvent,
     } from '@/api/liveTransfer'
     import Modal from '@/ui/Modal.vue'
+    import Button from '@/ui/Button.vue'
     import { showError, showToast } from '@/stores/notify'
 
     const props = defineProps<{
@@ -557,24 +558,22 @@
 
             <aside class="fud-right">
                 <div class="fud-actions">
-                    <button
-                        class="fud-action fud-action-primary"
-                        type="button"
+                    <Button
+                        variant="primary"
                         :disabled="!selectedFiles.length || uploading"
                         @click="directUpload"
                     >
                         <i class="fa-solid fa-upload" aria-hidden="true"></i>
-                        <span>直接上传</span>
-                    </button>
-                    <button
-                        class="fud-action"
-                        type="button"
+                        直接上传
+                    </Button>
+                    <Button
+                        variant="secondary"
                         :disabled="!selectedFiles.length || uploading"
                         @click="createTransfer"
                     >
                         <i class="fa-solid fa-link" aria-hidden="true"></i>
-                        <span>在线传输</span>
-                    </button>
+                        在线传输
+                    </Button>
                 </div>
 
                 <div v-if="activeCode" class="fud-live-panel">
@@ -756,40 +755,8 @@
         gap: 10px;
     }
 
-    .fud-action {
+    .fud-actions :deep(.gddp-button) {
         flex: 1;
-        height: 40px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        border: 1px solid #e5e9f0;
-        border-radius: 10px;
-        background: #fff;
-        color: #111827;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
-    }
-
-    .fud-action:hover:not(:disabled) {
-        border-color: #cbd5e1;
-    }
-
-    .fud-action:disabled {
-        opacity: 0.5;
-        cursor: default;
-    }
-
-    .fud-action-primary {
-        background: #111827;
-        color: #fff;
-        border-color: #111827;
-    }
-
-    .fud-action-primary:hover:not(:disabled) {
-        background: #1f2937;
     }
 
     .fud-live-panel {

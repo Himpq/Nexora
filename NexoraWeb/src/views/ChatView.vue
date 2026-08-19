@@ -37,6 +37,13 @@
                 <!-- 聊天节点常驻,Files/Workspace 仅覆盖显示,避免返回时重新渲染对话。 -->
                 <div v-show="activeView === 'chat'" class="gddp-chat-view">
                 <div id="messagesContainer" class="messages-area">
+                    <!-- 切换会话加载中:显示加载占位,既不闪欢迎页也不残留旧内容 -->
+                    <div v-if="conversationStore.messagesLoading" class="messages-loading">
+                        <span class="messages-loading-spinner" aria-hidden="true"></span>
+                        <span>加载中…</span>
+                    </div>
+
+                    <template v-else>
                     <div v-if="!conversationStore.messages.length" class="welcome-screen">
                         <h1>Hello, {{ userStore.username }}.</h1>
                         <p>How can I assist you today?</p>
@@ -73,11 +80,12 @@
                             @switch-version="handleSwitchVersion"
                         />
                     </template>
+                    </template>
                 </div>
 
                 <!-- Turn Indicator(对齐原版:有对话轮次即显示,当前轮高亮) -->
                 <TurnIndicatorPanel
-                    :messages="conversationStore.messages"
+                    :messages="conversationStore.turns"
                     @jump="handleTurnIndicatorJump"
                 />
 
@@ -243,6 +251,9 @@
     /** 知识点设置弹窗(接入原版 knowledgeSettingsModal;具体功能待接入) */
     const knowledgeSettingsOpen = ref(false)
 
+    /** 正在向前补载更早消息:抑制"消息变化自动滚到底部",避免补载后被强行拉到底 */
+    const prepending = ref(false)
+
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
     const fileDetailReturnView = ref<'files' | 'workspace'>('files')
@@ -351,22 +362,53 @@
      * 目标消息居中于消息视口(而非顶部对齐),跳转后临时高亮 3 秒;
      * 跳转期间的滚动跟随屏蔽由 TurnIndicatorPanel 内部 _isJumping 等价逻辑处理
      */
-    function handleTurnIndicatorJump(messageIndex: number): void {
+    async function handleTurnIndicatorJump(messageIndex: number): Promise<void> {
+        // 目标轮次可能尚未加载(消息窗口化):先向前分页补载,每页都恢复滚动位置避免漂移。
+        // prepending 必须保持到"目标滚动完成之后"再释放,否则"消息变化自动滚底"
+        // 监听在 nextTick 刷新期执行时 prepending 已为 false,仍会把视图拉到底、覆盖目标滚动。
+        const needLoad = !conversationStore.messages.some((item) => Number(item.index) === messageIndex)
+
+        if (needLoad) {
+            prepending.value = true
+
+            try {
+                const loaded = await ensureMessageIndexLoadedWithRestore(messageIndex)
+
+                if (!loaded) {
+                    prepending.value = false
+
+                    return
+                }
+            } catch {
+                prepending.value = false
+
+                return
+            }
+        }
+
+        await nextTick()
+
         const container = document.getElementById('messagesContainer')
         const target = container
             ? container.querySelector<HTMLElement>(`.message.user[data-index="${messageIndex}"]`)
             : null
 
         if (!container || !target) {
+            prepending.value = false
+
             return
         }
 
         const targetTop = Math.max(0, target.offsetTop - (container.clientHeight / 2) + (target.offsetHeight / 2))
 
+        // 平滑滚动到目标(被 prepending 保护,不会被"自动滚底"打断)
         container.scrollTo({
             top: targetTop,
             behavior: 'smooth'
         })
+
+        // 滚动完成后再释放:期间"自动滚底"监听被抑制,不会覆盖本次定位
+        prepending.value = false
 
         target.classList.add('turn-jump-highlight')
 
@@ -912,7 +954,7 @@
         try {
             await conversationStore.openConversation(parentConversationId)
 
-            await conversationStore.ensureMessageIndexLoaded(messageIndex)
+            await ensureMessageIndexLoadedWithRestore(messageIndex)
 
             await nextTick()
 
@@ -945,8 +987,64 @@
     }
 
     /**
+     * 向前补载一页后,按"新增内容高度"恢复滚动位置,使视口锚点不跳动。
+     * 必须在 loadPreviousMessages 之前记录 prevScroll*,补载后调用。
+     */
+    function restoreScrollAfterPrepend(container: HTMLElement, prevScrollTop: number, prevScrollHeight: number): void {
+        container.scrollTop = prevScrollTop + (container.scrollHeight - prevScrollHeight)
+    }
+
+    /**
+     * 确保目标消息已加载(窗口化):循环向前补载,每补一页都在视图层恢复滚动位置,
+     * 避免加载更早消息时视图向上漂移。最终由调用方滚动/高亮。
+     */
+    async function ensureMessageIndexLoadedWithRestore(messageIndex: number): Promise<boolean> {
+        const target = Number(messageIndex)
+
+        if (!Number.isFinite(target) || target < 0) {
+            return false
+        }
+
+        if (conversationStore.messages.some((item) => Number(item.index) === target)) {
+            return true
+        }
+
+        const container = document.getElementById('messagesContainer')
+        let guard = 0
+
+        while (
+            guard < 80
+            && conversationStore.hasMoreBefore
+            && conversationStore.messages.length > 0
+            && target < Number(conversationStore.messages[0].index)
+        ) {
+            guard += 1
+
+            const prevScrollTop = container ? container.scrollTop : 0
+            const prevScrollHeight = container ? container.scrollHeight : 0
+
+            const added = await conversationStore.loadPreviousMessages()
+
+            if (!added) {
+                break
+            }
+
+            if (container) {
+                await nextTick()
+                restoreScrollAfterPrepend(container, prevScrollTop, prevScrollHeight)
+            }
+
+            if (conversationStore.messages.some((item) => Number(item.index) === target)) {
+                break
+            }
+        }
+
+        return conversationStore.messages.some((item) => Number(item.index) === target)
+    }
+
+    /**
      * 加载更早消息(对齐原版 loadPreviousConversationMessages):
-     * 保存当前首条消息的 DOM 位置 → 加载 → nextTick 后恢复滚动,保证视觉不跳动。
+     * 以"内容高度增量"恢复滚动位置,保证补载前后视觉不跳动、且不回到顶部触发连锁加载。
      */
     async function handleLoadPrevious(): Promise<void> {
         const container = document.getElementById('messagesContainer')
@@ -955,8 +1053,11 @@
             return
         }
 
-        const anchorMessage = container.querySelector<HTMLElement>('.message')
-        const anchorOffset = anchorMessage ? anchorMessage.offsetTop - container.scrollTop : 0
+        // 记录补载前的滚动位置与内容高度(用于按新增高度还原,而非依赖易出错的锚点偏移)
+        const prevScrollTop = container.scrollTop
+        const prevScrollHeight = container.scrollHeight
+
+        prepending.value = true
 
         try {
             await conversationStore.loadPreviousMessages()
@@ -965,16 +1066,9 @@
         } finally {
             await nextTick()
 
-            // 恢复滚动位置:加载后首条消息仍在原位
-            const restored = container.querySelector<HTMLElement>('.message')
+            restoreScrollAfterPrepend(container, prevScrollTop, prevScrollHeight)
 
-            if (restored && anchorMessage) {
-                const addedHeight = restored.offsetTop - anchorMessage.offsetTop
-
-                container.scrollTop = anchorMessage.offsetTop - anchorOffset + addedHeight
-            } else {
-                container.scrollTop = container.scrollHeight
-            }
+            prepending.value = false
         }
     }
 
@@ -992,10 +1086,16 @@
         }
     }
 
-    /** 消息变化后滚动到底部(仅当非"加载更早消息"前置插入时) */
+    /** 消息变化后滚动到底部(仅当非"加载更早消息"前置插入、且非会话加载中时) */
     watch(
         () => conversationStore.messages,
         async () => {
+            // 会话加载期间消息先替换为占位高度,此时滚动会错位;交由 messagesLoading 监听收尾
+            // 向前补载更早消息由其自身的滚动高度增量还原负责,避免被强行拉到底
+            if (conversationStore.messagesLoading || prepending.value) {
+                return
+            }
+
             await nextTick()
 
             const container = document.getElementById('messagesContainer')
@@ -1005,6 +1105,24 @@
             }
         },
         { deep: true }
+    )
+
+    /** 会话加载完成:真实消息已渲染,滚动到底部展示最新一轮(避免停在顶部触发自动补载) */
+    watch(
+        () => conversationStore.messagesLoading,
+        async (loading) => {
+            if (loading) {
+                return
+            }
+
+            await nextTick()
+
+            const container = document.getElementById('messagesContainer')
+
+            if (container) {
+                container.scrollTop = container.scrollHeight
+            }
+        }
     )
 
     /** 切换会话:本次渲染即时显示(不触发消息渐入动画),下一帧移除标记恢复动画 */
@@ -1173,8 +1291,10 @@
         try {
             await conversationStore.openConversation(anchor.conversationId)
 
-            // 滚动到目标消息(对齐原版 messageIndex 定位)
+            // 滚动到目标消息(对齐原版 messageIndex 定位):目标可能未加载,先补载
             if (typeof anchor.messageIndex === 'number') {
+                await ensureMessageIndexLoadedWithRestore(anchor.messageIndex)
+
                 await nextTick()
 
                 const target = document.querySelector(`.message[data-index="${anchor.messageIndex}"]`)
@@ -1242,7 +1362,7 @@
                 await conversationStore.openConversation(hit.conversation_id)
             }
 
-            await conversationStore.ensureMessageIndexLoaded(hit.message_index)
+            await ensureMessageIndexLoadedWithRestore(hit.message_index)
 
             await nextTick()
 
@@ -1340,5 +1460,27 @@
         padding: 5px 14px;
         color: #9ca3af;
         font-size: 12px;
+    }
+
+    /* 切换会话加载占位:居中显示,既不闪欢迎页也不残留旧内容 */
+    .messages-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        height: 100%;
+        min-height: 240px;
+        color: #9ca3af;
+        font-size: 13px;
+    }
+
+    .messages-loading-spinner {
+        width: 22px;
+        height: 22px;
+        border: 2px solid #e5e7eb;
+        border-top-color: #6b7280;
+        border-radius: 50%;
+        animation: messages-history-spin 0.8s linear infinite;
     }
 </style>

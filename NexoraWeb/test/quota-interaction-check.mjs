@@ -65,7 +65,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(300)
 await page.evaluate(() => {
-    const menu = [...document.querySelectorAll('.settings-modal-shell .setting-select-menu.open')].find((m) => [...m.querySelectorAll('button')].some((b) => b.textContent.trim() === 'w'))
+    const menu = [...document.querySelectorAll('.setting-select-menu.open')].find((m) => [...m.querySelectorAll('button')].some((b) => b.textContent.trim() === 'w'))
     const w = [...(menu?.querySelectorAll('button') || [])].find((b) => b.textContent.trim() === 'w')
     w?.click()
 })

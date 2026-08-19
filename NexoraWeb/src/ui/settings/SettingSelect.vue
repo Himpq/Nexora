@@ -28,45 +28,56 @@
             <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
         </button>
 
-        <div class="setting-select-menu" :class="{ open }" :style="menuStyle" role="listbox">
-            <div v-if="search" class="setting-select-search">
-                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                <input
-                    v-model="searchText"
-                    type="text"
-                    :placeholder="searchPlaceholder || '搜索...'"
-                    autocomplete="off"
-                >
-            </div>
-            <template v-if="hasGroups">
-                <template v-for="group in filteredGroups" :key="group.name">
-                    <div class="setting-select-group-title">{{ group.name }}</div>
-                    <button
-                        v-for="option in group.options"
-                        :key="String(option.value)"
-                        type="button"
-                        role="option"
-                        :class="{ active: String(option.value) === String(modelValue) }"
-                        @click="select(option.value)"
-                    >{{ option.label }}</button>
+        <!-- Teleport 菜单到 body:避免祖先元素的 transform/filter  constrain 导致
+             position:fixed 相对于祖先而非视口定位,菜单错误偏移到屏幕中段 -->
+        <Teleport to="body">
+            <div
+                v-if="open"
+                ref="menuRef"
+                class="setting-select-menu open"
+                :style="menuStyle"
+                role="listbox"
+                @click.stop
+            >
+                <div v-if="search" class="setting-select-search">
+                    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                    <input
+                        v-model="searchText"
+                        type="text"
+                        :placeholder="searchPlaceholder || '搜索...'"
+                        autocomplete="off"
+                    >
+                </div>
+                <template v-if="hasGroups">
+                    <template v-for="group in filteredGroups" :key="group.name">
+                        <div class="setting-select-group-title">{{ group.name }}</div>
+                        <button
+                            v-for="option in group.options"
+                            :key="String(option.value)"
+                            type="button"
+                            role="option"
+                            :class="{ active: String(option.value) === String(modelValue) }"
+                            @click="select(option.value)"
+                        >{{ option.label }}</button>
+                    </template>
                 </template>
-            </template>
-            <button
-                v-for="option in filteredOptions"
-                v-else
-                :key="String(option.value)"
-                type="button"
-                role="option"
-                :class="{ active: String(option.value) === String(modelValue) }"
-                @click="select(option.value)"
-            >{{ option.label }}</button>
-            <div v-if="searchEmpty" class="setting-select-menu-state">无匹配项</div>
-        </div>
+                <button
+                    v-for="option in filteredOptions"
+                    v-else
+                    :key="String(option.value)"
+                    type="button"
+                    role="option"
+                    :class="{ active: String(option.value) === String(modelValue) }"
+                    @click="select(option.value)"
+                >{{ option.label }}</button>
+                <div v-if="searchEmpty" class="setting-select-menu-state">无匹配项</div>
+            </div>
+        </Teleport>
     </div>
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
@@ -86,9 +97,16 @@
         search?: boolean
         searchPlaceholder?: string
         popoverKey?: string
+        /** 展开方向：auto 自动、top 向上、bottom 向下（输入框工具选择器需固定向上） */
+        placement?: 'auto' | 'top' | 'bottom'
     }>(), {
-        popoverKey: 'setting-select',
+        popoverKey: undefined,
+        placement: 'auto',
     })
+
+    /** 未显式传入 popoverKey 时按实例自增,避免同一面板内多下拉共用同一 key 导致联动弹出 */
+    const autoPopoverKey = `setting-select-${useId()}`
+    const effectivePopoverKey = computed(() => props.popoverKey ?? autoPopoverKey)
 
     const emit = defineEmits<{
         'update:modelValue': [value: string | number]
@@ -96,6 +114,7 @@
 
     const wrapRef = ref<HTMLElement | null>(null)
     const triggerRef = ref<HTMLElement | null>(null)
+    const menuRef = ref<HTMLElement | null>(null)
 
     /** 菜单内搜索词(打开时重置) */
     const searchText = ref('')
@@ -168,7 +187,7 @@
         return matched ? matched.label : (props.placeholder || '请选择')
     })
 
-    const open = computed(() => overlay.popover === props.popoverKey)
+    const open = computed(() => overlay.popover === effectivePopoverKey.value)
 
     function updateMenuPosition(): void {
         if (open.value) {
@@ -191,23 +210,24 @@
         window.removeEventListener('scroll', updateMenuPosition, true)
 
         if (open.value) {
-            closePopover(props.popoverKey)
+            closePopover(effectivePopoverKey.value)
         }
     })
 
     function toggle(): void {
         if (open.value) {
-            closePopover(props.popoverKey)
+            closePopover(effectivePopoverKey.value)
 
             return
         }
 
         searchText.value = ''
-        openPopover(props.popoverKey, wrapRef.value)
+        openPopover(effectivePopoverKey.value, wrapRef.value)
         void nextTick(positionMenu)
     }
 
-    /** 依据触发器位置定位菜单(覆盖 absolute 定位,防滚动容器裁剪) */
+    /** 依据触发器位置定位菜单(Teleport 到 body 后 position:fixed 相对于视口,
+     *  避免祖先 transform/filter 约束导致的定位偏移,防滚动容器裁剪) */
     function positionMenu(): void {
         const trigger = triggerRef.value
 
@@ -219,11 +239,19 @@
         const vw = window.innerWidth || document.documentElement.clientWidth
         const vh = window.innerHeight || document.documentElement.clientHeight
         const width = Math.min(Math.max(rect.width, 160), vw - 24)
-        const contentHeight = 300
-        const spaceBelow = vh - rect.bottom - 4
-        const spaceAbove = rect.top - 4
-        const openUp = spaceBelow < contentHeight && spaceAbove > spaceBelow
-        const rawTop = openUp ? rect.top - 4 - contentHeight : rect.bottom + 4
+        // 实际内容高度：优先取渲染后 menu 的 scrollHeight，避免固定 300 导致底部触发器上翻时
+        // 菜单远离触发器、视觉上“跳到中部”（Auto(OFF) 仅 3 项高度约 100，却按 300 计算）
+        const measuredHeight = menuRef.value?.scrollHeight || 0
+        const fallbackHeight = Math.min(320, Math.max(80, props.options.length * 36 + (props.search ? 44 : 8) + 8))
+        const contentHeight = measuredHeight > 0 ? Math.min(measuredHeight, 320) : (fallbackHeight || 300)
+        const gap = 4
+        const spaceBelow = vh - rect.bottom - gap
+        const spaceAbove = rect.top - gap
+        // placement 特例：输入框工具选择器需固定向上展开
+        let openUp = spaceBelow < contentHeight && spaceAbove > spaceBelow
+        if (props.placement === 'top') openUp = true
+        else if (props.placement === 'bottom') openUp = false
+        const rawTop = openUp ? rect.top - gap - contentHeight : rect.bottom + gap
         const left = Math.max(12, Math.min(rect.left, vw - width - 12))
 
         menuStyle.value = {
@@ -237,6 +265,6 @@
 
     function select(value: string | number): void {
         emit('update:modelValue', value)
-        closePopover(props.popoverKey)
+        closePopover(effectivePopoverKey.value)
     }
 </script>

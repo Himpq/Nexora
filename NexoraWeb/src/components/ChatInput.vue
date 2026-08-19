@@ -71,43 +71,14 @@
                                 </span>
                             </label>
 
-                            <!-- Tools 模式下拉(对齐原版) -->
+                            <!-- Tools 模式下拉(复用通用 GDDP SettingSelect) -->
                             <label class="check-box tool-mode-box" title="Tool Use Mode">
                                 <span class="check-label-wrap">
                                     <i class="fa-solid fa-screwdriver-wrench check-label-icon" aria-hidden="true"></i>
                                     <span class="check-label check-label-text">Tools</span>
                                 </span>
-                                <div
-                                    ref="toolsDropdownRef"
-                                    class="tool-mode-dropdown"
-                                    id="toolsModeDropdown"
-                                    :class="{ open: toolsMenuOpen }"
-                                >
-                                    <input type="hidden" id="toolsMode" :value="toolsMode">
-                                    <TriggerButton
-                                        id="toolsModeTrigger"
-                                        :open="toolsMenuOpen"
-                                        @toggle="toggleToolsMenu"
-                                    >
-                                        <span id="toolsModeLabel">{{ toolsModeLabel }}</span>
-                                        <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
-                                    </TriggerButton>
-                                    <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
-                                        <button
-                                            v-for="mode in toolsModes"
-                                            :key="mode.value"
-                                            type="button"
-                                            class="tool-mode-item"
-                                            :class="{ active: toolsMode === mode.value }"
-                                            :data-mode="mode.value"
-                                            role="option"
-                                            :aria-selected="toolsMode === mode.value"
-                                            @click.stop="selectToolsMode(mode.value)"
-                                        >
-                                            {{ mode.label }}
-                                        </button>
-                                    </div>
-                                </div>
+                                <input type="hidden" id="toolsMode" :value="toolsMode">
+                                <SettingSelect v-model="toolsMode" :options="toolsModes" width="120px" popover-key="tools-menu" placement="top" class="chat-tools-select" />
                             </label>
                         </div>
                     </div>
@@ -214,8 +185,8 @@
     import type { AttachmentInput } from '@/api/attachments'
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
-    import { closePopover, openPopover, overlay } from '@/ui/overlay'
-    import TriggerButton from '@/ui/TriggerButton.vue'
+    import { overlay } from '@/ui/overlay'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const props = defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */
@@ -249,17 +220,12 @@
     /** Tools 模式(对齐原版 auto_off 默认);下拉状态由浮层协调器管理 */
     const toolsMode = ref('auto_off')
     const toolsMenuOpen = computed(() => overlay.popover === 'tools-menu')
-    const toolsDropdownRef = ref<HTMLElement | null>(null)
 
     const toolsModes = [
         { value: 'off', label: 'Off' },
         { value: 'auto_off', label: 'Auto(OFF)' },
         { value: 'force', label: 'Force' },
     ]
-
-    const toolsModeLabel = computed(() => {
-        return toolsModes.find((mode) => mode.value === toolsMode.value)?.label || 'Auto(OFF)'
-    })
 
     /** 生成中:输入框保持可用,发送按钮切换为"停止" */
     const streaming = computed(() => conversationStore.generating)
@@ -404,23 +370,6 @@
         const ascii = source.length - nonAscii
 
         return Math.max(0, Math.ceil(nonAscii / 1.25 + ascii / 4))
-    }
-
-    function toggleToolsMenu(): void {
-        if (toolsMenuOpen.value) {
-            closePopover('tools-menu')
-
-            return
-        }
-
-        // 打开工具下拉:浮层协调器自动关闭右侧栏等浮层
-        openPopover('tools-menu', toolsDropdownRef.value)
-    }
-
-    function selectToolsMode(value: string): void {
-        toolsMode.value = value
-
-        closePopover('tools-menu')
     }
 
     function handleInput(event: Event): void {
@@ -580,5 +529,23 @@
         outline: 2px solid #93c5fd;
         outline-offset: 2px;
         border-radius: 4px;
+    }
+
+    /* Tools 下拉在此位置需与 Thinking/Search 复选框视觉对齐,单独收敛为紧凑触发器 */
+    .chat-tools-select :deep(.setting-select-trigger) {
+        height: 28px;
+        min-width: 96px;
+        padding: 0 8px;
+        font-size: 12px;
+        border-radius: 6px;
+        gap: 6px;
+    }
+
+    .chat-tools-select :deep(.setting-select-trigger i) {
+        font-size: 10px;
+    }
+
+    .chat-tools-select :deep(.setting-select-label) {
+        font-size: 12px;
     }
 </style>

@@ -40,35 +40,12 @@
                             @keydown.enter="load"
                         >
                     </label>
-                    <div class="tool-mode-dropdown file-center-sort-dropdown" :class="{ open: sortMenuOpen }">
-                        <TriggerButton
-                            class="file-center-sort-trigger"
-                            :open="sortMenuOpen"
-                            @toggle="sortMenuOpen = !sortMenuOpen"
-                        >
-                            <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
-                            <span>{{ sortBy === 'name_asc' ? '文件名称' : '上传时间' }}</span>
-                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                        </TriggerButton>
-                        <div class="tool-mode-menu file-center-sort-menu" role="listbox" aria-label="排序方式">
-                            <button
-                                type="button"
-                                class="tool-mode-item"
-                                role="option"
-                                :class="{ active: sortBy === 'created_desc' }"
-                                :aria-selected="sortBy === 'created_desc'"
-                                @click="setSort('created_desc')"
-                            >上传时间</button>
-                            <button
-                                type="button"
-                                class="tool-mode-item"
-                                role="option"
-                                :class="{ active: sortBy === 'name_asc' }"
-                                :aria-selected="sortBy === 'name_asc'"
-                                @click="setSort('name_asc')"
-                            >文件名称</button>
-                        </div>
-                    </div>
+                    <SettingSelect
+                        v-model="sortBy"
+                        :options="sortOptions"
+                        width="150px"
+                        popover-key="file-center-sort"
+                    />
                     <Button
                         variant="secondary"
                         size="icon"
@@ -122,7 +99,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, ref, watch } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import {
@@ -139,7 +116,7 @@
     } from '@/api/files-center'
     import FileUploadDialog from '@/components/FileUploadDialog.vue'
     import Button from '@/ui/Button.vue'
-    import TriggerButton from '@/ui/TriggerButton.vue'
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
 
@@ -158,8 +135,12 @@
     const currentPath = ref('')
     const selectedRef = ref('')
     const sortBy = ref<'created_desc' | 'name_asc'>('created_desc')
-    const sortMenuOpen = ref(false)
     const uploadDialogOpen = ref(false)
+
+    const sortOptions = [
+        { value: 'created_desc', label: '上传时间' },
+        { value: 'name_asc', label: '文件名称' },
+    ]
 
     /** 排序后的文件列表(对齐原版 sortFileCenterDirectoryEntries) */
     const sortedFiles = computed(() => {
@@ -180,31 +161,10 @@
         (opened) => {
             if (opened) {
                 void load()
-
-                document.addEventListener('click', handleOutsideClick)
-            } else {
-                sortMenuOpen.value = false
-
-                document.removeEventListener('click', handleOutsideClick)
             }
         },
         { immediate: true }
     )
-
-    onBeforeUnmount(() => {
-        document.removeEventListener('click', handleOutsideClick)
-    })
-
-    /** 外部点击关闭排序下拉(自建下拉统一处理) */
-    function handleOutsideClick(event: MouseEvent): void {
-        const target = event.target as HTMLElement | null
-
-        if (!target || target.closest('.file-center-sort-dropdown')) {
-            return
-        }
-
-        sortMenuOpen.value = false
-    }
 
     /** 加载文件列表(对齐原版 loadFileCenterFiles) */
     async function load(): Promise<void> {
@@ -251,12 +211,6 @@
         selectedRef.value = fileRef(file)
 
         emit('open-detail', file)
-    }
-
-    /** 设置排序并关闭下拉 */
-    function setSort(value: 'created_desc' | 'name_asc'): void {
-        sortBy.value = value
-        sortMenuOpen.value = false
     }
 
     /** 返回上一级目录(当前实现为无目录导航,保持全部文件) */

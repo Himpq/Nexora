@@ -100,7 +100,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
@@ -118,11 +118,14 @@
         loading?: boolean
         emptyLabel?: string
     }>(), {
-        popoverKey: 'gddp-model-select',
+        popoverKey: undefined,
         containerId: 'gddpModelSelectContainer',
         loading: false,
         emptyLabel: '暂无可用模型',
     })
+
+    const autoPopoverKey = `gddp-model-select-${useId()}`
+    const effectivePopoverKey = computed(() => props.popoverKey ?? autoPopoverKey)
 
     const emit = defineEmits<{
         'update:modelValue': [value: string]
@@ -131,7 +134,7 @@
     const selectedId = computed(() => props.modelValue ?? '')
     const selectedModel = computed(() => props.models.find((model) => model.id === selectedId.value))
     const selectedLabel = computed(() => selectedModel.value?.name || props.leadingPlaceholder || '请选择')
-    const open = computed(() => overlay.popover === props.popoverKey)
+    const open = computed(() => overlay.popover === effectivePopoverKey.value)
 
     const groups = computed(() => {
         const groupMap = new Map<string, {
@@ -166,12 +169,13 @@
     const containerRef = ref<HTMLElement | null>(null)
     const triggerRef = ref<HTMLButtonElement | null>(null)
     const menuRef = ref<HTMLElement | null>(null)
-    const dropdownPosition = ref({ left: 0, top: 0, width: 0 })
+    const dropdownPosition = ref({ left: 0, top: 0, width: 0, maxHeight: 420 })
 
     const menuStyle = computed(() => ({
         left: `${dropdownPosition.value.left}px`,
         top: `${dropdownPosition.value.top}px`,
         width: `${dropdownPosition.value.width}px`,
+        maxHeight: `${dropdownPosition.value.maxHeight}px`,
     }))
 
     const STATUS_LABELS: Record<string, string> = {
@@ -212,11 +216,15 @@
             ? Math.min(Math.max(260, Math.floor(viewportWidth * 0.92)), 380)
             : Math.min(420, viewportWidth - 24)
         const contentHeight = menuRef.value?.scrollHeight || 300
-        const height = Math.min(contentHeight, isMobile ? Math.floor(viewportHeight * 0.62) : 420, viewportHeight - 24)
         const gap = 6
         const spaceBelow = viewportHeight - rect.bottom - gap
         const spaceAbove = rect.top - gap
-        const openUp = spaceBelow < height && spaceAbove > spaceBelow
+        // 先按视口与内容预估高度,再按实际可用空间收敛,避免在设置弹窗等窄视口内溢出屏幕
+        const maxAllowedHeight = isMobile ? Math.floor(viewportHeight * 0.62) : 420
+        const desiredHeight = Math.min(contentHeight, maxAllowedHeight, viewportHeight - 24)
+        const openUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow
+        const availableSpace = openUp ? spaceAbove : spaceBelow
+        const height = Math.min(desiredHeight, Math.max(160, availableSpace - 12))
         const rawTop = isMobile
             ? Math.min(rect.bottom + 8, Math.max(70, viewportHeight - height - 12))
             : (openUp ? rect.top - gap - height : rect.bottom + gap)
@@ -226,6 +234,7 @@
             left: Math.round(left),
             top: Math.round(Math.max(12, rawTop)),
             width: Math.round(width),
+            maxHeight: Math.round(height),
         }
     }
 
@@ -238,12 +247,12 @@
 
     function toggleOpen(): void {
         if (open.value) {
-            closePopover(props.popoverKey)
+            closePopover(effectivePopoverKey.value)
 
             return
         }
 
-        openPopover(props.popoverKey, containerRef.value)
+        openPopover(effectivePopoverKey.value, containerRef.value)
         void nextTick(() => {
             positionMenu()
             scrollSelectedOptionIntoView()
@@ -252,7 +261,7 @@
 
     function select(value: string): void {
         emit('update:modelValue', value)
-        closePopover(props.popoverKey)
+        closePopover(effectivePopoverKey.value)
     }
 
     function updateMenuPosition(): void {
@@ -276,7 +285,7 @@
         window.removeEventListener('scroll', updateMenuPosition, true)
 
         if (open.value) {
-            closePopover(props.popoverKey)
+            closePopover(effectivePopoverKey.value)
         }
     })
 </script>
