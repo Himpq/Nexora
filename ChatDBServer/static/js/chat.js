@@ -16354,16 +16354,43 @@ function copyShareUrl() {
     return knowledgeSettingsController.copyShareUrl();
 }
 
-function showToast(msg) {
-    let toast = document.querySelector('.toast-notification');
-    if(!toast) {
-        toast = document.createElement('div');
-        toast.className = 'toast-notification';
-        document.body.appendChild(toast);
+const TOAST_STYLE = {
+    info:    { color: '#2080f0', icon: 'fa-circle-info' },
+    success: { color: '#18a058', icon: 'fa-circle-check' },
+    warning: { color: '#f0a020', icon: 'fa-triangle-exclamation' },
+    error:   { color: '#d03050', icon: 'fa-circle-xmark' }
+};
+
+/**
+ * showToast — 全局消息提示(与新版 Nexora 前端 notify.ts 完全一致的 DOM 结构与视觉)
+ *
+ * @param {string} msg 提示内容
+ * @param {('info'|'success'|'warning'|'error')} [type='info'] 提示类型,决定图标与左侧色条
+ */
+function showToast(msg, type = 'info') {
+    let root = document.getElementById('nexora-toast-root');
+    if(!root) {
+        root = document.createElement('div');
+        root.id = 'nexora-toast-root';
+        document.body.appendChild(root);
     }
-    toast.textContent = msg;
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3000);
+    const style = TOAST_STYLE[type] || TOAST_STYLE.info;
+    const toast = document.createElement('div');
+    toast.className = 'nexora-toast';
+    toast.style.borderLeftColor = style.color;
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid ' + style.icon;
+    icon.setAttribute('aria-hidden', 'true');
+    icon.style.color = style.color;
+    const text = document.createElement('span');
+    text.textContent = msg;
+    toast.appendChild(icon);
+    toast.appendChild(text);
+    root.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('is-leaving');
+        setTimeout(() => toast.remove(), 250);
+    }, 3000);
 }
 
 function resolveProviderSimpleIconSlug(provider) {

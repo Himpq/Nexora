@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_avatar.js — 头像裁切与用户资料
  *
  * 职责：头像裁切 canvas 操作（缩放/拖拽/圆形裁切/预览）；从 chat.js 批量迁移。
@@ -14,7 +14,7 @@
  */
 import {
     showToast,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 
 const avatarCropState = {
     img: null,

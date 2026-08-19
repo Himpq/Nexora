@@ -23,58 +23,12 @@
     -webkit-backdrop-filter: blur(4px);
 }
 
-/*
- * legacy 模式(复用原版 Nexora CSS 的弹窗,如设置窗口):
- * 原版 .modal-backdrop 默认 display:none、.active 才显示;
- * 本文件后加载,覆盖 display 使 v-if 显示与 .active 一致。
- */
-.g-modal-backdrop.modal-backdrop {
-    display: flex;
-}
-
-.g-modal-backdrop.modal-backdrop.active {
-    display: flex;
-}
-
-/* legacy 模式淡入动画(原版无动画,补一个极简过渡,避免生硬) */
-.g-modal-fade-enter-active,
-.g-modal-fade-leave-active {
-    transition: opacity 0.15s ease;
-}
-
-.g-modal-fade-enter-from,
-.g-modal-fade-leave-to {
-    opacity: 0;
-}
-
-/* legacy 卡片:原版 .modal 自带圆角/阴影,这里确保 display 与 flex 方向正确 */
-.g-modal-backdrop.modal-backdrop .modal {
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
-}
-
-/* legacy 头部:原版 #settingsModal .modal-head 有 !important 规则,此处只兜底非 settings 弹窗 */
-.g-modal-backdrop.modal-backdrop .modal-head {
-    flex-shrink: 0;
-}
-
-.g-modal-backdrop.modal-backdrop .modal-body {
-    flex: 1;
-    min-height: 0;
-}
-
-.g-modal-backdrop.modal-backdrop .modal-footer {
-    flex-shrink: 0;
-}
-
 /* ---------- 卡片 ---------- */
 .g-modal {
     display: flex;
     flex-direction: column;
-    width: 100%;
-    max-width: 440px;
-    max-height: calc(100vh - 40px);
+    width: 440px;
+    max-height: min(560px, calc(100vh - 40px));
     background: #fff;
     border-radius: 16px;
     box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
@@ -83,11 +37,13 @@
 }
 
 .g-modal-sm {
-    max-width: 360px;
+    width: 360px;
+    max-height: min(420px, calc(100vh - 40px));
 }
 
 .g-modal-lg {
-    max-width: 640px;
+    width: 640px;
+    max-height: min(600px, calc(100vh - 40px));
 }
 
 /* ---------- 头部 ---------- */
@@ -127,6 +83,8 @@
 
 /* ---------- 正文 ---------- */
 .g-modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
     padding: 4px 20px 16px;
     overflow-y: auto;
     font-size: 14px;

@@ -49,6 +49,10 @@ export interface StreamSendOptions {
     includeContext?: boolean
     /** 消息附件(对齐原版 uploadedFileIds → user_attachments) */
     attachments?: AttachmentInput[]
+    /** 重答模式:后端按 regenerateIndex 截断上下文并覆盖原回答(自动保存旧版本) */
+    isRegenerate?: boolean
+    /** 重答目标 assistant 消息索引(配合 isRegenerate 使用) */
+    regenerateIndex?: number
 }
 
 export type StreamEndReason = 'done' | 'aborted' | 'error'
@@ -57,6 +61,8 @@ export interface StreamEndInfo {
     error?: string
     cancelReason?: string
     finalContent?: string
+    /** 后端落盘后的最终消息对象(含 metadata.versions),用于轻量收尾更新而非全量重载 */
+    finalMessage?: Record<string, unknown>
 }
 
 export interface StreamHandlers {
@@ -153,6 +159,8 @@ export class StreamService {
                     enable_tools: options.enableTools ?? true,
                     include_context: options.includeContext ?? true,
                     user_attachments: options.attachments && options.attachments.length > 0 ? options.attachments : undefined,
+                    is_regenerate: !!options.isRegenerate,
+                    regenerate_index: options.isRegenerate ? Number(options.regenerateIndex) : undefined,
                 }),
                 signal: controller.signal,
             })
@@ -340,6 +348,9 @@ export class StreamService {
                 const info: StreamEndInfo = {
                     error: chunk.error || undefined,
                     cancelReason: chunk.cancel_reason || undefined,
+                    finalMessage: (chunk.final_message && typeof chunk.final_message === 'object')
+                        ? chunk.final_message as Record<string, unknown>
+                        : undefined,
                 }
 
                 if (chunk.error) {

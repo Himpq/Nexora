@@ -275,6 +275,23 @@ def get_workspace_conversation(workspace_id, conversation_id):
         return handle_workspace_error(error)
 
 
+@workspace_bp.route("/api/workspace/<workspace_id>/conversations/<conversation_id>", methods=["DELETE"])
+def remove_workspace_conversation(workspace_id, conversation_id):
+    try:
+        username = current_username()
+        wid = validate_workspace_id(workspace_id)
+        cid = normalize_text(conversation_id, 80)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.remove_conversation(wid, cid, username)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
 @workspace_bp.route("/api/workspace/<workspace_id>/knowledge", methods=["POST"])
 def add_workspace_knowledge_document(workspace_id):
     try:
@@ -293,6 +310,32 @@ def add_workspace_knowledge_document(workspace_id):
         assert_basis_knowledge_exists(username, title)
         store = find_store_for_visible_workspace(username, wid)
         workspace = store.add_knowledge_document(wid, title, username, knowledge_type)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
+@workspace_bp.route("/api/workspace/<workspace_id>/knowledge", methods=["DELETE"])
+def remove_workspace_knowledge_document(workspace_id):
+    try:
+        username = current_username()
+        data = parse_json_body()
+        wid = validate_workspace_id(workspace_id)
+        title = normalize_text(data.get("title") or data.get("knowledge_title"), 160)
+        knowledge_type = normalize_text(data.get("knowledge_type") or data.get("type") or "basis", 32) or "basis"
+
+        if not title:
+            raise ValueError("knowledge title is required")
+
+        if knowledge_type != "basis":
+            raise ValueError("knowledge_type must be basis")
+
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.remove_knowledge_document(wid, title, username, knowledge_type)
 
         return jsonify({
             "success": True,

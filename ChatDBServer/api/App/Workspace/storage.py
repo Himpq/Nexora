@@ -890,6 +890,104 @@ class WorkspaceStore:
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
 
+    def remove_conversation(self, workspace_id: str, conversation_id: str, actor: str) -> Dict[str, Any]:
+        """从工作区移除当前用户的对话标记(不对齐原版,原版无移除;供右键菜单再次点击取消归入)"""
+        wid = validate_workspace_id(workspace_id)
+        cid = normalize_text(conversation_id, 80)
+
+        if not cid:
+            raise ValueError("conversation_id is required")
+
+        safe_actor = validate_username(actor)
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, safe_actor)
+        conversations = workspace.get("conversations", [])
+
+        if not isinstance(conversations, list):
+            conversations = []
+
+        now = utc_now_iso()
+        kept: List[Dict[str, Any]] = []
+        removed_title = cid
+
+        for item in conversations:
+            if not isinstance(item, dict):
+                continue
+
+            if str(item.get("conversation_id") or "").strip() != cid:
+                kept.append(item)
+                continue
+
+            removed_title = normalize_text(item.get("title"), 160) or cid
+
+        if len(kept) == len(conversations):
+            raise ValueError("conversation not in workspace")
+
+        workspace["conversations"] = kept
+        workspace["updated_at"] = now
+        self._append_workspace_activity(
+            workspace,
+            action="conversation_removed",
+            resource_type="conversation",
+            title=removed_title,
+            actor=safe_actor,
+            time=now,
+            subtitle="移除了对话",
+            ref=cid,
+        )
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, safe_actor)
+
+    def remove_knowledge_document(
+        self,
+        workspace_id: str,
+        title: str,
+        actor: str,
+        knowledge_type: str = "basis",
+    ) -> Dict[str, Any]:
+        """从工作区移除当前用户的知识库标记(原版无移除;供右键菜单再次点击取消归入)"""
+        wid = validate_workspace_id(workspace_id)
+        safe_title = normalize_text(title, 160)
+        safe_type = normalize_text(knowledge_type, 32) or "basis"
+
+        if not safe_title:
+            raise ValueError("knowledge title is required")
+
+        if safe_type != "basis":
+            raise ValueError("knowledge_type must be basis")
+
+        safe_actor = validate_username(actor)
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, safe_actor)
+        documents = self._normalize_knowledge_documents(workspace.get("knowledge_documents", []), safe_actor)
+        now = utc_now_iso()
+        kept: List[Dict[str, Any]] = []
+
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("title") != safe_title or item.get("knowledge_type") != safe_type or item.get("added_by") != safe_actor:
+                kept.append(item)
+
+        if len(kept) == len(documents):
+            raise ValueError("knowledge not in workspace")
+
+        workspace["knowledge_documents"] = kept
+        workspace["updated_at"] = now
+        self._append_workspace_activity(
+            workspace,
+            action="knowledge_removed",
+            resource_type="knowledge",
+            title=safe_title,
+            actor=safe_actor,
+            time=now,
+            subtitle="移除了知识库",
+            ref=safe_title,
+        )
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, safe_actor)
+
     def _get_sandbox_file_entry(self, owner_username: str, file_ref: str) -> Dict[str, Any]:
         owner = validate_username(owner_username)
         ref = normalize_workspace_file_ref(file_ref, owner)

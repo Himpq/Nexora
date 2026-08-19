@@ -12,11 +12,13 @@
             :collapsed="sidebarCollapsed"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
+            @open-chat="backToChat"
             @open-workspaces="handleOpenWorkspaces"
             @open-files="handleOpenFileCenter"
             @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
             @open-trash="trashOpen = true"
             @open-timeline="timelineOpen = true"
+            @view-branch-source="handleViewBranchSource"
         />
 
         <main class="main-content">
@@ -29,8 +31,6 @@
                 @open-files="handleOpenFiles"
                 @open-knowledge="handleOpenKnowledge"
                 @back-to-chat="handleHeaderBack"
-                @save-knowledge="saveKnowledgeDocument"
-                @vectorize-knowledge="vectorizeKnowledgeDocument"
             />
 
             <div class="gddp-view-stage">
@@ -43,6 +43,21 @@
                     </div>
 
                     <template v-else>
+                        <!-- 加载更早消息入口(对齐原版 loadPreviousConversationMessages:顶部触发 + 手动按钮) -->
+                        <div class="messages-history-load">
+                            <button
+                                v-if="conversationStore.hasMoreBefore"
+                                type="button"
+                                class="messages-history-load-btn"
+                                :disabled="conversationStore.loadingBefore"
+                                @click="handleLoadPrevious"
+                            >
+                                <span v-if="conversationStore.loadingBefore" class="messages-history-loading-spinner" aria-hidden="true"></span>
+                                {{ conversationStore.loadingBefore ? '加载中…' : '加载更早消息' }}
+                            </button>
+                            <span v-else class="messages-history-load-end">已到最早消息</span>
+                        </div>
+
                         <MessageItem
                             v-for="(message, index) in conversationStore.messages"
                             :key="message.index"
@@ -54,6 +69,8 @@
                             @edit-save="handleEditUserMessage"
                             @regenerate="handleRegenerate"
                             @open-image="handleOpenImage"
+                            @fork="handleForkMessage"
+                            @switch-version="handleSwitchVersion"
                         />
                     </template>
                 </div>
@@ -70,6 +87,7 @@
                     @send="handleSend"
                     @stop="handleStop"
                     @remove-attachment="pendingAttachments.splice($event, 1)"
+                    @open-token-detail="tokenDetailOpen = true"
                 />
                 </div>
 
@@ -89,6 +107,7 @@
 
                 <div v-show="workspacesOpen" class="gddp-content-view">
                     <WorkspacesView
+                        ref="workspacesViewRef"
                         :open="workspacesOpen"
                         @close="backToChat"
                         @open-conversation="handleOpenWorkspaceConversation"
@@ -105,7 +124,11 @@
                 </div>
 
                 <div v-show="knowledgeOpen" class="gddp-content-view">
-                    <KnowledgeViewer ref="knowledgeViewerRef" :open="knowledgeOpen" :title="knowledgeTitle" />
+                    <KnowledgeViewer
+                        :open="knowledgeOpen"
+                        :title="knowledgeTitle"
+                        @open-settings="knowledgeSettingsOpen = true"
+                    />
                 </div>
             </div>
         </main>
@@ -116,11 +139,20 @@
             :open="knowledgePanelOpen"
             @close="closePanel('knowledge')"
             @open-document="handleOpenKnowledgeDocument"
+            @document-deleted="handleKnowledgeDocumentDeleted"
         />
 
         <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
 
+        <KnowledgeSettingsModal
+            :open="knowledgeSettingsOpen"
+            :title="knowledgeTitle"
+            @close="knowledgeSettingsOpen = false"
+        />
+
         <TrashModal :open="trashOpen" @close="trashOpen = false" @restored="handleTrashRestored" />
+
+        <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
         <ImageViewer
             :open="imageViewerUrl !== ''"
@@ -142,6 +174,14 @@
             @add-note="handleAddNote"
             @explain="handleExplainSelection"
         />
+
+        <GlobalSearch
+            @new-conversation="handleSearchNewConversation"
+            @open-conversation="handleSearchOpenConversation"
+            @jump-to-message="handleSearchJumpToMessage"
+            @open-knowledge="handleSearchOpenKnowledge"
+            @open-file="handleSearchOpenFile"
+        />
     </div>
 </template>
 
@@ -150,36 +190,40 @@
 
     import type { ChatMessage } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
-    import { deleteMessage, updateMessageContent } from '@/api/conversations'
+    import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
     import { streamService, type StreamChunk } from '@/stream/StreamService'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
-    import { closeAllOverlays, closePanel, openPanel, overlay } from '@/ui/overlay'
+    import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
 
     import ChatHeader from '@/components/ChatHeader.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
     import FilesPanel from '@/components/FilesPanel.vue'
+    import GlobalSearch from '@/components/GlobalSearch.vue'
     import ImageViewer from '@/components/ImageViewer.vue'
     import KnowledgePanel from '@/components/KnowledgePanel.vue'
     import KnowledgeViewer from '@/components/KnowledgeViewer.vue'
     import KnowledgeManagementView from '@/components/KnowledgeManagementView.vue'
+    import KnowledgeSettingsModal from '@/components/KnowledgeSettingsModal.vue'
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
     import TimelinePanel from '@/components/TimelinePanel.vue'
+    import TokenDetailModal from '@/components/TokenDetailModal.vue'
     import TrashModal from '@/components/TrashModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
     import WorkspacesView from '@/components/WorkspacesView.vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import type { NoteItem } from '@/api/notes'
+    import type { SearchFileHit, SearchMessageHit } from '@/api/search'
 
     const conversationStore = useConversationStore()
     const modelStore = useModelStore()
@@ -191,57 +235,55 @@
     const timelineOpen = ref(false)
     const notesOpen = ref(false)
     const sidebarCollapsed = ref(false)
+    const tokenDetailOpen = ref(false)
+
+    /** 当前流是否已通过 error chunk 弹过错误提示,避免终帧/断线重复弹(每次发送前重置) */
+    let streamErrorToastShown = false
+
+    /** 知识点设置弹窗(接入原版 knowledgeSettingsModal;具体功能待接入) */
+    const knowledgeSettingsOpen = ref(false)
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
-    const filesCenterOpen = ref(false)
     const fileDetail = ref<CloudFileItem | null>(null)
     const fileDetailReturnView = ref<'files' | 'workspace'>('files')
 
-    /** Workspaces 项目视图:替换主内容区(对齐原版 openWorkspaceProjectsView) */
-    const workspacesOpen = ref(false)
-    const knowledgeMgmtOpen = ref(false)
-    const knowledgeOpen = ref(false)
+    /** Workspaces 视图引用:顶栏返回需先回项目首页(详情内容 → 首页 → 聊天) */
+    const workspacesViewRef = ref<InstanceType<typeof WorkspacesView> | null>(null)
+
+    /** 内容级视图统一由浮层协调器(GDDP)单一状态机管理,切换时彼此互斥 */
+    const filesCenterOpen = computed(() => overlay.view === 'files')
+    const workspacesOpen = computed(() => overlay.view === 'workspaces')
+    const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
+    const knowledgeOpen = computed(() => overlay.view === 'knowledge')
     const knowledgeTitle = ref('')
-    const knowledgeViewerRef = ref<InstanceType<typeof KnowledgeViewer> | null>(null)
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
     const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt'>(() => {
-        if (filesCenterOpen.value) {
-            return 'files'
-        }
-
-        if (workspacesOpen.value) {
-            return 'workspaces'
-        }
-
-        if (knowledgeMgmtOpen.value) {
-            return 'knowledge-mgmt'
-        }
-
-        if (knowledgeOpen.value) {
-            return 'knowledge'
-        }
-
-        return 'chat'
+        return overlay.view || 'chat'
     })
 
     /** 返回聊天视图(对齐原版 closeFileCenterOrReturn) */
     function backToChat(): void {
         closeAllOverlays()
 
-        filesCenterOpen.value = false
-        workspacesOpen.value = false
-        knowledgeMgmtOpen.value = false
-        knowledgeOpen.value = false
         knowledgeTitle.value = ''
         fileDetail.value = null
         fileDetailReturnView.value = 'files'
     }
 
-    /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。 */
+    /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。
+     *  Workspace 内容多级返回:文件详情 → Workspace 首页 → 聊天 */
     function handleHeaderBack(): void {
+        // 文件详情:先从内容返回其来源视图(文件中心首页 / Workspaces 首页)
         if (filesCenterOpen.value && fileDetail.value !== null) {
             handleFileDetailBack()
+
+            return
+        }
+
+        // Workspaces 详情内容:先返回 Workspaces 首页
+        if (workspacesOpen.value && workspacesViewRef.value?.isInDetail()) {
+            workspacesViewRef.value.backToList()
 
             return
         }
@@ -333,10 +375,14 @@
         }, 3000)
     }
 
-    /** 最后一条助手消息在生成中时标记打字指示 */
+    /** 助手消息在生成中时标记打字指示(重答时锁定目标索引消息) */
     function isStreamingMessage(index: number): boolean {
         if (!conversationStore.generating) {
             return false
+        }
+
+        if (conversationStore.streamingTargetIndex !== null) {
+            return index === Number(conversationStore.streamingTargetIndex)
         }
 
         return index === conversationStore.messages.length - 1
@@ -458,9 +504,9 @@
             return
         }
 
-        // 错误块:显式上报,避免静默失败
+        // 错误块:显式上报;不在块内中断流,由 done 终帧统一收尾并恢复目标消息(避免丢失流式目标索引)
         if (chunk.type === 'error') {
-            conversationStore.abortStream()
+            streamErrorToastShown = true
 
             showError(String(chunk.content || chunk.message || '回复生成失败'))
 
@@ -493,21 +539,37 @@
         }
     }
 
-    /** 流结束:按原因收尾;done 帧用完整内容兜底 */
+    /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
+        const detail = info as { error?: string; finalContent?: string; finalMessage?: Record<string, unknown> } | undefined
+
         if (reason === 'error') {
+            // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标
+            conversationStore.applyFinalMessage(detail?.finalMessage)
+
+            // 重连失败等场景拿不到终帧消息时,把错误文本写入目标消息,避免消息留空
+            if (!detail?.finalMessage) {
+                conversationStore.fillStreamingMessageWithError(detail?.error || '回复生成失败,请重试')
+            }
+
             conversationStore.abortStream()
 
-            const detail = info as { error?: string } | undefined
+            // 流过程中 error chunk 已弹过提示时,终帧/断线收尾不再重复弹
+            if (!streamErrorToastShown) {
+                showError(detail?.error || '回复生成失败,请重试')
+            }
 
-            showError(detail?.error || '回复生成失败,请重试')
+            streamErrorToastShown = false
 
             return
         }
 
-        const detail = info as { finalContent?: string } | undefined
+        // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
+        conversationStore.applyFinalMessage(detail?.finalMessage)
 
         conversationStore.endStream({ finalContent: detail?.finalContent })
+
+        streamErrorToastShown = false
     }
 
     /** 停止生成:中断当前流并清空待发送队列 */
@@ -599,7 +661,7 @@
         })
     }
 
-    /** 重答:重新发送该轮用户消息(简单实现,对齐原版重答意图) */
+    /** 重答:通过后端 is_regenerate 机制覆盖目标回答并自动保存旧版本(对齐原版 startRegenerate) */
     async function handleRegenerate(assistantMessage: ChatMessage): Promise<void> {
         const userMessage = conversationStore.messages.find(
             (item) => item.role === 'user' && item.index === assistantMessage.index - 1
@@ -617,19 +679,52 @@
             return
         }
 
-        // 移除旧回答,重新发送用户消息
-        conversationStore.removeMessagePair(userMessage.index)
-        conversationStore.messages = conversationStore.messages.filter((item) => item.index !== userMessage.index)
+        const conversationId = conversationStore.currentId
 
-        await doSend(String(userMessage.content || ''), {
+        if (!conversationId) {
+            showToast('当前对话尚未保存,无法重答', 'warning')
+
+            return
+        }
+
+        // 本地清空目标回答,锁定流式更新该消息(后端将按 regenerate_index 截断上下文并覆盖)
+        conversationStore.beginStreamAt(assistantMessage.index)
+
+        const accepted = await streamService.send({
+            message: String(userMessage.content || ''),
+            conversationId,
+            modelName: modelStore.selectedId || undefined,
             enableThinking: true,
             enableWebSearch: false,
             enableTools: true,
+            includeContext: true,
+            isRegenerate: true,
+            regenerateIndex: assistantMessage.index,
+        }, {
+            onChunk: handleStreamChunk,
+            onEnd: handleStreamEnd,
         })
+
+        if (!accepted) {
+            conversationStore.abortStream()
+
+            showToast('发送冲突,请重试', 'warning')
+
+            return
+        }
+
+        // 流式期间本地已增量更新目标消息;done 终帧携带后端落盘的最终消息(含版本),
+        // 在 handleStreamEnd 中本地轻量收尾,无需全量重载
     }
 
     function handleToggleSidebar(): void {
-        // 对齐原版:.sidebar.collapsed 宽度归零隐藏
+        // 对齐原版:移动端(≤980px)顶栏按钮切换抽屉,桌面端才折叠(.sidebar.collapsed)
+        if (window.matchMedia('(max-width: 980px)').matches) {
+            document.body.classList.toggle('mobile-sidebar-open')
+
+            return
+        }
+
         sidebarCollapsed.value = !sidebarCollapsed.value
     }
 
@@ -660,9 +755,19 @@
     }
 
     function handleOpenKnowledgeDocument(title: string): void {
-        knowledgeMgmtOpen.value = false
         knowledgeTitle.value = title
-        knowledgeOpen.value = true
+
+        // 保留知识库面板:从右侧栏打开正文后仍可继续浏览文档列表
+        openView('knowledge', { keepPanel: true })
+    }
+
+    /** 知识库被删除:若当前正文正打开该文档则返回聊天主视图 */
+    function handleKnowledgeDocumentDeleted(title: string): void {
+        if (knowledgeTitle.value !== title) {
+            return
+        }
+
+        backToChat()
     }
 
     /** 侧边栏 Knowledge 按钮:打开/关闭知识库管理视图(对齐原版独立管理页,内嵌为视图) */
@@ -673,20 +778,7 @@
             return
         }
 
-        closeAllOverlays()
-
-        filesCenterOpen.value = false
-        workspacesOpen.value = false
-        knowledgeOpen.value = false
-        knowledgeMgmtOpen.value = true
-    }
-
-    function saveKnowledgeDocument(): void {
-        void knowledgeViewerRef.value?.save()
-    }
-
-    function vectorizeKnowledgeDocument(): void {
-        void knowledgeViewerRef.value?.vectorize()
+        openView('knowledge-mgmt')
     }
 
     /** 侧边栏 Files 按钮:打开/关闭文件中心视图(对齐原版 openFilesFrameView 的互斥切换) */
@@ -697,10 +789,7 @@
             return
         }
 
-        closeAllOverlays()
-
-        workspacesOpen.value = false
-        filesCenterOpen.value = true
+        openView('files')
         fileDetail.value = null
     }
 
@@ -712,10 +801,7 @@
             return
         }
 
-        closeAllOverlays()
-
-        filesCenterOpen.value = false
-        workspacesOpen.value = true
+        openView('workspaces')
     }
 
     /** 打开文件详情 */
@@ -726,10 +812,7 @@
 
     /** Workspace 文件复用 Files 详情视图,返回时恢复原 Workspace 详情页。 */
     function handleOpenWorkspaceFile(file: CloudFileItem): void {
-        closeAllOverlays()
-
-        workspacesOpen.value = false
-        filesCenterOpen.value = true
+        openView('files')
         fileDetail.value = file
         fileDetailReturnView.value = 'workspace'
     }
@@ -738,8 +821,9 @@
         fileDetail.value = null
 
         if (fileDetailReturnView.value === 'workspace') {
-            filesCenterOpen.value = false
-            workspacesOpen.value = true
+            openView('workspaces')
+            // 从 Workspace 内容返回时重置到项目首页,而非停留在详情页
+            workspacesViewRef.value?.backToList()
         }
 
         fileDetailReturnView.value = 'files'
@@ -765,7 +849,150 @@
         imageViewerUrl.value = url
     }
 
-    /** 消息变化后滚动到底部 */
+    /** 从消息创建会话分支(对齐原版 forkConversationFromMessage) */
+    async function handleForkMessage(message: ChatMessage): Promise<void> {
+        const conversationId = conversationStore.currentId
+
+        if (!conversationId) {
+            showToast('当前对话尚未保存,无法创建分支', 'warning')
+
+            return
+        }
+
+        if (conversationStore.generating) {
+            showToast('当前会话仍在生成,完成后才能创建分支', 'warning')
+
+            return
+        }
+
+        try {
+            const result = await forkConversation(conversationId, message.index)
+
+            await conversationStore.loadConversations()
+
+            await conversationStore.openConversation(result.conversation_id)
+
+            showToast(`已创建分支:${result.title || result.conversation_id}`, 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '创建分支失败')
+        }
+    }
+
+    /** 切换消息版本(对齐原版 switchVersion:后端返回切换后的消息,本地轻量替换,无需全量重载) */
+    async function handleSwitchVersion(message: ChatMessage, versionIndex: number): Promise<void> {
+        const conversationId = conversationStore.currentId
+
+        if (!conversationId) {
+            showToast('当前对话尚未保存', 'warning')
+
+            return
+        }
+
+        if (conversationStore.generating) {
+            showToast('当前会话仍在生成,请稍后再试', 'warning')
+
+            return
+        }
+
+        try {
+            const switched = await switchMessageVersion(conversationId, message.index, versionIndex)
+
+            if (switched) {
+                conversationStore.applyFinalMessage(switched, message.index)
+            }
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '切换版本失败')
+        }
+    }
+
+    /** 查看分支处:打开父会话并跳转到分支消息(对齐原版 viewConversationBranchSourceFromContextMenu) */
+    async function handleViewBranchSource(parentConversationId: string, messageIndex: number): Promise<void> {
+        backToChat()
+
+        try {
+            await conversationStore.openConversation(parentConversationId)
+
+            await conversationStore.ensureMessageIndexLoaded(messageIndex)
+
+            await nextTick()
+
+            const container = document.getElementById('messagesContainer')
+
+            if (!container) {
+                return
+            }
+
+            const target = container.querySelector<HTMLElement>(`.message[data-index="${Math.floor(messageIndex)}"]`)
+
+            if (!target) {
+                showToast('来源内容已变更或找不到', 'warning')
+
+                return
+            }
+
+            const targetTop = Math.max(0, target.offsetTop - (container.clientHeight / 2) + (target.offsetHeight / 2))
+
+            container.scrollTo({ top: targetTop, behavior: 'smooth' })
+
+            target.classList.add('turn-jump-highlight')
+
+            window.setTimeout(() => {
+                target.classList.remove('turn-jump-highlight')
+            }, 3000)
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '跳转失败')
+        }
+    }
+
+    /**
+     * 加载更早消息(对齐原版 loadPreviousConversationMessages):
+     * 保存当前首条消息的 DOM 位置 → 加载 → nextTick 后恢复滚动,保证视觉不跳动。
+     */
+    async function handleLoadPrevious(): Promise<void> {
+        const container = document.getElementById('messagesContainer')
+
+        if (!container || !conversationStore.hasMoreBefore || conversationStore.loadingBefore) {
+            return
+        }
+
+        const anchorMessage = container.querySelector<HTMLElement>('.message')
+        const anchorOffset = anchorMessage ? anchorMessage.offsetTop - container.scrollTop : 0
+
+        try {
+            await conversationStore.loadPreviousMessages()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '加载更早消息失败')
+        } finally {
+            await nextTick()
+
+            // 恢复滚动位置:加载后首条消息仍在原位
+            const restored = container.querySelector<HTMLElement>('.message')
+
+            if (restored && anchorMessage) {
+                const addedHeight = restored.offsetTop - anchorMessage.offsetTop
+
+                container.scrollTop = anchorMessage.offsetTop - anchorOffset + addedHeight
+            } else {
+                container.scrollTop = container.scrollHeight
+            }
+        }
+    }
+
+    /** 滚动到顶部附近时自动加载更早消息(对齐原版 maybeLoadPreviousConversationMessagesFromScroll) */
+    function handleMessagesScroll(): void {
+        const container = document.getElementById('messagesContainer')
+
+        if (!container || conversationStore.loadingBefore) {
+            return
+        }
+
+        // 用户滚动到距顶部 40px 内且还有更早消息时触发
+        if (container.scrollTop <= 40 && conversationStore.hasMoreBefore) {
+            void handleLoadPrevious()
+        }
+    }
+
+    /** 消息变化后滚动到底部(仅当非"加载更早消息"前置插入时) */
     watch(
         () => conversationStore.messages,
         async () => {
@@ -773,11 +1000,31 @@
 
             const container = document.getElementById('messagesContainer')
 
-            if (container) {
+            if (container && !conversationStore.loadingBefore) {
                 container.scrollTop = container.scrollHeight
             }
         },
         { deep: true }
+    )
+
+    /** 切换会话:本次渲染即时显示(不触发消息渐入动画),下一帧移除标记恢复动画 */
+    watch(
+        () => conversationStore.currentId,
+        async () => {
+            await nextTick()
+
+            const container = document.getElementById('messagesContainer')
+
+            if (!container) {
+                return
+            }
+
+            container.classList.add('instant-messages')
+
+            requestAnimationFrame(() => {
+                container.classList.remove('instant-messages')
+            })
+        }
     )
 
     onMounted(async () => {
@@ -796,12 +1043,21 @@
 
         chatInputRef.value?.focus()
 
+        // 消息区滚动监听:滚动到顶部自动加载更早消息
+        const container = document.getElementById('messagesContainer')
+
+        container?.addEventListener('scroll', handleMessagesScroll, { passive: true })
+
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
     })
 
     onBeforeUnmount(() => {
+        const container = document.getElementById('messagesContainer')
+
+        container?.removeEventListener('scroll', handleMessagesScroll)
+
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
     })
@@ -850,7 +1106,7 @@
         selectionMenuRef.value?.open(text, event.clientX, event.clientY, anchor)
     }
 
-    /** 点击菜单外任意处关闭选区菜单(对齐原版 click 监听) */
+    /** 点击菜单外任意处关闭选区菜单(对齐原版 click 监听);移动端点击侧边栏外空白关闭抽屉 */
     function handleDocumentClick(event: MouseEvent): void {
         const menu = document.querySelector('.notes-context-menu')
 
@@ -860,6 +1116,22 @@
 
         if (selectionMenuRef.value?.isOpen()) {
             selectionMenuRef.value.close()
+        }
+
+        if (window.matchMedia('(max-width: 980px)').matches && document.body.classList.contains('mobile-sidebar-open')) {
+            const sidebar = document.querySelector<HTMLElement>('.sidebar')
+            const target = event.target as Node
+            const toggleEls = document.querySelectorAll<HTMLElement>('#toggleSidebar, #toggleSidebarMobile')
+
+            if (!sidebar || sidebar.contains(target)) {
+                return
+            }
+
+            if (Array.from(toggleEls).some((el) => el.contains(target))) {
+                return
+            }
+
+            document.body.classList.remove('mobile-sidebar-open')
         }
     }
 
@@ -939,4 +1211,134 @@
 
         showToast('已填入解释指令', 'success')
     }
+
+    /** 全局搜索:新建对话(对齐原版 quickActions 的 createNewConversation) */
+    function handleSearchNewConversation(): void {
+        backToChat()
+
+        conversationStore.newConversation()
+    }
+
+    /** 全局搜索:打开标题命中的会话(对齐原版 loadConversation) */
+    async function handleSearchOpenConversation(conversationId: string): Promise<void> {
+        backToChat()
+
+        try {
+            await conversationStore.openConversation(conversationId)
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '打开会话失败')
+        }
+    }
+
+    /**
+     * 全局搜索:消息命中跳转(对齐原版 jumpToChatSource):
+     * 目标会话不同则先切换;目标消息不在当前窗口时向前分页补载,再滚动高亮。
+     */
+    async function handleSearchJumpToMessage(hit: SearchMessageHit): Promise<void> {
+        backToChat()
+
+        try {
+            if (conversationStore.currentId !== hit.conversation_id) {
+                await conversationStore.openConversation(hit.conversation_id)
+            }
+
+            await conversationStore.ensureMessageIndexLoaded(hit.message_index)
+
+            await nextTick()
+
+            const target = document.querySelector(`.message[data-index="${hit.message_index}"]`)
+
+            if (!target) {
+                showToast('目标消息不存在或已删除', 'info')
+
+                return
+            }
+
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+            target.classList.add('turn-jump-highlight')
+
+            window.setTimeout(() => {
+                target.classList.remove('turn-jump-highlight')
+            }, 3000)
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '跳转消息失败')
+        }
+    }
+
+    /** 全局搜索:打开知识库命中文档(对齐原版 viewKnowledge) */
+    function handleSearchOpenKnowledge(title: string): void {
+        handleOpenKnowledgeDocument(title)
+    }
+
+    /**
+     * 全局搜索:打开云盘文件命中(对齐原版 openFilesFrameView + openFileCenterFileDetail):
+     * 搜索结果仅含 alias/name,直接构造条目打开详情,由 FileDetailView 经 fileRef 读取。
+     */
+    function handleSearchOpenFile(hit: SearchFileHit): void {
+        const file: CloudFileItem = {
+            alias: hit.alias,
+            name: hit.name,
+            original_name: hit.name,
+        }
+
+        openView('files')
+        fileDetail.value = file
+        fileDetailReturnView.value = 'files'
+    }
 </script>
+
+<style scoped>
+    /* 加载更早消息入口(对齐原版 loadPreviousConversationMessages 的顶部触发交互) */
+    .messages-history-load {
+        display: flex;
+        justify-content: center;
+        padding: 10px 0 2px;
+    }
+
+    .messages-history-load-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        background: #fff;
+        color: #6b7280;
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .messages-history-load-btn:hover:not(:disabled) {
+        background: #f9fafb;
+        color: #374151;
+        border-color: #d1d5db;
+    }
+
+    .messages-history-load-btn:disabled {
+        opacity: 0.7;
+        cursor: default;
+    }
+
+    .messages-history-loading-spinner {
+        width: 12px;
+        height: 12px;
+        border: 2px solid #d1d5db;
+        border-top-color: #6b7280;
+        border-radius: 50%;
+        animation: messages-history-spin 0.8s linear infinite;
+    }
+
+    @keyframes messages-history-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .messages-history-load-end {
+        padding: 5px 14px;
+        color: #9ca3af;
+        font-size: 12px;
+    }
+</style>

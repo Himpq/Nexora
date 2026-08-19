@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_nexoracode.js — NexoraCode 本地项目列表/选择/隐藏/代理在线状态
  *
  * 职责：NexoraCode 本地项目列表/选择/隐藏/代理在线状态；从 chat.js 批量迁移。
@@ -40,7 +40,7 @@ import {
     setDesktopAgentIndicatorState,
     showToast,
     updateMessageModelBadge,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 import {
     BROWSER_SYNC_RECONNECT_MAX_MS,
     browserSyncReconnectAttempts,

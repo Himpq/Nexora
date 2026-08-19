@@ -44,10 +44,48 @@
     background: var(--bg-main, #fff);
 }
 
+/* 编辑器全屏:固定定位的编辑器无法脱离本层叠上下文,提升其到顶栏(100)之上,完整覆盖 chat-header */
+body.gddp-markdown-fullscreen-active .gddp-content-view {
+    z-index: calc(var(--z-header, 100) + 100);
+}
+
 .gddp-content-view > .file-center-view,
 .gddp-content-view > .knowledge-viewer,
 .gddp-content-view > .knowledge-mgmt-view {
     flex: 1 1 auto;
+}
+
+/* 内容级视图统一预留滚动条 gutter:避免列表加载后滚动条出现/消失导致
+   Workspaces、Files 等居中布局在切换时产生几 px 横向偏移 */
+.gddp-content-view > .file-center-view,
+.gddp-content-view > .workspace-projects-view,
+.gddp-content-view > .workspace-detail-view,
+.gddp-content-view > .knowledge-mgmt-view {
+    scrollbar-gutter: stable;
+}
+
+/* 消息气泡:保留原版 style.css 的 fadeIn 渐入动画(opacity:0 → 1 + translateY)。
+   切换会话/加载历史时由 ChatView 通过容器类即时显示(见 ChatView 的 instant 切换逻辑) */
+#messagesContainer .message {
+    opacity: 0;
+    animation: messageFadeIn 0.3s forwards;
+}
+
+@keyframes messageFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+#messagesContainer.instant-messages .message {
+    opacity: 1;
+    animation: none;
 }
 
 .chat-header {
@@ -120,6 +158,13 @@
     .header-left .gddp-model-select-trigger {
         padding: 0 8px;
     }
+
+    /* 手机端侧边栏抽屉:ChatView handleToggleMobile 在 body 上切换 mobile-sidebar-open,
+       与 style.css 的 .sidebar.mobile-open 语义一致(原版同断点、同位移、同投影) */
+    body.mobile-sidebar-open .sidebar {
+        transform: translateX(0) !important;
+        box-shadow: 10px 0 28px rgba(0, 0, 0, 0.35) !important;
+    }
 }
 
 @media (max-width: 760px) {
@@ -163,8 +208,42 @@
         gap: 14px;
     }
 
-    .file-center-actions {
+.file-center-actions {
         width: 100%;
-        flex-wrap: wrap;
     }
+}
+
+/* 会话分支树:分支会话缩进 + 引导线(迁移自原版 chat_conversation_branches.css) */
+.conversation-item.conversation-branch-item {
+    position: relative;
+    padding-left: calc(12px + var(--conversation-branch-offset, 0px));
+}
+
+.conversation-item.conversation-branch-item::before {
+    content: '';
+    position: absolute;
+    left: calc(6px + var(--conversation-branch-offset, 0px));
+    top: 0;
+    bottom: 50%;
+    width: 8px;
+    border-left: 1px solid rgba(148, 163, 184, 0.38);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.38);
+    border-bottom-left-radius: 5px;
+    pointer-events: none;
+}
+
+.conversation-item.conversation-branch-orphan::before {
+    border-left-style: dashed;
+    border-bottom-style: dashed;
+}
+
+.conversation-branch-icon {
+    margin-right: 6px;
+    color: #94a3b8;
+    font-size: 11px;
+}
+
+.conversation-item:hover .conversation-branch-icon,
+.conversation-item.active .conversation-branch-icon {
+    color: currentColor;
 }

@@ -13,7 +13,7 @@
             <div
                 v-if="open"
                 class="image-viewer-backdrop active"
-                @click.self="emit('close')"
+                @mousedown.self="emit('close')"
             >
                 <div class="image-viewer-shell" role="dialog" aria-modal="true" aria-label="图片查看器">
                     <div class="image-viewer-toolbar">

@@ -1,0 +1,96 @@
+/**
+ * dropdowns.css — 现代化下拉菜单(工具模式 / 文件排序)
+ *
+ * 职责:
+ *   - 统一覆盖原版 .tool-mode-menu 系列样式,升级为 GDDP 卡片风格
+ *   - 打开/关闭增加过渡动效(visibility + opacity + transform)
+ *   - 与 tokens.css 的 --z-dropdown 层级令牌对齐
+ */
+
+.tool-mode-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    left: auto;
+    min-width: 176px;
+    background: #fff;
+    border: 1px solid #eef2f7;
+    border-radius: 14px;
+    box-shadow:
+        0 24px 48px -12px rgba(15, 23, 42, 0.16),
+        0 8px 16px -8px rgba(15, 23, 42, 0.08);
+    padding: 6px;
+    display: grid;
+    gap: 4px;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+    transform-origin: bottom right;
+    pointer-events: none;
+    transition:
+        opacity 0.16s ease,
+        transform 0.16s ease,
+        visibility 0.16s ease;
+    z-index: var(--z-dropdown);
+}
+
+.tool-mode-dropdown.open .tool-mode-menu {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+
+.tool-mode-item {
+    min-height: 32px;
+    border: none;
+    border-radius: 9px;
+    background: transparent;
+    color: #475569;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+    white-space: nowrap;
+    line-height: 1.25;
+    padding: 8px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition:
+        background-color 0.14s ease,
+        color 0.14s ease;
+}
+
+.tool-mode-item:hover {
+    background: #f6f8fb;
+    color: #0f172a;
+}
+
+.tool-mode-item.active {
+    background: #eef2ff;
+    color: #4f46e5;
+    font-weight: 600;
+}
+
+/* 文件中心排序:弹出方向为下方,触发按钮升级为协调的圆角样式 */
+.file-center-sort-menu {
+    top: calc(100% + 8px);
+    bottom: auto;
+    left: 0;
+    right: auto;
+    transform-origin: top left;
+    z-index: calc(var(--z-dropdown) + 1);
+}
+
+.file-center-sort-trigger {
+    height: 36px;
+    min-width: 130px;
+    max-width: 170px;
+    border: 1px solid #e5e9f0;
+    border-radius: 10px;
+    background: #fff;
+    color: #111827;
+    font-size: 13px;
+    font-weight: 600;
+}

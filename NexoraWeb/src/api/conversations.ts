@@ -8,12 +8,22 @@
 
 import { apiFetch } from './client'
 
+/** 会话分支信息(对齐原版 readConversationBranch 读取的后端 branch 结构) */
+export interface ConversationBranch {
+    root_conversation_id: string
+    parent_conversation_id: string
+    parent_message_index: number
+    created_at?: string
+}
+
 export interface ConversationSummary {
     id: string
     title: string
     conversation_mode?: string
     updated_at?: number
     created_at?: number
+    /** 分支会话来源信息(非分支会话为 undefined) */
+    branch?: ConversationBranch
     [key: string]: unknown
 }
 
@@ -50,6 +60,7 @@ interface MessagesResponse {
     start_index: number
     end_index: number
     total: number
+    has_more_before?: boolean
 }
 
 /** 获取会话列表(按更新时间倒序);后端字段 conversation_id 映射为前端 id */
@@ -68,7 +79,33 @@ export async function listConversations(): Promise<ConversationSummary[]> {
         created_at: item.created_at,
         // 置顶状态必须透传,否则前端无法排序/显示 pin 图标(后端已按 pin 排序)
         pin: !!item.pin,
+        // 分支信息必须透传,否则侧边栏无法渲染分支树/右键无法跳转分支处
+        branch: readConversationBranch(item),
     }))
+}
+
+/** 归一化分支信息:结构不完整时返回 undefined(对齐原版 readConversationBranch) */
+function readConversationBranch(item: RawConversationItem): ConversationBranch | undefined {
+    const raw = item.branch && typeof item.branch === 'object' ? item.branch as Record<string, unknown> : null
+
+    if (!raw) {
+        return undefined
+    }
+
+    const rootConversationId = String(raw.root_conversation_id || '').trim()
+    const parentConversationId = String(raw.parent_conversation_id || '').trim()
+    const parentMessageIndex = Number(raw.parent_message_index)
+
+    if (!rootConversationId || !parentConversationId || !Number.isInteger(parentMessageIndex)) {
+        return undefined
+    }
+
+    return {
+        root_conversation_id: rootConversationId,
+        parent_conversation_id: parentConversationId,
+        parent_message_index: parentMessageIndex,
+        created_at: String(raw.created_at || '').trim(),
+    }
 }
 
 /** 创建新会话;传入 conversationId 可复用已存在会话 */
@@ -90,6 +127,24 @@ export async function deleteConversation(conversationId: string): Promise<void> 
     await apiFetch<{ success: boolean }>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
         method: 'DELETE',
     })
+}
+
+interface ForkConversationResponse {
+    success: boolean
+    conversation_id: string
+    title: string
+    branch: ConversationBranch
+}
+
+/** 从已完成的 assistant 回答节点创建独立会话分支(对齐原版 forkFromMessage) */
+export async function forkConversation(conversationId: string, messageIndex: number): Promise<ForkConversationResponse> {
+    return apiFetch<ForkConversationResponse>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/fork`,
+        {
+            method: 'POST',
+            body: JSON.stringify({ message_index: Number(messageIndex) }),
+        }
+    )
 }
 
 /** 置顶/取消置顶会话 */
@@ -125,6 +180,24 @@ export async function updateMessageContent(conversationId: string, messageIndex:
             body: JSON.stringify({ content: String(content || '') }),
         }
     )
+}
+
+/** 切换助手消息到指定历史版本(POST /api/switch_version,对齐原版 switchVersion) */
+export async function switchMessageVersion(
+    conversationId: string,
+    messageIndex: number,
+    versionIndex: number,
+): Promise<Record<string, unknown> | null> {
+    const data = await apiFetch<{ success: boolean; message?: Record<string, unknown> }>('/api/switch_version', {
+        method: 'POST',
+        body: JSON.stringify({
+            conversation_id: conversationId,
+            message_index: Number(messageIndex),
+            version_index: Number(versionIndex),
+        }),
+    })
+
+    return data && data.message && typeof data.message === 'object' ? data.message : null
 }
 
 /** 分页读取会话消息(倒序分页:before 为读取到哪条索引之前) */

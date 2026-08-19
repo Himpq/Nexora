@@ -19,12 +19,12 @@
         size="lg"
         @close="emit('close')"
     >
-        <div class="avatar-crop-layout">
-            <div class="avatar-crop-main">
-                <div class="avatar-crop-canvas-wrap">
+        <div class="ac-layout">
+            <div class="ac-main">
+                <div class="ac-canvas-wrap">
                     <canvas
                         ref="cropCanvas"
-                        class="avatar-crop-canvas"
+                        class="ac-canvas"
                         width="320"
                         height="320"
                         @pointerdown="startDrag"
@@ -36,7 +36,7 @@
                         @wheel.prevent="onWheelZoom"
                     ></canvas>
                 </div>
-                <div class="avatar-crop-controls">
+                <div class="ac-controls">
                     <label for="avatarCropZoom">缩放</label>
                     <input
                         id="avatarCropZoom"
@@ -47,13 +47,13 @@
                         :value="Math.round(zoom * 100)"
                         @input="onZoomRange"
                     />
-                    <button class="btn-primary-outline btn-compact avatar-crop-reset" type="button" @click="reset">重置</button>
+                    <button class="btn-primary-outline btn-compact ac-reset" type="button" @click="reset">重置</button>
                 </div>
             </div>
-            <div class="avatar-crop-preview-wrap">
-                <div class="avatar-crop-preview-title">圆形预览</div>
-                <canvas ref="previewCanvas" class="avatar-crop-preview" width="120" height="120"></canvas>
-                <div class="avatar-crop-tip">拖动图片定位,双击画布可重置位置。</div>
+            <div class="ac-preview-wrap">
+                <div class="ac-preview-title">圆形预览</div>
+                <canvas ref="previewCanvas" class="ac-preview" width="120" height="120"></canvas>
+                <div class="ac-tip">拖动图片定位,双击画布可重置位置。</div>
             </div>
         </div>
 
@@ -324,3 +324,112 @@
 
     defineExpose({ openWithFile })
 </script>
+
+<style scoped>
+    /* 裁切区整体:画布列 + 预览列 */
+    .ac-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 200px;
+        gap: 16px;
+        align-items: stretch;
+        min-height: 360px;
+    }
+
+    /* 画布列:画布区 + 控制条 */
+    .ac-main {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: 12px;
+    }
+
+    .ac-canvas-wrap {
+        min-width: 0;
+        min-height: 360px;
+        overflow: hidden;
+        border: 1px solid #d6deea;
+        border-radius: 10px;
+        background: #9ca3af;
+    }
+
+    .ac-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: grab;
+    }
+
+    .ac-controls {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #f8fafc;
+    }
+
+    .ac-controls label {
+        color: #475569;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .ac-controls input[type="range"] {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .ac-reset {
+        width: 88px;
+        min-width: 88px;
+        height: 34px;
+    }
+
+    /* 预览列 */
+    .ac-preview-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f8fafc;
+    }
+
+    .ac-preview-title {
+        font-size: 12px;
+        color: #334155;
+        font-weight: 600;
+    }
+
+    .ac-preview {
+        width: 140px;
+        height: 140px;
+        border-radius: 999px;
+        border: 1px solid #dbeafe;
+        background: #ffffff;
+    }
+
+    .ac-tip {
+        font-size: 11px;
+        color: #64748b;
+        line-height: 1.4;
+        text-align: center;
+    }
+
+    @media (max-width: 560px) {
+        .ac-layout {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .ac-canvas-wrap {
+            min-height: 260px;
+        }
+    }
+</style>

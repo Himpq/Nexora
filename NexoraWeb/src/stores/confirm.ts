@@ -53,6 +53,9 @@ export function showConfirm(options: ConfirmOptions): Promise<boolean> {
         backdrop.className = 'g-modal-backdrop'
         backdrop.style.zIndex = confirmZIndex()
 
+        /** 防重复 settle:确认/取消/遮罩/Esc 多条路径只允许结算一次 */
+        let settled = false
+
         backdrop.innerHTML = `
             <div class="g-modal g-modal-sm" role="dialog" aria-label="${escapeHtml(options.title)}">
                 <div class="g-modal-head">
@@ -72,12 +75,22 @@ export function showConfirm(options: ConfirmOptions): Promise<boolean> {
             </div>
         `
 
+        /** 结算:先播退场动画(leave),结束后移除节点并 resolve */
         function cleanup(result: boolean): void {
+            if (settled) {
+                return
+            }
+
+            settled = true
             document.removeEventListener('keydown', onKeydown)
 
-            backdrop.remove()
+            backdrop.classList.add('g-modal-leave-active', 'g-modal-leave-to')
 
-            resolve(result)
+            setTimeout(() => {
+                backdrop.remove()
+
+                resolve(result)
+            }, 200)
         }
 
         function onKeydown(event: KeyboardEvent): void {
@@ -99,8 +112,13 @@ export function showConfirm(options: ConfirmOptions): Promise<boolean> {
 
         root.appendChild(backdrop)
 
-        // 入场动画
-        requestAnimationFrame(() => backdrop.classList.add('g-modal-enter-active'))
+        // 入场动画:先置初始态(enter-from),下一帧切换为激活态触发 transition
+        backdrop.classList.add('g-modal-enter-from')
+
+        requestAnimationFrame(() => {
+            backdrop.classList.remove('g-modal-enter-from')
+            backdrop.classList.add('g-modal-enter-active')
+        })
     })
 }
 
@@ -129,6 +147,9 @@ export function showPrompt(options: PromptOptions): Promise<string | null> {
         backdrop.className = 'g-modal-backdrop'
         backdrop.style.zIndex = confirmZIndex()
 
+        /** 防重复 settle:确认/取消/遮罩/Esc 多条路径只允许结算一次 */
+        let settled = false
+
         backdrop.innerHTML = `
             <div class="g-modal g-modal-sm" role="dialog" aria-label="${escapeHtml(options.title)}">
                 <div class="g-modal-head">
@@ -153,12 +174,22 @@ export function showPrompt(options: PromptOptions): Promise<string | null> {
 
         const input = backdrop.querySelector('[data-input]') as HTMLInputElement | null
 
+        /** 结算:先播退场动画(leave),结束后移除节点并 resolve */
         function cleanup(result: string | null): void {
+            if (settled) {
+                return
+            }
+
+            settled = true
             document.removeEventListener('keydown', onKeydown)
 
-            backdrop.remove()
+            backdrop.classList.add('g-modal-leave-active', 'g-modal-leave-to')
 
-            resolve(result)
+            setTimeout(() => {
+                backdrop.remove()
+
+                resolve(result)
+            }, 200)
         }
 
         function onKeydown(event: KeyboardEvent): void {
@@ -192,7 +223,11 @@ export function showPrompt(options: PromptOptions): Promise<string | null> {
 
         root.appendChild(backdrop)
 
+        // 入场动画:先置初始态(enter-from),下一帧切换为激活态触发 transition
+        backdrop.classList.add('g-modal-enter-from')
+
         requestAnimationFrame(() => {
+            backdrop.classList.remove('g-modal-enter-from')
             backdrop.classList.add('g-modal-enter-active')
 
             input?.focus()

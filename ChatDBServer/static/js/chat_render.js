@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_render.js — 消息渲染编排
  *
  * 职责：思维块/Reasoning 创建/折叠/追加/插入，Markdown/LaTeX 协调入口；从 chat.js 批量迁移。
@@ -18,7 +18,7 @@ import {
     highlightCode,
     renderMarkdownWithNewTabLinks,
     renderMathSafe,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 import {
     bindSourceMarkdown,
 } from './chat_notes.js?v=20260810_chatjs_split_01';

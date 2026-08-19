@@ -12,7 +12,7 @@
       - props: initialValue / placeholder / toolbar / imageUploadEnabled
       - emits: change(markdown) / imageFiles(files)
       - expose: getMarkdown / setMarkdown / getEditor / getMode / setMode / togglePreview / toggleSplit /
-                getSelectedText / replaceSelection / insertText / exec / runCommand / destroy
+                getSelectedText / replaceSelection / insertText / exec / runCommand / destroy / reset
 -->
 
 <template>
@@ -71,6 +71,11 @@
             <button type="button" class="toolbar-btn" :class="{ active: fullscreen }" title="全屏" @click="toggleFullscreen">
                 <i class="fa fa-arrows-alt" aria-hidden="true"></i>
             </button>
+
+            <span class="toolbar-separator" aria-hidden="true"></span>
+            <button type="button" class="toolbar-btn gddp-markdown-settings-btn" title="设置" @click="emit('settings')">
+                <i class="fa-solid fa-gear" aria-hidden="true"></i>
+            </button>
         </div>
 
         <div ref="editorHost" class="gddp-markdown-host" :class="modeClasses"></div>
@@ -80,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import Editor from '@toast-ui/editor'
     import '@toast-ui/editor/dist/toastui-editor.css'
@@ -102,6 +107,7 @@
     const emit = defineEmits<{
         change: [markdown: string]
         imageFiles: [files: File[]]
+        settings: []
     }>()
 
     const editorHost = ref<HTMLElement | null>(null)
@@ -113,6 +119,12 @@
     const fullscreen = ref(false)
     const headingMenuOpen = ref(false)
     const headingLevels = [1, 2, 3, 4]
+
+    // 全屏标记:固定定位的全屏编辑器无法脱离 .gddp-content-view 的层叠上下文(z-index:1),
+    // 需在 body 上打标,由 gddp-layout 提升内容视图到顶栏(z-index:100)之上才能完整覆盖 chat-header
+    watch(fullscreen, (active) => {
+        document.body.classList.toggle('gddp-markdown-fullscreen-active', active)
+    })
 
     /** 预览模式下禁用格式命令(对齐原版 disabled 行为) */
     const formatDisabled = computed(() => viewMode.value === 'preview')
@@ -134,10 +146,11 @@
         editor.value = null
         document.removeEventListener('click', handleDocumentClick)
         clearImageUploadBridge()
+        document.body.classList.remove('gddp-markdown-fullscreen-active')
     })
 
     /** 创建 Toast UI 编辑器(隐藏原生工具栏)并绑定图片粘贴/拖拽上传 */
-    function mountEditor(): void {
+    function mountEditor(initialValue = props.initialValue): void {
         if (!editorHost.value) {
             return
         }
@@ -147,7 +160,7 @@
 
         editor.value = new Editor({
             el: editorHost.value,
-            initialValue: props.initialValue,
+            initialValue,
             initialEditType: 'markdown',
             previewStyle: 'vertical',
             height: '100%',
@@ -417,7 +430,7 @@
 
     defineExpose({
         getMarkdown: () => editor.value?.getMarkdown() ?? '',
-        setMarkdown: (markdown: string) => editor.value?.setMarkdown(markdown),
+        setMarkdown: (markdown: string, cursorToEnd = true) => editor.value?.setMarkdown(markdown, cursorToEnd),
         getEditor: () => editor.value,
         getMode: () => viewMode.value,
         setMode,
@@ -432,6 +445,8 @@
             editor.value?.destroy()
             editor.value = null
         },
+        /** 强制重建编辑器实例:用于 setMarkdown 失败(PM doc 与 preview 脱节)后的兜底,保证 editor 与 preview 原子同步 */
+        reset: (markdown: string) => mountEditor(markdown),
     })
 </script>
 
@@ -513,6 +528,11 @@
         height: 18px;
         margin: 0 6px;
         background: #d4d4d8;
+    }
+
+    /* 设置按钮靠右对齐 */
+    .gddp-markdown-toolbar .gddp-markdown-settings-btn {
+        margin-left: auto;
     }
 
     .gddp-markdown-toolbar .heading-menu {

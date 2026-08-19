@@ -18,7 +18,7 @@
 
 .settings-modal-shell {
     display: flex;
-    height: min(74vh, 700px);
+    height: 100%;
     min-height: 500px;
 }
 

@@ -79,34 +79,34 @@
         size="sm"
         @close="announcementOpen = false"
     >
-        <div class="form-group">
+        <div class="np-form-group">
             <label for="announcementTitleInput">标题</label>
             <input
                 id="announcementTitleInput"
                 v-model="announcementTitle"
-                class="input-modern"
+                class="g-input"
                 type="text"
                 maxlength="120"
                 placeholder="输入公告标题"
             >
         </div>
-        <div class="form-group">
+        <div class="np-form-group">
             <label for="announcementContentInput">内容</label>
             <textarea
                 id="announcementContentInput"
                 v-model="announcementContent"
-                class="input-modern chat-announcement-textarea"
+                class="g-input np-announcement-textarea"
                 maxlength="4000"
                 rows="6"
                 placeholder="输入公告内容"
             ></textarea>
         </div>
-        <div class="form-group">
+        <div class="np-form-group">
             <label for="announcementLevelSelect">级别</label>
-            <div class="chat-announcement-level-select">
+            <div class="np-announcement-level-select">
                 <button
                     id="announcementLevelSelectButton"
-                    class="chat-announcement-level-button"
+                    class="np-announcement-level-button"
                     type="button"
                     aria-haspopup="listbox"
                     :aria-expanded="levelMenuOpen"
@@ -115,9 +115,9 @@
                     <span>{{ levelLabel(announcementLevel) }}</span>
                     <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
                 </button>
-                <div
+<div
                     id="announcementLevelSelectMenu"
-                    class="chat-announcement-level-menu"
+                    class="np-announcement-level-menu"
                     role="listbox"
                     aria-label="公告级别"
                     :hidden="!levelMenuOpen"
@@ -127,6 +127,7 @@
                         :key="option.value"
                         type="button"
                         role="option"
+                        :class="{ active: announcementLevel === option.value }"
                         :aria-selected="announcementLevel === option.value"
                         @click="announcementLevel = option.value; levelMenuOpen = false"
                     >
@@ -396,3 +397,97 @@
         })
     }
 </script>
+
+<style scoped>
+    /* ---------- 公告弹窗表单(去原版 .form-group/.input-modern,走 GDDP 组件) ---------- */
+
+    .np-form-group {
+        margin-bottom: 14px;
+    }
+
+    .np-form-group:last-child {
+        margin-bottom: 0;
+    }
+
+    .np-form-group label {
+        display: block;
+        margin-bottom: 6px;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .np-announcement-textarea {
+        min-height: 140px;
+        resize: vertical;
+        line-height: 1.5;
+    }
+
+    /* ---------- 公告级别下拉 ---------- */
+
+    .np-announcement-level-select {
+        position: relative;
+        width: 100%;
+    }
+
+    .np-announcement-level-button {
+        width: 100%;
+        height: 38px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #111827;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 12px;
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+    }
+
+    .np-announcement-level-button:hover,
+    .np-announcement-level-button[aria-expanded="true"] {
+        border-color: #9ca3af;
+        background: #f9fafb;
+    }
+
+    .np-announcement-level-menu {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 4800;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #ffffff;
+        box-shadow: 0 14px 28px rgba(15, 23, 42, 0.14);
+        padding: 6px;
+    }
+
+    .np-announcement-level-menu[hidden] {
+        display: none;
+    }
+
+    .np-announcement-level-menu button {
+        width: 100%;
+        height: 34px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: #111827;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        font: inherit;
+        font-size: 14px;
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .np-announcement-level-menu button:hover,
+    .np-announcement-level-menu button.active {
+        background: #f3f4f6;
+    }
+</style>

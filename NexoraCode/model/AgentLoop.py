@@ -88,6 +88,7 @@ class AgentLoop:
         final_persisted = False
         # 上一轮产生的文本与 usage（中断落盘用，循环内每轮更新）。
         content_text = ""
+        reasoning_text = ""
         last_round_io = None
         last_round_had_tool_calls = False
 
@@ -133,6 +134,7 @@ class AgentLoop:
                                 context_window,
                                 request_first_round_chars,
                                 badge_timing,
+                                reasoning_content=reasoning_text,
                             ),
                             "timestamp": _now(),
                         },
@@ -157,6 +159,7 @@ class AgentLoop:
             tools = self.executor.list_tools_llm_format()
 
             assistant_parts = []
+            assistant_reasoning_parts = []
             assistant_tool_calls = []
             round_usage = None
 
@@ -170,6 +173,11 @@ class AgentLoop:
 
                         assistant_parts.append(str(event.get("delta") or ""))
                         yield {"type": "content", "content": str(event.get("delta") or "")}
+
+                    elif event_type == "reasoning_content":
+                        # 推理过程增量透传给前端实时展示。
+                        assistant_reasoning_parts.append(str(event.get("delta") or ""))
+                        yield {"type": "reasoning_content", "content": str(event.get("delta") or "")}
 
                     elif event_type == "tool_call":
                         assistant_tool_calls.append(event)
@@ -188,6 +196,7 @@ class AgentLoop:
                 if "".join(assistant_parts).strip() and not final_persisted and not assistant_tool_calls:
                     final_persisted = True
                     content_text = "".join(assistant_parts)
+                    reasoning_text += "".join(assistant_reasoning_parts)
                     last_round_io = self._accumulate_usage(round_usage, totals)
                     badge_timing["endedAt"] = int(time.time() * 1000)
                     badge_timing["outputTokens"] = int(totals.get("output") or 0)
@@ -203,6 +212,7 @@ class AgentLoop:
                                 context_window,
                                 request_first_round_chars,
                                 badge_timing,
+                                reasoning_content=reasoning_text,
                             ),
                             "timestamp": _now(),
                         },
@@ -213,6 +223,7 @@ class AgentLoop:
                 break
 
             content_text = "".join(assistant_parts)
+            reasoning_text += "".join(assistant_reasoning_parts)
             grouped_tool_calls = self._group_tool_calls(assistant_tool_calls)
 
             last_round_io = self._accumulate_usage(round_usage, totals)
@@ -236,6 +247,7 @@ class AgentLoop:
                             context_window,
                             request_first_round_chars,
                             badge_timing,
+                            reasoning_content=reasoning_text,
                         ),
                         "timestamp": _now(),
                     },
@@ -263,6 +275,7 @@ class AgentLoop:
                     totals,
                     context_window,
                     request_first_round_chars,
+                    reasoning_content=reasoning_text,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -439,6 +452,7 @@ class AgentLoop:
         context_window: int,
         first_round_chars: int,
         badge_timing: dict | None = None,
+        reasoning_content: str = "",
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -446,11 +460,15 @@ class AgentLoop:
         - badge_timing:                请求级计时与速率（总耗时/首token/输出/缓存），
                                        供前端重进对话后从快照恢复 model badge 展示。
         - request_debug:               窗口上限与首轮载荷字符（前端脏数据保护）
+        - reasoning_content:           推理过程全文（前端历史渲染的 thinking 折叠块）
         """
         metadata: dict = {}
 
         if model_name:
             metadata["model_name"] = model_name
+
+        if reasoning_content:
+            metadata["reasoning_content"] = reasoning_content
 
         if badge_timing:
             metadata["badge_timing"] = {

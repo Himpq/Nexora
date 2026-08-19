@@ -41,7 +41,7 @@
                             @keydown.enter="load"
                         >
                     </label>
-                    <div class="tool-mode-dropdown file-center-sort-dropdown">
+                    <div class="tool-mode-dropdown file-center-sort-dropdown" :class="{ open: sortMenuOpen }">
                         <button
                             class="tool-mode-trigger file-center-sort-trigger"
                             type="button"
@@ -57,6 +57,7 @@
                         <div class="tool-mode-menu file-center-sort-menu" role="listbox" aria-label="排序方式">
                             <button
                                 type="button"
+                                class="tool-mode-item"
                                 role="option"
                                 :class="{ active: sortBy === 'created_desc' }"
                                 :aria-selected="sortBy === 'created_desc'"
@@ -64,6 +65,7 @@
                             >上传时间</button>
                             <button
                                 type="button"
+                                class="tool-mode-item"
                                 role="option"
                                 :class="{ active: sortBy === 'name_asc' }"
                                 :aria-selected="sortBy === 'name_asc'"

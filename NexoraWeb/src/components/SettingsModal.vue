@@ -14,6 +14,7 @@
     <Modal
         :open="open"
         width="1060px"
+        height="min(80vh, 720px)"
         modal-class="settings-modal"
         title="设置"
         @close="emit('close')"

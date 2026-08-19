@@ -25,7 +25,7 @@
   --learning-sidebar-accent: #3f4654;
 
   /* toast 通知必须始终浮于全站所有弹窗/小窗之上（设置小窗弹窗栈基线 20000，每层 +20） */
-  --toast-notification-layer: 30000;
+  --z-toast: 40000;
 }
 
 * { box-sizing: border-box; outline: none; }
@@ -10983,9 +10983,54 @@ body.is-admin .menu-item.admin-only {
     border-color: #b91c1c;
 }
 
-/* Toast Notification */
-.toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: all 0.3s ease; z-index: var(--toast-notification-layer) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.toast-notification.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* Toast Notification — 与新版本 Nexora 前端 nexora-toast 视觉统一(白底、左侧色条、图标) */
+#nexora-toast-root {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: var(--z-toast, 40000);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.nexora-toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid #2080f0;
+    border-radius: 8px;
+    padding: 10px 16px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+    font-size: 14px;
+    color: #334155;
+    max-width: 420px;
+    animation: nexora-toast-in 0.2s ease-out;
+    pointer-events: auto;
+}
+
+.nexora-toast.is-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: all 0.25s ease-in;
+}
+
+@keyframes nexora-toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
 /* Better Knowledge Panel Buttons */
 .k-actions .btn-icon-small { border: 1px solid transparent; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: #666; transition: all 0.2s; background: transparent; }
 .k-actions .btn-icon-small:hover { background: #f0f0f0; color: #000; }
@@ -13128,8 +13173,8 @@ body.is-admin .menu-item.admin-only {
     z-index: 1;
 }
 
-.toast-notification {
-    z-index: var(--toast-notification-layer) !important;
+#nexora-toast-root {
+    z-index: var(--z-toast, 40000) !important;
 }
 
 /* Ensure second-level admin modals render above settings modal */

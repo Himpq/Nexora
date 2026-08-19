@@ -120,6 +120,30 @@
                 </div>
 
                 <div v-if="message.content" class="msg-actions">
+                    <!-- 版本切换器(对齐原版 buildVersionNavigation:多版本时显示 prev/next + 计数) -->
+                    <div v-if="versionNav.total > 1" class="version-switcher">
+                        <button
+                            class="btn-ver"
+                            :title="'上一版本'"
+                            :disabled="versionNav.prevIndex === null"
+                            @click="handleSwitchVersion(versionNav.prevIndex)"
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <polyline points="15 18 9 12 15 6"></polyline>
+                            </svg>
+                        </button>
+                        <span>{{ versionNav.current }} / {{ versionNav.total }}</span>
+                        <button
+                            class="btn-ver"
+                            :title="'下一版本'"
+                            :disabled="versionNav.nextIndex === null"
+                            @click="handleSwitchVersion(versionNav.nextIndex)"
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <polyline points="9 18 15 12 9 6"></polyline>
+                            </svg>
+                        </button>
+                    </div>
                     <button class="btn-action" title="复制消息" @click="handleCopy">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -130,6 +154,15 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"></polyline>
                             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                    </button>
+                    <button class="btn-action" title="从这里创建分支" @click="handleFork">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="6" cy="4" r="2"></circle>
+                            <circle cx="18" cy="8" r="2"></circle>
+                            <circle cx="6" cy="20" r="2"></circle>
+                            <path d="M6 6v12"></path>
+                            <path d="M8 10h4a6 6 0 0 0 6-6"></path>
                         </svg>
                     </button>
                 </div>
@@ -158,6 +191,8 @@
         'edit-save': [message: ChatMessage, content: string]
         regenerate: [message: ChatMessage]
         'open-image': [url: string]
+        fork: [message: ChatMessage]
+        'switch-version': [message: ChatMessage, versionIndex: number]
     }>()
 
     const reasoningCollapsed = ref(true)
@@ -329,6 +364,128 @@
         emit('delete', props.message)
     }
 
+    /** 从这里创建分支:通知父级发起 fork(对齐原版 fork-conversation 按钮) */
+    function handleFork(): void {
+        emit('fork', props.message)
+    }
+
+    /** 切换到指定历史版本(对齐原版 switchVersion:verIndex 为 null 时不触发) */
+    function handleSwitchVersion(versionIndex: number | null): void {
+        if (versionIndex === null || versionIndex === undefined || Number.isNaN(Number(versionIndex))) {
+            return
+        }
+
+        emit('switch-version', props.message, Number(versionIndex))
+    }
+
+    interface VersionVariant {
+        content: string
+        timestamp: string
+        __serverIndex: number
+        __isCurrent: boolean
+    }
+
+    /** 历史版本列表(metadata.versions 中的有内容变体,对齐原版 rawVersions 过滤) */
+    const versionVariants = computed<VersionVariant[]>(() => {
+        const metadata = messageMetadata()
+        const raw = metadata.versions
+
+        if (!Array.isArray(raw)) {
+            return []
+        }
+
+        const variants: VersionVariant[] = []
+
+        raw.forEach((entry, index) => {
+            if (!entry || typeof entry !== 'object') {
+                return
+            }
+
+            const record = entry as Record<string, unknown>
+            const content = String(record.content || '').trim()
+
+            if (!content) {
+                return
+            }
+
+            variants.push({
+                content: String(record.content || ''),
+                timestamp: String(record.timestamp || ''),
+                __serverIndex: index,
+                __isCurrent: false,
+            })
+        })
+
+        return variants
+    })
+
+    /** 版本导航信息(对齐原版 buildVersionNavigation:全部变体按时间戳排序后定位当前位次) */
+    const versionNav = computed<{
+        total: number
+        current: number
+        prevIndex: number | null
+        nextIndex: number | null
+    }>(() => {
+        const currentVariant: VersionVariant = {
+            content: props.message.content || '',
+            timestamp: String(props.message.timestamp || ''),
+            __serverIndex: versionVariants.value.length,
+            __isCurrent: true,
+        }
+        const pool = [
+            ...versionVariants.value,
+            currentVariant,
+        ]
+
+        if (pool.length <= 1) {
+            return { total: 1, current: 1, prevIndex: null, nextIndex: null }
+        }
+
+        const sorted = pool
+            .map((variant, index) => ({ ...variant, __originOrder: index }))
+            .sort((left, right) => {
+                const leftTime = parseTimestamp(left.timestamp)
+                const rightTime = parseTimestamp(right.timestamp)
+
+                if (leftTime !== rightTime) {
+                    return leftTime - rightTime
+                }
+
+                return left.__originOrder - right.__originOrder
+            })
+        const currentSignature = `${currentVariant.timestamp}::${currentVariant.content.slice(0, 120)}`
+        let currentPosition = sorted.findIndex((variant) => {
+            return `${variant.timestamp}::${variant.content.slice(0, 120)}` === currentSignature && variant.__isCurrent
+        })
+
+        if (currentPosition < 0) {
+            currentPosition = sorted.length - 1
+        }
+
+        const previous = currentPosition > 0 ? sorted[currentPosition - 1] : null
+        const next = currentPosition < sorted.length - 1 ? sorted[currentPosition + 1] : null
+
+        return {
+            total: sorted.length,
+            current: currentPosition + 1,
+            prevIndex: previous ? Number(previous.__serverIndex) : null,
+            nextIndex: next ? Number(next.__serverIndex) : null,
+        }
+    })
+
+    /** 解析变体时间戳(无效返回 0,对齐原版 normalizeVariantTimestamp) */
+    function parseTimestamp(raw: string): number {
+        const value = String(raw || '').trim()
+
+        if (!value) {
+            return 0
+        }
+
+        const parsed = Date.parse(value)
+
+        return Number.isFinite(parsed) ? parsed : 0
+    }
+
     interface MessageAttachment {
         type?: string
         mime?: string
@@ -449,5 +606,39 @@
             opacity: 1;
             transform: scale(1);
         }
+    }
+
+    /* 版本切换器(对齐原版 style.css .version-switcher/.btn-ver) */
+    .version-switcher {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-right: 2px;
+        font-size: 11px;
+        color: #6b7280;
+    }
+
+    .btn-ver {
+        border: 1px solid #e5e7eb;
+        background: #fff;
+        color: #475569;
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+    }
+
+    .btn-ver:hover:not(:disabled) {
+        background: #f8fafc;
+        color: #111827;
+    }
+
+    .btn-ver:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
     }
 </style>

@@ -15,6 +15,8 @@ import router from './router'
 import './styles/gddp.css'
 import './styles/model-select.css'
 import './styles/gddp-layout.css'
+import './styles/knowledge-collab.css'
+import './styles/workspaces.css'
 
 const app = createApp(App)
 

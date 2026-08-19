@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_lifecycle.js — 全局副作用与 window 桥接集中注册
  *
  * 职责：集中注册跨模块 window 桥接（live-binding 状态 + 函数引用），
@@ -70,7 +70,7 @@ import {
     closeSettingsModal,
     closeSkillEditorModal,
     saveSkillEditorModal,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 
 
 /**

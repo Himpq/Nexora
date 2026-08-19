@@ -45,22 +45,33 @@
 
         <div class="sidebar-content" id="conversationList">
             <div
-                v-for="item in store.conversations"
-                :key="item.id"
+                v-for="row in store.branchRows"
+                :key="row.conversation.id"
                 class="conversation-item"
-                :class="{ active: item.id === store.currentId, 'is-streaming': isStreamingItem(item.id) }"
-                :data-conversation-id="item.id"
-                :data-pin="isPinned(item.id) ? '1' : '0'"
-                @click="handleOpen(item.id)"
-                @contextmenu.prevent="handleContextMenu($event, item)"
+                :class="{
+                    active: row.conversation.id === store.currentId,
+                    'is-streaming': isStreamingItem(row.conversation.id),
+                    'conversation-branch-item': isVisibleBranch(row.conversation),
+                }"
+                :data-conversation-id="row.conversation.id"
+                :data-pin="isPinned(row.conversation.id) ? '1' : '0'"
+                :style="branchOffsetStyle(row)"
+                :title="branchTooltip(row.conversation)"
+                @click="handleOpen(row.conversation.id)"
+                @contextmenu.prevent="handleContextMenu($event, row.conversation)"
             >
-                <span class="title" :title="item.title">
+                <span class="title" :title="row.conversation.title">
                     <i
-                        v-if="isPinned(item.id)"
+                        v-if="isVisibleBranch(row.conversation)"
+                        class="fa-solid fa-code-branch conversation-branch-icon"
+                        aria-hidden="true"
+                    ></i>
+                    <i
+                        v-if="isPinned(row.conversation.id)"
                         class="fa-solid fa-thumbtack conversation-pin-icon"
                         aria-hidden="true"
                     ></i>
-                    {{ item.title }}
+                    {{ row.conversation.title }}
                 </span>
                 <span class="conversation-item-right">
                     <!-- 原版 hover 删除按钮(.delete-chat,默认隐藏,hover 显示) -->
@@ -69,7 +80,7 @@
                         type="button"
                         title="删除会话"
                         aria-label="删除会话"
-                        @click.stop="handleDelete(item)"
+                        @click.stop="handleDelete(row.conversation)"
                     >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -77,7 +88,7 @@
                         </svg>
                     </button>
                     <span
-                        v-if="isStreamingItem(item.id)"
+                        v-if="isStreamingItem(row.conversation.id)"
                         class="conversation-stream-indicator is-loading"
                         title="模型正在回复"
                         aria-hidden="true"
@@ -94,13 +105,17 @@
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
+            :armed="contextMenu.armed"
             :x="contextMenu.x"
             :y="contextMenu.y"
+            target-type="conversation"
             :conversation-id="contextMenu.conversationId"
             :title="contextMenu.title"
             :pinned="contextMenu.pinned"
+            :branch="contextMenu.branch"
             @pin-changed="handlePinChanged"
             @title-changed="handleTitleChanged"
+            @view-branch-source="handleViewBranchSource"
         />
 
         <div class="sidebar-footer">
@@ -148,11 +163,12 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import { useRouter } from 'vue-router'
 
-    import type { ConversationSummary } from '@/api/conversations'
+    import type { ConversationBranch, ConversationSummary } from '@/api/conversations'
+    import type { ConversationBranchRow } from '@/stores/conversation'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
     import { showError, showToast } from '@/stores/notify'
@@ -164,11 +180,13 @@
     const emit = defineEmits<{
         'toggle-mobile': []
         'open-settings': []
+        'open-chat': []
         'open-workspaces': []
         'open-files': []
         'open-knowledge-mgmt': []
         'open-trash': []
         'open-timeline': []
+        'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
     const props = defineProps<{
@@ -214,6 +232,51 @@
         return store.generating && conversationId === store.currentId
     }
 
+    /** 是否为可见分支会话(有分支信息且非孤儿;对齐原版 visibleBranch) */
+    function isVisibleBranch(conversation: ConversationSummary): boolean {
+        const branch = readBranch(conversation)
+
+        return !!branch && !isOrphanBranch(conversation)
+    }
+
+    /** 分支缩进样式(对齐原版 --conversation-branch-offset,深度上限 6) */
+    function branchOffsetStyle(row: ConversationBranchRow): Record<string, string> | undefined {
+        if (!isVisibleBranch(row.conversation)) {
+            return undefined
+        }
+
+        return {
+            '--conversation-branch-offset': `${Math.max(1, row.depth) * 14}px`,
+        }
+    }
+
+    /** 分支悬停提示(对齐原版 row.title:分支自父会话的第 N 条消息) */
+    function branchTooltip(conversation: ConversationSummary): string | undefined {
+        const branch = readBranch(conversation)
+
+        if (!branch || isOrphanBranch(conversation)) {
+            return undefined
+        }
+
+        return `分支自会话 ${branch.parent_conversation_id} 的第 ${branch.parent_message_index + 1} 条消息`
+    }
+
+    /** 读取会话分支信息 */
+    function readBranch(conversation: ConversationSummary): ConversationBranch | null {
+        return conversation.branch && typeof conversation.branch === 'object' ? conversation.branch : null
+    }
+
+    /** 孤儿分支:父会话在列表中不存在(对齐原版 branchOrphan) */
+    function isOrphanBranch(conversation: ConversationSummary): boolean {
+        const branch = readBranch(conversation)
+
+        if (!branch) {
+            return false
+        }
+
+        return !store.conversations.some((entry) => entry.id === branch.parent_conversation_id)
+    }
+
     async function handleNewChat(): Promise<void> {
         // 生成中禁止新建会话:避免流式文本写入错误会话
         if (store.generating) {
@@ -221,6 +284,9 @@
 
             return
         }
+
+        // New Chat 语义为回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
+        emit('open-chat')
 
         try {
             await store.newConversation()
@@ -236,6 +302,9 @@
 
             return
         }
+
+        // 点击会话 = 回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
+        emit('open-chat')
 
         try {
             await store.openConversation(conversationId)
@@ -273,7 +342,7 @@
         }
     }
 
-    /** 右键菜单:对齐原版 pin-context-menu(置顶/改名/归入工作区) */
+    /** 右键菜单:对齐原版 pin-context-menu(置顶/改名/归入工作区/查看分支处) */
     function handleContextMenu(event: MouseEvent, item: ConversationSummary): void {
         event.preventDefault()
 
@@ -289,6 +358,8 @@
             conversationId: item.id,
             title: item.title,
             pinned: isPinned(item.id),
+            branch: readBranch(item) || undefined,
+            armed: true,
         }
 
         openPopover('context-menu')
@@ -301,16 +372,35 @@
         conversationId: '',
         title: '',
         pinned: false,
+        branch: undefined as ConversationBranch | undefined,
+        armed: false,
     })
 
+    /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
+    watch(
+        () => overlay.popover,
+        (popover) => {
+            if (popover !== 'context-menu') {
+                contextMenu.value.armed = false
+            }
+        }
+    )
+
     /** 置顶状态变化:本地更新并重排 */
-    function handlePinChanged(conversationId: string, pinned: boolean): void {
-        store.setConversationPinLocal(conversationId, pinned)
+    function handlePinChanged(targetType: string, id: string, pinned: boolean): void {
+        if (targetType === 'conversation') {
+            store.setConversationPinLocal(id, pinned)
+        }
     }
 
     /** 标题变化:本地更新 */
     function handleTitleChanged(conversationId: string, title: string): void {
         store.setConversationTitleLocal(conversationId, title)
+    }
+
+    /** 查看分支处:转发给父级打开父会话并跳转到分支消息(对齐原版 viewConversationBranchSourceFromContextMenu) */
+    function handleViewBranchSource(branch: ConversationBranch): void {
+        emit('view-branch-source', branch.parent_conversation_id, branch.parent_message_index)
     }
 
     async function handleLogout(): Promise<void> {

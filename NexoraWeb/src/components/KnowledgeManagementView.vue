@@ -54,9 +54,11 @@
 
                 <div v-if="basisLoading" class="knowledge-mgmt-grid" aria-hidden="true">
                     <div v-for="i in 6" :key="i" class="knowledge-mgmt-card knowledge-mgmt-skeleton">
-                        <div class="knowledge-mgmt-skeleton-line knowledge-mgmt-skeleton-title"></div>
-                        <div class="knowledge-mgmt-skeleton-line"></div>
-                        <div class="knowledge-mgmt-skeleton-line knowledge-mgmt-skeleton-short"></div>
+                        <div class="knowledge-mgmt-skeleton-ico"></div>
+                        <div class="knowledge-mgmt-skeleton-body">
+                            <div class="knowledge-mgmt-skeleton-line knowledge-mgmt-skeleton-title"></div>
+                            <div class="knowledge-mgmt-skeleton-line knowledge-mgmt-skeleton-short"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -76,14 +78,20 @@
                         @click="emit('open-document', item.title)"
                         @keydown.enter="emit('open-document', item.title)"
                     >
-                        <div class="knowledge-mgmt-card-head">
-                            <h3>{{ item.title }}</h3>
-                            <i v-if="item.pin" class="fa-solid fa-thumbtack" aria-hidden="true" title="已置顶"></i>
+                        <div class="knowledge-mgmt-card-main">
+                            <i class="fa-regular fa-file-lines" aria-hidden="true"></i>
+                            <div class="knowledge-mgmt-card-info">
+                                <div class="knowledge-mgmt-card-head">
+                                    <h3>{{ item.title }}</h3>
+                                    <span v-if="item.public" class="knowledge-mgmt-card-badge" title="公开协作">公开</span>
+                                    <i v-if="item.pin" class="fa-solid fa-thumbtack" aria-hidden="true" title="已置顶"></i>
+                                </div>
+                                <p class="knowledge-mgmt-card-updated">
+                                    <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                                    {{ formatUpdatedAt(item.updated_at) }}
+                                </p>
+                            </div>
                         </div>
-                        <p class="knowledge-mgmt-card-updated">
-                            <i class="fa-regular fa-clock" aria-hidden="true"></i>
-                            {{ formatUpdatedAt(item.updated_at) }}
-                        </p>
                         <div class="knowledge-mgmt-card-actions" @click.stop>
                             <button type="button" class="knowledge-mgmt-card-btn" title="查看" @click="emit('open-document', item.title)">
                                 <i class="fa-regular fa-eye" aria-hidden="true"></i>
@@ -136,7 +144,7 @@
         </div>
 
         <!-- 添加/编辑基础知识模态框 -->
-        <div v-if="basisModalOpen" class="knowledge-mgmt-backdrop" @click.self="closeModals">
+        <div v-if="basisModalOpen" class="knowledge-mgmt-backdrop" @mousedown.self="closeModals">
             <div class="knowledge-mgmt-modal" role="dialog" aria-modal="true">
                 <div class="knowledge-mgmt-modal-head">
                     <h3>{{ basisModalTitle ? '编辑基础知识' : '添加基础知识' }}</h3>
@@ -185,7 +193,7 @@
         </div>
 
         <!-- 添加/编辑短期记忆模态框 -->
-        <div v-if="shortModalOpen" class="knowledge-mgmt-backdrop" @click.self="closeModals">
+        <div v-if="shortModalOpen" class="knowledge-mgmt-backdrop" @mousedown.self="closeModals">
             <div class="knowledge-mgmt-modal" role="dialog" aria-modal="true">
                 <div class="knowledge-mgmt-modal-head">
                     <h3>{{ shortModalTitle ? '编辑短期记忆' : '添加短期记忆' }}</h3>
@@ -614,34 +622,60 @@
     }
 
     .knowledge-mgmt-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-        gap: 14px;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid #f1f5f9;
     }
 
     .knowledge-mgmt-card {
-        position: relative;
         display: flex;
-        flex-direction: column;
-        padding: 16px 18px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 12px;
+        border-bottom: 1px solid #f1f5f9;
         background: #fff;
         cursor: pointer;
-        transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+        transition: background-color 0.12s ease;
     }
 
     .knowledge-mgmt-card:hover {
-        border-color: #d0d7de;
         background: #f8fafc;
-        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+    }
+
+    .knowledge-mgmt-card-main {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .knowledge-mgmt-card-main > .fa-file-lines {
+        flex: none;
+        color: #9ca3af;
+        font-size: 15px;
+    }
+
+    .knowledge-mgmt-card-info {
+        flex: 1;
+        min-width: 0;
     }
 
     .knowledge-mgmt-card-head {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin-bottom: 8px;
+        margin-bottom: 4px;
+    }
+
+    .knowledge-mgmt-card-badge {
+        flex: none;
+        padding: 1px 7px;
+        border: 1px solid #d4d4d8;
+        border-radius: 999px;
+        color: #52525b;
+        font-size: 11px;
+        line-height: 1.4;
     }
 
     .knowledge-mgmt-card-head h3 {
@@ -650,7 +684,7 @@
         margin: 0;
         overflow: hidden;
         color: #0f172a;
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 600;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -673,14 +707,21 @@
 
     .knowledge-mgmt-card-actions {
         display: flex;
+        flex: none;
         gap: 8px;
-        margin-top: 14px;
-        opacity: 0;
+        opacity: 1;
         transition: opacity 0.2s;
     }
 
-    .knowledge-mgmt-card:hover .knowledge-mgmt-card-actions {
-        opacity: 1;
+    /* 触屏设备操作按钮始终可见;桌面端 hover 卡片时才浮现 */
+    @media (hover: hover) {
+        .knowledge-mgmt-card-actions {
+            opacity: 0;
+        }
+
+        .knowledge-mgmt-card:hover .knowledge-mgmt-card-actions {
+            opacity: 1;
+        }
     }
 
     .knowledge-mgmt-card-btn {
@@ -775,9 +816,24 @@
         pointer-events: none;
     }
 
+    .knowledge-mgmt-skeleton-ico {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 46%, #eef2f7 100%);
+        background-size: 220% 100%;
+        animation: knowledge-mgmt-skeleton 1.1s ease-in-out infinite;
+    }
+
+    .knowledge-mgmt-skeleton-body {
+        flex: 1;
+        min-width: 0;
+    }
+
     .knowledge-mgmt-skeleton-line {
         height: 12px;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
         border-radius: 6px;
         background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 46%, #eef2f7 100%);
         background-size: 220% 100%;
@@ -785,13 +841,13 @@
     }
 
     .knowledge-mgmt-skeleton-title {
-        width: 58%;
-        height: 16px;
-        margin-bottom: 16px;
+        width: 44%;
+        height: 14px;
     }
 
     .knowledge-mgmt-skeleton-short {
         width: 72%;
+        margin-bottom: 0;
     }
 
     @keyframes knowledge-mgmt-skeleton {
@@ -940,5 +996,20 @@
         border-color: #111827;
         color: #111827;
         background: #ececee;
+    }
+
+    /* 移动端:压缩页面留白,卡片单列展示 */
+    @media (max-width: 760px) {
+        .knowledge-mgmt-view {
+            padding: 24px 16px 40px;
+        }
+
+        .knowledge-mgmt-head h1 {
+            font-size: 22px;
+        }
+
+        .knowledge-mgmt-card {
+            padding: 12px 8px;
+        }
     }
 </style>

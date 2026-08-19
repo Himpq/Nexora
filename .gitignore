@@ -42,10 +42,9 @@ NexoraLearning/tests/test_booksproc_outline_trigger.py
 NexoraLearning/tests/test_cognition_course_catalog.py
 NexoraLearning/frontend/assets/vendor/echarts/LICENSE
 .arts
-# �����������ݣ�����⣩
+
 data/
 NexoraSearch/storage
 .npm-cache/
 
-# NexoraWeb 构建产物(部署时构建,不纳入版本控制)
 ChatDBServer/static/new/

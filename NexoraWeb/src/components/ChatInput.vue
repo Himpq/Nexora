@@ -10,18 +10,32 @@
 
 <template>
     <div class="input-dock">
-        <!-- 待发送附件条(对齐原版 filePreview:发送持久化后清空) -->
-        <div v-if="attachmentList.length" class="input-attachments" id="filePreview">
-            <div v-for="(att, index) in attachmentList" :key="`${att.sandbox_path || att.name}-${index}`" class="input-attachment-chip">
-                <i class="fa-solid fa-paperclip" aria-hidden="true"></i>
-                <span class="input-attachment-name" :title="att.sandbox_path || att.name">{{ att.name || att.sandbox_path }}</span>
-                <span v-if="att.size" class="input-attachment-size">{{ formatSize(att.size) }}</span>
-                <button type="button" class="input-attachment-remove" title="移除附件" @click="emit('remove-attachment', index)">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
+        <!-- 待发送附件条(对齐原版 filePreviewArea:卡片式预览,右上角删除) -->
+        <div v-if="attachmentList.length" class="input-attachments" id="filePreviewArea">
+            <div
+                v-for="(att, index) in attachmentList"
+                :key="`${att.sandbox_path || att.name}-${index}`"
+                class="upload-preview-card"
+                :class="isImageAttachment(att) ? 'is-image' : 'is-file'"
+            >
+                <button type="button" class="upload-preview-remove" title="移除" @click="emit('remove-attachment', index)">
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                 </button>
+
+                <div class="upload-preview-media">
+                    <img
+                        v-if="isImageAttachment(att)"
+                        :src="attachmentPreviewUrl(att)"
+                        :alt="attachmentDisplayName(att)"
+                        loading="lazy"
+                    >
+                    <i v-else :class="attachmentIconClass(att)" aria-hidden="true"></i>
+                </div>
+
+                <div class="upload-preview-body">
+                    <div class="upload-preview-title" :title="att.sandbox_path || att.name">{{ attachmentDisplayName(att) }}</div>
+                    <div class="upload-preview-meta">{{ attachmentMeta(att) }}</div>
+                </div>
             </div>
         </div>
 
@@ -129,19 +143,40 @@
                             {{ conversationStore.queueCount }}
                         </span>
 
-                        <div class="token-budget-mini" id="tokenBudgetMini">
+                        <button
+                            type="button"
+                            class="token-budget-mini"
+                            id="tokenBudgetMini"
+                            title="查看 Token 使用详情"
+                            aria-label="查看 Token 使用详情"
+                            @click="emit('open-token-detail')"
+                        >
                             <span
                                 class="token-budget-ring"
                                 id="tokenBudgetRing"
                                 :style="{ '--tb-color': tokenRing.color, '--tb-angle': `${tokenRing.angle}deg` }"
                             ></span>
-                        </div>
-                        <div class="token-budget-usage" id="tokenBudgetUsage" :title="ctxTitle" :style="{ color: tokenRing.color }">
+                        </button>
+                        <button
+                            type="button"
+                            class="token-budget-usage"
+                            id="tokenBudgetUsage"
+                            :title="`${ctxTitle} · 点击查看详情`"
+                            :style="{ color: tokenRing.color }"
+                            @click="emit('open-token-detail')"
+                        >
                             {{ ctxText }}
-                        </div>
-                        <div class="token-mini" id="tokenDisplay">
+                        </button>
+                        <button
+                            type="button"
+                            class="token-mini"
+                            id="tokenDisplay"
+                            title="查看 Token 使用详情"
+                            aria-label="查看 Token 使用详情"
+                            @click="emit('open-token-detail')"
+                        >
                             TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
-                        </div>
+                        </button>
                     </div>
 
                     <button
@@ -187,6 +222,8 @@
         stop: []
         /** 移除某条待发送附件 */
         'remove-attachment': [index: number]
+        /** 打开 Token 详情弹窗(GDDP) */
+        'open-token-detail': []
     }>()
 
     const conversationStore = useConversationStore()
@@ -293,6 +330,61 @@
         }
 
         return `${bytes}B`
+    }
+
+    /** 附件显示名(对齐原版 getUploadPreviewDisplayName:取路径末段) */
+    function attachmentDisplayName(att: AttachmentInput): string {
+        const raw = String(att.name || att.original_name || att.sandbox_path || '').trim()
+
+        if (!raw) {
+            return '未命名'
+        }
+
+        const parts = raw.split(/[\\/]/).filter(Boolean)
+
+        return String(parts[parts.length - 1] || raw).trim() || '未命名'
+    }
+
+    /** 附件类型(对齐原版 getUploadPreviewMeta:扩展名 + 大小) */
+    function attachmentMeta(att: AttachmentInput): string {
+        const name = attachmentDisplayName(att).toLowerCase()
+        const ext = name.includes('.') ? name.split('.').pop() || '' : ''
+        const size = formatSize(att.size)
+
+        return [ext || 'file', size].filter(Boolean).join(' · ')
+    }
+
+    /** 是否图片附件(原版 type=image 显缩略图;本端按扩展名推断) */
+    function isImageAttachment(att: AttachmentInput): boolean {
+        const name = String(att.name || att.original_name || att.sandbox_path || '').toLowerCase()
+
+        return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)
+    }
+
+    /** 图片附件预览 URL(对齐原版 file.url:走文件中心 inline 下载) */
+    function attachmentPreviewUrl(att: AttachmentInput): string {
+        const fileRef = String(att.sandbox_path || att.stored_path || '').trim()
+
+        if (!fileRef) {
+            return ''
+        }
+
+        return `/api/files/download?file_ref=${encodeURIComponent(fileRef)}&inline=1`
+    }
+
+    /** 文件附件图标(对齐原版 getUploadPreviewIconClass) */
+    function attachmentIconClass(att: AttachmentInput): string {
+        const name = attachmentDisplayName(att).toLowerCase()
+
+        if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.csv')) return 'fa-regular fa-file-lines'
+        if (name.endsWith('.pdf')) return 'fa-regular fa-file-pdf'
+        if (name.endsWith('.doc') || name.endsWith('.docx')) return 'fa-regular fa-file-word'
+        if (name.endsWith('.xls') || name.endsWith('.xlsx')) return 'fa-regular fa-file-excel'
+        if (name.endsWith('.ppt') || name.endsWith('.pptx')) return 'fa-regular fa-file-powerpoint'
+        if (name.endsWith('.zip') || name.endsWith('.rar') || name.endsWith('.7z') || name.endsWith('.tar') || name.endsWith('.gz')) return 'fa-regular fa-file-zipper'
+        if (name.endsWith('.json') || name.endsWith('.yaml') || name.endsWith('.yml') || name.endsWith('.xml')) return 'fa-regular fa-file-code'
+
+        return 'fa-regular fa-file'
     }
 
     /** 文本 token 估算(对齐原版 estimateStreamTokensByText) */
@@ -431,60 +523,57 @@
         user-select: none;
     }
 
-    /* 待发送附件条(替代原版 filePreview;输入区上方,简洁芯片式) */
+    /* 待发送附件条(复用全局 upload-preview-card 卡片式样式,对齐原版 filePreviewArea) */
     .input-attachments {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
-        padding: 0 12px 8px;
+        gap: 10px;
+        padding: 8px 12px;
+        border-bottom: 1px solid #eef2f7;
     }
 
-    .input-attachment-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        max-width: 260px;
-        padding: 4px 8px;
-        border: 1px solid #e2e8f0;
-        border-radius: 999px;
-        background: #f8fafc;
-        font-size: 12px;
-        color: #334155;
+    /* Token 点击区改为按钮后去默认样式，保留原版等宽字体与尺寸 */
+    .token-budget-mini,
+    .token-budget-usage,
+    .token-mini {
+        appearance: none;
+        -webkit-appearance: none;
+        background: transparent;
+        border: none;
+        padding: 0;
+        margin: 0;
+        cursor: pointer;
     }
 
-    .input-attachment-chip i {
-        color: #64748b;
-        font-size: 11px;
-    }
-
-    .input-attachment-name {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .input-attachment-size {
-        flex: none;
-        font-size: 11px;
-        color: #94a3b8;
-    }
-
-    .input-attachment-remove {
+    .token-budget-mini {
+        width: 18px;
+        height: 18px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 16px;
-        height: 16px;
-        border: none;
-        border-radius: 50%;
-        background: transparent;
-        color: #94a3b8;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
     }
 
-    .input-attachment-remove:hover {
-        background: #fee2e2;
-        color: #dc2626;
+    .token-budget-usage {
+        font-family: var(--nc-font-mono);
+        font-size: 11px;
+        font-weight: 400;
+        white-space: nowrap;
+        line-height: 1;
+    }
+
+    .token-mini {
+        font-family: var(--nc-font-mono);
+        font-size: 11px;
+        font-weight: 400;
+        color: #7a7a7a;
+        line-height: 1;
+    }
+
+    .token-budget-mini:focus-visible,
+    .token-budget-usage:focus-visible,
+    .token-mini:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 2px;
+        border-radius: 4px;
     }
 </style>

@@ -116,6 +116,8 @@
 
 .btn-danger-small:hover {
     background: #fdecec;
+    color: #c0392b;
+    border-color: #f0c4c4;
 }
 
 .btn-compact {

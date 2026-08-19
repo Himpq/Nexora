@@ -432,9 +432,10 @@
         return Array.isArray(items) ? items : []
     })
 
-    /** 是否为当前用户创建的 Workspace(控制分享/删除可用性) */
+    /** 是否为当前用户创建的 Workspace(控制分享/删除可用性);
+     *  owner_username 存的是登录名(user.id),必须比对 userId 而非显示名 username */
     const isOwner = computed(() => {
-        return String(detail.value?.owner_username || '') === String(userStore.username || '')
+        return String(detail.value?.owner_username || '') === String(userStore.userId || '')
     })
 
     watch(
@@ -459,9 +460,10 @@
         document.removeEventListener('scroll', hideResourceMenu, true)
     })
 
-    /** 是否当前用户创建(对齐原版 owner_username 与当前用户比对) */
+    /** 是否当前用户创建(对齐原版 owner_username 与 user.id 比对);
+     *  不能比对 userStore.username(显示名),否则创建/共享会归类错误 */
     function isOwned(workspace: WorkspaceSummary): boolean {
-        return String(workspace.owner_username || '') === String(userStore.username || '')
+        return String(workspace.owner_username || '') === String(userStore.userId || '')
     }
 
     /** 是否共享:非本人创建的即视为共享 */
@@ -819,4 +821,15 @@
             showError(error instanceof Error ? error.message : '创建任务失败')
         }
     }
+
+    /** 暴露给父级(ChatView 顶栏返回):详情页返回列表、查询是否处于详情内容 */
+    defineExpose({
+        backToList(): void {
+            detail.value = null
+        },
+
+        isInDetail(): boolean {
+            return detail.value !== null
+        },
+    })
 </script>

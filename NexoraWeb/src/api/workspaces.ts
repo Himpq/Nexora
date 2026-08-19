@@ -28,6 +28,11 @@ export interface WorkspaceSummary {
     workspace_task_count?: number
     open_task_count?: number
     shared_users?: string[]
+    /** include_marks=1 时的标记数据:已归入的对话/知识/文件 */
+    conversation_ids?: string[]
+    conversations?: WorkspaceConversation[]
+    knowledge_documents?: WorkspaceKnowledgeDocument[]
+    workspace_files?: WorkspaceFileEntry[]
     [key: string]: unknown
 }
 
@@ -226,6 +231,48 @@ export async function addWorkspaceFile(workspaceId: string, fileRef: string): Pr
 
     if (!data.success || !data.workspace) {
         throw new Error(data.message || '添加文件失败')
+    }
+
+    return data.workspace
+}
+
+/** 添加基础知识到项目(对齐原版 addKnowledgeToWorkspace) */
+export async function addWorkspaceKnowledge(workspaceId: string, title: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/knowledge`,
+        { method: 'POST', body: JSON.stringify({ title, knowledge_type: 'basis' }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '知识归入失败')
+    }
+
+    return data.workspace
+}
+
+/** 从项目移除对话(右键菜单再次点击取消归入) */
+export async function removeWorkspaceConversation(workspaceId: string, conversationId: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+        { method: 'DELETE' }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '取消归入失败')
+    }
+
+    return data.workspace
+}
+
+/** 从项目移除基础知识(右键菜单再次点击取消归入) */
+export async function removeWorkspaceKnowledge(workspaceId: string, title: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/knowledge`,
+        { method: 'DELETE', body: JSON.stringify({ title, knowledge_type: 'basis' }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '取消归入失败')
     }
 
     return data.workspace

@@ -272,6 +272,14 @@ export async function saveKnowledgeContent(title: string, content: string, versi
     }
 }
 
+/** 设置基础知识置顶状态(对齐原版 setBasisKnowledgePinned,PUT /api/knowledge/basis/<title>/pin) */
+export async function setBasisKnowledgePin(title: string, pin: boolean): Promise<void> {
+    await apiFetch<{ success: boolean }>(`/api/knowledge/basis/${encodeURIComponent(title)}/pin`, {
+        method: 'PUT',
+        body: JSON.stringify({ pin: !!pin }),
+    })
+}
+
 /** 重新向量化当前知识库正文。 */
 export async function vectorizeKnowledge(title: string, content: string): Promise<void> {
     const data = await apiFetch<{ success: boolean; message?: string }>('/api/knowledge/vectorize', {
@@ -317,12 +325,19 @@ export function readKnowledgeCollabMeta(metadata?: Record<string, unknown> | nul
 /**
  * 构建知识库在线协作 WebSocket 地址(对齐原版 getOwnerKnowledgeCollabWsUrl)。
  * role 为 owner/public 之分;public 页面以 public 角色加入同一 share_id 房间。
+ * displayName 用于成员栏展示,owner 空串时服务端回退为 owner 登录名。
+ * owner 缺省时按公开分享页 pathname 推导;owner 端调用必须显式传入当前登录名(userStore.userId)。
  */
-export function buildKnowledgeCollabWsUrl(meta: KnowledgeCollabMeta, role: 'owner' | 'public' = 'owner'): string {
+export function buildKnowledgeCollabWsUrl(
+    meta: KnowledgeCollabMeta,
+    role: 'owner' | 'public' = 'owner',
+    displayName = '',
+    owner?: string
+): string {
     const shareId = String(meta.share_id || '').trim()
-    const owner = String(window.location.pathname.split('/').filter(Boolean)[1] || '')
+    const resolvedOwner = owner || String(window.location.pathname.split('/').filter(Boolean)[1] || '')
 
-    if (!shareId) {
+    if (!shareId || !resolvedOwner) {
         return ''
     }
 
@@ -330,7 +345,7 @@ export function buildKnowledgeCollabWsUrl(meta: KnowledgeCollabMeta, role: 'owne
     const params = new URLSearchParams()
 
     params.set('role', role)
-    params.set('display_name', '')
+    params.set('display_name', displayName)
 
-    return `${protocol}//${window.location.host}/ws/knowledge/collab/${encodeURIComponent(owner)}/${encodeURIComponent(shareId)}?${params.toString()}`
+    return `${protocol}//${window.location.host}/ws/knowledge/collab/${encodeURIComponent(resolvedOwner)}/${encodeURIComponent(shareId)}?${params.toString()}`
 }

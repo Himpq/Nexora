@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_workflow.js — 工作流视图四件套（Feed/Designer/Placeholder/Sidebar）
  *
  * 职责：工作流视图四件套（Feed/Designer/Placeholder/Sidebar）；从 chat.js 批量迁移。
@@ -31,7 +31,7 @@ import {
     setWorkflowMainMode,
     setWorkflowSidebarActiveWorkflow,
     updateWorkflowCanvasScale,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 import {
     closeCloudFilePanel,
     closeKnowledgePanel,

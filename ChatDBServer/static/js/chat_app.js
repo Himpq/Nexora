@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_app.js — 应用引导与初始化编排
  *
  * 职责：独占 DOMContentLoaded 主入口，按固定顺序编排应用初始化：
@@ -168,7 +168,7 @@ import {
     updateLearningFeedMentionCandidates,
     updateMobileMessageInputViewportBaseline,
     updateMobileSelectionQuickAdd,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 
 // 设置弹窗 Esc 关闭处理器是否已绑定：唯一读写方为本模块，状态收敛于此。
 let settingsModalEscapeHandlerBound = false;

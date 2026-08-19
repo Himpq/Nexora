@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_wss_sync.js — 浏览器 WSS 连接/重连/HTTP 轮询兜底
  *
  * 职责：浏览器 WSS 连接/重连/HTTP 轮询兜底；从 chat.js 批量迁移。
@@ -23,7 +23,7 @@ import {
     loadCloudFiles,
     loadKnowledge,
     setDesktopAgentIndicatorState,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 import {
     clearBrowserSyncTimers,
     getBrowserOllamaProviderKeys,

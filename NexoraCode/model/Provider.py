@@ -501,6 +501,13 @@ class ProviderClient:
                     if content:
                         yield {"type": "content", "delta": content}
 
+                    # 推理模型（GLM-5-Base / DeepSeek-R1 等）思考过程走 reasoning_content，
+                    # 单独提取，避免界面在思考期间长时间空白。
+                    reasoning = delta.get("reasoning_content")
+
+                    if reasoning:
+                        yield {"type": "reasoning_content", "delta": reasoning}
+
                     tool_calls = delta.get("tool_calls")
 
                     if tool_calls:

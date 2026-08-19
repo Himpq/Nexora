@@ -6531,7 +6531,20 @@ def _log_stream_chunk(chunk, model_name=None, source="yield"):
 
     source_text = str(source or "").strip()
     source_part = f" source={source_text}" if source_text else ""
-    print(f"{prefix}{source_part} type={chunk_type} content={content_dump}")
+    _safe_console_print(f"{prefix}{source_part} type={chunk_type} content={content_dump}")
+
+
+def _safe_console_print(text):
+    """安全控制台打印:Windows GBK 等窄编码控制台遇到 emoji 等字符会抛 UnicodeEncodeError,这里统一降级替换。"""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+        safe_text = str(text).encode(enc, errors='replace').decode(enc, errors='replace')
+        print(safe_text)
+    except Exception:
+        # 极端场景(如 stdout 已关闭)下打印失败不影响业务主流程,直接忽略
+        pass
 
 
 def _should_log_tool_stream_chunks():
@@ -11417,7 +11430,17 @@ def switch_version():
         
     manager = ConversationManager(username)
     if manager.switch_message_version(conv_id, int(msg_index), int(ver_index)):
-        return jsonify({"success": True})
+        try:
+            conversation = manager.get_conversation(conv_id)
+            messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
+            switched_message = None
+
+            if isinstance(messages, list) and 0 <= int(msg_index) < len(messages):
+                switched_message = deepcopy(messages[int(msg_index)])
+
+            return jsonify({"success": True, "message": switched_message})
+        except Exception:
+            return jsonify({"success": True})
     return jsonify({"success": False, "message": "Failed to switch version"}), 500
 
 
@@ -13446,10 +13469,40 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         yield f"data: {chunk_data}\n\n"
 
     final_meta = get_stream_session_meta(stream_id, username=username) or {}
+    final_message = None
+    final_conversation_id = str(
+        final_meta.get("conversation_id") or meta.get("conversation_id") or ""
+    ).strip()
+
+    if final_conversation_id:
+        try:
+            manager = ConversationManager(username)
+            conversation = manager.get_conversation(final_conversation_id)
+            messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
+
+            if isinstance(messages, list) and messages:
+                final_message_index = final_meta.get("regenerate_index")
+                final_index = None
+
+                try:
+                    final_index = int(final_message_index) if final_message_index is not None else None
+                except Exception:
+                    final_index = None
+
+                if final_index is not None and 0 <= final_index < len(messages):
+                    final_message = messages[final_index]
+                elif not bool(final_meta.get("is_regenerate", False)):
+                    final_message = messages[-1]
+
+                if isinstance(final_message, dict):
+                    final_message = deepcopy(final_message)
+        except Exception as final_message_error:
+            final_message = None
+
     final_session_info = {
         "type": "stream_session",
         "stream_id": str(stream_id or ""),
-        "conversation_id": str(final_meta.get("conversation_id") or meta.get("conversation_id") or ""),
+        "conversation_id": final_conversation_id,
         "is_regenerate": bool(final_meta.get("is_regenerate", meta.get("is_regenerate", False))),
         "assistant_index": final_meta.get("assistant_index", meta.get("assistant_index")),
         "regenerate_index": final_meta.get("regenerate_index", meta.get("regenerate_index")),
@@ -13460,6 +13513,7 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         "error": str(final_meta.get("error") or ""),
         "head_seq": int(final_meta.get("head_seq") or meta.get("head_seq") or 1),
         "last_seq": int(final_meta.get("last_seq") or meta.get("last_seq") or 0),
+        "final_message": final_message,
     }
     yield f"data: {json.dumps(final_session_info, ensure_ascii=False, default=str)}\n\n"
     yield "data: [DONE]\n\n"
@@ -15594,6 +15648,14 @@ def get_token_stats():
                         io_today_total += (in_tok + out_tok)
 
                 if io_found:
+                    # 当前对话的 Token 详情需返回过滤后的历史明细（设置页已展示全局统计，弹窗聚焦当前对话）
+                    try:
+                        raw_logs = user.get_token_logs()
+                        filtered = [log for log in raw_logs if str(log.get('conversation_id', '')) == conversation_id]
+                        history = TokenUsageDetailPresenter(username).decorate_history(filtered, limit=20)
+                    except Exception:
+                        history = []
+
                     return jsonify({
                         'success': True,
                         'conversation_id': conversation_id,
@@ -15603,7 +15665,7 @@ def get_token_stats():
                         'today_input': io_today_input,
                         'today_output': io_today_output,
                         'today': io_today_total,
-                        'history': []
+                        'history': history
                     })
             except Exception as stats_error:
                 print(f"[TOKEN_STATS] conversation aggregate failed cid={conversation_id}: {stats_error}")

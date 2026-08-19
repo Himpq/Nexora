@@ -8,7 +8,7 @@
 <template>
     <header class="chat-header">
         <div class="header-left">
-            <!-- 文件中心/Workspaces 视图:左侧为返回按钮(对齐原版 closeFileCenterOrReturn) -->
+            <!-- 文件中心/Workspaces/知识库等覆盖视图:左侧仅返回按钮(对齐原版 closeFileCenterOrReturn) -->
             <template v-if="view !== 'chat'">
                 <button class="btn-icon" title="Back" @click="emit('back-to-chat')">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -16,14 +16,6 @@
                         <polyline points="12 19 5 12 12 5"></polyline>
                     </svg>
                 </button>
-                <template v-if="view === 'knowledge'">
-                    <button class="btn-icon knowledge-action" type="button" title="保存" @click="emit('save-knowledge')">
-                        <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
-                    </button>
-                    <button class="btn-icon knowledge-action" type="button" title="向量化" @click="emit('vectorize-knowledge')">
-                        <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
-                    </button>
-                </template>
             </template>
 
             <template v-else>
@@ -103,10 +95,8 @@
         'open-notes': []
         'open-files': []
         'open-knowledge': []
-        /** 从文件中心/Workspaces 视图返回聊天 */
+        /** 从覆盖视图返回聊天 */
         'back-to-chat': []
-        'save-knowledge': []
-        'vectorize-knowledge': []
     }>()
 
     const props = withDefaults(defineProps<{

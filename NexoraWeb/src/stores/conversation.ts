@@ -15,6 +15,7 @@ import {
     fetchMessages,
     listConversations,
     type ChatMessage,
+    type ConversationBranch,
     type ConversationSummary,
 } from '@/api/conversations'
 
@@ -28,6 +29,12 @@ interface ConversationState {
     loaded: boolean
     queue: QueuedMessage[]
     streamTokenProfile: Record<string, unknown> | null
+    /** 是否还有更早的消息未加载(对齐原版 messageWindow.hasMoreBefore) */
+    hasMoreBefore: boolean
+    /** 正在加载更早消息(防重入,对齐原版 loadingBefore) */
+    loadingBefore: boolean
+    /** 流式更新的目标助手消息索引(重答时指向被覆盖的历史回答;null 表示最后一条) */
+    streamingTargetIndex: number | null
 }
 
 /** 排队消息(生成中发送的内容进入队列,当前流结束后自动发送) */
@@ -53,6 +60,9 @@ export const useConversationStore = defineStore('conversation', {
         loaded: false,
         queue: [],
         streamTokenProfile: null,
+        hasMoreBefore: false,
+        loadingBefore: false,
+        streamingTargetIndex: null,
     }),
 
     getters: {
@@ -63,6 +73,14 @@ export const useConversationStore = defineStore('conversation', {
         /** 待发送队列长度(供 UI 显示徽标) */
         queueCount(state): number {
             return state.queue.length
+        },
+
+        /**
+         * 侧边栏会话分支树行(对齐原版 arrangeConversationBranchRows):
+         * 分支会话紧跟在父会话之后按深度缩进,孤儿分支排在末尾。
+         */
+        branchRows(state): ConversationBranchRow[] {
+            return arrangeConversationBranchRows(state.conversations)
         },
     },
 
@@ -85,6 +103,9 @@ export const useConversationStore = defineStore('conversation', {
             this.messages = []
             this.streamText = ''
             this.streamReasoning = ''
+            this.hasMoreBefore = false
+            this.loadingBefore = false
+            this.streamingTargetIndex = null
         },
 
         /** 确保存在会话 ID;为空时调用后端创建(发送路径使用) */
@@ -112,14 +133,23 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this.currentId = conversationId
+            this.hasMoreBefore = false
+            this.loadingBefore = false
+            this.streamingTargetIndex = null
+
+            // 立即清空消息:避免网络窗口内残留旧会话内容(原版 renderMessages 先 innerHTML='' 再渲染)
+            this.messages = []
 
             await this.loadMessages()
         },
 
-        /** 加载当前会话消息(最近 100 条);补齐后端绝对索引 */
+        /** 加载当前会话消息(最近 100 条作为初始窗口);补齐后端绝对索引 */
         async loadMessages(): Promise<void> {
             if (!this.currentId) {
                 this.messages = []
+                this.hasMoreBefore = false
+                this.loadingBefore = false
+                this.streamingTargetIndex = null
 
                 return
             }
@@ -133,6 +163,103 @@ export const useConversationStore = defineStore('conversation', {
                 ...message,
                 index: startIndex + offset,
             }))
+            this.hasMoreBefore = !!data.has_more_before
+            this.loadingBefore = false
+        },
+
+        /**
+         * 加载更早消息并前置合并(对齐原版 loadPreviousConversationMessages):
+         * 以当前最早消息索引为 before 拉取上一页,按后端绝对索引去重合并到头部。
+         * 返回是否真正加载了新消息。
+         */
+        async loadPreviousMessages(limit = 50): Promise<boolean> {
+            if (!this.currentId || !this.hasMoreBefore || this.loadingBefore || this.messages.length === 0) {
+                return false
+            }
+
+            const firstIndex = Number(this.messages[0].index)
+
+            if (!Number.isFinite(firstIndex) || firstIndex <= 0) {
+                this.hasMoreBefore = false
+
+                return false
+            }
+
+            this.loadingBefore = true
+
+            try {
+                const data = await fetchMessages(this.currentId, { limit, before: firstIndex })
+
+                const rawMessages = Array.isArray(data.messages) ? data.messages : []
+                const startIndex = Number(data.start_index || 0)
+
+                if (rawMessages.length === 0) {
+                    this.hasMoreBefore = false
+
+                    return false
+                }
+
+                // 按后端绝对索引去重合并(避免与已有消息重叠)
+                const existing = new Set(this.messages.map((message) => Number(message.index)))
+                const older = rawMessages
+                    .map((message, offset) => ({
+                        ...message,
+                        index: startIndex + offset,
+                    }))
+                    .filter((message) => !existing.has(Number(message.index)))
+
+                if (older.length === 0) {
+                    this.hasMoreBefore = false
+
+                    return false
+                }
+
+                this.messages = [...older, ...this.messages]
+                this.hasMoreBefore = !!data.has_more_before
+
+                return true
+            } finally {
+                this.loadingBefore = false
+            }
+        },
+
+        /**
+         * 确保目标消息索引已加载(对齐原版 ensureConversationMessageIndexLoaded):
+         * 目标不在当前窗口时,循环向前分页直至加载到目标或没有更早消息。
+         * 返回目标消息是否已可定位。
+         */
+        async ensureMessageIndexLoaded(messageIndex: number): Promise<boolean> {
+            const targetIndex = Number(messageIndex)
+
+            if (!Number.isFinite(targetIndex) || targetIndex < 0) {
+                return false
+            }
+
+            const loaded = () => this.messages.some(
+                (message) => Number(message.index) === targetIndex
+            )
+
+            if (loaded()) {
+                return true
+            }
+
+            let guard = 0
+
+            while (
+                guard < 80
+                && this.hasMoreBefore
+                && this.messages.length > 0
+                && targetIndex < Number(this.messages[0].index)
+            ) {
+                guard += 1
+                const added = await this.loadPreviousMessages()
+
+                if (!added || loaded()) {
+                    break
+                }
+            }
+
+            return loaded()
         },
 
         /** 删除会话(当前会话删除后清空选择) */
@@ -144,6 +271,9 @@ export const useConversationStore = defineStore('conversation', {
             if (this.currentId === conversationId) {
                 this.currentId = ''
                 this.messages = []
+                this.hasMoreBefore = false
+                this.loadingBefore = false
+                this.streamingTargetIndex = null
             }
         },
 
@@ -184,6 +314,32 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
+        /** 重答流式:清空目标助手消息并锁定流式更新目标索引(对齐原版 resetAssistantMessageForLiveStream) */
+        beginStreamAt(assistantIndex: number): void {
+            const index = Number(assistantIndex)
+
+            if (!Number.isFinite(index) || index < 0) {
+                return
+            }
+
+            const assistant = this.messages.find(
+                (message) => message.role === 'assistant' && Number(message.index) === index
+            )
+
+            if (!assistant) {
+                return
+            }
+
+            assistant.content = ''
+            assistant.reasoning = ''
+            assistant.pending = true
+
+            this.streamingTargetIndex = index
+            this.generating = true
+            this.streamText = ''
+            this.streamReasoning = ''
+        },
+
         /** 流式增量追加正文到助手消息 */
         appendStreamText(delta: string): void {
             if (!delta) {
@@ -214,21 +370,123 @@ export const useConversationStore = defineStore('conversation', {
                 this._updateStreamingAssistant({ content: options.finalContent })
             }
 
+            if (this.streamingTargetIndex !== null) {
+                const target = this.messages.find(
+                    (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
+                )
+
+                if (target) {
+                    target.pending = false
+                }
+            }
+
             this.generating = false
             this.streamText = ''
             this.streamReasoning = ''
+            this.streamingTargetIndex = null
+        },
+
+        /**
+         * 用后端 done 终帧携带的最终消息覆盖本地目标消息
+         *
+         * 定位顺序:目标索引参数 > 当前流式目标索引 > 最后一条助手消息;
+         * 重答时更新被覆盖的消息,普通发送时更新最后一条,覆盖内容与
+         * metadata.versions(版本切换器数据源),避免全量重载。
+         */
+        applyFinalMessage(message: Record<string, unknown> | undefined, targetIndex?: number | null): void {
+            if (!message || typeof message !== 'object') {
+                return
+            }
+
+            let assistant: ChatMessage | undefined
+
+            const preferIndex = Number.isFinite(Number(targetIndex))
+                ? Number(targetIndex)
+                : this.streamingTargetIndex
+
+            if (preferIndex !== null && preferIndex !== undefined && Number.isFinite(preferIndex)) {
+                assistant = this.messages.find(
+                    (item) => item.role === 'assistant' && Number(item.index) === preferIndex
+                )
+            }
+
+            if (!assistant) {
+                assistant = this.messages[this.messages.length - 1]
+            }
+
+            if (!assistant || assistant.role !== 'assistant') {
+                return
+            }
+
+            if (typeof message.content === 'string') {
+                assistant.content = message.content
+            }
+
+            if (message.metadata && typeof message.metadata === 'object') {
+                assistant.metadata = {
+                    ...(assistant.metadata && typeof assistant.metadata === 'object'
+                        ? (assistant.metadata as Record<string, unknown>)
+                        : {}),
+                    ...(message.metadata as Record<string, unknown>),
+                }
+            }
+
+            assistant.pending = false
+        },
+
+        /**
+         * 将错误文本写入当前流式目标消息
+         *
+         * 重连失败等场景拿不到后端终帧消息时,目标消息可能被清空;
+         * 用错误文本填充,保证用户能看到失败原因而非空白气泡。
+         */
+        fillStreamingMessageWithError(errorText: string): void {
+            const text = String(errorText || '回复生成失败').trim()
+
+            const targetIndex = this.streamingTargetIndex
+
+            const assistant = targetIndex !== null
+                ? this.messages.find((message) => message.role === 'assistant' && Number(message.index) === Number(targetIndex))
+                : this.messages[this.messages.length - 1]
+
+            if (!assistant || assistant.role !== 'assistant') {
+                return
+            }
+
+            if (assistant.content) {
+                assistant.content = `${assistant.content}\n\n${text}`
+            } else {
+                assistant.content = text
+            }
+
+            assistant.pending = false
         },
 
         /** 中断流:复位生成状态,保留已生成的部分文本 */
         abortStream(): void {
+            if (this.streamingTargetIndex !== null) {
+                const target = this.messages.find(
+                    (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
+                )
+
+                if (target) {
+                    target.pending = false
+                }
+            }
+
             this.generating = false
             this.streamText = ''
             this.streamReasoning = ''
+            this.streamingTargetIndex = null
         },
 
-        /** 更新当前正在生成的助手消息(最后一条 assistant) */
+        /** 更新当前正在生成的助手消息(重答时更新目标索引消息,否则更新最后一条) */
         _updateStreamingAssistant(patch: Partial<ChatMessage>): void {
-            const assistant = this.messages[this.messages.length - 1]
+            const targetIndex = this.streamingTargetIndex
+
+            const assistant = targetIndex !== null
+                ? this.messages.find((message) => message.role === 'assistant' && Number(message.index) === Number(targetIndex))
+                : this.messages[this.messages.length - 1]
 
             if (assistant && assistant.role === 'assistant') {
                 Object.assign(assistant, patch)
@@ -317,3 +575,96 @@ export const useConversationStore = defineStore('conversation', {
         },
     },
 })
+
+/** 分支树排列行(深度 + 孤儿标记,对齐原版 arrangeConversationBranchRows 输出) */
+export interface ConversationBranchRow {
+    conversation: ConversationSummary
+    depth: number
+    orphan: boolean
+}
+
+/** 读取会话分支信息(对齐原版 readConversationBranch) */
+function readConversationBranch(item: ConversationSummary): ConversationBranch | null {
+    const branch = item.branch && typeof item.branch === 'object' ? item.branch : null
+
+    if (!branch) {
+        return null
+    }
+
+    const rootConversationId = String(branch.root_conversation_id || '').trim()
+    const parentConversationId = String(branch.parent_conversation_id || '').trim()
+    const parentMessageIndex = Number(branch.parent_message_index)
+
+    if (!rootConversationId || !parentConversationId || !Number.isInteger(parentMessageIndex)) {
+        return null
+    }
+
+    return {
+        root_conversation_id: rootConversationId,
+        parent_conversation_id: parentConversationId,
+        parent_message_index: parentMessageIndex,
+        created_at: String(branch.created_at || '').trim(),
+    }
+}
+
+/**
+ * 将会话列表排列为分支树行(对齐原版 arrangeConversationBranchRows):
+ * 普通会话按原始顺序,分支会话排在其父会话之后并逐层缩进,深度上限 6;
+ * 父会话缺失(孤儿分支)与未访问会话排到末尾。
+ */
+function arrangeConversationBranchRows(conversations: ConversationSummary[]): ConversationBranchRow[] {
+    const ordered = Array.isArray(conversations) ? conversations : []
+    const byId = new Map<string, ConversationSummary>()
+    const childrenByParent = new Map<string, ConversationSummary[]>()
+    const roots: Array<{ conversation: ConversationSummary; orphan: boolean }> = []
+
+    ordered.forEach((conversation) => {
+        if (conversation.id) {
+            byId.set(conversation.id, conversation)
+        }
+    })
+
+    ordered.forEach((conversation) => {
+        const branch = readConversationBranch(conversation)
+
+        if (!branch || !byId.has(branch.parent_conversation_id)) {
+            roots.push({ conversation, orphan: !!branch })
+
+            return
+        }
+
+        const siblings = childrenByParent.get(branch.parent_conversation_id) || []
+        siblings.push(conversation)
+        childrenByParent.set(branch.parent_conversation_id, siblings)
+    })
+
+    const rows: ConversationBranchRow[] = []
+    const visited = new Set<string>()
+
+    function appendConversation(conversation: ConversationSummary, depth: number, orphan: boolean): void {
+        if (!conversation.id || visited.has(conversation.id)) {
+            return
+        }
+
+        visited.add(conversation.id)
+        rows.push({ conversation, depth, orphan: !!orphan })
+
+        const children = childrenByParent.get(conversation.id) || []
+
+        children.forEach((child) => {
+            appendConversation(child, Math.min(depth + 1, 6), false)
+        })
+    }
+
+    roots.forEach((row) => {
+        appendConversation(row.conversation, 0, row.orphan)
+    })
+
+    ordered.forEach((conversation) => {
+        if (conversation.id && !visited.has(conversation.id)) {
+            appendConversation(conversation, 0, true)
+        }
+    })
+
+    return rows
+}

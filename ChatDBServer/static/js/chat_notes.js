@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat_notes.js — 笔记/时间线/上下文菜单/选区提取
  *
  * 职责：笔记 CRUD + 云同步 + 笔记本管理 + 时间线面板 + 右键上下文菜单 +
@@ -55,7 +55,7 @@ import {
     resizeMessageInput,
     showToast,
     trashViewState,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20260819_toast_unify_01';
 import {
     removeInvisibleTextChars,
 } from './chat_input.js?v=20260810_chatjs_split_01';

@@ -55,15 +55,15 @@
                 <div id="cloudFileList" class="k-list">
                     <div v-if="loading" class="k-list-empty">加载中...</div>
                     <div v-else-if="!files.length" class="k-list-empty">暂无文件</div>
-                    <div
-                        v-for="file in files"
-                        :key="file.name"
-                        class="cloud-file-item"
-                        :title="`${file.name}\n大小:${formatSize(file.size)}`"
-                    >
+                        <div
+                            v-for="file in files"
+                            :key="fileRef(file)"
+                            class="cloud-file-item"
+                            :title="`${fileDisplayName(file)}\n大小:${formatSize(file.size)}`"
+                        >
                         <div class="cloud-file-main">
                             <div class="cloud-file-head">
-                                <div class="cloud-file-name">{{ file.name }}</div>
+                                <div class="cloud-file-name">{{ fileDisplayName(file) }}</div>
                                 <div class="cloud-file-actions">
                                     <button
                                         class="cloud-file-btn cloud-file-attach"
@@ -105,7 +105,7 @@
 <script setup lang="ts">
     import { onMounted, ref, watch } from 'vue'
 
-    import { listCloudFiles, type CloudFileItem } from '@/api/files'
+    import { fileDisplayName, fileRef, listFiles, type CloudFileItem } from '@/api/files-center'
     import type { AttachmentInput } from '@/api/attachments'
     import { showError, showToast } from '@/stores/notify'
     import { registerPanel } from '@/ui/overlay'
@@ -147,17 +147,14 @@
         loading.value = true
 
         try {
-            files.value = await listCloudFiles({ query: query.value.trim() })
+            const result = await listFiles(query.value.trim())
+
+            files.value = result.files
         } catch (error) {
             showError(error instanceof Error ? error.message : '加载文件列表失败')
         } finally {
             loading.value = false
         }
-    }
-
-    /** 文件 ref(对齐原版 getCloudFileRef:sandbox_path 优先) */
-    function fileRef(file: CloudFileItem): string {
-        return String(file.sandbox_path || file.alias || file.name || '').trim()
     }
 
     /** 附加到输入框(对齐原版 attachCloudFileAsAttachment) */
@@ -170,7 +167,7 @@
             return
         }
 
-        const displayName = String(file.alias || file.name || sandbox).trim()
+        const displayName = fileDisplayName(file) || sandbox
 
         emit('attach', {
             type: 'sandbox_file',
