@@ -472,6 +472,26 @@
         font-size: 12px;
     }
 
+    /* 手机端空间窄:改为单行横向滚动,避免状态与成员被强制换行挤乱 */
+    @media (max-width: 760px) {
+        .knowledge-collab-strip {
+            flex-wrap: nowrap;
+            gap: 6px;
+            padding: 6px 8px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .knowledge-collab-status {
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+
+        .knowledge-collab-member {
+            flex: 0 0 auto;
+        }
+    }
+
     .knowledge-collab-status {
         padding: 3px 8px;
         border-radius: 999px;

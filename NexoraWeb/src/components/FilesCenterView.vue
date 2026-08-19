@@ -21,16 +21,15 @@
                     <div class="file-center-breadcrumb" id="fileCenterBreadcrumb">{{ currentPath || '全部文件' }}</div>
                 </div>
                 <div class="file-center-actions">
-                    <button
-                        class="file-center-tool-btn"
-                        type="button"
+                    <Button
+                        variant="secondary"
+                        size="icon"
+                        icon="fa-solid fa-arrow-left"
                         title="返回上一级"
                         aria-label="返回上一级"
                         :disabled="!currentPath"
                         @click="goBack"
-                    >
-                        <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                    </button>
+                    />
                     <label class="file-center-search">
                         <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
                         <input
@@ -42,18 +41,15 @@
                         >
                     </label>
                     <div class="tool-mode-dropdown file-center-sort-dropdown" :class="{ open: sortMenuOpen }">
-                        <button
-                            class="tool-mode-trigger file-center-sort-trigger"
-                            type="button"
-                            aria-haspopup="listbox"
-                            :aria-expanded="sortMenuOpen"
-                            title="排序方式"
-                            @click.stop="sortMenuOpen = !sortMenuOpen"
+                        <TriggerButton
+                            class="file-center-sort-trigger"
+                            :open="sortMenuOpen"
+                            @toggle="sortMenuOpen = !sortMenuOpen"
                         >
                             <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
                             <span>{{ sortBy === 'name_asc' ? '文件名称' : '上传时间' }}</span>
                             <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                        </button>
+                        </TriggerButton>
                         <div class="tool-mode-menu file-center-sort-menu" role="listbox" aria-label="排序方式">
                             <button
                                 type="button"
@@ -73,20 +69,18 @@
                             >文件名称</button>
                         </div>
                     </div>
-                    <button class="file-center-tool-btn" type="button" title="刷新" aria-label="刷新" @click="load">
-                        <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
-                    </button>
-                    <button class="file-center-upload-btn" type="button" @click="openFilePicker">
+                    <Button
+                        variant="secondary"
+                        size="icon"
+                        icon="fa-solid fa-rotate-right"
+                        title="刷新"
+                        aria-label="刷新"
+                        @click="load"
+                    />
+                    <Button variant="primary" @click="uploadDialogOpen = true">
                         <i class="fa-solid fa-upload" aria-hidden="true"></i>
-                        <span>上传</span>
-                    </button>
-                    <input
-                        ref="fileInputRef"
-                        type="file"
-                        multiple
-                        hidden
-                        @change="handleFilesSelected"
-                    >
+                        上传
+                    </Button>
                 </div>
             </div>
 
@@ -118,6 +112,12 @@
                 </div>
             </div>
         </div>
+
+        <FileUploadDialog
+            :open="uploadDialogOpen"
+            @close="uploadDialogOpen = false"
+            @uploaded="load"
+        />
     </section>
 </template>
 
@@ -136,8 +136,10 @@
         isImageFile,
         listFiles,
         removeFile,
-        uploadFile,
     } from '@/api/files-center'
+    import FileUploadDialog from '@/components/FileUploadDialog.vue'
+    import Button from '@/ui/Button.vue'
+    import TriggerButton from '@/ui/TriggerButton.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
 
@@ -157,8 +159,7 @@
     const selectedRef = ref('')
     const sortBy = ref<'created_desc' | 'name_asc'>('created_desc')
     const sortMenuOpen = ref(false)
-    const fileInputRef = ref<HTMLInputElement | null>(null)
-    const uploading = ref(false)
+    const uploadDialogOpen = ref(false)
 
     /** 排序后的文件列表(对齐原版 sortFileCenterDirectoryEntries) */
     const sortedFiles = computed(() => {
@@ -263,38 +264,6 @@
         currentPath.value = ''
 
         void load()
-    }
-
-    /** 打开文件选择器 */
-    function openFilePicker(): void {
-        fileInputRef.value?.click()
-    }
-
-    /** 选择文件后上传(对齐原版 uploadFileCenterFiles) */
-    async function handleFilesSelected(event: Event): Promise<void> {
-        const input = event.target as HTMLInputElement
-        const selected = Array.from(input.files || [])
-
-        input.value = ''
-
-        if (!selected.length || uploading.value) {
-            return
-        }
-
-        uploading.value = true
-
-        try {
-            for (const file of selected) {
-                await uploadFile(file, currentPath.value, () => {})
-            }
-
-            showToast(`已上传 ${selected.length} 个文件`, 'success')
-            await load()
-        } catch (error) {
-            showError(error instanceof Error ? error.message : '上传失败')
-        } finally {
-            uploading.value = false
-        }
     }
 
     /** 删除选中文件 */

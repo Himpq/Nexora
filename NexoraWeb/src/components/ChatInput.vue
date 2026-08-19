@@ -84,10 +84,14 @@
                                     :class="{ open: toolsMenuOpen }"
                                 >
                                     <input type="hidden" id="toolsMode" :value="toolsMode">
-                                    <button type="button" class="tool-mode-trigger" id="toolsModeTrigger" aria-haspopup="listbox" :aria-expanded="toolsMenuOpen" @click.stop="toggleToolsMenu">
+                                    <TriggerButton
+                                        id="toolsModeTrigger"
+                                        :open="toolsMenuOpen"
+                                        @toggle="toggleToolsMenu"
+                                    >
                                         <span id="toolsModeLabel">{{ toolsModeLabel }}</span>
                                         <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
-                                    </button>
+                                    </TriggerButton>
                                     <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
                                         <button
                                             v-for="mode in toolsModes"
@@ -211,6 +215,7 @@
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import TriggerButton from '@/ui/TriggerButton.vue'
 
     const props = defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */

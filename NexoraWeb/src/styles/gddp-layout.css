@@ -139,6 +139,9 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
     min-width: 0;
 }
 
+/* 文件中心视图容器由 gddp-content-view 统一治理,此处不额外定义工具按钮样式
+ * (工具栏按钮复用全局 GDDP Button 组件,见 FilesCenterView.vue) */
+
 @media (max-width: 980px) {
     .chat-header {
         overflow: visible !important;

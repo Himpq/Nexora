@@ -73,7 +73,7 @@
     font-weight: 600;
 }
 
-/* 文件中心排序:弹出方向为下方,触发按钮升级为协调的圆角样式 */
+/* 文件中心排序:弹出方向为下方,触发按钮复用统一 TriggerButton 组件 */
 .file-center-sort-menu {
     top: calc(100% + 8px);
     bottom: auto;
@@ -84,13 +84,6 @@
 }
 
 .file-center-sort-trigger {
-    height: 36px;
     min-width: 130px;
     max-width: 170px;
-    border: 1px solid #e5e9f0;
-    border-radius: 10px;
-    background: #fff;
-    color: #111827;
-    font-size: 13px;
-    font-weight: 600;
 }
