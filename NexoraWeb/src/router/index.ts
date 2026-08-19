@@ -28,6 +28,13 @@ const router = createRouter({
             // 懒加载:对话主界面独立 chunk
             component: () => import('@/views/ChatView.vue'),
         },
+        {
+            // 公开读取码下载页:无需登录
+            path: '/share',
+            name: 'share',
+            component: () => import('@/views/ShareView.vue'),
+            meta: { public: true },
+        },
     ],
 })
 

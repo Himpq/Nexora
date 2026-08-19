@@ -8,7 +8,7 @@ import urllib.parse
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from flask import Blueprint, Response, jsonify, render_template, request, send_file, session, stream_with_context
+from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context
 
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
 from App.Storage import UserFileSandbox
@@ -1391,8 +1391,16 @@ def get_file_transfer(code):
 
 @files_bp.route("/share", methods=["GET"])
 def share_download_page():
-    """公开读取码下载页，不要求登录。"""
-    return render_template("share.html")
+    """读取码下载页:统一跳转到新前端 SPA(哈希路由 /share),保持 ?code= 透传。
+
+    旧 share.html 模板保留作回退,但正式入口已迁移至 NexoraWeb ShareView。
+    """
+    code = request.args.get("code", "").strip()
+
+    if code:
+        return redirect(f"/new#/share?code={urllib.parse.quote(code)}")
+
+    return redirect("/new#/share")
 
 
 @files_bp.route("/api/files/transfer/<path:code>", methods=["DELETE"])
