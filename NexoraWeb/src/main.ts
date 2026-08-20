@@ -17,6 +17,7 @@ import './styles/model-select.css'
 import './styles/gddp-layout.css'
 import './styles/knowledge-collab.css'
 import './styles/workspaces.css'
+import './styles/chat-input.css'
 
 const app = createApp(App)
 

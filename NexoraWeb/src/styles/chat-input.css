@@ -1,0 +1,154 @@
+/**
+ * chat-input.css - NexoraWeb input container geometry and collapse states.
+ *
+ * The legacy stylesheet is shared with the old chat entry (含 chat.css 的
+ * .input-wrapper { display: flex } 等规则).这里用 #nexora-app 作用域覆盖,
+ * 使收起动画独立于旧页面。
+ */
+
+#nexora-app .input-dock {
+    width: 100%;
+}
+
+/* 收起完成:input-dock 保持自然高度(不清零),否则 0 高度 dock 会被挤出视口、按钮被裁掉;
+   同时覆盖原版 flex:0 0 0 / height:0,让 dock 参与 flex 布局占位、按钮随 messages 上移仍可见 */
+#nexora-app .input-dock.input-dock-collapsed {
+    overflow: visible;
+    pointer-events: none;
+    flex: none;
+    height: auto;
+    min-height: 0;
+    margin-top: -30px;
+}
+
+/* 收起时隐藏待发送附件条,仅保留右下角折叠按钮 */
+#nexora-app .input-dock.input-dock-collapsed .input-attachments {
+    display: none;
+}
+
+/* display:block 覆盖 chat.css 的 .input-wrapper{display:flex};max-width + 右对齐 margin
+   使 wrapper 居中并保留两侧边距(不会贴边);收起全程同一条 margin,按钮只随 max-width 平滑右移 */
+#nexora-app #inputWrapper {
+    position: relative;
+    display: block;
+    width: auto;
+    max-width: calc(100% - 80px);
+    box-sizing: border-box;
+    margin: 0 40px 40px auto;
+    overflow: visible;
+    transition:
+        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#nexora-app #inputWrapper .input-container {
+    width: min(100%, var(--input-container-max-width, 800px));
+    max-width: var(--input-container-max-width, 800px);
+    margin: 0 auto;
+    box-sizing: border-box;
+    transition:
+        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        padding 0.32s ease;
+}
+
+/* 收起完成:wrapper 仅收缩 max-width(同一条右对齐 margin),按钮锚定右侧且整段动画不切换定位 */
+#nexora-app #inputWrapper.input-wrapper-collapsed {
+    max-width: 44px;
+    margin: 0 40px 40px auto;
+    background: transparent;
+    overflow: hidden;
+}
+
+/* 收起态容器:保持居中(仅由收缩的 wrapper 带动右移),并彻底清除原版输入卡片的
+   边框/背景/投影,避免残留白色圆环(对齐原版透明化) */
+#nexora-app #inputWrapper .input-container.input-collapsed {
+    min-height: 44px;
+    max-width: 44px;
+    max-height: 44px;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    box-sizing: border-box;
+}
+
+/* 收起态容器在收缩中的 wrapper 内始终保持水平居中(margin 不切换),
+   与 wrapper 同步收缩时按钮随右缘连续右移,不出现"先居中再左跳" */
+#nexora-app #inputWrapper.input-wrapper-collapsed .input-container {
+    margin: 0 auto;
+}
+
+/* 收起态工具行:保留按钮右侧对齐(不去除 margin-left:auto 右缘锚定),
+   随卡片收缩平滑滑入右下角而非居中后再整体移动 */
+#nexora-app #inputWrapper .input-container.input-collapsed .input-options {
+    height: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    box-sizing: border-box;
+    align-items: center;
+    overflow: hidden;
+}
+
+/* 收起态隐藏工具行与正文/底部,仅保留折叠按钮(对齐原版收起时序与样式) */
+#nexora-app #inputWrapper .input-container.input-collapsed .input-options-tools {
+    max-height: 0;
+    opacity: 0;
+    flex: 0 0 0;
+    width: 0;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+}
+
+#nexora-app #inputWrapper .input-container.input-collapsed #messageInput,
+#nexora-app #inputWrapper .input-container.input-collapsed .input-footer {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+}
+
+#nexora-app #inputWrapper .input-container.input-collapsed .input-collapse-btn {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    margin-left: auto;
+    box-sizing: border-box;
+}
+
+/* 收起完成的圆钮:白底+圆角+轻投影,独立可点(对齐原版外观) */
+#nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn {
+    pointer-events: auto;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    border-radius: 12px;
+    border: 1px solid var(--border-input);
+    background: #fff;
+    color: var(--text-main);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+#nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn:hover {
+    background: #f5f5f5;
+}
+
+@media (max-width: 980px) {
+    #nexora-app #inputWrapper {
+        max-width: calc(100% - 32px);
+        margin: 0 16px max(16px, env(safe-area-inset-bottom)) auto;
+    }
+
+    #nexora-app #inputWrapper.input-wrapper-collapsed {
+        margin: 0 16px max(16px, env(safe-area-inset-bottom)) auto;
+    }
+}

@@ -9,7 +9,7 @@
 -->
 
 <template>
-    <div class="input-dock">
+    <div class="input-dock" :class="{ 'input-dock-collapsed': inputDockCollapsed }">
         <!-- 待发送附件条(对齐原版 filePreviewArea:卡片式预览,右上角删除) -->
         <div v-if="attachmentList.length" class="input-attachments" id="filePreviewArea">
             <div
@@ -42,9 +42,9 @@
         <div
             id="inputWrapper"
             class="input-wrapper"
-            :class="{ 'input-wrapper-collapsed': collapsed }"
+            :class="{ 'input-wrapper-collapsed': inputWrapperCollapsed }"
         >
-            <div class="input-container" :class="{ 'input-collapsed': collapsed, 'tools-mode-menu-open': toolsMenuOpen }">
+            <div class="input-container" :class="{ 'input-collapsed': inputContainerCollapsed, 'tools-mode-menu-open': toolsMenuOpen }">
                 <div class="input-options">
                     <div class="input-options-tools">
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
@@ -89,7 +89,7 @@
                         :title="collapsed ? '展开输入框' : '折叠输入框'"
                         :aria-label="collapsed ? '展开输入框' : '折叠输入框'"
                         :aria-expanded="!collapsed"
-                        @click="collapsed = !collapsed"
+                        @click="toggleCollapsed"
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline :points="collapsed ? '18 15 12 9 6 15' : '6 9 12 15 18 9'"></polyline>
@@ -214,8 +214,13 @@
     const enableThinking = ref(false)
     const enableWebSearch = ref(true)
 
-    /** 输入区折叠状态(对齐原版 .input-collapsed) */
+    /** 输入区折叠状态(容器与 wrapper 同步单段收缩,按钮随卡片右缘平滑滑入右下角,不会先居中再跳变) */
     const collapsed = ref(false)
+    const inputContainerCollapsed = ref(false)
+    const inputWrapperCollapsed = ref(false)
+
+    /** input-dock 收起态:dock 保持自然高度(不清零),按钮始终可见可点 */
+    const inputDockCollapsed = ref(false)
 
     /** Tools 模式(对齐原版 auto_off 默认);下拉状态由浮层协调器管理 */
     const toolsMode = ref('auto_off')
@@ -388,6 +393,24 @@
 
         el.style.height = 'auto'
         el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+    }
+
+    /** 折叠/展开:容器与 wrapper 同步切换,两条 max-width 过渡同进同退,
+     *  按钮始终锚定卡片右缘(右对齐 margin),随收缩平滑滑入右下角,dock 保持自然高度不裁按钮。 */
+    function toggleCollapsed(): void {
+        if (!collapsed.value) {
+            collapsed.value = true
+            inputContainerCollapsed.value = true
+            inputWrapperCollapsed.value = true
+            inputDockCollapsed.value = true
+
+            return
+        }
+
+        collapsed.value = false
+        inputContainerCollapsed.value = false
+        inputWrapperCollapsed.value = false
+        inputDockCollapsed.value = false
     }
 
     /** Enter 发送(Shift 换行),中文输入法组合时不触发 */
