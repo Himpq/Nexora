@@ -13264,7 +13264,9 @@ def admin_upsert_provider(target_provider=None):
             existing_provider = {}
 
         provider_record = dict(existing_provider)
-        provider_record['api_key'] = str(api_key)
+        # API Key 留空表示保持不变:仅当提交了非空 key 时才覆盖,避免编辑时误清空已存密钥
+        if api_key:
+            provider_record['api_key'] = str(api_key)
         provider_record['base_url'] = str(base_url)
         provider_record['api_type'] = api_type or 'openai'
         if user_agent:

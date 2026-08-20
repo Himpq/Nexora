@@ -21,23 +21,15 @@
     margin-top: -30px;
 }
 
-/* 悬浮阶段:收缩过渡结束后 dock 切换为底边 absolute 悬浮(脱离 flex 流),
-   消息区顺势延伸到底部,消除 dock 带出的 50px 白色条带;按钮位置与收缩结束时刻一致,
-   不产生跳变(浮层 pointer-events 继承收起态 none,点击透传给消息区) */
-#nexora-app .input-dock.input-dock-floating {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    flex: none;
-    height: auto;
-    min-height: 0;
-    margin-top: 0;
+/* 消息区底部 margin 参与收起过渡:20px(原版)→ -30px,消息区内容盒平滑延伸到视口底部,
+   与 dock 收缩同步推进,dock 底边悬浮于消息区之上,消除白色条带且全程无跳变
+   (dock 顶部 = 900 - dock高度,与消息区 margin 无关,故按钮滑动不受此过渡影响) */
+#nexora-app #messagesContainer {
+    transition: margin-bottom 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* 悬浮时消息区延伸到底部:移除原版 messages-area 的 20px 底部 margin(仅浮层态生效) */
-#nexora-app .gddp-chat-view:has(.input-dock.input-dock-floating) #messagesContainer {
-    margin-bottom: 0;
+#nexora-app .gddp-chat-view:has(.input-dock.input-dock-collapsed) #messagesContainer {
+    margin-bottom: -30px;
 }
 
 /* 收起时隐藏待发送附件条,仅保留右下角折叠按钮 */

@@ -9,7 +9,7 @@
 -->
 
 <template>
-    <div class="input-dock" :class="{ 'input-dock-collapsed': inputDockCollapsed, 'input-dock-floating': dockFloating }">
+    <div class="input-dock" :class="{ 'input-dock-collapsed': inputDockCollapsed }">
         <!-- 待发送附件条(对齐原版 filePreviewArea:卡片式预览,右上角删除) -->
         <div v-if="attachmentList.length" class="input-attachments" id="filePreviewArea">
             <div
@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, ref } from 'vue'
+    import { computed, ref } from 'vue'
 
     import type { AttachmentInput } from '@/api/attachments'
     import { useConversationStore } from '@/stores/conversation'
@@ -221,12 +221,6 @@
 
     /** input-dock 收起态:dock 保持自然高度(不清零),按钮始终可见可点 */
     const inputDockCollapsed = ref(false)
-
-    /** 悬浮阶段:dock 收缩过渡结束后切换为底边 absolute 悬浮,消息区延伸到底部消除白色条带 */
-    const dockFloating = ref(false)
-
-    /** 悬浮阶段定时器(收缩过渡结束后触发;展开/组件卸载时清理) */
-    let dockFloatingTimer = 0
 
     /** Tools 模式(对齐原版 auto_off 默认);下拉状态由浮层协调器管理 */
     const toolsMode = ref('auto_off')
@@ -403,7 +397,7 @@
 
     /** 折叠/展开:容器与 wrapper 同步切换,两条 max-width 过渡同进同退,
      *  按钮始终锚定卡片右缘(右对齐 margin),随收缩平滑滑入右下角,dock 保持自然高度不裁按钮;
-     *  收缩过渡结束后 dock 切换为底边悬浮(第二段),消息区延伸到底部,不残留白色条带。 */
+     *  消息区底部 margin 同步过渡为负值,延伸到底部消除白色条带(见 chat-input.css)。 */
     function toggleCollapsed(): void {
         if (!collapsed.value) {
             collapsed.value = true
@@ -411,28 +405,14 @@
             inputWrapperCollapsed.value = true
             inputDockCollapsed.value = true
 
-            // 第一段动画完成后(过渡 360ms + 缓冲),dock 切换为底边悬浮
-            window.clearTimeout(dockFloatingTimer)
-
-            dockFloatingTimer = window.setTimeout(() => {
-                dockFloating.value = true
-            }, 380)
-
             return
         }
 
-        // 展开:先取消悬浮恢复消息区,再整体展开(按钮位置与悬浮态一致,无跳变)
-        window.clearTimeout(dockFloatingTimer)
-        dockFloating.value = false
         collapsed.value = false
         inputContainerCollapsed.value = false
         inputWrapperCollapsed.value = false
         inputDockCollapsed.value = false
     }
-
-    onBeforeUnmount(() => {
-        window.clearTimeout(dockFloatingTimer)
-    })
 
     /** Enter 发送(Shift 换行),中文输入法组合时不触发 */
     function handleKeydown(event: KeyboardEvent): void {
