@@ -21,6 +21,25 @@
     margin-top: -30px;
 }
 
+/* 悬浮阶段:收缩过渡结束后 dock 切换为底边 absolute 悬浮(脱离 flex 流),
+   消息区顺势延伸到底部,消除 dock 带出的 50px 白色条带;按钮位置与收缩结束时刻一致,
+   不产生跳变(浮层 pointer-events 继承收起态 none,点击透传给消息区) */
+#nexora-app .input-dock.input-dock-floating {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    flex: none;
+    height: auto;
+    min-height: 0;
+    margin-top: 0;
+}
+
+/* 悬浮时消息区延伸到底部:移除原版 messages-area 的 20px 底部 margin(仅浮层态生效) */
+#nexora-app .gddp-chat-view:has(.input-dock.input-dock-floating) #messagesContainer {
+    margin-bottom: 0;
+}
+
 /* 收起时隐藏待发送附件条,仅保留右下角折叠按钮 */
 #nexora-app .input-dock.input-dock-collapsed .input-attachments {
     display: none;
@@ -38,7 +57,8 @@
     overflow: visible;
     transition:
         max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
-        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-bottom 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #nexora-app #inputWrapper .input-container {
@@ -52,10 +72,11 @@
         padding 0.32s ease;
 }
 
-/* 收起完成:wrapper 仅收缩 max-width(同一条右对齐 margin),按钮锚定右侧且整段动画不切换定位 */
+/* 收起完成:wrapper 仅收缩 max-width(同一条右对齐 margin),按钮锚定右侧且整段动画不切换定位;
+   底部间距随收起收缩到 16px,回收空白不残留白色 footer */
 #nexora-app #inputWrapper.input-wrapper-collapsed {
     max-width: 44px;
-    margin: 0 40px 40px auto;
+    margin: 0 40px 16px auto;
     background: transparent;
     overflow: hidden;
 }
@@ -125,17 +146,17 @@
     box-sizing: border-box;
 }
 
-/* 收起完成的圆钮:白底+圆角+轻投影,独立可点(对齐原版外观) */
+/* 收起完成的圆钮:白底+圆角,去边框去投影,贴合背景不残留深色抠图圈 */
 #nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn {
     pointer-events: auto;
     width: 44px;
     height: 44px;
     margin-left: auto;
     border-radius: 12px;
-    border: 1px solid var(--border-input);
+    border: 1px solid rgba(0, 0, 0, 0.06);
     background: #fff;
     color: var(--text-main);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    box-shadow: none;
 }
 
 #nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn:hover {
