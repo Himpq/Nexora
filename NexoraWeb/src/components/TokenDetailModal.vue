@@ -272,15 +272,18 @@
 
         try {
             stats.value = await fetchTokenStats(cid)
-
-            await nextTick()
-
-            renderChart()
         } catch (error) {
             loadError.value = error instanceof Error ? error.message : '获取 Token 统计失败'
             chartMeta.value = '加载失败'
         } finally {
+            // 先解除加载态,让 v-else 分支(统计栅格/图表/明细表)进入 DOM,再渲染图表
             loading.value = false
+        }
+
+        await nextTick()
+
+        if (!loadError.value) {
+            renderChart()
         }
     }
 
@@ -341,6 +344,12 @@
         const totalSum = totalData.reduce((a, b) => a + b, 0)
 
         chartMeta.value = `共 ${totalSum.toLocaleString()} tokens · ${history.length} 条记录`
+
+        // 刷新等场景下容器随 loading 态被 v-else 重新创建,若实例仍挂在已移除的旧容器上
+        // 必须先销毁(释放 resize 监听)再对新容器重新 init,否则 canvas 不会出现在新容器
+        if (chartInstance && chartInstance.getDom() !== chartRef.value) {
+            disposeChart()
+        }
 
         if (!chartInstance) {
             chartInstance = echarts.init(chartRef.value)
