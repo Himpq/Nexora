@@ -422,6 +422,28 @@ def update_workspace_knowledge_pin(workspace_id):
         return handle_workspace_error(error)
 
 
+@workspace_bp.route("/api/workspace/<workspace_id>/files", methods=["DELETE"])
+def remove_workspace_file(workspace_id):
+    try:
+        username = current_username()
+        data = parse_json_body()
+        wid = validate_workspace_id(workspace_id)
+        file_ref = parse_file_ref(data.get("file_ref") or data.get("sandbox_path") or data.get("alias"))
+
+        if not file_ref:
+            raise ValueError("file_ref is required")
+
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.remove_file(wid, file_ref, username)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
 @workspace_bp.route("/api/workspace/<workspace_id>/files", methods=["POST"])
 def add_workspace_file(workspace_id):
     try:
