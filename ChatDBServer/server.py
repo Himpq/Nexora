@@ -6703,9 +6703,9 @@ def js_bundle(bundle_name):
 
 @app.route('/')
 def index():
-    """首页：未登录展示 Landing，已登录进入聊天"""
+    """首页：未登录展示 Landing，已登录进入新版聊天前端(/new)；旧版保留在 /chat 作为回退"""
     if 'username' in session:
-        return redirect(url_for('chat', **request.args))
+        return redirect(url_for('new_frontend_page', **request.args))
 
     return render_template('public_site/landing.html')
 
@@ -6768,17 +6768,17 @@ def favicon():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """登录页面"""
+    """登录入口:GET 一律进入新版前端(登录页由 /new#/login 渲染,POST 仍由本路由处理)"""
     if request.method == 'GET':
         if 'username' in session:
             try:
                 users = load_users()
                 if session.get('username') in users:
-                    return redirect(url_for('chat'))
+                    return redirect('/new')
             except Exception:
                 pass
             session.clear()
-        return render_template('login.html')
+        return redirect('/new')
     
     # POST - 处理登录
     data = request.get_json() or {}
