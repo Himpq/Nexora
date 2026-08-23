@@ -95,6 +95,9 @@
 .settings-main {
     flex: 1;
     min-width: 0;
+    /* 关键:flex 列向子项默认 min-height:auto(不可低于内容),会把弹窗撑出视口
+       导致内层滚动失效(手机端"滑不了"的根因)。必须显式归零。 */
+    min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--color-bg-elevated);
