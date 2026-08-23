@@ -2242,10 +2242,17 @@
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .settings-modal-shell .settings-management-list,
-    .settings-modal-shell .admin-users-list {
-        height: auto;
-        max-height: 220px;
+    /* 列表/详情两级钻取(AdminPanel):默认只显示列表,点选后整页切到详情 */
+    .settings-modal-shell .settings-management-detail {
+        display: none;
+    }
+
+    .settings-modal-shell .settings-management-layout.show-detail .settings-management-list {
+        display: none;
+    }
+
+    .settings-modal-shell .settings-management-layout.show-detail .settings-management-detail {
+        display: block;
     }
 
     .settings-modal-shell .settings-skill-top {

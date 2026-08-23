@@ -200,20 +200,17 @@
         open: boolean
     }>()
 
-            const userStore = useUserStore()
+                const userStore = useUserStore()
 
-    /** 窄视口(≤760px):弹窗转近全屏,布局由 settings.css 切为两级导航 */
+    /** 窄视口(≤760px):弹窗完全全屏(inset 0 无缝隙,杜绝顶栏从边缘透出的"重合"观感),
+     *  布局由 settings.css 切为两级导航(一级分类页 → 二级内容页) */
     const isCompactViewport = ref(false)
 
     /** 手机端导航层级:1=分类列表页,2=内容页(点击分类进入) */
     const mobileLevel = ref<1 | 2>(1)
 
-    /** 视口尺寸变化计数:驱动高度按 innerHeight 重新取值(dvh 兼容性兜底) */
-    const viewportTick = ref(0)
-
     function syncCompactViewport(): void {
         isCompactViewport.value = window.matchMedia('(max-width: 760px)').matches
-        viewportTick.value += 1
     }
 
     onMounted(() => {
@@ -227,13 +224,7 @@
 
     const modalWidth = computed(() => (isCompactViewport.value ? '100%' : '1060px'))
 
-    const modalHeight = computed(() => {
-        void viewportTick.value
-
-        return isCompactViewport.value
-            ? `${Math.round(window.innerHeight * 0.93)}px`
-            : 'min(80vh, 720px)'
-    })
+    const modalHeight = computed(() => (isCompactViewport.value ? '100%' : 'min(80vh, 720px)'))
 
     const activeTab = ref('profile')
     const avatarCropOpen = ref(false)
