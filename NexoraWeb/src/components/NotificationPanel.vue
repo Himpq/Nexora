@@ -1,22 +1,23 @@
 <!--
-    NotificationPanel.vue — 通知面板(对齐原版 notification.js renderPanel)
+    NotificationPanel.vue — 通知面板(GDDP)
 
     设计:
-      - 铃铛下拉面板,复用原版全局样式类(.chat-notification-popover / -item / -actions 等)
+      - 铃铛下拉面板,视觉自包含(scoped),不再依赖原版全局 notification.css
+      - 开合动效对齐 GDDP 浮动面板规范(panels.css:opacity/transform 双向过渡)
       - 打开/关闭经浮层协调器(overlay.popover === 'notification'),互斥 + 外部点击关闭统一保证
-      - 公告弹窗(管理员)走统一 ui/Modal.vue,级别选择为自建下拉(禁用原生 select)
+      - 公告弹窗(管理员)走统一 ui/Modal.vue,级别选择复用通用 GDDP SettingSelect
 -->
 
 <template>
-    <div class="chat-notification-popover" :class="{ open: isOpen }" role="dialog" aria-label="通知">
-        <div class="chat-notification-header">
-            <div>
-                <div class="chat-notification-title">通知</div>
-                <div class="chat-notification-subtitle">{{ unreadCount > 0 ? `${unreadCount} 条未读` : '已全部读完' }}</div>
+    <div class="np-panel" :class="{ open: isOpen }" role="dialog" aria-label="通知" :aria-hidden="!isOpen">
+        <div class="np-head">
+            <div class="np-head-text">
+                <div class="np-title">通知</div>
+                <div class="np-subtitle">{{ unreadCount > 0 ? `${unreadCount} 条未读` : '已全部读完' }}</div>
             </div>
             <button
                 v-if="isAdmin"
-                class="chat-notification-add"
+                class="np-add"
                 type="button"
                 title="设置公告"
                 aria-label="设置公告"
@@ -26,29 +27,29 @@
             </button>
         </div>
 
-        <div v-if="loading && !loaded" class="chat-notification-state">正在加载...</div>
-        <div v-else-if="error" class="chat-notification-state chat-notification-state-error">{{ error }}</div>
-        <div v-else-if="!items.length" class="chat-notification-state">暂无通知</div>
-        <div v-else class="chat-notification-list">
+        <div v-if="loading && !loaded" class="np-state">正在加载...</div>
+        <div v-else-if="error" class="np-state np-state-error">{{ error }}</div>
+        <div v-else-if="!items.length" class="np-state">暂无通知</div>
+        <div v-else class="np-list">
             <article
                 v-for="item in items"
                 :key="item.notification_id"
-                class="chat-notification-item"
+                class="np-item"
                 :class="{ 'is-read': item.read }"
                 :data-notification-id="item.notification_id"
             >
-                <div class="chat-notification-icon" :class="`chat-notification-icon-${levelOf(item)}`">
+                <div class="np-icon" :class="`np-icon-${levelOf(item)}`">
                     <i class="fa-solid" :class="levelIcon(item.level)" aria-hidden="true"></i>
                 </div>
-                <div class="chat-notification-main">
-                    <div class="chat-notification-item-title">{{ item.title }}</div>
-                    <div v-if="item.content" class="chat-notification-content">{{ item.content }}</div>
-                    <div v-if="metaText(item)" class="chat-notification-meta">{{ metaText(item) }}</div>
+                <div class="np-main">
+                    <div class="np-item-title">{{ item.title }}</div>
+                    <div v-if="item.content" class="np-content">{{ item.content }}</div>
+                    <div v-if="metaText(item)" class="np-meta">{{ metaText(item) }}</div>
                 </div>
-                <div class="chat-notification-actions">
+                <div class="np-actions">
                     <button
                         v-if="!item.read"
-                        class="chat-notification-action chat-notification-read"
+                        class="np-action np-action-read"
                         type="button"
                         title="标记已读"
                         aria-label="标记已读"
@@ -58,7 +59,7 @@
                     </button>
                     <button
                         v-if="canRemove(item)"
-                        class="chat-notification-action chat-notification-remove"
+                        class="np-action np-action-remove"
                         :class="{ 'is-public-delete': isPublic(item) }"
                         type="button"
                         :title="isPublic(item) ? '删除全体公告' : '删除通知'"
@@ -102,39 +103,15 @@
             ></textarea>
         </div>
         <div class="np-form-group">
-            <label for="announcementLevelSelect">级别</label>
-            <div class="np-announcement-level-select">
-                <button
-                    id="announcementLevelSelectButton"
-                    class="np-announcement-level-button"
-                    type="button"
-                    aria-haspopup="listbox"
-                    :aria-expanded="levelMenuOpen"
-                    @click="levelMenuOpen = !levelMenuOpen"
-                >
-                    <span>{{ levelLabel(announcementLevel) }}</span>
-                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                </button>
-<div
-                    id="announcementLevelSelectMenu"
-                    class="np-announcement-level-menu"
-                    role="listbox"
-                    aria-label="公告级别"
-                    :hidden="!levelMenuOpen"
-                >
-                    <button
-                        v-for="option in levelOptions"
-                        :key="option.value"
-                        type="button"
-                        role="option"
-                        :class="{ active: announcementLevel === option.value }"
-                        :aria-selected="announcementLevel === option.value"
-                        @click="announcementLevel = option.value; levelMenuOpen = false"
-                    >
-                        {{ option.label }}
-                    </button>
-                </div>
-            </div>
+            <label>级别</label>
+
+            <!-- 级别下拉:复用通用 GDDP SettingSelect(禁用原生 select) -->
+            <SettingSelect
+                v-model="announcementLevel"
+                :options="levelOptions"
+                width="100%"
+                popover-key="announcement-level"
+            />
         </div>
         <template #footer>
             <button class="g-btn g-btn-ghost" type="button" @click="announcementOpen = false">取消</button>
@@ -147,27 +124,26 @@
     import { computed, ref, watch } from 'vue'
 
     import type { NotificationItem } from '@/api/notifications'
-    import { createAnnouncement, listNotifications, markNotificationRead, removeNotification } from '@/api/notifications'
+    import { createAnnouncement } from '@/api/notifications'
     import { showError, showToast } from '@/stores/notify'
+    import { useNotificationStore } from '@/stores/notification'
     import { useUserStore } from '@/stores/user'
     import { overlay } from '@/ui/overlay'
 
     import Modal from '@/ui/Modal.vue'
-
-    const emit = defineEmits<{
-        /** 未读数变化(驱动铃铛 badge) */
-        'unread-change': [count: number]
-    }>()
+    import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
     const userStore = useUserStore()
+    const notificationStore = useNotificationStore()
 
     /** 面板是否打开:由浮层协调器统一管理 */
     const isOpen = computed(() => overlay.popover === 'notification')
 
-    const items = ref<NotificationItem[]>([])
-    const unreadCount = ref(0)
-    const loading = ref(false)
-    const loaded = ref(false)
+    /** 通知列表与未读数:唯一数据源为 notification store(HTTP 拉取 + WSS 推送双入口) */
+    const items = computed(() => notificationStore.items)
+    const unreadCount = computed(() => notificationStore.unreadCount)
+    const loading = computed(() => notificationStore.loading)
+    const loaded = computed(() => notificationStore.loaded)
     const error = ref('')
 
     /** 公告弹窗状态 */
@@ -175,7 +151,6 @@
     const announcementTitle = ref('')
     const announcementContent = ref('')
     const announcementLevel = ref('info')
-    const levelMenuOpen = ref(false)
 
     const levelOptions = [
         { value: 'info', label: '普通' },
@@ -204,57 +179,32 @@
             return
         }
 
-        loading.value = true
         error.value = ''
 
         try {
-            const data = await listNotifications(20)
-
-            items.value = data.items
-            unreadCount.value = data.unread_count
-            loaded.value = true
-
-            emit('unread-change', unreadCount.value)
+            await notificationStore.load()
         } catch (loadError) {
             error.value = loadError instanceof Error ? loadError.message : '通知加载失败'
-        } finally {
-            loading.value = false
         }
     }
 
-    /** 标记已读:本地更新 + 上报后端(对齐原版 markNotificationRead) */
+    /** 标记已读:经 store 上报后端并统一更新状态 */
     async function handleRead(item: NotificationItem): Promise<void> {
         if (item.read) {
             return
         }
 
         try {
-            const nextUnread = await markNotificationRead(item.notification_id)
-
-            items.value = items.value.map((row) => {
-                if (row.notification_id !== item.notification_id) {
-                    return row
-                }
-
-                return { ...row, read: true }
-            })
-            unreadCount.value = nextUnread
-
-            emit('unread-change', unreadCount.value)
+            await notificationStore.markRead(item.notification_id)
         } catch (readError) {
             showError(readError instanceof Error ? readError.message : '通知状态更新失败')
         }
     }
 
-    /** 删除通知:本地移除 + 上报后端(对齐原版 removeNotification) */
+    /** 删除通知:经 store 上报后端并统一更新状态 */
     async function handleRemove(item: NotificationItem): Promise<void> {
         try {
-            const nextUnread = await removeNotification(item.notification_id)
-
-            items.value = items.value.filter((row) => row.notification_id !== item.notification_id)
-            unreadCount.value = nextUnread
-
-            emit('unread-change', unreadCount.value)
+            await notificationStore.remove(item.notification_id)
         } catch (removeError) {
             showError(removeError instanceof Error ? removeError.message : '删除通知失败')
         }
@@ -287,25 +237,6 @@
         } catch (publishError) {
             showError(publishError instanceof Error ? publishError.message : '发布公告失败')
         }
-    }
-
-    /** 级别标签(对齐原版 getLevelLabel) */
-    function levelLabel(level: string): string {
-        const normalized = String(level || 'info').trim().toLowerCase()
-
-        if (normalized === 'success') {
-            return '完成'
-        }
-
-        if (normalized === 'warning') {
-            return '提醒'
-        }
-
-        if (normalized === 'error') {
-            return '重要'
-        }
-
-        return '普通'
     }
 
     /** 级别图标(对齐原版 renderLevelIcon) */
@@ -399,7 +330,223 @@
 </script>
 
 <style scoped>
-    /* ---------- 公告弹窗表单(去原版 .form-group/.input-modern,走 GDDP 组件) ---------- */
+    /* ---------- 面板壳(GDDP 浮层:白底描边 + 开合动效,层级走令牌) ---------- */
+
+    .np-panel {
+        position: absolute;
+        top: calc(100% + 10px);
+        right: 0;
+        width: 320px;
+        min-height: 220px;
+        max-width: calc(100vw - 24px);
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        background: var(--color-bg-elevated);
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+        z-index: var(--z-dropdown);
+        overflow: hidden;
+        visibility: hidden;
+        opacity: 0;
+        transform: translateY(10px) scale(0.97);
+        pointer-events: none;
+        transition:
+            opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+            transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+            visibility 0.18s;
+    }
+
+    .np-panel.open {
+        visibility: visible;
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+    }
+
+    /* ---------- 头部 ---------- */
+
+    .np-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 14px 12px;
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .np-title {
+        color: var(--color-text-primary);
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.25;
+    }
+
+    .np-subtitle {
+        margin-top: 3px;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        line-height: 1.25;
+    }
+
+    .np-add {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
+        cursor: pointer;
+        font-size: 13px;
+        flex: 0 0 auto;
+    }
+
+    .np-add:hover {
+        border-color: var(--color-text-secondary);
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
+    }
+
+    /* ---------- 列表 ---------- */
+
+    .np-list {
+        max-height: min(420px, calc(100vh - 160px));
+        overflow: auto;
+    }
+
+    .np-item {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        gap: 10px;
+        padding: 12px 12px;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
+        cursor: pointer;
+    }
+
+    .np-item:hover {
+        background: var(--color-bg-sunken);
+    }
+
+    .np-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        background: #e0f2fe;
+        color: #0369a1;
+        font-size: 13px;
+    }
+
+    .np-icon-success {
+        background: var(--color-success-surface);
+        color: var(--color-success-text);
+    }
+
+    .np-icon-warning {
+        background: #fef3c7;
+        color: #b45309;
+    }
+
+    .np-icon-error {
+        background: var(--color-danger-surface);
+        color: var(--color-danger-text);
+    }
+
+    .np-main {
+        min-width: 0;
+    }
+
+    .np-item-title {
+        color: var(--color-text-primary);
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+    }
+
+    .np-item.is-read .np-item-title {
+        color: var(--color-text-secondary);
+        font-weight: 600;
+    }
+
+    .np-content {
+        margin-top: 4px;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+    }
+
+    .np-meta {
+        margin-top: 6px;
+        color: var(--color-text-secondary);
+        font-size: 11px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+    }
+
+    /* ---------- 条目操作(标记已读 / 删除) ---------- */
+
+    .np-actions {
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-end;
+        gap: 6px;
+        min-width: 28px;
+    }
+
+    .np-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        cursor: pointer;
+    }
+
+    .np-action:hover {
+        border-color: #d1d5db;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
+    }
+
+    /* 全体公告删除:危险语义淡红反馈 */
+    .np-action-remove.is-public-delete {
+        color: var(--color-danger-text);
+    }
+
+    .np-action-remove.is-public-delete:hover {
+        border-color: var(--color-danger-border);
+        background: var(--color-danger-surface);
+        color: var(--color-danger-text);
+    }
+
+    /* ---------- 加载 / 错误 / 空态 ---------- */
+
+    .np-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 160px;
+        padding: 20px;
+        color: var(--color-text-secondary);
+        font-size: 13px;
+        text-align: center;
+    }
+
+    .np-state-error {
+        color: var(--color-danger-text);
+    }
+
+    /* ---------- 公告弹窗表单 ---------- */
 
     .np-form-group {
         margin-bottom: 14px;
@@ -412,7 +559,7 @@
     .np-form-group label {
         display: block;
         margin-bottom: 6px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-size: 13px;
         font-weight: 600;
     }
@@ -423,71 +570,15 @@
         line-height: 1.5;
     }
 
-    /* ---------- 公告级别下拉 ---------- */
+    /* ---------- 窄屏:锚定视口右上,避免左侧溢出屏幕 ---------- */
 
-    .np-announcement-level-select {
-        position: relative;
-        width: 100%;
-    }
-
-    .np-announcement-level-button {
-        width: 100%;
-        height: 38px;
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        background: #ffffff;
-        color: #111827;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 0 12px;
-        font: inherit;
-        font-size: 14px;
-        cursor: pointer;
-    }
-
-    .np-announcement-level-button:hover,
-    .np-announcement-level-button[aria-expanded="true"] {
-        border-color: #9ca3af;
-        background: #f9fafb;
-    }
-
-    .np-announcement-level-menu {
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: calc(100% + 6px);
-        z-index: 4800;
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        background: #ffffff;
-        box-shadow: 0 14px 28px rgba(15, 23, 42, 0.14);
-        padding: 6px;
-    }
-
-    .np-announcement-level-menu[hidden] {
-        display: none;
-    }
-
-    .np-announcement-level-menu button {
-        width: 100%;
-        height: 34px;
-        border: none;
-        border-radius: 6px;
-        background: transparent;
-        color: #111827;
-        display: flex;
-        align-items: center;
-        padding: 0 10px;
-        font: inherit;
-        font-size: 14px;
-        text-align: left;
-        cursor: pointer;
-    }
-
-    .np-announcement-level-menu button:hover,
-    .np-announcement-level-menu button.active {
-        background: #f3f4f6;
+    @media (max-width: 980px) {
+        .np-panel {
+            position: fixed;
+            top: 60px;
+            right: 8px;
+            width: min(320px, calc(100vw - 16px));
+            min-height: 220px;
+        }
     }
 </style>

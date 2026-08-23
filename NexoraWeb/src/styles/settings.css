@@ -28,15 +28,15 @@
     flex: none;
     width: 210px;
     padding: 18px 12px;
-    background: #fafafa;
-    border-right: 1px solid #ececec;
+    background: var(--color-bg-sunken);
+    border-right: 1px solid var(--color-border);
     overflow-y: auto;
 }
 
 .settings-nav-group + .settings-nav-group {
     margin-top: 16px;
     padding-top: 12px;
-    border-top: 1px solid #eeeeee;
+    border-top: 1px solid var(--color-border);
 }
 
 .settings-nav-group-label {
@@ -44,7 +44,7 @@
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.06em;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 .settings-nav-item {
@@ -60,7 +60,7 @@
     background: transparent;
     font-size: 13px;
     font-weight: 500;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     text-align: left;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
@@ -76,18 +76,18 @@
 }
 
 .settings-nav-item:hover {
-    background: #f1f1f1;
-    color: #111111;
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
 }
 
 .settings-nav-item.active {
-    background: #f1f1f1;
-    color: #111111;
+    background: var(--color-control-active);
+    color: var(--color-text-primary);
     font-weight: 600;
 }
 
 .settings-nav-item.active i {
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 /* ==================== 主区 ==================== */
@@ -97,7 +97,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    background: #ffffff;
+    background: var(--color-bg-elevated);
 }
 
 .settings-page-head {
@@ -108,7 +108,7 @@
     gap: 14px;
     min-height: 58px;
     padding: 10px 28px;
-    border-bottom: 1px solid #f2f2f2;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .settings-page-head-main {
@@ -121,7 +121,7 @@
     margin: 0 0 4px;
     font-size: 17px;
     font-weight: 700;
-    color: #111111;
+    color: var(--color-text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -130,7 +130,7 @@
 .settings-page-head p {
     margin: 0;
     font-size: 12.5px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -179,7 +179,7 @@
     display: inline-flex;
     gap: 2px;
     padding: 3px;
-    background: #f3f3f3;
+    background: var(--color-control-track);
     border-radius: 8px;
     width: max-content;
     max-width: 100%;
@@ -198,7 +198,7 @@
     background: transparent;
     font-size: 12.5px;
     font-weight: 550;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.15s ease, color 0.15s ease;
@@ -207,14 +207,14 @@
 .settings-page-head-tab:hover:not(.active),
 .settings-mode-toggle-btn:hover:not(.active),
 .setting-segmented-btn:hover:not(.active) {
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .settings-page-head-tab.active,
 .settings-mode-toggle-btn.active,
 .setting-segmented-btn.active {
-    background: #ffffff;
-    color: #111111;
+    background: var(--color-control-active);
+    color: var(--color-text-primary);
     font-weight: 600;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
@@ -252,8 +252,8 @@
 /* ==================== 分组卡片 + 左右行 ==================== */
 
 .setting-card {
-    background: #ffffff;
-    border: 1px solid #e8e8e8;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
     border-radius: 10px;
 }
 
@@ -269,13 +269,13 @@
     margin: 0;
     font-size: 13px;
     font-weight: 650;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .setting-card-head p {
     margin: 4px 0 0;
     font-size: 12px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
 }
 
 .setting-card-body {
@@ -289,7 +289,7 @@
     gap: 24px;
     min-height: 50px;
     padding: 9px 0;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .setting-card-body > .setting-row:last-child {
@@ -304,7 +304,7 @@
 .setting-row-label {
     font-size: 13px;
     font-weight: 550;
-    color: #222222;
+    color: var(--color-text-primary);
 }
 
 .setting-row-hint {
@@ -331,7 +331,7 @@
     margin-bottom: 6px;
     font-size: 12.5px;
     font-weight: 550;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .input-modern,
@@ -340,18 +340,18 @@
     width: 100%;
     height: 34px;
     padding: 0 12px;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     font-size: 13px;
-    color: #111111;
+    color: var(--color-text-primary);
     outline: none;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .settings-modal-shell .input-modern:focus,
 .setting-input:focus {
-    border-color: #111111;
+    border-color: var(--color-text-primary);
     box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.07);
 }
 
@@ -363,7 +363,7 @@
 
 .settings-modal-shell .settings-help-text {
     font-size: 12px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     line-height: 1.6;
 }
 
@@ -398,10 +398,10 @@
     min-width: var(--gddp-action-min-width);
     height: var(--gddp-control-height);
     padding: 0 16px;
-    border: 1px solid #c9c9c9;
+    border: 1px solid var(--color-border);
     border-radius: var(--gddp-border-radius);
-    background: #fff;
-    color: #2e2e2e;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 13px;
     font-weight: 550;
     cursor: pointer;
@@ -409,21 +409,21 @@
 }
 
 .gddp-button-primary {
-    border-color: #111;
-    color: #111;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
     font-weight: 600;
 }
 
 .gddp-button-danger {
-    border-color: #f0c4c4;
-    background: #fff7f7;
-    color: #c0392b;
+    border-color: var(--color-danger-border);
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
 }
 
 .gddp-button-quiet {
     border-color: transparent;
     background: transparent;
-    color: #6b7280;
+    color: var(--color-text-secondary);
 }
 
 .gddp-button-compact {
@@ -447,14 +447,14 @@
     gap: 8px;
     font-size: 13px;
     font-weight: 550;
-    color: #222222;
+    color: var(--color-text-primary);
     cursor: pointer;
 }
 
 .settings-toggle-row input[type="checkbox"] {
     width: 16px;
     height: 16px;
-    accent-color: #111111;
+    accent-color: var(--color-accent-text);
     cursor: pointer;
 }
 
@@ -470,19 +470,19 @@
     gap: 10px;
     margin-bottom: 12px;
     padding-bottom: 10px;
-    border-bottom: 1px solid #e8e8e8;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .settings-modal-shell .admin-users-toolbar {
     padding-bottom: 10px;
-    border-bottom: 1px solid #e8e8e8;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .settings-modal-shell .admin-system-toolbar-row h4 {
     margin: 0;
     font-size: 14px;
     font-weight: 650;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 /* 布局:占满剩余高度,列表/详情内部滚动(不再是 fit-content) */
@@ -499,9 +499,9 @@
 .settings-modal-shell .settings-management-list {
     min-height: 0;
     height: 100%;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     overflow-y: auto;
 }
 
@@ -509,9 +509,9 @@
 .settings-modal-shell .settings-management-detail {
     min-height: 0;
     height: 100%;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     padding: 16px;
     overflow-y: auto;
 }
@@ -520,7 +520,7 @@
     padding: 28px 16px;
     text-align: center;
     font-size: 13px;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 /* 列表项(div,非 button——对齐原版) */
@@ -531,8 +531,8 @@
     width: 100%;
     padding: 7px 12px;
     border: none;
-    border-bottom: 1px solid #f4f4f4;
-    background: #fff;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
     text-align: left;
     cursor: pointer;
     box-sizing: border-box;
@@ -540,15 +540,15 @@
 }
 
 .settings-modal-shell .admin-user-item:hover {
-    background: #fafafa;
+    background: var(--color-bg-sunken);
 }
 
 .settings-modal-shell .admin-user-item.active {
-    background: #f3f3f3;
+    background: var(--color-bg-hover);
 }
 
 .settings-modal-shell .admin-user-item.active .admin-user-name {
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .settings-modal-shell .admin-user-name {
@@ -556,7 +556,7 @@
     min-width: 0;
     font-size: 13px;
     font-weight: 600;
-    color: #222222;
+    color: var(--color-text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -574,7 +574,7 @@
 .settings-modal-shell .admin-user-meta {
     flex: none;
     font-size: 11.5px;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 /* 头像(列表):圆形 + 背景裁剪,杜绝 img 溢出 */
@@ -587,8 +587,8 @@
     height: 34px;
     border-radius: 50%;
     overflow: hidden;
-    background: #f0f0f0;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
     font-size: 13px;
 }
 
@@ -601,7 +601,7 @@
 
 .settings-modal-shell .admin-public-api-key-icon i {
     font-size: 13px;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 /* Provider 图标(模型管理) */
@@ -613,11 +613,11 @@
     width: 26px;
     height: 26px;
     border-radius: 6px;
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
     overflow: hidden;
     font-size: 12px;
     font-weight: 700;
-    color: #666666;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .provider-icon img {
@@ -642,11 +642,11 @@
 /* 详情信息文本与网格 */
 .settings-modal-shell .admin-info-text {
     font-size: 13px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     padding: 8px 12px;
-    background: #fafafa;
+    background: var(--color-bg-sunken);
     border-radius: 7px;
-    border: 1px solid #f0f0f0;
+    border: 1px solid var(--color-border);
 }
 
 .settings-modal-shell .admin-user-detail-grid {
@@ -680,23 +680,23 @@
     flex-direction: column;
     gap: 6px;
     padding: 16px;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
 }
 
 .settings-modal-shell .stat-card .label,
 .settings-modal-shell .settings-stat-card .label {
     font-size: 12px;
     font-weight: 550;
-    color: #8a8a8a;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .stat-card .value,
 .settings-modal-shell .settings-stat-card .value {
     font-size: 22px;
     font-weight: 700;
-    color: #111111;
+    color: var(--color-text-primary);
     line-height: 1.2;
 }
 
@@ -704,19 +704,19 @@
     padding: 18px 0;
     text-align: center;
     font-size: 13px;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 .settings-stat-count {
     font-size: 13px;
     font-weight: 550;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     font-variant-numeric: tabular-nums;
 }
 
 /* 系统设置卡片 */
 .settings-modal-shell .admin-system-card {
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
     padding: 16px;
     margin-bottom: 14px;
@@ -726,7 +726,7 @@
     margin: 0 0 10px;
     font-size: 13.5px;
     font-weight: 650;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 /* ==================== 模型行 + 状态徽标 ==================== */
@@ -748,7 +748,7 @@
 
 .settings-modal-shell .model-admin-toolbar-unit label {
     font-size: 12px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
 }
 
 /* 模型行(对齐原版 model-admin-item:grid 36px icon + 1fr 内容,hover 显示编辑/删除) */
@@ -758,13 +758,13 @@
     align-items: flex-start;
     gap: 10px;
     padding: 8px 12px;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
     border-radius: 7px;
     transition: background 0.15s ease;
 }
 
 .settings-modal-shell .admin-model-row:hover {
-    background: #fafafa;
+    background: var(--color-bg-sunken);
 }
 
 /* 内容列(名称行 + 上下文 + 额度条) */
@@ -813,7 +813,7 @@
     min-width: 0;
     font-size: 13px;
     font-weight: 600;
-    color: #222222;
+    color: var(--color-text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -834,25 +834,25 @@
     min-width: 120px;
     text-align: right;
     font-size: 11.5px;
-    color: #999999;
+    color: var(--color-text-secondary);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
 .settings-modal-shell .admin-model-status.model-status-normal {
-    background: #e8f5e9;
-    color: #2e7d32;
+    background: var(--color-success-surface);
+    color: var(--color-success-text);
 }
 
 .settings-modal-shell .admin-model-status.model-status-error {
-    background: #fdecea;
-    color: #c0392b;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
 }
 
 .settings-modal-shell .admin-model-status.model-status-disabled,
 .settings-modal-shell .admin-model-status.model-status-unknown {
-    background: #f2f2f2;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
 }
 
 /* Ollama 模型状态点(对齐原版 model-status-btn,点击打开状态弹窗) */
@@ -866,7 +866,7 @@
     border-radius: 999px;
     border: 1px solid transparent;
     background: transparent;
-    color: #94a3b8;
+    color: var(--color-text-secondary);
     font-size: 10px;
     cursor: pointer;
     padding: 0;
@@ -874,13 +874,13 @@
 }
 
 .settings-modal-shell .model-status-btn:hover {
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-loading {
-    color: #94a3b8;
-    background: #fafafa;
-    border-color: #eeeeee;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-sunken);
+    border-color: var(--color-border);
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-warn {
@@ -890,14 +890,14 @@
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-success {
-    color: #2e7d32;
-    background: #e8f5e9;
+    color: var(--color-success-text);
+    background: var(--color-success-surface);
     border-color: #c8e6c9;
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-danger {
-    color: #c0392b;
-    background: #fdecea;
+    color: var(--color-danger-text);
+    background: var(--color-danger-surface);
     border-color: #f5c6c0;
 }
 
@@ -914,16 +914,16 @@
     justify-content: space-between;
     gap: 16px;
     padding: 6px 0;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
     font-size: 13px;
 }
 
 .settings-modal-shell .ollama-status-row span {
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .ollama-status-row strong {
-    color: #222222;
+    color: var(--color-text-primary);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
 }
@@ -932,7 +932,7 @@
     padding: 24px 0;
     text-align: center;
     font-size: 13px;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .ollama-status-message {
@@ -941,16 +941,16 @@
     border-radius: 7px;
     font-size: 12.5px;
     line-height: 1.5;
-    border: 1px solid #eeeeee;
-    background: #fafafa;
-    color: #3c3c3c;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
     word-break: break-word;
 }
 
 .settings-modal-shell .ollama-status-message.level-success {
-    background: #e8f5e9;
+    background: var(--color-success-surface);
     border-color: #c8e6c9;
-    color: #2e7d32;
+    color: var(--color-success-text);
 }
 
 .settings-modal-shell .ollama-status-message.level-warning {
@@ -960,9 +960,9 @@
 }
 
 .settings-modal-shell .ollama-status-message.level-danger {
-    background: #fdecea;
+    background: var(--color-danger-surface);
     border-color: #f5c6c0;
-    color: #c0392b;
+    color: var(--color-danger-text);
 }
 
 /* ==================== 额度策略(对齐原版 model-provider-quota-row:provider 行内下拉) ==================== */
@@ -976,7 +976,7 @@
 
 .settings-modal-shell .model-provider-quota-label {
     font-size: 11px;
-    color: #999999;
+    color: var(--color-text-secondary);
     white-space: nowrap;
 }
 
@@ -988,20 +988,20 @@
     align-items: center;
     justify-content: center;
     border-radius: 6px;
-    border: 1px solid #d1d5db;
-    background: #fff;
-    color: #111827;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     cursor: pointer;
     font-size: 11px;
 }
 
 .settings-modal-shell .model-icon-btn:hover {
-    background: #f3f4f6;
+    background: var(--color-bg-hover);
 }
 
 .settings-modal-shell .model-icon-btn-danger {
-    color: #dc2626;
-    border-color: #fecaca;
+    color: var(--color-danger-text);
+    border-color: var(--color-danger-border);
 }
 
 .settings-modal-shell .model-icon-btn-danger:hover {
@@ -1048,17 +1048,17 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #fff;
-    color: #3c3c3c;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
     font-size: 12px;
     cursor: pointer;
 }
 
 .settings-modal-shell .quota-total-icon-btn:hover {
-    border-color: #111111;
-    color: #111111;
+    border-color: var(--color-text-primary);
+    color: var(--color-text-primary);
 }
 
 /* 额度计量条(对齐原版 quota-meter-shell) */
@@ -1120,11 +1120,11 @@
 }
 
 .settings-modal-shell .quota-meter-label-item.debt {
-    color: #b91c1c;
+    color: var(--color-danger-text);
 }
 
 .settings-modal-shell .quota-meter-label-item.remaining {
-    color: #166534;
+    color: var(--color-success-text);
 }
 
 .settings-modal-shell .quota-meter-label-item.used {
@@ -1132,7 +1132,7 @@
 }
 
 .settings-modal-shell .quota-meter-label-item.total {
-    color: #0f172a;
+    color: var(--color-text-primary);
 }
 
 /* 额度调整 popover(fixed 锚点跟随,对齐原版 quotaAdjustPopover) */
@@ -1142,15 +1142,15 @@
     min-width: 340px;
     max-width: calc(100vw - 24px);
     padding: 12px;
-    border: 1px solid #e2e2e2;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #ffffff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 14px 34px rgba(2, 6, 23, 0.18);
 }
 
 .quota-adjust-title {
     font-size: 13px;
-    color: #111111;
+    color: var(--color-text-primary);
     font-weight: 700;
 }
 
@@ -1160,7 +1160,7 @@
     gap: 8px;
     margin-top: 10px;
     font-size: 12px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     white-space: nowrap;
 }
 
@@ -1173,7 +1173,7 @@
 
 .quota-adjust-mode-label {
     font-size: 12px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     white-space: nowrap;
 }
 
@@ -1184,15 +1184,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #ffffff;
-    color: #111111;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     cursor: pointer;
 }
 
 .quota-adjust-save-btn:hover {
-    border-color: #111111;
+    border-color: var(--color-text-primary);
 }
 
 .quota-adjust-hint-text {
@@ -1209,7 +1209,7 @@
     align-items: flex-start;
     gap: 28px;
     padding-bottom: 14px;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .settings-avatar-panel {
@@ -1227,8 +1227,8 @@
     border-radius: 50%;
     background-size: cover;
     background-position: center;
-    background-color: #f0f0f0;
-    border: 1px solid #e2e2e2;
+    background-color: var(--color-bg-hover);
+    border: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1238,7 +1238,7 @@
 .settings-avatar.settings-avatar-placeholder {
     font-size: 30px;
     font-weight: 600;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 .settings-avatar-actions {
@@ -1262,17 +1262,17 @@
 
 .settings-userid-inline {
     font-size: 12px;
-    color: #999999;
+    color: var(--color-text-secondary);
     margin-bottom: 14px;
 }
 
 .settings-field {
     padding: 8px 12px;
-    background: #fafafa;
-    border: 1px solid #f0f0f0;
+    background: var(--color-bg-sunken);
+    border: 1px solid var(--color-border);
     border-radius: 7px;
     font-size: 13px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
 }
 
 .settings-profile-actions {
@@ -1291,7 +1291,7 @@
 }
 
 .settings-pref-card {
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
     padding: 16px;
 }
@@ -1319,7 +1319,7 @@
 
 .settings-modal-shell .papi-key-list-main .mono {
     font-size: 11px;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 /* 操作按钮行已统一为 .setting-action-row(见上方 GDDP 按钮区),papi-action-row 历史写法已移除 */
@@ -1330,15 +1330,15 @@
     gap: 10px;
     margin-top: 8px;
     padding: 14px;
-    border: 1px solid #e0e0e0;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: #fafafa;
+    background: var(--color-bg-sunken);
 }
 
 .settings-modal-shell .papi-key-plain code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 13px;
-    color: #111111;
+    color: var(--color-text-primary);
     word-break: break-all;
     user-select: all;
 }
@@ -1363,10 +1363,10 @@
     height: auto;
     min-height: 140px;
     min-width: 0;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 16px;
     padding: 14px 14px 12px;
-    background: #ffffff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
     display: flex;
     flex-direction: column;
@@ -1384,12 +1384,12 @@
     width: 46px;
     height: 46px;
     border-radius: 10px;
-    background: #fafafa;
-    border: 1px solid #eeeeee;
+    background: var(--color-bg-sunken);
+    border: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .settings-skill-main {
@@ -1405,7 +1405,7 @@
 
 .settings-modal-shell .settings-skill-title {
     font-size: 14px;
-    color: #111111;
+    color: var(--color-text-primary);
     font-weight: 700;
     line-height: 1.3;
     margin-bottom: 3px;
@@ -1417,7 +1417,7 @@
 }
 
 .settings-modal-shell .settings-skill-preview {
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     font-size: 12px;
     line-height: 1.45;
     display: -webkit-box;
@@ -1442,7 +1442,7 @@
 
 .settings-modal-shell .settings-skill-mode-label {
     font-size: 10px;
-    color: #999999;
+    color: var(--color-text-secondary);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -1450,7 +1450,7 @@
 
 .settings-modal-shell .settings-skill-divider {
     height: 1px;
-    background: #f0f0f0;
+    background: var(--color-bg-hover);
     margin: 10px 0;
 }
 
@@ -1468,8 +1468,8 @@
     flex: 0 1 auto;
     min-width: 0;
     border-radius: 999px;
-    background: #f5f5f5;
-    color: #3c3c3c;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
     font-size: 11.5px;
     font-weight: 600;
     line-height: 1;
@@ -1490,7 +1490,7 @@
     padding: 30px 16px;
     text-align: center;
     font-size: 13px;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 /* Skill 市场 */
@@ -1508,19 +1508,19 @@
     gap: 8px;
     height: 36px;
     padding: 0 12px;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     transition: border-color 0.15s ease;
 }
 
 .settings-modal-shell .skill-market-search:focus-within {
-    border-color: #111111;
+    border-color: var(--color-text-primary);
 }
 
 .settings-modal-shell .skill-market-search svg {
     flex: none;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .skill-market-search input {
@@ -1529,7 +1529,7 @@
     outline: none;
     background: transparent;
     font-size: 13px;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .settings-modal-shell .skill-market-list {
@@ -1546,15 +1546,15 @@
     flex-direction: column;
     gap: 12px;
     padding: 14px 16px;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     cursor: pointer;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .settings-modal-shell .skill-market-card:hover {
-    border-color: #c9c9c9;
+    border-color: var(--color-border);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
@@ -1568,7 +1568,7 @@
 .settings-modal-shell .skill-market-card-title {
     font-size: 13.5px;
     font-weight: 650;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .settings-modal-shell .skill-market-card-body {
@@ -1603,7 +1603,7 @@
 .settings-modal-shell .skill-market-card-desc {
     margin-top: 3px;
     font-size: 12.5px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1619,8 +1619,8 @@
 .settings-modal-shell .skill-market-tag {
     padding: 1px 8px;
     border-radius: 999px;
-    background: #f2f2f2;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
     font-size: 11px;
     font-weight: 550;
 }
@@ -1631,7 +1631,7 @@
     gap: 10px;
     margin-top: 7px;
     font-size: 11.5px;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .skill-market-card-actions {
@@ -1643,10 +1643,10 @@
 .settings-modal-shell .btn-skill-install {
     height: 30px;
     padding: 0 14px;
-    border: 1px solid #111111;
+    border: 1px solid var(--color-border-strong);
     border-radius: 7px;
-    background: #ffffff;
-    color: #111111;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
@@ -1654,16 +1654,16 @@
 }
 
 .settings-modal-shell .btn-skill-install:hover {
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
 }
 
 .settings-modal-shell .btn-skill-installed {
     height: 30px;
     padding: 0 14px;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
     background: #f7f7f7;
-    color: #999999;
+    color: var(--color-text-secondary);
     font-size: 12.5px;
     cursor: default;
 }
@@ -1671,10 +1671,10 @@
 .settings-modal-shell .btn-skill-detail {
     height: 30px;
     padding: 0 14px;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #fff;
-    color: #3c3c3c;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
     font-size: 12.5px;
     font-weight: 550;
     cursor: pointer;
@@ -1682,8 +1682,8 @@
 }
 
 .settings-modal-shell .btn-skill-detail:hover {
-    border-color: #111111;
-    color: #111111;
+    border-color: var(--color-text-primary);
+    color: var(--color-text-primary);
 }
 
 /* ==================== 邮箱 ==================== */
@@ -1700,8 +1700,8 @@
     gap: 4px;
     padding: 4px 10px;
     border-radius: 999px;
-    background: #f2f2f2;
-    color: #3c3c3c;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
     font-size: 11.5px;
     font-weight: 550;
 }
@@ -1724,15 +1724,15 @@
     margin: 0;
     font-size: 13px;
     font-weight: 650;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .settings-modal-shell .admin-map-error {
     padding: 10px 12px;
-    border: 1px solid #f0c4c4;
+    border: 1px solid var(--color-danger-border);
     border-radius: 7px;
-    background: #fff7f7;
-    color: #b03a2e;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
     font-size: 12.5px;
 }
 
@@ -1748,8 +1748,8 @@
 }
 
 .settings-modal-shell .model-status-pill.ok {
-    background: #e8f5e9;
-    color: #2e7d32;
+    background: var(--color-success-surface);
+    color: var(--color-success-text);
 }
 
 .settings-modal-shell .model-status-pill.warn {
@@ -1758,8 +1758,8 @@
 }
 
 .settings-modal-shell .model-status-pill.muted {
-    background: #f2f2f2;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
 }
 
 /* 邮箱用户绑定对(对齐原版 admin-bind-pair / -card / -arrow) */
@@ -1780,14 +1780,14 @@
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     min-width: 0;
 }
 
 .settings-modal-shell .admin-bind-arrow {
-    color: #999999;
+    color: var(--color-text-secondary);
     font-size: 16px;
     user-select: none;
 }
@@ -1822,7 +1822,7 @@
     min-width: 0;
     min-height: 360px;
     overflow: hidden;
-    border: 1px solid #e2e2e2;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
     background: #9ca3af;
 }
@@ -1842,13 +1842,13 @@
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    border: 1px solid #e2e2e2;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fafafa;
+    background: var(--color-bg-sunken);
 }
 
 .avatar-crop-controls label {
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
@@ -1860,9 +1860,9 @@
 }
 
 .avatar-crop-preview-wrap {
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fafafa;
+    background: var(--color-bg-sunken);
     padding: 12px;
     display: flex;
     flex-direction: column;
@@ -1872,7 +1872,7 @@
 
 .avatar-crop-preview-title {
     font-size: 12px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     font-weight: 600;
 }
 
@@ -1880,13 +1880,13 @@
     width: 140px;
     height: 140px;
     border-radius: 999px;
-    border: 1px solid #dbeafe;
-    background: #ffffff;
+    border: 1px solid var(--color-accent-border);
+    background: var(--color-bg-elevated);
 }
 
 .avatar-crop-tip {
     font-size: 11px;
-    color: #7a7a7a;
+    color: var(--color-text-secondary);
     line-height: 1.5;
     text-align: center;
 }
@@ -1896,7 +1896,7 @@
 .settings-modal-shell .admin-chroma-collections {
     display: flex;
     flex-direction: column;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
     overflow: hidden;
 }
@@ -1907,7 +1907,7 @@
     justify-content: space-between;
     gap: 10px;
     padding: 11px 14px;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .settings-modal-shell .admin-chroma-collection:last-child {
@@ -1917,7 +1917,7 @@
 .settings-modal-shell .admin-chroma-collection-name {
     font-size: 13px;
     font-weight: 550;
-    color: #222222;
+    color: var(--color-text-primary);
 }
 
 /* ==================== 通用下拉(SettingSelect) ==================== */
@@ -1935,23 +1935,23 @@
     width: 100%;
     height: 34px;
     padding: 0 12px;
-    border: 1px solid #dddddd;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     font-size: 13px;
-    color: #111111;
+    color: var(--color-text-primary);
     cursor: pointer;
     transition: border-color 0.15s ease;
 }
 
 .setting-select-trigger:hover,
 .setting-select-trigger.open {
-    border-color: #111111;
+    border-color: var(--color-text-primary);
 }
 
 .setting-select-trigger i {
     font-size: 11px;
-    color: #999999;
+    color: var(--color-text-secondary);
     transition: transform 0.15s ease;
 }
 
@@ -1968,9 +1968,9 @@
     min-width: 140px;
     max-height: 320px;
     padding: 4px;
-    border: 1px solid #e2e2e2;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
     overflow-y: auto;
 }
@@ -1983,15 +1983,15 @@
     margin: 4px 4px 6px;
     padding: 0 8px;
     height: 30px;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
-    background: #fafafa;
+    background: var(--color-bg-sunken);
 }
 
 .setting-select-search i {
     flex: none;
     font-size: 11px;
-    color: #a0a0a0;
+    color: var(--color-text-secondary);
 }
 
 .setting-select-search input {
@@ -2001,16 +2001,16 @@
     outline: none;
     background: transparent;
     font-size: 12.5px;
-    color: #111111;
+    color: var(--color-text-primary);
 }
 
 .setting-select-search input::placeholder {
-    color: #b0b0b0;
+    color: var(--color-text-secondary);
 }
 
 .setting-select-menu-state {
     padding: 12px 10px;
-    color: #999999;
+    color: var(--color-text-secondary);
     font-size: 12px;
     text-align: center;
 }
@@ -2023,15 +2023,15 @@
     border-radius: 6px;
     background: transparent;
     font-size: 12.5px;
-    color: #3c3c3c;
+    color: var(--color-text-secondary);
     text-align: left;
     cursor: pointer;
 }
 
 .setting-select-menu button:hover,
 .setting-select-menu button.active {
-    background: #f1f1f1;
-    color: #111111;
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
     font-weight: 550;
 }
 
@@ -2040,7 +2040,7 @@
     padding: 6px 10px 4px;
     font-size: 11px;
     font-weight: 650;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 .setting-select-group-title:first-child {
@@ -2066,7 +2066,7 @@
     display: block;
     font-size: 13px;
     font-weight: 550;
-    color: #222222;
+    color: var(--color-text-primary);
 }
 
 .setting-toggle-hint {
@@ -2080,7 +2080,7 @@
     flex: none;
     width: 16px;
     height: 16px;
-    accent-color: #111111;
+    accent-color: var(--color-accent-text);
     cursor: pointer;
 }
 
@@ -2089,13 +2089,13 @@
 .model-perm-list {
     max-height: 360px;
     overflow-y: auto;
-    border: 1px solid #e8e8e8;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
 }
 
 .model-perm-row {
     padding: 8px 14px;
-    border-bottom: 1px solid #f4f4f4;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .model-perm-row:last-child {
@@ -2105,13 +2105,13 @@
 .model-perm-name {
     font-size: 13px;
     font-weight: 600;
-    color: #222222;
+    color: var(--color-text-primary);
 }
 
 .model-perm-id {
     margin-left: 8px;
     font-size: 11.5px;
-    color: #999999;
+    color: var(--color-text-secondary);
 }
 
 .model-perm-badge {
@@ -2121,23 +2121,23 @@
     border-radius: 999px;
     font-size: 11px;
     font-weight: 550;
-    background: #f2f2f2;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
 }
 
 .model-perm-badge.provider-ollama {
-    background: #e8f5e9;
-    color: #2e7d32;
+    background: var(--color-success-surface);
+    color: var(--color-success-text);
 }
 
 .model-perm-badge.status-error {
-    background: #fdecea;
-    color: #b03a2e;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
 }
 
 .model-perm-badge.status-disabled {
-    background: #f2f2f2;
-    color: #7a7a7a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
 }
 
 /* ==================== 窄宽响应式规则 ==================== */

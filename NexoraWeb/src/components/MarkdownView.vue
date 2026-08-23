@@ -6,14 +6,16 @@
       - highlight.js 代码高亮
       - KaTeX 数学公式(块级 $$...$$ 与行内 $...$)
       - 输出前做基础 XSS 清洗(移除 script 与事件属性)
+
+    性能约定(重要):
+      - marked.use 必须停留在模块顶层:它修改的是全局 marked 实例,
+        在组件内调用会随实例数量无限堆叠扩展钩子,导致解析耗时与内存暴涨;
+      - 渲染走 120ms 尾随节流:流式期间高频增量不逐字重解析,
+        停止增量后由定时器补一次最终态,历史加载等一次性内容立即渲染。
 -->
 
-<template>
-    <div class="markdown-body" v-html="renderedHtml"></div>
-</template>
-
 <script setup lang="ts">
-    import { computed } from 'vue'
+    import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
     import { marked } from 'marked'
     import { markedHighlight } from 'marked-highlight'
@@ -23,24 +25,121 @@
     import 'highlight.js/styles/github.min.css'
     import 'katex/dist/katex.min.css'
 
-    const props = defineProps<{
-        content: string
-    }>()
+    /** 流式节流间隔(ms):该周期内的多次增量合并为一次解析 */
+    const RENDER_THROTTLE_MS = 120
 
-    /** 渲染配置:marked + marked-highlight 代码高亮 */
+    /**
+     * 允许自动语法高亮的语言白名单。
+     *
+     * 背景(2026-08 性能事故):知识搜索结果的 markdown 中嵌套了不配对的 ```markdown
+     * 围栏,hljs 的 markdown 语法对围栏启用 subLanguage,出现"高亮输出被再次当作
+     * 输入高亮"的反馈循环(实测 217B → 7.9MB 指数膨胀直至标签页 OOM)。
+     * 白名单同时挡掉:text/markdown 等无价值高亮、未知语言的 highlightAuto 全量扫描。
+     */
+    const HIGHLIGHT_LANG_WHITELIST = new Set([
+        'json', 'js', 'javascript', 'ts', 'typescript', 'jsx', 'tsx',
+        'py', 'python', 'bash', 'shell', 'sh', 'css', 'less', 'scss',
+        'html', 'xml', 'sql', 'java', 'c', 'cpp', 'go', 'rust', 'php', 'yaml', 'yml',
+    ])
+
+    /** 超长代码跳过高亮(解析成本失控保护) */
+    const HIGHLIGHT_MAX_CODE_LENGTH = 100_000
+
+    /** 跳过高亮时的安全转义(marked-highlight 将返回值视为已转义 HTML) */
+    function escapeCodeText(value: string): string {
+        return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    }
+
+    // 模块级注册一次(marked 全局单例,重复 use 会堆叠扩展钩子)
     marked.use(markedHighlight({
         langPrefix: 'hljs language-',
 
         highlight(code: string, lang: string): string {
-            const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+            const language = String(lang || '').trim().toLowerCase()
+
+            // 防御1:输入已含高亮标记 → 是上一轮输出被回灌,返回转义文本绝不二次高亮
+            if (code.includes('hljs-') || code.includes('<span')) {
+                return escapeCodeText(code)
+            }
+
+            // 防御2:语言不在白名单(markdown/text/plain/未知等)→ 转义纯文本展示
+            if (!HIGHLIGHT_LANG_WHITELIST.has(language)) {
+                return escapeCodeText(code)
+            }
+
+            // 防御3:超长代码不做高亮
+            if (code.length > HIGHLIGHT_MAX_CODE_LENGTH) {
+                return escapeCodeText(code)
+            }
+
+            if (!hljs.getLanguage(language)) {
+                return escapeCodeText(code)
+            }
 
             try {
-                return hljs.highlight(code, { language }).value
+                return hljs.highlight(code, { language, ignoreIllegals: true }).value
             } catch {
-                return hljs.highlightAuto(code).value
+                return escapeCodeText(code)
             }
         },
     }))
+
+    const props = defineProps<{
+        content: string
+    }>()
+
+    /** 实际参与渲染的内容(节流缓冲区) */
+    const displayContent = ref(props.content || '')
+
+    let throttleTimer: number | null = null
+    let lastRenderAt = 0
+
+    function flushNow(): void {
+        if (throttleTimer !== null) {
+            window.clearTimeout(throttleTimer)
+
+            throttleTimer = null
+        }
+
+        lastRenderAt = Date.now()
+        displayContent.value = props.content || ''
+    }
+
+    watch(() => props.content, () => {
+        if (!props.content) {
+            flushNow()
+
+            return
+        }
+
+        const elapsed = Date.now() - lastRenderAt
+
+        if (throttleTimer !== null) {
+            window.clearTimeout(throttleTimer)
+
+            throttleTimer = null
+        }
+
+        if (elapsed >= RENDER_THROTTLE_MS) {
+            flushNow()
+
+            return
+        }
+
+        throttleTimer = window.setTimeout(() => {
+            throttleTimer = null
+            lastRenderAt = Date.now()
+            displayContent.value = props.content || ''
+        }, RENDER_THROTTLE_MS - elapsed)
+    })
+
+    onBeforeUnmount(() => {
+        if (throttleTimer !== null) {
+            window.clearTimeout(throttleTimer)
+
+            throttleTimer = null
+        }
+    })
 
     /** 块级公式 $$...$$ 渲染为 HTML */
     function renderBlockMath(source: string): string {
@@ -84,13 +183,17 @@
     }
 
     const renderedHtml = computed(() => {
-        const withMath = renderInlineMath(renderBlockMath(props.content || ''))
+        const withMath = renderInlineMath(renderBlockMath(displayContent.value))
 
         const raw = marked.parse(withMath, { gfm: true, breaks: true }) as string
 
         return sanitizeHtml(raw)
     })
 </script>
+
+<template>
+    <div class="markdown-body" v-html="renderedHtml"></div>
+</template>
 
 <style scoped>
     .markdown-body {
@@ -104,7 +207,8 @@
     }
 
     .markdown-body :deep(pre) {
-        background: #f6f8fa;
+        background: var(--color-bg-sunken);
+        border: 1px solid var(--color-border);
         border-radius: 6px;
         padding: 12px;
         overflow-x: auto;
@@ -116,7 +220,7 @@
     }
 
     .markdown-body :deep(:not(pre) > code) {
-        background: rgba(175, 184, 193, 0.2);
+        background: var(--color-bg-hover);
         border-radius: 4px;
         padding: 0.1em 0.4em;
     }
@@ -128,15 +232,31 @@
 
     .markdown-body :deep(th),
     .markdown-body :deep(td) {
-        border: 1px solid #d0d7de;
+        border: 1px solid var(--color-border);
         padding: 4px 10px;
     }
 
+    /* 表头底色与正文区分,暗色下不再呈"黑底白字"的裸表格观感 */
+    .markdown-body :deep(th) {
+        background: var(--color-bg-sunken);
+        color: var(--color-text-primary);
+        font-weight: 600;
+    }
+
+    /*
+     * markdown 分隔符(---):浏览器默认 hr 继承文字色,
+     * 暗色下会渲染成白色横线,显式收敛到边框令牌。
+     */
+    .markdown-body :deep(hr) {
+        border: none;
+        border-top: 1px solid var(--color-border);
+    }
+
     .markdown-body :deep(blockquote) {
-        border-left: 3px solid #d0d7de;
+        border-left: 3px solid var(--color-border-strong);
         margin: 0.5em 0;
         padding-left: 12px;
-        color: #57606a;
+        color: var(--color-text-secondary);
     }
 
     .markdown-body :deep(img) {

@@ -125,7 +125,7 @@
         --bg-left: #000000;
         --bg-right: #ffffff;
         --text-main: #1a1a1a;
-        --border: #eeeeee;
+        --border: var(--color-border);
     }
 
     .login-wrapper {
@@ -133,7 +133,7 @@
         height: 100vh;
         width: 100%;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .login-left {
@@ -175,7 +175,7 @@
     }
 
     .big-logo .dot {
-        color: #444;
+        color: var(--color-text-secondary);
         margin-left: 4px;
     }
 
@@ -185,7 +185,7 @@
         align-items: center;
         justify-content: center;
         padding: 40px;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .login-box {
@@ -200,7 +200,7 @@
     .login-header h2 {
         font-size: 28px;
         font-weight: 600;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
         margin: 0 0 8px;
     }
 
@@ -249,7 +249,7 @@
     .form-group label {
         display: block;
         margin-bottom: 10px;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
         font-weight: 500;
         font-size: 13px;
         text-transform: uppercase;
@@ -262,14 +262,14 @@
         border: 1px solid #eee;
         border-radius: 4px;
         font-size: 15px;
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         transition: all 0.2s ease;
     }
 
     .form-group input:focus {
         outline: none;
-        border-color: #000;
-        background: #fff;
+        border-color: var(--color-text-primary);
+        background: var(--color-bg-elevated);
         box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.03);
     }
 

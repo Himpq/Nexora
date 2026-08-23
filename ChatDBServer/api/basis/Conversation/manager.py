@@ -1156,9 +1156,27 @@ class ConversationManager:
                 
                 # 更新元数据（保留 versions 列表）
                 msg["metadata"] = target.get("metadata", {})
-                msg["metadata"]["versions"] = self._sanitize_assistant_versions([
-                    v for i, v in enumerate(all_variants) if i != version_index
-                ])
+
+                # 切换时保留全部其余变体(含正文为空的中途终止版本):
+                # 用户刚以"N/M 版本"看过它们,按可见性丢弃会导致 M 缩水、无法切回;
+                # 仅做结构清洗(非 dict 剔除/正文净化/剥离嵌套 versions 防无限嵌套)
+                kept_versions = []
+
+                for i, variant in enumerate(all_variants):
+                    if i == version_index or not isinstance(variant, dict):
+                        continue
+
+                    cleaned_variant = dict(variant)
+
+                    cleaned_variant["content"] = sanitize_assistant_visible_content(cleaned_variant.get("content", ""))
+                    cleaned_variant["metadata"] = {
+                        k: v for k, v in (cleaned_variant.get("metadata") or {}).items()
+                        if k != "versions"
+                    }
+
+                    kept_versions.append(cleaned_variant)
+
+                msg["metadata"]["versions"] = kept_versions
                 model_name = str(msg.get("metadata", {}).get("model_name", "") or "").strip()
                 if model_name:
                     msg["model_name"] = model_name

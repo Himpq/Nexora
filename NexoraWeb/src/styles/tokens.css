@@ -85,9 +85,9 @@
     width: 100%;
     height: 30px;
     border-radius: 8px;
-    border: 1px solid #dbe4f1;
-    background: #fff;
-    color: #0f172a;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 12px;
     padding: 0 9px;
     display: flex;
@@ -98,7 +98,7 @@
 }
 
 .notes-notebook-select:hover {
-    border-color: #cbd5e1;
+    border-color: var(--color-border);
 }
 
 .notes-notebook-menu {
@@ -108,9 +108,9 @@
     right: 0;
     z-index: var(--z-dropdown);
     display: none;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
     padding: 4px;
     max-height: 220px;
@@ -128,19 +128,19 @@
     border: none;
     border-radius: 7px;
     background: transparent;
-    color: #334155;
+    color: var(--color-text-secondary);
     font-size: 12px;
     text-align: left;
     cursor: pointer;
 }
 
 .notes-notebook-menu button:hover {
-    background: #f1f5f9;
+    background: var(--color-bg-hover);
 }
 
 .notes-notebook-menu button.active {
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--color-accent-surface);
+    color: var(--color-accent-text);
     font-weight: 600;
 }
 

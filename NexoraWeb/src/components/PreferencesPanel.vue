@@ -12,7 +12,7 @@
     <div class="settings-preferences-grid">
         <SettingCard title="外观与行为">
             <SettingRow label="主题">
-                <SettingSelect v-model="form.theme" :options="themeOptions" width="150px" popover-key="preferences-theme" />
+                <SettingSelect v-model="themeModel" :options="themeOptions" width="150px" popover-key="preferences-theme" />
             </SettingRow>
             <SettingRow label="语言">
                 <SettingSelect v-model="form.language" :options="languageOptions" width="150px" popover-key="preferences-language" />
@@ -105,6 +105,8 @@
 
     import { useModelStore } from '@/stores/model'
 
+    import { isThemePreference, setTheme, theme, type ThemePreference } from '@/ui/theme'
+
     import SettingCard from '@/ui/settings/SettingCard.vue'
     import SettingModelSelect from '@/ui/settings/SettingModelSelect.vue'
     import SettingRow from '@/ui/settings/SettingRow.vue'
@@ -145,6 +147,22 @@
     })
 
     const modelStore = useModelStore()
+
+    /*
+     * 主题下拉的读写模型:
+     *   - get 读表单值(服务器回填只改 form.theme,不经过 setter,绝不反向改变当前主题);
+     *   - set 仅在用户操作下拉时触发:立即应用主题(保存前可预览),持久化仍由 handleSave 落库。
+     * 此前用 watch(form.theme) 存在竞态:watch 默认异步 flush,
+     * load() 的 finally 同步清掉 loading 后回调才执行,守卫失效导致
+     * 打开面板被服务器旧值"莫名其妙切回暗色"。computed setter 无此问题。
+     */
+    const themeModel = computed<ThemePreference>({
+        get: () => (isThemePreference(form.theme) ? form.theme : 'system'),
+        set: (value) => {
+            form.theme = value
+            setTheme(value)
+        },
+    })
 
     /**
      * 设置内模型选择统一到对话模型(modelStore 单一来源):
@@ -208,9 +226,12 @@
 
     /** 填充表单(仅覆盖存在的键) */
     function applyPreferences(preferences: UserPreferences): void {
-        if (typeof preferences.theme === 'string' && preferences.theme) {
-            form.theme = preferences.theme
-        }
+        /*
+         * 主题表单始终显示当前实际偏好(theme.preference),不回填服务器旧值:
+         * 否则面板下拉与界面实际明暗不一致,保存时还会把旧值写回服务器。
+         * 用户改下拉经 themeModel setter 立即生效,点"保存偏好"才落服务器。
+         */
+        form.theme = theme.preference
 
         if (typeof preferences.streaming === 'boolean') {
             form.streaming = preferences.streaming
@@ -275,7 +296,7 @@
         font-family: inherit;
         font-size: 12.5px;
         line-height: 1.6;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         margin-bottom: 12px;
     }
 
@@ -295,7 +316,7 @@
 
     .settings-memory-model-label {
         font-size: 12px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
     }
 
     .settings-memory-actions {

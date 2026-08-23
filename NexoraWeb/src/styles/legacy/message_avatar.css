@@ -1,0 +1,28 @@
+.message.user .message-user-avatar-slot {
+    display: none;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
+    margin-left: 8px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.message.user.show-user-avatar .message-user-avatar-slot,
+.message.user[data-show-user-avatar="1"] .message-user-avatar-slot {
+    display: flex;
+}
+
+.message.user .message-user-avatar-slot img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}

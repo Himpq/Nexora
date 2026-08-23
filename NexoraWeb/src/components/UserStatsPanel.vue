@@ -41,6 +41,7 @@
 <script setup lang="ts">
     import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
     import * as echarts from 'echarts'
+    import { chartPalette, echartsTheme, theme } from '@/ui/theme'
 
     import { apiFetch } from '@/api/client'
     import { showError } from '@/stores/notify'
@@ -88,7 +89,13 @@
         .map(([model, count]) => ({ model, count: Number(count || 0) }))
         .sort((a, b) => b.count - a.count))
 
-    onMounted(() => {
+    /*
+ * 主题切换时重建图表(echarts canvas 不继承 CSS 令牌)。
+ */
+watch(() => theme.resolved, () => {
+    void load()
+})
+onMounted(() => {
         void load()
     })
 
@@ -131,13 +138,14 @@
         })
 
         chart?.dispose()
-        chart = echarts.init(chartRef.value)
+        chart = echarts.init(chartRef.value, echartsTheme())
         chart.setOption({
-            grid: { left: 12, right: 12, top: 20, bottom: 8, containLabel: true },
+            
+                    backgroundColor: 'transparent',grid: { left: 12, right: 12, top: 20, bottom: 8, containLabel: true },
             tooltip: { trigger: 'axis', confine: true },
-            xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 10, color: '#999' } },
-            yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#999' }, splitLine: { lineStyle: { color: '#f0f0f0' } } },
-            series: [{ name: 'Token', type: 'line', smooth: true, showSymbol: false, data: values, lineStyle: { width: 2, color: '#111' }, itemStyle: { color: '#111' } }],
+            xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
+            yAxis: { type: 'value', axisLabel: { fontSize: 10, color: chartPalette.value.muted }, splitLine: { lineStyle: { color: chartPalette.value.lineSplit } } },
+            series: [{ name: 'Token', type: 'line', smooth: true, showSymbol: false, data: values, lineStyle: { width: 2, color: chartPalette.value.text }, itemStyle: { color: chartPalette.value.text } }],
         })
     }
 
@@ -164,7 +172,7 @@
     }
 
     .user-stats-total {
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 

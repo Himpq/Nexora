@@ -1,0 +1,28 @@
+/**
+ * legacy.css — Nexora 原版设计资产聚合入口
+ *
+ * 职责:
+ *   - 按 /new 入口页的历史加载顺序聚合原版 CSS,保证收编进 Vue 工程后层叠优先级不变
+ *   - 本目录是"视觉冻结"资产:除变量桥接(见 style.css 头部桥接区)外不做任何视觉改写;
+ *     黑夜模式的颜色切换统一走 tokens-color.css 的语义令牌层
+ *
+ * 注意:
+ *   - @import 必须保持在文件最顶部(CSS 规范要求),新增区域文件请按原 index.html 顺序追加
+ *   - 第三方 vendor 资产(fonts / katex / fontawesome / highlightjs)仍由入口页 <link> 加载,
+ *     不属于本聚合范围;其中代码高亮主题因需随明暗模式切换,由 theme store 单独管理
+ */
+
+@import './legacy/style.css';
+@import './legacy/chat_files.css';
+@import './legacy/workspace_projects.css';
+@import './legacy/chat_papi_keys.css';
+@import './legacy/chat_settings_dialog.css';
+@import './legacy/chat_settings_management.css';
+@import './legacy/chat_memory_settings.css';
+@import './legacy/chat_skill_market.css';
+@import './legacy/chat_token_details.css';
+@import './legacy/global_search.css';
+@import './legacy/knowledge_collab.css';
+@import './legacy/sidebar_brand_navigation.css';
+@import './legacy/message_avatar.css';
+@import './legacy/easymde_override.css';

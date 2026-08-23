@@ -852,23 +852,23 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid #dddddd;
+        border: 1px solid var(--color-border);
         border-radius: 7px;
-        background: #fff;
-        color: #3c3c3c;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         cursor: pointer;
         transition: border-color 0.15s ease, color 0.15s ease;
     }
 
     .btn-skill-small:hover {
-        border-color: #111111;
-        color: #111111;
+        border-color: var(--color-text-primary);
+        color: var(--color-text-primary);
     }
 
     .btn-skill-small.danger:hover {
         border-color: #e0a0a0;
-        color: #c0392b;
+        color: var(--color-danger-text);
     }
 
     /* 详情弹窗 */
@@ -883,18 +883,18 @@
         flex-wrap: wrap;
         gap: 12px;
         font-size: 12px;
-        color: #64748b;
+        color: var(--color-text-secondary);
     }
 
     .skill-detail-content {
         max-height: 380px;
         overflow-y: auto;
         padding: 12px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
         font-size: 13px;
-        color: #0f172a;
+        color: var(--color-text-primary);
         white-space: pre-wrap;
         word-break: break-word;
     }
@@ -914,12 +914,12 @@
         gap: 12px;
         margin-top: 14px;
         padding-top: 12px;
-        border-top: 1px solid #eeeeee;
+        border-top: 1px solid var(--color-border);
     }
 
     .skill-market-page-info {
         font-size: 12px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-variant-numeric: tabular-nums;
     }
 </style>

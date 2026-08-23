@@ -79,10 +79,10 @@
 
 .knowledge-collab-offline-tip {
     padding: 8px 16px;
-    border: 1px solid #fecaca;
+    border: 1px solid var(--color-danger-border);
     border-radius: 999px;
-    background: #fff1f2;
-    color: #991b1b;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
     font-size: 13px;
     font-weight: 700;
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);

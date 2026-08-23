@@ -29,3 +29,6 @@ export {
     openPopover,
     overlay,
 } from './overlay'
+
+export { initTheme, isThemePreference, setTheme, theme } from './theme'
+export type { ResolvedTheme, ThemePreference } from './theme'

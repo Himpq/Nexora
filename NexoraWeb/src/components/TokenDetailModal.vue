@@ -1,4 +1,4 @@
-﻿<!--
+<!--
     TokenDetailModal.vue — Token 使用详情弹窗(GDDP)
 
     设计:
@@ -175,6 +175,7 @@
     import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
     import * as echarts from 'echarts'
+    import { chartPalette, echartsTheme, theme } from '@/ui/theme'
 
     import type { TokenDetail, TokenLog, TokenStats } from '@/api/tokens'
     import { fetchTokenDetail, fetchTokenStats } from '@/api/tokens'
@@ -223,6 +224,18 @@
                 void loadStats()
             } else {
                 disposeChart()
+            }
+        },
+    )
+
+    /*
+     * 主题切换时重建图表(echarts canvas 不继承 CSS 令牌);仅面板打开时需要。
+     */
+    watch(
+        () => theme.resolved,
+        () => {
+            if (props.open) {
+                void loadStats()
             }
         },
     )
@@ -352,22 +365,23 @@
         }
 
         if (!chartInstance) {
-            chartInstance = echarts.init(chartRef.value)
+            chartInstance = echarts.init(chartRef.value, echartsTheme())
             window.addEventListener('resize', handleResize)
         } else {
             chartInstance.resize()
         }
 
         chartInstance.setOption({
-            grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
+            
+                    backgroundColor: 'transparent',grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
             tooltip: { trigger: 'axis', confine: true },
-            legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: '#7a7a7a' } },
-            xAxis: { type: 'category', data: labels, axisLine: { lineStyle: { color: '#e2e2e2' } }, axisLabel: { fontSize: 10, color: '#999', interval: Math.max(0, Math.floor(labels.length / 6)) } },
-            yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
+            legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: chartPalette.value.muted } },
+            xAxis: { type: 'category', data: labels, axisLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted, interval: Math.max(0, Math.floor(labels.length / 6)) } },
+            yAxis: { type: 'value', splitLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
             series: [
-                { name: '输入', type: 'line', smooth: true, showSymbol: false, data: inputData, lineStyle: { width: 2, color: '#8b95a7' }, itemStyle: { color: '#8b95a7' }, areaStyle: { color: 'rgba(139,149,167,0.08)' } },
+                { name: '输入', type: 'line', smooth: true, showSymbol: false, data: inputData, lineStyle: { width: 2, color: '#8b95a7' }, itemStyle: { color: '#8b95a7' }, areaStyle: { color: 'rgba(139, 149, 167, 0.08)' } },
                 { name: '输出', type: 'line', smooth: true, showSymbol: false, data: outputData, lineStyle: { width: 2, color: '#4f46e5' }, itemStyle: { color: '#4f46e5' }, areaStyle: { color: 'rgba(79,70,229,0.08)' } },
-                { name: '总计', type: 'line', smooth: true, showSymbol: false, data: totalData, lineStyle: { width: 2, color: '#111111' }, itemStyle: { color: '#111111' } },
+                { name: '总计', type: 'line', smooth: true, showSymbol: false, data: totalData, lineStyle: { width: 2, color: chartPalette.value.text }, itemStyle: { color: chartPalette.value.text } },
             ],
         })
 
@@ -436,7 +450,7 @@
 
     .token-detail-head-title h3 {
         margin: 0;
-        color: #111111;
+        color: var(--color-text-primary);
         font-size: 16px;
         font-weight: 600;
         letter-spacing: 0;
@@ -446,7 +460,7 @@
     .token-detail-head-hint {
         display: block;
         margin-top: 2px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 400;
     }
@@ -466,13 +480,13 @@
         gap: 12px;
         min-height: 220px;
         padding: 28px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-size: 13px;
         text-align: center;
     }
 
     .token-detail-state.is-error {
-        color: #b91c1c;
+        color: var(--color-danger-text);
     }
 
     /* 统计栅格:复用 settings.css .stat-card 视觉(白底/浅灰边/无彩色左条) */
@@ -488,19 +502,19 @@
         flex-direction: column;
         gap: 6px;
         padding: 16px;
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .token-detail-card-label {
-        color: #8a8a8a;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 550;
     }
 
     .token-detail-card-value {
-        color: #111111;
+        color: var(--color-text-primary);
         font-family: var(--nc-font-mono);
         font-size: 22px;
         font-weight: 700;
@@ -509,7 +523,7 @@
     }
 
     .token-detail-card-sub {
-        color: #999999;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono);
         font-size: 11.5px;
         font-variant-numeric: tabular-nums;
@@ -517,10 +531,10 @@
 
     /* 明细表:对齐 AdminStatsPanel admin-user-token-recent-table */
     .token-detail-logs {
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         overflow: hidden;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .token-detail-logs-head {
@@ -529,33 +543,33 @@
         justify-content: space-between;
         gap: 12px;
         padding: 14px 16px;
-        border-bottom: 1px solid #e8e8e8;
-        background: #fafafa;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-sunken);
     }
 
     .token-detail-logs-head h4 {
         margin: 0;
-        color: #111111;
+        color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 650;
     }
 
     .token-detail-logs-hint {
-        color: #999999;
+        color: var(--color-text-secondary);
         font-size: 11.5px;
     }
 
     .token-detail-empty {
         padding: 28px 16px;
-        color: #a0a0a0;
+        color: var(--color-text-secondary);
         font-size: 13px;
         text-align: center;
     }
 
     .token-detail-chart-card {
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         padding: 16px;
         margin-bottom: 14px;
     }
@@ -572,12 +586,12 @@
         margin: 0;
         font-size: 13px;
         font-weight: 650;
-        color: #111111;
+        color: var(--color-text-primary);
     }
 
     .token-detail-chart-meta {
         font-size: 11.5px;
-        color: #999999;
+        color: var(--color-text-secondary);
         white-space: nowrap;
     }
 
@@ -614,9 +628,9 @@
         top: 0;
         z-index: 1;
         padding: 8px 12px;
-        background: #fafafa;
-        border-bottom: 1px solid #eeeeee;
-        color: #7a7a7a;
+        background: var(--color-bg-sunken);
+        border-bottom: 1px solid var(--color-border);
+        color: var(--color-text-secondary);
         font-size: 11.5px;
         font-weight: 600;
         text-align: left;
@@ -629,7 +643,7 @@
 
     .token-detail-table tbody td {
         padding: 8px 12px;
-        border-bottom: 1px solid #f4f4f4;
+        border-bottom: 1px solid var(--color-border);
         vertical-align: middle;
     }
 
@@ -644,7 +658,7 @@
 
     .token-detail-row:hover,
     .token-detail-row:focus-visible {
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         outline: none;
     }
 
@@ -658,13 +672,13 @@
     }
 
     .token-log-time-date {
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         font-size: 12px;
         white-space: nowrap;
     }
 
     .token-log-time-clock {
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono);
         font-size: 11px;
         font-weight: 500;
@@ -672,14 +686,14 @@
     }
 
     .token-log-split {
-        color: #a0a0a0;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono);
         font-size: 11px;
         font-variant-numeric: tabular-nums;
     }
 
     .token-log-total {
-        color: #111111;
+        color: var(--color-text-primary);
         font-family: var(--nc-font-mono);
         font-size: 12.5px;
         font-weight: 700;
@@ -692,7 +706,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #222222;
+        color: var(--color-text-primary);
         font-size: 12.5px;
     }
 
@@ -703,10 +717,10 @@
         justify-content: center;
         min-width: 52px;
         padding: 3px 10px;
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 999px;
-        background: #fafafa;
-        color: #3c3c3c;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 11px;
         font-weight: 600;
         line-height: 1;
@@ -716,9 +730,9 @@
     .token-detail-badge--tool,
     .token-detail-badge--search,
     .token-detail-badge--memory {
-        background: #fafafa;
-        color: #3c3c3c;
-        border-color: #e8e8e8;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
+        border-color: var(--color-border);
     }
 
     /* 详情下钻 */
@@ -728,7 +742,7 @@
         justify-content: space-between;
         gap: 12px;
         padding-bottom: 12px;
-        border-bottom: 1px solid #e8e8e8;
+        border-bottom: 1px solid var(--color-border);
         margin-bottom: 14px;
     }
 
@@ -737,14 +751,14 @@
         flex-wrap: wrap;
         align-items: center;
         gap: 6px 10px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         font-size: 12px;
         justify-content: flex-end;
         min-width: 0;
     }
 
     .token-detail-drill-tokens {
-        color: #111111;
+        color: var(--color-text-primary);
         font-family: var(--nc-font-mono);
         font-weight: 600;
         font-variant-numeric: tabular-nums;
@@ -762,12 +776,12 @@
 
     .token-detail-section + .token-detail-section {
         padding-top: 22px;
-        border-top: 1px solid #f1f5f9;
+        border-top: 1px solid var(--color-border);
     }
 
     .token-detail-section h4 {
         margin: 0 0 10px;
-        color: #111111;
+        color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 650;
     }

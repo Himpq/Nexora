@@ -453,7 +453,7 @@
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     /* ---------- 在线协作成员条 ---------- */
@@ -466,9 +466,9 @@
         flex-shrink: 0;
         min-height: 28px;
         padding: 6px 10px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #fff;
-        color: #475569;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -495,8 +495,8 @@
     .knowledge-collab-status {
         padding: 3px 8px;
         border-radius: 999px;
-        background: #f1f5f9;
-        color: #475569;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
     }
 
     .knowledge-collab-status.is-ok {
@@ -510,7 +510,7 @@
     }
 
     .knowledge-collab-status.is-error {
-        background: #fff1f2;
+        background: var(--color-danger-surface);
         color: #be123c;
     }
 
@@ -520,10 +520,10 @@
         gap: 6px;
         max-width: 220px;
         padding: 5px 8px;
-        border: 1px solid #dbe2ea;
+        border: 1px solid var(--color-border);
         border-radius: 999px;
-        background: #ffffff;
-        color: #334155;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         line-height: 1;
         white-space: nowrap;
     }
@@ -541,13 +541,13 @@
     }
 
     .knowledge-collab-cursor {
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-variant-numeric: tabular-nums;
     }
 
     .knowledge-collab-member.is-self {
-        border-color: #93c5fd;
-        background: #eff6ff;
-        color: #1d4ed8;
+        border-color: var(--color-accent-border);
+        background: var(--color-accent-surface);
+        color: var(--color-accent-text);
     }
 </style>

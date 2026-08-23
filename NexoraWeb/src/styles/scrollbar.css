@@ -1,0 +1,41 @@
+/**
+ * scrollbar.css — 全局自建滚动条
+ *
+ * 职责:
+ *   - 提供全站统一的细滚动条视觉(替代浏览器默认灰色),颜色走令牌随主题切换
+ *   - legacy style.css 已有的分区定制(sidebar 深色等)特异性更高,不受本规则影响;
+ *     本规则只兜住"没有任何定制"的区域
+ *
+ * 注意:
+ *   - Firefox 走 scrollbar-width/scrollbar-color 标准属性
+ *   - thumb 悬停加深;track 透明以贴合各区域底色
+ */
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}

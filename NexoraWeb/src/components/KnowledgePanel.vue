@@ -319,7 +319,7 @@
 
     .knowledge-panel-heading h3 {
         margin: 0 0 10px;
-        color: #18181b;
+        color: var(--color-text-primary);
         font-size: 14px;
         font-weight: 600;
     }
@@ -331,7 +331,7 @@
     }
 
     .k-search > i {
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 12px;
         flex: none;
     }
@@ -341,17 +341,17 @@
         min-width: 0;
         height: var(--gddp-control-height-compact);
         padding: 0 8px;
-        border: 1px solid #dbe2ea;
+        border: 1px solid var(--color-border);
         border-radius: var(--gddp-border-radius);
         outline: none;
-        color: #111827;
+        color: var(--color-text-primary);
         font-size: 12px;
         box-sizing: border-box;
         transition: border-color 0.15s ease;
     }
 
     .k-search input:focus {
-        border-color: #111827;
+        border-color: var(--color-text-primary);
     }
 
     .k-actions {
@@ -363,8 +363,8 @@
 
     .k-actions :deep(.gddp-button:hover),
     .k-section-actions :deep(.gddp-button:hover) {
-        background: #f4f4f5;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .k-section-title {
@@ -382,8 +382,8 @@
     .k-count {
         padding: 1px 7px;
         border-radius: 999px;
-        background: #ececee;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
         font-size: 11px;
         font-weight: 600;
     }
@@ -396,12 +396,12 @@
 
     .k-list {
         font-size: 13px;
-        color: #444;
+        color: var(--color-text-secondary);
     }
 
     .k-list-empty {
         padding: 20px 0;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
         text-align: center;
     }
@@ -413,9 +413,9 @@
         width: 100%;
         padding: 9px 8px;
         border: 0;
-        border-bottom: 1px solid #f1f5f9;
+        border-bottom: 1px solid var(--color-border);
         background: transparent;
-        color: #475569;
+        color: var(--color-text-secondary);
         text-align: left;
         font-size: 13px;
         cursor: pointer;
@@ -424,18 +424,18 @@
 
     .knowledge-item > .fa-book {
         flex: none;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
     .knowledge-item:hover {
-        background: #f4f4f5;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .knowledge-item.active {
-        background: #ececee;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
         font-weight: 600;
     }
 

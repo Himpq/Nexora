@@ -367,13 +367,13 @@
         align-items: center;
         gap: 10px;
         padding: 10px 12px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ac-controls label {
-        color: #475569;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
@@ -397,14 +397,14 @@
         align-items: center;
         gap: 10px;
         padding: 12px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ac-preview-title {
         font-size: 12px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-weight: 600;
     }
 
@@ -413,12 +413,12 @@
         height: 140px;
         border-radius: 999px;
         border: 1px solid #dbeafe;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
     }
 
     .ac-tip {
         font-size: 11px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         line-height: 1.4;
         text-align: center;
     }

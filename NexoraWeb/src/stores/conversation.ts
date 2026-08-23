@@ -22,14 +22,21 @@ import {
     type ConversationSummary,
     type ConversationTurn,
 } from '@/api/conversations'
+import { parseContextCompressionStep } from '@/stream/contextCompression'
+import type { QuestionPayload } from '@/stream/questionCard'
+import {
+    appendSegmentDelta,
+    appendToolSegment,
+    rebuildSegmentsForMessage,
+    rebuildSegmentsFromFlat,
+    type MessageSegment,
+} from '@/stream/messageSegments'
 
 interface ConversationState {
     conversations: ConversationSummary[]
     currentId: string
     messages: ChatMessage[]
     generating: boolean
-    streamText: string
-    streamReasoning: string
     loaded: boolean
     queue: QueuedMessage[]
     streamTokenProfile: Record<string, unknown> | null
@@ -39,6 +46,14 @@ interface ConversationState {
     loadingBefore: boolean
     /** 流式更新的目标助手消息索引(重答时指向被覆盖的历史回答;null 表示最后一条) */
     streamingTargetIndex: number | null
+    /** 当前流所属会话 ID:跨会话查看时用于隔离增量写入与指示器定位 */
+    streamingConversationId: string
+    /**
+     * 进行中流的分离消息缓冲(会话 ID → 缓冲):
+     * 流式增量始终写入这里挂名的助手对象,切走期间照常累积;
+     * 切回该会话时把缓冲对象接回可见列表,实现零丢失的进度恢复。
+     */
+    pendingStreams: Record<string, PendingStream>
     /** 消息加载中(切换会话期间为真;模板据此显示加载占位而非欢迎页/旧内容) */
     messagesLoading: boolean
     /** 会话完整用户轮次(单独从 /turns 拉取,与窗口化消息解耦) */
@@ -54,9 +69,77 @@ export interface QueuedMessage {
         enableThinking: boolean
         enableWebSearch: boolean
         enableTools: boolean
+        /** Tools 模式(auto_off/force/off),原样传给后端 tool_mode */
+        toolsMode: string
     }
     /** 该条消息携带的附件(进入队列即快照,避免后续变更影响) */
     attachments?: AttachmentInput[]
+}
+
+/** 进行中流的分离缓冲:助手对象独立于可见列表持续累积,切回时接回 */
+interface PendingStream {
+    /** 助手消息在其会话中的绝对索引 */
+    targetIndex: number
+    /** 分离累积的助手消息对象(单一数据源) */
+    assistant: ChatMessage
+    /** 新发送场景的用户消息对象(切回恢复用;重答场景为空) */
+    userMessage?: ChatMessage
+    /** 流已结束(done/aborted):缓冲保留至用户切回消费后释放 */
+    finished?: boolean
+}
+
+/** 跨刷新活动流快照(sessionStorage 持久化结构) */
+export interface ActiveStreamSnapshot {
+    conversationId: string
+    streamId: string
+    lastSeq: number
+    targetIndex: number
+    modelName?: string
+    userMessage?: ChatMessage
+    assistant: ChatMessage
+}
+
+const ACTIVE_STREAM_STORAGE_KEY = 'nexora_active_stream_v1'
+
+/** 快照写入节流间隔(ms) */
+const STREAM_PERSIST_THROTTLE_MS = 500
+
+// 模块级节流状态(单例 store,安全)
+let streamPersistLastAt = 0
+let streamPersistTimer: number | null = null
+let streamingLastSeq = 0
+let streamingStreamId = ''
+
+function readActiveStreamStorage(): ActiveStreamSnapshot | null {
+    try {
+        const raw = sessionStorage.getItem(ACTIVE_STREAM_STORAGE_KEY)
+
+        if (!raw) {
+            return null
+        }
+
+        const parsed = JSON.parse(raw) as ActiveStreamSnapshot
+
+        return parsed && parsed.conversationId && parsed.streamId && parsed.assistant ? parsed : null
+    } catch {
+        return null
+    }
+}
+
+function writeActiveStreamStorage(snapshot: ActiveStreamSnapshot): void {
+    try {
+        sessionStorage.setItem(ACTIVE_STREAM_STORAGE_KEY, JSON.stringify(snapshot))
+    } catch {
+        // 配额/隐私模式失败不阻塞主流程:仅丢失"刷新恢复"能力
+    }
+}
+
+function clearActiveStreamStorage(): void {
+    try {
+        sessionStorage.removeItem(ACTIVE_STREAM_STORAGE_KEY)
+    } catch {
+        // 忽略
+    }
 }
 
 export const useConversationStore = defineStore('conversation', {
@@ -65,39 +148,159 @@ export const useConversationStore = defineStore('conversation', {
         currentId: '',
         messages: [],
         generating: false,
-        streamText: '',
-        streamReasoning: '',
         loaded: false,
         queue: [],
         streamTokenProfile: null,
         hasMoreBefore: false,
         loadingBefore: false,
         streamingTargetIndex: null,
+        streamingConversationId: '',
+        pendingStreams: {},
         messagesLoading: false,
         turns: [],
         loadSeq: 0,
     }),
 
-    getters: {
-        currentConversation(state): ConversationSummary | undefined {
-            return state.conversations.find((item) => item.id === state.currentId)
+    actions: {
+        /** 记录重连断点序号(chunk._stream_seq,由 ChatView 回传) */
+        setStreamingLastSeq(seq: number): void {
+            const value = Number(seq)
+
+            if (Number.isFinite(value) && value > 0) {
+                streamingLastSeq = Math.max(streamingLastSeq, Math.floor(value))
+            }
         },
 
-        /** 待发送队列长度(供 UI 显示徽标) */
-        queueCount(state): number {
-            return state.queue.length
+        /** 记录服务端分配的流 ID(stream_session chunk,由 ChatView 回传) */
+        setStreamingStreamMeta(streamId: string): void {
+            const value = String(streamId || '').trim()
+
+            if (value) {
+                streamingStreamId = value
+            }
         },
 
         /**
-         * 侧边栏会话分支树行(对齐原版 arrangeConversationBranchRows):
-         * 分支会话紧跟在父会话之后按深度缩进,孤儿分支排在末尾。
+         * 节流持久化活动流快照(sessionStorage):
+         * 刷新后据此恢复分离缓冲并通过 reconnect 续播。
          */
-        branchRows(state): ConversationBranchRow[] {
-            return arrangeConversationBranchRows(state.conversations)
-        },
-    },
+        persistActiveStream(force = false): void {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
 
-    actions: {
+            if (!pending || pending.finished || !streamingStreamId) {
+                return
+            }
+
+            const buildAndWrite = () => {
+                const snapshot: ActiveStreamSnapshot = {
+                    conversationId: convId,
+                    streamId: streamingStreamId,
+                    lastSeq: streamingLastSeq,
+                    targetIndex: pending.targetIndex,
+                    modelName: pending.assistant.model_name,
+                    userMessage: pending.userMessage,
+                    assistant: {
+                        index: pending.assistant.index,
+                        role: 'assistant',
+                        content: pending.assistant.content || '',
+                        reasoning: pending.assistant.reasoning || '',
+                        segments: pending.assistant.segments || [],
+                        model_name: pending.assistant.model_name,
+                        metadata: { model_name: pending.assistant.model_name || '' },
+                    },
+                }
+
+                writeActiveStreamStorage(snapshot)
+            }
+
+            const now = Date.now()
+
+            if (force || now - streamPersistLastAt >= STREAM_PERSIST_THROTTLE_MS) {
+                streamPersistLastAt = now
+
+                buildAndWrite()
+
+                return
+            }
+
+            if (streamPersistTimer === null) {
+                streamPersistTimer = window.setTimeout(() => {
+                    streamPersistTimer = null
+                    streamPersistLastAt = Date.now()
+
+                    // 闭包内重取最新 pending(可能已被消费)
+                    const latestConv = this.streamingConversationId
+                    const latest = latestConv ? this.pendingStreams[latestConv] : undefined
+
+                    if (latest && !latest.finished && streamingStreamId) {
+                        const snapshot: ActiveStreamSnapshot = {
+                            conversationId: latestConv,
+                            streamId: streamingStreamId,
+                            lastSeq: streamingLastSeq,
+                            targetIndex: latest.targetIndex,
+                            modelName: latest.assistant.model_name,
+                            userMessage: latest.userMessage,
+                            assistant: {
+                                index: latest.assistant.index,
+                                role: 'assistant',
+                                content: latest.assistant.content || '',
+                                reasoning: latest.assistant.reasoning || '',
+                                segments: latest.assistant.segments || [],
+                                model_name: latest.assistant.model_name,
+                                metadata: { model_name: latest.assistant.model_name || '' },
+                            },
+                        }
+
+                        writeActiveStreamStorage(snapshot)
+                    }
+                }, STREAM_PERSIST_THROTTLE_MS - (now - streamPersistLastAt))
+            }
+        },
+
+        /** 读取并清除 sessionStorage 中的活动流快照(启动恢复入口) */
+        takeActiveStreamSnapshot(): ActiveStreamSnapshot | null {
+            const snapshot = readActiveStreamStorage()
+
+            clearActiveStreamStorage()
+
+            return snapshot
+        },
+
+        /** 注册跨刷新恢复的流(重建分离缓冲与全局状态;随后由 ChatView 发起 reconnect 续播) */
+        registerRestoredStream(snapshot: ActiveStreamSnapshot): void {
+            this.pendingStreams[snapshot.conversationId] = {
+                targetIndex: snapshot.targetIndex,
+                assistant: { ...snapshot.assistant },
+                userMessage: snapshot.userMessage,
+            }
+
+            this.generating = true
+            this.streamingConversationId = snapshot.conversationId
+            this.streamingTargetIndex = snapshot.targetIndex
+            this.streamTokenProfile = null
+
+            streamingLastSeq = Number(snapshot.lastSeq) || 0
+            streamingStreamId = String(snapshot.streamId || '')
+        },
+
+        /** 重连发现流已结束/不存在:把缓冲转为已完成态保留展示 */
+        finishRestoredStream(): void {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
+
+            if (pending) {
+                pending.finished = true
+                pending.assistant.pending = false
+            }
+
+            this.generating = false
+            this.streamingConversationId = ''
+            this.streamingTargetIndex = null
+
+            clearActiveStreamStorage()
+        },
+
         /** 拉取会话列表 */
         async loadConversations(): Promise<void> {
             this.conversations = await listConversations()
@@ -114,8 +317,6 @@ export const useConversationStore = defineStore('conversation', {
 
             this.currentId = ''
             this.messages = []
-            this.streamText = ''
-            this.streamReasoning = ''
             this.hasMoreBefore = false
             this.loadingBefore = false
             this.streamingTargetIndex = null
@@ -147,6 +348,10 @@ export const useConversationStore = defineStore('conversation', {
                 return
             }
 
+            const t0 = performance.now()
+
+            console.debug(`[conv-load] open ${conversationId} start`)
+
             // 序号自增:本次加载期间若再次切换,过期结果将被丢弃
             const seq = ++this.loadSeq
 
@@ -161,11 +366,53 @@ export const useConversationStore = defineStore('conversation', {
             try {
                 await this.loadMessages(seq)
 
+                console.debug(`[conv-load] ${conversationId} messages done cost=${(performance.now() - t0).toFixed(0)}ms count=${this.messages.length}`)
+
                 // 仅当本次加载未被更新的切换覆盖时才提交结果
                 if (seq === this.loadSeq) {
+                    // 切回带分离缓冲的会话(生成中或已完成未消费):
+                    // 接回缓冲对象实现零丢失进度恢复,消费后释放
+                    const pending = this.pendingStreams[conversationId]
+
+                    if (pending) {
+                        const list = this.messages
+
+                        if (pending.userMessage && !list.some(
+                            (item) => item.role === 'user' && Number(item.index) === Number(pending.userMessage!.index)
+                        )) {
+                            list.push(pending.userMessage)
+                        }
+
+                        const existingAssistant = list.find(
+                            (item) => item.role === 'assistant' && Number(item.index) === pending.targetIndex
+                        )
+
+                        if (existingAssistant) {
+                            // 以缓冲内容覆盖服务端旧数据(保留列表对象引用)
+                            Object.assign(existingAssistant, pending.assistant)
+                        } else {
+                            list.push(pending.assistant)
+                        }
+
+                        list.sort((a, b) => Number(a.index) - Number(b.index))
+
+                        this.streamingTargetIndex = pending.targetIndex
+
+                        if (pending.finished) {
+                            delete this.pendingStreams[conversationId]
+
+                            // 同步清理跨刷新快照,避免下次启动误重连已结束的流
+                            clearActiveStreamStorage()
+                        }
+                    }
+
                     await this.loadTurns()
+
+                    console.debug(`[conv-load] ${conversationId} turns done total=${(performance.now() - t0).toFixed(0)}ms`)
                 }
             } catch (error) {
+                console.debug(`[conv-load] ${conversationId} ERROR cost=${(performance.now() - t0).toFixed(0)}ms`, error)
+
                 // 加载失败:本次负责时清空,避免残留上一个会话的内容
                 if (seq === this.loadSeq) {
                     this.messages = []
@@ -202,10 +449,7 @@ export const useConversationStore = defineStore('conversation', {
             const rawMessages = Array.isArray(data.messages) ? data.messages : []
             const startIndex = Number(data.start_index || 0)
 
-            this.messages = rawMessages.map((message, offset) => ({
-                ...message,
-                index: startIndex + offset,
-            }))
+            this.messages = rawMessages.map((message, offset) => toLocalMessage(message, startIndex + offset))
             this.hasMoreBefore = !!data.has_more_before
             this.loadingBefore = false
         },
@@ -256,10 +500,7 @@ export const useConversationStore = defineStore('conversation', {
                 // 按后端绝对索引去重合并(避免与已有消息重叠)
                 const existing = new Set(this.messages.map((message) => Number(message.index)))
                 const older = rawMessages
-                    .map((message, offset) => ({
-                        ...message,
-                        index: startIndex + offset,
-                    }))
+                    .map((message, offset) => toLocalMessage(message, startIndex + offset))
                     .filter((message) => !existing.has(Number(message.index)))
 
                 if (older.length === 0) {
@@ -312,12 +553,20 @@ export const useConversationStore = defineStore('conversation', {
                 index: nextIndex + 1,
                 role: 'assistant',
                 content: '',
+                segments: [],
             }
 
             this.messages.push(userMessage, assistantMessage)
             this.generating = true
-            this.streamText = ''
-            this.streamReasoning = ''
+            this.streamingConversationId = this.currentId
+            this.streamingTargetIndex = assistantMessage.index
+
+            // 注册分离缓冲:切走期间增量照常写入该对象,切回时接回列表(零丢失)
+            this.pendingStreams[this.currentId] = {
+                targetIndex: assistantMessage.index,
+                assistant: assistantMessage,
+                userMessage,
+            }
 
             // 乐观更新会话标题(首条消息截断),等待后端自动生成标题时保持可辨识
             if (this.currentId) {
@@ -349,45 +598,227 @@ export const useConversationStore = defineStore('conversation', {
 
             assistant.content = ''
             assistant.reasoning = ''
+            assistant.segments = []
             assistant.pending = true
+            assistant.compressionStep = null
 
             this.streamingTargetIndex = index
+            this.streamingConversationId = this.currentId
             this.generating = true
-            this.streamText = ''
-            this.streamReasoning = ''
+
+            // 注册分离缓冲(重答场景无新增用户消息)
+            this.pendingStreams[this.currentId] = {
+                targetIndex: index,
+                assistant,
+            }
         },
 
-        /** 流式增量追加正文到助手消息 */
+        /** 流式增量追加正文分段(与思考分段按输出顺序交错排列) */
         appendStreamText(delta: string): void {
             if (!delta) {
                 return
             }
 
-            this.streamText += delta
+            appendSegmentDelta(this._resolveStreamingAssistant(), 'content', delta)
 
-            this._updateStreamingAssistant({ content: this.streamText })
+            this.persistActiveStream()
         },
 
-        /** 流式增量追加思考内容到助手消息 */
+        /** 流式增量追加思考分段(正文已输出后再次思考会新开分段,顺序追加) */
         appendStreamReasoning(delta: string): void {
             if (!delta) {
                 return
             }
 
-            this.streamReasoning += delta
+            appendSegmentDelta(this._resolveStreamingAssistant(), 'reasoning', delta)
 
-            this._updateStreamingAssistant({ reasoning: this.streamReasoning })
+            this.persistActiveStream()
         },
 
-        /** 流结束:用 done 终帧的完整内容兜底覆盖,再复位生成状态 */
-        endStream(options: { finalContent?: string } = {}): void {
-            if (options.finalContent) {
-                this.streamText = options.finalContent
+        /**
+         * 流式追加工具/问题事件分段
+         * (数据源:function_call_delta / function_call / function_result / question chunk)
+         *
+         * delta 阶段并入最后一个未闭合的同调用分段实现参数流式;
+         * 完整 call 事件覆盖同调用的 delta 分段(消除拼接边界误差);
+         * result 独立成段,保持与后端 process_steps 一致的时序;
+         * question 为交互卡片分段,等待用户作答;
+         * 以上分段均不参与扁平字段同步(content/reasoning 不受影响)。
+         */
+        appendStreamToolStep(step: Record<string, unknown>): void {
+            const type = String(step.type || '').trim()
 
-                this._updateStreamingAssistant({ content: options.finalContent })
+            if (type !== 'function_call_delta' && type !== 'function_call' && type !== 'function_result' && type !== 'question') {
+                return
             }
 
-            if (this.streamingTargetIndex !== null) {
+            this.persistActiveStream()
+
+            if (type === 'function_call_delta') {
+                this._mergeStreamToolDelta(step)
+
+                return
+            }
+
+            if (type === 'function_call') {
+                this._finalizeStreamToolCall(step)
+
+                return
+            }
+
+            if (type === 'question') {
+                const payload = (step.question && typeof step.question === 'object')
+                    ? step.question as QuestionPayload
+                    : {}
+                const segment: MessageSegment = {
+                    type: 'question',
+                    text: '',
+                    name: 'question',
+                    callId: String(step.call_id || ''),
+                    question: payload,
+                }
+
+                appendToolSegment(this._resolveStreamingAssistant(), segment)
+
+                return
+            }
+
+            if (type !== 'function_result') {
+                return
+            }
+
+            const segment: MessageSegment = {
+                type: 'function_result',
+                text: String(step.result ?? ''),
+                name: String(step.name || '').trim() || 'tool',
+                callId: String(step.call_id || ''),
+                modelVisibleResult: typeof step.model_visible_result === 'string'
+                    ? step.model_visible_result
+                    : undefined,
+                round: Number(step.round) || undefined,
+            }
+
+            appendToolSegment(this._resolveStreamingAssistant(), segment)
+        },
+
+        /**
+         * 自后向前定位"最近一个未闭合"的工具调用分段:
+         * 逆序扫描中先遇到匹配 callId 的 function_result 即视为已闭合;
+         * 先遇到匹配的 function_call 即为目标;文本/思考分段跳过。
+         */
+        _findOpenToolCallSegment(segments: MessageSegment[], callId: string): MessageSegment | undefined {
+            for (let i = segments.length - 1; i >= 0; i -= 1) {
+                const seg = segments[i]
+
+                if (seg.type === 'function_call') {
+                    return (!callId || !seg.callId || seg.callId === callId) ? seg : undefined
+                }
+
+                if (seg.type === 'function_result') {
+                    const resCallId = String(seg.callId || '')
+
+                    if (!callId || !resCallId || resCallId === callId) {
+                        return undefined
+                    }
+                }
+            }
+
+            return undefined
+        },
+
+        /** 参数流式增量:并入未闭合调用分段;无则新开一个 delta 调用分段 */
+        _mergeStreamToolDelta(step: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant()
+
+            if (!assistant) {
+                return
+            }
+
+            const segments = Array.isArray(assistant.segments) ? assistant.segments : []
+            const callId = String(step.call_id || '')
+            let target = this._findOpenToolCallSegment(segments, callId)
+
+            if (!target) {
+                target = {
+                    type: 'function_call',
+                    text: '',
+                    name: String(step.name_delta || step.name || '').trim() || 'tool',
+                    callId,
+                }
+
+                segments.push(target)
+
+                assistant.segments = segments
+            }
+            else if (target.name === 'tool' && String(step.name_delta || '').trim()) {
+                target.name = String(step.name_delta).trim()
+            }
+
+            const argsDelta = String(step.arguments_delta ?? step.delta ?? '')
+
+            if (argsDelta) {
+                target.text += argsDelta
+            }
+        },
+
+        /** 完整调用事件:覆盖未闭合的同调用分段(delta 拼接可能有边界误差);无则独立成段 */
+        _finalizeStreamToolCall(step: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant()
+
+            if (!assistant) {
+                return
+            }
+
+            const segments = Array.isArray(assistant.segments) ? assistant.segments : []
+            const callId = String(step.call_id || '')
+            const fullName = String(step.name || '').trim() || 'tool'
+            const fullArgs = String(step.arguments ?? '')
+            const target = this._findOpenToolCallSegment(segments, callId)
+
+            if (target) {
+                target.text = fullArgs
+                target.name = fullName
+
+                if (callId) {
+                    target.callId = callId
+                }
+
+                return
+            }
+
+            appendToolSegment(assistant, {
+                type: 'function_call',
+                text: fullArgs,
+                name: fullName,
+                callId,
+                round: Number(step.round) || undefined,
+            })
+        },
+
+        /** 流结束:终帧完整正文覆盖后复位生成状态(分段结构保留流式时序,不再塌缩重建) */
+        endStream(options: { finalContent?: string } = {}): void {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
+            const assistant = pending ? pending.assistant : this._resolveStreamingAssistant()
+
+            // 仅当服务端全文非空且与本地增量拼接不一致(罕见漂移)时才按扁平字段重建;
+            // 空 finalContent(部分后端场景)不覆盖本地累积
+            if (assistant && options.finalContent != null && String(options.finalContent).trim() !== '') {
+                const finalText = String(options.finalContent)
+
+                if (finalText !== String(assistant.content || '')) {
+                    assistant.content = finalText
+
+                    rebuildSegmentsFromFlat(assistant)
+                }
+            }
+
+            if (assistant) {
+                assistant.pending = false
+            }
+
+            // 正在查看该会话时同步可见列表的 pending 标记
+            if (this.streamingConversationId === this.currentId && this.streamingTargetIndex !== null) {
                 const target = this.messages.find(
                     (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
                 )
@@ -397,9 +828,13 @@ export const useConversationStore = defineStore('conversation', {
                 }
             }
 
+            // 缓冲保留(标记 finished):用户切回消费后才释放,防止后台完成时内容丢失
+            if (pending) {
+                pending.finished = true
+            }
+
             this.generating = false
-            this.streamText = ''
-            this.streamReasoning = ''
+            this.streamingConversationId = ''
             this.streamingTargetIndex = null
         },
 
@@ -417,14 +852,28 @@ export const useConversationStore = defineStore('conversation', {
 
             let assistant: ChatMessage | undefined
 
-            const preferIndex = Number.isFinite(Number(targetIndex))
-                ? Number(targetIndex)
-                : this.streamingTargetIndex
+            // 活动流的缓冲对象优先(跨会话场景下可见列表可能根本不是流所属会话)
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
 
-            if (preferIndex !== null && preferIndex !== undefined && Number.isFinite(preferIndex)) {
-                assistant = this.messages.find(
-                    (item) => item.role === 'assistant' && Number(item.index) === preferIndex
-                )
+            if (pending) {
+                const explicit = Number(targetIndex)
+
+                if (!Number.isFinite(explicit) || explicit === pending.targetIndex) {
+                    assistant = pending.assistant
+                }
+            }
+
+            if (!assistant) {
+                const preferIndex = Number.isFinite(Number(targetIndex))
+                    ? Number(targetIndex)
+                    : this.streamingTargetIndex
+
+                if (preferIndex !== null && preferIndex !== undefined && Number.isFinite(preferIndex)) {
+                    assistant = this.messages.find(
+                        (item) => item.role === 'assistant' && Number(item.index) === preferIndex
+                    )
+                }
             }
 
             if (!assistant) {
@@ -439,6 +888,11 @@ export const useConversationStore = defineStore('conversation', {
                 assistant.content = message.content
             }
 
+            // 版本切换会改写落盘时间戳;不同步会让版本导航签名匹配失败而错位
+            if (typeof message.timestamp === 'string' && message.timestamp) {
+                assistant.timestamp = message.timestamp
+            }
+
             if (message.metadata && typeof message.metadata === 'object') {
                 assistant.metadata = {
                     ...(assistant.metadata && typeof assistant.metadata === 'object'
@@ -446,7 +900,14 @@ export const useConversationStore = defineStore('conversation', {
                         : {}),
                     ...(message.metadata as Record<string, unknown>),
                 }
+
+                // 服务器终帧/版本切换携带完整 process_steps 后,压缩卡片以服务器持久化数据为准,
+                // 清空流式本地步骤,避免本地旧值覆盖新版本内容(历史回放路径接管渲染)。
+                assistant.compressionStep = null
             }
+
+            // 终帧覆盖后按持久化数据重建分段:优先 process_steps(保留工具链与多轮思考时序)
+            rebuildSegmentsForMessage(assistant)
 
             assistant.pending = false
         },
@@ -460,28 +921,23 @@ export const useConversationStore = defineStore('conversation', {
         fillStreamingMessageWithError(errorText: string): void {
             const text = String(errorText || '回复生成失败').trim()
 
-            const targetIndex = this.streamingTargetIndex
-
-            const assistant = targetIndex !== null
-                ? this.messages.find((message) => message.role === 'assistant' && Number(message.index) === Number(targetIndex))
-                : this.messages[this.messages.length - 1]
+            const assistant = this._resolveStreamingAssistant()
 
             if (!assistant || assistant.role !== 'assistant') {
                 return
             }
 
-            if (assistant.content) {
-                assistant.content = `${assistant.content}\n\n${text}`
-            } else {
-                assistant.content = text
-            }
+            // 错误文本作为正文增量追加(保留既有分段时序,不塌缩重建)
+            const prefix = assistant.content ? '\n\n' : ''
+
+            appendSegmentDelta(assistant, 'content', `${prefix}${text}`)
 
             assistant.pending = false
         },
 
-        /** 中断流:复位生成状态,保留已生成的部分文本 */
+        /** 中断流:复位生成状态;分离缓冲保留(含已落盘部分内容)至用户切回消费 */
         abortStream(): void {
-            if (this.streamingTargetIndex !== null) {
+            if (this.streamingConversationId === this.currentId && this.streamingTargetIndex !== null) {
                 const target = this.messages.find(
                     (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
                 )
@@ -491,21 +947,51 @@ export const useConversationStore = defineStore('conversation', {
                 }
             }
 
+            const pending = this.streamingConversationId
+                ? this.pendingStreams[this.streamingConversationId]
+                : undefined
+
+            if (pending) {
+                pending.finished = true
+
+                if (this.streamingConversationId === this.currentId) {
+                    // 正在查看:立即消费释放
+                    delete this.pendingStreams[this.streamingConversationId]
+                }
+            }
+
             this.generating = false
-            this.streamText = ''
-            this.streamReasoning = ''
+            this.streamingConversationId = ''
             this.streamingTargetIndex = null
         },
 
-        /** 更新当前正在生成的助手消息(重答时更新目标索引消息,否则更新最后一条) */
-        _updateStreamingAssistant(patch: Partial<ChatMessage>): void {
+        /**
+         * 定位当前流式更新的目标助手消息:
+         * 始终返回分离缓冲对象(pendingStreams 注册的单一数据源)——
+         * 无论用户当前查看哪个会话,增量都持续累积在缓冲里,切回时零丢失。
+         */
+        _resolveStreamingAssistant(): ChatMessage | undefined {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
+
+            if (pending) {
+                return pending.assistant
+            }
+
             const targetIndex = this.streamingTargetIndex
 
             const assistant = targetIndex !== null
                 ? this.messages.find((message) => message.role === 'assistant' && Number(message.index) === Number(targetIndex))
                 : this.messages[this.messages.length - 1]
 
-            if (assistant && assistant.role === 'assistant') {
+            return assistant && assistant.role === 'assistant' ? assistant : undefined
+        },
+
+        /** 更新当前正在生成的助手消息(重答时更新目标索引消息,否则更新最后一条) */
+        _updateStreamingAssistant(patch: Partial<ChatMessage>): void {
+            const assistant = this._resolveStreamingAssistant()
+
+            if (assistant) {
                 Object.assign(assistant, patch)
             }
         },
@@ -522,6 +1008,22 @@ export const useConversationStore = defineStore('conversation', {
         /** 记录本次请求的 token 画像(prompt_token_profile chunk,CTX/Token 展示数据源) */
         setStreamingTokenProfile(profile: Record<string, unknown>): void {
             this.streamTokenProfile = { ...profile }
+        },
+
+        /**
+         * 记录上下文压缩状态到当前助手消息(数据源:context_compression_status chunk)
+         *
+         * 只保留最新一条:后端按 start → done/skipped 顺序推送,后到者覆盖前态,
+         * 与历史回放 process_steps 取最后一条的语义一致(对齐原版 upsertContextCompressionCard)。
+         */
+        setStreamingContextCompression(step: Record<string, unknown>): void {
+            const parsed = parseContextCompressionStep(step)
+
+            if (!parsed) {
+                return
+            }
+
+            this._updateStreamingAssistant({ compressionStep: parsed })
         },
 
         /** 消息入队(生成中调用;当前流结束后由 ChatView 自动发送下一条) */
@@ -591,6 +1093,25 @@ export const useConversationStore = defineStore('conversation', {
             this.queue = []
         },
     },
+
+    getters: {
+        currentConversation(state): ConversationSummary | undefined {
+            return state.conversations.find((item) => item.id === state.currentId)
+        },
+
+        /** 待发送队列长度(供 UI 显示徽标) */
+        queueCount(state): number {
+            return state.queue.length
+        },
+
+        /**
+         * 侧边栏会话分支树行(对齐原版 arrangeConversationBranchRows):
+         * 分支会话紧跟在父会话之后按深度缩进,孤儿分支排在末尾。
+         */
+        branchRows(state): ConversationBranchRow[] {
+            return arrangeConversationBranchRows(state.conversations)
+        },
+    },
 })
 
 /** 分支树排列行(深度 + 孤儿标记,对齐原版 arrangeConversationBranchRows 输出) */
@@ -598,6 +1119,15 @@ export interface ConversationBranchRow {
     conversation: ConversationSummary
     depth: number
     orphan: boolean
+}
+
+/** 原始消息 → 本地消息(补齐绝对索引;助手消息按持久化数据重建分段,优先 process_steps) */
+function toLocalMessage(message: ChatMessage, index: number): ChatMessage {
+    const local: ChatMessage = { ...message, index }
+
+    rebuildSegmentsForMessage(local)
+
+    return local
 }
 
 /** 读取会话分支信息(对齐原版 readConversationBranch) */

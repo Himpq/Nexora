@@ -5,26 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nexora</title>
 
-    <!-- 设计资产层:直接引用 Nexora 原版 CSS,保证视觉 100% 一致 -->
+    <!-- 第三方 vendor 资产(fonts / katex / fontawesome)仍由 Flask /static 托管 -->
     <link rel="stylesheet" href="/static/vendor/fonts/fonts.css" />
+    <!-- 代码高亮双主题:亮色常开,暗色默认禁用,由 theme store 按 data-theme 联动启停 -->
     <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css" />
+    <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github-dark.min.css" id="hljs-theme-dark" disabled />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css" />
-    <link rel="stylesheet" href="/static/css/style.css" />
-    <link rel="stylesheet" href="/static/css/chat_files.css" />
-    <link rel="stylesheet" href="/static/css/workspace_projects.css" />
-    <link rel="stylesheet" href="/static/css/chat_papi_keys.css" />
-    <link rel="stylesheet" href="/static/css/chat_settings_dialog.css" />
-    <link rel="stylesheet" href="/static/css/chat_settings_management.css" />
-    <link rel="stylesheet" href="/static/css/chat_memory_settings.css" />
-    <link rel="stylesheet" href="/static/css/chat_skill_market.css" />
-    <link rel="stylesheet" href="/static/css/chat_token_details.css" />
-    <link rel="stylesheet" href="/static/css/global_search.css" />
-    <link rel="stylesheet" href="/static/css/knowledge_collab.css" />
-    <link rel="stylesheet" href="/static/css/sidebar_brand_navigation.css" />
-    <link rel="stylesheet" href="/static/css/notification.css" />
-    <link rel="stylesheet" href="/static/css/message_avatar.css" />
-    <link rel="stylesheet" href="/static/css/easymde_override.css" />
+    <!-- Nexora 原版设计 CSS 已收编进 Vue 工程(src/styles/legacy),经 main.ts 统一引入 -->
   </head>
   <body>
     <div id="app"></div>

@@ -242,7 +242,7 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
 
 .conversation-branch-icon {
     margin-right: 6px;
-    color: #94a3b8;
+    color: var(--color-text-secondary);
     font-size: 11px;
 }
 

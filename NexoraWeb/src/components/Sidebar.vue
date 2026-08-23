@@ -229,7 +229,7 @@
 
     /** 会话是否正在生成(原版 is-streaming 类) */
     function isStreamingItem(conversationId: string): boolean {
-        return store.generating && conversationId === store.currentId
+        return store.generating && conversationId === store.streamingConversationId
     }
 
     /** 是否为可见分支会话(有分支信息且非孤儿;对齐原版 visibleBranch) */
@@ -278,13 +278,6 @@
     }
 
     async function handleNewChat(): Promise<void> {
-        // 生成中禁止新建会话:避免流式文本写入错误会话
-        if (store.generating) {
-            showToast('回复生成中,请先停止再新建会话', 'warning')
-
-            return
-        }
-
         // New Chat 语义为回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
         emit('open-chat')
 
@@ -296,13 +289,6 @@
     }
 
     async function handleOpen(conversationId: string): Promise<void> {
-        // 生成中禁止切换会话:流式文本会写入错误会话
-        if (store.generating) {
-            showToast('回复生成中,请先停止再切换会话', 'warning')
-
-            return
-        }
-
         // 点击会话 = 回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
         emit('open-chat')
 

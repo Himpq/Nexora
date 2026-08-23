@@ -30,7 +30,7 @@
             <div v-else-if="!items.length" class="trash-empty-state">暂无回收站内容</div>
 
             <article v-for="item in items" :key="item.id" class="trash-card">
-                <div class="trash-card-icon" :class="`trash-card-icon--${item.type}`">
+                <div class="trash-card-icon">
                     <i :class="typeIcon(item.type)" aria-hidden="true"></i>
                 </div>
 
@@ -217,7 +217,7 @@
 
     .trash-empty-state {
         padding: 48px 0 56px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 13px;
         text-align: center;
     }
@@ -229,39 +229,25 @@
         padding: 12px 14px;
         border: 1px solid #e8eef7;
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
 
     .trash-card:hover {
-        border-color: #cbd5e1;
+        border-color: var(--color-border);
         box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
     }
 
+    /* 条目图标:中性裸图标(对齐知识库管理卡片 #9ca3af 语言,不用彩色底块) */
     .trash-card-icon {
         display: flex;
         align-items: center;
         justify-content: center;
-        flex: 0 0 38px;
-        width: 38px;
-        height: 38px;
-        border-radius: 10px;
-        font-size: 15px;
-    }
-
-    .trash-card-icon--conversation {
-        background: #eef2ff;
-        color: #4f46e5;
-    }
-
-    .trash-card-icon--knowledge_basis {
-        background: #f5f3ff;
-        color: #7c3aed;
-    }
-
-    .trash-card-icon:not(.trash-card-icon--conversation):not(.trash-card-icon--knowledge_basis) {
-        background: #f1f5f9;
-        color: #475569;
+        flex: 0 0 28px;
+        width: 28px;
+        padding-top: 2px;
+        color: var(--color-text-secondary);
+        font-size: 16px;
     }
 
     .trash-card-body {
@@ -282,7 +268,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 14px;
         font-weight: 600;
     }
@@ -291,15 +277,15 @@
         flex: 0 0 auto;
         padding: 1px 8px;
         border-radius: 999px;
-        background: #f1f5f9;
-        color: #475569;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
         font-size: 11px;
         line-height: 18px;
     }
 
     .trash-card-preview {
         margin: 0 0 10px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
         line-height: 1.5;
         display: -webkit-box;
@@ -320,7 +306,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 11px;
     }
 

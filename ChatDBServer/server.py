@@ -1526,12 +1526,24 @@ def _build_map_provider_config_payload(cfg: Dict[str, Any], include_admin_config
 
     active_provider_ready = provider_status.get(provider, {}).get('ready') if provider in provider_status else False
 
+    # 前端地图渲染器所需配置(与旧版 chat.html 注入 window.NEXORA_MAP_RENDERER_CONFIG 一致):
+    # browser_ak/browser_tk 本身就是面向浏览器侧的访问键,旧版已对登录用户全量下发。
+    baidu_map_cfg = map_cfg.get('baidu', {}) if isinstance(map_cfg.get('baidu'), dict) else {}
+    tianditu_map_cfg = map_cfg.get('tianditu', {}) if isinstance(map_cfg.get('tianditu'), dict) else {}
+
     return {
         'provider': provider,
         'provider_ready': bool(active_provider_ready),
         'config_errors': config_errors,
         'supported_providers': list(SUPPORTED_MAP_PROVIDERS),
         'providers': provider_status,
+        'map_renderer_config': {
+            'provider': provider or 'baidu',
+            'baiduMapAk': str(baidu_map_cfg.get('browser_ak') or '').strip(),
+            'baiduMapVersion': str(baidu_map_cfg.get('browser_version') or '1.0').strip() or '1.0',
+            'tiandituMapTk': str(tianditu_map_cfg.get('browser_tk') or tianditu_map_cfg.get('tk') or '').strip(),
+            'tiandituMapVersion': str(tianditu_map_cfg.get('browser_version') or '4.0').strip() or '4.0'
+        },
         'history_policy': {
             'mode': 'scene_provider_pinned',
             'summary': '历史地图记录保留 scene.provider，新默认 provider 只影响之后生成的地图。',
@@ -18066,7 +18078,12 @@ def new_frontend_page():
 
     try:
         with open(new_index, 'r', encoding='utf-8') as f:
-            return Response(f.read(), mimetype='text/html')
+            resp = Response(f.read(), mimetype='text/html')
+
+            # 入口页禁止缓存:产物文件名带 hash,但 index.html 若被缓存会引用已不存在的旧资产
+            resp.headers['Cache-Control'] = 'no-cache'
+
+            return resp
     except Exception:
         return jsonify({'success': False, 'message': '新前端尚未构建,请先执行前端构建'}), 404
 

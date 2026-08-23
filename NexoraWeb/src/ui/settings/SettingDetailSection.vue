@@ -23,14 +23,14 @@
     .setting-detail-section {
         padding-bottom: 16px;
         margin-bottom: 16px;
-        border-bottom: 1px solid #eeeeee;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .setting-detail-section-title {
         margin: 0 0 12px;
         font-size: 11.5px;
         font-weight: 650;
-        color: #888888;
+        color: var(--color-text-secondary);
         letter-spacing: 0.03em;
     }
 

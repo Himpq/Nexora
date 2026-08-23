@@ -22,14 +22,14 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: #fff;
-    border: 1px solid #e2e8f0;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
     border-left: 3px solid #2080f0;
     border-radius: 8px;
     padding: 10px 16px;
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
     font-size: 14px;
-    color: #334155;
+    color: var(--color-text-secondary);
     max-width: 420px;
     animation: nexora-toast-in 0.2s ease-out;
     pointer-events: auto;

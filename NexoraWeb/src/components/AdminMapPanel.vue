@@ -312,7 +312,7 @@
         margin: 14px 0 8px;
         font-size: 13px;
         font-weight: 600;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
     }
 
     .admin-map-config-field-full {
@@ -339,10 +339,10 @@
     .admin-map-history-policy {
         margin-top: 14px;
         padding: 10px 12px;
-        border: 1px solid #eeeeee;
+        border: 1px solid var(--color-border);
         border-radius: 7px;
-        background: #fafafa;
-        color: #7a7a7a;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 12px;
         line-height: 1.6;
     }
@@ -356,10 +356,10 @@
 
     .admin-map-error {
         padding: 10px 12px;
-        border: 1px solid #f0c4c4;
+        border: 1px solid var(--color-danger-border);
         border-radius: 7px;
-        background: #fff7f7;
-        color: #b03a2e;
+        background: var(--color-danger-surface);
+        color: var(--color-danger-text);
         font-size: 12.5px;
     }
 </style>

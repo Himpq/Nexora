@@ -284,8 +284,8 @@
     .share-panel {
         width: 100%;
         max-width: 460px;
-        background: #fff;
-        border: 1px solid #e8e8e8;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
         border-radius: 14px;
         padding: 28px;
         box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
@@ -325,7 +325,7 @@
 
     .share-header p {
         font-size: 13px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         margin: 0 0 18px;
     }
 
@@ -343,7 +343,7 @@
 
     .share-code-field span {
         font-size: 12px;
-        color: #64748b;
+        color: var(--color-text-secondary);
     }
 
     .share-code-field input {
@@ -354,20 +354,20 @@
         font-size: 15px;
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
         letter-spacing: 1px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         outline: none;
         transition: border-color 0.15s ease;
     }
 
     .share-code-field input:focus {
-        border-color: #111;
+        border-color: var(--color-text-primary);
     }
 
     .share-primary-btn {
         height: 42px;
-        border: 1px solid #111;
-        background: #fff;
-        color: #111;
+        border: 1px solid var(--color-border-strong);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         border-radius: 9px;
         font-size: 14px;
         font-weight: 600;
@@ -393,25 +393,25 @@
         min-height: 18px;
         margin-top: 10px;
         font-size: 12px;
-        color: #2563eb;
+        color: var(--color-accent-text);
     }
 
     .share-status.is-error {
-        color: #dc2626;
+        color: var(--color-danger-text);
     }
 
     .share-file-panel {
         margin-top: 18px;
         padding-top: 18px;
-        border-top: 1px solid #f1f5f9;
+        border-top: 1px solid var(--color-border);
     }
 
     .share-file-icon {
         width: 42px;
         height: 42px;
         border-radius: 10px;
-        background: #f1f5f9;
-        color: #475569;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -435,7 +435,7 @@
 
     .share-file-meta dt {
         font-size: 11px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         margin-bottom: 2px;
     }
 
@@ -443,15 +443,15 @@
         margin: 0;
         font-size: 13px;
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
-        color: #111;
+        color: var(--color-text-primary);
     }
 
     .share-download-btn {
         width: 100%;
         height: 42px;
-        border: 1px solid #111;
-        background: #fff;
-        color: #111;
+        border: 1px solid var(--color-border-strong);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         border-radius: 9px;
         font-size: 14px;
         font-weight: 600;
@@ -511,7 +511,7 @@
 
     .share-file-row-size {
         font-size: 11px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
     }
 
@@ -524,15 +524,15 @@
 
     .share-file-row-status {
         font-size: 11px;
-        color: #64748b;
+        color: var(--color-text-secondary);
     }
 
     .share-file-row-btn {
         height: 30px;
         padding: 0 12px;
-        border: 1px solid #111;
-        background: #fff;
-        color: #111;
+        border: 1px solid var(--color-border-strong);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         border-radius: 7px;
         font-size: 12px;
         font-weight: 600;

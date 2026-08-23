@@ -590,7 +590,7 @@
         max-height: 62vh;
         display: flex;
         flex-direction: column;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
         border-radius: 12px;
         box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
         overflow: hidden;
@@ -610,12 +610,12 @@
         outline: none;
         font-size: 15px;
         background: transparent;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
     }
 
     .gsp-kbd {
         font-size: 11px;
-        color: #8a8a8a;
+        color: var(--color-text-secondary);
         border: 1px solid rgba(0, 0, 0, 0.14);
         border-radius: 4px;
         padding: 1px 6px;
@@ -631,14 +631,14 @@
     .gsp-status {
         padding: 26px 16px;
         text-align: center;
-        color: #8a8a8a;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
     .gsp-group-title {
         padding: 8px 16px 4px;
         font-size: 11px;
-        color: #9a9a9a;
+        color: var(--color-text-secondary);
         letter-spacing: 0.4px;
     }
 
@@ -651,7 +651,7 @@
     }
 
     .gsp-item.is-active {
-        background: #f2f2f2;
+        background: var(--color-bg-hover);
     }
 
     .gsp-icon {
@@ -659,7 +659,7 @@
         width: 18px;
         height: 18px;
         margin-top: 2px;
-        color: #6a6a6a;
+        color: var(--color-text-secondary);
     }
 
     .gsp-icon svg {
@@ -675,7 +675,7 @@
 
     .gsp-item-title {
         font-size: 14px;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
         line-height: 1.45;
         overflow: hidden;
         display: -webkit-box;
@@ -686,7 +686,7 @@
     .gsp-item-meta {
         margin-top: 2px;
         font-size: 12px;
-        color: #9a9a9a;
+        color: var(--color-text-secondary);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -703,7 +703,7 @@
         padding: 8px 16px;
         border-top: 1px solid rgba(0, 0, 0, 0.08);
         font-size: 11px;
-        color: #9a9a9a;
+        color: var(--color-text-secondary);
     }
 
     @media (max-width: 640px) {

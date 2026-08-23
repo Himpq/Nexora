@@ -665,8 +665,8 @@
         padding: 24px;
         border: 1px dashed #94a3b8;
         border-radius: 8px;
-        background: #f8fafc;
-        color: #334155;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         text-align: center;
         cursor: pointer;
         outline: none;
@@ -676,25 +676,25 @@
     .fud-dropzone:hover,
     .fud-dropzone:focus-visible,
     .fud-dropzone.is-drag {
-        border-color: #111827;
-        background: #ffffff;
+        border-color: var(--color-text-primary);
+        background: var(--color-bg-elevated);
         box-shadow: inset 0 0 0 1px #111827;
     }
 
     .fud-dropzone i {
         font-size: 34px;
-        color: #111827;
+        color: var(--color-text-primary);
     }
 
     .fud-dropzone strong {
         font-size: 16px;
-        color: #111827;
+        color: var(--color-text-primary);
         line-height: 1.3;
     }
 
     .fud-dropzone span {
         font-size: 12px;
-        color: #64748b;
+        color: var(--color-text-secondary);
     }
 
     .fud-selected {
@@ -713,9 +713,9 @@
         align-items: center;
         gap: 10px;
         padding: 8px 10px;
-        border: 1px solid #eef2f7;
+        border: 1px solid var(--color-border);
         border-radius: 9px;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .fud-selected-name {
@@ -729,7 +729,7 @@
 
     .fud-selected-size {
         font-size: 12px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
         flex: 0 0 auto;
     }
@@ -740,14 +740,14 @@
         height: 24px;
         border: none;
         background: transparent;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         border-radius: 6px;
         cursor: pointer;
     }
 
     .fud-selected-remove:hover {
-        background: #f1f5f9;
-        color: #475569;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
     }
 
     .fud-actions {
@@ -764,14 +764,14 @@
         flex-direction: column;
         gap: 10px;
         padding: 14px;
-        border: 1px solid #eef2f7;
+        border: 1px solid var(--color-border);
         border-radius: 12px;
         background: #fbfcfe;
     }
 
     .fud-live-status {
         font-size: 13px;
-        color: #475569;
+        color: var(--color-text-secondary);
     }
 
     .fud-live-link-row {
@@ -786,8 +786,8 @@
         padding: 0 10px;
         border: 1px solid #e5e9f0;
         border-radius: 8px;
-        background: #fff;
-        color: #111827;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
         font-size: 12px;
         outline: none;
@@ -799,8 +799,8 @@
         height: 34px;
         border: 1px solid #111827;
         border-radius: 8px;
-        background: #fff;
-        color: #111827;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease;
     }
@@ -812,7 +812,7 @@
 
     .fud-live-code {
         font-size: 12px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
     }
 
@@ -834,11 +834,11 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        color: #334155;
+        color: var(--color-text-secondary);
     }
 
     .fud-live-progress-state {
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
         flex: 0 0 auto;
     }
@@ -846,7 +846,7 @@
     .fud-live-progress-bar {
         height: 6px;
         border-radius: 999px;
-        background: #e2e8f0;
+        background: var(--color-bg-hover);
         overflow: hidden;
     }
 
@@ -859,7 +859,7 @@
     .fud-live-progress-bytes {
         margin-top: 3px;
         font-size: 11px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
     }
 
@@ -873,10 +873,10 @@
 
     .fud-live-event {
         font-size: 12px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         padding: 4px 8px;
-        background: #fff;
-        border: 1px solid #eef2f7;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
         border-radius: 6px;
     }
 </style>

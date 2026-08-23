@@ -516,8 +516,8 @@
         flex: 1;
         min-height: 0;
         overflow: auto;
-        background: #fff;
-        color: #111827;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         box-sizing: border-box;
         padding: 42px 40px 58px;
     }
@@ -543,7 +543,7 @@
 
     .knowledge-mgmt-head h1 {
         margin: 0;
-        color: #111827;
+        color: var(--color-text-primary);
         font-size: 28px;
         line-height: 1.2;
         font-weight: 650;
@@ -563,26 +563,26 @@
         width: 34px;
         height: var(--gddp-control-height);
         padding: 0;
-        border: 1px solid #c9c9c9;
+        border: 1px solid var(--color-border);
         border-radius: var(--gddp-border-radius);
-        background: #fff;
-        color: #2e2e2e;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
         font-size: 14px;
         cursor: pointer;
         transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
     }
 
     .knowledge-mgmt-tool-btn:hover {
-        border-color: #111111;
-        color: #111111;
-        background: #fafafa;
+        border-color: var(--color-text-primary);
+        color: var(--color-text-primary);
+        background: var(--color-bg-sunken);
     }
 
     .knowledge-mgmt-tabs {
         display: flex;
         gap: 8px;
         margin-bottom: 24px;
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .knowledge-mgmt-tab {
@@ -591,7 +591,7 @@
         border-bottom: 2px solid transparent;
         margin-bottom: -1px;
         background: transparent;
-        color: #6b7280;
+        color: var(--color-text-secondary);
         font-size: 14px;
         font-weight: 500;
         cursor: pointer;
@@ -599,12 +599,12 @@
     }
 
     .knowledge-mgmt-tab:hover {
-        color: #111827;
+        color: var(--color-text-primary);
     }
 
     .knowledge-mgmt-tab.active {
-        color: #18181b;
-        border-bottom-color: #18181b;
+        color: var(--color-text-primary);
+        border-bottom-color: var(--color-text-primary);
     }
 
     .knowledge-mgmt-section-head {
@@ -616,7 +616,7 @@
 
     .knowledge-mgmt-section-head h2 {
         margin: 0;
-        color: #111827;
+        color: var(--color-text-primary);
         font-size: 16px;
         font-weight: 600;
     }
@@ -624,7 +624,7 @@
     .knowledge-mgmt-grid {
         display: flex;
         flex-direction: column;
-        border-top: 1px solid #f1f5f9;
+        border-top: 1px solid var(--color-border);
     }
 
     .knowledge-mgmt-card {
@@ -633,14 +633,14 @@
         justify-content: space-between;
         gap: 16px;
         padding: 14px 12px;
-        border-bottom: 1px solid #f1f5f9;
-        background: #fff;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
         cursor: pointer;
         transition: background-color 0.12s ease;
     }
 
     .knowledge-mgmt-card:hover {
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .knowledge-mgmt-card-main {
@@ -652,7 +652,7 @@
 
     .knowledge-mgmt-card-main > .fa-file-lines {
         flex: none;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 15px;
     }
 
@@ -673,7 +673,7 @@
         padding: 1px 7px;
         border: 1px solid #d4d4d8;
         border-radius: 999px;
-        color: #52525b;
+        color: var(--color-text-secondary);
         font-size: 11px;
         line-height: 1.4;
     }
@@ -683,7 +683,7 @@
         min-width: 0;
         margin: 0;
         overflow: hidden;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 14px;
         font-weight: 600;
         text-overflow: ellipsis;
@@ -697,7 +697,7 @@
 
     .knowledge-mgmt-card-updated {
         margin: 0;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -730,30 +730,30 @@
         justify-content: center;
         width: 28px;
         height: 28px;
-        border: 1px solid #d9dee7;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #fff;
-        color: #475569;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         cursor: pointer;
         transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
     }
 
     .knowledge-mgmt-card-btn:hover {
-        border-color: #111827;
-        color: #111827;
-        background: #f4f4f5;
+        border-color: var(--color-text-primary);
+        color: var(--color-text-primary);
+        background: var(--color-bg-hover);
     }
 
     .knowledge-mgmt-card-btn-danger:hover {
-        border-color: #fecaca;
-        color: #dc2626;
+        border-color: var(--color-danger-border);
+        color: var(--color-danger-text);
         background: #fef2f2;
     }
 
     .knowledge-mgmt-empty {
         padding: 60px 20px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 14px;
         text-align: center;
     }
@@ -780,9 +780,9 @@
         align-items: flex-start;
         gap: 12px;
         padding: 16px 20px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .knowledge-mgmt-short-body {
@@ -793,13 +793,13 @@
     .knowledge-mgmt-short-body strong {
         display: block;
         margin-bottom: 6px;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 14px;
     }
 
     .knowledge-mgmt-short-body p {
         margin: 0;
-        color: #475569;
+        color: var(--color-text-secondary);
         font-size: 13px;
         line-height: 1.6;
         white-space: pre-wrap;
@@ -821,7 +821,7 @@
         width: 22px;
         height: 22px;
         border-radius: 6px;
-        background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 46%, #eef2f7 100%);
+        background: linear-gradient(90deg, var(--color-bg-hover) 0%, var(--color-bg-sunken) 46%, var(--color-bg-hover) 100%);
         background-size: 220% 100%;
         animation: knowledge-mgmt-skeleton 1.1s ease-in-out infinite;
     }
@@ -835,7 +835,7 @@
         height: 12px;
         margin-bottom: 8px;
         border-radius: 6px;
-        background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 46%, #eef2f7 100%);
+        background: linear-gradient(90deg, var(--color-bg-hover) 0%, var(--color-bg-sunken) 46%, var(--color-bg-hover) 100%);
         background-size: 220% 100%;
         animation: knowledge-mgmt-skeleton 1.1s ease-in-out infinite;
     }
@@ -876,7 +876,7 @@
         max-height: 88vh;
         overflow-y: auto;
         border-radius: 12px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
         animation: knowledge-mgmt-slide-up 0.2s ease;
     }
@@ -898,12 +898,12 @@
         align-items: center;
         justify-content: space-between;
         padding: 16px 20px;
-        border-bottom: 1px solid #e2e8f0;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .knowledge-mgmt-modal-head h3 {
         margin: 0;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 16px;
     }
 
@@ -916,13 +916,13 @@
         border: none;
         border-radius: 6px;
         background: transparent;
-        color: #64748b;
+        color: var(--color-text-secondary);
         cursor: pointer;
     }
 
     .knowledge-mgmt-modal-close:hover {
-        background: #f1f5f9;
-        color: #0f172a;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .knowledge-mgmt-modal-body {
@@ -936,7 +936,7 @@
     .knowledge-mgmt-form-group label {
         display: block;
         margin-bottom: 6px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-size: 13px;
         font-weight: 500;
     }
@@ -945,10 +945,10 @@
     .knowledge-mgmt-form-group textarea {
         width: 100%;
         padding: 9px 12px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 7px;
         outline: none;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-family: inherit;
         font-size: 13px;
         box-sizing: border-box;
@@ -957,7 +957,7 @@
 
     .knowledge-mgmt-form-group input:focus,
     .knowledge-mgmt-form-group textarea:focus {
-        border-color: #111827;
+        border-color: var(--color-text-primary);
     }
 
     .knowledge-mgmt-form-group textarea {
@@ -993,9 +993,9 @@
 
     /* 公开协作开关的激活态(覆盖 GDDP btn-primary-outline hover 行为) */
     .knowledge-mgmt-modal-footer .btn-primary-outline.is-active {
-        border-color: #111827;
-        color: #111827;
-        background: #ececee;
+        border-color: var(--color-text-primary);
+        color: var(--color-text-primary);
+        background: var(--color-control-active);
     }
 
     /* 移动端:压缩页面留白,卡片单列展示 */

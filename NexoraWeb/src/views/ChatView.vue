@@ -8,6 +8,9 @@
 
 <template>
     <div class="app-container">
+        <!-- 浏览器实时同步通道:进入聊天页自动连接 /ws/browser,接收模型配置/通知等推送 -->
+        <BrowserSyncConnector />
+
         <Sidebar
             :collapsed="sidebarCollapsed"
             @toggle-mobile="handleToggleMobile"
@@ -30,6 +33,7 @@
                 @open-notes="notesOpen = true"
                 @open-files="handleOpenFiles"
                 @open-knowledge="handleOpenKnowledge"
+                @open-mail="handleOpenMailCenter"
                 @back-to-chat="handleHeaderBack"
             />
 
@@ -72,9 +76,11 @@
                             :model-name="modelStore.selectedModel?.name"
                             :streaming="isStreamingMessage(index)"
                             :is-last-user-message="isLastUserMessage(message)"
+                            :conversation-id="conversationStore.currentId"
                             @delete="handleDeleteMessage"
                             @edit-save="handleEditUserMessage"
                             @regenerate="handleRegenerate"
+                            @question-answer="handleQuestionAnswer"
                             @open-image="handleOpenImage"
                             @fork="handleForkMessage"
                             @switch-version="handleSwitchVersion"
@@ -95,6 +101,7 @@
                     @send="handleSend"
                     @stop="handleStop"
                     @remove-attachment="pendingAttachments.splice($event, 1)"
+                    @files-uploaded="handleUploadedFiles"
                     @open-token-detail="tokenDetailOpen = true"
                 />
                 </div>
@@ -136,6 +143,14 @@
                         :open="knowledgeOpen"
                         :title="knowledgeTitle"
                         @open-settings="knowledgeSettingsOpen = true"
+                    />
+                </div>
+
+                <div v-show="mailCenterOpen" class="gddp-content-view">
+                    <MailCenterView
+                        ref="mailViewRef"
+                        :open="mailCenterOpen"
+                        @close="backToChat"
                     />
                 </div>
             </div>
@@ -205,9 +220,13 @@
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
+    import { useBottomFollow } from '@/composables/useBottomFollow'
+    import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
+    import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
 
     import ChatHeader from '@/components/ChatHeader.vue'
+    import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -218,6 +237,7 @@
     import KnowledgeViewer from '@/components/KnowledgeViewer.vue'
     import KnowledgeManagementView from '@/components/KnowledgeManagementView.vue'
     import KnowledgeSettingsModal from '@/components/KnowledgeSettingsModal.vue'
+    import MailCenterView from '@/components/MailCenterView.vue'
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
@@ -254,6 +274,21 @@
     /** 正在向前补载更早消息:抑制"消息变化自动滚到底部",避免补载后被强行拉到底 */
     const prepending = ref(false)
 
+    /**
+     * 跟随底部滚动策略:
+     * 流式增量仅在用户位于底部附近时自动滚底;用户上滑回看即暂停,回到底部恢复。
+     */
+    const {
+        following: autoFollowBottom,
+        syncWithScroll,
+        followNow,
+        resume: resumeBottomFollow,
+        suspend: suspendBottomFollow,
+    } = useBottomFollow()
+
+    // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
+    useConversationUrlSync()
+
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
     const fileDetailReturnView = ref<'files' | 'workspace'>('files')
@@ -266,10 +301,11 @@
     const workspacesOpen = computed(() => overlay.view === 'workspaces')
     const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
     const knowledgeOpen = computed(() => overlay.view === 'knowledge')
+    const mailCenterOpen = computed(() => overlay.view === 'mail')
     const knowledgeTitle = ref('')
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'>(() => {
         return overlay.view || 'chat'
     })
 
@@ -299,6 +335,13 @@
             return
         }
 
+        // 邮件阅读态:先返回邮件列表,列表态才关闭整个视图
+        if (mailCenterOpen.value && mailViewRef.value?.isInDetail()) {
+            mailViewRef.value.backToList()
+
+            return
+        }
+
         backToChat()
     }
 
@@ -316,6 +359,7 @@
     /** 选区右键菜单与笔记面板引用 */
     const selectionMenuRef = ref<InstanceType<typeof SelectionContextMenu> | null>(null)
     const notesPanelRef = ref<InstanceType<typeof NotesPanel> | null>(null)
+    const mailViewRef = ref<InstanceType<typeof MailCenterView> | null>(null)
 
     /** 图片查看器:非空 url 即打开(对齐原版 openImageViewer/closeImageViewer) */
     const imageViewerUrl = ref('')
@@ -357,6 +401,25 @@
         showToast('已附加到输入框', 'success')
     }
 
+    /** 输入区直选文件上传完成:按 sandbox_path 去重后并入待发送附件列表 */
+    function handleUploadedFiles(list: AttachmentInput[]): void {
+        list.forEach((attachment) => {
+            const sandbox = String(attachment.sandbox_path || '').trim()
+
+            if (!sandbox) {
+                return
+            }
+
+            if (pendingAttachments.value.some((att) => att.sandbox_path === sandbox)) {
+                return
+            }
+
+            pendingAttachments.value.push(attachment)
+        })
+
+        chatInputRef.value?.focus()
+    }
+
     /**
      * 轮次预览点击跳转(对齐原版 scrollToAndHighlight):
      * 目标消息居中于消息视口(而非顶部对齐),跳转后临时高亮 3 秒;
@@ -367,6 +430,9 @@
         // prepending 必须保持到"目标滚动完成之后"再释放,否则"消息变化自动滚底"
         // 监听在 nextTick 刷新期执行时 prepending 已为 false,仍会把视图拉到底、覆盖目标滚动。
         const needLoad = !conversationStore.messages.some((item) => Number(item.index) === messageIndex)
+
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
 
         if (needLoad) {
             prepending.value = true
@@ -435,6 +501,7 @@
         enableThinking: boolean
         enableWebSearch: boolean
         enableTools: boolean
+        toolsMode: string
     }): Promise<void> {
         // 附件随消息快照,进入队列/发送后清空输入区附件条(对齐原版发送后 reset files)
         const attachments = pendingAttachments.value.slice()
@@ -471,9 +538,13 @@
         enableThinking: boolean
         enableWebSearch: boolean
         enableTools: boolean
+        toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
+
+        // 发送即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
+        resumeBottomFollow()
 
         conversationStore.beginStream(content)
 
@@ -484,6 +555,7 @@
             enableThinking: options.enableThinking,
             enableWebSearch: options.enableWebSearch,
             enableTools: options.enableTools,
+            toolMode: options.toolsMode,
             includeContext: true,
             attachments,
         }, {
@@ -510,6 +582,11 @@
             }
 
             if (conversationStore.queueCount > 0 && !streamService.isSending) {
+                // 队列只在其所属会话被查看时排空,避免后台流期间把排队消息发进别的会话
+                if (conversationStore.streamingConversationId !== conversationStore.currentId) {
+                    return
+                }
+
                 const next = conversationStore.dequeueNext()
 
                 if (next) {
@@ -521,6 +598,15 @@
 
     /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误 */
     function handleStreamChunk(chunk: StreamChunk): void {
+        // 跨刷新恢复:回传断点序号与流 ID(必须先于各分支的提前 return)
+        if (Number.isFinite(Number(chunk._stream_seq))) {
+            conversationStore.setStreamingLastSeq(Number(chunk._stream_seq))
+        }
+
+        if (chunk.stream_id) {
+            conversationStore.setStreamingStreamMeta(String(chunk.stream_id))
+        }
+
         // 会话 ID 同步(后端懒创建会话时通过 conversation_id chunk 返回)
         if (chunk.type === 'conversation_id' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
@@ -542,6 +628,13 @@
         // token 画像:记录本次请求的 token 构成(CTX/Token 显示数据源)
         if (chunk.type === 'prompt_token_profile') {
             conversationStore.setStreamingTokenProfile(chunk)
+
+            return
+        }
+
+        // 上下文压缩状态:更新当前助手消息的压缩卡片(对齐原版 updateMessageDivTools 的 context_compression_status 分支)
+        if (chunk.type === 'context_compression_status') {
+            conversationStore.setStreamingContextCompression(chunk)
 
             return
         }
@@ -578,12 +671,48 @@
             const delta = String(chunk.content || chunk.delta || '')
 
             conversationStore.appendStreamReasoning(delta)
+
+            return
+        }
+
+        // 工具事件:delta 阶段并入调用分段实现参数流式,call/result 维持配对时序;
+        // question 为交互问题卡片,等待用户作答后作为普通消息发送
+        if (
+            chunk.type === 'function_call_delta'
+            || chunk.type === 'function_call'
+            || chunk.type === 'function_result'
+            || chunk.type === 'question'
+        ) {
+            conversationStore.appendStreamToolStep(chunk as unknown as Record<string, unknown>)
+        }
+
+        // 增量落地后节流写快照(跨刷新恢复数据源)
+        if (
+            chunk.type === 'content_delta'
+            || chunk.type === 'content'
+            || chunk.type === 'reasoning_content'
+            || chunk.type === 'reasoning_delta'
+            || chunk.type === 'function_call'
+            || chunk.type === 'function_result'
+            || chunk.type === 'question'
+        ) {
+            conversationStore.persistActiveStream()
         }
     }
 
     /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
         const detail = info as { error?: string; finalContent?: string; finalMessage?: Record<string, unknown> } | undefined
+
+        // 跨刷新重连发现服务端流已结束/不存在:
+        // 快照内容按"已完成部分"保留展示,静默收尾(不弹错误、不写错误文本)
+        if (reason === 'error' && typeof detail?.error === 'string' && detail.error.startsWith('STREAM_GONE')) {
+            conversationStore.finishRestoredStream()
+
+            streamErrorToastShown = false
+
+            return
+        }
 
         if (reason === 'error') {
             // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标
@@ -606,6 +735,18 @@
             return
         }
 
+        // 用户终止:保留本地已流式接收的交错分段(多轮思考/工具链不塌缩);
+        // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
+        if (reason === 'aborted') {
+            conversationStore.applyFinalMessage(detail?.finalMessage)
+
+            conversationStore.abortStream()
+
+            streamErrorToastShown = false
+
+            return
+        }
+
         // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
         conversationStore.applyFinalMessage(detail?.finalMessage)
 
@@ -616,9 +757,13 @@
 
     /** 停止生成:中断当前流并清空待发送队列 */
     function handleStop(): void {
-        streamService.cancel()
-
-        conversationStore.abortStream()
+        // 仅发起取消;生成状态与流式目标索引由 onEnd('aborted') 收尾复位,
+        // 保证取消终帧的 applyFinalMessage 仍能定位到正确的目标消息(重答场景)
+        if (streamService.isSending) {
+            streamService.cancel()
+        } else {
+            conversationStore.abortStream()
+        }
 
         conversationStore.clearQueue()
     }
@@ -699,7 +844,38 @@
         await doSend(content, {
             enableThinking: true,
             enableWebSearch: false,
-            enableTools: true,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolsMode: readCurrentToolsMode(),
+        })
+    }
+
+    /** 读取输入区当前 Tools 模式(重答/编辑重发沿用,对齐原版 tool_mode 取值) */
+    function readCurrentToolsMode(): string {
+        return chatInputRef.value?.getToolsMode() || 'auto_off'
+    }
+
+    /**
+     * question 卡片作答:回答作为普通用户消息进入会话
+     * (上一条助手消息以 await 收尾,模型自然把该消息当作问题的回答继续执行)
+     */
+    async function handleQuestionAnswer(_message: ChatMessage, _questionId: string, answer: string): Promise<void> {
+        const content = String(answer || '').trim()
+
+        if (!content) {
+            return
+        }
+
+        if (streamService.isSending) {
+            showToast('已有回复生成中,请稍候', 'warning')
+
+            return
+        }
+
+        await doSend(content, {
+            enableThinking: true,
+            enableWebSearch: false,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolsMode: readCurrentToolsMode(),
         })
     }
 
@@ -732,13 +908,17 @@
         // 本地清空目标回答,锁定流式更新该消息(后端将按 regenerate_index 截断上下文并覆盖)
         conversationStore.beginStreamAt(assistantMessage.index)
 
+        // 重答即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
+        resumeBottomFollow()
+
         const accepted = await streamService.send({
             message: String(userMessage.content || ''),
             conversationId,
             modelName: modelStore.selectedId || undefined,
             enableThinking: true,
             enableWebSearch: false,
-            enableTools: true,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolMode: readCurrentToolsMode(),
             includeContext: true,
             isRegenerate: true,
             regenerateIndex: assistantMessage.index,
@@ -846,6 +1026,17 @@
         openView('workspaces')
     }
 
+    /** 顶栏 Mail 按钮:打开/关闭邮件中心视图(与 Files/Workspaces 同为互斥内容级视图) */
+    function handleOpenMailCenter(): void {
+        if (mailCenterOpen.value) {
+            backToChat()
+
+            return
+        }
+
+        openView('mail')
+    }
+
     /** 打开文件详情 */
     function openFileDetail(file: CloudFileItem): void {
         fileDetail.value = file
@@ -950,6 +1141,9 @@
     /** 查看分支处:打开父会话并跳转到分支消息(对齐原版 viewConversationBranchSourceFromContextMenu) */
     async function handleViewBranchSource(parentConversationId: string, messageIndex: number): Promise<void> {
         backToChat()
+
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
 
         try {
             await conversationStore.openConversation(parentConversationId)
@@ -1072,11 +1266,18 @@
         }
     }
 
-    /** 滚动到顶部附近时自动加载更早消息(对齐原版 maybeLoadPreviousConversationMessagesFromScroll) */
+    /** 消息区滚动:更新跟随底部状态;滚动到顶部附近时自动加载更早消息(对齐原版 maybeLoadPrevious...) */
     function handleMessagesScroll(): void {
         const container = document.getElementById('messagesContainer')
 
-        if (!container || conversationStore.loadingBefore) {
+        if (!container) {
+            return
+        }
+
+        // 先更新跟随状态:距底部超过阈值视为用户主动上滑,暂停流式期间的自动滚底
+        syncWithScroll(container)
+
+        if (conversationStore.loadingBefore) {
             return
         }
 
@@ -1086,13 +1287,18 @@
         }
     }
 
-    /** 消息变化后滚动到底部(仅当非"加载更早消息"前置插入、且非会话加载中时) */
+    /** 消息变化后滚动到底部(仅当跟随底部、非"加载更早消息"前置插入、且非会话加载中时) */
     watch(
         () => conversationStore.messages,
         async () => {
             // 会话加载期间消息先替换为占位高度,此时滚动会错位;交由 messagesLoading 监听收尾
             // 向前补载更早消息由其自身的滚动高度增量还原负责,避免被强行拉到底
             if (conversationStore.messagesLoading || prepending.value) {
+                return
+            }
+
+            // 用户已上滑离开底部:不再强制拉回,保证生成中可自由回看(思考链展开时尤其关键)
+            if (!autoFollowBottom.value) {
                 return
             }
 
@@ -1107,7 +1313,7 @@
         { deep: true }
     )
 
-    /** 会话加载完成:真实消息已渲染,滚动到底部展示最新一轮(避免停在顶部触发自动补载) */
+    /** 会话加载完成:真实消息已渲染,恢复跟随并滚到底部展示最新一轮(避免停在顶部触发自动补载) */
     watch(
         () => conversationStore.messagesLoading,
         async (loading) => {
@@ -1120,7 +1326,7 @@
             const container = document.getElementById('messagesContainer')
 
             if (container) {
-                container.scrollTop = container.scrollHeight
+                followNow(container)
             }
         }
     )
@@ -1159,6 +1365,9 @@
             showError(error instanceof Error ? error.message : '模型列表加载失败')
         }
 
+        // 地图渲染器:仅预取 provider 配置;脚本在消息出现真实地图结果时按需加载
+        primeNexoraMapRendererConfig()
+
         chatInputRef.value?.focus()
 
         // 消息区滚动监听:滚动到顶部自动加载更早消息
@@ -1169,6 +1378,57 @@
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
+
+        // URL 直达:?cid= 指向的会话优先加载(对齐原前端"URL 目标 > 流恢复目标"的导航优先级)
+        const urlConversationId = readConversationIdFromLocation()
+
+        if (urlConversationId) {
+            try {
+                await conversationStore.openConversation(urlConversationId)
+            } catch (error) {
+                showError(error instanceof Error ? error.message : '打开会话失败')
+            }
+        }
+
+        // 跨刷新恢复:读取活动流快照 → 重建分离缓冲 → 断点续播剩余流
+        const snapshot = conversationStore.takeActiveStreamSnapshot()
+
+        if (snapshot) {
+            conversationStore.registerRestoredStream(snapshot)
+            console.debug(`[conv-load] restored stream registered conv=${snapshot.conversationId} seq=${snapshot.lastSeq}`)
+
+            // 无 URL 直达目标(或目标即恢复会话)时才自动回到恢复中的会话;
+            // URL 指向其他会话时流在后台续播并进入分离缓冲,切回时零丢失接回
+            if (!urlConversationId || urlConversationId === snapshot.conversationId) {
+                void conversationStore.openConversation(snapshot.conversationId).catch(() => {})
+            }
+
+            void streamService.reconnect(
+                {
+                    streamId: snapshot.streamId,
+                    fromSeq: snapshot.lastSeq,
+                    conversationId: snapshot.conversationId,
+                },
+                {
+                    onChunk: handleStreamChunk,
+                    onEnd: handleStreamEnd,
+                },
+            )
+        }
+
+        // 临时诊断钩子(复现完成后移除)
+        ;(window as unknown as { __dbgConv?: () => Record<string, unknown> }).__dbgConv = () => ({
+            currentId: conversationStore.currentId,
+            loading: conversationStore.messagesLoading,
+            count: conversationStore.messages.length,
+            generating: conversationStore.generating,
+            streamingConv: conversationStore.streamingConversationId,
+            target: conversationStore.streamingTargetIndex,
+            pendingKeys: Object.keys(conversationStore.pendingStreams),
+            lastContent: conversationStore.messages.length
+                ? String(conversationStore.messages[conversationStore.messages.length - 1].content || '').slice(0, 80)
+                : '',
+        })
     })
 
     onBeforeUnmount(() => {
@@ -1178,6 +1438,11 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
+    })
+
+    // 刷新/关闭前强制落盘活动流快照(节流窗口内的尾部增量不丢)
+    window.addEventListener('beforeunload', () => {
+        conversationStore.persistActiveStream(true)
     })
 
     /** 在可选中文本区域右键且存在选区时,弹出选区菜单(对齐原版 contextmenu 监听) */
@@ -1288,6 +1553,9 @@
         // 回到聊天视图(若在 Files/Workspaces 中)
         backToChat()
 
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
+
         try {
             await conversationStore.openConversation(anchor.conversationId)
 
@@ -1357,6 +1625,9 @@
     async function handleSearchJumpToMessage(hit: SearchMessageHit): Promise<void> {
         backToChat()
 
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
+
         try {
             if (conversationStore.currentId !== hit.conversation_id) {
                 await conversationStore.openConversation(hit.conversation_id)
@@ -1421,10 +1692,10 @@
         align-items: center;
         gap: 8px;
         padding: 5px 14px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 14px;
-        background: #fff;
-        color: #6b7280;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -1432,7 +1703,7 @@
 
     .messages-history-load-btn:hover:not(:disabled) {
         background: #f9fafb;
-        color: #374151;
+        color: var(--color-text-secondary);
         border-color: #d1d5db;
     }
 
@@ -1445,7 +1716,7 @@
         width: 12px;
         height: 12px;
         border: 2px solid #d1d5db;
-        border-top-color: #6b7280;
+        border-top-color: var(--color-text-secondary);
         border-radius: 50%;
         animation: messages-history-spin 0.8s linear infinite;
     }
@@ -1458,7 +1729,7 @@
 
     .messages-history-load-end {
         padding: 5px 14px;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -1471,15 +1742,15 @@
         gap: 12px;
         height: 100%;
         min-height: 240px;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
     .messages-loading-spinner {
         width: 22px;
         height: 22px;
-        border: 2px solid #e5e7eb;
-        border-top-color: #6b7280;
+        border: 2px solid var(--color-border);
+        border-top-color: var(--color-text-secondary);
         border-radius: 50%;
         animation: messages-history-spin 0.8s linear infinite;
     }

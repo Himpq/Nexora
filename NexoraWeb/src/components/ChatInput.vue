@@ -48,8 +48,13 @@
                 <div class="input-options">
                     <div class="input-options-tools">
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
-                            <label class="btn-icon-small" title="Upload File / Image" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);">
-                                <input type="file" id="fileInput" style="display:none" multiple>
+                            <label
+                                class="btn-icon-small"
+                                :title="uploadingFiles ? '上传中...' : 'Upload File / Image'"
+                                :class="{ 'is-uploading': uploadingFiles }"
+                                style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);"
+                            >
+                                <input type="file" id="fileInput" style="display:none" multiple @change="handleFileSelection">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                                 </svg>
@@ -122,9 +127,9 @@
                             type="button"
                             class="token-budget-mini"
                             id="tokenBudgetMini"
-                            title="查看 Token 使用详情"
-                            aria-label="查看 Token 使用详情"
-                            @click="emit('open-token-detail')"
+                            title="查看上下文窗口"
+                            aria-label="查看上下文窗口"
+                            @click.stop="toggleTokenBudgetCard($event)"
                         >
                             <span
                                 class="token-budget-ring"
@@ -136,9 +141,9 @@
                             type="button"
                             class="token-budget-usage"
                             id="tokenBudgetUsage"
-                            :title="`${ctxTitle} · 点击查看详情`"
+                            :title="hoverText"
                             :style="{ color: tokenRing.color }"
-                            @click="emit('open-token-detail')"
+                            @click.stop="toggleTokenBudgetCard($event)"
                         >
                             {{ ctxText }}
                         </button>
@@ -176,17 +181,38 @@
                 </div>
             </div>
         </div>
+
+        <!-- 上下文窗口卡片:点击 tokenBudgetMini / tokenBudgetUsage 触发(对齐原版 #tokenBudgetTooltip) -->
+        <TokenBudgetCard
+            :open="tokenBudgetCardOpen"
+            :model="tipModel"
+            :trigger="cardTrigger"
+            :estimated="usedEstimated"
+            @open-token-detail="emit('open-token-detail')"
+            @close="closePopover('token-budget-card')"
+        />
     </div>
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import type { AttachmentInput } from '@/api/attachments'
+    import { uploadFile } from '@/api/files-center'
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
-    import { overlay } from '@/ui/overlay'
+    import { showToast } from '@/stores/notify'
+    import {
+        buildTokenBudgetHoverText,
+        buildTokenBudgetTooltipModel,
+        computeContextWindowUsedTokens,
+        normalizeContextWindow,
+        readLastAssistantIoTokens,
+        safeTokenInt,
+    } from '@/stream/tokenBudget'
+    import { closePopover, openPopover, overlay } from '@/ui/overlay'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
+    import TokenBudgetCard from '@/components/TokenBudgetCard.vue'
 
     const props = defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */
@@ -194,10 +220,18 @@
     }>()
 
     const emit = defineEmits<{
-        send: [content: string, options: { enableThinking: boolean; enableWebSearch: boolean; enableTools: boolean }]
+        send: [content: string, options: {
+            enableThinking: boolean
+            enableWebSearch: boolean
+            enableTools: boolean
+            /** Tools 模式原值(auto_off/force/off),发送链路透传给后端 tool_mode */
+            toolsMode: string
+        }]
         stop: []
         /** 移除某条待发送附件 */
         'remove-attachment': [index: number]
+        /** 直选文件上传完成:父级并入待发送附件列表 */
+        'files-uploaded': [attachments: AttachmentInput[]]
         /** 打开 Token 详情弹窗(GDDP) */
         'open-token-detail': []
     }>()
@@ -211,8 +245,59 @@
     /** 附件列表(空值安全:父级未传时为空数组) */
     const attachmentList = computed(() => props.attachments || [])
 
-    const enableThinking = ref(false)
-    const enableWebSearch = ref(true)
+    /** 输入区偏好(Thinking/Search/Tools)localStorage 键,对齐原版 CHAT_COMPOSER_PREFS_KEY */
+    const COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1'
+
+    interface ComposerPrefs {
+        thinking: boolean
+        search: boolean
+        toolsMode: string
+    }
+
+    const toolsModes = [
+        { value: 'off', label: 'Off' },
+        { value: 'auto_off', label: 'Auto(OFF)' },
+        { value: 'force', label: 'Force' },
+    ]
+
+    /** 读取输入区偏好缓存(缺失/损坏返回空对象) */
+    function readComposerPrefs(): Partial<ComposerPrefs> {
+        try {
+            const raw = localStorage.getItem(COMPOSER_PREFS_KEY)
+
+            if (!raw) {
+                return {}
+            }
+
+            const parsed = JSON.parse(raw) as Partial<ComposerPrefs>
+
+            return parsed && typeof parsed === 'object' ? parsed : {}
+        } catch {
+            return {}
+        }
+    }
+
+    /** 写入输入区偏好缓存(失败静默,不影响输入区使用) */
+    function writeComposerPrefs(prefs: ComposerPrefs): void {
+        try {
+            localStorage.setItem(COMPOSER_PREFS_KEY, JSON.stringify(prefs))
+        } catch {
+            // 缓存写入失败不影响输入区使用
+        }
+    }
+
+    /** 归一化 Tools 模式:非法值回退 auto_off(对齐原版 normalizeToolsMode) */
+    function normalizeToolsMode(raw: unknown): string {
+        const value = String(raw || '').trim()
+
+        return toolsModes.some((item) => item.value === value) ? value : 'auto_off'
+    }
+
+    /** 输入区偏好:优先恢复本地缓存,无缓存用默认(Thinking 关 / Search 开 / Tools auto_off) */
+    const composerPrefs = readComposerPrefs()
+
+    const enableThinking = ref(typeof composerPrefs.thinking === 'boolean' ? composerPrefs.thinking : false)
+    const enableWebSearch = ref(typeof composerPrefs.search === 'boolean' ? composerPrefs.search : true)
 
     /** 输入区折叠状态(容器与 wrapper 同步单段收缩,按钮随卡片右缘平滑滑入右下角,不会先居中再跳变) */
     const collapsed = ref(false)
@@ -223,14 +308,8 @@
     const inputDockCollapsed = ref(false)
 
     /** Tools 模式(对齐原版 auto_off 默认);下拉状态由浮层协调器管理 */
-    const toolsMode = ref('auto_off')
+    const toolsMode = ref(normalizeToolsMode(composerPrefs.toolsMode))
     const toolsMenuOpen = computed(() => overlay.popover === 'tools-menu')
-
-    const toolsModes = [
-        { value: 'off', label: 'Off' },
-        { value: 'auto_off', label: 'Auto(OFF)' },
-        { value: 'force', label: 'Force' },
-    ]
 
     /** 生成中:输入框保持可用,发送按钮切换为"停止" */
     const streaming = computed(() => conversationStore.generating)
@@ -240,23 +319,80 @@
         return tokenRing.value.text
     })
 
-    const ctxTitle = computed(() => {
-        const model = modelStore.selectedModel
+    /** token 画像(prompt_token_profile 块,CTX/卡片数据源) */
+    const tokenProfile = computed(() => (conversationStore.streamTokenProfile || {}) as Record<string, unknown>)
 
-        return model ? `${model.name} 上下文窗口` : '上下文窗口未知'
+    /**
+     * 本轮上下文真实占用:优先最后一条助手消息 io_tokens_window 的 raw_input
+     * (完整 prompt 口径,含缓存命中历史);缺失时回退 input 补全或文本估算。
+     */
+    const ctxUsed = computed(() => {
+        const systemTokens = safeTokenInt(tokenProfile.value.system_tokens)
+        const toolsTokens = safeTokenInt(tokenProfile.value.tools_tokens)
+        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
+        const historyText = conversationStore.messages.map((m) => String(m.content || '')).join('')
+
+        // input 是缓存计费增量(命中缓存的历史不计入),不能代表窗口占用;
+        // 只有 raw_input 缺失时才走"增量+固定部分"补全公式(responses 续接场景)。
+        if (ioTokens.round.rawInput > 0) {
+            return ioTokens.round.rawInput
+        }
+
+        const roundInput = ioTokens.round.input > 0 ? ioTokens.round.input : estimateTextTokens(historyText)
+
+        return computeContextWindowUsedTokens({ roundInput, systemTokens, toolTokens: toolsTokens })
     })
+
+    /** 是否估算口径(本轮无真实 usage 数据,展示"近似/上限估算"标注) */
+    const usedEstimated = computed(() => {
+        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
+
+        return ioTokens.round.input <= 0 && ioTokens.round.rawInput <= 0
+    })
+
+    /** 上下文窗口卡片数据模型(对齐原版 buildTokenBudgetTooltipModel) */
+    const tipModel = computed(() => {
+        const limit = normalizeContextWindow(modelStore.selectedModel?.context_window)
+        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
+
+        return buildTokenBudgetTooltipModel({
+            limit,
+            used: ctxUsed.value,
+            contextOn: true,
+            totalInput: ioTokens.round.input,
+            rawInput: ioTokens.round.rawInput,
+            cumulativeInput: ioTokens.cumulative.input,
+            cachedInput: ioTokens.round.cachedInput,
+            systemTokens: safeTokenInt(tokenProfile.value.system_tokens),
+            toolTokens: safeTokenInt(tokenProfile.value.tools_tokens),
+            estimated: usedEstimated.value,
+        })
+    })
+
+    /** usage 悬浮提示文本(对齐原版 buildTokenBudgetHoverText) */
+    const hoverText = computed(() => buildTokenBudgetHoverText(tipModel.value))
+
+    /** 上下文窗口卡片:触发按钮引用 + 打开状态(经 overlay 协调器管理) */
+    const cardTrigger = ref<HTMLElement | null>(null)
+    const tokenBudgetCardOpen = computed(() => overlay.popover === 'token-budget-card')
+
+    /** 点击 tokenBudgetMini / tokenBudgetUsage 切换上下文窗口卡片(对齐原版 bindTokenBudgetTooltipTriggers) */
+    function toggleTokenBudgetCard(event: Event): void {
+        cardTrigger.value = (event.currentTarget as HTMLElement) || null
+
+        if (overlay.popover === 'token-budget-card') {
+            closePopover('token-budget-card')
+
+            return
+        }
+
+        openPopover('token-budget-card')
+    }
 
     /** 上下文圆环:用量/预算 conic-gradient(对齐原版 renderTokenBudgetUi) */
     const tokenRing = computed(() => {
         const limit = Number(modelStore.selectedModel?.context_window || 0)
-        const profile = (conversationStore.streamTokenProfile || {}) as Record<string, unknown>
-        const systemTokens = safeToken(profile.system_tokens)
-        const toolsTokens = safeToken(profile.tools_tokens)
-
-        // 用量估算:固定部分(system+tools)+ 消息文本估算
-        const historyText = conversationStore.messages.map((m) => String(m.content || '')).join('')
-        const estimated = estimateTextTokens(historyText)
-        const used = systemTokens + toolsTokens + estimated
+        const used = ctxUsed.value
 
         if (limit <= 0) {
             return {
@@ -281,13 +417,6 @@
             text: `CTX ${used.toLocaleString()}/${limit.toLocaleString()}`,
         }
     })
-
-    /** 安全数字转换 */
-    function safeToken(value: unknown): number {
-        const num = Number(value)
-
-        return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0
-    }
 
     /** 附件大小展示(对齐原版 formatFileSize) */
     function formatSize(size?: number): string {
@@ -383,6 +512,58 @@
         autoResize()
     }
 
+    /** 直选上传进行中(防重入,按钮置灰) */
+    const uploadingFiles = ref(false)
+
+    /**
+     * 输入区直选文件上传(对齐原版 fileInput → uploadSingleFileWithProgress):
+     * 逐个走 /api/upload 任务链,成功后转为 sandbox_file 附件交父级并入待发送列表。
+     */
+    async function handleFileSelection(event: Event): Promise<void> {
+        const input = event.target as HTMLInputElement
+        const files = Array.from(input.files || [])
+
+        input.value = ''
+
+        if (!files.length || uploadingFiles.value) {
+            return
+        }
+
+        uploadingFiles.value = true
+
+        try {
+            const uploaded: AttachmentInput[] = []
+
+            for (const file of files) {
+                const result = await uploadFile(file)
+                const sandboxPath = String(result.sandbox_path || '').trim()
+
+                if (!sandboxPath) {
+                    throw new Error(`${file.name} 上传结果缺少文件路径`)
+                }
+
+                const displayName = String(result.original_name || file.name)
+
+                uploaded.push({
+                    type: 'sandbox_file',
+                    name: displayName,
+                    original_name: displayName,
+                    sandbox_path: sandboxPath,
+                    stored_path: String(result.stored_path || sandboxPath),
+                    size: Number(result.size || file.size || 0),
+                })
+            }
+
+            emit('files-uploaded', uploaded)
+
+            showToast(`已附加 ${uploaded.length} 个文件`, 'success')
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : '上传失败', 'error')
+        } finally {
+            uploadingFiles.value = false
+        }
+    }
+
     /** 与原版一致:输入时自动调整高度 */
     function autoResize(): void {
         const el = inputRef.value
@@ -449,6 +630,7 @@
             enableThinking: enableThinking.value,
             enableWebSearch: enableWebSearch.value,
             enableTools: toolsMode.value !== 'off',
+            toolsMode: toolsMode.value,
         })
 
         draft.value = ''
@@ -460,6 +642,15 @@
             el.style.height = 'auto'
         }
     }
+
+    /** 偏好变更即写回本地缓存(对齐原版 saveComposerPrefsToStorage) */
+    watch([enableThinking, enableWebSearch, toolsMode], () => {
+        writeComposerPrefs({
+            thinking: enableThinking.value,
+            search: enableWebSearch.value,
+            toolsMode: toolsMode.value,
+        })
+    })
 
     /** 外部填充输入内容(解释指令等,对齐原版 fillMessageInputWithExplainText) */
     function fillDraft(text: string): void {
@@ -482,6 +673,10 @@
             inputRef.value?.focus()
         },
         fillDraft,
+        /** 供父级在重答/编辑重发等路径读取当前 Tools 模式(对齐原版重答沿用 toolsMode) */
+        getToolsMode(): string {
+            return toolsMode.value
+        },
     })
 </script>
 
@@ -491,8 +686,8 @@
         display: inline-flex;
         align-items: center;
         gap: 5px;
-        background: #eef2ff;
-        color: #4f46e5;
+        background: var(--color-bg-hover);
+        color: var(--color-accent-text);
         border-radius: 999px;
         padding: 2px 10px;
         font-size: 12px;
@@ -507,7 +702,7 @@
         flex-wrap: wrap;
         gap: 10px;
         padding: 8px 12px;
-        border-bottom: 1px solid #eef2f7;
+        border-bottom: 1px solid var(--color-border);
     }
 
     /* Token 点击区改为按钮后去默认样式，保留原版等宽字体与尺寸 */
@@ -543,7 +738,7 @@
         font-family: var(--nc-font-mono);
         font-size: 11px;
         font-weight: 400;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         line-height: 1;
     }
 
@@ -553,6 +748,12 @@
         outline: 2px solid #93c5fd;
         outline-offset: 2px;
         border-radius: 4px;
+    }
+
+    /* 上传进行中:图标半透明提示 */
+    .is-uploading {
+        opacity: 0.45;
+        pointer-events: none;
     }
 
     /* Tools 下拉在此位置需与 Thinking/Search 复选框视觉对齐,单独收敛为紧凑触发器 */

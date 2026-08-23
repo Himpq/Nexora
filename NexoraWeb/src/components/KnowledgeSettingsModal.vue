@@ -241,7 +241,7 @@
 
     .ks-modal-head p {
         margin: 4px 0 0;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -252,7 +252,7 @@
         gap: 4px;
         margin-bottom: 14px;
         padding-bottom: 12px;
-        border-bottom: 1px solid #f1f5f9;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .ks-tab {
@@ -260,7 +260,7 @@
         border: none;
         border-radius: 8px;
         background: transparent;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 13px;
         font-weight: 500;
         cursor: pointer;
@@ -268,13 +268,13 @@
     }
 
     .ks-tab:hover {
-        background: #f1f5f9;
-        color: #0f172a;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .ks-tab.active {
         background: #eef2f7;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-weight: 600;
     }
 
@@ -291,7 +291,7 @@
     .ks-field label {
         display: block;
         margin-bottom: 6px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-size: 13px;
         font-weight: 600;
     }
@@ -319,7 +319,7 @@
         height: 20px;
         margin-top: 2px;
         border-radius: 999px;
-        background: #e2e8f0;
+        background: var(--color-bg-hover);
         transition: background 0.15s ease;
     }
 
@@ -331,7 +331,7 @@
         width: 16px;
         height: 16px;
         border-radius: 999px;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
         transition: transform 0.15s ease;
     }
@@ -353,20 +353,20 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 600;
     }
 
     .ks-switch-title i {
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-switch-desc {
         display: block;
         margin-top: 3px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
         line-height: 1.5;
     }
@@ -376,15 +376,15 @@
     .ks-share-box {
         margin-top: 10px;
         padding: 12px;
-        border: 1px dashed #cbd5e1;
+        border: 1px dashed var(--color-border);
         border-radius: 8px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ks-share-label {
         display: block;
         margin-bottom: 6px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 600;
     }
@@ -398,10 +398,10 @@
         flex: 1;
         min-width: 0;
         padding: 6px 10px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #ffffff;
-        color: #475569;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         box-sizing: border-box;
     }
@@ -423,39 +423,39 @@
     .ks-vector-tip {
         margin-bottom: 10px;
         padding: 8px 10px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #f8fafc;
-        color: #94a3b8;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-vector-status {
         margin-bottom: 8px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-chunk-list {
         max-height: 180px;
         padding: 8px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #f8fafc;
-        color: #475569;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 12px;
         overflow-y: auto;
     }
 
     .ks-chunk-empty {
-        color: #94a3b8;
+        color: var(--color-text-secondary);
     }
 
     /* ---------- 记录 ---------- */
 
     .ks-history-row {
         padding: 4px 0;
-        color: #475569;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 </style>

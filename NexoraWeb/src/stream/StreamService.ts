@@ -46,6 +46,8 @@ export interface StreamSendOptions {
     enableThinking?: boolean
     enableWebSearch?: boolean
     enableTools?: boolean
+    /** Tools 模式(auto_off/force/off),对应后端 tool_mode;缺省时后端按 auto_off 处理 */
+    toolMode?: string
     includeContext?: boolean
     /** 消息附件(对齐原版 uploadedFileIds → user_attachments) */
     attachments?: AttachmentInput[]
@@ -79,8 +81,11 @@ export class StreamService {
 
     private _controller: AbortController | null = null
 
-    /** 当前流的 stream_id(断线重连使用) */
+    /** 当前流的 stream_id(断线重连与取消定位使用) */
     private _streamId = ''
+
+    /** 当前流所属会话 ID(后端取消接口的定位兜底,懒创建会话时从流事件回填) */
+    private _conversationId = ''
 
     /** 已消费的最新序列号(断线重连断点) */
     private _lastSeq = 0
@@ -91,6 +96,78 @@ export class StreamService {
     /** 是否正在发送(供 UI 读取以禁用输入/按钮) */
     get isSending(): boolean {
         return this._sending
+    }
+
+    /** 当前流 ID(跨刷新恢复快照用) */
+    get streamId(): string {
+        return this._streamId
+    }
+
+    /** 已消费的最新序列号(重连断点) */
+    get lastSeq(): number {
+        return this._lastSeq
+    }
+
+    /**
+     * 跨刷新重连:按 stream_id+from_seq 续播剩余流(服务端断点续传)
+     *
+     * 返回 true 表示续播已建立;false 表示流已不存在/已被消费(404 等),
+     * 调用方应把快照内容按"已完成部分"保留展示。
+     */
+    async reconnect(options: {
+        streamId: string
+        fromSeq: number
+        conversationId?: string
+    }, handlers: StreamHandlers): Promise<boolean> {
+        if (this._sending) {
+            return false
+        }
+
+        this._sending = true
+        this._controller = new AbortController()
+        this._streamId = String(options.streamId || '')
+        this._conversationId = String(options.conversationId || '')
+        this._lastSeq = Number(options.fromSeq) || 0
+        this._reconnectAttempts = 0
+
+        try {
+            const res = await fetch('/api/chat/stream/reconnect', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
+                },
+                body: JSON.stringify({
+                    stream_id: this._streamId,
+                    from_seq: this._lastSeq,
+                }),
+                signal: this._controller.signal,
+            })
+
+            if (!res.ok || !res.body) {
+                handlers.onEnd?.('error', { error: `STREAM_GONE(${res.status})` })
+
+                return false
+            }
+
+            await this._consumeStream(res, handlers)
+
+            return true
+        } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                handlers.onEnd?.('aborted')
+
+                return true
+            }
+
+            handlers.onEnd?.('error', { error: error instanceof Error ? error.message : '重连失败' })
+
+            return false
+        } finally {
+            this._sending = false
+            this._controller = null
+        }
     }
 
     /**
@@ -107,6 +184,7 @@ export class StreamService {
         this._sending = true
         this._controller = new AbortController()
         this._streamId = ''
+        this._conversationId = String(options.conversationId || '')
         this._lastSeq = 0
         this._reconnectAttempts = 0
 
@@ -120,18 +198,38 @@ export class StreamService {
         return true
     }
 
-    /** 中断当前流:先通知后端取消,再 abort 本地读取 */
+    /** 中断当前流:通知后端取消生成,再 abort 本地读取 */
     cancel(): void {
         if (!this._sending) {
             return
+        }
+
+        // 后端 /api/chat/stream/cancel 按 stream_id/conversation_id 定位流会话,
+        // 两者都缺时返回 400 且服务端会继续生成到结束 → 必须携带已记录的标识
+        const payload: Record<string, string> = {}
+
+        if (this._streamId) {
+            payload.stream_id = this._streamId
+        }
+
+        if (this._conversationId) {
+            payload.conversation_id = this._conversationId
         }
 
         void fetch('/api/chat/stream/cancel', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-        }).catch(() => undefined)
+            body: JSON.stringify(payload),
+        })
+            .then(async (res) => {
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({})) as { message?: string }
+
+                    console.warn('[StreamService] 服务端取消未被接受:', data.message || `HTTP ${res.status}`)
+                }
+            })
+            .catch(() => undefined)
 
         this._controller?.abort()
     }
@@ -157,6 +255,7 @@ export class StreamService {
                     enable_thinking: options.enableThinking ?? true,
                     enable_web_search: options.enableWebSearch ?? true,
                     enable_tools: options.enableTools ?? true,
+                    tool_mode: options.toolMode || undefined,
                     include_context: options.includeContext ?? true,
                     user_attachments: options.attachments && options.attachments.length > 0 ? options.attachments : undefined,
                     is_regenerate: !!options.isRegenerate,
@@ -333,9 +432,13 @@ export class StreamService {
             return false
         }
 
-        // 记录断点信息(断线重连使用):stream_id 与已消费序列
+        // 记录断点信息(断线重连与取消定位使用):stream_id、会话 ID 与已消费序列
         if (chunk.stream_id) {
             this._streamId = String(chunk.stream_id)
+        }
+
+        if (!this._conversationId && chunk.conversation_id) {
+            this._conversationId = String(chunk.conversation_id)
         }
 
         if (Number.isFinite(Number(chunk._stream_seq))) {

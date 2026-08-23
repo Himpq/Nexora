@@ -551,8 +551,8 @@
         width: 100%;
         padding: 9px 12px;
         border: none;
-        border-bottom: 1px solid #f0f0f0;
-        background: #fff;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
         text-align: left;
         cursor: pointer;
         box-sizing: border-box;
@@ -560,11 +560,11 @@
     }
 
     .auth-key-item:hover {
-        background: #fafafa;
+        background: var(--color-bg-sunken);
     }
 
     .auth-key-item.active {
-        background: #f3f3f3;
+        background: var(--color-bg-hover);
     }
 
     .auth-key-avatar {
@@ -575,8 +575,8 @@
         width: 34px;
         height: 34px;
         border-radius: 50%;
-        background: #f5f5f5;
-        color: #888888;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
@@ -604,20 +604,20 @@
         min-width: 0;
         font-size: 13px;
         font-weight: 600;
-        color: #222222;
+        color: var(--color-text-primary);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
     .auth-key-item.active .auth-key-name {
-        color: #111111;
+        color: var(--color-text-primary);
     }
 
     /* 范围信息使用普通灰色文字,不再使用 owner/global 彩色胶囊。 */
     .auth-scope-text {
         flex: none;
-        color: #999999;
+        color: var(--color-text-secondary);
         font-size: 10.5px;
         font-weight: 550;
     }
@@ -627,7 +627,7 @@
         align-items: center;
         gap: 8px;
         font-size: 11px;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     .auth-key-preview {
@@ -641,11 +641,11 @@
 
     .auth-key-expiry {
         flex: none;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     .auth-key-expiry.expired {
-        color: #dc2626;
+        color: var(--color-danger-text);
         font-weight: 600;
     }
 
@@ -655,7 +655,7 @@
         padding: 28px 16px;
         text-align: center;
         font-size: 13px;
-        color: #a0a0a0;
+        color: var(--color-text-secondary);
     }
 
     .auth-detail-empty {
@@ -670,7 +670,7 @@
 
     .auth-empty-icon {
         font-size: 24px;
-        color: #d0d0d0;
+        color: var(--color-text-secondary);
     }
 
     /* ==================== 详情区 ==================== */
@@ -688,15 +688,15 @@
     /* 卡片容器(可编辑区 / 只读信息 / 权限) */
     .auth-card {
         padding: 14px 16px;
-        border: 1px solid #eeeeee;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
     }
 
     .auth-card-title {
         font-size: 11.5px;
         font-weight: 650;
-        color: #888888;
+        color: var(--color-text-secondary);
         letter-spacing: 0.03em;
         margin-bottom: 12px;
         text-transform: uppercase;
@@ -729,23 +729,23 @@
     .auth-info-label {
         font-size: 11px;
         font-weight: 550;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     .auth-info-value {
         font-size: 13px;
-        color: #222222;
+        color: var(--color-text-primary);
         padding: 6px 10px;
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         border-radius: 6px;
-        border: 1px solid #f0f0f0;
+        border: 1px solid var(--color-border);
         word-break: break-all;
     }
 
     .auth-info-value.auth-expired {
-        color: #dc2626;
+        color: var(--color-danger-text);
         background: #fef2f2;
-        border-color: #fecaca;
+        border-color: var(--color-danger-border);
     }
 
     /* ==================== 权限 toggle 开关 ==================== */
@@ -762,30 +762,30 @@
         justify-content: space-between;
         gap: 10px;
         padding: 9px 12px;
-        border: 1px solid #eeeeee;
+        border: 1px solid var(--color-border);
         border-radius: 7px;
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         cursor: pointer;
         transition: border-color 0.15s ease, background 0.15s ease;
     }
 
     .auth-perm-toggle:hover {
-        border-color: #d0d0d0;
+        border-color: var(--color-border);
     }
 
     .auth-perm-toggle.active {
-        border-color: #111111;
+        border-color: var(--color-text-primary);
         background: #f7f7f7;
     }
 
     .auth-perm-label {
         font-size: 12.5px;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         font-weight: 500;
     }
 
     .auth-perm-toggle.active .auth-perm-label {
-        color: #111111;
+        color: var(--color-text-primary);
     }
 
     /* toggle 滑轨 */
@@ -810,7 +810,7 @@
         width: 14px;
         height: 14px;
         border-radius: 50%;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
         transition: transform 0.2s ease;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
     }
@@ -823,16 +823,16 @@
 
     .auth-plain-key {
         padding: 12px;
-        background: #f8f8f8;
+        background: var(--color-bg-sunken);
         border-radius: 8px;
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
     }
 
     .auth-plain-key-value {
         display: block;
         padding: 10px 12px;
-        background: #ffffff;
-        border: 1px solid #e0e0e0;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
         border-radius: 6px;
         font-size: 13px;
         word-break: break-all;
@@ -843,7 +843,7 @@
     .auth-plain-key-tip {
         margin-top: 10px;
         font-size: 12px;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     /* ==================== 弹窗提示 ==================== */

@@ -12,13 +12,13 @@
     align-items: center;
     gap: 10px;
     padding: 8px 12px;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--color-border);
     border-radius: 8px;
     transition: background 0.15s ease;
 }
 
 .admin-model-row:hover {
-    background: #f8fafc;
+    background: var(--color-bg-sunken);
 }
 
 .admin-model-name {
@@ -26,7 +26,7 @@
     min-width: 0;
     font-size: 13px;
     font-weight: 600;
-    color: #0f172a;
+    color: var(--color-text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -41,24 +41,24 @@
 }
 
 .admin-model-status.model-status-normal {
-    background: #dcfce7;
-    color: #15803d;
+    background: var(--color-success-surface);
+    color: var(--color-success-text);
 }
 
 .admin-model-status.model-status-error {
-    background: #fee2e2;
-    color: #b91c1c;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
 }
 
 .admin-model-status.model-status-disabled,
 .admin-model-status.model-status-unknown {
-    background: #f1f5f9;
-    color: #64748b;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
 }
 
 .admin-model-ctx {
     flex: none;
     font-size: 11px;
-    color: #64748b;
+    color: var(--color-text-secondary);
     font-variant-numeric: tabular-nums;
 }

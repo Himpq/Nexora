@@ -28,7 +28,7 @@ export const overlay = reactive({
     /** 当前打开的右侧栏面板 id(至多一个) */
     panel: null as string | null,
     /** 当前打开的内容级视图 id(至多一个;null 表示聊天主视图) */
-    view: null as 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | null,
+    view: null as 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | null,
     /** 当前打开的弹窗 id(至多一个) */
     modal: null as string | null,
 })
@@ -103,7 +103,7 @@ export function closePanel(id: string): void {
  *
  * keepPanel=true 时保留右侧栏面板(如从知识库面板打开知识库正文,面板保持可继续浏览)。
  */
-export function openView(id: 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt', options: { keepPanel?: boolean } = {}): void {
+export function openView(id: 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail', options: { keepPanel?: boolean } = {}): void {
     overlay.view = id
     overlay.popover = null
 

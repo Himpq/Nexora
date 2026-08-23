@@ -457,7 +457,7 @@
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     /* 全屏:脱离视图布局覆盖整个视口(设计令牌 --z-viewer) */
@@ -477,8 +477,8 @@
         gap: 2px;
         flex-shrink: 0;
         padding: 6px 10px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #fff;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
     }
 
     .gddp-markdown-toolbar .heading-control {
@@ -497,19 +497,19 @@
         border: 1px solid transparent;
         border-radius: var(--gddp-border-radius);
         background: transparent;
-        color: #3f3f46;
+        color: var(--color-text-secondary);
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease;
     }
 
     .gddp-markdown-toolbar .toolbar-btn:hover {
-        background: #f4f4f5;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .gddp-markdown-toolbar .toolbar-btn.active {
-        background: #ececee;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
         box-shadow: inset 0 0 0 1px #d4d4d8;
     }
 
@@ -547,7 +547,7 @@
         padding: 4px;
         border: 1px solid #d0d7de;
         border-radius: 6px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
     }
 

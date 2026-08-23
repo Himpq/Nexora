@@ -111,12 +111,12 @@
         gap: 6px;
         margin-bottom: 8px;
         font-size: 12px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         line-height: 1.4;
     }
 
     .setting-expiry-slider-current strong {
-        color: #111111;
+        color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 650;
     }
@@ -145,8 +145,8 @@
         width: 18px;
         height: 18px;
         border-radius: 50%;
-        background: #ffffff;
-        border: 2px solid #111111;
+        background: var(--color-bg-elevated);
+        border: 2px solid var(--color-border-strong);
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
     }
 
@@ -154,8 +154,8 @@
         width: 14px;
         height: 14px;
         border-radius: 50%;
-        background: #ffffff;
-        border: 2px solid #111111;
+        background: var(--color-bg-elevated);
+        border: 2px solid var(--color-border-strong);
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
     }
 
@@ -175,7 +175,7 @@
         padding: 4px 0;
         border: 0;
         background: transparent;
-        color: #999999;
+        color: var(--color-text-secondary);
         font-size: 11px;
         line-height: 1.25;
         text-align: center;
@@ -192,7 +192,7 @@
     }
 
     .setting-expiry-slider-mark.active {
-        color: #111111;
+        color: var(--color-text-primary);
         font-weight: 650;
     }
 </style>
