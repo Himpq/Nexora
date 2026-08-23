@@ -7154,7 +7154,10 @@ function replaceConversationHistory(conversationId = '') {
     if (!window.history.replaceState) return;
 
     const normalizedId = String(conversationId || '').trim();
-    const url = normalizedId ? `/chat?cid=${encodeURIComponent(normalizedId)}` : '/chat';
+    // 基于当前路径改写,兼容 /old 旧路由(不硬编码 /chat)
+    const url = normalizedId
+        ? `${window.location.pathname}?cid=${encodeURIComponent(normalizedId)}`
+        : window.location.pathname;
     window.history.replaceState({}, '', url);
 }
 
@@ -9975,7 +9978,7 @@ function resetTokenUiForNewConversation() {
 
 function pushNewConversationHistory() {
     if (window.history.pushState) {
-        window.history.pushState({}, '', '/chat');
+        window.history.pushState({}, '', window.location.pathname);
     }
 }
 
@@ -10065,7 +10068,7 @@ function pushConversationHistory(conversationId) {
     }
 
     if (window.history.pushState) {
-        window.history.pushState({}, '', `/chat?cid=${cid}`);
+        window.history.pushState({}, '', `${window.location.pathname}?cid=${cid}`);
     }
 }
 

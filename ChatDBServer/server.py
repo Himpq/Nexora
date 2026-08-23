@@ -6703,7 +6703,7 @@ def js_bundle(bundle_name):
 
 @app.route('/')
 def index():
-    """首页：未登录展示 Landing，已登录进入新版聊天前端(/new)；旧版保留在 /chat 作为回退"""
+    """首页：未登录展示 Landing，已登录进入新版聊天前端(/new)；旧版完整界面保留在 /old"""
     if 'username' in session:
         return redirect(url_for('new_frontend_page', **request.args))
 
@@ -10278,7 +10278,15 @@ def admin_chroma_stats():
 
 @app.route('/chat')
 def chat():
-    """聊天页面"""
+    """聊天入口:已迁移至新版前端;旧版完整界面保留在 /old 作为回退"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return redirect('/new')
+
+
+@app.route('/old')
+def legacy_chat():
+    """旧版聊天页(回退入口):与原 /chat 完全一致,供新旧并行期使用"""
     if 'username' not in session:
         return redirect(url_for('login'))
     try:
