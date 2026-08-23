@@ -6871,7 +6871,7 @@ textarea {
 
 .file-center-tool-btn:hover {
     border-color: var(--color-border);
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     color: var(--color-text-primary);
 }
 
@@ -6937,7 +6937,7 @@ textarea {
 .file-center-card:focus,
 .file-center-card:focus-visible {
     border-color: var(--color-border);
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     outline: none;
     box-shadow: none;
 }

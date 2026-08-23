@@ -152,7 +152,7 @@
 }
 
 .mail-folder-tab:hover {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     color: var(--color-text-primary);
 }
 
@@ -176,7 +176,7 @@
 }
 
 .mail-folder-count.muted {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     color: var(--color-text-secondary);
 }
 
@@ -197,7 +197,7 @@
     gap: 12px;
     padding: 14px 18px;
     border: none;
-    border-bottom: 1px solid #f1f4f8;
+    border-bottom: 1px solid var(--color-border);
     background: transparent;
     color: inherit;
     font: inherit;

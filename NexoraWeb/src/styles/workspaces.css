@@ -156,7 +156,7 @@
 }
 
 .workspace-projects-item:hover {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
 }
 
 .workspace-projects-item.active {
@@ -698,7 +698,7 @@
 }
 
 .workspace-detail-title-edit-btn:hover {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     color: var(--color-text-primary);
 }
 
@@ -760,7 +760,7 @@
 }
 
 .workspace-detail-share-btn:hover {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
     color: var(--color-text-primary);
 }
 
@@ -2318,7 +2318,7 @@
 }
 
 .workspace-detail-resource:hover {
-    background: #f1f4f8;
+    background: var(--color-bg-hover);
 }
 
 .workspace-detail-resource.is-clickable {

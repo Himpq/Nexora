@@ -490,7 +490,7 @@
         justify-content: space-between;
         gap: 12px;
         padding: 10px 12px;
-        border: 1px solid #eef2f6;
+        border: 1px solid var(--color-border);
         border-radius: 9px;
         background: #fbfcfe;
     }
