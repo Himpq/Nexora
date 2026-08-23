@@ -1,0 +1,152 @@
+/**
+ * toastui-theme.css — Toast UI Editor 暗色适配(GDDP 令牌化)
+ *
+ * 背景:
+ *   - @toast-ui/editor v3 官方样式只有浅色;知识库编辑器(MarkdownEditor)在暗色下
+ *     编辑区/预览区/工具栏仍是白底黑字,不可读。
+ *   - 本文件所有规则都挂在 html[data-theme='dark'] 下:暗色时以更高优先级覆盖官方
+ *     浅色值(属性选择器额外加权),浅色主题零影响;颜色一律走设计令牌,随令牌层联动。
+ *
+ * 覆盖面(对齐 MarkdownEditor 实际用到的表面):
+ *   - 外框 / 工具栏(含按钮 hover/active 与分隔线)
+ *   - markdown 编辑区(ProseMirror 文字/光标/占位符)与分屏分隔线
+ *   - 预览区背景与 .toastui-editor-contents 排版(标题/链接/引用/代码/表格/分割线)
+ *   - 弹窗(添加链接/图片)与内部输入框
+ */
+
+/* ---------- 外框与工具栏 ---------- */
+
+html[data-theme='dark'] .toastui-editor-defaultUI {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI-toolbar {
+    background: var(--color-bg-elevated);
+    border-bottom-color: var(--color-border);
+    box-shadow: none;
+}
+
+html[data-theme='dark'] .toastui-editor-toolbar-group button:hover,
+html[data-theme='dark'] .toastui-editor-toolbar-group button:active {
+    background: var(--color-bg-hover);
+}
+
+html[data-theme='dark'] .toastui-editor-toolbar-divider {
+    background-color: var(--color-border);
+}
+
+/* ---------- 编辑区 / 分屏 ---------- */
+
+html[data-theme='dark'] .toastui-editor-main {
+    background: var(--color-bg-elevated);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-preview {
+    background: var(--color-bg-elevated);
+}
+
+html[data-theme='dark'] .toastui-editor-md-splitter {
+    background-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor,
+html[data-theme='dark'] .toastui-editor-md-container .ProseMirror {
+    color: var(--color-text-primary);
+    caret-color: var(--color-text-primary);
+}
+
+/* 占位符(空文档提示文字) */
+html[data-theme='dark'] .toastui-editor-md-container .ProseMirror .placeholder {
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents-placeholder::before {
+    color: var(--color-text-secondary);
+}
+
+/* ---------- 预览排版(.toastui-editor-contents) ---------- */
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h1,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h2,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h3,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h4,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h5,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h6 {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h1,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents h2 {
+    border-bottom-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents a {
+    color: var(--color-accent-text);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents blockquote {
+    border-left-color: var(--color-border-strong);
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents code {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents pre {
+    background: var(--color-bg-page);
+    border-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents pre code {
+    background: transparent;
+    color: inherit;
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents table {
+    border-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents table th,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents table td {
+    border-color: var(--color-border);
+    background: transparent;
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents table th {
+    background: var(--color-bg-sunken);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents hr {
+    border-top-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-contents img {
+    background: transparent;
+}
+
+/* ---------- 弹窗(添加链接 / 添加图片) ---------- */
+
+html[data-theme='dark'] .toastui-editor-popup {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body input[type='text'] {
+    background: var(--color-bg-page);
+    border-color: var(--color-border);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body input[type='text']:focus {
+    border-color: var(--color-accent-text);
+    outline: none;
+}

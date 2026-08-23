@@ -22,7 +22,9 @@
     import hljs from 'highlight.js'
     import katex from 'katex'
 
-    import 'highlight.js/styles/github.min.css'
+    // 代码高亮主题不在此静态引入:入口页 index.html 声明 github(亮,常开)与
+    // github-dark(暗,id=hljs-theme-dark)双 link,由 ui/theme.ts 按主题互斥启停。
+    // 若在此 import github.min.css 会被打进包尾并覆盖暗色 link,导致暗色代码块不可读。
     import 'katex/dist/katex.min.css'
 
     /** 流式节流间隔(ms):该周期内的多次增量合并为一次解析 */
