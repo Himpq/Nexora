@@ -98,10 +98,13 @@ export const useUserStore = defineStore('user', {
             return true
         },
 
-        /** 登出 */
+        /** 登出:本地登录态必须无条件清空;服务端登出尽力而为
+         *  (会话已失效时 /logout 也可能失败,若向上抛错会阻断调用方的跳转) */
         async logout(): Promise<void> {
             try {
                 await apiLogout()
+            } catch {
+                // 服务端登出失败不阻断本地登出:cookie 失效等场景下服务端本就无需再清
             } finally {
                 this.user = null
                 this.initialized = false

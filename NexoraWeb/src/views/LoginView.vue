@@ -163,7 +163,7 @@
         gap: 14px;
     }
 
-    .big-logo {
+        .big-logo {
         font-size: 84px;
         font-weight: 700;
         color: #fff;
@@ -172,11 +172,51 @@
         align-items: baseline;
         z-index: 10;
         text-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        /* 品牌入场:上浮 + 模糊消散(复刻原版 fadeInLogo) */
+        animation: fade-in-logo 1.2s ease-out;
+    }
+
+    @keyframes fade-in-logo {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+            filter: blur(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+            filter: blur(0);
+        }
     }
 
     .big-logo .dot {
-        color: var(--color-text-secondary);
+        color: #444;
         margin-left: 4px;
+    }
+
+    /* 点号多阶段循环(. → .. → ... → ...? → 空,复刻原版 multiPhaseDots) */
+    .big-logo .dot::after {
+        content: '.';
+        display: inline-block;
+        animation: multi-phase-dots 4.5s infinite;
+    }
+
+    @keyframes multi-phase-dots {
+        0%   { content: '.'; opacity: 1; }
+        5%   { content: '.'; opacity: 0; }
+        10%  { content: '.'; opacity: 1; }
+        15%  { content: '.'; opacity: 0; }
+        20%  { content: '.'; opacity: 1; }
+        22%  { content: '.'; opacity: 1; }
+        33%  { content: '..'; opacity: 1; }
+        44%  { content: '...'; opacity: 1; }
+        55%  { content: '...?'; opacity: 1; }
+        77%  { content: '...?'; opacity: 1; }
+        80%  { content: '..'; opacity: 1; }
+        85%  { content: '.'; opacity: 1; }
+        90%  { content: ''; opacity: 1; }
+        100% { content: '.'; opacity: 1; }
     }
 
     .login-right {
@@ -191,6 +231,20 @@
     .login-box {
         width: 100%;
         max-width: 380px;
+        /* 表单滑入(复刻原版 slideInRight) */
+        animation: slide-in-right 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slide-in-right {
+        from {
+            opacity: 0;
+            transform: translateX(40px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
     }
 
     .login-header {

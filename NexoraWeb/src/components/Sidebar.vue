@@ -390,9 +390,12 @@
     }
 
     async function handleLogout(): Promise<void> {
-        await userStore.logout()
-
-        await router.replace('/login')
+        // 跳转放在 finally:无论登出接口结果如何都必须离开聊天视图
+        try {
+            await userStore.logout()
+        } finally {
+            await router.replace('/login')
+        }
     }
 
     /** 切换用户菜单(由浮层协调器统一管理打开/外部关闭/互斥) */
