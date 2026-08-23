@@ -1,0 +1,114 @@
+/**
+ * workspaces.css — Workspaces 区域共享样式(GDDP 分层:组件私有样式在各 SFC scoped 内,
+ * 跨面板复用的行级原子样式统一收口在此,禁止在面板间复制粘贴)
+ */
+
+/* 面板空态(对话/知识库/文件/任务/总览通用) */
+.ws-empty {
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    padding: 18px 10px;
+}
+
+/* 置顶图钉(行标题前缀) */
+.ws-pin-icon {
+    color: var(--color-text-primary);
+    font-size: 11px;
+    margin-right: 7px;
+}
+
+/* 行右侧日期 + 可见性开关的公共几何 */
+.ws-row-side {
+    display: grid;
+    grid-template-columns: 92px 112px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14px;
+}
+
+.ws-row-date {
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 共享只读对话视图:状态文案(加载中/错误) */
+.ws-shared-state {
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    padding: 24px 10px;
+}
+
+/*
+ * 详情页内嵌输入框槽位(对齐原版 workspace-detail-input-slot):
+ * ChatInput 经 Teleport 停靠进详情页头部与 tab 栏之间;
+ * 槽位宽度与详情内容区同轴,内部输入坞去除外边距与底色。
+ */
+.ws-detail-input-slot {
+    position: relative;
+    z-index: 30;
+    width: 100%;
+    max-width: var(--input-container-max-width, 800px);
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 14px;
+}
+
+.ws-detail-input-slot .input-dock {
+    margin: 0;
+    background: transparent;
+}
+
+@media (max-width: 720px) {
+    .ws-row-side {
+        grid-template-columns: 84px 96px;
+        gap: 10px;
+    }
+
+    .ws-row-date {
+        font-size: 12px;
+    }
+}
+
+/*
+ * 从 Workspace 打开的对话:聊天视图左上角常驻「返回 Workspace」入口。
+ * .gddp-chat-view 为绝对定位铺满舞台的容器,按钮以绝对定位停靠其顶部左缘。
+ */
+.chat-workspace-return {
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    z-index: 20;
+}
+
+.chat-workspace-return-btn {
+    height: 32px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.chat-workspace-return-btn:hover {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+.chat-workspace-return-btn:focus-visible {
+    outline: 2px solid var(--color-text-primary);
+    outline-offset: 2px;
+}

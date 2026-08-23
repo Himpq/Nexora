@@ -49,6 +49,24 @@
                     <Button
                         variant="secondary"
                         size="icon"
+                        icon="fa-solid fa-download"
+                        title="下载选中文件"
+                        aria-label="下载选中文件"
+                        :disabled="!selectedFile"
+                        @click="selectedFile && handleDownload(selectedFile)"
+                    />
+                    <Button
+                        variant="secondary"
+                        size="icon"
+                        icon="fa-solid fa-trash-can"
+                        title="删除选中文件"
+                        aria-label="删除选中文件"
+                        :disabled="!selectedFile"
+                        @click="selectedFile && handleDelete(selectedFile)"
+                    />
+                    <Button
+                        variant="secondary"
+                        size="icon"
                         icon="fa-solid fa-rotate-right"
                         title="刷新"
                         aria-label="刷新"
@@ -77,6 +95,7 @@
                             :title="cardTitle(file)"
                             @click="selectFile(file)"
                             @dblclick="openDetail(file)"
+                            @contextmenu.prevent="openFileMenu($event, file)"
                         >
                             <div class="file-center-card-icon-wrap">
                                 <span class="file-center-file-icon" :class="fileToneClass(file)">
@@ -94,6 +113,18 @@
             :open="uploadDialogOpen"
             @close="uploadDialogOpen = false"
             @uploaded="load"
+        />
+
+        <!-- 文件右键菜单:归入/移出工作区(参考会话右键的移入移出) -->
+        <ContextMenu
+            :armed="fileMenu.armed"
+            :x="fileMenu.x"
+            :y="fileMenu.y"
+            target-type="cloud_file"
+            :file-ref="fileMenu.fileRef"
+            :file-alias="fileMenu.fileAlias"
+            :title="fileMenu.title"
+            :pinned="false"
         />
     </section>
 </template>
@@ -114,11 +145,13 @@
         listFiles,
         removeFile,
     } from '@/api/files-center'
+    import ContextMenu from '@/components/ContextMenu.vue'
     import FileUploadDialog from '@/components/FileUploadDialog.vue'
     import Button from '@/ui/Button.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { openPopover, overlay } from '@/ui/overlay'
 
     const emit = defineEmits<{
         close: []
@@ -136,6 +169,52 @@
     const selectedRef = ref('')
     const sortBy = ref<'created_desc' | 'name_asc'>('created_desc')
     const uploadDialogOpen = ref(false)
+
+    /** 当前选中文件(头栏下载/删除按钮数据源) */
+    const selectedFile = computed(() => {
+        if (!selectedRef.value) {
+            return null
+        }
+
+        return files.value.find((file) => fileRef(file) === selectedRef.value) || null
+    })
+
+    /** 文件右键菜单状态(目标:云盘文件,动作:归入/移出工作区) */
+    const fileMenu = ref({
+        armed: false,
+        x: 0,
+        y: 0,
+        fileRef: '',
+        fileAlias: '',
+        title: '',
+    })
+
+    /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
+    watch(
+        () => overlay.popover,
+        (popover) => {
+            if (popover !== 'context-menu') {
+                fileMenu.value.armed = false
+            }
+        }
+    )
+
+    /** 文件右键:选中 + 弹出工作区归入/移出菜单(镜像会话右键菜单) */
+    function openFileMenu(event: MouseEvent, file: CloudFileItem): void {
+        selectFile(file)
+
+        fileMenu.value = {
+            armed: true,
+            x: event.clientX,
+            y: event.clientY,
+            fileRef: cloudFileRef(file),
+            fileAlias: String(file.alias || ''),
+            title: fileDisplayName(file),
+        }
+
+        // 打开浮层(镜像 Sidebar/KnowledgePanel:菜单可见性依赖 overlay.popover 命中本菜单 id)
+        openPopover('context-menu')
+    }
 
     const sortOptions = [
         { value: 'created_desc', label: '上传时间' },

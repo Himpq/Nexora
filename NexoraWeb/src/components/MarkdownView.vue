@@ -152,6 +152,162 @@
         })
     }
 
+    /**
+     * 渲染前归一化(仅作用于代码围栏之外):
+     *
+     * 1. 中文语境强调定界符修正:`**` 与引号(`"“”''`)+文字紧贴时插入零宽空格(U+200B)。
+     *    背景(marked 助翼误判):`位就是**"轻装旅行主力"**，和` 这类内容——
+     *    开启侧 `**` 紧贴 CJK 文字 + 引号时 marked 的 em/strong 分隔符左右助翼判定失败,
+     *    `**` 原样输出、加粗不生效;插入不可见零宽空格后分隔符恢复判读。
+     * 2. 表格容错:全角竖线 ｜ → ASCII |;连续 2+ 行管道行但缺 `---` 分隔行时自动补分隔行,
+     *    并保证表与后续正文之间有换行(否则 GFM 会把正文吞进表格数据行)。
+     */
+    function normalizeMarkdownForRendering(source: string): string {
+        const lines = String(source || '').split('\n')
+        const out: string[] = []
+        let fenceChar = ''
+        let fenceLength = 0
+        // 上一个非空行是否为表格分隔行(处于表格体内部时不再补分隔,避免二次分隔破坏数据行)
+        let previousSeparatedTable = false
+
+        for (let i = 0; i < lines.length; i += 1) {
+            const line = lines[i]
+            const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/)
+
+            if (fenceMatch) {
+                const marker = fenceMatch[1]
+                const markerChar = marker[0]
+                const markerLength = marker.length
+
+                if (!fenceChar) {
+                    fenceChar = markerChar
+                    fenceLength = markerLength
+                } else if (fenceChar === markerChar && markerLength >= fenceLength) {
+                    fenceChar = ''
+                    fenceLength = 0
+                }
+
+                out.push(line)
+                previousSeparatedTable = false
+
+                continue
+            }
+
+            if (fenceChar) {
+                // 围栏内代码内容不加工,保持原样
+                out.push(line)
+
+                continue
+            }
+
+            if (!line.trim()) {
+                out.push(line)
+                previousSeparatedTable = false
+
+                continue
+            }
+
+            const normalized = normalizeLineRow(line)
+
+            if (previousSeparatedTable) {
+                out.push(normalized)
+                previousSeparatedTable = false
+
+                continue
+            }
+
+            if (isTableSeparatorRow(normalized)) {
+                out.push(normalized)
+                previousSeparatedTable = true
+
+                continue
+            }
+
+            const nextRaw = lines[i + 1]
+
+            if (nextRaw !== undefined) {
+                const nextNorm = normalizeLineRow(nextRaw)
+
+                if (isPipeRow(normalized) && isPipeRow(nextNorm) && !isTableSeparatorRow(nextNorm)) {
+                    // 缺分隔行的表:定位整段连续管道行,补一张分隔行,段尾遇正文补空行防 GFM 吞并
+                    let runEnd = i
+
+                    while (
+                        runEnd + 1 < lines.length
+                        && lines[runEnd + 1].trim()
+                        && isPipeRow(normalizeLineRow(lines[runEnd + 1]))
+                    ) {
+                        runEnd += 1
+                    }
+
+                    out.push(normalized)
+                    out.push(buildTableSeparatorRow(normalized))
+
+                    for (let k = i + 1; k <= runEnd; k += 1) {
+                        out.push(normalizeLineRow(lines[k]))
+                    }
+
+                    const afterLine = String(lines[runEnd + 1] ?? '').trim()
+
+                    if (afterLine) {
+                        out.push('')
+                    }
+
+                    i = runEnd
+                    previousSeparatedTable = false
+
+                    continue
+                }
+            }
+
+            out.push(normalized)
+        }
+
+        return out.join('\n')
+    }
+
+    /** 单行归一化:全角竖线 → ASCII |;强调定界符与引号贴邻的上下文插入零宽空格 */
+    function normalizeLineRow(line: string): string {
+        return line
+            .replace(/｜/g, '|')
+            .replace(/([^\s\p{P}\p{S}])(\*\*)(?=["“”'‘’])/gu, `$1$2\u200B`)
+            .replace(/(["“”'‘’])(\*\*)(?=[^\s\p{P}\p{S}])/gu, `$1\u200B$2`)
+    }
+
+    /** 是否为表格数据/表头行(至少 2 个未转义管道符,即 3 列及以上) */
+    function isPipeRow(line: string): boolean {
+        return countUnescapedPipes(line) >= 2
+    }
+
+    /** 是否为 GFM 表格分隔行(如 `--- | --- | ---`、`:---:|--- | :--:` ) */
+    function isTableSeparatorRow(line: string): boolean {
+        const trimmed = String(line || '').trim().replace(/^\|/, '').replace(/\|$/, '')
+        const cells = trimmed.split('|').map((cell) => cell.trim())
+
+        return cells.length >= 2 && cells.every((cell) => /^:?-+:?$/.test(cell))
+    }
+
+    /** 未转义管道符计数(跳过 `\|`) */
+    function countUnescapedPipes(line: string): number {
+        const text = String(line || '')
+        let count = 0
+
+        for (let i = 0; i < text.length; i += 1) {
+            if (text[i] === '|' && (i === 0 || text[i - 1] !== '\\')) {
+                count += 1
+            }
+        }
+
+        return count
+    }
+
+    /** 按表头列数生成 GFM 分隔行 */
+    function buildTableSeparatorRow(headerRow: string): string {
+        const columns = countUnescapedPipes(headerRow) + 1
+
+        return Array.from({ length: columns }, () => '---').join(' | ')
+    }
+
     /** 行内公式 $...$ 渲染(前后不能是数字,避免与货币符号冲突) */
     function renderInlineMath(source: string): string {
         return source.replace(/(^|[^$\\])\$([^$\n]+?)\$/g, (_match, prefix: string, latex: string) => {
@@ -183,7 +339,9 @@
     }
 
     const renderedHtml = computed(() => {
-        const withMath = renderInlineMath(renderBlockMath(displayContent.value))
+        const normalized = normalizeMarkdownForRendering(displayContent.value)
+
+        const withMath = renderInlineMath(renderBlockMath(normalized))
 
         const raw = marked.parse(withMath, { gfm: true, breaks: true }) as string
 

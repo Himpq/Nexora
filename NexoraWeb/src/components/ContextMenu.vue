@@ -6,6 +6,7 @@
     目标类型:
       - conversation    -> 置顶走 /api/conversations/<id>/pin,归入走 /api/workspace/<id>/conversations
       - knowledge_basis -> 置顶走 /api/knowledge/basis/<title>/pin,归入走 /api/workspace/<id>/knowledge
+      - cloud_file      -> 无置顶;归入走 /api/workspace/<id>/files,已归入时可取消归入(移除文件标记)
     可见性:父级 armed + 浮层协调器 popoverId 互斥;打开时注册容器支持外部点击关闭。
     子菜单:由原版 CSS hover/focus 显示(与交互一致),JS 仅负责加载工作区数据。
     每次打开都重新拉取 include_marks 工作区列表,保证已归入打勾实时刷新。
@@ -21,7 +22,7 @@
             :style="{ left: `${posX}px`, top: `${posY}px` }"
             aria-hidden="false"
         >
-            <button id="pinContextMenuAction" type="button" @click="handleTogglePin">
+            <button id="pinContextMenuAction" v-if="targetType !== 'cloud_file'" type="button" @click="handleTogglePin">
                 <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
                 <span>{{ pinned ? '解除置顶' : '置顶' }}</span>
             </button>
@@ -79,11 +80,13 @@
     import { setConversationPin, updateConversationTitle } from '@/api/conversations'
     import type { ConversationBranch } from '@/api/conversations'
     import { setBasisKnowledgePin } from '@/api/knowledge'
-    import type { WorkspaceSummary } from '@/api/workspaces'
+    import type { WorkspaceSummary, WorkspaceFileEntry } from '@/api/workspaces'
     import {
+        addWorkspaceFile,
         addWorkspaceKnowledge,
         listWorkspaces,
         removeWorkspaceConversation,
+        removeWorkspaceFile,
         removeWorkspaceKnowledge,
     } from '@/api/workspaces'
     import { showPrompt } from '@/stores/confirm'
@@ -97,10 +100,13 @@
         y: number
         /** 浮层协调器菜单 id(不同来源菜单用不同 id,保证互斥与各自 armed 清理) */
         popoverId?: string
-        /** 目标类型:会话 / 知识库(默认会话) */
-        targetType?: 'conversation' | 'knowledge_basis'
+        /** 目标类型:会话 / 知识库 / 云端文件(默认会话) */
+        targetType?: 'conversation' | 'knowledge_basis' | 'cloud_file'
         /** 会话目标 id(知识库目标为空) */
         conversationId?: string
+        /** 云端文件目标:文件引用(sandbox_path 优先)与别名(用于工作区已归入标记匹配) */
+        fileRef?: string
+        fileAlias?: string
         title: string
         pinned: boolean
         /** 会话分支信息(仅分支会话显示"查看分支处"入口) */
@@ -111,6 +117,8 @@
         popoverId: 'context-menu',
         targetType: 'conversation',
         conversationId: '',
+        fileRef: '',
+        fileAlias: '',
         branch: undefined,
         keepPanel: false,
     })
@@ -250,7 +258,37 @@
             return workspaceHasMarkedKnowledge(workspace, props.title)
         }
 
+        if (props.targetType === 'cloud_file') {
+            return workspaceHasMarkedFile(workspace, props.fileRef, props.fileAlias)
+        }
+
         return workspaceHasMarkedConversation(workspace, props.conversationId)
+    }
+
+    /** 云端文件已归入判断:工作区文件标记按 file_ref / alias / 传入别名三者任一匹配(镜像 workspaceHasMarkedConversation) */
+    function workspaceHasMarkedFile(workspace: WorkspaceSummary, fileRef: string, fileAlias: string): boolean {
+        const ref = String(fileRef || '').trim()
+        const alias = String(fileAlias || '').trim()
+
+        if ((!ref && !alias) || !workspace) {
+            return false
+        }
+
+        const files = Array.isArray(workspace.workspace_files) ? workspace.workspace_files : []
+
+        return files.some((item) => {
+            if (!item || typeof item !== 'object') {
+                return false
+            }
+
+            const markerRef = String(item.file_ref || '').trim()
+            const markerAlias = String(item.alias || '').trim()
+
+            return (
+                (ref && (markerRef === ref || markerAlias === ref))
+                || (alias && markerAlias === alias)
+            )
+        })
     }
 
     /** 会话已归入判断(对齐原版 workspaceHasMarkedConversation) */
@@ -297,6 +335,31 @@
         })
     }
 
+    /** 云端文件已归入标记条目(取消归入时需要其 file_ref 定位后端标记) */
+    function findMarkedFile(workspace: WorkspaceSummary): WorkspaceFileEntry | null {
+        const ref = String(props.fileRef || '').trim()
+        const alias = String(props.fileAlias || '').trim()
+        const files = Array.isArray(workspace.workspace_files) ? workspace.workspace_files : []
+
+        for (const item of files) {
+            if (!item || typeof item !== 'object') {
+                continue
+            }
+
+            const markerRef = String(item.file_ref || '').trim()
+            const markerAlias = String(item.alias || '').trim()
+
+            if (
+                (ref && (markerRef === ref || markerAlias === ref))
+                || (alias && markerAlias === alias)
+            ) {
+                return item as WorkspaceFileEntry
+            }
+        }
+
+        return null
+    }
+
     /** 归入/取消归入工作区(再次点击已归入的工作区则移除;对齐原版 isMarked 标记) */
     async function handleAddToWorkspace(workspaceId: string): Promise<void> {
         if (!workspaceId) {
@@ -314,6 +377,26 @@
         closePopover(props.popoverId)
 
         try {
+            if (props.targetType === 'cloud_file') {
+                const ref = String(props.fileRef || '').trim()
+
+                if (!ref) {
+                    return
+                }
+
+                if (removing) {
+                    const marker = findMarkedFile(workspace)
+
+                    await removeWorkspaceFile(workspaceId, marker?.file_ref || ref)
+                    showToast('已取消归入', 'success')
+                } else {
+                    await addWorkspaceFile(workspaceId, ref)
+                    showToast('已归入 Workspace', 'success')
+                }
+
+                return
+            }
+
             if (props.targetType === 'knowledge_basis') {
                 if (removing) {
                     await removeWorkspaceKnowledge(workspaceId, props.title)

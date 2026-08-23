@@ -2,7 +2,7 @@
     WorkspaceKnowledgePanel.vue — Workspace 知识库面板
 
     置顶优先排序行:图标 + 标题 + @添加者;日期 + 可见性开关;
-    点击打开知识库文档,右键弹出置顶菜单。对齐原版 renderWorkspaceProjectKnowledgeRows。
+    点击打开知识库文档,右键弹出置顶菜单(开关区域除外)。
 -->
 
 <template>
@@ -24,15 +24,16 @@
             <span class="ws-knowledge-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
             <span class="ws-knowledge-main">
                 <span class="ws-knowledge-title">
-                    <i v-if="doc.pin" class="fa-solid fa-thumbtack ws-pin-icon" aria-hidden="true"></i>{{ doc.title }}
+                    <i v-if="doc.pin" class="fa-solid fa-thumbtack ws-pin-icon" aria-hidden="true"></i>{{ knowledgeTitle(doc) }}
                 </span>
-                <span class="ws-knowledge-meta">{{ doc.added_by ? `@${doc.added_by}` : '未知用户' }}</span>
+                <span class="ws-knowledge-meta">{{ ownerLabel(String(doc.added_by || '')) }}</span>
             </span>
             <span class="ws-row-side">
                 <span class="ws-row-date">{{ formatWorkspaceDate(doc.updated_at || doc.added_at || doc.created_at) }}</span>
                 <WorkspaceVisibilitySwitch
                     :visibility="String(doc.visibility || '')"
-                    :disabled="!canEditVisibility(doc)"
+                    :disabled="!canEdit(doc)"
+                    :saving="savingKey === rowKey(doc)"
                     @toggle="toggleVisibility(doc)"
                 />
             </span>
@@ -46,8 +47,15 @@
     import type { WorkspaceDetail, WorkspaceKnowledgeDocument } from '@/api/workspaces'
     import { formatWorkspaceDate } from '@/api/workspaces'
 
-    import { normalizeVisibility, sortPinnedFirst } from '../workspaceDisplay'
-    import { useWorkspaceActions, type WorkspaceResourceRef } from '../workspaceContext'
+    import {
+        canEditVisibilityOf,
+        isVisibilitySwitchTarget,
+        knowledgeRef,
+        ownerLabel,
+        resourceRowKey,
+    } from '../workspaceResource'
+    import { sortPinnedFirst } from '../workspaceDisplay'
+    import { useVisibilitySavingKey, useWorkspaceActions } from '../workspaceContext'
 
     import WorkspaceVisibilitySwitch from '../WorkspaceVisibilitySwitch.vue'
 
@@ -56,6 +64,7 @@
     }>()
 
     const actions = useWorkspaceActions()
+    const savingKey = useVisibilitySavingKey()
 
     const documents = computed<WorkspaceKnowledgeDocument[]>(() => {
         const items = Array.isArray(props.workspace.knowledge_documents) ? props.workspace.knowledge_documents : []
@@ -67,30 +76,39 @@
         return `${doc.title}:${String(doc.added_by || '')}`
     }
 
-    function canEditVisibility(item: WorkspaceKnowledgeDocument): boolean {
-        const owner = String(item.added_by || props.workspace.owner_username || '').trim()
+    /** 知识库标题:后端偶发把原始 epoch 塞进 title,纯数字时回落为「未命名知识库」 */
+    function knowledgeTitle(doc: WorkspaceKnowledgeDocument): string {
+        const title = String(doc.title || '').trim()
 
-        return owner === actions.currentUserId()
+        if (!title || /^[\d.]+$/.test(title)) {
+            return '未命名知识库'
+        }
+
+        return title
     }
 
-    function resourceRef(item: WorkspaceKnowledgeDocument): WorkspaceResourceRef {
-        return {
-            type: 'knowledge',
-            ref: item.title,
-            addedBy: String(item.added_by || ''),
-            visibility: normalizeVisibility(item.visibility),
-            knowledgeType: String(item.knowledge_type || 'basis'),
-        }
+    function canEdit(item: WorkspaceKnowledgeDocument): boolean {
+        return canEditVisibilityOf(props.workspace, item.added_by, actions.currentUserId())
+    }
+
+    function rowKey(item: WorkspaceKnowledgeDocument): string {
+        return resourceRowKey(knowledgeRef(item))
     }
 
     function toggleVisibility(item: WorkspaceKnowledgeDocument): void {
-        const next = normalizeVisibility(item.visibility) === 'share' ? 'private' : 'share'
+        const target = knowledgeRef(item)
+        const next = target.visibility === 'share' ? 'private' : 'share'
 
-        void actions.toggleResourceVisibility(resourceRef(item), next)
+        void actions.toggleResourceVisibility(target, next)
     }
 
+    /** 开关区域右键不弹置顶菜单(对齐原版 visibility-toggle 排除) */
     function openMenu(event: MouseEvent, item: WorkspaceKnowledgeDocument): void {
-        actions.openResourceMenu(event, resourceRef(item))
+        if (isVisibilitySwitchTarget(event.target)) {
+            return
+        }
+
+        actions.openResourceMenu(event, knowledgeRef(item))
     }
 </script>
 
@@ -99,12 +117,6 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
-    }
-
-    .ws-empty {
-        color: var(--color-text-secondary);
-        font-size: 14px;
-        padding: 18px 10px;
     }
 
     .ws-knowledge-row {
@@ -153,12 +165,6 @@
         gap: 2px;
     }
 
-    .ws-pin-icon {
-        color: var(--color-text-primary);
-        font-size: 11px;
-        margin-right: 7px;
-    }
-
     .ws-knowledge-title {
         min-width: 0;
         color: var(--color-text-primary);
@@ -179,22 +185,6 @@
         white-space: nowrap;
     }
 
-    .ws-row-side {
-        display: grid;
-        grid-template-columns: 92px 112px;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 14px;
-    }
-
-    .ws-row-date {
-        color: var(--color-text-secondary);
-        font-size: 13px;
-        text-align: right;
-        white-space: nowrap;
-        font-variant-numeric: tabular-nums;
-    }
-
     @media (max-width: 720px) {
         .ws-knowledge-row {
             grid-template-columns: 30px minmax(0, 1fr);
@@ -208,11 +198,6 @@
 
         .ws-row-date {
             text-align: left;
-            font-size: 12px;
-        }
-
-        .ws-knowledge-title {
-            font-size: 14px;
         }
     }
 </style>

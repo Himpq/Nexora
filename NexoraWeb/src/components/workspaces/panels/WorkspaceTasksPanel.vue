@@ -22,14 +22,32 @@
                     <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
                 </button>
                 <span class="ws-calendar-title-tools">
-                    <button
-                        class="ws-calendar-title-btn"
-                        type="button"
-                        :aria-expanded="jumpOpen"
-                        title="跳转月份"
-                        aria-label="跳转月份"
-                        @click="jumpOpen = !jumpOpen"
-                    ><strong>{{ monthLabel }}</strong></button>
+                    <!-- 跳月表单:GDDP 统一浮动(不再内嵌推挤月历布局) -->
+                    <Popover ref="jumpPopover" placement="bottom">
+                        <template #trigger="{ open }">
+                            <button
+                                class="ws-calendar-title-btn"
+                                type="button"
+                                :aria-expanded="open"
+                                title="跳转月份"
+                                aria-label="跳转月份"
+                                @click="open ? closeJump() : openJump()"
+                            ><strong>{{ monthLabel }}</strong></button>
+                        </template>
+                        <form class="ws-calendar-jump" @submit.prevent="submitJump" @keydown.esc.prevent="closeJump">
+                            <input
+                                ref="jumpInputRef"
+                                v-model="jumpInput"
+                                type="text"
+                                placeholder="YYYY-MM"
+                                maxlength="7"
+                                inputmode="numeric"
+                                autocomplete="off"
+                                aria-label="跳转月份"
+                            >
+                            <button type="submit" title="跳转" aria-label="跳转"><i class="fa-solid fa-check" aria-hidden="true"></i></button>
+                        </form>
+                    </Popover>
                     <button class="ws-calendar-today-btn" type="button" title="定位到今天" aria-label="定位到今天" @click="goToday">
                         <i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i>
                     </button>
@@ -38,21 +56,6 @@
                     <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
                 </button>
             </div>
-
-            <form v-if="jumpOpen" class="ws-calendar-jump" @submit.prevent="submitJump">
-                <input
-                    ref="jumpInputRef"
-                    v-model="jumpInput"
-                    type="text"
-                    placeholder="YYYY-MM"
-                    maxlength="7"
-                    inputmode="numeric"
-                    autocomplete="off"
-                    aria-label="跳转月份"
-                >
-                <button type="submit" title="跳转" aria-label="跳转"><i class="fa-solid fa-check" aria-hidden="true"></i></button>
-                <button type="button" title="关闭" aria-label="关闭" @click="jumpOpen = false"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
-            </form>
 
             <div class="ws-calendar-weekdays">
                 <span v-for="day in WEEKDAYS" :key="day">{{ day }}</span>
@@ -65,7 +68,7 @@
                     class="ws-calendar-day"
                     :class="{ 'is-muted': cell.outsideMonth, 'is-today': cell.isToday, 'has-tasks': cell.tasks.length > 0 }"
                     :data-workspace-task-date="cell.dateKey"
-                    @click="actions.editTask(null, { date: cell.dateKey })"
+                    @dblclick="createTaskOnDate(cell.dateKey)"
                 >
                     <div class="ws-calendar-cell-head">
                         <div class="ws-calendar-date">{{ cell.dayNumber }}</div>
@@ -84,7 +87,7 @@
                         >
                             <span class="ws-calendar-ribbon" :class="{ 'has-title': item.showTitle }">{{ item.showTitle ? item.title : '' }}</span>
                         </button>
-                        <span v-if="cell.hiddenCount" class="ws-calendar-more">+{{ cell.hiddenCount }}</span>
+                        <span v-if="cell.hiddenCount" class="ws-calendar-more" :title="`还有 ${cell.hiddenCount} 个日程`">+{{ cell.hiddenCount }}</span>
                     </div>
                 </div>
             </div>
@@ -128,9 +131,12 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, ref, watch } from 'vue'
+    import { computed, nextTick, ref } from 'vue'
 
     import Button from '@/ui/Button.vue'
+    import Popover from '@/ui/Popover.vue'
+
+    import { showToast } from '@/stores/notify'
 
     import type { WorkspaceDetail, WorkspaceTaskEntry } from '@/api/workspaces'
 
@@ -166,7 +172,7 @@
 
     /** ===== 日历月份状态(空串表示跟随默认月份) ===== */
     const monthValue = ref('')
-    const jumpOpen = ref(false)
+    const jumpPopover = ref<InstanceType<typeof Popover> | null>(null)
     const jumpInput = ref('')
     const jumpInputRef = ref<HTMLInputElement | null>(null)
 
@@ -184,29 +190,15 @@
 
     function goToday(): void {
         monthValue.value = todayKey().slice(0, 7)
-        jumpOpen.value = false
+        closeJump()
     }
 
-    async function submitJump(): Promise<void> {
-        const parsed = normalizeMonthInput(jumpInput.value)
-
-        if (!parsed) {
-            return
-        }
-
-        monthValue.value = parsed
-        jumpOpen.value = false
-    }
-
-    /** 打开跳月表单时聚焦并全选输入框(对齐原版 focusWorkspaceTaskCalendarMonthInput) */
-    watch(jumpOpen, (opened) => {
-        if (!opened) {
-            return
-        }
-
+    /** 打开跳月浮层:预填当前月份并聚焦全选(对齐原版 focusWorkspaceTaskCalendarMonthInput) */
+    async function openJump(): Promise<void> {
         jumpInput.value = currentMonth.value
+        jumpPopover.value?.open()
 
-        void nextTick(() => {
+        await nextTick(() => {
             const input = jumpInputRef.value
 
             if (input) {
@@ -214,7 +206,39 @@
                 input.select()
             }
         })
-    })
+    }
+
+    function closeJump(): void {
+        jumpPopover.value?.close()
+    }
+
+    async function submitJump(): Promise<void> {
+        const parsed = normalizeMonthInput(jumpInput.value)
+
+        if (!parsed) {
+            // 无效输入:提示并回焦继续编辑(对齐原版 focusWorkspaceTaskCalendarMonthInput)
+            showToast('请输入正确的月份，例如 2026-07', 'warning')
+
+            await nextTick(() => {
+                const input = jumpInputRef.value
+
+                if (input) {
+                    input.focus()
+                    input.select()
+                }
+            })
+
+            return
+        }
+
+        monthValue.value = parsed
+        closeJump()
+    }
+
+    /** 双击日历格:以该日为开始+截止预填新建任务(对齐原版 taskPanel dblclick) */
+    function createTaskOnDate(dateKey: string): void {
+        actions.editTask(null, { startDate: dateKey, dueDate: dateKey })
+    }
 
     /** ===== 日历格构建(对齐原版 renderWorkspaceTaskCalendar) ===== */
 
@@ -359,11 +383,7 @@
         padding-bottom: 36px;
     }
 
-    .ws-empty {
-        color: var(--color-text-secondary);
-        font-size: 14px;
-        padding: 18px 10px;
-    }
+    /* 空态基础样式来自全局 workspaces.css(.ws-empty),此处不重复 */
 
     .ws-tasks-toolbar {
         display: flex;
@@ -436,15 +456,13 @@
         background: var(--color-bg-hover);
     }
 
+    /* 跳月表单(浮动在 ui/Popover 卡片内) */
     .ws-calendar-jump {
-        min-height: 42px;
-        border-bottom: 1px solid var(--color-border);
-        background: var(--color-bg-hover);
         display: flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
-        padding: 6px 10px;
+        padding: 8px 10px;
     }
 
     .ws-calendar-jump input {
@@ -476,6 +494,11 @@
         align-items: center;
         justify-content: center;
         cursor: pointer;
+    }
+
+    .ws-calendar-jump button:hover {
+        border-color: var(--color-border-strong);
+        color: var(--color-text-primary);
     }
 
     .ws-calendar-nav {
@@ -584,14 +607,18 @@
         margin-top: 3px;
     }
 
+    /*
+     * 日程条:颜色只由 ribbon 色条承载,按钮本体透明。
+     * (旧版给 item 铺 --ribbon-bg 淡色底,min-height 20px > ribbon 8px,
+     *  底色从条上下露出,玫瑰色看起来像"红任务带粉色条",已移除。)
+     */
     .ws-calendar-item {
         --ribbon-color: var(--color-accent-text);
-        --ribbon-bg: var(--color-accent-surface);
         width: 100%;
         min-height: 20px;
         border: none;
         border-radius: 5px;
-        background: var(--ribbon-bg);
+        background: transparent;
         display: grid;
         padding: 0;
         cursor: pointer;
@@ -621,40 +648,36 @@
         white-space: nowrap;
     }
 
-    /* 日程颜色语义(对齐原版 task-color-*) */
+    /*
+     * 日程颜色语义(对齐原版 task-color-*;色值与任务编辑弹窗色板一致,
+     * 保证"编辑器选的颜色 = 日历看到的颜色")
+     */
     .ws-calendar-item.task-color-blue {
         --ribbon-color: var(--color-accent-text);
-        --ribbon-bg: var(--color-accent-surface);
     }
 
     .ws-calendar-item.task-color-green {
         --ribbon-color: var(--color-success-text);
-        --ribbon-bg: var(--color-success-surface);
     }
 
     .ws-calendar-item.task-color-amber {
-        --ribbon-color: #d97706;
-        --ribbon-bg: rgba(217, 119, 6, 0.14);
+        --ribbon-color: #f59e0b;
     }
 
     .ws-calendar-item.task-color-rose {
-        --ribbon-color: #e11d48;
-        --ribbon-bg: rgba(225, 29, 72, 0.12);
+        --ribbon-color: #f43f5e;
     }
 
     .ws-calendar-item.task-color-violet {
-        --ribbon-color: #7c3aed;
-        --ribbon-bg: rgba(124, 58, 237, 0.12);
+        --ribbon-color: #8b5cf6;
     }
 
     .ws-calendar-item.task-color-cyan {
-        --ribbon-color: #0891b2;
-        --ribbon-bg: rgba(8, 145, 178, 0.12);
+        --ribbon-color: #06b6d4;
     }
 
     .ws-calendar-item.task-color-slate {
         --ribbon-color: var(--color-text-secondary);
-        --ribbon-bg: var(--color-bg-hover);
     }
 
     .ws-calendar-more {

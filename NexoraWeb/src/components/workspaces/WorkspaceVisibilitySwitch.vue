@@ -8,17 +8,20 @@
 <template>
     <button
         class="ws-visibility-switch"
-        :class="{ 'is-share': isShare }"
+        :class="{ 'is-share': isShare, 'is-saving': saving }"
         type="button"
         :aria-pressed="isShare"
-        :disabled="disabled"
+        :disabled="disabled || saving"
         :title="title"
         @click.stop="emit('toggle')"
     >
-        <span class="ws-visibility-track" aria-hidden="true">
-            <span class="ws-visibility-thumb"></span>
-        </span>
-        <span class="ws-visibility-text">{{ label }}</span>
+        <span v-if="saving" class="ws-visibility-saving" aria-hidden="true"><i class="fa-solid fa-spinner"></i></span>
+        <template v-else>
+            <span class="ws-visibility-track" aria-hidden="true">
+                <span class="ws-visibility-thumb"></span>
+            </span>
+            <span class="ws-visibility-text">{{ label }}</span>
+        </template>
     </button>
 </template>
 
@@ -27,10 +30,14 @@
 
     import { normalizeVisibility, visibilityLabel } from './workspaceDisplay'
 
-    const props = defineProps<{
+    const props = withDefaults(defineProps<{
         visibility: string
         disabled: boolean
-    }>()
+        /** 保存请求进行中(防连点竞态,对齐原版 toggle disabled + is-saving) */
+        saving?: boolean
+    }>(), {
+        saving: false,
+    })
 
     const emit = defineEmits<{
         toggle: []
@@ -41,6 +48,10 @@
     const label = computed(() => visibilityLabel(props.visibility))
 
     const title = computed(() => {
+        if (props.saving) {
+            return '保存中...'
+        }
+
         if (props.disabled) {
             return '仅资源添加者可修改共享状态'
         }
@@ -83,6 +94,14 @@
     .ws-visibility-switch:disabled {
         cursor: default;
         opacity: 0.68;
+    }
+
+    /* 保存中:仅剩居中 spinner,禁点防竞态 */
+    .ws-visibility-saving {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
     }
 
     .ws-visibility-switch.is-share {

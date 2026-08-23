@@ -7,7 +7,7 @@
  *   - 面板只表达"意图",所有副作用收敛在根组件
  */
 
-import type { InjectionKey } from 'vue'
+import type { InjectionKey, Ref } from 'vue'
 import { inject } from 'vue'
 
 import type { WorkspaceFileEntry, WorkspaceTaskEntry } from '@/api/workspaces'
@@ -34,6 +34,13 @@ export interface WorkspaceTaskDraftOptions {
     dueDate?: string
 }
 
+/** 打开对话时传给宿主(ChatView)的定位信息;ownerUsername 非当前用户时走只读共享视图 */
+export interface WorkspaceConversationOpenMeta {
+    workspaceId: string
+    workspaceTitle: string
+    ownerUsername: string
+}
+
 /** 根组件向子树暴露的全部动作 */
 export interface WorkspaceActions {
     /** 当前登录用户 ID(owner_username 存登录名,比对用它而非显示名) */
@@ -48,8 +55,8 @@ export interface WorkspaceActions {
     /** 右键菜单 */
     openResourceMenu(event: MouseEvent, target: WorkspaceResourceRef): void
 
-    /** 打开资源 */
-    openConversation(conversationId: string): void
+    /** 打开资源(meta 由根组件按资源归属补全,他人共享的对话走只读打开) */
+    openConversation(conversationId: string, addedBy?: string): void
     openKnowledge(title: string): void
     openFile(file: WorkspaceFileEntry): void
 
@@ -73,6 +80,9 @@ export interface WorkspaceActions {
 
 export const WORKSPACE_ACTIONS_KEY: InjectionKey<WorkspaceActions> = Symbol('WorkspaceActions')
 
+/** 可见性开关保存中状态:值为正在保存的资源行键(resourceRowKey),空串表示空闲 */
+export const WORKSPACE_VISIBILITY_SAVING_KEY: InjectionKey<Ref<string>> = Symbol('WorkspaceVisibilitySaving')
+
 /** 面板内统一取用动作(须在 setup 上下文调用;根组件必提供,缺失即编程错误,直接抛出暴露问题) */
 export function useWorkspaceActions(): WorkspaceActions {
     const actions = inject(WORKSPACE_ACTIONS_KEY)
@@ -82,4 +92,15 @@ export function useWorkspaceActions(): WorkspaceActions {
     }
 
     return actions
+}
+
+/** 面板内读取可见性开关保存中状态(根组件必提供) */
+export function useVisibilitySavingKey(): Ref<string> {
+    const savingKey = inject(WORKSPACE_VISIBILITY_SAVING_KEY)
+
+    if (!savingKey) {
+        throw new Error('[Workspaces] VisibilitySaving 未提供:面板必须在 WorkspacesView 子树内使用')
+    }
+
+    return savingKey
 }

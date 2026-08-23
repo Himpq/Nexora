@@ -61,6 +61,24 @@ export function safeTokenInt(value: unknown): number {
 }
 
 /**
+ * 文本 → token 估算(对齐原版 estimateStreamTokensByText):
+ * 非 ASCII 按 1.25 字符/token,ASCII 按 4 字符/token;空文本计 0,非空至少 1。
+ * 供 TK mini 流式输出估算与 CTX 文本估算复用。
+ */
+export function estimateStreamTokensByText(text: unknown): number {
+    const source = String(text ?? '')
+
+    if (!source) {
+        return 0
+    }
+
+    const nonAscii = (source.match(/[^\x00-\x7F]/g) || []).length
+    const ascii = source.length - nonAscii
+
+    return Math.max(1, Math.ceil(nonAscii / 1.25 + ascii / 4))
+}
+
+/**
  * 归一化上下文窗口:非法/过小(<1024)视为未配置,超大值收敛到 4M(对齐原版 normalizeContextWindow)
  */
 export function normalizeContextWindow(value: unknown): number {

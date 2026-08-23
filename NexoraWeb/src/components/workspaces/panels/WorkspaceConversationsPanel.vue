@@ -1,8 +1,9 @@
 <!--
     WorkspaceConversationsPanel.vue — Workspace 聊天(对话)面板
 
-    置顶优先排序;标题 + "@添加者 · 最近提问";日期 + 可见性开关;
-    点击打开会话,右键弹出置顶菜单。对齐原版 renderWorkspaceProjectConversationRows。
+    置顶优先排序;标题 + "@添加者 · 最近提问";日期 + 可见性开关。
+    行权限对齐原版:自己添加的行可打开;他人添加的仅共享态可只读打开,
+    私有他人行降级为不可点列表项(is-readonly)。
 -->
 
 <template>
@@ -12,13 +13,14 @@
         <div
             v-for="conv in conversations"
             :key="conv.conversation_id"
-            class="ws-conv-row is-clickable"
-            :class="{ 'is-pinned': conv.pin }"
-            role="button"
-            tabindex="0"
-            :aria-label="`打开对话:${conv.title || conv.conversation_id}`"
-            @click="open(conv)"
-            @keydown.enter.prevent="open(conv)"
+            class="ws-conv-row"
+            :class="{ 'is-clickable': canOpen(conv), 'is-readonly': !canEdit(conv), 'is-pinned': conv.pin }"
+            :role="canOpen(conv) ? 'button' : 'listitem'"
+            :tabindex="canOpen(conv) ? 0 : -1"
+            :aria-label="rowAriaLabel(conv)"
+            :aria-disabled="canOpen(conv) ? undefined : 'true'"
+            @click="canOpen(conv) && open(conv)"
+            @keydown.enter.prevent="canOpen(conv) && open(conv)"
             @contextmenu.prevent="openMenu($event, conv)"
         >
             <span class="ws-conv-main">
@@ -31,7 +33,8 @@
                 <span class="ws-row-date">{{ formatWorkspaceDate(conv.updated_at || conv.added_at || conv.created_at) }}</span>
                 <WorkspaceVisibilitySwitch
                     :visibility="String(conv.visibility || '')"
-                    :disabled="!canEditVisibility(conv)"
+                    :disabled="!canEdit(conv)"
+                    :saving="savingKey === rowKey(conv)"
                     @toggle="toggleVisibility(conv)"
                 />
             </span>
@@ -45,8 +48,16 @@
     import type { WorkspaceConversation, WorkspaceDetail } from '@/api/workspaces'
     import { formatWorkspaceDate } from '@/api/workspaces'
 
-    import { normalizeVisibility, sortPinnedFirst } from '../workspaceDisplay'
-    import { useWorkspaceActions, type WorkspaceResourceRef } from '../workspaceContext'
+    import {
+        canEditVisibilityOf,
+        canOpenConversation,
+        conversationRef,
+        isVisibilitySwitchTarget,
+        ownerLabel,
+        resourceRowKey,
+    } from '../workspaceResource'
+    import { sortPinnedFirst } from '../workspaceDisplay'
+    import { useVisibilitySavingKey, useWorkspaceActions } from '../workspaceContext'
 
     import WorkspaceVisibilitySwitch from '../WorkspaceVisibilitySwitch.vue'
 
@@ -55,6 +66,7 @@
     }>()
 
     const actions = useWorkspaceActions()
+    const savingKey = useVisibilitySavingKey()
 
     const conversations = computed<WorkspaceConversation[]>(() => {
         const items = Array.isArray(props.workspace.conversations) ? props.workspace.conversations : []
@@ -62,42 +74,54 @@
         return sortPinnedFirst(items, (item) => item.pin === true)
     })
 
-    /** 资源是否当前用户添加(可见性开关可用性;空 added_by 视为项目创建者资源) */
-    function canEditVisibility(item: WorkspaceConversation): boolean {
-        const owner = String(item.added_by || props.workspace.owner_username || '').trim()
+    /** 是否当前用户添加(可见性开关可用性) */
+    function canEdit(item: WorkspaceConversation): boolean {
+        return canEditVisibilityOf(props.workspace, item.added_by, actions.currentUserId())
+    }
 
-        return owner === actions.currentUserId()
+    /** 行是否可打开:自己的行直接开,他人的行仅共享态可只读开(对齐原版 canOpenConversation) */
+    function canOpen(item: WorkspaceConversation): boolean {
+        return canOpenConversation(props.workspace, item, actions.currentUserId())
+    }
+
+    /** 无障碍文案:区分 打开 / 只读共享打开 / 不可打开 */
+    function rowAriaLabel(item: WorkspaceConversation): string {
+        const title = item.title || item.conversation_id || '未命名对话'
+
+        if (!canOpen(item)) {
+            return `共享对话:${title}`
+        }
+
+        return `${canEdit(item) ? '打开对话' : '只读打开共享对话'}:${title}`
     }
 
     /** 副标题:@添加者 · 最近用户提问 */
     function detailText(item: WorkspaceConversation): string {
-        const owner = String(item.added_by || '').trim()
-        const lastQuestion = String(item.last_user_question || '暂无用户提问').trim()
-
-        return `${owner ? `@${owner}` : '未知用户'} · ${lastQuestion}`
+        return `${ownerLabel(String(item.added_by || ''))} · ${String(item.last_user_question || '暂无用户提问').trim()}`
     }
 
-    function resourceRef(item: WorkspaceConversation): WorkspaceResourceRef {
-        return {
-            type: 'conversation',
-            ref: item.conversation_id,
-            addedBy: String(item.added_by || ''),
-            visibility: normalizeVisibility(item.visibility),
-        }
+    function rowKey(item: WorkspaceConversation): string {
+        return resourceRowKey(conversationRef(item))
     }
 
     function open(item: WorkspaceConversation): void {
-        actions.openConversation(item.conversation_id)
+        actions.openConversation(item.conversation_id, String(item.added_by || ''))
     }
 
     function toggleVisibility(item: WorkspaceConversation): void {
-        const next = normalizeVisibility(item.visibility) === 'share' ? 'private' : 'share'
+        const target = conversationRef(item)
+        const next = target.visibility === 'share' ? 'private' : 'share'
 
-        void actions.toggleResourceVisibility(resourceRef(item), next)
+        void actions.toggleResourceVisibility(target, next)
     }
 
+    /** 开关区域右键不弹置顶菜单(对齐原版 visibility-toggle 排除) */
     function openMenu(event: MouseEvent, item: WorkspaceConversation): void {
-        actions.openResourceMenu(event, resourceRef(item))
+        if (isVisibilitySwitchTarget(event.target)) {
+            return
+        }
+
+        actions.openResourceMenu(event, conversationRef(item))
     }
 </script>
 
@@ -108,19 +132,12 @@
         gap: 2px;
     }
 
-    .ws-empty {
-        color: var(--color-text-secondary);
-        font-size: 14px;
-        padding: 18px 10px;
-    }
-
     .ws-conv-row {
         width: 100%;
         height: 60px;
         border-radius: 8px;
         background: transparent;
         color: var(--color-text-primary);
-        cursor: pointer;
         display: grid;
         grid-template-columns: minmax(0, 1fr) 218px;
         align-items: center;
@@ -129,8 +146,17 @@
         transition: background 0.16s ease, color 0.16s ease;
     }
 
-    .ws-conv-row:hover {
+    .ws-conv-row.is-clickable {
+        cursor: pointer;
+    }
+
+    .ws-conv-row.is-clickable:hover {
         background: var(--color-bg-hover);
+    }
+
+    /* 只读行(他人私有资源):保留展示但弱化悬停反馈 */
+    .ws-conv-row.is-readonly.is-clickable:hover {
+        background: var(--color-bg-sunken);
     }
 
     .ws-conv-row:focus-visible {
@@ -155,12 +181,6 @@
         white-space: nowrap;
     }
 
-    .ws-pin-icon {
-        color: var(--color-text-primary);
-        font-size: 11px;
-        margin-right: 7px;
-    }
-
     .ws-conv-main small {
         color: var(--color-text-secondary);
         font-size: 12px;
@@ -168,22 +188,6 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-    }
-
-    .ws-row-side {
-        display: grid;
-        grid-template-columns: 92px 112px;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 14px;
-    }
-
-    .ws-row-date {
-        color: var(--color-text-secondary);
-        font-size: 13px;
-        text-align: right;
-        white-space: nowrap;
-        font-variant-numeric: tabular-nums;
     }
 
     @media (max-width: 720px) {
@@ -202,7 +206,6 @@
 
         .ws-row-date {
             text-align: left;
-            font-size: 12px;
         }
 
         .ws-conv-main strong {

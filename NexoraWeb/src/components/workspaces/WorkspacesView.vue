@@ -6,6 +6,8 @@
       - 实现 WorkspaceActions(注入给详情壳与面板):置顶/可见性/任务 CRUD/
         分享/上传/预览/新建知识库等全部副作用
       - 调度四个弹窗:分享 / 云端文件选择 / 文件预览 / 任务编辑
+      - 打开对话时按归属分流:自己的会话直接打开,他人共享的会话
+        以只读元数据交由宿主(ChatView)渲染共享视图
 
     对齐原版 openWorkspaceProjectsView 的完整交互;呈现由子组件承载。
 -->
@@ -28,6 +30,7 @@
             :workspace="detail"
             :tab="detailTab"
             @update:tab="detailTab = $event"
+            @back="detail = null"
         />
     </section>
 
@@ -37,7 +40,9 @@
         :x="resourceMenu.x"
         :y="resourceMenu.y"
         :pinned="resourceMenu.pinned"
+        :show-remove="resourceMenu.showRemove"
         @confirm="confirmResourcePin"
+        @remove="handleRemoveResource"
     />
 
     <!-- 分享弹窗 -->
@@ -100,6 +105,7 @@
         pinWorkspaceConversation,
         pinWorkspaceFile,
         pinWorkspaceKnowledge,
+        removeWorkspaceFile,
         updateConversationVisibility,
         updateFileVisibility,
         updateKnowledgeVisibility,
@@ -120,15 +126,18 @@
     import WorkspaceTaskModal from './modals/WorkspaceTaskModal.vue'
     import {
         WORKSPACE_ACTIONS_KEY,
+        WORKSPACE_VISIBILITY_SAVING_KEY,
         type WorkspaceActions,
+        type WorkspaceConversationOpenMeta,
         type WorkspaceDetailTab,
         type WorkspaceResourceRef,
         type WorkspaceTaskDraftOptions,
     } from './workspaceContext'
+    import { resourceRowKey } from './workspaceResource'
 
     const emit = defineEmits<{
-        /** 点击项目内对话:回到聊天并打开该会话 */
-        'open-conversation': [conversationId: string]
+        /** 点击项目内对话:自己的会话直接打开;他人共享会话附带归属元数据走只读视图 */
+        'open-conversation': [conversationId: string, meta?: WorkspaceConversationOpenMeta]
         /** 打开项目内知识库文档 */
         'open-knowledge': [title: string]
     }>()
@@ -238,7 +247,7 @@
         syncListWithDetail(updated)
     }
 
-    /** 新建项目(名称走统一 prompt) */
+    /** 新建项目(名称走统一 prompt;长度上限对齐原版 maxlength=120) */
     async function handleCreate(): Promise<void> {
         const title = await showPrompt({
             title: '新建 Workspace',
@@ -246,6 +255,7 @@
             placeholder: '例如:日本之旅',
             confirmText: '创建',
             cancelText: '取消',
+            maxlength: 120,
         })
 
         const trimmed = String(title || '').trim()
@@ -266,11 +276,23 @@
 
     /** ===== 注入动作实现 ===== */
 
+    /** 资源类型中文名(置顶 toast 按类型区分文案,对齐原版) */
+    const RESOURCE_NOUNS: Record<WorkspaceResourceRef['type'], string> = {
+        conversation: '对话',
+        knowledge: '知识库',
+        file: '文件',
+    }
+
+    /** 可见性开关保存中的资源行键(空串表示空闲;开关据此显示 spinner 并禁点) */
+    const visibilitySavingKey = ref('')
+
     /** 资源置顶/取消置顶(按类型分发到对应接口) */
     async function toggleResourcePin(target: WorkspaceResourceRef, nextPin: boolean): Promise<void> {
         if (!detail.value) {
             return
         }
+
+        const noun = RESOURCE_NOUNS[target.type]
 
         try {
             if (target.type === 'conversation') {
@@ -287,17 +309,19 @@
                 applyDetailUpdate(await pinWorkspaceFile(detail.value.workspace_id, target.ref, target.addedBy, nextPin))
             }
 
-            showToast(nextPin ? '已置顶' : '已取消置顶', 'success')
+            showToast(nextPin ? `Workspace ${noun}已置顶` : `Workspace ${noun}已取消置顶`, 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '置顶失败')
         }
     }
 
-    /** 共享状态切换(private/share) */
+    /** 共享状态切换(private/share);请求期间标记保存中,防连点竞态 */
     async function toggleResourceVisibility(target: WorkspaceResourceRef, next: string): Promise<void> {
         if (!detail.value) {
             return
         }
+
+        visibilitySavingKey.value = resourceRowKey(target)
 
         try {
             if (target.type === 'conversation') {
@@ -311,6 +335,8 @@
             showToast(next === 'share' ? '已设为共享' : '已设为私有', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '共享状态保存失败')
+        } finally {
+            visibilitySavingKey.value = ''
         }
     }
 
@@ -321,6 +347,8 @@
         y: number
         pinned: boolean
         target: WorkspaceResourceRef | null
+        /** 是否显示「从 Workspace 移除」(仅自己添加的文件行) */
+        showRemove: boolean
     }
 
     const resourceMenu = ref<ResourceMenuState>({
@@ -329,16 +357,19 @@
         y: 0,
         pinned: false,
         target: null,
+        showRemove: false,
     })
 
     function openResourceMenu(event: MouseEvent, target: WorkspaceResourceRef): void {
         resourceMenu.value = {
             visible: true,
-            // 边界钳制,防止菜单溢出视口(对齐原版 showWorkspaceResourceContextMenu)
-            x: Math.min(Math.max(8, event.clientX), Math.max(8, window.innerWidth - 148)),
-            y: Math.min(Math.max(8, event.clientY), Math.max(8, window.innerHeight - 60)),
+            // 原始坐标直投;视口钳制由菜单组件按实测尺寸完成(对齐原版 showWorkspaceResourceContextMenu)
+            x: event.clientX,
+            y: event.clientY,
             pinned: resolvePinned(target),
             target,
+            // 文件标记只允许自己添加的行移出(后端按 actor 限定);对话/知识库的移出走主列表右键"取消归入"
+            showRemove: target.type === 'file' && String(target.addedBy || '') === userStore.userId,
         }
     }
 
@@ -378,20 +409,65 @@
         await toggleResourcePin(target, !pinned)
     }
 
+    /** 从 Workspace 移除文件标记(仅自己添加的行可移除,后端按 actor 限定) */
+    async function handleRemoveResource(): Promise<void> {
+        const target = resourceMenu.value.target
+        const workspace = detail.value
+
+        hideResourceMenu()
+
+        if (!target || target.type !== 'file' || !workspace) {
+            return
+        }
+
+        try {
+            applyDetailUpdate(await removeWorkspaceFile(String(workspace.workspace_id || ''), target.ref))
+
+            showToast('已从 Workspace 移除', 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '移除失败')
+        }
+    }
+
     onMounted(() => {
         document.addEventListener('click', hideResourceMenu)
         document.addEventListener('scroll', hideResourceMenu, true)
+        window.addEventListener('resize', hideResourceMenu)
     })
 
     onBeforeUnmount(() => {
         document.removeEventListener('click', hideResourceMenu)
         document.removeEventListener('scroll', hideResourceMenu, true)
+        window.removeEventListener('resize', hideResourceMenu)
     })
 
     /** ===== 打开资源 ===== */
 
-    function openConversation(conversationId: string): void {
-        emit('open-conversation', conversationId)
+    /**
+     * 打开项目内对话,按归属分流(对齐原版 openWorkspaceDetailConversation):
+     *   - 自己添加 → 直接交宿主按普通会话打开
+     *   - 他人添加 → 附带归属元数据,由宿主走只读共享视图
+     */
+    function openConversation(conversationId: string, addedBy = ''): void {
+        const workspace = detail.value
+
+        if (!workspace) {
+            return
+        }
+
+        const owner = String(addedBy || workspace.owner_username || '').trim()
+
+        if (!owner || owner === userStore.userId) {
+            emit('open-conversation', conversationId)
+
+            return
+        }
+
+        emit('open-conversation', conversationId, {
+            workspaceId: workspace.workspace_id,
+            workspaceTitle: String(workspace.title || ''),
+            ownerUsername: owner,
+        })
     }
 
     function openKnowledge(title: string): void {
@@ -729,8 +805,16 @@
     }
 
     provide(WORKSPACE_ACTIONS_KEY, actions)
+    provide(WORKSPACE_VISIBILITY_SAVING_KEY, visibilitySavingKey)
 
-    /** 暴露给父级(ChatView 顶栏返回):详情页返回列表、查询是否处于详情内容 */
+    /**
+     * 暴露给宿主(ChatView):
+     *   - backToList / isInDetail:顶栏返回的多级回退
+     *   - composerTarget:详情页内嵌输入框的归入目标(workspace_id;空串=未在详情页)。
+     *     是响应式引用,宿主据此驱动 Teleport 开关与顶栏「Workspace/Workspaces」标题
+     */
+    const composerTarget = computed(() => (detail.value ? detail.value.workspace_id : ''))
+
     defineExpose({
         backToList(): void {
             detail.value = null
@@ -739,6 +823,14 @@
         isInDetail(): boolean {
             return detail.value !== null
         },
+
+        /** 当前详情所在 Workspace id(空串表示不在详情页),供宿主回退定位 */
+        currentWorkspaceId(): string {
+            return detail.value ? String(detail.value.workspace_id || '') : ''
+        },
+
+        /** 详情页内嵌输入框归入目标;空串表示当前不在详情页 */
+        composerTarget,
     })
 </script>
 

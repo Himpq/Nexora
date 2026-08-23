@@ -73,6 +73,9 @@
             </button>
 
             <span class="toolbar-separator" aria-hidden="true"></span>
+            <button type="button" class="toolbar-btn gddp-markdown-save-btn" title="保存 (Ctrl+S)" @click="emit('save')">
+                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+            </button>
             <button type="button" class="toolbar-btn gddp-markdown-settings-btn" title="设置" @click="emit('settings')">
                 <i class="fa-solid fa-gear" aria-hidden="true"></i>
             </button>
@@ -108,6 +111,8 @@
         change: [markdown: string]
         imageFiles: [files: File[]]
         settings: []
+        /** 工具栏「保存」按钮;宿主决定保存行为(知识库宿主绑定保存正文) */
+        save: []
     }>()
 
     const editorHost = ref<HTMLElement | null>(null)

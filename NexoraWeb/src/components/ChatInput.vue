@@ -155,7 +155,7 @@
                             aria-label="查看 Token 使用详情"
                             @click="emit('open-token-detail')"
                         >
-                            TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
+                            TK <span id="totalInputTokens">{{ tokenMiniInput }}</span> / <span id="totalOutputTokens">{{ tokenMiniOutput }}</span>
                         </button>
                     </div>
 
@@ -195,7 +195,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, onMounted, ref, watch } from 'vue'
 
     import type { AttachmentInput } from '@/api/attachments'
     import { uploadFile } from '@/api/files-center'
@@ -206,11 +206,13 @@
         buildTokenBudgetHoverText,
         buildTokenBudgetTooltipModel,
         computeContextWindowUsedTokens,
+        estimateStreamTokensByText,
         normalizeContextWindow,
         readLastAssistantIoTokens,
         safeTokenInt,
     } from '@/stream/tokenBudget'
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import { clearDraft, loadDraft, saveDraft } from '@/composables/useChatDraft'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import TokenBudgetCard from '@/components/TokenBudgetCard.vue'
 
@@ -241,6 +243,42 @@
 
     const draft = ref('')
     const inputRef = ref<HTMLTextAreaElement | null>(null)
+
+    /** 恢复当前会话草稿(挂载与切换对话时调用):回到上次未发送的文字,并同步输入框高度 */
+    function restoreDraft(): void {
+        const saved = loadDraft(conversationStore.currentId)
+
+        if (saved === draft.value) {
+            return
+        }
+
+        draft.value = saved
+
+        const el = inputRef.value
+
+        if (el) {
+            el.value = saved
+
+            autoResize()
+        }
+    }
+
+    onMounted(() => {
+        restoreDraft()
+    })
+
+    // 切换对话/新建对话:换回该会话的草稿
+    watch(
+        () => conversationStore.currentId,
+        () => {
+            restoreDraft()
+        }
+    )
+
+    // 输入即按会话落缓存(防刷新丢失);草稿清空时自动移除该会话缓存
+    watch(draft, (text) => {
+        saveDraft(conversationStore.currentId, text)
+    })
 
     /** 附件列表(空值安全:父级未传时为空数组) */
     const attachmentList = computed(() => props.attachments || [])
@@ -338,7 +376,7 @@
             return ioTokens.round.rawInput
         }
 
-        const roundInput = ioTokens.round.input > 0 ? ioTokens.round.input : estimateTextTokens(historyText)
+        const roundInput = ioTokens.round.input > 0 ? ioTokens.round.input : estimateStreamTokensByText(historyText)
 
         return computeContextWindowUsedTokens({ roundInput, systemTokens, toolTokens: toolsTokens })
     })
@@ -492,19 +530,9 @@
         return 'fa-regular fa-file'
     }
 
-    /** 文本 token 估算(对齐原版 estimateStreamTokensByText) */
-    function estimateTextTokens(text: string): number {
-        const source = String(text || '')
-
-        if (!source) {
-            return 0
-        }
-
-        const nonAscii = (source.match(/[^\x00-\x7F]/g) || []).length
-        const ascii = source.length - nonAscii
-
-        return Math.max(0, Math.ceil(nonAscii / 1.25 + ascii / 4))
-    }
+    /** TK mini 输入/输出展示(今日基数 + 流式增量,数据源 conversation store,对齐原版 applyTokenMiniDisplay) */
+    const tokenMiniInput = computed(() => conversationStore.tokenMiniText.input)
+    const tokenMiniOutput = computed(() => conversationStore.tokenMiniText.output)
 
     function handleInput(event: Event): void {
         draft.value = (event.target as HTMLTextAreaElement).value
@@ -632,6 +660,9 @@
             enableTools: toolsMode.value !== 'off',
             toolsMode: toolsMode.value,
         })
+
+        // 发送成功后清除该会话草稿(避免刷新后旧草稿复活)
+        clearDraft(conversationStore.currentId)
 
         draft.value = ''
 

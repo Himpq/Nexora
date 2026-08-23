@@ -24,6 +24,7 @@ import './styles/chat-input.css'
 import './styles/token-budget-card.css'
 import './styles/mail-center.css'
 import './styles/tool-chain.css'
+import './styles/workspaces.css'
 
 const app = createApp(App)
 

@@ -516,6 +516,12 @@
     .admin-token-trend-chart {
         width: 100%;
         height: 220px;
+        /*
+         * 覆盖 legacy 全局的白色渐变底(style.css: linear-gradient(#fbfdff→#ffffff)):
+         * 画布 backgroundColor 为 transparent,不覆盖时暗色模式下透出白色渐变。
+         * 直接露出卡片令牌底色,明暗主题自适应。
+         */
+        background: transparent;
     }
 
     .admin-token-trend-top {

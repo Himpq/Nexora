@@ -14,7 +14,11 @@
 -->
 
 <template>
-    <div class="message" :class="[message.role, { pending: message.pending }]" :data-index="message.index">
+    <div
+        class="message"
+        :class="[message.role, { pending: message.pending, 'stream-caret-active': streamCaretActive }]"
+        :data-index="message.index"
+    >
         <div class="message-content">
             <template v-if="message.role === 'user'">
                 <!-- 内联编辑(对齐原版 toggleEditUserPrompt:气泡变 textarea,Enter 保存重答) -->
@@ -66,7 +70,7 @@
 
                 <div class="msg-actions">
                     <button
-                        v-if="isLastUserMessage"
+                        v-if="isLastUserMessage && !readonly"
                         class="btn-action"
                         :title="editing ? '保存修改' : '编辑提示词'"
                         @click="handleEditClick"
@@ -82,7 +86,7 @@
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                         </svg>
                     </button>
-                    <button class="btn-action btn-del" title="删除" @click="handleDelete">
+                    <button v-if="!readonly" class="btn-action btn-del" title="删除" @click="handleDelete">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
                         </svg>
@@ -117,7 +121,10 @@
                         <div class="thinking-header execution-flow-header" @click="toggleReasoning(item.sourceIndex)">
                             <span class="execution-flow-node thinking-flow-node" aria-hidden="true"></span>
                             <span class="execution-flow-main">
-                                <span class="thinking-title execution-flow-title">{{ reasoningTitle(item.segment, item.sourceIndex) }}</span>
+                                <span
+                                    class="thinking-title execution-flow-title"
+                                    :ref="(el: unknown) => setReasoningTitleRef(item.sourceIndex, el)"
+                                >{{ reasoningTitle(item.segment, item.sourceIndex) }}</span>
                             </span>
                             <i class="fa-solid fa-chevron-down chevron-icon" aria-hidden="true"></i>
                         </div>
@@ -152,7 +159,7 @@
                             <div class="question-card-title">{{ item.payload.question_title || '问题' }}</div>
                             <div class="question-card-content">{{ item.payload.question_content }}</div>
 
-                            <template v-if="!isQuestionAnswered(item)">
+                            <template v-if="!isQuestionAnswered(item) && !readonly">
                                 <div v-if="(item.payload.choices || []).length" class="question-card-choices">
                                     <button
                                         v-for="(choice, choiceIndex) in item.payload.choices"
@@ -233,8 +240,8 @@
                     思考阶段被终止的回复同样可重答;生成中隐藏整条操作栏)
                 -->
                 <div v-if="!streaming" class="msg-actions">
-                    <!-- 版本切换器(对齐原版 buildVersionNavigation:多版本时显示 prev/next + 计数) -->
-                    <div v-if="versionNav.total > 1" class="version-switcher">
+                    <!-- 版本切换器(对齐原版 buildVersionNavigation:多版本时显示 prev/next + 计数);只读模式隐藏 -->
+                    <div v-if="versionNav.total > 1 && !readonly" class="version-switcher">
                         <button
                             class="btn-ver"
                             :title="'上一版本'"
@@ -263,13 +270,13 @@
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                         </svg>
                     </button>
-                    <button class="btn-action" title="重新回答" @click="emit('regenerate', message)">
+                    <button v-if="!readonly" class="btn-action" title="重新回答" @click="emit('regenerate', message)">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"></polyline>
                             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                         </svg>
                     </button>
-                    <button class="btn-action" title="从这里创建分支" @click="handleFork">
+                    <button v-if="!readonly" class="btn-action" title="从这里创建分支" @click="handleFork">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="6" cy="4" r="2"></circle>
                             <circle cx="18" cy="8" r="2"></circle>
@@ -307,14 +314,18 @@
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
 
-    const props = defineProps<{
+    const props = withDefaults(defineProps<{
         message: ChatMessage
         streaming?: boolean
         modelName?: string
         isLastUserMessage?: boolean
         /** 当前会话 ID(地图 ref 结果组装 conversation_id 用) */
         conversationId?: string
-    }>()
+        /** 只读模式(Workspace 共享对话):隐藏编辑/删除/重答/分支/版本切换与作答交互 */
+        readonly?: boolean
+    }>(), {
+        readonly: false,
+    })
 
     const emit = defineEmits<{
         delete: [message: ChatMessage]
@@ -388,6 +399,17 @@
         } catch {
             return text
         }
+    }
+
+    /** 执行流程文本截断(对齐原版 clipExecutionFlowText:空白折叠,超长省略号) */
+    function clipExecutionFlowText(text: string, limit = 96): string {
+        const value = String(text || '').replace(/\s+/g, ' ').trim()
+
+        if (value.length <= limit) {
+            return value
+        }
+
+        return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`
     }
 
     /** 参数 JSON 解析为对象(供中文动作标题提取 subject/title 等字段) */
@@ -505,6 +527,30 @@
                     payload: (segment.question && typeof segment.question === 'object')
                         ? segment.question as QuestionPayload
                         : {},
+                })
+
+                return
+            }
+
+            // 终态错误步骤(process_steps 中 type=error):渲染为红色错误条目,
+            // 对齐原版 appendErrorEvent 的「节点圆点 + 发生错误 + 截断错误文本」;
+            // 展开区保留完整错误内容,避免“只弹 toast、气泡全空”。
+            if (segment.type === 'error') {
+                const errText = String(segment.text || '')
+
+                items.push({
+                    kind: 'tool',
+                    sourceIndex,
+                    callId: String(segment.callId || ''),
+                    rawName: 'Error',
+                    title: '发生错误',
+                    flowKind: 'error',
+                    status: clipExecutionFlowText(errText, 112),
+                    running: false,
+                    hasOutput: !!errText.trim(),
+                    args: {},
+                    outputText: errText,
+                    markdownMode: false,
                 })
 
                 return
@@ -709,6 +755,9 @@
     /**
      * 思考行标题:流式中显示末段字符滚动窗口「思考中:…xxx」;
      * 其余状态(已完成/历史回放)显示「思考过程」。
+     *
+     * 滚动窗口宽度自适应:按标题元素实际可用宽度测算可容纳字符(而非固定字符数),
+     * 且换行即把窗口起点重置到最后一个 \n 之后——输出跨行时不残留上一行尾部。
      */
     function reasoningTitle(segment: MessageSegment, sourceIndex: number): string {
         if (!isLiveReasoning(sourceIndex)) {
@@ -716,9 +765,90 @@
         }
 
         const raw = String(segment.text || '')
-        const tail = raw.slice(-32).trimStart()
+        const titlePrefix = '思考中：'
 
-        return `思考中：${raw.length > 32 ? '…' : ''}${tail}`
+        // 换行重置窗口起点:只展示最后一个 \n 之后的当前行,避免跨行残留旧段
+        const lineStart = raw.lastIndexOf('\n') + 1
+        const line = raw.slice(lineStart)
+
+        const titleEl = reasoningTitleEls.value[sourceIndex]
+
+        // 首帧未挂载/SSR 环境无元素可测:退化为固定字符数窗口
+        if (!titleEl) {
+            const fallbackCapacity = 26
+            let fallbackTail = line
+            let fallbackEllipsis = lineStart > 0
+
+            if (line.length > fallbackCapacity) {
+                fallbackTail = line.slice(-fallbackCapacity)
+                fallbackEllipsis = true
+            }
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
+        const font = getComputedStyle(titleEl).font
+        const availableWidth = Math.max(1, titleEl.clientWidth - reasoningTextWidth(titlePrefix, font))
+        const { tail, truncated } = fitReasoningTail(line, availableWidth, font)
+        const showEllipsis = lineStart > 0 || truncated
+
+        return `${titlePrefix}${showEllipsis ? '…' : ''}${tail}`
+    }
+
+    /** 思考行标题元素引用(分段索引 → 元素);宽度自适应测量用,卸载时置空 */
+    const reasoningTitleEls = ref<Record<number, HTMLElement | null>>({})
+
+    function setReasoningTitleRef(sourceIndex: number, el: unknown): void {
+        reasoningTitleEls.value[sourceIndex] = (el as HTMLElement | null) || null
+    }
+
+    /** 文本测宽 canvas 上下文(懒创建,仅测宽用,不依赖布局) */
+    let reasoningMeasureCtx: CanvasRenderingContext2D | null = null
+
+    function reasoningTextWidth(text: string, font: string): number {
+        if (typeof document === 'undefined') {
+            return 0
+        }
+
+        if (!reasoningMeasureCtx) {
+            reasoningMeasureCtx = document.createElement('canvas').getContext('2d')
+        }
+
+        if (!reasoningMeasureCtx) {
+            return 0
+        }
+
+        reasoningMeasureCtx.font = font
+
+        return reasoningMeasureCtx.measureText(text).width
+    }
+
+    /**
+     * 宽度内最大尾部子串(二分查找):尾部超出可用宽度时截断并占省略号宽度,
+     * 保证「…+尾部」整体落在组件可用宽度内。
+     */
+    function fitReasoningTail(line: string, availableWidth: number, font: string): { tail: string; truncated: boolean } {
+        if (availableWidth <= 0 || !line) {
+            return { tail: '', truncated: !!line }
+        }
+
+        const ellipsisWidth = reasoningTextWidth('…', font)
+        let low = 0
+        let high = line.length
+
+        while (low < high) {
+            const mid = Math.ceil((low + high) / 2)
+            const tail = line.slice(-mid)
+            const width = reasoningTextWidth(tail, font) + (mid < line.length ? ellipsisWidth : 0)
+
+            if (width <= availableWidth) {
+                low = mid
+            } else {
+                high = mid - 1
+            }
+        }
+
+        return { tail: line.slice(-low), truncated: low < line.length }
     }
 
     /** 手动切换思考块折叠(记录用户选择,后续自动展开/收起策略不再覆盖该块) */
@@ -749,6 +879,12 @@
     function isTailContent(item: TextRenderItem): boolean {
         return item.sourceIndex === tailContentIndex.value
     }
+
+    /**
+     * 正文流式尾标是否正在显示(尾部分段为正文且生成中):
+     * 此时隐藏 legacy pending ●,避免与 stream-caret 两个闪烁指示重复。
+     */
+    const streamCaretActive = computed(() => tailContentIndex.value >= 0)
 
     // 新一轮流式开始时分段被清空:重置手动折叠记录,避免旧状态影响新思考块/工具徽标
     watch(() => contentSegments.value.length, (length) => {
@@ -1133,6 +1269,12 @@
     @keyframes nc-caret-blink {
         0%, 100% { opacity: 1; }
         50% { opacity: 0; }
+    }
+
+    /* 正文尾标(stream-caret)显示时,隐藏 legacy pending ●(style.css .message-content::after),
+       避免同一消息内两个闪烁指示重复;思考/等待首 token 阶段(无正文尾标)保留 ● */
+    .message.assistant.pending.stream-caret-active .message-content::after {
+        display: none;
     }
 
     /* 版本切换器(对齐原版 style.css .version-switcher/.btn-ver) */

@@ -129,6 +129,8 @@ export interface PromptOptions {
     confirmText?: string
     cancelText?: string
     placeholder?: string
+    /** 输入长度上限(如 Workspace 名称 120) */
+    maxlength?: number
 }
 
 /** 打开输入小窗;resolve(输入值) 表示确认,resolve(null) 表示取消 */
@@ -163,7 +165,7 @@ export function showPrompt(options: PromptOptions): Promise<string | null> {
                 </div>
                 <div class="g-modal-body">
                     ${options.label ? `<div style="font-size: 13px; color: #64748b; margin-bottom: 8px;">${escapeHtml(options.label)}</div>` : ''}
-                    <input type="text" class="g-input" data-input placeholder="${escapeHtml(options.placeholder || '')}" value="${escapeHtml(options.defaultValue || '')}" />
+                    <input type="text" class="g-input" data-input placeholder="${escapeHtml(options.placeholder || '')}" value="${escapeHtml(options.defaultValue || '')}"${options.maxlength ? ` maxlength="${options.maxlength}"` : ''} />
                 </div>
                 <div class="g-modal-footer">
                     <button type="button" class="g-btn g-btn-ghost" data-action="cancel">${escapeHtml(options.cancelText || '取消')}</button>

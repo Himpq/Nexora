@@ -3,7 +3,7 @@
 
     卡片网格(auto-fill 小卡):图片缩略图 / 类型图标 + 名称两行截断 +
     "大小 · 类型"元信息 + 可见性开关;点击打开内置预览,右键弹出置顶菜单。
-    对齐原版 renderWorkspaceProjectFileRows 的呈现密度。
+    悬停 tooltip 汇总名称/添加者/大小/类型/更新时间(对齐原版多行 title)。
 -->
 
 <template>
@@ -18,6 +18,7 @@
             role="button"
             tabindex="0"
             :aria-label="`打开文件:${displayName(entry)}`"
+            :title="cardTooltip(entry)"
             @click="actions.openFile(entry)"
             @keydown.enter.prevent="actions.openFile(entry)"
             @contextmenu.prevent="openMenu($event, entry)"
@@ -35,7 +36,8 @@
             <div class="ws-file-card-switch">
                 <WorkspaceVisibilitySwitch
                     :visibility="String(entry.visibility || '')"
-                    :disabled="!canEditVisibility(entry)"
+                    :disabled="!canEdit(entry)"
+                    :saving="savingKey === rowKey(entry)"
                     @toggle="toggleVisibility(entry)"
                 />
             </div>
@@ -46,7 +48,6 @@
 <script setup lang="ts">
     import { computed } from 'vue'
 
-    import type { CloudFileItem } from '@/api/files-center'
     import {
         fileDisplayName,
         fileIconClass,
@@ -55,10 +56,11 @@
         isImageFile,
     } from '@/api/files-center'
     import type { WorkspaceDetail, WorkspaceFileEntry } from '@/api/workspaces'
-    import { workspaceFileUrl } from '@/api/workspaces'
+    import { formatWorkspaceDate, workspaceFileUrl } from '@/api/workspaces'
 
-    import { fileTypeText, normalizeVisibility, sortPinnedFirst } from '../workspaceDisplay'
-    import { useWorkspaceActions, type WorkspaceResourceRef } from '../workspaceContext'
+    import { canEditVisibilityOf, fileRef, isVisibilitySwitchTarget, resourceRowKey, toCloudFileItem } from '../workspaceResource'
+    import { fileTypeText, sortPinnedFirst } from '../workspaceDisplay'
+    import { useVisibilitySavingKey, useWorkspaceActions } from '../workspaceContext'
 
     import WorkspaceVisibilitySwitch from '../WorkspaceVisibilitySwitch.vue'
 
@@ -67,6 +69,7 @@
     }>()
 
     const actions = useWorkspaceActions()
+    const savingKey = useVisibilitySavingKey()
 
     const files = computed<WorkspaceFileEntry[]>(() => {
         const items = Array.isArray(props.workspace.workspace_files) ? props.workspace.workspace_files : []
@@ -74,31 +77,21 @@
         return sortPinnedFirst(items, (item) => item.pin === true)
     })
 
-    /** 条目 → 文件中心工具函数所需的形状(仅取其读取的字段) */
-    function asCloudFile(entry: WorkspaceFileEntry): CloudFileItem {
-        return {
-            alias: String(entry.alias || ''),
-            original_name: String(entry.original_name || ''),
-            title: String(entry.title || ''),
-            source_ext: String(entry.source_ext || ''),
-        }
-    }
-
     function displayName(entry: WorkspaceFileEntry): string {
-        return fileDisplayName(asCloudFile(entry))
+        return fileDisplayName(toCloudFileItem(entry))
     }
 
     function toneClass(entry: WorkspaceFileEntry): string {
-        return fileToneClass(asCloudFile(entry))
+        return fileToneClass(toCloudFileItem(entry))
     }
 
     function iconClass(entry: WorkspaceFileEntry): string {
-        return fileIconClass(asCloudFile(entry))
+        return fileIconClass(toCloudFileItem(entry))
     }
 
     /** 图片缩略图走项目下载接口内联(added_by 定位跨用户沙箱) */
     function thumbnailUrl(entry: WorkspaceFileEntry): string {
-        if (!isImageFile(asCloudFile(entry))) {
+        if (!isImageFile(toCloudFileItem(entry))) {
             return ''
         }
 
@@ -110,29 +103,41 @@
         return [formatFileSize(Number(entry.size || 0)), fileTypeText(entry)].filter(Boolean).join(' · ')
     }
 
-    function canEditVisibility(entry: WorkspaceFileEntry): boolean {
-        const owner = String(entry.added_by || props.workspace.owner_username || '').trim()
+    /** 悬停 tooltip(对齐原版多行 title:名称/@添加者/大小/类型/更新时间) */
+    function cardTooltip(entry: WorkspaceFileEntry): string {
+        const date = formatWorkspaceDate(entry.updated_at || entry.added_at || entry.created_at)
 
-        return owner === actions.currentUserId()
+        return [
+            displayName(entry),
+            entry.added_by ? `@${entry.added_by}` : '',
+            formatFileSize(Number(entry.size || 0)),
+            fileTypeText(entry),
+            date !== '-' ? `更新:${date}` : '',
+        ].filter(Boolean).join('\n')
     }
 
-    function resourceRef(entry: WorkspaceFileEntry): WorkspaceResourceRef {
-        return {
-            type: 'file',
-            ref: entry.file_ref,
-            addedBy: String(entry.added_by || ''),
-            visibility: normalizeVisibility(entry.visibility),
-        }
+    function canEdit(entry: WorkspaceFileEntry): boolean {
+        return canEditVisibilityOf(props.workspace, entry.added_by, actions.currentUserId())
+    }
+
+    function rowKey(entry: WorkspaceFileEntry): string {
+        return resourceRowKey(fileRef(entry))
     }
 
     function toggleVisibility(entry: WorkspaceFileEntry): void {
-        const next = normalizeVisibility(entry.visibility) === 'share' ? 'private' : 'share'
+        const target = fileRef(entry)
+        const next = target.visibility === 'share' ? 'private' : 'share'
 
-        void actions.toggleResourceVisibility(resourceRef(entry), next)
+        void actions.toggleResourceVisibility(target, next)
     }
 
+    /** 开关区域右键不弹置顶菜单(对齐原版 visibility-toggle 排除) */
     function openMenu(event: MouseEvent, entry: WorkspaceFileEntry): void {
-        actions.openResourceMenu(event, resourceRef(entry))
+        if (isVisibilitySwitchTarget(event.target)) {
+            return
+        }
+
+        actions.openResourceMenu(event, fileRef(entry))
     }
 </script>
 
@@ -146,15 +151,13 @@
 
     .ws-empty {
         grid-column: 1 / -1;
-        color: var(--color-text-secondary);
-        font-size: 14px;
-        padding: 18px 10px;
     }
 
     .ws-file-card {
         position: relative;
         min-width: 0;
-        min-height: 158px;
+        /* 高度由固定媒体区 + 2 行标题 + 元信息 + 开关自然撑开,不强制 min-height,
+           保证缩略图与类型图标卡片高度统一(对齐原版卡片网格的整齐排布)。 */
         border: 1px solid transparent;
         border-radius: 8px;
         background: transparent;
@@ -177,12 +180,14 @@
         outline: none;
     }
 
+    /* 媒体区固定 54px(缩略图与类型图标同框),消除图片/非图片卡片的高度差 */
     .ws-file-card-media {
         width: 54px;
         height: 54px;
         display: flex;
         align-items: center;
         justify-content: center;
+        flex: 0 0 auto;
     }
 
     .ws-file-thumb {
@@ -196,8 +201,8 @@
     }
 
     .ws-file-icon {
-        width: 44px;
-        height: 44px;
+        width: 54px;
+        height: 54px;
         border-radius: 9px;
         background: var(--color-bg-sunken);
         color: var(--color-text-secondary);
@@ -207,15 +212,11 @@
         font-size: 20px;
     }
 
-    .ws-pin-icon {
-        color: var(--color-text-primary);
-        font-size: 11px;
-        margin-right: 5px;
-    }
-
+    /* 标题固定预留 2 行高度,长名省略号截断,避免单行/双行卡片错位 */
     .ws-file-card-name {
         width: 100%;
         min-width: 0;
+        min-height: calc(13px * 1.35 * 2);
         color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 650;
@@ -226,6 +227,10 @@
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow-wrap: anywhere;
+    }
+
+    .ws-pin-icon {
+        margin-right: 5px;
     }
 
     .ws-file-card-meta {

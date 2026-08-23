@@ -18,8 +18,8 @@
 import type { ChatMessage } from '@/api/conversations'
 import type { QuestionPayload } from '@/stream/questionCard'
 
-/** 分段类型:思考过程 / 正文 / 工具调用 / 工具结果 / 交互问题 */
-export type MessageSegmentType = 'reasoning' | 'content' | 'function_call' | 'function_result' | 'question'
+/** 分段类型:思考过程 / 正文 / 工具调用 / 工具结果 / 交互问题 / 终态错误 */
+export type MessageSegmentType = 'reasoning' | 'content' | 'function_call' | 'function_result' | 'question' | 'error'
 
 /** 消息内容分段(渲染按数组顺序进行,文本追加只发生在末尾同类型分段) */
 export interface MessageSegment {
@@ -140,7 +140,7 @@ export function rebuildSegmentsFromFlat(message: ChatMessage): void {
     message.segments = segments
 }
 
-/** 将分段按类型合并写回扁平字段 content / reasoning(工具分段不参与扁平字段) */
+/** 将分段按类型合并写回扁平字段 content / reasoning(工具分段不参与扁平字段,错误文本并入 content 保持复制/版本数据口径) */
 export function flattenSegmentsToFlat(message: ChatMessage): void {
     const segments = Array.isArray(message.segments) ? message.segments : []
     let reasoning = ''
@@ -149,7 +149,7 @@ export function flattenSegmentsToFlat(message: ChatMessage): void {
     segments.forEach((segment) => {
         if (segment.type === 'reasoning') {
             reasoning += segment.text
-        } else if (segment.type === 'content') {
+        } else if (segment.type === 'content' || segment.type === 'error') {
             content += segment.text
         }
     })
@@ -202,6 +202,17 @@ function stepToSegment(step: Record<string, unknown>): MessageSegment | null {
             callId: String(step.call_id || ''),
             modelVisibleResult: typeof step.model_visible_result === 'string' ? step.model_visible_result : undefined,
             round: Number(step.round) || undefined,
+        }
+    }
+
+    // 终态错误步骤(模型限流/认证失败/网络中断等):映射为 error 分段,渲染为消息内红色错误行。
+    // 若在此丢弃,纯错误消息重建分段后会被清空(字数归零),前端只剩 toast 而无气泡内容。
+    if (type === 'error') {
+        return {
+            type: 'error',
+            text: String(step.content || step.message || ''),
+            name: String(step.name || '').trim() || 'error',
+            callId: String(step.call_id || ''),
         }
     }
 

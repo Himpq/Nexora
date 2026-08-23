@@ -9,6 +9,8 @@
 
 import type { WorkspaceActivityItem, WorkspaceFileEntry, WorkspaceTaskEntry } from '@/api/workspaces'
 
+import { formatDateLabel, todayKey } from '@/ui/date'
+
 /** ===== 任务状态 / 颜色(对齐原版 WORKSPACE_TASK_STATUS_OPTIONS 等) ===== */
 
 export interface WorkspaceTaskStatusOption {
@@ -192,59 +194,19 @@ export function activityIcon(item: WorkspaceActivityItem): string {
     return overviewTypeIcon(type)
 }
 
-/** ===== 日期工具(对齐原版 formatWorkspaceTaskDateKey 系列函数) ===== */
+/** ===== 日期工具(纯函数已上收 GDDP ui/date.ts,此处转发导出保持历史引用) ===== */
 
-/** 本地时区 YYYY-MM-DD 键 */
-export function formatDateKey(date: Date): string {
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-
-    return `${date.getFullYear()}-${month}-${day}`
-}
-
-export function todayKey(): string {
-    return formatDateKey(new Date())
-}
-
-/** 解析 YYYY-MM-DD;格式或真实日期不合法返回 null(对齐原版 parseWorkspaceTaskDate) */
-export function parseDateKey(value: unknown): Date | null {
-    const text = String(value || '').trim()
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-        return null
-    }
-
-    const year = Number(text.slice(0, 4))
-    const month = Number(text.slice(5, 7))
-    const day = Number(text.slice(8, 10))
-    const date = new Date(year, month - 1, day)
-
-    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-        return null
-    }
-
-    return date
-}
-
-export function isValidDateKey(value: unknown): boolean {
-    const text = String(value || '').trim()
-
-    return !text || parseDateKey(text) !== null
-}
-
-/** MM-DD 短标签(对齐原版 formatWorkspaceTaskDateLabel) */
-export function formatDateLabel(value: unknown): string {
-    const date = parseDateKey(value)
-
-    if (!date) {
-        return String(value || '').trim()
-    }
-
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-
-    return `${month}-${day}`
-}
+export {
+    dateRangeMonth,
+    formatDateKey,
+    formatDateLabel,
+    isValidDateKey,
+    normalizeMonth,
+    normalizeMonthInput,
+    parseDateKey,
+    shiftMonth,
+    todayKey,
+} from '@/ui/date'
 
 /** 任务排期描述(对齐原版 formatWorkspaceTaskSchedule) */
 export function taskScheduleText(task: Pick<WorkspaceTaskEntry, 'start_date' | 'due_date'>): string {
@@ -293,48 +255,6 @@ export function isTaskOnDate(task: WorkspaceTaskEntry, dateKey: string): boolean
     return false
 }
 
-/** YYYY-MM 归一化(非法返回空串,对齐原版 normalizeWorkspaceTaskMonth) */
-export function normalizeMonth(value: unknown): string {
-    const text = String(value || '').trim()
-
-    if (!/^\d{4}-\d{2}$/.test(text)) {
-        return ''
-    }
-
-    const month = Number(text.slice(5, 7))
-
-    return month >= 1 && month <= 12 ? text : ''
-}
-
-/** 月输入宽容解析(支持 202503 / 2025-3 / 2025年3月 等,对齐原版 normalizeWorkspaceTaskMonthInput) */
-export function normalizeMonthInput(value: unknown): string {
-    const text = String(value || '').trim()
-
-    if (!text) {
-        return ''
-    }
-
-    const compactMatch = text.match(/^(\d{4})(\d{2})$/)
-    const separatedMatch = text.match(/^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?$/)
-    const match = compactMatch || separatedMatch
-
-    if (!match) {
-        return normalizeMonth(text)
-    }
-
-    return normalizeMonth(`${match[1]}-${String(Number(match[2])).padStart(2, '0')}`)
-}
-
-/** 月份平移(对齐原版 shiftWorkspaceTaskCalendarMonth) */
-export function shiftMonth(monthValue: string, offset: number): string {
-    const month = normalizeMonth(monthValue) || todayKey().slice(0, 7)
-    const year = Number(month.slice(0, 4))
-    const monthIndex = Number(month.slice(5, 7)) - 1
-    const date = new Date(year, monthIndex + offset, 1)
-
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-}
-
 /** 默认日历月份:最近的含任务月份,否则当月(对齐原版 getWorkspaceDefaultTaskCalendarMonth) */
 export function defaultCalendarMonth(tasks: WorkspaceTaskEntry[]): string {
     const today = todayKey()
@@ -345,11 +265,6 @@ export function defaultCalendarMonth(tasks: WorkspaceTaskEntry[]): string {
     const nearestDate = datedTasks.find((dateKey) => dateKey >= today) || datedTasks[0] || today
 
     return nearestDate.slice(0, 7)
-}
-
-/** 日期范围选择器初始月份(对齐原版 getWorkspaceTaskDateRangeMonth) */
-export function dateRangeMonth(startDate = '', dueDate = ''): string {
-    return (startDate || dueDate || todayKey()).slice(0, 7)
 }
 
 /** 时间范围触发器两行文案(对齐原版 formatWorkspaceTaskDateRangeLabel + meta 行) */

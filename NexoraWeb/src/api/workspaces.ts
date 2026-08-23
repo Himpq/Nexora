@@ -9,6 +9,7 @@
  *   POST   /api/workspace/<id>/settings          更新设置(改名/共享)
  *   POST   /api/workspace/<id>/conversations/<cid>/visibility 对话可见性
  *   POST   /api/workspace/<id>/conversations/<cid>/pin        对话置顶
+ *   GET    /api/workspace/<id>/conversations/<cid>            共享对话只读读取(跨用户)
  *   POST   /api/workspace/<id>/knowledge          归入知识库
  *   POST   /api/workspace/<id>/knowledge/blank    新建空白知识库
  *   POST   /api/workspace/<id>/knowledge/visibility 知识库可见性
@@ -24,6 +25,8 @@
  */
 
 import { apiFetch } from './client'
+
+import type { ChatMessage } from './conversations'
 
 export interface WorkspaceSummary {
     workspace_id: string
@@ -192,6 +195,20 @@ interface WorkspaceMutationResponse {
     message?: string
 }
 
+/** 共享对话只读读取响应(后端 get_visible_conversation 输出) */
+export interface WorkspaceSharedConversation {
+    conversation: {
+        conversation_id?: string
+        title?: string
+        messages?: Array<Partial<ChatMessage>>
+    }
+    marker?: WorkspaceConversation
+    readonly: boolean
+    owner_username: string
+    workspace_id: string
+    workspace_title: string
+}
+
 /** 拉取项目列表(include_marks 对齐原版 loadWorkspaceProjects) */
 export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
     const data = await apiFetch<WorkspaceListResponse>('/api/workspace/list?include_marks=1')
@@ -301,9 +318,22 @@ export async function pinWorkspaceFile(
     return data.workspace
 }
 
-/** 添加云端文件到项目(对齐原版 add_workspace_file) */
-export async function addWorkspaceFile(workspaceId: string, fileRef: string): Promise<WorkspaceDetail> {
+/** 从项目移除文件标记(右键菜单取消归入,镜像 removeWorkspaceConversation;仅移除当前用户添加的标记) */
+export async function removeWorkspaceFile(workspaceId: string, fileRef: string): Promise<WorkspaceDetail> {
     const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/files`,
+        { method: 'DELETE', body: JSON.stringify({ file_ref: fileRef }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '取消归入失败')
+    }
+
+    return data.workspace
+}
+
+/** 添加云端文件到项目(对齐原版 add_workspace_file) */
+export async function addWorkspaceFile(workspaceId: string, fileRef: string): Promise<WorkspaceDetail> {    const data = await apiFetch<WorkspaceMutationResponse>(
         `/api/workspace/${encodeURIComponent(workspaceId)}/files`,
         { method: 'POST', body: JSON.stringify({ file_ref: fileRef }) }
     )
@@ -355,6 +385,49 @@ export async function removeWorkspaceKnowledge(workspaceId: string, title: strin
     }
 
     return data.workspace
+}
+
+/** 对话归入项目(Workspace 详情页输入框发送新对话后登记,对齐原版 addConversationToWorkspace) */
+export async function addWorkspaceConversation(workspaceId: string, conversationId: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/conversations`,
+        { method: 'POST', body: JSON.stringify({ conversation_id: conversationId }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '对话归入失败')
+    }
+
+    return data.workspace
+}
+
+/**
+ * 读取他人共享进项目的对话(只读;后端按 viewer 校验可见性)。
+ * 返回值已把消息数组映射为 ChatMessage(补 index),供消息区直接渲染。
+ */
+export async function fetchSharedWorkspaceConversation(workspaceId: string, conversationId: string): Promise<{
+    title: string
+    ownerUsername: string
+    workspaceTitle: string
+    messages: ChatMessage[]
+}> {
+    const data = await apiFetch<WorkspaceSharedConversation>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`
+    )
+
+    if (!data.conversation) {
+        throw new Error('共享对话读取失败')
+    }
+
+    const rawMessages = Array.isArray(data.conversation.messages) ? data.conversation.messages : []
+
+    return {
+        title: String(data.conversation.title || data.marker?.title || conversationId).trim(),
+        ownerUsername: String(data.owner_username || '').trim(),
+        workspaceTitle: String(data.workspace_title || '').trim(),
+        // 落库消息与 /messages 同构(缺 index),此处补齐后按 ChatMessage 消费
+        messages: rawMessages.map((message, index) => ({ ...message, index }) as ChatMessage),
+    }
 }
 
 /** 新建项目任务(对齐原版 create_workspace_task) */
@@ -515,17 +588,29 @@ export async function searchWorkspaceUsers(query = '', limit = 20): Promise<Work
     return Array.isArray(data.items) ? data.items : []
 }
 
-/** 项目时间显示(对齐原版 formatWorkspaceDate) */
-export function formatWorkspaceDate(raw: string | undefined): string {
-    const value = String(raw || '').trim()
+/**
+ * 项目时间显示(对齐原版 formatWorkspaceDate):
+ *   - 纯数字(含小数 epoch,如 1787080769.0539062)按时间戳解析,
+ *     >1e11 视为毫秒,否则秒,兼容后端新旧字段与浮点精度尾巴
+ *   - 输出紧凑的「M月D日」;无法解析时原样返回
+ */
+export function formatWorkspaceDate(raw: string | number | undefined): string {
+    const value = String(raw ?? '').trim()
 
     if (!value) {
         return '-'
     }
 
-    try {
-        return new Date(value).toLocaleString()
-    } catch {
+    // 允许小数 epoch(后端偶发带精度尾巴的时间戳),Number() 可直接吃掉小数点
+    const numeric = Number(value)
+
+    const date = Number.isFinite(numeric) && numeric > 0
+        ? new Date(numeric > 100000000000 ? numeric : numeric * 1000)
+        : new Date(value)
+
+    if (Number.isNaN(date.getTime())) {
         return value
     }
+
+    return `${date.getMonth() + 1}月${date.getDate()}日`
 }

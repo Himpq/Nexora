@@ -30,8 +30,8 @@
             </template>
         </div>
 
-        <div class="header-center" id="conversationTitle">
-            {{ view === 'files' ? 'Files' : (view === 'workspaces' ? 'Workspaces' : (view === 'knowledge' ? (knowledgeTitle || 'Knowledge') : (view === 'knowledge-mgmt' ? '知识库管理' : (view === 'mail' ? 'Mail' : conversationTitle)))) }}
+        <div class="header-center" id="conversationTitle" :title="centerTitleTooltip">
+            {{ centerTitle }}
         </div>
 
         <div class="header-right">
@@ -141,9 +141,15 @@ const emit = defineEmits<{
         knowledgeTitle?: string
         /** 当前视图:chat(默认) | files(文件中心) | workspaces | knowledge(正文编辑) | knowledge-mgmt(知识库管理) | mail(邮件中心) */
         view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'
+        /** 标题覆盖(如 Workspace 详情/共享对话标题);空串表示走视图默认标题 */
+        overrideTitle?: string
+        /** 覆盖标题的悬停说明(如「只读共享 · @owner」) */
+        overrideTitleTooltip?: string
     }>(), {
         view: 'chat',
         knowledgeTitle: '',
+        overrideTitle: '',
+        overrideTitleTooltip: '',
     })
 
     const conversationStore = useConversationStore()
@@ -188,6 +194,30 @@ const emit = defineEmits<{
         // 对齐原版:新建空白会话(欢迎屏)时标题为 New Chat
         return conversationStore.currentConversation?.title || 'New Chat'
     })
+
+    /** 中央标题:覆盖值优先,否则按视图取默认(对齐原版 headerTitle 切换) */
+    const VIEW_TITLES: Record<string, string> = {
+        files: 'Files',
+        workspaces: 'Workspaces',
+        knowledge: '',
+        'knowledge-mgmt': '知识库管理',
+        mail: 'Mail',
+    }
+
+    const centerTitle = computed(() => {
+        if (props.overrideTitle) {
+            return props.overrideTitle
+        }
+
+        if (props.view === 'knowledge') {
+            return props.knowledgeTitle || 'Knowledge'
+        }
+
+        return VIEW_TITLES[props.view] ?? conversationTitle.value
+    })
+
+    /** 覆盖标题的悬停说明(仅覆盖态生效,如共享对话标注归属) */
+    const centerTitleTooltip = computed(() => (props.overrideTitle ? props.overrideTitleTooltip : ''))
 </script>
 
 <style scoped>

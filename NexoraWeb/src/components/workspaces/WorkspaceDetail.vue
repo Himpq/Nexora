@@ -10,6 +10,9 @@
         <!-- 头部 -->
         <div class="ws-detail-header">
             <div class="ws-detail-title-row">
+                <button class="ws-detail-back-btn" type="button" title="返回 Workspaces" aria-label="返回 Workspaces" @click="emit('back')">
+                    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                </button>
                 <span class="ws-detail-title-icon">
                     <i class="fa-regular fa-folder" aria-hidden="true"></i>
                 </span>
@@ -56,6 +59,9 @@
             </div>
         </div>
 
+        <!-- 详情内嵌输入框停靠点:ChatView 的 ChatInput 经 Teleport 挂载于此(对齐原版 workspaceDetailInputSlot) -->
+        <div id="ws-detail-input-slot" class="ws-detail-input-slot" aria-label="Workspace 对话输入"></div>
+
         <!-- tab 栏 -->
         <div class="ws-detail-tabs" role="tablist" aria-label="Workspace 内容">
             <button
@@ -69,8 +75,16 @@
                 @click="emit('update:tab', tab.value)"
             ><span>{{ tab.label }}</span></button>
 
-            <button v-if="activeTab === 'knowledge'" class="ws-detail-side-btn" type="button" title="新建空白知识库" aria-label="新建空白知识库" @click="handleCreateKnowledge">
-                <i class="fa-solid fa-plus" aria-hidden="true"></i>
+            <button
+                v-if="activeTab === 'knowledge'"
+                class="ws-detail-side-btn"
+                type="button"
+                title="新建空白知识库"
+                aria-label="新建空白知识库"
+                :disabled="creatingKnowledge"
+                @click="handleCreateKnowledge"
+            >
+                <i :class="creatingKnowledge ? 'fa-solid fa-spinner' : 'fa-solid fa-plus'" aria-hidden="true"></i>
                 <span>新建</span>
             </button>
 
@@ -155,6 +169,8 @@
 
     const emit = defineEmits<{
         'update:tab': [tab: WorkspaceDetailTab]
+        /** 返回 Workspace 列表(从详情页回到首页) */
+        back: []
     }>()
 
     const actions = useWorkspaceActions()
@@ -238,9 +254,21 @@
         }
     }
 
-    /** ===== 新建空白知识库 ===== */
+    /** ===== 新建空白知识库(请求期间禁用按钮防重复提交,对齐原版 is-loading) ===== */
+    const creatingKnowledge = ref(false)
+
     async function handleCreateKnowledge(): Promise<void> {
-        await actions.createBlankKnowledge('')
+        if (creatingKnowledge.value) {
+            return
+        }
+
+        creatingKnowledge.value = true
+
+        try {
+            await actions.createBlankKnowledge('')
+        } finally {
+            creatingKnowledge.value = false
+        }
     }
 
     /** ===== 上传到 Workspace ===== */
@@ -261,9 +289,9 @@
 <style scoped>
     .ws-detail-shell {
         width: 100%;
-        min-height: 100%;
+        min-height: 0;
         margin: 0;
-        padding: 42px 40px 96px;
+        padding: 42px 40px 56px;
         box-sizing: border-box;
     }
 
@@ -304,6 +332,36 @@
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
+    }
+
+    /* 详情页返回按钮:置于标题行最左,点回 Workspace 列表 */
+    .ws-detail-back-btn {
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--color-border);
+        border-radius: 9px;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        padding: 0;
+        font: inherit;
+        font-size: 15px;
+        cursor: pointer;
+        transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+    }
+
+    .ws-detail-back-btn:hover {
+        border-color: var(--color-border-strong);
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
+    }
+
+    .ws-detail-back-btn:focus-visible {
+        outline: 2px solid var(--color-text-primary);
+        outline-offset: 2px;
     }
 
     .ws-detail-title-editor {
@@ -464,27 +522,31 @@
         margin-left: 0;
     }
 
-    .ws-detail-side-btn:hover {
+    .ws-detail-side-btn:hover:not(:disabled) {
         border-color: var(--color-border-strong);
         background: var(--color-bg-sunken);
     }
 
+    .ws-detail-side-btn:disabled {
+        cursor: default;
+        opacity: 0.68;
+    }
+
     /* ===== 面板容器 ===== */
     .ws-detail-panels {
-        --ws-detail-panel-min-height: clamp(620px, calc(100vh - 320px), 860px);
-        min-height: var(--ws-detail-panel-min-height);
-        margin-bottom: 96px;
+        min-height: 0;
+        margin-bottom: 32px;
     }
 
     .ws-detail-panel {
-        min-height: inherit;
+        min-height: 0;
     }
 
     .ws-detail-panel-list {
         display: flex;
         flex-direction: column;
         gap: 2px;
-        min-height: inherit;
+        min-height: 0;
         box-sizing: border-box;
     }
 
@@ -497,11 +559,7 @@
 
     @media (max-width: 720px) {
         .ws-detail-shell {
-            padding: 28px 16px 88px;
-        }
-
-        .ws-detail-panels {
-            --ws-detail-panel-min-height: clamp(520px, calc(100vh - 260px), 720px);
+            padding: 28px 16px 56px;
         }
 
         .ws-detail-header {
@@ -530,6 +588,12 @@
             width: 36px;
             height: 36px;
             font-size: 17px;
+        }
+
+        .ws-detail-back-btn {
+            width: 32px;
+            height: 32px;
+            font-size: 14px;
         }
 
         .ws-detail-tabs {

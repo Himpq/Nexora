@@ -35,7 +35,6 @@
 <script setup lang="ts">
     import { computed, ref, watch } from 'vue'
 
-    import type { CloudFileItem } from '@/api/files-center'
     import {
         fileDisplayName,
         formatFileSize,
@@ -43,6 +42,8 @@
     } from '@/api/files-center'
     import type { WorkspaceFileEntry } from '@/api/workspaces'
     import { readWorkspaceFile, workspaceFileUrl } from '@/api/workspaces'
+
+    import { toCloudFileItem } from '../workspaceResource'
 
     import Modal from '@/ui/Modal.vue'
 
@@ -60,19 +61,9 @@
     const loading = ref(false)
     const loadError = ref('')
 
-    /** 复用文件中心的展示工具(仅取其读取的字段) */
-    function asCloudFile(entry: WorkspaceFileEntry): CloudFileItem {
-        return {
-            alias: String(entry.alias || ''),
-            original_name: String(entry.original_name || ''),
-            title: String(entry.title || ''),
-            source_ext: String(entry.source_ext || ''),
-        }
-    }
+    const displayName = computed(() => props.file ? fileDisplayName(toCloudFileItem(props.file)) : '')
 
-    const displayName = computed(() => props.file ? fileDisplayName(asCloudFile(props.file)) : '')
-
-    const isImage = computed(() => Boolean(props.file && isImageFile(asCloudFile(props.file))))
+    const isImage = computed(() => Boolean(props.file && isImageFile(toCloudFileItem(props.file))))
 
     const addedBy = computed(() => String(props.file?.added_by || ''))
 
