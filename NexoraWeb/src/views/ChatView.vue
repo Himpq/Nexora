@@ -124,9 +124,8 @@
                     <WorkspacesView
                         ref="workspacesViewRef"
                         :open="workspacesOpen"
-                        @close="backToChat"
                         @open-conversation="handleOpenWorkspaceConversation"
-                        @open-file="handleOpenWorkspaceFile"
+                        @open-knowledge="handleOpenKnowledgeDocument"
                     />
                 </div>
 
@@ -247,7 +246,7 @@
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
     import TrashModal from '@/components/TrashModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
-    import WorkspacesView from '@/components/WorkspacesView.vue'
+    import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import type { NoteItem } from '@/api/notes'
@@ -291,7 +290,6 @@
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
-    const fileDetailReturnView = ref<'files' | 'workspace'>('files')
 
     /** Workspaces 视图引用:顶栏返回需先回项目首页(详情内容 → 首页 → 聊天) */
     const workspacesViewRef = ref<InstanceType<typeof WorkspacesView> | null>(null)
@@ -315,7 +313,6 @@
 
         knowledgeTitle.value = ''
         fileDetail.value = null
-        fileDetailReturnView.value = 'files'
     }
 
     /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。
@@ -1040,26 +1037,11 @@
     /** 打开文件详情 */
     function openFileDetail(file: CloudFileItem): void {
         fileDetail.value = file
-        fileDetailReturnView.value = 'files'
-    }
-
-    /** Workspace 文件复用 Files 详情视图,返回时恢复原 Workspace 详情页。 */
-    function handleOpenWorkspaceFile(file: CloudFileItem): void {
-        openView('files')
-        fileDetail.value = file
-        fileDetailReturnView.value = 'workspace'
     }
 
     function handleFileDetailBack(): void {
+        // 文件详情 → 文件中心列表(Workspace 文件已改为内置预览,不再借道此处)
         fileDetail.value = null
-
-        if (fileDetailReturnView.value === 'workspace') {
-            openView('workspaces')
-            // 从 Workspace 内容返回时重置到项目首页,而非停留在详情页
-            workspacesViewRef.value?.backToList()
-        }
-
-        fileDetailReturnView.value = 'files'
     }
 
     function handleOpenSettings(): void {
@@ -1675,7 +1657,6 @@
 
         openView('files')
         fileDetail.value = file
-        fileDetailReturnView.value = 'files'
     }
 </script>
 

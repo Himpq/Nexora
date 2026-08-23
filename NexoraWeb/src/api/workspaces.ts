@@ -7,11 +7,20 @@
  *   GET    /api/workspace/<id>                   项目详情
  *   DELETE /api/workspace/<id>                   删除项目
  *   POST   /api/workspace/<id>/settings          更新设置(改名/共享)
+ *   POST   /api/workspace/<id>/conversations/<cid>/visibility 对话可见性
  *   POST   /api/workspace/<id>/conversations/<cid>/pin        对话置顶
- *   POST   /api/workspace/<id>/knowledge/pin                 知识库置顶
- *   POST   /api/workspace/<id>/files/pin                     文件置顶
- *   POST   /api/workspace/<id>/files            添加云端文件
- *   POST   /api/workspace/<id>/tasks            新建任务
+ *   POST   /api/workspace/<id>/knowledge          归入知识库
+ *   POST   /api/workspace/<id>/knowledge/blank    新建空白知识库
+ *   POST   /api/workspace/<id>/knowledge/visibility 知识库可见性
+ *   POST   /api/workspace/<id>/knowledge/pin      知识库置顶
+ *   POST   /api/workspace/<id>/files              添加云端文件
+ *   POST   /api/workspace/<id>/files/visibility   文件可见性
+ *   POST   /api/workspace/<id>/files/pin          文件置顶
+ *   GET    /api/workspace/<id>/files/read         文件预览(跨用户走 added_by)
+ *   GET    /api/workspace/<id>/files/download     文件下载/内联(缩略图同源)
+ *   POST   /api/workspace/<id>/tasks              新建任务
+ *   POST   /api/workspace/<id>/tasks/<tid>        更新任务
+ *   DELETE /api/workspace/<id>/tasks/<tid>        删除任务
  */
 
 import { apiFetch } from './client'
@@ -41,6 +50,9 @@ export interface WorkspaceConversation {
     title?: string
     added_by?: string
     added_at?: string
+    updated_at?: string
+    created_at?: string
+    last_user_question?: string
     visibility?: string
     pin?: boolean
     [key: string]: unknown
@@ -49,8 +61,12 @@ export interface WorkspaceConversation {
 export interface WorkspaceKnowledgeDocument {
     title: string
     knowledge_type?: string
-    visibility?: string
     added_by?: string
+    added_at?: string
+    updated_at?: string
+    created_at?: string
+    basis_id?: string
+    visibility?: string
     pin?: boolean
     [key: string]: unknown
 }
@@ -58,8 +74,15 @@ export interface WorkspaceKnowledgeDocument {
 export interface WorkspaceFileEntry {
     file_ref: string
     alias?: string
-    visibility?: string
+    title?: string
+    original_name?: string
+    source_ext?: string
     added_by?: string
+    added_at?: string
+    updated_at?: string
+    created_at?: string
+    size?: number
+    visibility?: string
     pin?: boolean
     [key: string]: unknown
 }
@@ -69,8 +92,30 @@ export interface WorkspaceTaskEntry {
     title?: string
     status?: string
     priority?: string
+    color?: string
+    assignee?: string
+    start_date?: string
+    due_date?: string
+    notes?: string
+    source_type?: string
+    source_title?: string
+    source_ref?: string
     created_at?: string
     [key: string]: unknown
+}
+
+/** 任务新建/更新的提交载荷(对齐原版 getWorkspaceTaskModalPayload) */
+export interface WorkspaceTaskPayload {
+    title: string
+    status: string
+    color: string
+    assignee: string
+    start_date: string
+    due_date: string
+    source_type: string
+    source_title: string
+    source_ref: string
+    notes: string
 }
 
 export interface WorkspaceMemory {
@@ -80,21 +125,54 @@ export interface WorkspaceMemory {
     [key: string]: unknown
 }
 
+/** 活动流条目(后端 _normalize_workspace_activity 输出) */
+export interface WorkspaceActivityItem {
+    activity_id?: string
+    action: string
+    resource_type: string
+    title: string
+    subtitle?: string
+    actor?: string
+    time: string
+    ref?: string
+    metadata?: Record<string, string>
+    [key: string]: unknown
+}
+
+/** 总览聚合(后端 _build_workspace_overview 输出) */
+export interface WorkspaceOverview {
+    resource_counts?: {
+        conversations?: number
+        knowledge_documents?: number
+        workspace_files?: number
+        workspace_tasks?: number
+    }
+    task_status_counts?: Record<string, number>
+    open_task_count?: number
+    overdue_task_count?: number
+    upcoming_tasks?: WorkspaceTaskEntry[]
+    recent_items?: Array<Record<string, unknown>>
+    activity_items?: WorkspaceActivityItem[]
+    pinned_resources?: Array<Record<string, unknown>>
+}
+
 export interface WorkspaceDetail extends WorkspaceSummary {
     conversations?: WorkspaceConversation[]
     knowledge_documents?: WorkspaceKnowledgeDocument[]
     workspace_files?: WorkspaceFileEntry[]
     workspace_tasks?: WorkspaceTaskEntry[]
     workspace_memory?: WorkspaceMemory
-    overview?: {
-        activity_items?: Array<{
-            action: string
-            title: string
-            time: string
-            actor?: string
-        }>
-        [key: string]: unknown
-    }
+    overview?: WorkspaceOverview
+    [key: string]: unknown
+}
+
+/** 用户搜索条目(/api/user/search,共享弹窗选择用户用) */
+export interface WorkspaceUserOption {
+    user_id?: string
+    username?: string
+    display_name?: string
+    avatar_url?: string
+    role?: string
     [key: string]: unknown
 }
 
@@ -184,16 +262,17 @@ export async function pinWorkspaceConversation(workspaceId: string, conversation
     return data.workspace
 }
 
-/** 知识库置顶/取消置顶(对齐原版 updateWorkspaceKnowledgePin) */
+/** 知识库置顶/取消置顶(对齐原版 updateWorkspaceKnowledgePin,knowledge_type 固定 basis 体系) */
 export async function pinWorkspaceKnowledge(
     workspaceId: string,
     title: string,
     addedBy: string,
-    pin: boolean
+    pin: boolean,
+    knowledgeType = 'basis'
 ): Promise<WorkspaceDetail> {
     const data = await apiFetch<WorkspaceMutationResponse>(
         `/api/workspace/${encodeURIComponent(workspaceId)}/knowledge/pin`,
-        { method: 'POST', body: JSON.stringify({ title, added_by: addedBy, pin }) }
+        { method: 'POST', body: JSON.stringify({ title, knowledge_type: knowledgeType, added_by: addedBy, pin }) }
     )
 
     if (!data.success || !data.workspace) {
@@ -279,7 +358,7 @@ export async function removeWorkspaceKnowledge(workspaceId: string, title: strin
 }
 
 /** 新建项目任务(对齐原版 create_workspace_task) */
-export async function createWorkspaceTask(workspaceId: string, task: Record<string, unknown>): Promise<WorkspaceDetail> {
+export async function createWorkspaceTask(workspaceId: string, task: WorkspaceTaskPayload): Promise<WorkspaceDetail> {
     const data = await apiFetch<WorkspaceMutationResponse>(
         `/api/workspace/${encodeURIComponent(workspaceId)}/tasks`,
         { method: 'POST', body: JSON.stringify(task) }
@@ -290,6 +369,150 @@ export async function createWorkspaceTask(workspaceId: string, task: Record<stri
     }
 
     return data.workspace
+}
+
+/** 更新任务(对齐原版 updateWorkspaceTask;支持部分字段,如仅 status) */
+export async function updateWorkspaceTask(workspaceId: string, taskId: string, task: Partial<WorkspaceTaskPayload>): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}`,
+        { method: 'POST', body: JSON.stringify(task) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '任务保存失败')
+    }
+
+    return data.workspace
+}
+
+/** 删除任务(对齐原版 deleteWorkspaceTask) */
+export async function deleteWorkspaceTask(workspaceId: string, taskId: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(taskId)}`,
+        { method: 'DELETE' }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '任务删除失败')
+    }
+
+    return data.workspace
+}
+
+/** 对话可见性切换(对齐原版 updateWorkspaceConversationVisibility) */
+export async function updateConversationVisibility(workspaceId: string, conversationId: string, visibility: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/visibility`,
+        { method: 'POST', body: JSON.stringify({ visibility }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '共享状态保存失败')
+    }
+
+    return data.workspace
+}
+
+/** 知识库可见性切换(对齐原版 updateWorkspaceKnowledgeVisibility) */
+export async function updateKnowledgeVisibility(workspaceId: string, title: string, visibility: string, knowledgeType = 'basis'): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/knowledge/visibility`,
+        { method: 'POST', body: JSON.stringify({ title, knowledge_type: knowledgeType, visibility }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '共享状态保存失败')
+    }
+
+    return data.workspace
+}
+
+/** 文件可见性切换(对齐原版 updateWorkspaceFileVisibility) */
+export async function updateFileVisibility(workspaceId: string, fileRef: string, visibility: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/files/visibility`,
+        { method: 'POST', body: JSON.stringify({ file_ref: fileRef, visibility }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '共享状态保存失败')
+    }
+
+    return data.workspace
+}
+
+/** 新建空白知识库并归入项目(对齐原版 createBlankKnowledgeInWorkspace) */
+export async function createBlankWorkspaceKnowledge(workspaceId: string, titlePrefix: string): Promise<{ title: string; workspace: WorkspaceDetail }> {
+    const data = await apiFetch<WorkspaceMutationResponse & { title?: string }>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/knowledge/blank`,
+        { method: 'POST', body: JSON.stringify({ title_prefix: titlePrefix }) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '空白知识库创建失败')
+    }
+
+    return { title: String(data.title || ''), workspace: data.workspace }
+}
+
+/**
+ * Workspace 文件下载/内联 URL(缩略图与预览同源)。
+ * added_by 用于跨用户读取共享资源,后端据此定位文件归属沙箱。
+ */
+export function workspaceFileUrl(workspaceId: string, fileRef: string, addedBy = '', inline = false): string {
+    const params = new URLSearchParams()
+
+    params.set('file_ref', fileRef)
+
+    if (addedBy) {
+        params.set('added_by', addedBy)
+    }
+
+    if (inline) {
+        params.set('inline', '1')
+    }
+
+    return `/api/workspace/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`
+}
+
+/** 读取 Workspace 文件文本预览(走项目接口,支持跨用户共享文件) */
+export async function readWorkspaceFile(workspaceId: string, fileRef: string, addedBy = ''): Promise<{ content: string; truncated: boolean }> {
+    const params = new URLSearchParams()
+
+    params.set('file_ref', fileRef)
+
+    if (addedBy) {
+        params.set('added_by', addedBy)
+    }
+
+    const data = await apiFetch<{ success: boolean; content?: string; truncated?: boolean; message?: string }>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/files/read?${params.toString()}`
+    )
+
+    if (!data.success) {
+        throw new Error(data.message || '文件读取失败')
+    }
+
+    return {
+        content: String(data.content || ''),
+        truncated: Boolean(data.truncated),
+    }
+}
+
+/** 用户搜索(共享弹窗选择用户,/api/user/search) */
+export async function searchWorkspaceUsers(query = '', limit = 20): Promise<WorkspaceUserOption[]> {
+    const params = new URLSearchParams()
+
+    params.set('q', query)
+    params.set('limit', String(limit))
+
+    const data = await apiFetch<{ success: boolean; items?: WorkspaceUserOption[]; message?: string }>(`/api/user/search?${params.toString()}`)
+
+    if (!data.success) {
+        throw new Error(data.message || '用户列表加载失败')
+    }
+
+    return Array.isArray(data.items) ? data.items : []
 }
 
 /** 项目时间显示(对齐原版 formatWorkspaceDate) */
