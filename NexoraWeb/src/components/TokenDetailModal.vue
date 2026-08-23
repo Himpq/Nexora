@@ -786,6 +786,22 @@
         font-weight: 650;
     }
 
+    /*
+     * 详情内 markdown 代码块(记忆更新正文等纯文本块):
+     * 禁用横向滚动条,长行自动换行、高度随内容自适应,
+     * 形态对齐 tool-chain.css 思考内容面板的代码块规则(pre-wrap + anywhere 断行)。
+     * 选择器带 .token-detail-drill 前级抬高优先级,保证压过 MarkdownView 内部的 overflow-x: auto。
+     */
+    .token-detail-drill .token-detail-section :deep(pre) {
+        overflow-x: hidden;
+    }
+
+    .token-detail-drill .token-detail-section :deep(pre code) {
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+
     .mono {
         font-family: var(--nc-font-mono);
         font-variant-numeric: tabular-nums;
