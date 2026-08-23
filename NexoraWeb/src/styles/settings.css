@@ -2142,9 +2142,72 @@
 
 /* ==================== 窄宽响应式规则 ==================== */
 @media (max-width: 760px) {
+    /* 壳转纵向:导航变顶部横向胶囊条,内容占满剩余高度(修复手机端右侧被挤压) */
+    .settings-modal-shell {
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .settings-modal-shell .settings-nav {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        flex: none;
+        padding: 9px 12px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: none;
+        border-bottom: 1px solid var(--color-border);
+        scrollbar-width: none;
+    }
+
+    .settings-modal-shell .settings-nav::-webkit-scrollbar {
+        display: none;
+    }
+
+    .settings-nav-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .settings-nav-group + .settings-nav-group {
+        margin: 0 0 0 8px;
+        padding: 0 0 0 10px;
+        padding-top: 0;
+        border-top: none;
+        border-left: 1px solid var(--color-border);
+    }
+
+    .settings-nav-group-label {
+        display: none;
+    }
+
+    .settings-nav-item {
+        width: auto;
+        flex: none;
+        height: 30px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
+    }
+
+    .settings-nav-item.active {
+        border-color: var(--color-text-primary);
+    }
+
     .settings-page-head {
+        flex-wrap: wrap;
         gap: 10px;
-        padding-inline: 18px;
+        min-height: 50px;
+        padding: 8px 14px;
+    }
+
+    .settings-page-body {
+        padding: 0 14px 16px;
     }
 
     .settings-page-head-actions {

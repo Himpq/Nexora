@@ -13,8 +13,8 @@
 <template>
     <Modal
         :open="open"
-        width="1060px"
-        height="min(80vh, 720px)"
+        :width="modalWidth"
+        :height="modalHeight"
         modal-class="settings-modal"
         title="设置"
         @close="emit('close')"
@@ -157,7 +157,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import { apiFetch } from '@/api/client'
     import { fetchMailGroups } from '@/api/admin-mail'
@@ -192,7 +192,37 @@
         open: boolean
     }>()
 
-    const userStore = useUserStore()
+        const userStore = useUserStore()
+
+    /** 窄视口(≤760px):弹窗转近全屏,布局由 settings.css 切为纵向(导航条在上) */
+    const isCompactViewport = ref(false)
+
+    /** 视口尺寸变化计数:驱动高度按 innerHeight 重新取值(dvh 兼容性兜底) */
+    const viewportTick = ref(0)
+
+    function syncCompactViewport(): void {
+        isCompactViewport.value = window.matchMedia('(max-width: 760px)').matches
+        viewportTick.value += 1
+    }
+
+    onMounted(() => {
+        syncCompactViewport()
+        window.addEventListener('resize', syncCompactViewport)
+    })
+
+    onBeforeUnmount(() => {
+        window.removeEventListener('resize', syncCompactViewport)
+    })
+
+    const modalWidth = computed(() => (isCompactViewport.value ? '100%' : '1060px'))
+
+    const modalHeight = computed(() => {
+        void viewportTick.value
+
+        return isCompactViewport.value
+            ? `${Math.round(window.innerHeight * 0.93)}px`
+            : 'min(80vh, 720px)'
+    })
 
     const activeTab = ref('profile')
     const avatarCropOpen = ref(false)
