@@ -115,16 +115,18 @@
             @uploaded="load"
         />
 
-        <!-- 文件右键菜单:归入/移出工作区(参考会话右键的移入移出) -->
+        <!-- 文件右键菜单:下载/删除/归入移出工作区(参考会话右键的移入移出) -->
         <ContextMenu
             :armed="fileMenu.armed"
             :x="fileMenu.x"
             :y="fileMenu.y"
             target-type="cloud_file"
-            :file-ref="fileMenu.fileRef"
-            :file-alias="fileMenu.fileAlias"
-            :title="fileMenu.title"
+            :file-ref="fileMenu.file ? cloudFileRef(fileMenu.file) : ''"
+            :file-alias="fileMenu.file ? String(fileMenu.file.alias || '') : ''"
+            :title="fileMenu.file ? fileDisplayName(fileMenu.file) : ''"
             :pinned="false"
+            @download-file="handleMenuDownload"
+            @request-delete-file="handleMenuDelete"
         />
     </section>
 </template>
@@ -179,14 +181,12 @@
         return files.value.find((file) => fileRef(file) === selectedRef.value) || null
     })
 
-    /** 文件右键菜单状态(目标:云盘文件,动作:归入/移出工作区) */
+    /** 文件右键菜单状态(目标:云盘文件,动作:下载/删除/归入移出工作区) */
     const fileMenu = ref({
         armed: false,
         x: 0,
         y: 0,
-        fileRef: '',
-        fileAlias: '',
-        title: '',
+        file: null as CloudFileItem | null,
     })
 
     /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
@@ -207,13 +207,29 @@
             armed: true,
             x: event.clientX,
             y: event.clientY,
-            fileRef: cloudFileRef(file),
-            fileAlias: String(file.alias || ''),
-            title: fileDisplayName(file),
+            file,
         }
 
         // 打开浮层(镜像 Sidebar/KnowledgePanel:菜单可见性依赖 overlay.popover 命中本菜单 id)
         openPopover('context-menu')
+    }
+
+    /** 右键菜单:下载当前文件 */
+    function handleMenuDownload(): void {
+        const file = fileMenu.value.file
+
+        if (file) {
+            handleDownload(file)
+        }
+    }
+
+    /** 右键菜单:删除当前文件(复用头栏删除的确认链路,成功后刷新列表) */
+    function handleMenuDelete(): void {
+        const file = fileMenu.value.file
+
+        if (file) {
+            void handleDelete(file)
+        }
     }
 
     const sortOptions = [

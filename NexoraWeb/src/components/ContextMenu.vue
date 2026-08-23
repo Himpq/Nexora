@@ -26,6 +26,16 @@
                 <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
                 <span>{{ pinned ? '解除置顶' : '置顶' }}</span>
             </button>
+            <template v-if="targetType === 'cloud_file'">
+                <button id="pinContextMenuFileDownload" type="button" @click="handleDownloadFile">
+                    <i class="fa-solid fa-download" aria-hidden="true"></i>
+                    <span>下载</span>
+                </button>
+                <button id="pinContextMenuFileDelete" class="pin-context-danger" type="button" @click="handleDeleteFile">
+                    <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                    <span>删除文件</span>
+                </button>
+            </template>
             <button v-if="targetType === 'conversation'" id="pinContextMenuRename" type="button" @click="handleRename">
                 <i class="fa-solid fa-pen" aria-hidden="true"></i>
                 <span>修改标题</span>
@@ -128,6 +138,9 @@
         'title-changed': [conversationId: string, title: string]
         'request-delete-basis': [title: string]
         'view-branch-source': [branch: ConversationBranch]
+        /** 云端文件目标:下载 / 删除(确认与执行由宿主完成,菜单先关闭) */
+        'download-file': []
+        'request-delete-file': []
     }>()
 
     const rootEl = ref<HTMLElement | null>(null)
@@ -467,6 +480,27 @@
         } catch (error) {
             showError(error instanceof Error ? error.message : '操作失败')
         }
+    }
+
+    /** 云端文件:下载/删除意图转发宿主(确认与执行由宿主完成,镜像 handleDeleteBasis 模式) */
+    function handleDownloadFile(): void {
+        if (props.targetType !== 'cloud_file') {
+            return
+        }
+
+        closePopover(props.popoverId)
+
+        emit('download-file')
+    }
+
+    function handleDeleteFile(): void {
+        if (props.targetType !== 'cloud_file') {
+            return
+        }
+
+        closePopover(props.popoverId)
+
+        emit('request-delete-file')
     }
 
     /** 删除知识库:仅通知父级(确认/删除/刷新由父级 KnowledgePanel 完成,避免菜单卸载后事件丢失) */
