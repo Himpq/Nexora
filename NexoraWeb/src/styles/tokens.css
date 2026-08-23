@@ -11,7 +11,9 @@
  *   --z-sidebar-panel  右侧滑入面板(知识库 / 文件)
  *   --z-right-click    右键菜单
  *   --z-floating       浮动面板(时间线等,原版 3601,低于右键菜单 3660)
- *   --z-modal          弹窗(设置 / 小窗)
+ *   --z-modal          弹窗(设置 / 小窗);4400 > legacy ≤980px 的 .chat-header 4200
+ *                      (style.css 移动端头部规则带 !important,弹窗必须高于它,
+ *                       否则手机端顶栏整条浮在设置窗之上)
  *   --z-viewer         全屏图片查看器(高于普通弹窗,低于确认框,对齐原版 5000 < 9300)
  *   --z-confirm        确认框(高于普通弹窗)
  *   --z-toast          全局提示
@@ -23,7 +25,7 @@
     --z-sidebar-panel: 1200;
     --z-right-click: 3660;
     --z-floating: 3601;
-    --z-modal: 4000;
+    --z-modal: 4400;
     --z-viewer: 4600;
     --z-confirm: 5000;
     --z-toast: 40000;
