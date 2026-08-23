@@ -19,10 +19,18 @@
         title="设置"
         @close="emit('close')"
     >
-        <div class="settings-modal-shell">
+        <div class="settings-modal-shell" :class="{ 'is-drilled': isCompactViewport && mobileLevel === 2 }">
             <SettingsNav :groups="navGroups" :active="activeTab" @select="onTabSelect" />
 
             <section class="settings-main">
+                <!-- 手机端二级页返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="mobileLevel = 1">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回分类</span>
+                </button>
+
                 <SettingsPageHeader
                     :title="activeTabMeta?.title"
                     :description="activeTabMeta?.description"
@@ -192,10 +200,13 @@
         open: boolean
     }>()
 
-        const userStore = useUserStore()
+            const userStore = useUserStore()
 
-    /** 窄视口(≤760px):弹窗转近全屏,布局由 settings.css 切为纵向(导航条在上) */
+    /** 窄视口(≤760px):弹窗转近全屏,布局由 settings.css 切为两级导航 */
     const isCompactViewport = ref(false)
+
+    /** 手机端导航层级:1=分类列表页,2=内容页(点击分类进入) */
+    const mobileLevel = ref<1 | 2>(1)
 
     /** 视口尺寸变化计数:驱动高度按 innerHeight 重新取值(dvh 兼容性兜底) */
     const viewportTick = ref(0)
@@ -388,11 +399,15 @@
 
     const activeTabActions = computed(() => pageActionsMap.value[activeTab.value] || [])
 
-    /** 切 tab:重置页头下拉/子标签值,并按需拉取动态选项 */
+    /** 切 tab:重置页头下拉/子标签值,并按需拉取动态选项;手机端钻入二级内容页 */
     function onTabSelect(tab: string): void {
         activeTab.value = tab
         headSelects.value = {}
         headSubTabs.value = {}
+
+        if (isCompactViewport.value) {
+            mobileLevel.value = 2
+        }
 
         // skills 页头子标签默认"我的 Skill"
         if (tab === 'skills') {
@@ -521,12 +536,13 @@
     }
 
 
-    /** 打开时重置到个人资料页 */
+    /** 打开时重置到个人资料页(手机端回到一级分类页) */
     watch(
         () => props.open,
         (opened) => {
             if (opened) {
                 onTabSelect('profile')
+                mobileLevel.value = 1
                 profileName.value = userStore.username
                 pendingAvatarBase64.value = ''
 

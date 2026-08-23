@@ -235,6 +235,11 @@
     overflow-y: auto;
 }
 
+/* 手机端二级页返回条:仅 ≤760px 媒体块内显示 */
+.settings-mobile-back {
+    display: none;
+}
+
 /* 仅管理面板类占满剩余高度;表单页(资料/偏好等)自然高度 + 外层滚动 */
 .settings-page-body > .admin-stats-panel,
 .settings-page-body > .admin-models-panel,
@@ -2140,63 +2145,67 @@
     color: var(--color-text-secondary);
 }
 
-/* ==================== 窄宽响应式规则 ==================== */
+/* ==================== 窄宽响应式规则(手机端两级导航) ==================== */
 @media (max-width: 760px) {
-    /* 壳转纵向:导航变顶部横向胶囊条,内容占满剩余高度(修复手机端右侧被挤压) */
+    /* 弹窗全屏:消除与顶栏的视觉重合,两级导航在此尺寸下生效 */
+    .g-modal-backdrop:has(> .settings-modal.g-modal) {
+        padding: 0;
+    }
+
+    .settings-modal.g-modal {
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        border-radius: 0;
+    }
+
+    /* 壳转纵向;is-drilled 由组件按手机端层级切换:
+       一级=分类列表页,二级=内容页(含返回),两页互斥显示 */
     .settings-modal-shell {
         flex-direction: column;
         min-height: 0;
     }
 
     .settings-modal-shell .settings-nav {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 6px;
+        display: block;
         width: 100%;
         flex: none;
-        padding: 9px 12px;
-        overflow-x: auto;
-        overflow-y: hidden;
+        padding: 8px 10px;
+        overflow-y: auto;
         border-right: none;
-        border-bottom: 1px solid var(--color-border);
-        scrollbar-width: none;
-    }
-
-    .settings-modal-shell .settings-nav::-webkit-scrollbar {
-        display: none;
-    }
-
-    .settings-nav-group {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .settings-nav-group + .settings-nav-group {
-        margin: 0 0 0 8px;
-        padding: 0 0 0 10px;
-        padding-top: 0;
-        border-top: none;
-        border-left: 1px solid var(--color-border);
-    }
-
-    .settings-nav-group-label {
-        display: none;
     }
 
     .settings-nav-item {
-        width: auto;
-        flex: none;
-        height: 30px;
-        padding: 0 12px;
-        border-radius: 999px;
-        background: var(--color-bg-elevated);
-        border: 1px solid var(--color-border);
+        width: 100%;
+        height: 46px;
+        padding: 0 14px;
+        border-radius: 9px;
+        font-size: 14px;
     }
 
-    .settings-nav-item.active {
-        border-color: var(--color-text-primary);
+    /* 两级互斥:一级显示导航隐藏内容;钻入后反之 */
+    .settings-modal-shell:not(.is-drilled) .settings-main {
+        display: none;
+    }
+
+    .settings-modal-shell.is-drilled .settings-nav {
+        display: none;
+    }
+
+    /* 二级页顶部返回条(仅手机端显示) */
+    .settings-mobile-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex: none;
+        padding: 10px 14px;
+        border: none;
+        border-bottom: 1px solid var(--color-border);
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
     }
 
     .settings-page-head {
