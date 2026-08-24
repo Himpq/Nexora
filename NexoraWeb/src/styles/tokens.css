@@ -1,11 +1,13 @@
 /**
- * tokens.css — 设计令牌(z-index 层级)
+ * tokens.css — 设计令牌(结构层:z-index / 字体 / 控件尺寸)
  *
  * 职责:
  *   - 统一管理全站 z-index 层级,所有组件/样式必须引用令牌,禁止硬编码数字
+ *   - 统一管理字体族与控件结构尺寸;颜色令牌见 tokens-color.css
  *   - 新组件接入时按语义选择层级,避免互相覆盖(对齐 naive-ui 的层级管理思路)
  *
  * 层级语义(从低到高):
+ *   --z-header         聊天区顶栏(相对定位基线,内部浮层以 +100 叠加)
  *   --z-dropdown       下拉菜单 / 工具模式菜单 / 用户菜单
  *   --z-portal-dropdown Teleport 到 body 的下拉菜单(可跨越弹窗层)
  *   --z-sidebar-panel  右侧滑入面板(知识库 / 文件)
@@ -29,11 +31,20 @@
     --z-viewer: 4600;
     --z-confirm: 5000;
     --z-toast: 40000;
+    --z-header: 100;
     --gddp-control-height: 34px;
     --gddp-control-height-compact: 30px;
     --gddp-action-min-width: 108px;
     --gddp-action-gap: 10px;
     --gddp-border-radius: 7px;
+    /* 聊天区顶栏高度(原 gddp-layout 内联 fallback 值转正) */
+    --gddp-header-height: 60px;
+    /*
+     * 字体族令牌(取值与 legacy 视觉冻结值一致,收编前散落的
+     * nc-font 死变量与各处硬编码栈统一收敛到此)
+     */
+    --font-sans: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Consolas', monospace;
 }
 
 /*

@@ -515,7 +515,7 @@
 
     .token-detail-card-value {
         color: var(--color-text-primary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 22px;
         font-weight: 700;
         line-height: 1.2;
@@ -524,7 +524,7 @@
 
     .token-detail-card-sub {
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 11.5px;
         font-variant-numeric: tabular-nums;
     }
@@ -679,7 +679,7 @@
 
     .token-log-time-clock {
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 11px;
         font-weight: 500;
         font-variant-numeric: tabular-nums;
@@ -687,14 +687,14 @@
 
     .token-log-split {
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 11px;
         font-variant-numeric: tabular-nums;
     }
 
     .token-log-total {
         color: var(--color-text-primary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 12.5px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
@@ -759,7 +759,7 @@
 
     .token-detail-drill-tokens {
         color: var(--color-text-primary);
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-weight: 600;
         font-variant-numeric: tabular-nums;
     }
@@ -803,7 +803,7 @@
     }
 
     .mono {
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-variant-numeric: tabular-nums;
     }
 

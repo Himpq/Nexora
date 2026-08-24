@@ -758,7 +758,7 @@
     }
 
     .token-budget-usage {
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 11px;
         font-weight: 400;
         white-space: nowrap;
@@ -766,7 +766,7 @@
     }
 
     .token-mini {
-        font-family: var(--nc-font-mono);
+        font-family: var(--font-mono);
         font-size: 11px;
         font-weight: 400;
         color: var(--color-text-secondary);

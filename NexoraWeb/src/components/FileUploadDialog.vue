@@ -730,7 +730,7 @@
     .fud-selected-size {
         font-size: 12px;
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
+        font-family: var(--font-mono);
         flex: 0 0 auto;
     }
 
@@ -788,7 +788,7 @@
         border-radius: 8px;
         background: var(--color-bg-elevated);
         color: var(--color-text-primary);
-        font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
+        font-family: var(--font-mono);
         font-size: 12px;
         outline: none;
     }
@@ -813,7 +813,7 @@
     .fud-live-code {
         font-size: 12px;
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
+        font-family: var(--font-mono);
     }
 
     .fud-live-progress-list {
@@ -839,7 +839,7 @@
 
     .fud-live-progress-state {
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
+        font-family: var(--font-mono);
         flex: 0 0 auto;
     }
 
@@ -860,7 +860,7 @@
         margin-top: 3px;
         font-size: 11px;
         color: var(--color-text-secondary);
-        font-family: var(--nc-font-mono, 'JetBrains Mono', monospace);
+        font-family: var(--font-mono);
     }
 
     .fud-live-events {

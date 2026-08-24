@@ -46,7 +46,7 @@
 
 /* 编辑器全屏:固定定位的编辑器无法脱离本层叠上下文,提升其到顶栏(100)之上,完整覆盖 chat-header */
 body.gddp-markdown-fullscreen-active .gddp-content-view {
-    z-index: calc(var(--z-header, 100) + 100);
+    z-index: calc(var(--z-header) + 100);
 }
 
 .gddp-content-view > .file-center-view,
@@ -181,10 +181,10 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
 
 .chat-header {
     position: relative;
-    z-index: var(--z-header, 100);
+    z-index: var(--z-header);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    flex: 0 0 var(--gddp-header-height, 60px);
+    flex: 0 0 var(--gddp-header-height);
     width: 100%;
     min-width: 0;
     box-sizing: border-box;

@@ -1551,7 +1551,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 
 .content-body :not(pre) > code,
 .thinking-content :not(pre) > code {
-    font-family: var(--nc-font-mono);
+    font-family: var(--font-mono);
     background: var(--color-bg-hover);
     border: 1px solid var(--color-border);
     color: var(--color-text-secondary);
@@ -1582,7 +1582,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     background: transparent !important;
     color: var(--color-text-primary);
     border: 0;
-    font-family: var(--nc-font-mono);
+    font-family: var(--font-mono);
     font-size: 13px;
     line-height: 1.6;
 }
@@ -1605,7 +1605,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 }
 
 .nc-code-lang {
-    font-family: var(--nc-font-mono);
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -4926,13 +4926,13 @@ body.settings-companion-mode #adminConfigModal {
     white-space: pre-wrap !important;
     word-break: break-word !important;
     overflow-wrap: anywhere !important;
-    font-family: var(--nc-font-mono);
+    font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.55;
 }
 
 .tool-output-markdown :not(pre) > code {
-    font-family: var(--nc-font-mono);
+    font-family: var(--font-mono);
     background: var(--color-bg-hover);
     border: 1px solid var(--color-border);
     color: var(--color-text-secondary);

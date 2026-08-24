@@ -62,7 +62,7 @@
     border-radius: 6px;
     background: var(--color-bg-sunken);
     color: var(--color-text-secondary);
-    font: 12px/1.65 var(--font-mono, Consolas, monospace);
+    font: 12px/1.65 var(--font-mono);
     letter-spacing: 0;
     box-sizing: border-box;
 }
