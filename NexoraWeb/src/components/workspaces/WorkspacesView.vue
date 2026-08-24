@@ -114,6 +114,7 @@
     import { showConfirm, showPrompt } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
+    import { workspaceChanges } from '@/stores/workspace'
 
     import WorkspaceList from './WorkspaceList.vue'
     import WorkspaceDetail from './WorkspaceDetail.vue'
@@ -213,6 +214,32 @@
             showError(error instanceof Error ? error.message : '加载 Workspaces 失败')
         } finally {
             loading.value = false
+        }
+    }
+
+    /** 外部归入/取消归入(右键菜单等)后同步打开中的页面:重拉列表,详情开着则原位刷新(保留所在 Tab) */
+    watch(
+        () => workspaceChanges.count,
+        () => {
+            if (!props.open) {
+                return
+            }
+
+            void load()
+            void refreshOpenDetail()
+        }
+    )
+
+    /** 原位刷新当前打开的详情(不经 openDetail,避免重置到 overview Tab) */
+    async function refreshOpenDetail(): Promise<void> {
+        if (!detail.value) {
+            return
+        }
+
+        try {
+            applyDetailUpdate(await fetchWorkspace(detail.value.workspace_id))
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '加载项目失败')
         }
     }
 

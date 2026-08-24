@@ -9,7 +9,6 @@
 <template>
     <ContextMenu
         ref="menuRef"
-        popover-id="workspace-resource-menu"
         :items="menuItems"
         :keep-panel="true"
         @select="onSelect"

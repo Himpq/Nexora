@@ -117,13 +117,11 @@
 
         <!-- 文件右键菜单:下载/删除/归入移出工作区(参考会话右键的移入移出) -->
         <ContextMenu
-            :armed="fileMenu.armed"
-            :x="fileMenu.x"
-            :y="fileMenu.y"
+            ref="fileMenuRef"
             target-type="cloud_file"
-            :file-ref="fileMenu.file ? cloudFileRef(fileMenu.file) : ''"
-            :file-alias="fileMenu.file ? String(fileMenu.file.alias || '') : ''"
-            :title="fileMenu.file ? fileDisplayName(fileMenu.file) : ''"
+            :file-ref="menuFile ? cloudFileRef(menuFile) : ''"
+            :file-alias="menuFile ? String(menuFile.alias || '') : ''"
+            :title="menuFile ? fileDisplayName(menuFile) : ''"
             :pinned="false"
             @download-file="handleMenuDownload"
             @request-delete-file="handleMenuDelete"
@@ -153,7 +151,6 @@
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
-    import { openPopover, overlay } from '@/ui/overlay'
 
     const emit = defineEmits<{
         close: []
@@ -181,54 +178,30 @@
         return files.value.find((file) => fileRef(file) === selectedRef.value) || null
     })
 
-    /** 文件右键菜单状态(目标:云盘文件,动作:下载/删除/归入移出工作区) */
-    const fileMenu = ref({
-        armed: false,
-        x: 0,
-        y: 0,
-        file: null as CloudFileItem | null,
-    })
+    /** 当前右键菜单目标文件(坐标经 open(x, y) 传入,不进状态) */
+    const menuFile = ref<CloudFileItem | null>(null)
 
-    /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
-    watch(
-        () => overlay.popover,
-        (popover) => {
-            if (popover !== 'context-menu') {
-                fileMenu.value.armed = false
-            }
-        }
-    )
+    const fileMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 文件右键:选中 + 弹出工作区归入/移出菜单(镜像会话右键菜单) */
     function openFileMenu(event: MouseEvent, file: CloudFileItem): void {
         selectFile(file)
+        menuFile.value = file
 
-        fileMenu.value = {
-            armed: true,
-            x: event.clientX,
-            y: event.clientY,
-            file,
-        }
-
-        // 打开浮层(镜像 Sidebar/KnowledgePanel:菜单可见性依赖 overlay.popover 命中本菜单 id)
-        openPopover('context-menu')
+        fileMenuRef.value?.open(event.clientX, event.clientY)
     }
 
     /** 右键菜单:下载当前文件 */
     function handleMenuDownload(): void {
-        const file = fileMenu.value.file
-
-        if (file) {
-            handleDownload(file)
+        if (menuFile.value) {
+            handleDownload(menuFile.value)
         }
     }
 
     /** 右键菜单:删除当前文件(复用头栏删除的确认链路,成功后刷新列表) */
     function handleMenuDelete(): void {
-        const file = fileMenu.value.file
-
-        if (file) {
-            void handleDelete(file)
+        if (menuFile.value) {
+            void handleDelete(menuFile.value)
         }
     }
 

@@ -10,7 +10,7 @@
       - 暗色:全部引用 --color-* 语义令牌,无第二套 dark 规则
 
     用法:
-      <ContextMenu ref="menu" popover-id="context-menu" :items="items" @select="onSelect">
+      <ContextMenu ref="menu" popover-id="unique-menu-id" :items="items" @select="onSelect">
         <template #submenu-workspace="{ close }">
           <button v-for="ws in workspaces" @click="addToWorkspace(ws)">...</button>
         </template>
@@ -34,25 +34,27 @@
         >
             <template v-for="item in items" :key="item.key">
                 <div v-if="item.divider" class="gddp-context-divider" role="separator"></div>
-                <button
-                    v-else
-                    type="button"
-                    role="menuitem"
-                    class="gddp-context-item"
-                    :class="{ 'is-danger': item.danger, 'has-submenu': item.submenuKey }"
-                    :disabled="item.disabled"
-                    @click="onSelect(item)"
-                >
-                    <i v-if="item.icon" :class="item.icon" aria-hidden="true"></i>
-                    <span class="gddp-context-label">{{ item.label }}</span>
-                    <i v-if="item.submenuKey" class="fa-solid fa-chevron-right gddp-context-submenu-arrow" aria-hidden="true"></i>
-                </button>
-                <div
-                    v-if="item.submenuKey"
-                    class="gddp-context-submenu"
-                    :data-submenu="item.submenuKey"
-                >
-                    <slot :name="`submenu-${item.submenuKey}`" :close="close" />
+                <!-- 条目容器:子菜单的定位锚点与 hover/focus 展开边界(对齐原版 pin-context-submenu-wrap) -->
+                <div v-else class="gddp-context-entry">
+                    <button
+                        type="button"
+                        role="menuitem"
+                        class="gddp-context-item"
+                        :class="{ 'is-danger': item.danger, 'has-submenu': item.submenuKey }"
+                        :disabled="item.disabled"
+                        @click="onSelect(item)"
+                    >
+                        <i v-if="item.icon" :class="item.icon" aria-hidden="true"></i>
+                        <span class="gddp-context-label">{{ item.label }}</span>
+                        <i v-if="item.submenuKey" class="fa-solid fa-chevron-right gddp-context-submenu-arrow" aria-hidden="true"></i>
+                    </button>
+                    <div
+                        v-if="item.submenuKey"
+                        class="gddp-context-submenu"
+                        :data-submenu="item.submenuKey"
+                    >
+                        <slot :name="`submenu-${item.submenuKey}`" :close="close" />
+                    </div>
                 </div>
             </template>
         </div>
@@ -60,7 +62,7 @@
 </template>
 
 <script setup lang="ts">
-    import { nextTick, ref, watch } from 'vue'
+    import { computed, nextTick, ref, useId, watch } from 'vue'
 
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
@@ -82,14 +84,13 @@
     }
 
     const props = withDefaults(defineProps<{
-        /** 浮层协调器菜单 id(不同来源菜单用不同 id 互斥) */
+        /** 浮层协调器菜单 id(缺省按实例自动生成,天然互斥;仅需跨组件协同控制同一菜单时才显式传入) */
         popoverId?: string
         /** 菜单项配置(分隔线项 divider:true) */
         items: ContextMenuItem[]
         /** 打开时保留右侧栏面板(面板内触发的菜单) */
         keepPanel?: boolean
     }>(), {
-        popoverId: 'gddp-context-menu',
         keepPanel: false,
     })
 
@@ -97,21 +98,31 @@
         select: [key: string]
     }>()
 
-    const visible = ref(false)
+    /** 实例唯一菜单 id:可见性按 id 全局匹配,自动生成保证多个实例永不互相串扰 */
+    const autoPopoverId = `gddp-ctx-${useId()}`
+
+    const effectivePopoverId = computed(() => props.popoverId || autoPopoverId)
+
+    /** 可见性跟随浮层协调器:openPopover 命中本 id 即显示(外部点击关闭由 overlay 全局监听统一保证) */
+    const visible = computed(() => overlay.popover === effectivePopoverId.value)
     const posX = ref(0)
     const posY = ref(0)
     const submenuLeft = ref(false)
     const rootEl = ref<HTMLElement | null>(null)
 
-    /** 打开菜单并注册到浮层协调器(互斥 + 外部点击关闭由 overlay 统一保证) */
+    /** 打开菜单:先向协调器注册 popoverId(触发 visible 与 Teleport 渲染),
+     *  待菜单 div 挂载后再用真实容器二次 openPopover 注册外部点击关闭边界 */
     function open(x: number, y: number): void {
         posX.value = x
         posY.value = y
-        visible.value = true
 
-        openPopover(props.popoverId, rootEl.value, { keepPanel: props.keepPanel })
+        openPopover(effectivePopoverId.value, null, { keepPanel: props.keepPanel })
 
         void nextTick().then(() => {
+            if (rootEl.value) {
+                openPopover(effectivePopoverId.value, rootEl.value, { keepPanel: props.keepPanel })
+            }
+
             clampToViewport()
             positionSubmenu()
             requestAnimationFrame(() => {
@@ -123,13 +134,12 @@
 
     /** 关闭菜单 */
     function close(): void {
-        visible.value = false
-        closePopover(props.popoverId)
+        closePopover(effectivePopoverId.value)
     }
 
     /** 菜单是否当前打开(供外部判断) */
     function isOpen(): boolean {
-        return visible.value && overlay.popover === props.popoverId
+        return overlay.popover === effectivePopoverId.value
     }
 
     /** 点击菜单项:关闭并回传 key(危险项同样回传,由宿主判断语义) */

@@ -5,7 +5,8 @@
     外部点击关闭与暗色视觉统一收敛到 GDDP ContextMenu:
       - 菜单项经 items 配置渲染(危险态 / 分隔线 / 子菜单由 key 驱动)
       - "归入工作区"异步子菜单经 #submenu-workspace slot 注入
-      - 父级仍以 armed + x/y 受控;armed 置真时本组件经 GDDP 容器打开菜单
+      - 命令式范式:宿主在 contextmenu 事件里设置目标 props 后调用 open(x, y),
+        关闭由 GDDP 容器(外部点击/选中项)自动完成
 
     目标类型:
       - conversation    -> 置顶走 /api/conversations/<id>/pin,归入走 /api/workspace/<id>/conversations
@@ -16,7 +17,6 @@
 <template>
     <ContextMenu
         ref="gddpRef"
-        :popover-id="popoverId"
         :items="menuItems"
         :keep-panel="keepPanel"
         @select="onSelect"
@@ -44,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, ref } from 'vue'
 
     import { setConversationPin, updateConversationTitle } from '@/api/conversations'
     import type { ConversationBranch } from '@/api/conversations'
@@ -61,15 +61,10 @@
     } from '@/api/workspaces'
     import { showPrompt } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { notifyWorkspaceChanged } from '@/stores/workspace'
     import ContextMenu, { type ContextMenuItem } from '@/ui/ContextMenu.vue'
 
     const props = withDefaults(defineProps<{
-        /** 父级打开状态:armed 置真且浮层协调器命中本菜单 id 时打开 */
-        armed: boolean
-        x: number
-        y: number
-        /** 浮层协调器菜单 id(不同来源菜单用不同 id,保证互斥与各自 armed 清理) */
-        popoverId?: string
         /** 目标类型:会话 / 知识库 / 云端文件(默认会话) */
         targetType?: 'conversation' | 'knowledge_basis' | 'cloud_file'
         /** 会话目标 id(知识库目标为空) */
@@ -84,7 +79,6 @@
         /** 打开时保留右侧栏面板(面板内触发的右键菜单,如知识库面板) */
         keepPanel?: boolean
     }>(), {
-        popoverId: 'context-menu',
         targetType: 'conversation',
         conversationId: '',
         fileRef: '',
@@ -156,17 +150,19 @@
         return items
     })
 
-    /** armed 置真时经 GDDP 容器打开菜单(视口钳制 / 外部关闭由容器负责) */
-    watch(
-        () => [props.armed, props.x, props.y] as const,
-        ([armed]) => {
-            if (armed) {
-                gddpRef.value?.open(props.x, props.y)
-                workspaces.value = []
-                void ensureWorkspaceItems()
-            }
-        }
-    )
+    /** 命令式打开(宿主在 contextmenu 事件里调用):注册浮层并拉取最新工作区标记 */
+    function open(x: number, y: number): void {
+        gddpRef.value?.open(x, y)
+        workspaces.value = []
+        void ensureWorkspaceItems()
+    }
+
+    /** 命令式关闭 */
+    function close(): void {
+        gddpRef.value?.close()
+    }
+
+    defineExpose({ open, close })
 
     /** 拉取工作区列表(include_marks 带回已归入标记;每次打开都重新拉取) */
     async function ensureWorkspaceItems(): Promise<void> {
@@ -303,28 +299,27 @@
 
         const removing = isMarked(workspace)
 
+        let changed = false
+
+        // 注意:分支内严禁提前 return,否则会跳过 try 之后的同步与广播
         try {
             if (props.targetType === 'cloud_file') {
                 const ref = String(props.fileRef || '').trim()
 
-                if (!ref) {
-                    return
+                if (ref) {
+                    if (removing) {
+                        const marker = findMarkedFile(workspace)
+
+                        await removeWorkspaceFile(workspaceId, marker?.file_ref || ref)
+                        showToast('已取消归入', 'success')
+                    } else {
+                        await addWorkspaceFile(workspaceId, ref)
+                        showToast('已归入 Workspace', 'success')
+                    }
+
+                    changed = true
                 }
-
-                if (removing) {
-                    const marker = findMarkedFile(workspace)
-
-                    await removeWorkspaceFile(workspaceId, marker?.file_ref || ref)
-                    showToast('已取消归入', 'success')
-                } else {
-                    await addWorkspaceFile(workspaceId, ref)
-                    showToast('已归入 Workspace', 'success')
-                }
-
-                return
-            }
-
-            if (props.targetType === 'knowledge_basis') {
+            } else if (props.targetType === 'knowledge_basis') {
                 if (removing) {
                     await removeWorkspaceKnowledge(workspaceId, props.title)
                     showToast('已取消归入', 'success')
@@ -333,27 +328,67 @@
                     showToast('已归入 Workspace', 'success')
                 }
 
-                return
+                changed = true
+            } else if (props.conversationId) {
+                if (removing) {
+                    await removeWorkspaceConversation(workspaceId, props.conversationId)
+                    showToast('已取消归入', 'success')
+                } else {
+                    await addWorkspaceConversation(workspaceId, props.conversationId)
+                    showToast('已归入 Workspace', 'success')
+                }
+
+                changed = true
             }
-
-            const conversationId = props.conversationId
-
-            if (!conversationId) {
-                return
-            }
-
-            if (removing) {
-                await removeWorkspaceConversation(workspaceId, conversationId)
-                showToast('已取消归入', 'success')
-
-                return
-            }
-
-            await addWorkspaceConversation(workspaceId, conversationId)
-            showToast('已归入 Workspace', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '操作失败')
         }
+
+        if (!changed) {
+            return
+        }
+
+        // 成功后立即同步本菜单的"已标记"并广播变更,让打开中的 Workspaces 页面同步刷新
+        syncWorkspaceMark(workspace, removing)
+        notifyWorkspaceChanged()
+    }
+
+    /**
+     * 归入状态变更后本地即时同步对应工作区的标记数据:
+     * 不重开菜单即可看到"已标记"翻转;仅改动内存副本,下次打开菜单仍会全量重拉。
+     */
+    function syncWorkspaceMark(workspace: WorkspaceSummary, removing: boolean): void {
+        const index = workspaces.value.findIndex((entry) => entry.workspace_id === workspace.workspace_id)
+
+        if (index < 0) {
+            return
+        }
+
+        const next: WorkspaceSummary = { ...workspaces.value[index] }
+
+        if (props.targetType === 'cloud_file') {
+            const files = Array.isArray(next.workspace_files) ? [...next.workspace_files] : []
+
+            next.workspace_files = removing
+                ? files.filter((item) => item !== findMarkedFile(workspace))
+                : [...files, { file_ref: String(props.fileRef || '').trim(), alias: props.fileAlias || undefined }]
+        } else if (props.targetType === 'knowledge_basis') {
+            const documents = Array.isArray(next.knowledge_documents) ? [...next.knowledge_documents] : []
+            const markedTitle = props.title.trim()
+
+            next.knowledge_documents = removing
+                ? documents.filter((item) => String(item.title || '').trim() !== markedTitle)
+                : [...documents, { title: props.title }]
+        } else {
+            const ids = Array.isArray(next.conversation_ids) ? [...next.conversation_ids] : []
+            const conversations = Array.isArray(next.conversations) ? [...next.conversations] : []
+
+            // conversation_ids 与 conversations 双数组都可能携带标记,取消时必须同时清理
+            next.conversation_ids = removing ? ids.filter((id) => id !== props.conversationId) : [...ids, props.conversationId]
+            next.conversations = removing ? conversations.filter((item) => item.conversation_id !== props.conversationId) : conversations
+        }
+
+        workspaces.value[index] = next
     }
 
     /** 按 key 分发到业务动作(GDDP 容器点击后已自动关闭菜单) */

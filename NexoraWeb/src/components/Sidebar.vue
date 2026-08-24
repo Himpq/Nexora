@@ -105,9 +105,7 @@
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
-            :armed="contextMenu.armed"
-            :x="contextMenu.x"
-            :y="contextMenu.y"
+            ref="contextMenuRef"
             target-type="conversation"
             :conversation-id="contextMenu.conversationId"
             :title="contextMenu.title"
@@ -163,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, ref } from 'vue'
 
     import { useRouter } from 'vue-router'
 
@@ -339,38 +337,24 @@
         }
 
         contextMenu.value = {
-            x: event.clientX,
-            y: event.clientY,
             conversationId: item.id,
             title: item.title,
             pinned: isPinned(item.id),
             branch: readBranch(item) || undefined,
-            armed: true,
         }
 
-        openPopover('context-menu')
+        contextMenuRef.value?.open(event.clientX, event.clientY)
     }
 
-    /** 右键菜单位置与目标会话 */
+    /** 会话右键菜单目标(坐标经 open(x, y) 传入,不进状态) */
     const contextMenu = ref({
-        x: 0,
-        y: 0,
         conversationId: '',
         title: '',
         pinned: false,
         branch: undefined as ConversationBranch | undefined,
-        armed: false,
     })
 
-    /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
-    watch(
-        () => overlay.popover,
-        (popover) => {
-            if (popover !== 'context-menu') {
-                contextMenu.value.armed = false
-            }
-        }
-    )
+    const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 置顶状态变化:本地更新并重排 */
     function handlePinChanged(targetType: string, id: string, pinned: boolean): void {

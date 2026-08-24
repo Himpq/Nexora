@@ -84,11 +84,42 @@
     background: var(--color-border);
 }
 
-/* 子菜单(具名 slot 内容容器):默认右弹出,父级 .submenu-left 时左弹出 */
+/* 条目容器:子菜单的定位锚点(相对父项而非整个菜单) */
+.gddp-context-entry {
+    position: relative;
+}
+
+/* 桥接热区:鼠标从父项斜移进子菜单时填补空隙,保证 hover 链路不断开 */
+.gddp-context-entry::after {
+    content: "";
+    position: absolute;
+    top: -8px;
+    left: 100%;
+    z-index: 1;
+    display: none;
+    width: 10px;
+    height: calc(100% + 16px);
+    background: transparent;
+}
+
+.gddp-context-menu.submenu-left .gddp-context-entry::after {
+    left: auto;
+    right: 100%;
+}
+
+.gddp-context-entry:hover::after,
+.gddp-context-entry:focus-within::after {
+    display: block;
+}
+
+/* 子菜单(具名 slot 内容容器):默认隐藏,悬停/聚焦父项时才展开;
+   默认右弹出,父级 .submenu-left 时左弹出 */
 .gddp-context-submenu {
     position: absolute;
     top: -7px;
     left: 100%;
+    z-index: 2;
+    display: none;
     margin-left: 4px;
     min-width: 190px;
     max-height: 320px;
@@ -105,6 +136,12 @@
     right: 100%;
     margin-left: 0;
     margin-right: 4px;
+}
+
+/* 悬停或键盘聚焦父项时展开子菜单(对齐原版 pin-context-submenu 行为) */
+.gddp-context-entry:hover .gddp-context-submenu,
+.gddp-context-entry:focus-within .gddp-context-submenu {
+    display: block;
 }
 
 /* 子菜单内的通用项(业务 slot 复用 .gddp-context-item 视觉) */

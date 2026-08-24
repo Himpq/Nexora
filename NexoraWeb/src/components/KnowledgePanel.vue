@@ -85,16 +85,13 @@
             </div>
         </div>
 
-        <!-- 知识库右键菜单(置顶/解除置顶 + 归入工作区,保留面板打开;popoverId 与会话菜单互斥) -->
+        <!-- 知识库右键菜单(置顶/解除置顶 + 归入工作区,保留面板打开)
+             常驻渲染(与 Sidebar 一致);目标经 menuItem 传入,坐标经 open(x, y) 传入 -->
         <ContextMenu
-            v-if="menuItem"
-            :armed="!!menuItem"
-            :x="menuX"
-            :y="menuY"
-            popover-id="context-menu-knowledge"
+            ref="contextMenuRef"
             target-type="knowledge_basis"
-            :title="menuItem.title"
-            :pinned="!!menuItem.pin"
+            :title="menuItem?.title || ''"
+            :pinned="!!menuItem?.pin"
             keep-panel
             @pin-changed="handleKnowledgePinChanged"
             @request-delete-basis="handleRequestDeleteBasis"
@@ -116,7 +113,7 @@
     import Button from '@/ui/Button.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
-    import { openPopover, overlay, registerPanel } from '@/ui/overlay'
+    import { registerPanel } from '@/ui/overlay'
 
     import ContextMenu from './ContextMenu.vue'
 
@@ -135,10 +132,10 @@
     const vectorizing = ref(false)
     const panelRef = ref<HTMLElement | null>(null)
 
-    /** 右键菜单位置与目标知识库 */
-    const menuX = ref(0)
-    const menuY = ref(0)
+    /** 右键菜单目标知识库(坐标经 open(x, y) 传入,不进状态) */
     const menuItem = ref<KnowledgeItem | null>(null)
+
+    const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 按关键词过滤知识库列表;置顶项排前(对齐原版 sortKnowledgeList) */
     const filteredItems = computed(() => {
@@ -157,16 +154,6 @@
                 return 0
             })
     })
-
-    /** 菜单被关闭(外部点击/操作完成)时清空目标;与其他菜单以不同 popoverId 互斥 */
-    watch(
-        () => overlay.popover,
-        (popover) => {
-            if (popover !== 'context-menu-knowledge') {
-                menuItem.value = null
-            }
-        }
-    )
 
     /** 注册右侧栏到浮层协调器:点击外部自动关闭(含触发按钮豁免) */
     onMounted(() => {
@@ -205,9 +192,8 @@
     /** 打开知识库右键菜单(保留面板打开,对齐原版 showPinContextMenu + targetType=knowledge_basis) */
     function openContextMenu(event: MouseEvent, item: KnowledgeItem): void {
         menuItem.value = item
-        menuX.value = event.clientX
-        menuY.value = event.clientY
-        openPopover('context-menu-knowledge', null, { keepPanel: true })
+
+        contextMenuRef.value?.open(event.clientX, event.clientY)
     }
 
     /** 知识库置顶状态变化:本地更新 pin 并触发排序(对齐原版 setBasisPinLocal) */

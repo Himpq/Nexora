@@ -9,7 +9,6 @@
 <template>
     <ContextMenu
         ref="menuRef"
-        popover-id="selection-menu"
         :items="menuItems"
         @select="onSelect"
     />
