@@ -56,16 +56,28 @@ export function primeNexoraMapRendererConfig(): void {
     void (async () => {
         try {
             const res = await fetch('/api/map/provider', { credentials: 'include' })
+
+            /**
+             * 后端响应结构(server.py get_map_provider_config):
+             *   { success, map_provider: { ..., map_renderer_config: {...} } }
+             * 渲染器配置嵌在 map_provider 一层之下,旧版 chat.html 由模板直接
+             * 注入 window,本接口是收编后唯一来源,层级不可再错。
+             */
             const data = await res.json().catch(() => ({})) as {
                 message?: string
-                map_renderer_config?: Record<string, unknown>
+                map_provider?: {
+                    message?: string
+                    map_renderer_config?: Record<string, unknown>
+                }
             }
 
-            if (data && data.map_renderer_config && typeof data.map_renderer_config === 'object') {
-                window.NEXORA_MAP_RENDERER_CONFIG = data.map_renderer_config
+            const rendererConfig = data?.map_provider?.map_renderer_config
+
+            if (rendererConfig && typeof rendererConfig === 'object') {
+                window.NEXORA_MAP_RENDERER_CONFIG = rendererConfig
             }
             else {
-                console.warn('[mapRenderer] 未获取到地图渲染配置', data?.message ?? '')
+                console.warn('[mapRenderer] 未获取到地图渲染配置', data?.message ?? data?.map_provider?.message ?? '')
             }
         } catch (error) {
             console.warn('[mapRenderer] 地图配置拉取失败:', error instanceof Error ? error.message : error)
