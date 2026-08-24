@@ -68,6 +68,8 @@
 <script setup lang="ts">
     import { onMounted, ref } from 'vue'
 
+    import { showError } from '@/stores/notify'
+
     import Modal from '@/ui/Modal.vue'
 
     const emit = defineEmits<{
@@ -94,18 +96,27 @@
     let lastY = 0
     let pendingFile: File | null = null
 
-    /** 加载用户选择的图片(对齐原版 openAvatarCropModal FileReader 流程) */
+    /** 加载用户选择的图片(对齐原版 openAvatarCropModal FileReader 流程);
+     *  解码失败(iPhone HEIC 等)显式报错并关闭,避免出现空白画布+应用按钮永久禁用 */
     async function openWithFile(file: File): Promise<void> {
         pendingFile = file
 
         const url = URL.createObjectURL(file)
         const img = new Image()
 
-        await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve()
-            img.onerror = () => reject(new Error('图片加载失败'))
-            img.src = url
-        })
+        try {
+            await new Promise<void>((resolve, reject) => {
+                img.onload = () => resolve()
+                img.onerror = () => reject(new Error('图片加载失败'))
+                img.src = url
+            })
+        } catch (error) {
+            URL.revokeObjectURL(url)
+            showError(error instanceof Error ? error.message : '图片加载失败,请换一张 JPG/PNG 照片')
+            emit('close')
+
+            return
+        }
 
         image = img
         zoom.value = 1

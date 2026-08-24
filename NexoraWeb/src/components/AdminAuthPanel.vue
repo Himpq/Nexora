@@ -10,10 +10,10 @@
 
 <template>
     <div class="admin-auth-panel">
-        <!-- 主体:左列表 + 右详情(AdminPanel 提供手机端两级钻取) -->
-        <AdminPanel>
+        <!-- 主体:左列表 + 右详情(手机端两级钻取由 CSS 类驱动,与 AdminPanel 一致) -->
+        <div class="settings-management-layout" :class="{ 'show-detail': authDetailOpen }">
             <!-- 左列表 -->
-            <template #list>
+            <div class="settings-management-list auth-key-list" @click="authDetailOpen = true">
                 <div v-if="loading" class="auth-empty">加载中...</div>
                 <div v-else-if="!filteredKeys.length" class="auth-empty">暂无 Public API Key</div>
                 <button
@@ -42,11 +42,10 @@
                         </span>
                     </span>
                 </button>
-            </template>
+            </div>
 
             <!-- 右详情 -->
-            <template #detail>
-                <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
+            <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
                     <i class="fa-solid fa-key auth-empty-icon" aria-hidden="true"></i>
                     <span>请选择一个 API Key 查看详情</span>
                 </div>
@@ -148,8 +147,6 @@
                     </SettingActionRow>
                 </div>
             </div>
-        </template>
-        </AdminPanel>
 
         <!-- 生成 / 重新生成 Key 弹窗 -->
         <Modal :open="keyModalOpen" :title="keyModalMode === 'regenerate' ? '重新生成 Public API Key' : '生成 Public API Key'" size="sm" @close="keyModalOpen = false">
@@ -197,7 +194,6 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
-    import AdminPanel from '@/ui/AdminPanel.vue'
     import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
     import SettingExpirySlider from '@/ui/settings/SettingExpirySlider.vue'
     import SettingSegmented from '@/ui/settings/SettingSegmented.vue'
@@ -208,6 +204,8 @@
     const keys = ref<PublicApiKey[]>([])
     const loading = ref(false)
     const selectedId = ref('')
+    /** 手机端两级钻取:点列表项进详情,返回条回列表 */
+    const authDetailOpen = ref(false)
     const selectedKey = ref<PublicApiKey | null>(null)
 
     /** 详情编辑状态 */
