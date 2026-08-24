@@ -1,3 +1,12 @@
+/**
+ * nexora_map_renderer.css — 地图结果卡片样式(GDDP 已接入)
+ *
+ * 颜色全部走语义令牌(--color-*),明暗切换由 tokens-color.css 自动响应;
+ * 唯一例外:.nexora-map-label 叠加在地图瓦片图像之上(非 UI 铬层),
+ * 瓦片恒为亮色影像,固定浅色底+深字保证两种主题下都压得住图面。
+ * 结构/尺寸规则与收编前一致,仅颜色层完成令牌化。
+ */
+
 .nexora-map-card {
     box-sizing: border-box;
     width: 100%;
@@ -5,9 +14,9 @@
     min-width: 0;
     margin: 12px auto;
     overflow: hidden;
-    border: 1px solid #cbd5e1;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
 }
 
@@ -18,15 +27,15 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border-bottom: 1px solid #e5edf6;
-    background: #f8fafc;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-sunken);
 }
 
 .nexora-map-card-title {
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
-    color: #0f172a;
+    color: var(--color-text-primary);
     font-size: 14px;
     font-weight: 700;
     line-height: 1.35;
@@ -39,24 +48,24 @@
     flex: 0 0 auto;
     max-width: 100%;
     padding: 3px 8px;
-    border: 1px solid #cbd5e1;
+    border: 1px solid var(--color-border-input);
     border-radius: 999px;
-    color: #475569;
-    background: #ffffff;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
     font-size: 12px;
     line-height: 1.4;
 }
 
 .nexora-map-card-status.is-ready {
-    border-color: #86efac;
-    color: #166534;
-    background: #f0fdf4;
+    border-color: var(--color-success-border);
+    color: var(--color-success-text);
+    background: var(--color-success-surface);
 }
 
 .nexora-map-card-status.is-error {
-    border-color: #fecaca;
-    color: #991b1b;
-    background: #fef2f2;
+    border-color: var(--color-danger-border);
+    color: var(--color-danger-text);
+    background: var(--color-danger-surface);
 }
 
 .nexora-map-card-body {
@@ -66,7 +75,7 @@
     max-width: 100%;
     overflow: hidden;
     min-height: 260px;
-    background: #eef2f7;
+    background: var(--color-bg-sunken);
 }
 
 .nexora-map-canvas {
@@ -109,8 +118,8 @@
     align-items: center;
     min-height: 180px;
     padding: 18px;
-    color: #991b1b;
-    background: #fff7f7;
+    color: var(--color-danger-text);
+    background: var(--color-danger-surface);
     font-size: 13px;
     line-height: 1.6;
 }
@@ -121,9 +130,9 @@
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px 12px 10px;
-    border-top: 1px solid #e5edf6;
-    color: #64748b;
-    background: #ffffff;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
     font-size: 12px;
     line-height: 1.5;
 }
@@ -136,6 +145,7 @@
     overflow-wrap: anywhere;
 }
 
+/* 叠在瓦片上的坐标标签:固定浅色(见文件头注),不随主题翻转 */
 .nexora-map-label {
     box-sizing: border-box;
     display: inline-block;
@@ -157,7 +167,7 @@
     .nexora-map-card {
         width: min(100%, 720px);
         max-width: 720px;
-        border-color: #b8c6d8;
+        border-color: var(--color-border-strong);
         box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
     }
 
