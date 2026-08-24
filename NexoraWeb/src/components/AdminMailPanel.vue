@@ -231,14 +231,14 @@
 
         loading.value = true
 
-        try {
-            const groupList = await fetchMailGroups().catch(() => [])
+                try {
+            const groupList = await fetchMailGroups()
 
             groups.value = groupList.length ? groupList : ['default']
             currentGroup.value = groups.value[0]
 
             // 拉取 Nexora 用户列表用于绑定对展示(对齐原版 loadAdminUsersList)
-            adminUsers.value = await listAdminUsers().catch(() => [])
+            adminUsers.value = await listAdminUsers()
 
             await loadUsers()
         } catch (error) {

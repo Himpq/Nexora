@@ -15,8 +15,8 @@
         :open="open"
         :width="modalWidth"
         :height="modalHeight"
+        :title="modalTitle"
         modal-class="settings-modal"
-        title="设置"
         @close="emit('close')"
     >
         <div class="settings-modal-shell" :class="{ 'is-drilled': isCompactViewport && mobileLevel === 2 }">
@@ -226,6 +226,15 @@
 
     const modalHeight = computed(() => (isCompactViewport.value ? '100%' : 'min(80vh, 720px)'))
 
+    /** 弹窗标题:手机端二级页带层级(「设置 - 偏好设置」),其余为「设置」 */
+    const modalTitle = computed(() => {
+        if (isCompactViewport.value && mobileLevel.value === 2 && activeTabMeta.value?.title) {
+            return `设置 - ${activeTabMeta.value.title}`
+        }
+
+        return '设置'
+    })
+
     const activeTab = ref('profile')
     const avatarCropOpen = ref(false)
     const avatarCropRef = ref<InstanceType<typeof AvatarCropModal> | null>(null)
@@ -410,13 +419,14 @@
         }
     }
 
-    /** 拉取邮箱分组(对齐原版 fetchMailGroups → domains) */
+        /** 拉取邮箱分组(对齐原版 fetchMailGroups → domains);失败显式上报并保留 default 可操作 */
     async function loadMailGroupOptions(): Promise<void> {
         try {
             const groups = await fetchMailGroups()
 
             mailGroupOptions.value = groups.map((group) => ({ value: group, label: group }))
-        } catch {
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '邮箱分组加载失败')
             mailGroupOptions.value = [{ value: 'default', label: 'default' }]
         }
     }

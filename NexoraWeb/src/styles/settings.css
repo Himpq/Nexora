@@ -2186,13 +2186,45 @@
         font-size: 14px;
     }
 
-    /* 两级互斥:一级显示导航隐藏内容;钻入后反之 */
-    .settings-modal-shell:not(.is-drilled) .settings-main {
-        display: none;
+    /* 两级切换滑动动画:两页绝对定位铺满壳体,transform 进出(替代 display 切换) */
+    .settings-modal-shell {
+        position: relative;
+        overflow: hidden;
     }
 
+    .settings-modal-shell .settings-nav,
+    .settings-modal-shell .settings-main {
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+    }
+
+    /* 一级(未钻入):导航在位;二级页右移屏外并延迟隐藏 */
+    .settings-modal-shell:not(.is-drilled) .settings-main {
+        transform: translateX(100%);
+        visibility: hidden;
+        pointer-events: none;
+        transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.26s;
+    }
+
+    .settings-modal-shell:not(.is-drilled) .settings-nav {
+        transform: translateX(0);
+        visibility: visible;
+    }
+
+    /* 二级(已钻入):内容滑入;一级左移视差淡出 */
     .settings-modal-shell.is-drilled .settings-nav {
-        display: none;
+        transform: translateX(-24%);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, visibility 0s linear 0.26s;
+    }
+
+    .settings-modal-shell.is-drilled .settings-main {
+        transform: translateX(0);
+        visibility: visible;
+        transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     /* 二级页顶部返回条(仅手机端显示) */

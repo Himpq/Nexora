@@ -92,6 +92,7 @@
     import { setBasisKnowledgePin } from '@/api/knowledge'
     import type { WorkspaceSummary, WorkspaceFileEntry } from '@/api/workspaces'
     import {
+        addWorkspaceConversation,
         addWorkspaceFile,
         addWorkspaceKnowledge,
         listWorkspaces,
@@ -435,20 +436,7 @@
                 return
             }
 
-            const res = await fetch(`/api/workspace/${encodeURIComponent(workspaceId)}/conversations`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ conversation_id: conversationId }),
-            })
-
-            const data = await res.json()
-
-            if (!res.ok || !data.success) {
-                throw new Error((data && data.message) || '对话归入 Workspace 失败')
-            }
-
+            await addWorkspaceConversation(workspaceId, conversationId)
             showToast('已归入 Workspace', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '操作失败')

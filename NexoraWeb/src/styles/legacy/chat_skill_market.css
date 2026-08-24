@@ -4,7 +4,7 @@
     display: flex;
     gap: 4px;
     padding: 0 0 14px 0;
-    border-bottom: 1px solid var(--border-color, var(--color-border));
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: 14px;
 }
 
@@ -15,19 +15,19 @@
     border-radius: 8px;
     font-size: 13.5px;
     font-weight: 500;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .skill-subtab:hover {
-    background: var(--hover-bg, #f5f5f5);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
 }
 
 .skill-subtab.active {
-    background: var(--primary-bg, #e8f0fe);
-    color: var(--primary-color, #1a73e8);
+    background: var(--color-accent-surface);
+    color: var(--color-accent-text);
     font-weight: 600;
 }
 
@@ -53,10 +53,10 @@
     align-items: center;
     gap: 6px;
     padding: 7px 14px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: var(--card-bg, #fff);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
@@ -64,9 +64,9 @@
 }
 
 .btn-skill-create:hover {
-    border-color: var(--primary-color, #1a73e8);
-    color: var(--primary-color, #1a73e8);
-    background: var(--primary-bg, #f0f6ff);
+    border-color: var(--color-accent-text);
+    color: var(--color-accent-text);
+    background: var(--color-accent-surface);
 }
 
 /* ==================== Skill 卡片来源标记 ==================== */
@@ -91,8 +91,8 @@
 }
 
 .settings-skill-origin[data-origin="market"] {
-    background: #e3f2fd;
-    color: #1565c0;
+    background: var(--color-accent-surface);
+    color: var(--color-accent-text);
 }
 
 /* ==================== Skill 卡片操作按钮 ==================== */
@@ -105,23 +105,23 @@
 
 .btn-skill-small {
     padding: 3px 8px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     background: transparent;
     font-size: 11.5px;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.12s ease;
 }
 
 .btn-skill-small:hover {
-    border-color: var(--primary-color, #1a73e8);
-    color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
+    color: var(--color-accent-text);
 }
 
 .btn-skill-small.danger:hover {
-    border-color: #e53935;
-    color: #e53935;
+    border-color: var(--color-danger-text);
+    color: var(--color-danger-text);
 }
 
 /* ==================== 市场工具栏 ==================== */
@@ -139,19 +139,19 @@
     gap: 8px;
     flex: 1;
     padding: 8px 12px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: var(--card-bg, #fff);
+    background: var(--color-bg-elevated);
     transition: border-color 0.15s ease;
 }
 
 .skill-market-search:focus-within {
-    border-color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
 }
 
 .skill-market-search svg {
     flex-shrink: 0;
-    color: var(--text-tertiary, #999);
+    color: var(--color-text-secondary);
 }
 
 .skill-market-search input {
@@ -160,26 +160,26 @@
     outline: none;
     background: transparent;
     font-size: 13.5px;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
 }
 
 .skill-market-search input::placeholder {
-    color: var(--text-tertiary, #aaa);
+    color: var(--color-text-secondary);
 }
 
 .skill-market-sort {
     padding: 8px 12px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: var(--card-bg, #fff);
+    background: var(--color-bg-elevated);
     font-size: 13px;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
     cursor: pointer;
     outline: none;
 }
 
 .skill-market-sort:focus {
-    border-color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
 }
 
 /* ==================== 市场列表 ==================== */
@@ -199,14 +199,14 @@
     justify-content: space-between;
     gap: 14px;
     padding: 14px 16px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 12px;
-    background: var(--card-bg, #fff);
+    background: var(--color-bg-elevated);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .skill-market-card:hover {
-    border-color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
     box-shadow: 0 2px 8px rgba(26, 115, 232, 0.08);
 }
 
@@ -224,7 +224,7 @@
 
 .skill-market-card-desc {
     font-size: 12.5px;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     margin-bottom: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -241,16 +241,16 @@
 .skill-market-tag {
     padding: 2px 8px;
     border-radius: 4px;
-    background: var(--hover-bg, #f5f5f5);
+    background: var(--color-bg-hover);
     font-size: 11px;
-    color: var(--text-secondary, #555);
+    color: var(--color-text-secondary);
 }
 
 .skill-market-card-meta {
     display: flex;
     gap: 12px;
     font-size: 11.5px;
-    color: var(--text-tertiary, #999);
+    color: var(--color-text-secondary);
 }
 
 .skill-market-card-actions {
@@ -261,25 +261,25 @@
 
 .btn-skill-detail {
     padding: 6px 12px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 7px;
     background: transparent;
     font-size: 12.5px;
-    color: var(--text-secondary, #555);
+    color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.12s ease;
 }
 
 .btn-skill-detail:hover {
-    border-color: var(--primary-color, #1a73e8);
-    color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
+    color: var(--color-accent-text);
 }
 
 .btn-skill-install {
     padding: 6px 14px;
     border: none;
     border-radius: 7px;
-    background: var(--primary-color, #1a73e8);
+    background: var(--color-accent-text);
     font-size: 12.5px;
     font-weight: 500;
     color: #fff;
@@ -293,11 +293,11 @@
 
 .btn-skill-installed {
     padding: 6px 14px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: var(--hover-bg, #f5f5f5);
+    background: var(--color-bg-hover);
     font-size: 12.5px;
-    color: var(--text-tertiary, #999);
+    color: var(--color-text-secondary);
     cursor: default;
 }
 
@@ -315,7 +315,7 @@
 
 .skill-detail-meta {
     font-size: 12.5px;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     padding: 8px 0;
     border-bottom: 1px solid var(--border-color, #eee);
     margin-bottom: 12px;
@@ -326,14 +326,14 @@
     min-height: 280px;
     max-height: 400px;
     padding: 12px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 12.5px;
     line-height: 1.6;
     resize: vertical;
-    background: var(--card-bg, #fafafa);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
 }
 
 /* ==================== 个人 Skill 编辑器弹窗 ==================== */
@@ -367,7 +367,7 @@
     display: block;
     font-size: 12.5px;
     font-weight: 500;
-    color: var(--text-secondary, #555);
+    color: var(--color-text-secondary);
     margin-bottom: 5px;
 }
 
@@ -375,18 +375,18 @@
 .ps-editor-grid select {
     width: 100%;
     padding: 8px 10px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 7px;
     font-size: 13px;
-    color: var(--text-primary, #333);
-    background: var(--card-bg, #fff);
+    color: var(--color-text-primary);
+    background: var(--color-bg-elevated);
     outline: none;
     transition: border-color 0.15s ease;
 }
 
 .ps-editor-grid input:focus,
 .ps-editor-grid select:focus {
-    border-color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
 }
 
 .ps-editor-content {
@@ -394,19 +394,19 @@
     min-height: 240px;
     max-height: 360px;
     padding: 12px;
-    border: 1px solid var(--border-color, var(--color-border));
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 12.5px;
     line-height: 1.6;
     resize: vertical;
-    background: var(--card-bg, #fafafa);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
     outline: none;
 }
 
 .ps-editor-content:focus {
-    border-color: var(--primary-color, #1a73e8);
+    border-color: var(--color-accent-text);
 }
 
 .ps-editor-footer {
