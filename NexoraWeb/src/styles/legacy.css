@@ -13,15 +13,10 @@
  */
 
 @import './legacy/style.css';
-@import './legacy/chat_files.css';
 @import './legacy/chat_papi_keys.css';
 @import './legacy/chat_settings_dialog.css';
 @import './legacy/chat_settings_management.css';
 @import './legacy/chat_memory_settings.css';
 @import './legacy/chat_skill_market.css';
-@import './legacy/chat_token_details.css';
 @import './legacy/global_search.css';
 @import './legacy/knowledge_collab.css';
-@import './legacy/sidebar_brand_navigation.css';
-@import './legacy/message_avatar.css';
-@import './legacy/easymde_override.css';
