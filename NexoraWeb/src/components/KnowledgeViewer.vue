@@ -524,18 +524,18 @@
     }
 
     .knowledge-collab-status.is-ok {
-        background: #ecfdf5;
-        color: #047857;
+        background: var(--color-success-surface);
+        color: var(--color-success-text);
     }
 
     .knowledge-collab-status.is-saving {
-        background: #fffbeb;
-        color: #b45309;
+        background: var(--color-warning-surface);
+        color: var(--color-warning-text);
     }
 
     .knowledge-collab-status.is-error {
         background: var(--color-danger-surface);
-        color: #be123c;
+        color: var(--color-danger-text);
     }
 
     .knowledge-collab-member {

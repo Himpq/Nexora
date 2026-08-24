@@ -9,7 +9,7 @@
 
 <template>
     <div class="admin-system-panel">
-        <div class="admin-users-layout settings-management-layout">
+        <div class="admin-users-layout settings-management-layout" :class="{ 'show-detail': detailOpen }">
             <!-- 模块列表 -->
             <div class="admin-users-list settings-management-list">
                 <div
@@ -19,8 +19,8 @@
                     :class="{ active: activeModule === module.key }"
                     role="button"
                     tabindex="0"
-                    @click="activeModule = module.key"
-                    @keydown.enter="activeModule = module.key"
+                    @click="selectModule(module.key)"
+                    @keydown.enter="selectModule(module.key)"
                 >
                     <span class="admin-user-avatar admin-system-module-icon"><i :class="module.icon" aria-hidden="true"></i></span>
                     <span class="admin-system-module-main">
@@ -32,6 +32,14 @@
 
             <!-- 模块详情 -->
             <div class="admin-user-detail settings-management-detail">
+                <!-- 手机端返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="detailOpen = false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回列表</span>
+                </button>
+
                 <!-- 基础运行 -->
                 <template v-if="activeModule === 'runtime'">
                     <div class="admin-system-section-head">
@@ -157,6 +165,15 @@
 
     const loading = ref(false)
     const activeModule = ref('runtime')
+
+    /** 手机端两级钻取:点击模块列表项整页切到详情(桌面端双栏并排不受影响) */
+    const detailOpen = ref(false)
+
+    /** 选中模块并触发手机端钻取(对齐 AdminPanel.selectModule 交互) */
+    function selectModule(key: string): void {
+        activeModule.value = key
+        detailOpen.value = true
+    }
 
     /** 模块定义(对齐原版 admin-system-module-item 列表) */
     const modules = [
@@ -504,12 +521,12 @@
     }
 
     .admin-system-section-health.is-success {
-        border-color: #9ccc9f;
+        border-color: var(--color-success-border);
         color: var(--color-success-text);
     }
 
     .admin-system-section-health.is-error {
-        border-color: #e0a0a0;
+        border-color: var(--color-danger-border);
         color: var(--color-danger-text);
     }
 </style>

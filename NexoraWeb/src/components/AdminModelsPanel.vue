@@ -10,7 +10,7 @@
 
 <template>
     <div class="admin-models-panel">
-        <div class="admin-users-layout model-admin-users-layout settings-management-layout">
+        <div class="admin-users-layout model-admin-users-layout settings-management-layout" :class="{ 'show-detail': detailOpen }">
             <div class="admin-users-list settings-management-list">
                 <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
                 <div v-else-if="!filteredProviders.length" class="admin-user-detail-empty">暂无供应商</div>
@@ -55,6 +55,13 @@
             </div>
 
             <div class="admin-user-detail settings-management-detail">
+                <!-- 手机端返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="detailOpen = false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回列表</span>
+                </button>
                 <div v-if="!selectedProvider" class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
                 <div v-else>
                     <div class="admin-users-toolbar admin-system-toolbar-row">
@@ -362,6 +369,8 @@
 
     const loading = ref(false)
     const models = ref<Record<string, ModelInfo>>({})
+    /** 手机端两级钻取:选择供应商后整页切到模型详情(桌面端双栏并排不受影响) */
+    const detailOpen = ref(false)
     const providersRecord = ref<Record<string, ProviderInfo>>({})
     const query = ref('')
     const selectedProvider = ref('')
@@ -590,6 +599,7 @@
 
     function selectProvider(provider: string): void {
         selectedProvider.value = provider
+        detailOpen.value = true
 
         void loadOllamaStatus(provider)
 

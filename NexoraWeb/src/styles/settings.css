@@ -70,7 +70,7 @@
     flex: none;
     width: 16px;
     font-size: 13px;
-    color: #9c9c9c;
+    color: var(--color-text-secondary);
     text-align: center;
     transition: color 0.15s ease;
 }
@@ -318,7 +318,7 @@
 .setting-row-hint {
     margin-top: 2px;
     font-size: 12px;
-    color: #9c9c9c;
+    color: var(--color-text-secondary);
 }
 
 .setting-row-control {
@@ -892,21 +892,21 @@
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-warn {
-    color: #b7791f;
-    background: #fdf6e3;
-    border-color: #f3e2b3;
+    color: var(--color-warning-text);
+    background: var(--color-warning-surface);
+    border-color: var(--color-warning-border);
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-success {
     color: var(--color-success-text);
     background: var(--color-success-surface);
-    border-color: #c8e6c9;
+    border-color: var(--color-success-border);
 }
 
 .settings-modal-shell .model-status-btn.model-status-btn-danger {
     color: var(--color-danger-text);
     background: var(--color-danger-surface);
-    border-color: #f5c6c0;
+    border-color: var(--color-danger-border);
 }
 
 /* Ollama 状态弹窗详情(对齐原版 ollama-status-grid / -row / -message) */
@@ -957,19 +957,19 @@
 
 .settings-modal-shell .ollama-status-message.level-success {
     background: var(--color-success-surface);
-    border-color: #c8e6c9;
+    border-color: var(--color-success-border);
     color: var(--color-success-text);
 }
 
 .settings-modal-shell .ollama-status-message.level-warning {
-    background: #fdf6e3;
-    border-color: #f3e2b3;
-    color: #8a6116;
+    background: var(--color-warning-surface);
+    border-color: var(--color-warning-border);
+    color: var(--color-warning-text);
 }
 
 .settings-modal-shell .ollama-status-message.level-danger {
     background: var(--color-danger-surface);
-    border-color: #f5c6c0;
+    border-color: var(--color-danger-border);
     color: var(--color-danger-text);
 }
 
@@ -1013,7 +1013,7 @@
 }
 
 .settings-modal-shell .model-icon-btn-danger:hover {
-    background: #fef2f2;
+    background: var(--color-danger-surface);
 }
 
 /* 列表项 hover 操作:provider 编辑/删除仅在 hover(含键盘 focus)时展示 */
@@ -1136,7 +1136,7 @@
 }
 
 .settings-modal-shell .quota-meter-label-item.used {
-    color: #a16207;
+    color: var(--color-warning-text);
 }
 
 .settings-modal-shell .quota-meter-label-item.total {
@@ -1206,7 +1206,7 @@
 .quota-adjust-hint-text {
     margin-top: 8px;
     font-size: 11px;
-    color: #8b95a7;
+    color: var(--color-text-secondary);
     line-height: 1.4;
 }
 
@@ -1353,7 +1353,7 @@
 
 .settings-modal-shell .papi-key-plain-tip {
     font-size: 12px;
-    color: #b45309;
+    color: var(--color-warning-text);
 }
 
 /* ==================== Skill(原生全局类,在设置壳内统一风格) ==================== */
@@ -1407,7 +1407,7 @@
 }
 
 .settings-modal-shell .settings-skill-main:focus-visible {
-    box-shadow: 0 0 0 2px #d0d0d0;
+    box-shadow: 0 0 0 2px var(--color-border-strong);
     border-radius: 8px;
 }
 
@@ -1670,7 +1670,7 @@
     padding: 0 14px;
     border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #f7f7f7;
+    background: var(--color-bg-hover);
     color: var(--color-text-secondary);
     font-size: 12.5px;
     cursor: default;
@@ -1761,8 +1761,8 @@
 }
 
 .settings-modal-shell .model-status-pill.warn {
-    background: #fdf6e3;
-    color: #8a6116;
+    background: var(--color-warning-surface);
+    color: var(--color-warning-text);
 }
 
 .settings-modal-shell .model-status-pill.muted {
@@ -1832,7 +1832,7 @@
     overflow: hidden;
     border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #9ca3af;
+    background: var(--color-border-strong);
 }
 
 .avatar-crop-canvas {
@@ -2081,7 +2081,7 @@
     display: block;
     margin-top: 2px;
     font-size: 12px;
-    color: #9c9c9c;
+    color: var(--color-text-secondary);
 }
 
 .setting-toggle input[type="checkbox"] {
@@ -2262,7 +2262,17 @@
     }
 
     .settings-page-head-actions {
-        justify-content: flex-end;
+        /* 手机端整行铺满并允许命令区换行,避免 select + 多个按钮 nowrap 撑爆溢出 */
+        flex-basis: 100%;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        overflow-x: visible;
+    }
+
+    .settings-page-head-commands {
+        /* 窄屏下命令与下拉允许换行,不再 max-content 强撑一行 */
+        flex-wrap: wrap;
+        width: 100%;
     }
 
     .settings-profile-head {

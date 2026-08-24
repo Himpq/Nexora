@@ -867,7 +867,7 @@
     }
 
     .btn-skill-small.danger:hover {
-        border-color: #e0a0a0;
+        border-color: var(--color-danger-border);
         color: var(--color-danger-text);
     }
 

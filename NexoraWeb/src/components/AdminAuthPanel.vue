@@ -44,8 +44,17 @@
                 </button>
             </div>
 
-            <!-- 右详情 -->
-            <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
+            <!-- 右详情(统一 .settings-management-detail 容器,使手机端 show-detail 钻取规则生效) -->
+            <div class="settings-management-detail">
+                <!-- 手机端返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="authDetailOpen = false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回列表</span>
+                </button>
+
+                <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
                     <i class="fa-solid fa-key auth-empty-icon" aria-hidden="true"></i>
                     <span>请选择一个 API Key 查看详情</span>
                 </div>
@@ -146,6 +155,7 @@
                         </button>
                     </SettingActionRow>
                 </div>
+            </div>
             </div>
 
         <!-- 生成 / 重新生成 Key 弹窗 -->
@@ -581,8 +591,8 @@
     }
 
     .auth-key-item.active .auth-key-avatar {
-        background: #111111;
-        color: #ffffff;
+        background: var(--color-text-primary);
+        color: var(--color-bg-elevated);
     }
 
     .auth-key-main {
@@ -744,7 +754,7 @@
 
     .auth-info-value.auth-expired {
         color: var(--color-danger-text);
-        background: #fef2f2;
+        background: var(--color-danger-surface);
         border-color: var(--color-danger-border);
     }
 
@@ -774,8 +784,8 @@
     }
 
     .auth-perm-toggle.active {
-        border-color: var(--color-text-primary);
-        background: #f7f7f7;
+        border-color: var(--color-border-strong);
+        background: var(--color-bg-hover);
     }
 
     .auth-perm-label {
@@ -788,19 +798,19 @@
         color: var(--color-text-primary);
     }
 
-    /* toggle 滑轨 */
+    /* toggle 滑轨(关态用控制件轨道令牌,随主题生效) */
     .auth-perm-track {
         position: relative;
         flex: none;
         width: 32px;
         height: 18px;
         border-radius: 9px;
-        background: #d1d5db;
+        background: var(--color-control-track);
         transition: background 0.2s ease;
     }
 
     .auth-perm-toggle.active .auth-perm-track {
-        background: #111111;
+        background: var(--color-text-primary);
     }
 
     .auth-perm-thumb {
@@ -852,10 +862,10 @@
         margin: 0 0 14px;
         padding: 10px 12px;
         border-radius: 7px;
-        background: #fef3cd;
-        border: 1px solid #fde68a;
+        background: var(--color-warning-surface);
+        border: 1px solid var(--color-warning-border);
         font-size: 12.5px;
-        color: #92400e;
+        color: var(--color-warning-text);
         line-height: 1.5;
     }
 </style>

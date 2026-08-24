@@ -72,7 +72,7 @@
     max-width: calc(100vw - 24px);
     max-height: min(420px, calc(100vh - 24px));
     padding: 0;
-    border: 1px solid #e2e6eb;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-bg-elevated);
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
@@ -197,7 +197,7 @@
 .provider-logo-fallback {
     border-radius: 50%;
     background: var(--color-bg-sunken);
-    color: #66717d;
+    color: var(--color-text-secondary);
     font-weight: 650;
     line-height: 1;
 }

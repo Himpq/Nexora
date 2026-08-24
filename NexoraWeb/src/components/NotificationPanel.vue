@@ -447,8 +447,8 @@
     }
 
     .np-icon-warning {
-        background: #fef3c7;
-        color: #b45309;
+        background: var(--color-warning-surface);
+        color: var(--color-warning-text);
     }
 
     .np-icon-error {

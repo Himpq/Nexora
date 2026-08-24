@@ -56,6 +56,11 @@
     --color-accent-text: #2563eb;
     --color-accent-surface: #eff6ff;
     --color-accent-border: #93c5fd;
+
+    /* 警告语义(提示条 / 注意说明):亮色浅琥珀底 + 深琥珀字 */
+    --color-warning-text: #92600a;
+    --color-warning-surface: #fef6e0;
+    --color-warning-border: #f6dca0;
 }
 
 /*
@@ -101,6 +106,11 @@
     --color-accent-text: #8ab4f8;
     --color-accent-surface: #16233d;
     --color-accent-border: #2c4a78;
+
+    /* 警告语义:暗色下低饱和深底 + 提亮前景 */
+    --color-warning-text: #e7c187;
+    --color-warning-surface: #2c2415;
+    --color-warning-border: #5c4a26;
 }
 
 /*

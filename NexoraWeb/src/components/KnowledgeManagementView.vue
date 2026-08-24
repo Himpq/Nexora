@@ -748,7 +748,7 @@
     .knowledge-mgmt-card-btn-danger:hover {
         border-color: var(--color-danger-border);
         color: var(--color-danger-text);
-        background: #fef2f2;
+        background: var(--color-danger-surface);
     }
 
     .knowledge-mgmt-empty {
@@ -967,20 +967,20 @@
     .knowledge-mgmt-share-info {
         margin-bottom: 16px;
         padding: 10px 12px;
-        border: 1px solid #bae6fd;
+        border: 1px solid var(--color-accent-border);
         border-radius: 8px;
-        background: #f0f9ff;
+        background: var(--color-accent-surface);
         font-size: 13px;
     }
 
     .knowledge-mgmt-share-info strong {
         display: block;
         margin-bottom: 4px;
-        color: #075985;
+        color: var(--color-accent-text);
     }
 
     .knowledge-mgmt-share-info a {
-        color: #0284c7;
+        color: var(--color-accent-text);
         word-break: break-all;
     }
 

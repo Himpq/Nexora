@@ -327,10 +327,10 @@
 
     .admin-map-missing-item {
         padding: 6px 10px;
-        border: 1px solid #f3e2b3;
+        border: 1px solid var(--color-warning-border);
         border-radius: 7px;
-        background: #fdf6e3;
-        color: #8a6116;
+        background: var(--color-warning-surface);
+        color: var(--color-warning-text);
         font-size: 12px;
         font-family: ui-monospace, "SF Mono", Consolas, monospace;
         word-break: break-all;
