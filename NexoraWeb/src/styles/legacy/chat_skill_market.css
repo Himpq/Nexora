@@ -218,7 +218,7 @@
 .skill-market-card-title {
     font-size: 14.5px;
     font-weight: 600;
-    color: var(--text-primary, #222);
+    color: var(--color-text-primary);
     margin-bottom: 4px;
 }
 
@@ -317,7 +317,7 @@
     font-size: 12.5px;
     color: var(--color-text-secondary);
     padding: 8px 0;
-    border-bottom: 1px solid var(--border-color, #eee);
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: 12px;
 }
 
@@ -414,7 +414,7 @@
     justify-content: flex-end;
     gap: 10px;
     padding: 14px 20px;
-    border-top: 1px solid var(--border-color, #eee);
+    border-top: 1px solid var(--color-border);
 }
 
 .btn-skill-publish {
