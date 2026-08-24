@@ -209,8 +209,16 @@
     /** 手机端导航层级:1=分类列表页,2=内容页(点击分类进入) */
     const mobileLevel = ref<1 | 2>(1)
 
+    /**
+     * 紧凑视口判定:820px 断点 + 触屏设备强制命中。
+     * 之前用 760px 且仅 matchMedia——部分全面屏(视口 780-820)或系统缩放
+     * 会导致 matchMedia 不命中,桌面 1060px 布局硬塞进手机屏,
+     * 表现为"所有 tab 点不了/没有二级菜单/内容窗口极小"。
+     * 触屏设备('ontouchstart' in window)一律走两级导航,不再依赖像素宽度。
+     */
     function syncCompactViewport(): void {
-        isCompactViewport.value = window.matchMedia('(max-width: 760px)').matches
+        const isTouch = 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0
+        isCompactViewport.value = isTouch || window.innerWidth <= 820
     }
 
     onMounted(() => {

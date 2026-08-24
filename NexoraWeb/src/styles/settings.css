@@ -2149,7 +2149,7 @@
 }
 
 /* ==================== 窄宽响应式规则(手机端两级导航) ==================== */
-@media (max-width: 760px) {
+@media (max-width: 820px) {
     /* 弹窗全屏:消除与顶栏的视觉重合,两级导航在此尺寸下生效 */
     .g-modal-backdrop:has(> .settings-modal.g-modal) {
         padding: 0;
