@@ -10,10 +10,10 @@
 
 <template>
     <div class="admin-auth-panel">
-        <!-- 主体:左列表 + 右详情 -->
-        <div class="settings-management-layout">
+        <!-- 主体:左列表 + 右详情(AdminPanel 提供手机端两级钻取) -->
+        <AdminPanel>
             <!-- 左列表 -->
-            <div class="settings-management-list auth-key-list">
+            <template #list>
                 <div v-if="loading" class="auth-empty">加载中...</div>
                 <div v-else-if="!filteredKeys.length" class="auth-empty">暂无 Public API Key</div>
                 <button
@@ -42,10 +42,10 @@
                         </span>
                     </span>
                 </button>
-            </div>
+            </template>
 
             <!-- 右详情 -->
-            <div class="settings-management-detail auth-detail">
+            <template #detail>
                 <div v-if="!selectedKey" class="auth-empty auth-detail-empty">
                     <i class="fa-solid fa-key auth-empty-icon" aria-hidden="true"></i>
                     <span>请选择一个 API Key 查看详情</span>
@@ -148,7 +148,8 @@
                     </SettingActionRow>
                 </div>
             </div>
-        </div>
+        </template>
+        </AdminPanel>
 
         <!-- 生成 / 重新生成 Key 弹窗 -->
         <Modal :open="keyModalOpen" :title="keyModalMode === 'regenerate' ? '重新生成 Public API Key' : '生成 Public API Key'" size="sm" @close="keyModalOpen = false">
@@ -196,6 +197,7 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
+    import AdminPanel from '@/ui/AdminPanel.vue'
     import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
     import SettingExpirySlider from '@/ui/settings/SettingExpirySlider.vue'
     import SettingSegmented from '@/ui/settings/SettingSegmented.vue'
