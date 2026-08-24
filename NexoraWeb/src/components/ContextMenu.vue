@@ -1,91 +1,50 @@
 <!--
-    ContextMenu.vue — 会话/知识库右键菜单(逐像素复刻原版 pin-context-menu)
+    ContextMenu.vue — 会话/知识库/云端文件右键菜单(基于 GDDP ui/ContextMenu)
 
-    结构(与原版 chat.html #pinContextMenu 一致):
-      置顶/解除置顶 + 修改标题(仅会话) + 归入工作区(子菜单,含已归入打勾)
+    业务动作(置顶 / 改名 / 归入工作区 / 删除等)保持不变,菜单容器、视口钳制、
+    外部点击关闭与暗色视觉统一收敛到 GDDP ContextMenu:
+      - 菜单项经 items 配置渲染(危险态 / 分隔线 / 子菜单由 key 驱动)
+      - "归入工作区"异步子菜单经 #submenu-workspace slot 注入
+      - 父级仍以 armed + x/y 受控;armed 置真时本组件经 GDDP 容器打开菜单
+
     目标类型:
       - conversation    -> 置顶走 /api/conversations/<id>/pin,归入走 /api/workspace/<id>/conversations
       - knowledge_basis -> 置顶走 /api/knowledge/basis/<title>/pin,归入走 /api/workspace/<id>/knowledge
-      - cloud_file      -> 无置顶;归入走 /api/workspace/<id>/files,已归入时可取消归入(移除文件标记)
-    可见性:父级 armed + 浮层协调器 popoverId 互斥;打开时注册容器支持外部点击关闭。
-    子菜单:由原版 CSS hover/focus 显示(与交互一致),JS 仅负责加载工作区数据。
-    每次打开都重新拉取 include_marks 工作区列表,保证已归入打勾实时刷新。
+      - cloud_file      -> 无置顶;归入走 /api/workspace/<id>/files,已归入时可取消归入
 -->
 
 <template>
-    <Teleport to="body">
-        <div
-            ref="rootEl"
-            id="pinContextMenu"
-            class="pin-context-menu"
-            :class="{ active: visible, 'submenu-left': submenuLeft }"
-            :style="{ left: `${posX}px`, top: `${posY}px` }"
-            aria-hidden="false"
-        >
-            <button id="pinContextMenuAction" v-if="targetType !== 'cloud_file'" type="button" @click="handleTogglePin">
-                <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
-                <span>{{ pinned ? '解除置顶' : '置顶' }}</span>
+    <ContextMenu
+        ref="gddpRef"
+        :popover-id="popoverId"
+        :items="menuItems"
+        :keep-panel="keepPanel"
+        @select="onSelect"
+    >
+        <template #submenu-workspace>
+            <div v-if="loadingWorkspaces" class="gddp-context-submenu-empty">加载中...</div>
+            <div v-else-if="!workspaces.length" class="gddp-context-submenu-empty">暂无工作区</div>
+            <button
+                v-for="workspace in workspaces"
+                :key="workspace.workspace_id"
+                class="gddp-context-item gddp-context-workspace-item"
+                :class="{ 'is-marked': isMarked(workspace) }"
+                type="button"
+                @click="handleAddToWorkspace(workspace.workspace_id)"
+            >
+                <i class="fa-regular fa-folder" aria-hidden="true"></i>
+                <span class="gddp-context-label">{{ workspace.title || 'Untitled Workspace' }}</span>
+                <span v-if="isMarked(workspace)" class="gddp-context-workspace-state">
+                    <i class="fa-solid fa-check" aria-hidden="true"></i>
+                    <span>已标记</span>
+                </span>
             </button>
-            <template v-if="targetType === 'cloud_file'">
-                <button id="pinContextMenuFileDownload" type="button" @click="handleDownloadFile">
-                    <i class="fa-solid fa-download" aria-hidden="true"></i>
-                    <span>下载</span>
-                </button>
-                <button id="pinContextMenuFileDelete" class="pin-context-danger" type="button" @click="handleDeleteFile">
-                    <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                    <span>删除文件</span>
-                </button>
-            </template>
-            <button v-if="targetType === 'conversation'" id="pinContextMenuRename" type="button" @click="handleRename">
-                <i class="fa-solid fa-pen" aria-hidden="true"></i>
-                <span>修改标题</span>
-            </button>
-            <button v-if="showBranchEntry" id="pinContextMenuBranch" type="button" @click="handleViewBranchSource">
-                <i class="fa-solid fa-code-branch" aria-hidden="true"></i>
-                <span>查看分支处</span>
-            </button>
-            <button v-if="targetType === 'knowledge_basis'" id="pinContextMenuBasisDelete" class="pin-context-danger" type="button" @click="handleDeleteBasis">
-                <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                <span>删除知识库</span>
-            </button>
-            <div id="pinContextMenuWorkspaceWrap" class="pin-context-submenu-wrap">
-                <button
-                    id="pinContextMenuWorkspace"
-                    type="button"
-                    @mouseenter="ensureWorkspaceItems"
-                    @click="ensureWorkspaceItems"
-                >
-                    <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                    <span>归入工作区</span>
-                    <i class="fa-solid fa-chevron-right pin-context-submenu-arrow" aria-hidden="true"></i>
-                </button>
-                <div id="pinContextMenuWorkspaceList" class="pin-context-submenu pin-context-workspace-list">
-                    <div v-if="loadingWorkspaces" class="pin-context-submenu-empty">加载中...</div>
-                    <div v-else-if="!workspaces.length" class="pin-context-submenu-empty">暂无工作区</div>
-                    <button
-                        v-for="workspace in workspaces"
-                        :key="workspace.workspace_id"
-                        class="pin-context-workspace-item"
-                        :class="{ 'is-marked': isMarked(workspace) }"
-                        :aria-pressed="isMarked(workspace) ? 'true' : 'false'"
-                        type="button"
-                        @click="handleAddToWorkspace(workspace.workspace_id)"
-                    >
-                        <i class="fa-regular fa-folder" aria-hidden="true"></i>
-                        <span class="pin-context-workspace-title">{{ workspace.title || 'Untitled Workspace' }}</span>
-                        <span v-if="isMarked(workspace)" class="pin-context-workspace-state">
-                            <i class="fa-solid fa-check" aria-hidden="true"></i>
-                            <span>已标记</span>
-                        </span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </Teleport>
+        </template>
+    </ContextMenu>
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, ref, watch } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import { setConversationPin, updateConversationTitle } from '@/api/conversations'
     import type { ConversationBranch } from '@/api/conversations'
@@ -102,10 +61,10 @@
     } from '@/api/workspaces'
     import { showPrompt } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
-    import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import ContextMenu, { type ContextMenuItem } from '@/ui/ContextMenu.vue'
 
     const props = withDefaults(defineProps<{
-        /** 父级打开状态:菜单显示需 armed 且浮层协调器当前打开本菜单的 popoverId */
+        /** 父级打开状态:armed 置真且浮层协调器命中本菜单 id 时打开 */
         armed: boolean
         x: number
         y: number
@@ -144,110 +103,70 @@
         'request-delete-file': []
     }>()
 
-    const rootEl = ref<HTMLElement | null>(null)
+    const gddpRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 归入工作区数据(每次打开菜单重新拉取,保证已归入标记实时) */
     const loadingWorkspaces = ref(false)
     const workspaces = ref<WorkspaceSummary[]>([])
 
-    /** 钳制后的菜单位置(避免超出视口) */
-    const posX = ref(props.x)
-    const posY = ref(props.y)
-
-    /** 子菜单是否向左弹出(靠近右边缘时,对齐原版 positionPinContextSubmenu) */
-    const submenuLeft = ref(false)
-
-    /** 右键菜单可见:父级 armed 且浮层协调器互斥到本菜单 id */
-    const visible = computed(() => props.armed && overlay.popover === props.popoverId)
-
-    /** 是否显示"查看分支处":会话目标且带完整分支信息(对齐原版 branchBtn 显示条件) */
+    /** 是否显示"查看分支处":会话目标且带完整分支信息 */
     const showBranchEntry = computed(() => {
         const branch = props.branch && typeof props.branch === 'object' ? props.branch : null
 
         return props.targetType === 'conversation' && !!branch && !!branch.parent_conversation_id
     })
 
-    /** 查看分支处:通知父级跳转到父会话的分支消息(对齐原版 viewConversationBranchSourceFromContextMenu) */
-    function handleViewBranchSource(): void {
-        const branch = props.branch && typeof props.branch === 'object' ? props.branch : null
+    /** 菜单项:按目标类型拼装(危险态 / 子菜单由 key 驱动) */
+    const menuItems = computed<ContextMenuItem[]>(() => {
+        const items: ContextMenuItem[] = []
 
-        if (!branch || !branch.parent_conversation_id) {
-            return
+        if (props.targetType !== 'cloud_file') {
+            items.push({
+                key: 'pin',
+                label: props.pinned ? '解除置顶' : '置顶',
+                icon: 'fa-solid fa-thumbtack',
+            })
         }
 
-        closePopover(props.popoverId)
+        if (props.targetType === 'cloud_file') {
+            items.push({ key: 'download', label: '下载', icon: 'fa-solid fa-download' })
+            items.push({ key: 'delete-file', label: '删除文件', icon: 'fa-solid fa-trash', danger: true })
+        }
 
-        emit('view-branch-source', branch)
-    }
+        if (props.targetType === 'conversation') {
+            items.push({ key: 'rename', label: '修改标题', icon: 'fa-solid fa-pen' })
+        }
 
-    /** 打开时:注册容器(外部点击关闭)、刷新工作区标记、钳制位置;flush post 确保 Teleport 节点已挂载。
-     *  immediate 覆盖 v-if 首次挂载场景(如知识库菜单):挂载时 armed/x/y 已是最终值,
-     *  无 immediate 则 watch 感知不到变化,首次右键无法钳制到视口内 */
-    watch(
-        [() => props.x, () => props.y, () => props.armed],
-        () => {
-            if (props.armed && overlay.popover === props.popoverId) {
-                void onOpen()
-            }
-        },
-        { flush: 'post', immediate: true }
-    )
+        if (showBranchEntry.value) {
+            items.push({ key: 'branch', label: '查看分支处', icon: 'fa-solid fa-code-branch' })
+        }
 
-    /** 菜单打开收尾流程(对齐原版 showPinContextMenu:注册容器 + 加载工作区 + 定位) */
-    async function onOpen(): Promise<void> {
-        posX.value = props.x
-        posY.value = props.y
+        if (props.targetType === 'knowledge_basis') {
+            items.push({ key: 'delete-basis', label: '删除知识库', icon: 'fa-solid fa-trash', danger: true })
+        }
 
-        openPopover(props.popoverId, rootEl.value, { keepPanel: props.keepPanel })
-
-        workspaces.value = []
-        void ensureWorkspaceItems()
-
-        await nextTick()
-
-        positionMenu()
-        positionSubmenu()
-
-        // 浏览器首帧布局后再校验一次,确保菜单真正渲染后仍在视口内(防测量时序导致的溢出)
-        requestAnimationFrame(() => {
-            positionMenu()
-            positionSubmenu()
+        // 归入工作区子菜单(所有目标类型通用)
+        items.push({
+            key: 'workspace',
+            label: '归入工作区',
+            icon: 'fa-regular fa-folder-open',
+            submenuKey: 'workspace',
         })
-    }
 
-    /** 钳制菜单到视口内(按实际渲染尺寸,对齐原版 left/top 边界计算) */
-    function positionMenu(): void {
-        if (!rootEl.value) {
-            return
-        }
-
-        const rect = rootEl.value.getBoundingClientRect()
-        const menuWidth = rect.width || rootEl.value.offsetWidth || 170
-        const menuHeight = rect.height || rootEl.value.offsetHeight || 90
-
-        posX.value = Math.min(Math.max(8, posX.value), Math.max(8, window.innerWidth - menuWidth - 12))
-        posY.value = Math.min(Math.max(8, posY.value), Math.max(8, window.innerHeight - menuHeight - 12))
-    }
-
-    /** 靠近右边缘时子菜单向左弹出,避免溢出屏幕(子菜单数据加载完成后会再次校准) */
-    function positionSubmenu(): void {
-        if (!rootEl.value) {
-            return
-        }
-
-        const menuWidth = rootEl.value.offsetWidth || 170
-        const submenuEl = rootEl.value.querySelector('.pin-context-submenu') as HTMLElement | null
-        const submenuWidth = (submenuEl ? submenuEl.offsetWidth : 0) || 190
-
-        submenuLeft.value = posX.value + menuWidth + submenuWidth + 24 > window.innerWidth
-    }
-
-    /** 子菜单数据加载完成后再校准左右弹出方向(此时子菜单宽度才稳定) */
-    watch(loadingWorkspaces, (loading) => {
-        if (!loading) {
-            positionSubmenu()
-        }
+        return items
     })
+
+    /** armed 置真时经 GDDP 容器打开菜单(视口钳制 / 外部关闭由容器负责) */
+    watch(
+        () => [props.armed, props.x, props.y] as const,
+        ([armed]) => {
+            if (armed) {
+                gddpRef.value?.open(props.x, props.y)
+                workspaces.value = []
+                void ensureWorkspaceItems()
+            }
+        }
+    )
 
     /** 拉取工作区列表(include_marks 带回已归入标记;每次打开都重新拉取) */
     async function ensureWorkspaceItems(): Promise<void> {
@@ -266,7 +185,7 @@
         }
     }
 
-    /** 该目标是否已归入指定工作区(对齐原版 isWorkspaceMarkedForPinTarget) */
+    /** 该目标是否已归入指定工作区 */
     function isMarked(workspace: WorkspaceSummary): boolean {
         if (props.targetType === 'knowledge_basis') {
             return workspaceHasMarkedKnowledge(workspace, props.title)
@@ -279,7 +198,6 @@
         return workspaceHasMarkedConversation(workspace, props.conversationId)
     }
 
-    /** 云端文件已归入判断:工作区文件标记按 file_ref / alias / 传入别名三者任一匹配(镜像 workspaceHasMarkedConversation) */
     function workspaceHasMarkedFile(workspace: WorkspaceSummary, fileRef: string, fileAlias: string): boolean {
         const ref = String(fileRef || '').trim()
         const alias = String(fileAlias || '').trim()
@@ -305,7 +223,6 @@
         })
     }
 
-    /** 会话已归入判断(对齐原版 workspaceHasMarkedConversation) */
     function workspaceHasMarkedConversation(workspace: WorkspaceSummary, conversationId: string): boolean {
         const cid = String(conversationId || '').trim()
 
@@ -330,7 +247,6 @@
         })
     }
 
-    /** 知识库已归入判断(对齐原版 workspaceHasMarkedKnowledge) */
     function workspaceHasMarkedKnowledge(workspace: WorkspaceSummary, title: string): boolean {
         const safeTitle = String(title || '').trim()
 
@@ -349,7 +265,6 @@
         })
     }
 
-    /** 云端文件已归入标记条目(取消归入时需要其 file_ref 定位后端标记) */
     function findMarkedFile(workspace: WorkspaceSummary): WorkspaceFileEntry | null {
         const ref = String(props.fileRef || '').trim()
         const alias = String(props.fileAlias || '').trim()
@@ -374,7 +289,7 @@
         return null
     }
 
-    /** 归入/取消归入工作区(再次点击已归入的工作区则移除;对齐原版 isMarked 标记) */
+    /** 归入 / 取消归入工作区(再次点击已归入的工作区则移除) */
     async function handleAddToWorkspace(workspaceId: string): Promise<void> {
         if (!workspaceId) {
             return
@@ -387,8 +302,6 @@
         }
 
         const removing = isMarked(workspace)
-
-        closePopover(props.popoverId)
 
         try {
             if (props.targetType === 'cloud_file') {
@@ -443,11 +356,51 @@
         }
     }
 
-    /** 置顶/解除置顶(会话走 conversations pin,知识库走 basis pin) */
+    /** 按 key 分发到业务动作(GDDP 容器点击后已自动关闭菜单) */
+    function onSelect(key: string): void {
+        if (key === 'pin') {
+            void handleTogglePin()
+
+            return
+        }
+
+        if (key === 'rename') {
+            void handleRename()
+
+            return
+        }
+
+        if (key === 'branch') {
+            handleViewBranchSource()
+
+            return
+        }
+
+        if (key === 'workspace') {
+            // 子菜单项自行处理,无需在此分发
+            return
+        }
+
+        if (key === 'delete-basis') {
+            handleDeleteBasis()
+
+            return
+        }
+
+        if (key === 'download') {
+            emit('download-file')
+
+            return
+        }
+
+        if (key === 'delete-file') {
+            emit('request-delete-file')
+        }
+    }
+
+    /** 置顶 / 解除置顶(会话走 conversations pin,知识库走 basis pin) */
     async function handleTogglePin(): Promise<void> {
         const nextPin = !props.pinned
-
-        closePopover(props.popoverId)
 
         try {
             if (props.targetType === 'knowledge_basis') {
@@ -470,28 +423,16 @@
         }
     }
 
-    /** 云端文件:下载/删除意图转发宿主(确认与执行由宿主完成,镜像 handleDeleteBasis 模式) */
-    function handleDownloadFile(): void {
-        if (props.targetType !== 'cloud_file') {
+    function handleViewBranchSource(): void {
+        const branch = props.branch && typeof props.branch === 'object' ? props.branch : null
+
+        if (!branch || !branch.parent_conversation_id) {
             return
         }
 
-        closePopover(props.popoverId)
-
-        emit('download-file')
+        emit('view-branch-source', branch)
     }
 
-    function handleDeleteFile(): void {
-        if (props.targetType !== 'cloud_file') {
-            return
-        }
-
-        closePopover(props.popoverId)
-
-        emit('request-delete-file')
-    }
-
-    /** 删除知识库:仅通知父级(确认/删除/刷新由父级 KnowledgePanel 完成,避免菜单卸载后事件丢失) */
     function handleDeleteBasis(): void {
         const title = props.title
 
@@ -499,20 +440,16 @@
             return
         }
 
-        closePopover(props.popoverId)
-
         emit('request-delete-basis', title)
     }
 
-    /** 修改标题(仅会话;自建输入小窗,对齐原版 rename modal 行为) */
+    /** 修改标题(仅会话;自建输入小窗) */
     async function handleRename(): Promise<void> {
         const conversationId = props.conversationId
 
         if (!conversationId) {
             return
         }
-
-        closePopover(props.popoverId)
 
         const nextTitle = await showPrompt({
             title: '修改标题',

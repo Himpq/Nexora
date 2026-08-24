@@ -34,11 +34,9 @@
         />
     </section>
 
-    <!-- 资源右键菜单 -->
+    <!-- 资源右键菜单(GDDP ContextMenu,命令式打开) -->
     <WorkspaceResourceMenu
-        :visible="resourceMenu.visible"
-        :x="resourceMenu.x"
-        :y="resourceMenu.y"
+        ref="resourceMenuRef"
         :pinned="resourceMenu.pinned"
         :show-remove="resourceMenu.showRemove"
         @confirm="confirmResourcePin"
@@ -342,35 +340,30 @@
 
     /** ===== 右键菜单 ===== */
     interface ResourceMenuState {
-        visible: boolean
-        x: number
-        y: number
         pinned: boolean
         target: WorkspaceResourceRef | null
         /** 是否显示「从 Workspace 移除」(仅自己添加的文件行) */
         showRemove: boolean
     }
 
+    const resourceMenuRef = ref<InstanceType<typeof WorkspaceResourceMenu> | null>(null)
+
     const resourceMenu = ref<ResourceMenuState>({
-        visible: false,
-        x: 0,
-        y: 0,
         pinned: false,
         target: null,
         showRemove: false,
     })
 
     function openResourceMenu(event: MouseEvent, target: WorkspaceResourceRef): void {
+        // 菜单定位与视口钳制交由 GDDP ContextMenu 负责;本组件仅预存置顶态与移除项可见性
         resourceMenu.value = {
-            visible: true,
-            // 原始坐标直投;视口钳制由菜单组件按实测尺寸完成(对齐原版 showWorkspaceResourceContextMenu)
-            x: event.clientX,
-            y: event.clientY,
             pinned: resolvePinned(target),
             target,
             // 文件标记只允许自己添加的行移出(后端按 actor 限定);对话/知识库的移出走主列表右键"取消归入"
             showRemove: target.type === 'file' && String(target.addedBy || '') === userStore.userId,
         }
+
+        resourceMenuRef.value?.open(event.clientX, event.clientY)
     }
 
     /** 从当前详情推导资源置顶态,保证菜单文案准确 */
@@ -390,10 +383,9 @@
         return Boolean(detail.value.workspace_files?.find((item) => item.file_ref === target.ref && String(item.added_by || '') === target.addedBy)?.pin)
     }
 
+    /** 关闭资源右键菜单(GDDP ContextMenu 命令式关闭;外部点击由 overlay 统一处理) */
     function hideResourceMenu(): void {
-        if (resourceMenu.value.visible) {
-            resourceMenu.value.visible = false
-        }
+        resourceMenuRef.value?.close()
     }
 
     async function confirmResourcePin(): Promise<void> {
@@ -430,13 +422,12 @@
     }
 
     onMounted(() => {
-        document.addEventListener('click', hideResourceMenu)
+        // 外部点击关闭由 GDDP ContextMenu 经 overlay 协调器统一保证,此处不再重复绑定 click
         document.addEventListener('scroll', hideResourceMenu, true)
         window.addEventListener('resize', hideResourceMenu)
     })
 
     onBeforeUnmount(() => {
-        document.removeEventListener('click', hideResourceMenu)
         document.removeEventListener('scroll', hideResourceMenu, true)
         window.removeEventListener('resize', hideResourceMenu)
     })

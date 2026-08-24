@@ -1,30 +1,18 @@
 <!--
-    SelectionContextMenu.vue — 选区右键菜单(对齐原版 notesContextMenu)
+    SelectionContextMenu.vue — 选区右键菜单(基于 GDDP ui/ContextMenu)
 
     触发:在消息区域选中文本后右键,显示"添加到笔记 / 复制选中文本 / 解释"。
-    位置经浮层协调器保证互斥(z-index 低于右键菜单,复用 --z-right-click 层级语义)。
+    定位与视口钳制由 GDDP ContextMenu 统一负责;本组件仅维护待处理文本与来源锚点,
+    并按菜单项 key 分发到对应动作。位置互斥复用 --z-right-click 层级语义。
 -->
 
 <template>
-    <div
-        v-if="visible"
-        class="notes-context-menu active"
-        :style="{ left: `${x}px`, top: `${y}px` }"
-        @click.stop
-    >
-        <button type="button" @click="handleAddNote">
-            <i class="fa-solid fa-note-sticky" aria-hidden="true"></i>
-            <span>添加到笔记</span>
-        </button>
-        <button type="button" @click="handleCopy">
-            <i class="fa-regular fa-copy" aria-hidden="true"></i>
-            <span>复制选中文本</span>
-        </button>
-        <button type="button" @click="handleExplain">
-            <i class="fa-solid fa-lightbulb" aria-hidden="true"></i>
-            <span>解释</span>
-        </button>
-    </div>
+    <ContextMenu
+        ref="menuRef"
+        popover-id="selection-menu"
+        :items="menuItems"
+        @select="onSelect"
+    />
 </template>
 
 <script setup lang="ts">
@@ -32,7 +20,7 @@
 
     import type { NoteAnchor } from '@/api/notes'
     import { showToast } from '@/stores/notify'
-    import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import ContextMenu, { type ContextMenuItem } from '@/ui/ContextMenu.vue'
 
     const emit = defineEmits<{
         /** 添加笔记:文本 + 来源标题 + 定位(conversationId + messageIndex,供跳转来源) */
@@ -41,9 +29,13 @@
         explain: [text: string]
     }>()
 
-    const visible = ref(false)
-    const x = ref(0)
-    const y = ref(0)
+    const menuItems: ContextMenuItem[] = [
+        { key: 'add-note', label: '添加到笔记', icon: 'fa-solid fa-note-sticky' },
+        { key: 'copy', label: '复制选中文本', icon: 'fa-regular fa-copy' },
+        { key: 'explain', label: '解释', icon: 'fa-solid fa-lightbulb' },
+    ]
+
+    const menuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     let pendingText = ''
     let pendingAnchor: NoteAnchor | null = null
@@ -53,69 +45,60 @@
         text: string,
         clientX: number,
         clientY: number,
-        anchor: NoteAnchor | null = null
+        anchor: NoteAnchor | null = null,
     ): void {
         pendingText = text
         pendingAnchor = anchor
-        x.value = Math.min(Math.max(8, clientX), Math.max(8, window.innerWidth - 190))
-        y.value = Math.min(Math.max(8, clientY), Math.max(8, window.innerHeight - 120))
 
-        visible.value = true
-
-        openPopover('selection-menu')
+        menuRef.value?.open(clientX, clientY)
     }
 
     /** 关闭菜单 */
     function close(): void {
-        visible.value = false
+        menuRef.value?.close()
         pendingText = ''
         pendingAnchor = null
-
-        closePopover('selection-menu')
     }
 
     /** 菜单是否当前打开(供外部点击关闭判断) */
     function isOpen(): boolean {
-        return visible.value && overlay.popover === 'selection-menu'
+        return menuRef.value?.isOpen() ?? false
     }
 
-    function handleAddNote(): void {
+    function onSelect(key: string): void {
         const text = pendingText
-        const anchor = pendingAnchor
 
-        close()
+        if (key === 'add-note') {
+            if (!text.trim()) {
+                return
+            }
 
-        if (!text.trim()) {
+            emit('add-note', text, document.title || '', pendingAnchor)
+            pendingText = ''
+            pendingAnchor = null
+
             return
         }
 
-        emit('add-note', text, document.title || '', anchor)
-    }
+        if (key === 'copy') {
+            void navigator.clipboard.writeText(text)
+                .then(() => showToast('已复制', 'success'))
+                .catch(() => showToast('复制失败', 'error'))
 
-    async function handleCopy(): Promise<void> {
-        const text = pendingText
+            pendingText = ''
+            pendingAnchor = null
 
-        close()
-
-        try {
-            await navigator.clipboard.writeText(text)
-
-            showToast('已复制', 'success')
-        } catch {
-            showToast('复制失败', 'error')
-        }
-    }
-
-    function handleExplain(): void {
-        const text = pendingText
-
-        close()
-
-        if (!text.trim()) {
             return
         }
 
-        emit('explain', text)
+        if (key === 'explain') {
+            if (text.trim()) {
+                emit('explain', text)
+            }
+
+            pendingText = ''
+            pendingAnchor = null
+        }
     }
 
     defineExpose({ open, close, isOpen })

@@ -22,16 +22,10 @@
             </div>
         </template>
 
-        <div class="ks-tabs">
-            <button
-                v-for="tab in tabs"
-                :key="tab.key"
-                class="ks-tab"
-                :class="{ active: activeTab === tab.key }"
-                type="button"
-                @click="activeTab = tab.key"
-            >{{ tab.label }}</button>
-        </div>
+        <SettingSegmented
+            v-model="activeTab"
+            :options="tabs"
+        />
 
         <!-- 基础信息 -->
         <div v-show="activeTab === 'basic'" class="ks-pane">
@@ -121,6 +115,7 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
+    import SettingSegmented from '@/ui/settings/SettingSegmented.vue'
 
     const props = defineProps<{
         open: boolean
@@ -133,12 +128,12 @@
 
     const userStore = useUserStore()
 
-    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 tab) */
+    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 tab;复用 GDDP SettingSegmented) */
     const tabs = [
-        { key: 'basic', label: '基础信息' },
-        { key: 'share', label: '共享协作' },
-        { key: 'vector', label: '向量' },
-        { key: 'history', label: '记录' },
+        { value: 'basic', label: '基础信息' },
+        { value: 'share', label: '共享协作' },
+        { value: 'vector', label: '向量' },
+        { value: 'history', label: '记录' },
     ]
 
     const activeTab = ref('basic')
@@ -245,37 +240,10 @@
         font-size: 12px;
     }
 
-    /* ---------- 页签 ---------- */
+    /* ---------- 页签(GDDP SettingSegmented 壳适配) ---------- */
 
-    .ks-tabs {
-        display: flex;
-        gap: 4px;
+    :deep(.setting-segmented) {
         margin-bottom: 14px;
-        padding-bottom: 12px;
-        border-bottom: 1px solid var(--color-border);
-    }
-
-    .ks-tab {
-        padding: 6px 14px;
-        border: none;
-        border-radius: 8px;
-        background: transparent;
-        color: var(--color-text-secondary);
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
-    }
-
-    .ks-tab:hover {
-        background: var(--color-bg-hover);
-        color: var(--color-text-primary);
-    }
-
-    .ks-tab.active {
-        background: #eef2f7;
-        color: var(--color-text-primary);
-        font-weight: 600;
     }
 
     /* ---------- 面板 ---------- */
