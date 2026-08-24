@@ -203,15 +203,12 @@
             <div class="quota-adjust-meta">用 {{ fmtQuota(adjustPopover.used) }} / 共 {{ fmtQuota(adjustPopover.total) }}</div>
             <div class="quota-adjust-mode">
                 <span class="quota-adjust-mode-label">调整</span>
-                <select
-                    v-model="adjustPopover.mode"
-                    class="input-modern"
-                    style="width:64px; height:30px; padding:4px 6px; font-size:12px;"
-                    @change="onAdjustModeChange"
-                >
-                    <option value="total">共</option>
-                    <option value="remaining">剩</option>
-                </select>
+                <SettingSelect
+                    :model-value="adjustPopover.mode"
+                    :options="ADJUST_MODE_OPTIONS"
+                    width="72px"
+                    @update:model-value="handleAdjustModeChange"
+                />
                 <input
                     v-model="adjustPopover.input"
                     class="input-modern"
@@ -464,6 +461,12 @@
         anchor: null,
     })
     const adjustPopoverRef = ref<HTMLElement | null>(null)
+
+    /** 额度调整口径选项(共/剩) */
+    const ADJUST_MODE_OPTIONS = [
+        { value: 'total', label: '共' },
+        { value: 'remaining', label: '剩' },
+    ]
 
     /** 弹窗下拉选项 */
     const providerSelectOptions = computed(() => {
@@ -1298,6 +1301,12 @@
         document.removeEventListener('keydown', onAdjustPopoverKeydown, true)
         window.removeEventListener('resize', onAdjustPopoverFollow)
         window.removeEventListener('scroll', onAdjustPopoverFollow, true)
+    }
+
+    /** 模式切换(GDDP 下拉回传)并预填输入(对齐原版 popover change 事件) */
+    function handleAdjustModeChange(mode: string | number): void {
+        adjustPopover.value.mode = mode === 'remaining' ? 'remaining' : 'total'
+        onAdjustModeChange()
     }
 
     /** 模式切换预填输入(对齐原版 popover change 事件) */

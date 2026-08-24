@@ -27,24 +27,8 @@
                 </div>
             </div>
 
-            <div class="knowledge-mgmt-tabs" role="tablist" aria-label="知识库分类">
-                <button
-                    class="knowledge-mgmt-tab"
-                    :class="{ active: tab === 'basis' }"
-                    type="button"
-                    role="tab"
-                    :aria-selected="tab === 'basis'"
-                    @click="tab = 'basis'"
-                >基础知识库</button>
-                <button
-                    class="knowledge-mgmt-tab"
-                    :class="{ active: tab === 'short' }"
-                    type="button"
-                    role="tab"
-                    :aria-selected="tab === 'short'"
-                    @click="tab = 'short'"
-                >短期记忆</button>
-            </div>
+            <!-- 基础知识库 / 短期记忆 分类切换(GDDP Tabs) -->
+            <Tabs v-model="tab" :tabs="KNOWLEDGE_TABS" class="knowledge-mgmt-tabs" />
 
             <!-- 基础知识库 -->
             <div v-show="tab === 'basis'" class="knowledge-mgmt-basis">
@@ -143,9 +127,9 @@
             </div>
         </div>
 
-        <!-- 添加/编辑基础知识模态框 -->
+        <!-- 添加/编辑基础知识模态框(自绘视觉,固定宽高:表单区滚动 + 底栏吸附) -->
         <div v-if="basisModalOpen" class="knowledge-mgmt-backdrop" @mousedown.self="closeModals">
-            <div class="knowledge-mgmt-modal" role="dialog" aria-modal="true">
+            <div class="knowledge-mgmt-modal is-fixed" role="dialog" aria-modal="true">
                 <div class="knowledge-mgmt-modal-head">
                     <h3>{{ basisModalTitle ? '编辑基础知识' : '添加基础知识' }}</h3>
                     <button class="knowledge-mgmt-modal-close" type="button" aria-label="关闭" @click="closeModals">
@@ -177,7 +161,7 @@
                         <a :href="basisShareUrl" target="_blank" rel="noopener noreferrer">{{ basisShareUrl }}</a>
                     </div>
 
-                    <div class="knowledge-mgmt-modal-footer">
+                    <div class="knowledge-mgmt-form-footer">
                         <button
                             v-if="basisModalTitle"
                             type="button"
@@ -192,7 +176,7 @@
             </div>
         </div>
 
-        <!-- 添加/编辑短期记忆模态框 -->
+        <!-- 添加/编辑短期记忆模态框(自绘视觉,高度自适应) -->
         <div v-if="shortModalOpen" class="knowledge-mgmt-backdrop" @mousedown.self="closeModals">
             <div class="knowledge-mgmt-modal" role="dialog" aria-modal="true">
                 <div class="knowledge-mgmt-modal-head">
@@ -216,7 +200,7 @@
                         <textarea v-model="shortForm.content" rows="6" placeholder="输入记忆内容" required></textarea>
                     </div>
 
-                    <div class="knowledge-mgmt-modal-footer">
+                    <div class="knowledge-mgmt-form-footer">
                         <button type="button" class="btn-cancel" @click="closeModals">取消</button>
                         <button type="submit" class="btn-primary">{{ shortModalTitle ? '保存' : '添加' }}</button>
                     </div>
@@ -246,6 +230,7 @@
     } from '@/api/knowledge'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import Tabs from '@/ui/Tabs.vue'
 
     const props = defineProps<{ open: boolean }>()
 
@@ -254,8 +239,14 @@
         'open-document': [title: string]
     }>()
 
-    /** 当前激活的分类标签 */
-    const tab = ref<'basis' | 'short'>('basis')
+    /** 当前激活的分类标签('basis' 基础知识库 | 'short' 短期记忆) */
+    const tab = ref('basis')
+
+    /** 分类标签配置(GDDP Tabs) */
+    const KNOWLEDGE_TABS = [
+        { value: 'basis', label: '基础知识库' },
+        { value: 'short', label: '短期记忆' },
+    ]
 
     /** 基础知识库列表 */
     const basisItems = ref<BasisKnowledgeItem[]>([])
@@ -578,33 +569,9 @@
         background: var(--color-bg-sunken);
     }
 
+    /* 分类切换(GDDP Tabs)与页头的布局间距 */
     .knowledge-mgmt-tabs {
-        display: flex;
-        gap: 8px;
         margin-bottom: 24px;
-        border-bottom: 1px solid var(--color-border);
-    }
-
-    .knowledge-mgmt-tab {
-        padding: 10px 16px;
-        border: none;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -1px;
-        background: transparent;
-        color: var(--color-text-secondary);
-        font-size: 14px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: color 0.15s ease;
-    }
-
-    .knowledge-mgmt-tab:hover {
-        color: var(--color-text-primary);
-    }
-
-    .knowledge-mgmt-tab.active {
-        color: var(--color-text-primary);
-        border-bottom-color: var(--color-text-primary);
     }
 
     .knowledge-mgmt-section-head {
@@ -881,6 +848,15 @@
         animation: knowledge-mgmt-slide-up 0.2s ease;
     }
 
+    /* 基础知识弹窗固定宽高:尺寸不随内容(如分享预览块)跳变,表单区滚动、底栏吸附 */
+    .knowledge-mgmt-modal.is-fixed {
+        width: min(92%, 560px);
+        height: min(640px, 88vh);
+        display: flex;
+        flex-direction: column;
+        overflow-y: hidden;
+    }
+
     @keyframes knowledge-mgmt-slide-up {
         from {
             transform: translateY(24px);
@@ -899,6 +875,7 @@
         justify-content: space-between;
         padding: 16px 20px;
         border-bottom: 1px solid var(--color-border);
+        flex: none;
     }
 
     .knowledge-mgmt-modal-head h3 {
@@ -927,6 +904,22 @@
 
     .knowledge-mgmt-modal-body {
         padding: 20px;
+    }
+
+    /* 固定宽高弹窗:表单区承担滚动,底栏常驻可视区 */
+    .knowledge-mgmt-modal.is-fixed .knowledge-mgmt-modal-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    .knowledge-mgmt-modal.is-fixed .knowledge-mgmt-form-footer {
+        position: sticky;
+        bottom: -20px;
+        margin: 16px -20px -21px;
+        padding: 12px 20px;
+        border-top: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
     }
 
     .knowledge-mgmt-form-group {
@@ -984,7 +977,7 @@
         word-break: break-all;
     }
 
-    .knowledge-mgmt-modal-footer {
+    .knowledge-mgmt-form-footer {
         display: flex;
         justify-content: flex-end;
         gap: 10px;
@@ -992,7 +985,7 @@
     }
 
     /* 公开协作开关的激活态(覆盖 GDDP btn-primary-outline hover 行为) */
-    .knowledge-mgmt-modal-footer .btn-primary-outline.is-active {
+    .knowledge-mgmt-form-footer .btn-primary-outline.is-active {
         border-color: var(--color-text-primary);
         color: var(--color-text-primary);
         background: var(--color-control-active);

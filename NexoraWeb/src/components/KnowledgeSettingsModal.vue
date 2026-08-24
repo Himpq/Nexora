@@ -3,6 +3,7 @@
 
     职责:
       - 复刻原版 4 个设置页:基础信息 / 共享协作 / 向量 / 记录
+      - 页签走 GDDP Tabs(对齐原版 admin-tab 下划线方案),弹窗固定宽高
       - 打开时读取当前知识元数据填充展示(标题 / 公开 / 协作 / 只读 / 最后修改时间 / 分享链接)
       - 具体功能占位:保存设置 / 复制链接 / 更新向量 / 删除向量 仅提示待接入,不调用后端
     样式:GDDP Modal 壳 + scoped 样式,不依赖原版全局 CSS
@@ -12,6 +13,7 @@
     <Modal
         :open="open"
         width="640px"
+        height="min(600px, 88vh)"
         modal-class="ks-modal"
         @close="close"
     >
@@ -22,10 +24,7 @@
             </div>
         </template>
 
-        <SettingSegmented
-            v-model="activeTab"
-            :options="tabs"
-        />
+        <Tabs v-model="activeTab" :tabs="tabs" class="ks-tabs" />
 
         <!-- 基础信息 -->
         <div v-show="activeTab === 'basic'" class="ks-pane">
@@ -115,7 +114,7 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
-    import SettingSegmented from '@/ui/settings/SettingSegmented.vue'
+    import Tabs from '@/ui/Tabs.vue'
 
     const props = defineProps<{
         open: boolean
@@ -128,7 +127,7 @@
 
     const userStore = useUserStore()
 
-    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 tab;复用 GDDP SettingSegmented) */
+    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 admin-tab 页签;走 GDDP Tabs) */
     const tabs = [
         { value: 'basic', label: '基础信息' },
         { value: 'share', label: '共享协作' },
@@ -240,10 +239,10 @@
         font-size: 12px;
     }
 
-    /* ---------- 页签(GDDP SettingSegmented 壳适配) ---------- */
+    /* ---------- 页签(GDDP Tabs,对齐原版 admin-tab 下划线方案) ---------- */
 
-    :deep(.setting-segmented) {
-        margin-bottom: 14px;
+    .ks-tabs {
+        margin-bottom: 18px;
     }
 
     /* ---------- 面板 ---------- */
