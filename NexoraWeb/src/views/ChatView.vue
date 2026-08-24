@@ -1762,12 +1762,6 @@
 
     /** 点击菜单外任意处关闭选区菜单(对齐原版 click 监听);移动端点击侧边栏外空白关闭抽屉 */
     function handleDocumentClick(event: MouseEvent): void {
-        const menu = document.querySelector('.notes-context-menu')
-
-        if (menu && menu.contains(event.target as Node)) {
-            return
-        }
-
         if (selectionMenuRef.value?.isOpen()) {
             selectionMenuRef.value.close()
         }

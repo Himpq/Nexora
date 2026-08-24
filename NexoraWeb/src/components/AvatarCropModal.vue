@@ -60,13 +60,16 @@
         <template #footer>
             <button type="button" class="g-btn g-btn-ghost" @click="emit('close')">取消</button>
             <button type="button" class="g-btn g-btn-ghost" @click="reset">重置</button>
-            <button type="button" class="g-btn g-btn-primary" :disabled="!image" @click="apply">应用</button>
+            <button type="button" class="g-btn g-btn-primary" :disabled="!hasImage" @click="apply">应用</button>
         </template>
     </Modal>
 </template>
 
 <script setup lang="ts">
     import { onMounted, ref } from 'vue'
+
+    /** 图片是否已加载(响应式,驱动"应用"按钮可用态;image 本身为非响应式实例,不进模板绑定) */
+    const hasImage = ref(false)
 
     import { showError } from '@/stores/notify'
 
@@ -122,6 +125,7 @@
         zoom.value = 1
         offsetX.value = 0
         offsetY.value = 0
+        hasImage.value = true
 
         draw()
     }
