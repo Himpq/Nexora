@@ -756,8 +756,8 @@
      * 思考行标题:流式中显示末段字符滚动窗口「思考中:…xxx」;
      * 其余状态(已完成/历史回放)显示「思考过程」。
      *
-     * 滚动窗口宽度自适应:按标题元素实际可用宽度测算可容纳字符(而非固定字符数),
-     * 且换行即把窗口起点重置到最后一个 \n 之后——输出跨行时不残留上一行尾部。
+     * 滚动窗口宽度自适应:按标题容器实际可用宽度测算可容纳字符(而非固定字符数),
+     * 窗口起点采用换行锚定 + 保底跨行的混合策略(见下方常量注释)。
      */
     function reasoningTitle(segment: MessageSegment, sourceIndex: number): string {
         if (!isLiveReasoning(sourceIndex)) {
@@ -767,9 +767,14 @@
         const raw = String(segment.text || '')
         const titlePrefix = '思考中：'
 
-        // 换行重置窗口起点:只展示最后一个 \n 之后的当前行,避免跨行残留旧段
+        // 窗口起点锚定的最小行长:当前行达到该长度才按换行锚定(不残留上一行),
+        // 否则保底跨行取增量尾部。真实思考文本几乎每两三个短句就换行,严格
+        // 「换行即清零」会让标题反复归零、大部分时间只剩最新分片的几个字符。
+        const MIN_ANCHOR_LINE = 14
+
         const lineStart = raw.lastIndexOf('\n') + 1
-        const line = raw.slice(lineStart)
+        const anchorStart = raw.length - lineStart >= MIN_ANCHOR_LINE ? lineStart : 0
+        const line = raw.slice(anchorStart)
 
         const titleEl = reasoningTitleEls.value[sourceIndex]
 
@@ -777,7 +782,7 @@
         if (!titleEl) {
             const fallbackCapacity = 26
             let fallbackTail = line
-            let fallbackEllipsis = lineStart > 0
+            let fallbackEllipsis = anchorStart > 0
 
             if (line.length > fallbackCapacity) {
                 fallbackTail = line.slice(-fallbackCapacity)
@@ -788,9 +793,15 @@
         }
 
         const font = getComputedStyle(titleEl).font
-        const availableWidth = Math.max(1, titleEl.clientWidth - reasoningTextWidth(titlePrefix, font))
+
+        // 宽度基准必须取父容器(.execution-flow-main 恒等于网格列宽,与文本无关):
+        // 标题 span 自身是内容自适应宽度(随已展示窗口文本伸缩),若以其 clientWidth
+        // 推算下一帧窗口会形成「文本→窗口→文本」自反馈回路,测量偏差在流式渲染中
+        // 逐帧累积,最终把窗口压缩成单字符。预留 2px 余量抵消亚像素取整误差。
+        const measureBase = titleEl.parentElement as HTMLElement
+        const availableWidth = Math.max(1, measureBase.clientWidth - reasoningTextWidth(titlePrefix, font) - 2)
         const { tail, truncated } = fitReasoningTail(line, availableWidth, font)
-        const showEllipsis = lineStart > 0 || truncated
+        const showEllipsis = anchorStart > 0 || truncated
 
         return `${titlePrefix}${showEllipsis ? '…' : ''}${tail}`
     }
