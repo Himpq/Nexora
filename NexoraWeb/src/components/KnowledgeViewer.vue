@@ -484,6 +484,9 @@
 
     .knowledge-collab-strip {
         display: flex;
+        /* 显式锁定横向:legacy/knowledge_collab.css 在 <=960px 会强制 column,
+           scoped 未声明该属性时会被其穿透,导致手机端成员条变成上下堆叠 */
+        flex-direction: row;
         align-items: center;
         flex-wrap: wrap;
         gap: 8px;
