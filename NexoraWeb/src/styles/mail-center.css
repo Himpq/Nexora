@@ -211,7 +211,7 @@
 }
 
 .mail-list-item:hover {
-    background: #f7f9fc;
+    background: var(--color-bg-hover);
 }
 
 /* 未读红点(对齐原版 .mail-unread-dot:红色 + 淡红光晕;仅未读渲染,已读无点) */
@@ -392,7 +392,7 @@
 .mail-center-guide {
     border: 1px solid var(--color-border);
     border-radius: 12px;
-    background: #f9fafb;
+    background: var(--color-bg-sunken);
     padding: 34px 28px;
     text-align: center;
 }
@@ -427,7 +427,7 @@
 .mail-center-guide code {
     padding: 1px 6px;
     border-radius: 6px;
-    background: #eef1f6;
+    background: var(--color-bg-elevated);
     color: var(--color-text-secondary);
     font-size: 12px;
 }

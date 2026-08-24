@@ -393,7 +393,7 @@
         justify-content: center;
         width: 28px;
         height: 28px;
-        border: 1px solid #d1d5db;
+        border: 1px solid var(--color-border-input);
         border-radius: 6px;
         background: var(--color-bg-elevated);
         color: var(--color-text-secondary);
@@ -436,8 +436,8 @@
         width: 32px;
         height: 32px;
         border-radius: 8px;
-        background: #e0f2fe;
-        color: #0369a1;
+        background: var(--color-accent-surface);
+        color: var(--color-accent-text);
         font-size: 13px;
     }
 
@@ -513,7 +513,7 @@
     }
 
     .np-action:hover {
-        border-color: #d1d5db;
+        border-color: var(--color-border-input);
         background: var(--color-bg-hover);
         color: var(--color-text-primary);
     }

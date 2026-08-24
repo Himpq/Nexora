@@ -42,7 +42,7 @@
     top: 18px;
     bottom: -10px;
     width: 1px;
-    background: #e5e7eb;
+    background: var(--color-border);
 }
 
 /* 连接线在最后一个流程行/后随正文等位置截断 */
@@ -126,7 +126,7 @@
     display: none;
     min-width: 0;
     margin: 0;
-    color: #8a97a8;
+    color: var(--color-text-secondary);
     font-size: 12px;
     font-weight: 500;
     line-height: 1.45;
@@ -144,7 +144,7 @@
     width: 12px;
     height: 12px;
     margin: 0;
-    color: #c0c7d1;
+    color: var(--color-text-secondary);
     opacity: 0;
     transition: transform 0.18s ease, color 0.18s ease;
 }
@@ -167,7 +167,7 @@
     width: 12px;
     height: 12px;
     margin: 0;
-    color: #c0c7d1;
+    color: var(--color-text-secondary);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -218,7 +218,7 @@
     margin-bottom: 8px;
     padding-top: 12px;
     padding-bottom: 12px;
-    border-color: #eceff3;
+    border-color: var(--color-border);
     border-top-width: 1px;
     border-bottom-width: 1px;
     opacity: 1;
@@ -245,7 +245,7 @@
     display: none;
     margin: 7px 8px 8px 18px;
     padding: 12px 14px;
-    border-left: 1px solid #eceff3;
+    border-left: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-bg-elevated);
     color: var(--color-text-secondary);

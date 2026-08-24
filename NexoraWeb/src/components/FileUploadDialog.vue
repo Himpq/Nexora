@@ -766,7 +766,7 @@
         padding: 14px;
         border: 1px solid var(--color-border);
         border-radius: 12px;
-        background: #fbfcfe;
+        background: var(--color-bg-sunken);
     }
 
     .fud-live-status {
@@ -784,7 +784,7 @@
         min-width: 0;
         height: 34px;
         padding: 0 10px;
-        border: 1px solid #e5e9f0;
+        border: 1px solid var(--color-border-input);
         border-radius: 8px;
         background: var(--color-bg-elevated);
         color: var(--color-text-primary);

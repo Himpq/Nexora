@@ -1108,7 +1108,7 @@
     top: -2px;
     bottom: -2px;
     width: 2px;
-    background: #334155;
+    background: var(--color-border-strong);
     opacity: 0.9;
 }
 

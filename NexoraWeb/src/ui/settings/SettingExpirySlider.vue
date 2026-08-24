@@ -131,12 +131,13 @@
         border-radius: 2px;
         outline: none;
         cursor: pointer;
+        /* 已走过部分用「墨色」令牌(亮色深/暗色浅自动翻转), 未走过为控件轨道色 */
         background: linear-gradient(
             to right,
-            #111111 0,
-            #111111 var(--settings-expiry-progress),
-            #dbe2ea var(--settings-expiry-progress),
-            #dbe2ea 100%
+            var(--color-text-primary) 0,
+            var(--color-text-primary) var(--settings-expiry-progress),
+            var(--color-control-track) var(--settings-expiry-progress),
+            var(--color-control-track) 100%
         );
     }
 

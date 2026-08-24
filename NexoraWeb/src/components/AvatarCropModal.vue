@@ -359,7 +359,7 @@
         min-width: 0;
         min-height: 360px;
         overflow: hidden;
-        border: 1px solid #d6deea;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         background: #9ca3af;
     }
@@ -423,7 +423,7 @@
         width: 140px;
         height: 140px;
         border-radius: 999px;
-        border: 1px solid #dbeafe;
+        border: 1px solid var(--color-accent-border);
         background: var(--color-bg-elevated);
     }
 
