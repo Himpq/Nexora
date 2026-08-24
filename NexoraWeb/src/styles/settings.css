@@ -2227,6 +2227,13 @@
         transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
+    /* 设置窗打开期间隐藏移动端侧栏抽屉(legacy 给 .sidebar 强制 z-index:7600!important
+       高于弹窗层级,会整条盖住设置窗;html 前缀抬高特异性压过同权重 !important) */
+    html body.settings-modal-open .sidebar {
+        visibility: hidden !important;
+        pointer-events: none !important;
+    }
+
     /* 二级页顶部返回条(仅手机端显示) */
     .settings-mobile-back {
         display: inline-flex;
@@ -2338,21 +2345,6 @@
     }
 }
 
-.settings-modal-shell ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-}
-
-.settings-modal-shell ::-webkit-scrollbar-thumb {
-    background: #d9d9d9;
-    border-radius: 4px;
-}
-
-.settings-modal-shell ::-webkit-scrollbar-thumb:hover {
-    background: #c4c4c4;
-}
-
-.settings-modal-shell ::-webkit-scrollbar-track {
-    background: transparent;
-}
+/* 滚动条视觉回归全局 scrollbar.css 统一规则(令牌化随主题切换);
+   此前此处硬编码亮色 thumb 导致暗色模式下设置窗滚动条风格不统一 */
 

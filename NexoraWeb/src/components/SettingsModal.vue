@@ -537,10 +537,13 @@
     }
 
 
-    /** 打开时重置到个人资料页(手机端回到一级分类页) */
+    /** 打开时重置到个人资料页(手机端回到一级分类页);同时收起移动端侧栏抽屉 */
     watch(
         () => props.open,
         (opened) => {
+            // 设置窗打开期间隐藏移动端侧栏(legacy 抽屉 z 7600 高于弹窗 4400,会盖住设置窗)
+            document.body.classList.toggle('settings-modal-open', opened)
+
             if (opened) {
                 onTabSelect('profile')
                 mobileLevel.value = 1
@@ -553,5 +556,10 @@
             }
         }
     )
+
+    onBeforeUnmount(() => {
+        // 组件卸载时兜底移除标记,避免侧栏被永久隐藏
+        document.body.classList.remove('settings-modal-open')
+    })
 
 </script>
