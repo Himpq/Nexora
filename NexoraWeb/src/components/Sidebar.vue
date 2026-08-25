@@ -105,9 +105,7 @@
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
-            :armed="contextMenu.armed"
-            :x="contextMenu.x"
-            :y="contextMenu.y"
+            ref="contextMenuRef"
             target-type="conversation"
             :conversation-id="contextMenu.conversationId"
             :title="contextMenu.title"
@@ -163,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, ref } from 'vue'
 
     import { useRouter } from 'vue-router'
 
@@ -229,7 +227,7 @@
 
     /** 会话是否正在生成(原版 is-streaming 类) */
     function isStreamingItem(conversationId: string): boolean {
-        return store.generating && conversationId === store.currentId
+        return store.generating && conversationId === store.streamingConversationId
     }
 
     /** 是否为可见分支会话(有分支信息且非孤儿;对齐原版 visibleBranch) */
@@ -278,13 +276,6 @@
     }
 
     async function handleNewChat(): Promise<void> {
-        // 生成中禁止新建会话:避免流式文本写入错误会话
-        if (store.generating) {
-            showToast('回复生成中,请先停止再新建会话', 'warning')
-
-            return
-        }
-
         // New Chat 语义为回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
         emit('open-chat')
 
@@ -296,13 +287,6 @@
     }
 
     async function handleOpen(conversationId: string): Promise<void> {
-        // 生成中禁止切换会话:流式文本会写入错误会话
-        if (store.generating) {
-            showToast('回复生成中,请先停止再切换会话', 'warning')
-
-            return
-        }
-
         // 点击会话 = 回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
         emit('open-chat')
 
@@ -353,38 +337,24 @@
         }
 
         contextMenu.value = {
-            x: event.clientX,
-            y: event.clientY,
             conversationId: item.id,
             title: item.title,
             pinned: isPinned(item.id),
             branch: readBranch(item) || undefined,
-            armed: true,
         }
 
-        openPopover('context-menu')
+        contextMenuRef.value?.open(event.clientX, event.clientY)
     }
 
-    /** 右键菜单位置与目标会话 */
+    /** 会话右键菜单目标(坐标经 open(x, y) 传入,不进状态) */
     const contextMenu = ref({
-        x: 0,
-        y: 0,
         conversationId: '',
         title: '',
         pinned: false,
         branch: undefined as ConversationBranch | undefined,
-        armed: false,
     })
 
-    /** 菜单被关闭(外部点击/操作完成)时解除武装,避免与其他右键菜单冲突 */
-    watch(
-        () => overlay.popover,
-        (popover) => {
-            if (popover !== 'context-menu') {
-                contextMenu.value.armed = false
-            }
-        }
-    )
+    const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 置顶状态变化:本地更新并重排 */
     function handlePinChanged(targetType: string, id: string, pinned: boolean): void {
@@ -404,9 +374,12 @@
     }
 
     async function handleLogout(): Promise<void> {
-        await userStore.logout()
-
-        await router.replace('/login')
+        // 跳转放在 finally:无论登出接口结果如何都必须离开聊天视图
+        try {
+            await userStore.logout()
+        } finally {
+            await router.replace('/login')
+        }
     }
 
     /** 切换用户菜单(由浮层协调器统一管理打开/外部关闭/互斥) */

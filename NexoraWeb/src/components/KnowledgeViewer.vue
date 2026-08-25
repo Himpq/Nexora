@@ -6,7 +6,7 @@
       - 图片上传(知识库 API:allocate → upload → 占位替换)
       - 在线协作(迁移路线第 3 阶段):metadata 满足 public+collaborative 时
         通过 src/stream/knowledge-collab.ts 建立 ws 连接,渲染成员条 + 远程光标 + 离线遮罩
-      - 保存与向量化以 expose 暴露,供后续工具栏功能接入(顶栏已不再承载)
+      - 保存:工具栏「保存」按钮 + Ctrl/Cmd+S(无自动保存,需显式提交);向量化经 expose 供后续接入
     编辑器内核、工具栏、视图模式、全屏、布局修正均由 MarkdownEditor 自包含管理
 -->
 
@@ -39,13 +39,14 @@
             placeholder="开始编写知识库正文…"
             @change="handleEditorChange"
             @image-files="handleImageFiles"
+            @save="handleSave"
             @settings="emit('open-settings')"
         />
     </section>
 </template>
 
 <script setup lang="ts">
-    import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+    import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import MarkdownEditor from '@/ui/editor/MarkdownEditor.vue'
     import {
@@ -120,9 +121,32 @@
     )
 
     onBeforeUnmount(() => {
+        window.removeEventListener('keydown', handleGlobalKeydown)
         stopCollab()
         viewerCleanupFns.forEach((cleanup) => cleanup())
         viewerCleanupFns = []
+    })
+
+    /** 工具栏「保存」按钮:显式提交正文 */
+    function handleSave(): void {
+        void save()
+    }
+
+    /** Ctrl/Cmd+S 保存(仅知识库视图打开且有目标标题时拦截浏览器的"另存为") */
+    function handleGlobalKeydown(event: KeyboardEvent): void {
+        if (!props.open || !props.title) {
+            return
+        }
+
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+            event.preventDefault()
+
+            void save()
+        }
+    }
+
+    onMounted(() => {
+        window.addEventListener('keydown', handleGlobalKeydown)
     })
 
     /** 加载知识正文(就绪后渲染编辑器,再按 metadata 决定是否启动协作) */
@@ -453,22 +477,25 @@
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     /* ---------- 在线协作成员条 ---------- */
 
     .knowledge-collab-strip {
         display: flex;
+        /* 显式锁定横向:legacy/knowledge_collab.css 在 <=960px 会强制 column,
+           scoped 未声明该属性时会被其穿透,导致手机端成员条变成上下堆叠 */
+        flex-direction: row;
         align-items: center;
         flex-wrap: wrap;
         gap: 8px;
         flex-shrink: 0;
         min-height: 28px;
         padding: 6px 10px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #fff;
-        color: #475569;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -495,23 +522,23 @@
     .knowledge-collab-status {
         padding: 3px 8px;
         border-radius: 999px;
-        background: #f1f5f9;
-        color: #475569;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
     }
 
     .knowledge-collab-status.is-ok {
-        background: #ecfdf5;
-        color: #047857;
+        background: var(--color-success-surface);
+        color: var(--color-success-text);
     }
 
     .knowledge-collab-status.is-saving {
-        background: #fffbeb;
-        color: #b45309;
+        background: var(--color-warning-surface);
+        color: var(--color-warning-text);
     }
 
     .knowledge-collab-status.is-error {
-        background: #fff1f2;
-        color: #be123c;
+        background: var(--color-danger-surface);
+        color: var(--color-danger-text);
     }
 
     .knowledge-collab-member {
@@ -520,10 +547,10 @@
         gap: 6px;
         max-width: 220px;
         padding: 5px 8px;
-        border: 1px solid #dbe2ea;
+        border: 1px solid var(--color-border);
         border-radius: 999px;
-        background: #ffffff;
-        color: #334155;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         line-height: 1;
         white-space: nowrap;
     }
@@ -541,13 +568,13 @@
     }
 
     .knowledge-collab-cursor {
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-variant-numeric: tabular-nums;
     }
 
     .knowledge-collab-member.is-self {
-        border-color: #93c5fd;
-        background: #eff6ff;
-        color: #1d4ed8;
+        border-color: var(--color-accent-border);
+        background: var(--color-accent-surface);
+        color: var(--color-accent-text);
     }
 </style>

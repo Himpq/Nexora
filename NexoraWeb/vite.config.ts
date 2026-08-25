@@ -40,6 +40,11 @@ export default defineConfig(({ command }) => ({
                 target: 'http://127.0.0.1:5000',
                 changeOrigin: true,
             },
+            // vendor 资产(字体/图标/高亮主题)仍由 Flask /static 托管,dev 下代理保证与构建产物一致
+            '/static/vendor': {
+                target: 'http://127.0.0.1:5000',
+                changeOrigin: true,
+            },
         },
     },
 }))

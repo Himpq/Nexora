@@ -192,8 +192,9 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
     import * as echarts from 'echarts'
+    import { chartPalette, echartsTheme, theme } from '@/ui/theme'
 
     import type { AdminUser } from '@/api/admin-users'
     import { listAdminUsers } from '@/api/admin-users'
@@ -263,6 +264,14 @@
         void loadAll()
     })
 
+    /*
+     * 主题切换时重建全部图表:echarts canvas 不响应 CSS 令牌,
+     * 旧实例配色会滞留;dispose 后按新主题重新 init 是唯一正确路径。
+     */
+    watch(() => theme.resolved, () => {
+        void loadAll()
+    })
+
     onBeforeUnmount(() => {
         trendChart?.dispose()
         toolChart?.dispose()
@@ -299,18 +308,19 @@
 
             if (trendChartRef.value) {
                 trendChart?.dispose()
-                trendChart = echarts.init(trendChartRef.value)
+                trendChart = echarts.init(trendChartRef.value, echartsTheme())
 
                 trendChart.setOption({
-                    grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
+                    
+                    backgroundColor: 'transparent',grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
                     tooltip: { trigger: 'axis', confine: true },
-                    legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: '#7a7a7a' } },
-                    xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: '#e2e2e2' } }, axisLabel: { fontSize: 10, color: '#999' } },
-                    yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
+                    legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: chartPalette.value.muted } },
+                    xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
                     series: [
                         { name: '输入', type: 'line', smooth: true, showSymbol: false, data: data.series.input_tokens, lineStyle: { width: 2, color: '#8b95a7' }, itemStyle: { color: '#8b95a7' } },
                         { name: '输出', type: 'line', smooth: true, showSymbol: false, data: data.series.output_tokens, lineStyle: { width: 2, color: '#4f46e5' }, itemStyle: { color: '#4f46e5' } },
-                        { name: '总', type: 'line', smooth: true, showSymbol: false, data: data.series.total_tokens, lineStyle: { width: 2, color: '#111111' }, itemStyle: { color: '#111111' } },
+                        { name: '总', type: 'line', smooth: true, showSymbol: false, data: data.series.total_tokens, lineStyle: { width: 2, color: chartPalette.value.text }, itemStyle: { color: chartPalette.value.text } },
                     ],
                 })
             }
@@ -427,16 +437,17 @@
 
             if (toolChartRef.value) {
                 toolChart?.dispose()
-                toolChart = echarts.init(toolChartRef.value)
+                toolChart = echarts.init(toolChartRef.value, echartsTheme())
 
                 toolChart.setOption({
-                    grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
+                    
+                    backgroundColor: 'transparent',grid: { left: 12, right: 12, top: 28, bottom: 8, containLabel: true },
                     tooltip: { trigger: 'axis', confine: true },
-                    legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: '#7a7a7a' } },
-                    xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: '#e2e2e2' } }, axisLabel: { fontSize: 10, color: '#999' } },
-                    yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } }, axisLabel: { fontSize: 10, color: '#999' } },
+                    legend: { top: 0, itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: chartPalette.value.muted } },
+                    xAxis: { type: 'category', data: data.labels, axisLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: chartPalette.value.lineSplit } }, axisLabel: { fontSize: 10, color: chartPalette.value.muted } },
                     series: [
-                        { name: '调用', type: 'bar', barMaxWidth: 14, data: data.series.map((row) => row.calls), itemStyle: { color: '#111111', borderRadius: [3, 3, 0, 0] } },
+                        { name: '调用', type: 'bar', barMaxWidth: 14, data: data.series.map((row) => row.calls), itemStyle: { color: chartPalette.value.text, borderRadius: [3, 3, 0, 0] } },
                         { name: '错误', type: 'bar', barMaxWidth: 14, data: data.series.map((row) => row.errors), itemStyle: { color: '#e0a0a0', borderRadius: [3, 3, 0, 0] } },
                     ],
                 })
@@ -476,9 +487,9 @@
     }
 
     .admin-token-trend-card {
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         padding: 16px;
     }
 
@@ -494,17 +505,23 @@
         margin: 0;
         font-size: 13.5px;
         font-weight: 650;
-        color: #111111;
+        color: var(--color-text-primary);
     }
 
     .admin-token-trend-meta {
         font-size: 11.5px;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     .admin-token-trend-chart {
         width: 100%;
         height: 220px;
+        /*
+         * 覆盖 legacy 全局的白色渐变底(style.css: linear-gradient(#fbfdff→#ffffff)):
+         * 画布 backgroundColor 为 transparent,不覆盖时暗色模式下透出白色渐变。
+         * 直接露出卡片令牌底色,明暗主题自适应。
+         */
+        background: transparent;
     }
 
     .admin-token-trend-top {
@@ -519,11 +536,11 @@
         align-items: center;
         gap: 6px;
         padding: 3px 10px;
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 999px;
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         font-size: 11.5px;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         max-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -531,17 +548,17 @@
     }
 
     .trend-top-chip b {
-        color: #111111;
+        color: var(--color-text-primary);
         font-variant-numeric: tabular-nums;
     }
 
     .trend-top-chip.danger {
-        border-color: #f0c4c4;
-        color: #b03a2e;
+        border-color: var(--color-danger-border);
+        color: var(--color-danger-text);
     }
 
     .trend-top-chip.danger b {
-        color: #b03a2e;
+        color: var(--color-danger-text);
     }
 
     /* 单用户查询 */
@@ -572,13 +589,13 @@
         border: none;
         border-radius: 50%;
         background: transparent;
-        color: #999999;
+        color: var(--color-text-secondary);
         cursor: pointer;
     }
 
     .admin-user-token-clear:hover {
-        background: #f1f1f1;
-        color: #111111;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .admin-user-token-menu {
@@ -590,9 +607,9 @@
         max-height: 220px;
         overflow-y: auto;
         padding: 4px;
-        border: 1px solid #e2e2e2;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--color-bg-elevated);
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
     }
 
@@ -606,7 +623,7 @@
         border-radius: 6px;
         background: transparent;
         font-size: 12.5px;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         text-align: left;
         cursor: pointer;
     }
@@ -619,8 +636,8 @@
         align-items: center;
         justify-content: center;
         border-radius: 50%;
-        background: #f1f1f1;
-        color: #7a7a7a;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
         font-size: 11px;
         overflow: hidden;
     }
@@ -643,7 +660,7 @@
     .admin-user-token-name {
         font-size: 12.5px;
         font-weight: 550;
-        color: #222222;
+        color: var(--color-text-primary);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -651,22 +668,22 @@
 
     .admin-user-token-handle {
         font-size: 11px;
-        color: #999999;
+        color: var(--color-text-secondary);
         font-variant-numeric: tabular-nums;
     }
 
     .admin-user-token-menu button:hover {
-        background: #f1f1f1;
-        color: #111111;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .admin-user-token-menu button.is-active {
-        background: #f1f1f1;
-        color: #111111;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .admin-user-token-menu button span {
-        color: #999999;
+        color: var(--color-text-secondary);
         font-size: 11px;
     }
 
@@ -678,7 +695,7 @@
     }
 
     .admin-user-token-recent-wrap {
-        border: 1px solid #eeeeee;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
         overflow: hidden;
     }
@@ -693,14 +710,14 @@
     .admin-user-token-recent-table td {
         padding: 8px 12px;
         text-align: left;
-        border-bottom: 1px solid #f4f4f4;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .admin-user-token-recent-table th {
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         font-size: 11.5px;
         font-weight: 600;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
     }
 
     .admin-user-token-recent-table tr:last-child td {
@@ -716,7 +733,7 @@
     }
 
     .admin-user-token-top-block {
-        border: 1px solid #eeeeee;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
         padding: 10px 12px;
         min-width: 0;
@@ -725,7 +742,7 @@
     .admin-user-token-top-title {
         font-size: 11.5px;
         font-weight: 650;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         margin-bottom: 6px;
     }
 
@@ -741,7 +758,7 @@
         justify-content: space-between;
         gap: 10px;
         font-size: 12px;
-        color: #3c3c3c;
+        color: var(--color-text-secondary);
         min-width: 0;
     }
 
@@ -753,13 +770,13 @@
 
     .admin-user-token-top-row .mono {
         flex: none;
-        color: #111111;
+        color: var(--color-text-primary);
         font-variant-numeric: tabular-nums;
     }
 
     .admin-user-token-top-empty {
         font-size: 12px;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     /* Tool 观测 */

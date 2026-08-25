@@ -142,12 +142,12 @@
 
     .chroma-search-hint {
         font-size: 12px;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
         margin-bottom: 8px;
     }
 
     .admin-table-wrapper {
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         overflow: hidden;
     }
@@ -162,14 +162,14 @@
     .admin-table td {
         padding: 10px 14px;
         text-align: left;
-        border-bottom: 1px solid #f4f4f4;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .admin-table th {
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         font-size: 12px;
         font-weight: 600;
-        color: #7a7a7a;
+        color: var(--color-text-secondary);
     }
 
     .admin-table tr:last-child td {

@@ -85,16 +85,13 @@
             </div>
         </div>
 
-        <!-- 知识库右键菜单(置顶/解除置顶 + 归入工作区,保留面板打开;popoverId 与会话菜单互斥) -->
+        <!-- 知识库右键菜单(置顶/解除置顶 + 归入工作区,保留面板打开)
+             常驻渲染(与 Sidebar 一致);目标经 menuItem 传入,坐标经 open(x, y) 传入 -->
         <ContextMenu
-            v-if="menuItem"
-            :armed="!!menuItem"
-            :x="menuX"
-            :y="menuY"
-            popover-id="context-menu-knowledge"
+            ref="contextMenuRef"
             target-type="knowledge_basis"
-            :title="menuItem.title"
-            :pinned="!!menuItem.pin"
+            :title="menuItem?.title || ''"
+            :pinned="!!menuItem?.pin"
             keep-panel
             @pin-changed="handleKnowledgePinChanged"
             @request-delete-basis="handleRequestDeleteBasis"
@@ -116,7 +113,7 @@
     import Button from '@/ui/Button.vue'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
-    import { openPopover, overlay, registerPanel } from '@/ui/overlay'
+    import { registerPanel } from '@/ui/overlay'
 
     import ContextMenu from './ContextMenu.vue'
 
@@ -135,10 +132,10 @@
     const vectorizing = ref(false)
     const panelRef = ref<HTMLElement | null>(null)
 
-    /** 右键菜单位置与目标知识库 */
-    const menuX = ref(0)
-    const menuY = ref(0)
+    /** 右键菜单目标知识库(坐标经 open(x, y) 传入,不进状态) */
     const menuItem = ref<KnowledgeItem | null>(null)
+
+    const contextMenuRef = ref<InstanceType<typeof ContextMenu> | null>(null)
 
     /** 按关键词过滤知识库列表;置顶项排前(对齐原版 sortKnowledgeList) */
     const filteredItems = computed(() => {
@@ -157,16 +154,6 @@
                 return 0
             })
     })
-
-    /** 菜单被关闭(外部点击/操作完成)时清空目标;与其他菜单以不同 popoverId 互斥 */
-    watch(
-        () => overlay.popover,
-        (popover) => {
-            if (popover !== 'context-menu-knowledge') {
-                menuItem.value = null
-            }
-        }
-    )
 
     /** 注册右侧栏到浮层协调器:点击外部自动关闭(含触发按钮豁免) */
     onMounted(() => {
@@ -205,9 +192,8 @@
     /** 打开知识库右键菜单(保留面板打开,对齐原版 showPinContextMenu + targetType=knowledge_basis) */
     function openContextMenu(event: MouseEvent, item: KnowledgeItem): void {
         menuItem.value = item
-        menuX.value = event.clientX
-        menuY.value = event.clientY
-        openPopover('context-menu-knowledge', null, { keepPanel: true })
+
+        contextMenuRef.value?.open(event.clientX, event.clientY)
     }
 
     /** 知识库置顶状态变化:本地更新 pin 并触发排序(对齐原版 setBasisPinLocal) */
@@ -319,7 +305,7 @@
 
     .knowledge-panel-heading h3 {
         margin: 0 0 10px;
-        color: #18181b;
+        color: var(--color-text-primary);
         font-size: 14px;
         font-weight: 600;
     }
@@ -331,7 +317,7 @@
     }
 
     .k-search > i {
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 12px;
         flex: none;
     }
@@ -341,17 +327,17 @@
         min-width: 0;
         height: var(--gddp-control-height-compact);
         padding: 0 8px;
-        border: 1px solid #dbe2ea;
+        border: 1px solid var(--color-border);
         border-radius: var(--gddp-border-radius);
         outline: none;
-        color: #111827;
+        color: var(--color-text-primary);
         font-size: 12px;
         box-sizing: border-box;
         transition: border-color 0.15s ease;
     }
 
     .k-search input:focus {
-        border-color: #111827;
+        border-color: var(--color-text-primary);
     }
 
     .k-actions {
@@ -363,8 +349,8 @@
 
     .k-actions :deep(.gddp-button:hover),
     .k-section-actions :deep(.gddp-button:hover) {
-        background: #f4f4f5;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .k-section-title {
@@ -382,8 +368,8 @@
     .k-count {
         padding: 1px 7px;
         border-radius: 999px;
-        background: #ececee;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
         font-size: 11px;
         font-weight: 600;
     }
@@ -396,12 +382,12 @@
 
     .k-list {
         font-size: 13px;
-        color: #444;
+        color: var(--color-text-secondary);
     }
 
     .k-list-empty {
         padding: 20px 0;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
         text-align: center;
     }
@@ -413,9 +399,9 @@
         width: 100%;
         padding: 9px 8px;
         border: 0;
-        border-bottom: 1px solid #f1f5f9;
+        border-bottom: 1px solid var(--color-border);
         background: transparent;
-        color: #475569;
+        color: var(--color-text-secondary);
         text-align: left;
         font-size: 13px;
         cursor: pointer;
@@ -424,18 +410,18 @@
 
     .knowledge-item > .fa-book {
         flex: none;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
     .knowledge-item:hover {
-        background: #f4f4f5;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
     }
 
     .knowledge-item.active {
-        background: #ececee;
-        color: #18181b;
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
         font-weight: 600;
     }
 

@@ -1526,12 +1526,24 @@ def _build_map_provider_config_payload(cfg: Dict[str, Any], include_admin_config
 
     active_provider_ready = provider_status.get(provider, {}).get('ready') if provider in provider_status else False
 
+    # 前端地图渲染器所需配置(与旧版 chat.html 注入 window.NEXORA_MAP_RENDERER_CONFIG 一致):
+    # browser_ak/browser_tk 本身就是面向浏览器侧的访问键,旧版已对登录用户全量下发。
+    baidu_map_cfg = map_cfg.get('baidu', {}) if isinstance(map_cfg.get('baidu'), dict) else {}
+    tianditu_map_cfg = map_cfg.get('tianditu', {}) if isinstance(map_cfg.get('tianditu'), dict) else {}
+
     return {
         'provider': provider,
         'provider_ready': bool(active_provider_ready),
         'config_errors': config_errors,
         'supported_providers': list(SUPPORTED_MAP_PROVIDERS),
         'providers': provider_status,
+        'map_renderer_config': {
+            'provider': provider or 'baidu',
+            'baiduMapAk': str(baidu_map_cfg.get('browser_ak') or '').strip(),
+            'baiduMapVersion': str(baidu_map_cfg.get('browser_version') or '1.0').strip() or '1.0',
+            'tiandituMapTk': str(tianditu_map_cfg.get('browser_tk') or tianditu_map_cfg.get('tk') or '').strip(),
+            'tiandituMapVersion': str(tianditu_map_cfg.get('browser_version') or '4.0').strip() or '4.0'
+        },
         'history_policy': {
             'mode': 'scene_provider_pinned',
             'summary': '历史地图记录保留 scene.provider，新默认 provider 只影响之后生成的地图。',
@@ -6691,9 +6703,9 @@ def js_bundle(bundle_name):
 
 @app.route('/')
 def index():
-    """首页：未登录展示 Landing，已登录进入聊天"""
+    """首页：未登录展示 Landing，已登录进入新版聊天前端(/new)；旧版完整界面保留在 /old"""
     if 'username' in session:
-        return redirect(url_for('chat', **request.args))
+        return redirect(url_for('new_frontend_page', **request.args))
 
     return render_template('public_site/landing.html')
 
@@ -6756,17 +6768,17 @@ def favicon():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """登录页面"""
+    """登录入口:GET 一律进入新版前端(登录页由 /new#/login 渲染,POST 仍由本路由处理)"""
     if request.method == 'GET':
         if 'username' in session:
             try:
                 users = load_users()
                 if session.get('username') in users:
-                    return redirect(url_for('chat'))
+                    return redirect('/new')
             except Exception:
                 pass
             session.clear()
-        return render_template('login.html')
+        return redirect('/new')
     
     # POST - 处理登录
     data = request.get_json() or {}
@@ -10266,7 +10278,15 @@ def admin_chroma_stats():
 
 @app.route('/chat')
 def chat():
-    """聊天页面"""
+    """聊天入口:已迁移至新版前端;旧版完整界面保留在 /old 作为回退"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return redirect('/new')
+
+
+@app.route('/old')
+def legacy_chat():
+    """旧版聊天页(回退入口):与原 /chat 完全一致,供新旧并行期使用"""
     if 'username' not in session:
         return redirect(url_for('login'))
     try:
@@ -13264,7 +13284,9 @@ def admin_upsert_provider(target_provider=None):
             existing_provider = {}
 
         provider_record = dict(existing_provider)
-        provider_record['api_key'] = str(api_key)
+        # API Key 留空表示保持不变:仅当提交了非空 key 时才覆盖,避免编辑时误清空已存密钥
+        if api_key:
+            provider_record['api_key'] = str(api_key)
         provider_record['base_url'] = str(base_url)
         provider_record['api_type'] = api_type or 'openai'
         if user_agent:
@@ -18064,7 +18086,12 @@ def new_frontend_page():
 
     try:
         with open(new_index, 'r', encoding='utf-8') as f:
-            return Response(f.read(), mimetype='text/html')
+            resp = Response(f.read(), mimetype='text/html')
+
+            # 入口页禁止缓存:产物文件名带 hash,但 index.html 若被缓存会引用已不存在的旧资产
+            resp.headers['Cache-Control'] = 'no-cache'
+
+            return resp
     except Exception:
         return jsonify({'success': False, 'message': '新前端尚未构建,请先执行前端构建'}), 404
 

@@ -125,7 +125,7 @@
         --bg-left: #000000;
         --bg-right: #ffffff;
         --text-main: #1a1a1a;
-        --border: #eeeeee;
+        --border: var(--color-border);
     }
 
     .login-wrapper {
@@ -133,7 +133,7 @@
         height: 100vh;
         width: 100%;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .login-left {
@@ -163,7 +163,7 @@
         gap: 14px;
     }
 
-    .big-logo {
+        .big-logo {
         font-size: 84px;
         font-weight: 700;
         color: #fff;
@@ -172,11 +172,51 @@
         align-items: baseline;
         z-index: 10;
         text-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        /* 品牌入场:上浮 + 模糊消散(复刻原版 fadeInLogo) */
+        animation: fade-in-logo 1.2s ease-out;
+    }
+
+    @keyframes fade-in-logo {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+            filter: blur(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+            filter: blur(0);
+        }
     }
 
     .big-logo .dot {
         color: #444;
         margin-left: 4px;
+    }
+
+    /* 点号多阶段循环(. → .. → ... → ...? → 空,复刻原版 multiPhaseDots) */
+    .big-logo .dot::after {
+        content: '.';
+        display: inline-block;
+        animation: multi-phase-dots 4.5s infinite;
+    }
+
+    @keyframes multi-phase-dots {
+        0%   { content: '.'; opacity: 1; }
+        5%   { content: '.'; opacity: 0; }
+        10%  { content: '.'; opacity: 1; }
+        15%  { content: '.'; opacity: 0; }
+        20%  { content: '.'; opacity: 1; }
+        22%  { content: '.'; opacity: 1; }
+        33%  { content: '..'; opacity: 1; }
+        44%  { content: '...'; opacity: 1; }
+        55%  { content: '...?'; opacity: 1; }
+        77%  { content: '...?'; opacity: 1; }
+        80%  { content: '..'; opacity: 1; }
+        85%  { content: '.'; opacity: 1; }
+        90%  { content: ''; opacity: 1; }
+        100% { content: '.'; opacity: 1; }
     }
 
     .login-right {
@@ -185,12 +225,26 @@
         align-items: center;
         justify-content: center;
         padding: 40px;
-        background: #fff;
+        background: var(--color-bg-elevated);
     }
 
     .login-box {
         width: 100%;
         max-width: 380px;
+        /* 表单滑入(复刻原版 slideInRight) */
+        animation: slide-in-right 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slide-in-right {
+        from {
+            opacity: 0;
+            transform: translateX(40px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
     }
 
     .login-header {
@@ -200,7 +254,7 @@
     .login-header h2 {
         font-size: 28px;
         font-weight: 600;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
         margin: 0 0 8px;
     }
 
@@ -249,7 +303,7 @@
     .form-group label {
         display: block;
         margin-bottom: 10px;
-        color: #1a1a1a;
+        color: var(--color-text-primary);
         font-weight: 500;
         font-size: 13px;
         text-transform: uppercase;
@@ -262,14 +316,14 @@
         border: 1px solid #eee;
         border-radius: 4px;
         font-size: 15px;
-        background: #fafafa;
+        background: var(--color-bg-sunken);
         transition: all 0.2s ease;
     }
 
     .form-group input:focus {
         outline: none;
-        border-color: #000;
-        background: #fff;
+        border-color: var(--color-text-primary);
+        background: var(--color-bg-elevated);
         box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.03);
     }
 

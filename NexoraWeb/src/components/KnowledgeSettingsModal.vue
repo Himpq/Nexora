@@ -3,6 +3,7 @@
 
     职责:
       - 复刻原版 4 个设置页:基础信息 / 共享协作 / 向量 / 记录
+      - 页签走 GDDP Tabs(对齐原版 admin-tab 下划线方案),弹窗固定宽高
       - 打开时读取当前知识元数据填充展示(标题 / 公开 / 协作 / 只读 / 最后修改时间 / 分享链接)
       - 具体功能占位:保存设置 / 复制链接 / 更新向量 / 删除向量 仅提示待接入,不调用后端
     样式:GDDP Modal 壳 + scoped 样式,不依赖原版全局 CSS
@@ -12,6 +13,7 @@
     <Modal
         :open="open"
         width="640px"
+        height="min(600px, 88vh)"
         modal-class="ks-modal"
         @close="close"
     >
@@ -22,16 +24,7 @@
             </div>
         </template>
 
-        <div class="ks-tabs">
-            <button
-                v-for="tab in tabs"
-                :key="tab.key"
-                class="ks-tab"
-                :class="{ active: activeTab === tab.key }"
-                type="button"
-                @click="activeTab = tab.key"
-            >{{ tab.label }}</button>
-        </div>
+        <Tabs v-model="activeTab" :tabs="tabs" class="ks-tabs" />
 
         <!-- 基础信息 -->
         <div v-show="activeTab === 'basic'" class="ks-pane">
@@ -121,6 +114,7 @@
     import { useUserStore } from '@/stores/user'
 
     import Modal from '@/ui/Modal.vue'
+    import Tabs from '@/ui/Tabs.vue'
 
     const props = defineProps<{
         open: boolean
@@ -133,12 +127,12 @@
 
     const userStore = useUserStore()
 
-    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 tab) */
+    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 admin-tab 页签;走 GDDP Tabs) */
     const tabs = [
-        { key: 'basic', label: '基础信息' },
-        { key: 'share', label: '共享协作' },
-        { key: 'vector', label: '向量' },
-        { key: 'history', label: '记录' },
+        { value: 'basic', label: '基础信息' },
+        { value: 'share', label: '共享协作' },
+        { value: 'vector', label: '向量' },
+        { value: 'history', label: '记录' },
     ]
 
     const activeTab = ref('basic')
@@ -241,41 +235,14 @@
 
     .ks-modal-head p {
         margin: 4px 0 0;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
-    /* ---------- 页签 ---------- */
+    /* ---------- 页签(GDDP Tabs,对齐原版 admin-tab 下划线方案) ---------- */
 
     .ks-tabs {
-        display: flex;
-        gap: 4px;
-        margin-bottom: 14px;
-        padding-bottom: 12px;
-        border-bottom: 1px solid #f1f5f9;
-    }
-
-    .ks-tab {
-        padding: 6px 14px;
-        border: none;
-        border-radius: 8px;
-        background: transparent;
-        color: #64748b;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
-    }
-
-    .ks-tab:hover {
-        background: #f1f5f9;
-        color: #0f172a;
-    }
-
-    .ks-tab.active {
-        background: #eef2f7;
-        color: #0f172a;
-        font-weight: 600;
+        margin-bottom: 18px;
     }
 
     /* ---------- 面板 ---------- */
@@ -291,7 +258,7 @@
     .ks-field label {
         display: block;
         margin-bottom: 6px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-size: 13px;
         font-weight: 600;
     }
@@ -319,7 +286,7 @@
         height: 20px;
         margin-top: 2px;
         border-radius: 999px;
-        background: #e2e8f0;
+        background: var(--color-bg-hover);
         transition: background 0.15s ease;
     }
 
@@ -331,7 +298,7 @@
         width: 16px;
         height: 16px;
         border-radius: 999px;
-        background: #ffffff;
+        background: var(--color-bg-elevated);
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
         transition: transform 0.15s ease;
     }
@@ -353,20 +320,20 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        color: #0f172a;
+        color: var(--color-text-primary);
         font-size: 13px;
         font-weight: 600;
     }
 
     .ks-switch-title i {
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-switch-desc {
         display: block;
         margin-top: 3px;
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
         line-height: 1.5;
     }
@@ -376,15 +343,15 @@
     .ks-share-box {
         margin-top: 10px;
         padding: 12px;
-        border: 1px dashed #cbd5e1;
+        border: 1px dashed var(--color-border);
         border-radius: 8px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ks-share-label {
         display: block;
         margin-bottom: 6px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 600;
     }
@@ -398,10 +365,10 @@
         flex: 1;
         min-width: 0;
         padding: 6px 10px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #ffffff;
-        color: #475569;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         box-sizing: border-box;
     }
@@ -423,39 +390,39 @@
     .ks-vector-tip {
         margin-bottom: 10px;
         padding: 8px 10px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #f8fafc;
-        color: #94a3b8;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-vector-status {
         margin-bottom: 8px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
     .ks-chunk-list {
         max-height: 180px;
         padding: 8px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 6px;
-        background: #f8fafc;
-        color: #475569;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
         font-size: 12px;
         overflow-y: auto;
     }
 
     .ks-chunk-empty {
-        color: #94a3b8;
+        color: var(--color-text-secondary);
     }
 
     /* ---------- 记录 ---------- */
 
     .ks-history-row {
         padding: 4px 0;
-        color: #475569;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 </style>

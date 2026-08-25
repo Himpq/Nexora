@@ -46,7 +46,7 @@
 
 /* 编辑器全屏:固定定位的编辑器无法脱离本层叠上下文,提升其到顶栏(100)之上,完整覆盖 chat-header */
 body.gddp-markdown-fullscreen-active .gddp-content-view {
-    z-index: calc(var(--z-header, 100) + 100);
+    z-index: calc(var(--z-header) + 100);
 }
 
 .gddp-content-view > .file-center-view,
@@ -55,11 +55,102 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
     flex: 1 1 auto;
 }
 
+/*
+ * Workspace 共享只读对话:绝对定位铺满内容舞台 + 不透明背景。
+ * 无论兄弟节点(WorkspacesView)是否处于 v-show 时序中间态,都不可能出现
+ * 「上对话、下 Workspace」的上下分离;视图内部自带返回条与消息滚动区。
+ */
+.gddp-content-view > .workspace-shared-view {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--color-bg-page, var(--bg-main, #fff));
+}
+
+.workspace-shared-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+}
+
+.workspace-shared-back {
+    width: auto;
+    height: 30px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.workspace-shared-back:hover {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+.workspace-shared-back:focus-visible {
+    outline: 2px solid var(--color-text-primary);
+    outline-offset: 2px;
+}
+
+.workspace-shared-title {
+    min-width: 0;
+    color: var(--color-text-primary);
+    font-size: 15px;
+    font-weight: 650;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+}
+
+.workspace-shared-owner {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.35;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 共享对话消息区:头部之外的剩余空间自滚动,消除 .messages-area 的固有边距/顶距 */
+.workspace-shared-view .workspace-shared-messages {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    margin-bottom: 0;
+    padding: 24px 20px 32px;
+}
+
 /* 内容级视图统一预留滚动条 gutter:避免列表加载后滚动条出现/消失导致
    Workspaces、Files 等居中布局在切换时产生几 px 横向偏移 */
 .gddp-content-view > .file-center-view,
 .gddp-content-view > .workspace-projects-view,
 .gddp-content-view > .workspace-detail-view,
+.gddp-content-view > .workspace-shared-view,
 .gddp-content-view > .knowledge-mgmt-view {
     scrollbar-gutter: stable;
 }
@@ -90,10 +181,10 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
 
 .chat-header {
     position: relative;
-    z-index: var(--z-header, 100);
+    z-index: var(--z-header);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    flex: 0 0 var(--gddp-header-height, 60px);
+    flex: 0 0 var(--gddp-header-height);
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
@@ -242,7 +333,7 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
 
 .conversation-branch-icon {
     margin-right: 6px;
-    color: #94a3b8;
+    color: var(--color-text-secondary);
     font-size: 11px;
 }
 

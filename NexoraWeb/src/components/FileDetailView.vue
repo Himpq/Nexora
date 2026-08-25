@@ -17,6 +17,10 @@
                 <h1 :title="fileDisplayName(file)">{{ fileDisplayName(file) }}</h1>
                 <div class="file-center-detail-meta">{{ metaText }}</div>
             </div>
+            <div class="file-center-detail-actions">
+                <Button variant="secondary" size="icon" icon="fa-solid fa-download" title="下载文件" aria-label="下载文件" @click="handleDownload" />
+                <Button variant="danger" size="icon" icon="fa-solid fa-trash-can" title="删除文件" aria-label="删除文件" @click="handleDelete" />
+            </div>
         </div>
         <div class="file-center-detail-content" id="fileCenterDetailContent">
             <div v-if="loading" class="file-center-empty">加载中...</div>
@@ -47,12 +51,19 @@
         formatFileUpdatedAt,
         isImageFile,
         readFile,
+        removeFile,
     } from '@/api/files-center'
-    import { showError } from '@/stores/notify'
-
+    import Button from '@/ui/Button.vue'
+    import { showConfirm } from '@/stores/confirm'
+    import { showError, showToast } from '@/stores/notify'
 
     const props = defineProps<{
         file: CloudFileItem | null
+    }>()
+
+    const emit = defineEmits<{
+        /** 删除成功:通知父级关闭详情(文件中心列表随之重载) */
+        deleted: []
     }>()
 
     const content = ref('')
@@ -85,6 +96,45 @@
         { immediate: true }
     )
 
+    /** 下载当前文件(走文件中心下载 URL) */
+    function handleDownload(): void {
+        if (!props.file) {
+            return
+        }
+
+        window.location.href = fileDownloadUrl(fileRef(props.file))
+    }
+
+    /** 删除当前文件:确认后删除并通知父级关闭详情 */
+    async function handleDelete(): Promise<void> {
+        const target = props.file
+
+        if (!target) {
+            return
+        }
+
+        const confirmed = await showConfirm({
+            title: '删除文件',
+            content: `确定删除文件「${fileDisplayName(target)}」吗?`,
+            confirmText: '删除',
+            cancelText: '取消',
+            danger: true,
+        })
+
+        if (!confirmed) {
+            return
+        }
+
+        try {
+            await removeFile(fileRef(target))
+
+            showToast('文件已删除', 'success')
+            emit('deleted')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '删除失败')
+        }
+    }
+
     /** 加载文本预览(对齐原版 loadFileCenterDetailContent) */
     async function loadPreview(file: CloudFileItem): Promise<void> {
         if (isImageFile(file)) {
@@ -105,3 +155,14 @@
     }
 
 </script>
+
+<style scoped>
+    /* 详情头部操作区(下载/删除右对齐) */
+    .file-center-detail-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+    }
+</style>

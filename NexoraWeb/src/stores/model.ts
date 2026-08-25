@@ -83,17 +83,19 @@ export const useModelStore = defineStore('model', {
     },
 
     actions: {
-        /** 加载模型目录:优先读缓存,再恢复上次选中的模型 */
-        async loadModels(): Promise<void> {
+        /** 加载模型目录:优先读缓存,再恢复上次选中的模型;force 时绕过缓存强制拉取 */
+        async loadModels(options: { force?: boolean } = {}): Promise<void> {
             this.loading = true
 
             try {
-                const cached = readConfigCache()
+                if (!options.force) {
+                    const cached = readConfigCache()
 
-                if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
-                    this.applyConfig(cached)
+                    if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
+                        this.applyConfig(cached)
 
-                    return
+                        return
+                    }
                 }
 
                 const config = await fetchAppConfig()

@@ -231,14 +231,14 @@
 
         loading.value = true
 
-        try {
-            const groupList = await fetchMailGroups().catch(() => [])
+                try {
+            const groupList = await fetchMailGroups()
 
             groups.value = groupList.length ? groupList : ['default']
             currentGroup.value = groups.value[0]
 
             // 拉取 Nexora 用户列表用于绑定对展示(对齐原版 loadAdminUsersList)
-            adminUsers.value = await listAdminUsers().catch(() => [])
+            adminUsers.value = await listAdminUsers()
 
             await loadUsers()
         } catch (error) {
@@ -476,7 +476,7 @@
 
     .mail-empty-icon {
         font-size: 24px;
-        color: #d0d0d0;
+        color: var(--color-text-secondary);
     }
 
     /* ==================== 详情区 ==================== */
@@ -515,8 +515,8 @@
         width: 34px;
         height: 34px;
         border-radius: 50%;
-        background: #f0f0f0;
-        color: #7a7a7a;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
         font-size: 13px;
         overflow: hidden;
     }
@@ -536,7 +536,7 @@
     .mail-bind-name {
         font-size: 13px;
         font-weight: 600;
-        color: #222222;
+        color: var(--color-text-primary);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -544,7 +544,7 @@
 
     .mail-bind-meta {
         font-size: 11px;
-        color: #999999;
+        color: var(--color-text-secondary);
         margin-top: 2px;
     }
 
@@ -556,8 +556,8 @@
         width: 28px;
         height: 28px;
         border-radius: 50%;
-        background: #f0f0f0;
-        color: #888888;
+        background: var(--color-bg-hover);
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -593,12 +593,12 @@
     .mail-info-label {
         font-size: 11px;
         font-weight: 550;
-        color: #999999;
+        color: var(--color-text-secondary);
     }
 
     .mail-info-value {
         font-size: 13px;
-        color: #222222;
+        color: var(--color-text-primary);
         word-break: break-all;
     }
 </style>

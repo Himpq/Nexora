@@ -1,0 +1,250 @@
+/**
+ * nexora_map_renderer.css — 地图结果卡片样式(GDDP 已接入)
+ *
+ * 颜色全部走语义令牌(--color-*),明暗切换由 tokens-color.css 自动响应;
+ * 唯一例外:.nexora-map-label 叠加在地图瓦片图像之上(非 UI 铬层),
+ * 瓦片恒为亮色影像,固定浅色底+深字保证两种主题下都压得住图面。
+ * 结构/尺寸规则与收编前一致,仅颜色层完成令牌化。
+ */
+
+.nexora-map-card {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 12px auto;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.nexora-map-card-header {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-sunken);
+}
+
+.nexora-map-card-title {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--color-text-primary);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nexora-map-card-status {
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    max-width: 100%;
+    padding: 3px 8px;
+    border: 1px solid var(--color-border-input);
+    border-radius: 999px;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.nexora-map-card-status.is-ready {
+    border-color: var(--color-success-border);
+    color: var(--color-success-text);
+    background: var(--color-success-surface);
+}
+
+.nexora-map-card-status.is-error {
+    border-color: var(--color-danger-border);
+    color: var(--color-danger-text);
+    background: var(--color-danger-surface);
+}
+
+.nexora-map-card-body {
+    box-sizing: border-box;
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    min-height: 260px;
+    background: var(--color-bg-sunken);
+}
+
+.nexora-map-canvas {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    height: min(440px, 54vh);
+    min-height: 320px;
+}
+
+.nexora-map-canvas img {
+    width: auto !important;
+    max-width: none !important;
+    height: auto !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    object-fit: fill !important;
+}
+
+.nexora-map-canvas[data-map-provider="tianditu"] .tdt-tile {
+    width: 256px !important;
+    height: 256px !important;
+    max-width: none !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    object-fit: fill !important;
+}
+
+.nexora-map-canvas[data-map-provider="tianditu"] .tdt-control img {
+    width: auto !important;
+    max-width: none !important;
+    height: auto !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    object-fit: contain !important;
+}
+
+.nexora-map-card-error {
+    display: flex;
+    align-items: center;
+    min-height: 180px;
+    padding: 18px;
+    color: var(--color-danger-text);
+    background: var(--color-danger-surface);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.nexora-map-card-footer {
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.nexora-map-card-footer span {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-height: 20px;
+    overflow-wrap: anywhere;
+}
+
+/* 叠在瓦片上的坐标标签:固定浅色(见文件头注),不随主题翻转 */
+.nexora-map-label {
+    box-sizing: border-box;
+    display: inline-block;
+    max-width: 240px;
+    overflow: hidden;
+    padding: 3px 7px;
+    border: 1px solid rgba(15, 23, 42, 0.16);
+    border-radius: 4px;
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.14);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (min-width: 721px) {
+    .nexora-map-card {
+        width: min(100%, 720px);
+        max-width: 720px;
+        border-color: var(--color-border-strong);
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
+    }
+
+    .nexora-map-canvas {
+        height: clamp(280px, 38vh, 340px);
+        min-height: 280px;
+    }
+}
+
+@media (max-width: 720px) {
+    .nexora-map-card {
+        margin: 10px auto;
+        border-radius: 6px;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    .nexora-map-card-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 8px;
+        padding: 8px 10px;
+    }
+
+    .nexora-map-card-title {
+        width: 100%;
+        display: -webkit-box;
+        font-size: 13px;
+        line-height: 1.45;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        white-space: normal;
+    }
+
+    .nexora-map-card-status {
+        padding: 2px 7px;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+
+    .nexora-map-card-body {
+        min-height: 300px;
+    }
+
+    .nexora-map-canvas {
+        height: clamp(300px, 58vh, 380px);
+        min-height: 300px;
+    }
+
+    .nexora-map-card-footer {
+        gap: 6px;
+        padding: 7px 10px 8px;
+        font-size: 11px;
+    }
+
+    .nexora-map-label {
+        max-width: calc(100vw - 80px);
+        padding: 2px 6px;
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 420px) {
+    .nexora-map-card-header {
+        grid-template-columns: 1fr;
+    }
+
+    .nexora-map-card-status {
+        justify-self: start;
+    }
+
+    .nexora-map-card-body {
+        min-height: 280px;
+    }
+
+    .nexora-map-canvas {
+        height: clamp(280px, 56vh, 340px);
+        min-height: 280px;
+    }
+}

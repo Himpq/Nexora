@@ -26,10 +26,10 @@
     width: auto;
     height: 34px;
     padding: 0 16px;
-    border: 1px solid #111111;
+    border: 1px solid var(--color-border-strong);
     border-radius: 7px;
-    background: #ffffff;
-    color: #111111;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
@@ -39,7 +39,7 @@
 
 .btn-primary:hover,
 .btn-confirm:hover {
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
 }
 
 .btn-primary:active,
@@ -56,10 +56,10 @@
     width: auto;
     height: 34px;
     padding: 0 16px;
-    border: 1px solid #c9c9c9;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #ffffff;
-    color: #2e2e2e;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 13px;
     font-weight: 550;
     cursor: pointer;
@@ -67,10 +67,14 @@
     transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 
+/*
+ * hover 反转禁令(风格约束):悬停只做"边框强化 + 文字提亮 + 底色微沉",
+ * 禁止切换到反色前景或整块换底,保证明暗两套主题下都有平顺的反馈梯度。
+ */
 .btn-primary-outline:hover {
-    border-color: #111111;
-    color: #111111;
-    background: #fafafa;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
+    background: var(--color-bg-hover);
 }
 
 .btn-cancel {
@@ -81,10 +85,10 @@
     width: auto;
     height: 34px;
     padding: 0 16px;
-    border: 1px solid #e2e2e2;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #f7f7f7;
-    color: #5a5a5a;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
     font-size: 13px;
     font-weight: 550;
     cursor: pointer;
@@ -92,7 +96,7 @@
 }
 
 .btn-cancel:hover {
-    background: #eeeeee;
+    background: var(--color-bg-hover);
 }
 
 .btn-danger-small {
@@ -103,10 +107,10 @@
     width: auto;
     height: var(--gddp-control-height);
     padding: 0 12px;
-    border: 1px solid #f0c4c4;
+    border: 1px solid var(--color-danger-border);
     border-radius: 7px;
-    background: #fff7f7;
-    color: #c0392b;
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
     font-size: 12.5px;
     font-weight: 550;
     cursor: pointer;
@@ -114,10 +118,13 @@
     transition: background 0.15s ease;
 }
 
+/*
+ * 危险按钮 hover 不再换底(base 与 surface 同源),只强化边框与文字,
+ * 避免亮色主题下"浅粉→正粉"的整块跳变。
+ */
 .btn-danger-small:hover {
-    background: #fdecec;
-    color: #c0392b;
-    border-color: #f0c4c4;
+    color: var(--color-danger-text);
+    border-color: var(--color-danger-text);
 }
 
 .btn-compact {

@@ -10,7 +10,7 @@
 
 <template>
     <div class="admin-models-panel">
-        <div class="admin-users-layout model-admin-users-layout settings-management-layout">
+        <div class="admin-users-layout model-admin-users-layout settings-management-layout" :class="{ 'show-detail': detailOpen }">
             <div class="admin-users-list settings-management-list">
                 <div v-if="loading" class="admin-user-detail-empty">加载中...</div>
                 <div v-else-if="!filteredProviders.length" class="admin-user-detail-empty">暂无供应商</div>
@@ -55,6 +55,13 @@
             </div>
 
             <div class="admin-user-detail settings-management-detail">
+                <!-- 手机端返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="detailOpen = false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回列表</span>
+                </button>
                 <div v-if="!selectedProvider" class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
                 <div v-else>
                     <div class="admin-users-toolbar admin-system-toolbar-row">
@@ -196,15 +203,12 @@
             <div class="quota-adjust-meta">用 {{ fmtQuota(adjustPopover.used) }} / 共 {{ fmtQuota(adjustPopover.total) }}</div>
             <div class="quota-adjust-mode">
                 <span class="quota-adjust-mode-label">调整</span>
-                <select
-                    v-model="adjustPopover.mode"
-                    class="input-modern"
-                    style="width:64px; height:30px; padding:4px 6px; font-size:12px;"
-                    @change="onAdjustModeChange"
-                >
-                    <option value="total">共</option>
-                    <option value="remaining">剩</option>
-                </select>
+                <SettingSelect
+                    :model-value="adjustPopover.mode"
+                    :options="ADJUST_MODE_OPTIONS"
+                    width="72px"
+                    @update:model-value="handleAdjustModeChange"
+                />
                 <input
                     v-model="adjustPopover.input"
                     class="input-modern"
@@ -362,6 +366,8 @@
 
     const loading = ref(false)
     const models = ref<Record<string, ModelInfo>>({})
+    /** 手机端两级钻取:选择供应商后整页切到模型详情(桌面端双栏并排不受影响) */
+    const detailOpen = ref(false)
     const providersRecord = ref<Record<string, ProviderInfo>>({})
     const query = ref('')
     const selectedProvider = ref('')
@@ -455,6 +461,12 @@
         anchor: null,
     })
     const adjustPopoverRef = ref<HTMLElement | null>(null)
+
+    /** 额度调整口径选项(共/剩) */
+    const ADJUST_MODE_OPTIONS = [
+        { value: 'total', label: '共' },
+        { value: 'remaining', label: '剩' },
+    ]
 
     /** 弹窗下拉选项 */
     const providerSelectOptions = computed(() => {
@@ -590,6 +602,7 @@
 
     function selectProvider(provider: string): void {
         selectedProvider.value = provider
+        detailOpen.value = true
 
         void loadOllamaStatus(provider)
 
@@ -1288,6 +1301,12 @@
         document.removeEventListener('keydown', onAdjustPopoverKeydown, true)
         window.removeEventListener('resize', onAdjustPopoverFollow)
         window.removeEventListener('scroll', onAdjustPopoverFollow, true)
+    }
+
+    /** 模式切换(GDDP 下拉回传)并预填输入(对齐原版 popover change 事件) */
+    function handleAdjustModeChange(mode: string | number): void {
+        adjustPopover.value.mode = mode === 'remaining' ? 'remaining' : 'total'
+        onAdjustModeChange()
     }
 
     /** 模式切换预填输入(对齐原版 popover change 事件) */

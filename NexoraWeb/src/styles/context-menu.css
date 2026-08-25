@@ -1,0 +1,180 @@
+/*
+ * context-menu.css — GDDP 通用右键上下文菜单视觉。
+ *
+ * 从原 components 下三套分散实现(pin-context-menu / notes-context-menu /
+ * ws-context-menu)收敛而来,所有颜色引用 --color-* 语义令牌,暗色经
+ * tokens-color.css 的 [data-theme="dark"] 自动生效,无第二套 dark 规则。
+ */
+
+.gddp-context-menu {
+    position: fixed;
+    z-index: var(--z-right-click);
+    min-width: 168px;
+    max-width: 280px;
+    padding: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 16px 42px rgba(15, 23, 42, 0.16);
+    font-size: 13px;
+    color: var(--color-text-primary);
+}
+
+.gddp-context-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.gddp-context-item:hover:not(:disabled),
+.gddp-context-item:focus-visible {
+    background: var(--color-bg-hover);
+    outline: none;
+}
+
+.gddp-context-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.gddp-context-item i:first-child {
+    flex: none;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+}
+
+.gddp-context-item.is-danger {
+    color: var(--color-danger-text);
+}
+
+.gddp-context-item.is-danger i:first-child {
+    color: var(--color-danger-text);
+}
+
+.gddp-context-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gddp-context-submenu-arrow {
+    flex: none;
+    font-size: 10px;
+    color: var(--color-text-secondary);
+}
+
+.gddp-context-divider {
+    height: 1px;
+    margin: 5px 8px;
+    background: var(--color-border);
+}
+
+/* 条目容器:子菜单的定位锚点(相对父项而非整个菜单) */
+.gddp-context-entry {
+    position: relative;
+}
+
+/* 桥接热区:鼠标从父项斜移进子菜单时填补空隙,保证 hover 链路不断开 */
+.gddp-context-entry::after {
+    content: "";
+    position: absolute;
+    top: -8px;
+    left: 100%;
+    z-index: 1;
+    display: none;
+    width: 10px;
+    height: calc(100% + 16px);
+    background: transparent;
+}
+
+.gddp-context-menu.submenu-left .gddp-context-entry::after {
+    left: auto;
+    right: 100%;
+}
+
+.gddp-context-entry:hover::after,
+.gddp-context-entry:focus-within::after {
+    display: block;
+}
+
+/* 子菜单(具名 slot 内容容器):默认隐藏,悬停/聚焦父项时才展开;
+   默认右弹出,父级 .submenu-left 时左弹出 */
+.gddp-context-submenu {
+    position: absolute;
+    top: -7px;
+    left: 100%;
+    z-index: 2;
+    display: none;
+    margin-left: 4px;
+    min-width: 190px;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 16px 42px rgba(15, 23, 42, 0.16);
+}
+
+.gddp-context-menu.submenu-left .gddp-context-submenu {
+    left: auto;
+    right: 100%;
+    margin-left: 0;
+    margin-right: 4px;
+}
+
+/* 悬停或键盘聚焦父项时展开子菜单(对齐原版 pin-context-submenu 行为) */
+.gddp-context-entry:hover .gddp-context-submenu,
+.gddp-context-entry:focus-within .gddp-context-submenu {
+    display: block;
+}
+
+/* 子菜单内的通用项(业务 slot 复用 .gddp-context-item 视觉) */
+.gddp-context-submenu .gddp-context-item {
+    font-weight: 550;
+}
+
+/* 子菜单空态(加载中 / 无数据) */
+.gddp-context-submenu-empty {
+    padding: 10px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    text-align: center;
+}
+
+/* 归入工作区子菜单项(带已标记态) */
+.gddp-context-workspace-item.is-marked {
+    color: var(--color-accent-text);
+}
+
+.gddp-context-workspace-item.is-marked:hover {
+    background: var(--color-bg-hover);
+}
+
+.gddp-context-workspace-item.is-marked i:first-child {
+    color: var(--color-accent-text);
+}
+
+.gddp-context-workspace-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--color-accent-text);
+}

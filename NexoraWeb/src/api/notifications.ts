@@ -40,6 +40,20 @@ interface NotificationMutationResponse {
     item?: NotificationItem
 }
 
+/** 变更接口统一返回:服务端权威记录 + 未读数(供 store 幂等合入) */
+export interface NotificationMutationResult {
+    item?: NotificationItem
+    unreadCount: number
+}
+
+/** 将变更响应规范化为统一结果结构 */
+function normalizeMutationResponse(data: NotificationMutationResponse): NotificationMutationResult {
+    return {
+        item: data.item && typeof data.item === 'object' ? data.item : undefined,
+        unreadCount: Math.max(0, Number(data.unread_count || 0)),
+    }
+}
+
 /** 拉取当前用户通知列表(limit 对齐原版 loadNotifications 的 20) */
 export async function listNotifications(limit = 20): Promise<NotificationListResult> {
     const data = await apiFetch<NotificationListResponse>(`/api/notifications?limit=${limit}`)
@@ -51,24 +65,24 @@ export async function listNotifications(limit = 20): Promise<NotificationListRes
     }
 }
 
-/** 标记单条通知已读,返回新的未读数 */
-export async function markNotificationRead(notificationId: string): Promise<number> {
+/** 标记单条通知已读,返回服务端记录与新的未读数 */
+export async function markNotificationRead(notificationId: string): Promise<NotificationMutationResult> {
     const data = await apiFetch<NotificationMutationResponse>(
         `/api/notifications/${encodeURIComponent(notificationId)}/read`,
         { method: 'POST' }
     )
 
-    return Number(data.unread_count || 0)
+    return normalizeMutationResponse(data)
 }
 
-/** 删除单条通知,返回新的未读数 */
-export async function removeNotification(notificationId: string): Promise<number> {
+/** 删除单条通知,返回服务端记录与新的未读数 */
+export async function removeNotification(notificationId: string): Promise<NotificationMutationResult> {
     const data = await apiFetch<NotificationMutationResponse>(
         `/api/notifications/${encodeURIComponent(notificationId)}/remove`,
         { method: 'POST' }
     )
 
-    return Number(data.unread_count || 0)
+    return normalizeMutationResponse(data)
 }
 
 /** 管理员发布公告 */

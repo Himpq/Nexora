@@ -1,0 +1,122 @@
+/**
+ * token-budget-card.css — 上下文窗口卡片(点击 tokenBudgetMini / tokenBudgetUsage 触发)
+ *
+ * 结构对齐原版 style.css .token-budget-tooltip 区块,视觉按 GDDP 令牌规范重写:
+ *   - 浅色面板 + 细边框 + 轻阴影(原版 #f8f8f8 / #111 边框改为白底浅灰)
+ *   - z-index 使用令牌 --z-portal-dropdown(高于弹窗层,对齐原版 9800 语义)
+ */
+
+.token-budget-card {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: var(--z-portal-dropdown);
+    width: min(286px, calc(100vw - 20px));
+    padding: 10px;
+    border-radius: var(--gddp-border-radius);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    font-size: 11px;
+    line-height: 1.45;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    pointer-events: auto;
+    /* 入场动画对齐 GDDP 弹窗(g-modal):淡入 + 微缩放上弹,锚点贴近触发元素 */
+    transform-origin: top left;
+    animation: token-budget-card-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes token-budget-card-pop {
+    from {
+        opacity: 0;
+        transform: scale(0.96) translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+.token-budget-tip-head {
+    display: grid;
+    gap: 2px;
+}
+
+.token-budget-tip-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-text-primary);
+}
+
+.token-budget-tip-pct {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--color-text-primary);
+}
+
+.token-budget-tip-sub {
+    margin-top: 2px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+.token-budget-tip-bar {
+    margin-top: 8px;
+    width: 100%;
+    height: 6px;
+    border-radius: 4px;
+    background: var(--color-bg-hover);
+    overflow: hidden;
+}
+
+.token-budget-tip-bar > span {
+    display: block;
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: var(--color-text-primary);
+}
+
+.token-budget-tip-grid {
+    margin-top: 8px;
+    display: grid;
+    gap: 4px;
+}
+
+.token-budget-tip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--color-text-primary);
+}
+
+.token-budget-tip-row span {
+    color: var(--color-text-secondary);
+}
+
+.token-budget-tip-row em {
+    font-style: normal;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+}
+
+.token-budget-card-action {
+    margin-top: 8px;
+    padding: 5px 8px;
+    border: none;
+    border-radius: 6px;
+    background: var(--color-bg-hover);
+    color: var(--color-accent-text);
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: background-color 0.16s ease;
+}
+
+.token-budget-card-action:hover {
+    background: var(--color-bg-hover);
+}

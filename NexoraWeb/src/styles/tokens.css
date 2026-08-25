@@ -1,17 +1,21 @@
 /**
- * tokens.css — 设计令牌(z-index 层级)
+ * tokens.css — 设计令牌(结构层:z-index / 字体 / 控件尺寸)
  *
  * 职责:
  *   - 统一管理全站 z-index 层级,所有组件/样式必须引用令牌,禁止硬编码数字
+ *   - 统一管理字体族与控件结构尺寸;颜色令牌见 tokens-color.css
  *   - 新组件接入时按语义选择层级,避免互相覆盖(对齐 naive-ui 的层级管理思路)
  *
  * 层级语义(从低到高):
+ *   --z-header         聊天区顶栏(相对定位基线,内部浮层以 +100 叠加)
  *   --z-dropdown       下拉菜单 / 工具模式菜单 / 用户菜单
  *   --z-portal-dropdown Teleport 到 body 的下拉菜单(可跨越弹窗层)
  *   --z-sidebar-panel  右侧滑入面板(知识库 / 文件)
  *   --z-right-click    右键菜单
  *   --z-floating       浮动面板(时间线等,原版 3601,低于右键菜单 3660)
- *   --z-modal          弹窗(设置 / 小窗)
+ *   --z-modal          弹窗(设置 / 小窗);4400 > legacy ≤980px 的 .chat-header 4200
+ *                      (style.css 移动端头部规则带 !important,弹窗必须高于它,
+ *                       否则手机端顶栏整条浮在设置窗之上)
  *   --z-viewer         全屏图片查看器(高于普通弹窗,低于确认框,对齐原版 5000 < 9300)
  *   --z-confirm        确认框(高于普通弹窗)
  *   --z-toast          全局提示
@@ -23,15 +27,24 @@
     --z-sidebar-panel: 1200;
     --z-right-click: 3660;
     --z-floating: 3601;
-    --z-modal: 4000;
+    --z-modal: 4400;
     --z-viewer: 4600;
     --z-confirm: 5000;
     --z-toast: 40000;
+    --z-header: 100;
     --gddp-control-height: 34px;
     --gddp-control-height-compact: 30px;
     --gddp-action-min-width: 108px;
     --gddp-action-gap: 10px;
     --gddp-border-radius: 7px;
+    /* 聊天区顶栏高度(原 gddp-layout 内联 fallback 值转正) */
+    --gddp-header-height: 60px;
+    /*
+     * 字体族令牌(取值与 legacy 视觉冻结值一致,收编前散落的
+     * nc-font 死变量与各处硬编码栈统一收敛到此)
+     */
+    --font-sans: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Consolas', monospace;
 }
 
 /*
@@ -85,9 +98,9 @@
     width: 100%;
     height: 30px;
     border-radius: 8px;
-    border: 1px solid #dbe4f1;
-    background: #fff;
-    color: #0f172a;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
     font-size: 12px;
     padding: 0 9px;
     display: flex;
@@ -98,7 +111,7 @@
 }
 
 .notes-notebook-select:hover {
-    border-color: #cbd5e1;
+    border-color: var(--color-border);
 }
 
 .notes-notebook-menu {
@@ -108,9 +121,9 @@
     right: 0;
     z-index: var(--z-dropdown);
     display: none;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--color-bg-elevated);
     box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
     padding: 4px;
     max-height: 220px;
@@ -128,19 +141,19 @@
     border: none;
     border-radius: 7px;
     background: transparent;
-    color: #334155;
+    color: var(--color-text-secondary);
     font-size: 12px;
     text-align: left;
     cursor: pointer;
 }
 
 .notes-notebook-menu button:hover {
-    background: #f1f5f9;
+    background: var(--color-bg-hover);
 }
 
 .notes-notebook-menu button.active {
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--color-accent-surface);
+    color: var(--color-accent-text);
     font-weight: 600;
 }
 

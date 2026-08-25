@@ -1,0 +1,43 @@
+/*
+ * tabs.css — GDDP 通用标签页(Tabs.vue)视觉。
+ *
+ * 下划线式 Tab:容器底线 + 激活项主色下边框,颜色全部走 --color-* 语义令牌,
+ * 暗色经 tokens-color.css 自动生效。宿主通过根元素 class 自行控制布局间距。
+ */
+
+.gddp-tabs {
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.gddp-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.15s ease;
+}
+
+.gddp-tab:hover {
+    color: var(--color-text-primary);
+}
+
+.gddp-tab.is-active {
+    color: var(--color-text-primary);
+    border-bottom-color: var(--color-text-primary);
+}
+
+.gddp-tab > i:first-child {
+    flex: none;
+    font-size: 13px;
+}

@@ -225,7 +225,7 @@
      */
 
     .k-list-empty {
-        color: #94a3b8;
+        color: var(--color-text-secondary);
         font-size: 12px;
         text-align: center;
         padding: 20px 0;

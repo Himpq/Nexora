@@ -13,16 +13,24 @@
 <template>
     <Modal
         :open="open"
-        width="1060px"
-        height="min(80vh, 720px)"
+        :width="modalWidth"
+        :height="modalHeight"
+        :title="modalTitle"
         modal-class="settings-modal"
-        title="设置"
         @close="emit('close')"
     >
-        <div class="settings-modal-shell">
+        <div class="settings-modal-shell" :class="{ 'is-drilled': isCompactViewport && mobileLevel === 2 }">
             <SettingsNav :groups="navGroups" :active="activeTab" @select="onTabSelect" />
 
             <section class="settings-main">
+                <!-- 手机端二级页返回条(桌面端由 CSS 隐藏) -->
+                <button type="button" class="settings-mobile-back" @click="mobileLevel = 1">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>返回分类</span>
+                </button>
+
                 <SettingsPageHeader
                     :title="activeTabMeta?.title"
                     :description="activeTabMeta?.description"
@@ -157,7 +165,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import { apiFetch } from '@/api/client'
     import { fetchMailGroups } from '@/api/admin-mail'
@@ -192,7 +200,48 @@
         open: boolean
     }>()
 
-    const userStore = useUserStore()
+                const userStore = useUserStore()
+
+    /** 窄视口(≤760px):弹窗完全全屏(inset 0 无缝隙,杜绝顶栏从边缘透出的"重合"观感),
+     *  布局由 settings.css 切为两级导航(一级分类页 → 二级内容页) */
+    const isCompactViewport = ref(false)
+
+    /** 手机端导航层级:1=分类列表页,2=内容页(点击分类进入) */
+    const mobileLevel = ref<1 | 2>(1)
+
+    /**
+     * 紧凑视口判定:820px 断点 + 触屏设备强制命中。
+     * 之前用 760px 且仅 matchMedia——部分全面屏(视口 780-820)或系统缩放
+     * 会导致 matchMedia 不命中,桌面 1060px 布局硬塞进手机屏,
+     * 表现为"所有 tab 点不了/没有二级菜单/内容窗口极小"。
+     * 触屏设备('ontouchstart' in window)一律走两级导航,不再依赖像素宽度。
+     */
+    function syncCompactViewport(): void {
+        const isTouch = 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0
+        isCompactViewport.value = isTouch || window.innerWidth <= 820
+    }
+
+    onMounted(() => {
+        syncCompactViewport()
+        window.addEventListener('resize', syncCompactViewport)
+    })
+
+    onBeforeUnmount(() => {
+        window.removeEventListener('resize', syncCompactViewport)
+    })
+
+    const modalWidth = computed(() => (isCompactViewport.value ? '100%' : '1060px'))
+
+    const modalHeight = computed(() => (isCompactViewport.value ? '100%' : 'min(80vh, 720px)'))
+
+    /** 弹窗标题:手机端二级页带层级(「设置 - 偏好设置」),其余为「设置」 */
+    const modalTitle = computed(() => {
+        if (isCompactViewport.value && mobileLevel.value === 2 && activeTabMeta.value?.title) {
+            return `设置 - ${activeTabMeta.value.title}`
+        }
+
+        return '设置'
+    })
 
     const activeTab = ref('profile')
     const avatarCropOpen = ref(false)
@@ -358,11 +407,15 @@
 
     const activeTabActions = computed(() => pageActionsMap.value[activeTab.value] || [])
 
-    /** 切 tab:重置页头下拉/子标签值,并按需拉取动态选项 */
+    /** 切 tab:重置页头下拉/子标签值,并按需拉取动态选项;手机端钻入二级内容页 */
     function onTabSelect(tab: string): void {
         activeTab.value = tab
         headSelects.value = {}
         headSubTabs.value = {}
+
+        if (isCompactViewport.value) {
+            mobileLevel.value = 2
+        }
 
         // skills 页头子标签默认"我的 Skill"
         if (tab === 'skills') {
@@ -374,13 +427,14 @@
         }
     }
 
-    /** 拉取邮箱分组(对齐原版 fetchMailGroups → domains) */
+        /** 拉取邮箱分组(对齐原版 fetchMailGroups → domains);失败显式上报并保留 default 可操作 */
     async function loadMailGroupOptions(): Promise<void> {
         try {
             const groups = await fetchMailGroups()
 
             mailGroupOptions.value = groups.map((group) => ({ value: group, label: group }))
-        } catch {
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '邮箱分组加载失败')
             mailGroupOptions.value = [{ value: 'default', label: 'default' }]
         }
     }
@@ -491,12 +545,16 @@
     }
 
 
-    /** 打开时重置到个人资料页 */
+    /** 打开时重置到个人资料页(手机端回到一级分类页);同时收起移动端侧栏抽屉 */
     watch(
         () => props.open,
         (opened) => {
+            // 设置窗打开期间隐藏移动端侧栏(legacy 抽屉 z 7600 高于弹窗 4400,会盖住设置窗)
+            document.body.classList.toggle('settings-modal-open', opened)
+
             if (opened) {
                 onTabSelect('profile')
+                mobileLevel.value = 1
                 profileName.value = userStore.username
                 pendingAvatarBase64.value = ''
 
@@ -506,5 +564,10 @@
             }
         }
     )
+
+    onBeforeUnmount(() => {
+        // 组件卸载时兜底移除标记,避免侧栏被永久隐藏
+        document.body.classList.remove('settings-modal-open')
+    })
 
 </script>

@@ -7,6 +7,7 @@
  */
 
 import { apiFetch } from './client'
+import type { MessageSegment } from '@/stream/messageSegments'
 
 /** 会话分支信息(对齐原版 readConversationBranch 读取的后端 branch 结构) */
 export interface ConversationBranch {
@@ -42,6 +43,8 @@ export interface ChatMessage {
     role: 'user' | 'assistant' | 'system'
     content: string
     reasoning?: string
+    /** 内容分段(思考/正文按输出顺序);流式期间为交错结构,收尾/历史加载后为规范结构 */
+    segments?: MessageSegment[]
     model_name?: string
     created_at?: number
     [key: string]: unknown

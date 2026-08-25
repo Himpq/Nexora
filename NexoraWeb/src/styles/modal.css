@@ -29,7 +29,7 @@
     flex-direction: column;
     width: 440px;
     max-height: min(560px, calc(100vh - 40px));
-    background: #fff;
+    background: var(--color-bg-elevated);
     border-radius: 16px;
     box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
     overflow: hidden;
@@ -59,7 +59,7 @@
     margin: 0;
     font-size: 16px;
     font-weight: 600;
-    color: #0f172a;
+    color: var(--color-text-primary);
 }
 
 .g-modal-close {
@@ -71,14 +71,14 @@
     border: none;
     border-radius: 8px;
     background: transparent;
-    color: #94a3b8;
+    color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .g-modal-close:hover {
-    background: #f1f5f9;
-    color: #0f172a;
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
 }
 
 /* ---------- 正文 ---------- */
@@ -88,7 +88,7 @@
     padding: 4px 20px 16px;
     overflow-y: auto;
     font-size: 14px;
-    color: #334155;
+    color: var(--color-text-secondary);
     line-height: 1.6;
 }
 
@@ -98,7 +98,7 @@
     justify-content: flex-end;
     gap: 10px;
     padding: 12px 20px 16px;
-    border-top: 1px solid #f1f5f9;
+    border-top: 1px solid var(--color-border);
     flex-shrink: 0;
 }
 
@@ -122,35 +122,35 @@
 }
 
 .g-btn-primary {
-    background: #ffffff;
-    color: #111111;
-    border: 1px solid #111111;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
 }
 
 .g-btn-primary:hover {
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
 }
 
 .g-btn-ghost {
-    background: #ffffff;
-    color: #5a5a5a;
-    border: 1px solid #d9d9d9;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
 }
 
 .g-btn-ghost:hover {
-    background: #f5f5f5;
-    color: #111111;
-    border-color: #111111;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+    border-color: var(--color-text-primary);
 }
 
 .g-btn-danger {
-    background: #ffffff;
-    color: #c0392b;
+    background: var(--color-bg-elevated);
+    color: var(--color-danger-text);
     border: 1px solid #e0a0a0;
 }
 
 .g-btn-danger:hover {
-    background: #fdecec;
+    background: var(--color-danger-surface);
 }
 
 /* GDDP 弹窗内 btn-* 按钮语言已上收全局层 buttons.css(单一按钮体系,
@@ -160,19 +160,19 @@
 .g-input {
     width: 100%;
     padding: 9px 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     font-size: 14px;
-    color: #0f172a;
-    background: #fff;
+    color: var(--color-text-primary);
+    background: var(--color-bg-elevated);
     outline: none;
     transition: all 0.15s ease;
     box-sizing: border-box;
 }
 
 .g-input:focus {
-    border-color: #94a3b8;
-    background: #fff;
+    border-color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
     box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
 }
 

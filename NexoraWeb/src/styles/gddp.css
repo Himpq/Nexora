@@ -1,9 +1,12 @@
 @import './tokens.css';
+@import './tokens-color.css';
 @import './nexora-toast.css';
 @import './modal.css';
 @import './admin.css';
 @import './buttons.css';
+@import './tabs.css';
 @import './settings.css';
 @import './panels.css';
 @import './dropdowns.css';
+@import './context-menu.css';
 @import './main.css';

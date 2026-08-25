@@ -226,29 +226,55 @@
     }
 
     /**
-     * 激活线在滚动窗口内居中(对齐原版 scrollActiveTurnIndicatorIntoView):
-     * 目标 = 线条中心对齐窗口中心,偏差 < 1px 不动
+     * 激活线滚动定位(对齐原版 scrollActiveTurnIndicatorIntoView 的增强):
+     *   - align="center":线居中对齐窗口中心(跳转/新增轮次/首次加载);
+     *   - align="nearest"(默认):仅当线滚出可视区时做最小滚动贴回边缘,
+     *     保证滚动阅读时高亮线始终可见,又不与消息区滚动互相干扰。
+     * 计算基于 getBoundingClientRect 差值:不依赖 offsetParent 链
+     * (lines 容器无 position,offsetTop 会跳到 fixed 面板导致基准错误),
+     * 每次至多两次矩形读取,仅在激活线变化时触发。
      */
-    function scrollActiveLineIntoView(animate: boolean): void {
+    function scrollActiveLineIntoView(animate: boolean, align: 'center' | 'nearest' = 'nearest'): void {
         const container = linesEl.value
 
-        if (!container) {
+        if (!container || activeTurnIndex.value < 0) {
             return
         }
 
-        const activeLine = activeTurnIndex.value >= 0
-            ? container.children[activeTurnIndex.value] as HTMLElement | undefined
-            : undefined
+        const activeLine = container.children[activeTurnIndex.value] as HTMLElement | undefined
 
         if (!activeLine) {
             return
         }
 
         requestAnimationFrame(() => {
-            const targetTop = Math.max(
-                0,
-                activeLine.offsetTop - ((container.clientHeight - activeLine.offsetHeight) / 2)
-            )
+            const containerRect = container.getBoundingClientRect()
+            const lineRect = activeLine.getBoundingClientRect()
+
+            // 线在容器可视坐标系中的位置(视口差值即容器内位置,滚动实时反映)
+            const lineTopInView = lineRect.top - containerRect.top
+            const lineBottomInView = lineTopInView + lineRect.height
+
+            let targetTop: number
+
+            if (align === 'center') {
+                targetTop = Math.max(
+                    0,
+                    container.scrollTop + (lineTopInView + (lineRect.height / 2)) - (containerRect.height / 2)
+                )
+            } else {
+
+                // nearest:已在可视区内则不动;越出上/下边缘时贴回对应边缘
+                if (lineTopInView >= 0 && lineBottomInView <= containerRect.height) {
+                    return
+                }
+
+                targetTop = lineTopInView < 0
+                    ? container.scrollTop + lineTopInView
+                    : container.scrollTop + (lineBottomInView - containerRect.height)
+            }
+
+            targetTop = Math.max(0, targetTop)
 
             if (Math.abs(container.scrollTop - targetTop) < 1) {
                 return
@@ -261,12 +287,14 @@
         })
     }
 
-    /** 设置激活轮次(对齐原版 setActiveTurnLine:更新高亮 + 可选窗口居中) */
+    /** 设置激活轮次(更新高亮;跳转/新增走居中,滚动跟随走最小可见滚动) */
     function setActiveTurnLine(index: number, options: TurnUpdateOptions = {}): void {
         activeTurnIndex.value = index
 
         if (options.forceScroll) {
-            scrollActiveLineIntoView(!!options.animate)
+            scrollActiveLineIntoView(!!options.animate, 'center')
+        } else {
+            scrollActiveLineIntoView(false, 'nearest')
         }
     }
 

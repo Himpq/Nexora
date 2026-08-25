@@ -1,0 +1,175 @@
+/**
+ * tokens-color.css — 语义色彩令牌与明暗主题
+ *
+ * 职责:
+ *   - 定义全站语义色彩令牌(表面 / 文字 / 边框),亮色值为默认主题
+ *   - [data-theme="dark"](由 theme store 写到 <html>)覆盖令牌为暗色值
+ *   - 第二区块为 legacy 区域变量的暗色过渡覆盖:仅服务于已收编的原版 CSS,
+ *     待聊天区等完成独立 Vue 渲染后,随 legacy 资产一起退役
+ *
+ * 规则:
+ *   - 新代码一律引用语义令牌(--color-*),禁止引用 legacy 过渡变量
+ *   - 组件禁止自行判断明暗(禁止手写 [data-theme] 分支),颜色差异全部收敛到本文件
+ */
+
+:root {
+    /* 原生控件(滚动条/表单/输入框自动填充)随主题走 */
+    color-scheme: light;
+
+    /* --- 表面 --- */
+    /* 页面主背景(内容区 / AI 消息泡) */
+    --color-bg-page: #ffffff;
+    /* 浮起表面:弹窗 / 菜单 / 卡片 */
+    --color-bg-elevated: #ffffff;
+    /* 凹陷表面:用户消息泡 / 次级面板底 */
+    --color-bg-sunken: #f4f4f4;
+    /* 通用悬浮反馈底 */
+    --color-bg-hover: #f7f7f8;
+
+    /* --- 文字 --- */
+    --color-text-primary: #111111;
+    --color-text-secondary: #666666;
+
+    /* --- 边框 --- */
+    --color-border: #eaeaea;
+    --color-border-input: #e0e0e0;
+    /* 强调边框:聚焦态 / 主按钮描边等需要高对比的场景 */
+    --color-border-strong: #999999;
+
+    /* --- 滚动条 --- */
+    --color-scrollbar-thumb: #cbd5e1;
+    --color-scrollbar-thumb-hover: #a0a0a0;
+
+    /* --- 控制件(分段控件/开关的轨道与选中滑块) --- */
+    --color-control-track: #f1f1f1;
+    --color-control-active: #ffffff;
+
+    /* --- 状态语义(danger / success / accent) --- */
+    --color-danger-text: #c0392b;
+    --color-danger-surface: #fdecec;
+    --color-danger-border: #f0c4c4;
+
+    --color-success-text: #2e7d32;
+    --color-success-surface: #e8f5e9;
+    --color-success-border: #86efac;
+
+    --color-accent-text: #2563eb;
+    --color-accent-surface: #eff6ff;
+    --color-accent-border: #93c5fd;
+
+    /* 警告语义(提示条 / 注意说明):亮色浅琥珀底 + 深琥珀字 */
+    --color-warning-text: #92600a;
+    --color-warning-surface: #fef6e0;
+    --color-warning-border: #f6dca0;
+}
+
+/*
+ * 暗色主题令牌覆盖区
+ * 配色基准:中性灰阶 + 微冷色偏,避免纯黑纯白造成的对比刺眼
+ */
+[data-theme='dark'] {
+    /* 原生控件(滚动条/表单/输入框自动填充)随主题走 */
+    color-scheme: dark;
+
+    /* --- 表面 --- */
+    --color-bg-page: #141416;
+    --color-bg-elevated: #202024;
+    --color-bg-sunken: #1a1a1d;
+    --color-bg-hover: #26262b;
+
+    /* --- 文字 --- */
+    --color-text-primary: #d6d6dc;
+    --color-text-secondary: #9c9ca6;
+
+    /* --- 边框 --- */
+    --color-border: #2c2c32;
+    --color-border-input: #38383f;
+    --color-border-strong: #85858f;
+
+    /* --- 滚动条 --- */
+    --color-scrollbar-thumb: #45454d;
+    --color-scrollbar-thumb-hover: #5c5c66;
+
+    /* --- 控制件:轨道与滑块保持两级对比,选中态清晰可辨 --- */
+    --color-control-track: #26262b;
+    --color-control-active: #3a3a42;
+
+    /* --- 状态语义:暗色下用低饱和深底 + 提亮前景 --- */
+    --color-danger-text: #f19999;
+    --color-danger-surface: #38181a;
+    --color-danger-border: #6b2729;
+
+    --color-success-text: #7fdca4;
+    --color-success-surface: #12291c;
+    --color-success-border: #2c5c40;
+
+    --color-accent-text: #8ab4f8;
+    --color-accent-surface: #16233d;
+    --color-accent-border: #2c4a78;
+
+    /* 警告语义:暗色下低饱和深底 + 提亮前景 */
+    --color-warning-text: #e7c187;
+    --color-warning-surface: #2c2415;
+    --color-warning-border: #5c4a26;
+}
+
+/*
+ * ============================================================
+ * legacy 区域变量暗色过渡覆盖区(临时资产,独立渲染后移除)
+ * ============================================================
+ * 原版 CSS 中不属于通用语义、且无法用上面令牌表达的区域性配色,
+ * 按原版变量名在暗色下给出对应值。亮色值不在此重复 —— 由 legacy
+ * CSS 自己的 :root 提供,避免同一颜色双处维护。
+ */
+
+[data-theme='dark'] {
+    /* 会话侧边栏:亮色下即为深色,暗色下仅微调并压低激活项亮度 */
+    --bg-sidebar: #0b0b0d;
+    --bg-sidebar-hover: #1d1d21;
+    --bg-sidebar-active: #2c2c31;
+    --text-sidebar-active: #ececf1;
+
+    /* 学习模式侧栏:亮色为浅灰面板,暗色整体翻转为深色面板 */
+    --learning-sidebar-bg: #17171a;
+    --learning-sidebar-surface: #1f1f23;
+    --learning-sidebar-border: #2e2e33;
+    --learning-sidebar-text: #ececf1;
+    --learning-sidebar-muted: #9a9aa3;
+    --learning-sidebar-accent: #c8ccd4;
+
+    /*
+     * 文件中心类型图标(tone-*分类色系统):
+     * 浅彩底统一转暗色表面,深彩字提亮为同色系亮变体(300 档),
+     * 保留类型语义的同时消除暗色下的浅色块刺眼与对比不足。
+     */
+    --file-icon-tone-pdf: #fb7185;
+    --file-icon-tone-slide: #fdba74;
+    --file-icon-tone-archive: #fcd34d;
+    --file-icon-tone-code: #c4b5fd;
+}
+
+/* 文件图标暗色适配(浅彩底 -> 中性表面) */
+[data-theme='dark'] .file-center-file-icon {
+    background: var(--color-bg-hover);
+}
+
+[data-theme='dark'] .file-center-folder-card .file-center-file-icon {
+    background: var(--color-bg-hover);
+}
+
+[data-theme='dark'] .file-center-file-icon.tone-pdf {
+    color: var(--file-icon-tone-pdf);
+}
+
+[data-theme='dark'] .file-center-file-icon.tone-slide,
+[data-theme='dark'] .file-center-folder-card .file-center-file-icon {
+    color: var(--file-icon-tone-slide);
+}
+
+[data-theme='dark'] .file-center-file-icon.tone-archive {
+    color: var(--file-icon-tone-archive);
+}
+
+[data-theme='dark'] .file-center-file-icon.tone-code {
+    color: var(--file-icon-tone-code);
+}

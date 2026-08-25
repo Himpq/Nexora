@@ -1,4 +1,4 @@
-﻿/**
+/**
  * chat_app.js — 应用引导与初始化编排
  *
  * 职责：独占 DOMContentLoaded 主入口，按固定顺序编排应用初始化：
@@ -226,7 +226,7 @@ async function bootstrap() {
         if (!cid && resumeCid && !isGenerating) {
             // Forward to resumed conversation to prevent double loading the UI
             cid = resumeCid;
-            if (window.history.replaceState) window.history.replaceState({}, '', `/chat?cid=${cid}`);
+            if (window.history.replaceState) window.history.replaceState({}, '', `${window.location.pathname}?cid=${cid}`);
         }
 
         if (cid) {

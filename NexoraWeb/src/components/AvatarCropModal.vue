@@ -60,13 +60,18 @@
         <template #footer>
             <button type="button" class="g-btn g-btn-ghost" @click="emit('close')">取消</button>
             <button type="button" class="g-btn g-btn-ghost" @click="reset">重置</button>
-            <button type="button" class="g-btn g-btn-primary" :disabled="!image" @click="apply">应用</button>
+            <button type="button" class="g-btn g-btn-primary" :disabled="!hasImage" @click="apply">应用</button>
         </template>
     </Modal>
 </template>
 
 <script setup lang="ts">
     import { onMounted, ref } from 'vue'
+
+    /** 图片是否已加载(响应式,驱动"应用"按钮可用态;image 本身为非响应式实例,不进模板绑定) */
+    const hasImage = ref(false)
+
+    import { showError } from '@/stores/notify'
 
     import Modal from '@/ui/Modal.vue'
 
@@ -94,23 +99,33 @@
     let lastY = 0
     let pendingFile: File | null = null
 
-    /** 加载用户选择的图片(对齐原版 openAvatarCropModal FileReader 流程) */
+    /** 加载用户选择的图片(对齐原版 openAvatarCropModal FileReader 流程);
+     *  解码失败(iPhone HEIC 等)显式报错并关闭,避免出现空白画布+应用按钮永久禁用 */
     async function openWithFile(file: File): Promise<void> {
         pendingFile = file
 
         const url = URL.createObjectURL(file)
         const img = new Image()
 
-        await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve()
-            img.onerror = () => reject(new Error('图片加载失败'))
-            img.src = url
-        })
+        try {
+            await new Promise<void>((resolve, reject) => {
+                img.onload = () => resolve()
+                img.onerror = () => reject(new Error('图片加载失败'))
+                img.src = url
+            })
+        } catch (error) {
+            URL.revokeObjectURL(url)
+            showError(error instanceof Error ? error.message : '图片加载失败,请换一张 JPG/PNG 照片')
+            emit('close')
+
+            return
+        }
 
         image = img
         zoom.value = 1
         offsetX.value = 0
         offsetY.value = 0
+        hasImage.value = true
 
         draw()
     }
@@ -348,7 +363,7 @@
         min-width: 0;
         min-height: 360px;
         overflow: hidden;
-        border: 1px solid #d6deea;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         background: #9ca3af;
     }
@@ -367,13 +382,13 @@
         align-items: center;
         gap: 10px;
         padding: 10px 12px;
-        border: 1px solid #e2e8f0;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ac-controls label {
-        color: #475569;
+        color: var(--color-text-secondary);
         font-size: 12px;
         font-weight: 600;
         white-space: nowrap;
@@ -397,14 +412,14 @@
         align-items: center;
         gap: 10px;
         padding: 12px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
-        background: #f8fafc;
+        background: var(--color-bg-sunken);
     }
 
     .ac-preview-title {
         font-size: 12px;
-        color: #334155;
+        color: var(--color-text-secondary);
         font-weight: 600;
     }
 
@@ -412,13 +427,13 @@
         width: 140px;
         height: 140px;
         border-radius: 999px;
-        border: 1px solid #dbeafe;
-        background: #ffffff;
+        border: 1px solid var(--color-accent-border);
+        background: var(--color-bg-elevated);
     }
 
     .ac-tip {
         font-size: 11px;
-        color: #64748b;
+        color: var(--color-text-secondary);
         line-height: 1.4;
         text-align: center;
     }

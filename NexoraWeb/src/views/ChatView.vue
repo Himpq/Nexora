@@ -8,6 +8,9 @@
 
 <template>
     <div class="app-container">
+        <!-- 浏览器实时同步通道:进入聊天页自动连接 /ws/browser,接收模型配置/通知等推送 -->
+        <BrowserSyncConnector />
+
         <Sidebar
             :collapsed="sidebarCollapsed"
             @toggle-mobile="handleToggleMobile"
@@ -26,16 +29,27 @@
                 :models="modelStore.models"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
+                :override-title="headerOverrideTitle"
+                :override-title-tooltip="headerOverrideTooltip"
                 @toggle-sidebar="handleToggleSidebar"
                 @open-notes="notesOpen = true"
                 @open-files="handleOpenFiles"
                 @open-knowledge="handleOpenKnowledge"
+                @open-mail="handleOpenMailCenter"
                 @back-to-chat="handleHeaderBack"
             />
 
             <div class="gddp-view-stage">
                 <!-- 聊天节点常驻,Files/Workspace 仅覆盖显示,避免返回时重新渲染对话。 -->
                 <div v-show="activeView === 'chat'" class="gddp-chat-view">
+                <!-- 从 Workspace 打开的对话:聊天视图内提供常驻「返回 Workspace」入口
+                     (顶栏返回按钮仅在覆盖视图显示,聊天态不满足,必须就地补一个)。 -->
+                <div v-if="workspaceReturnId !== ''" class="chat-workspace-return" aria-label="Workspace 返回入口">
+                    <button class="chat-workspace-return-btn" type="button" title="返回 Workspace" @click="returnToWorkspace">
+                        <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                        <span>返回 Workspace</span>
+                    </button>
+                </div>
                 <div id="messagesContainer" class="messages-area">
                     <!-- 切换会话加载中:显示加载占位,既不闪欢迎页也不残留旧内容 -->
                     <div v-if="conversationStore.messagesLoading" class="messages-loading">
@@ -72,9 +86,11 @@
                             :model-name="modelStore.selectedModel?.name"
                             :streaming="isStreamingMessage(index)"
                             :is-last-user-message="isLastUserMessage(message)"
+                            :conversation-id="conversationStore.currentId"
                             @delete="handleDeleteMessage"
                             @edit-save="handleEditUserMessage"
                             @regenerate="handleRegenerate"
+                            @question-answer="handleQuestionAnswer"
                             @open-image="handleOpenImage"
                             @fork="handleForkMessage"
                             @switch-version="handleSwitchVersion"
@@ -89,14 +105,17 @@
                     @jump="handleTurnIndicatorJump"
                 />
 
-                <ChatInput
-                    ref="chatInputRef"
-                    :attachments="pendingAttachments"
-                    @send="handleSend"
-                    @stop="handleStop"
-                    @remove-attachment="pendingAttachments.splice($event, 1)"
-                    @open-token-detail="tokenDetailOpen = true"
-                />
+                <!--
+                    输入坞:进入 Workspace 详情时停靠到详情页输入槽位(对齐原版
+                    mountWorkspaceDetailInputContainer)。必须用 v-if 条件挂载 Teleport:
+                    Vue 仅在挂载时解析一次目标,常驻 Teleport 会把启动期的 null 目标永久缓存,
+                    后续启用即 insertBefore(null) 崩溃;v-if 保证创建实例时槽位已存在。
+                    未停靠分支直接原地渲染,两分支共享同一份绑定(chatInputBindings)。
+                -->
+                <Teleport v-if="workspaceComposerDocked" to="#ws-detail-input-slot">
+                    <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
+                </Teleport>
+                <ChatInput v-else ref="chatInputRef" v-bind="chatInputBindings" />
                 </div>
 
                 <div v-show="filesCenterOpen" class="gddp-content-view">
@@ -108,18 +127,48 @@
                     />
                     <section v-else class="file-center-view" aria-label="Files">
                         <div class="file-center-shell">
-                            <FileDetailView :file="fileDetail" />
+                            <FileDetailView :file="fileDetail" @deleted="fileDetail = null" />
                         </div>
                     </section>
                 </div>
 
                 <div v-show="workspacesOpen" class="gddp-content-view">
+                    <!--
+                        他人共享对话只读视图:覆盖显示在 Workspaces 内容层(与 Files 的 fileDetail 同模式)。
+                        两分支必须 v-show 共存:WorkspacesView 卸载会连带销毁输入槽位,
+                        导致停靠中的输入坞 Teleport 目标失效(insertBefore 崩溃)。
+                    -->
+                    <section v-show="workspaceShared !== null" class="workspace-shared-view" aria-label="共享对话(只读)">
+                        <div class="workspace-shared-head">
+                            <button class="workspace-shared-back" type="button" title="返回 Workspace" aria-label="返回 Workspace" @click="closeWorkspaceSharedConversation()">
+                                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                                <span>返回</span>
+                            </button>
+                            <span class="workspace-shared-title">{{ workspaceShared?.title || '共享对话' }}</span>
+                            <span v-if="workspaceShared?.ownerUsername" class="workspace-shared-owner">只读 · @{{ workspaceShared.ownerUsername }}</span>
+                        </div>
+                        <div class="messages-area instant-messages workspace-shared-messages">
+                            <div v-if="workspaceShared !== null && workspaceShared.loading" class="ws-shared-state">加载中...</div>
+                            <div v-else-if="workspaceShared !== null && workspaceShared.error" class="ws-shared-state">{{ workspaceShared.error }}</div>
+
+                            <template v-else>
+                                <MessageItem
+                                    v-for="message in workspaceShared === null ? [] : workspaceShared.messages"
+                                    :key="message.index"
+                                    :message="message"
+                                    readonly
+                                    @open-image="handleOpenImage"
+                                />
+                            </template>
+                        </div>
+                    </section>
+
                     <WorkspacesView
+                        v-show="workspaceShared === null"
                         ref="workspacesViewRef"
                         :open="workspacesOpen"
-                        @close="backToChat"
-                        @open-conversation="handleOpenWorkspaceConversation"
-                        @open-file="handleOpenWorkspaceFile"
+                        @open-conversation="onWorkspaceOpenConversation"
+                        @open-knowledge="onWorkspaceOpenKnowledge"
                     />
                 </div>
 
@@ -136,6 +185,14 @@
                         :open="knowledgeOpen"
                         :title="knowledgeTitle"
                         @open-settings="knowledgeSettingsOpen = true"
+                    />
+                </div>
+
+                <div v-show="mailCenterOpen" class="gddp-content-view">
+                    <MailCenterView
+                        ref="mailViewRef"
+                        :open="mailCenterOpen"
+                        @close="backToChat"
                     />
                 </div>
             </div>
@@ -199,15 +256,19 @@
     import type { ChatMessage } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
     import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
-    import { streamService, type StreamChunk } from '@/stream/StreamService'
+    import { chatStream, type ChatStreamChunk } from '@/network/chatStream'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
+    import { useBottomFollow } from '@/composables/useBottomFollow'
+    import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
+    import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
 
     import ChatHeader from '@/components/ChatHeader.vue'
+    import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -218,6 +279,7 @@
     import KnowledgeViewer from '@/components/KnowledgeViewer.vue'
     import KnowledgeManagementView from '@/components/KnowledgeManagementView.vue'
     import KnowledgeSettingsModal from '@/components/KnowledgeSettingsModal.vue'
+    import MailCenterView from '@/components/MailCenterView.vue'
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
@@ -227,15 +289,21 @@
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
     import TrashModal from '@/components/TrashModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
-    import WorkspacesView from '@/components/WorkspacesView.vue'
+    import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import type { NoteItem } from '@/api/notes'
     import type { SearchFileHit, SearchMessageHit } from '@/api/search'
+    import type { WorkspaceConversationOpenMeta } from '@/components/workspaces/workspaceContext'
+
+    import { addWorkspaceConversation, fetchSharedWorkspaceConversation } from '@/api/workspaces'
 
     const conversationStore = useConversationStore()
     const modelStore = useModelStore()
     const userStore = useUserStore()
+
+    // 网络层快照内容源:进行中流的缓冲消息上下文由 store 提供(层只负责序列化/存储)
+    chatStream.attachSnapshotSource(() => conversationStore.buildStreamSnapshot())
 
     const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
     const settingsOpen = ref(false)
@@ -254,40 +322,215 @@
     /** 正在向前补载更早消息:抑制"消息变化自动滚到底部",避免补载后被强行拉到底 */
     const prepending = ref(false)
 
+    /**
+     * 跟随底部滚动策略:
+     * 流式增量仅在用户位于底部附近时自动滚底;用户上滑回看即暂停,回到底部恢复。
+     */
+    const {
+        following: autoFollowBottom,
+        syncWithScroll,
+        followNow,
+        resume: resumeBottomFollow,
+        suspend: suspendBottomFollow,
+    } = useBottomFollow()
+
+    // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
+    useConversationUrlSync()
+
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
-    const fileDetailReturnView = ref<'files' | 'workspace'>('files')
 
     /** Workspaces 视图引用:顶栏返回需先回项目首页(详情内容 → 首页 → 聊天) */
     const workspacesViewRef = ref<InstanceType<typeof WorkspacesView> | null>(null)
 
+    /**
+     * 从 Workspace 内打开对话/知识库后,记录来源 Workspace id,
+     * 顶栏返回时据此回退到原 Workspace 详情(对齐原版:Workspace 子内容返回项目视图)。
+     * 仅 Workspace 触发的打开才写入,其他入口(侧栏知识库/管理页)不受其影响。
+     */
+    const workspaceReturnId = ref<string>('')
+
+    /**
+     * Workspace 详情内嵌输入框:
+     *   - workspaceComposeTarget 非空 = 发送的会话应归入该 Workspace
+     *     (对齐原版 getActiveWorkspaceDetailComposeWorkspaceId)
+     */
+    const workspaceComposeTarget = computed(() => workspacesViewRef.value?.composerTarget || '')
+
+    /** 发送后已登记归入的会话集合(防队列补发重复登记) */
+    const composedRegisteredPairs = new Set<string>()
+
+    /** 发送后把新会话归入 Workspace(对齐原版 registerWorkspaceDetailConversation) */
+    async function registerComposedConversation(workspaceId: string, conversationId: string): Promise<void> {
+        const pairKey = `${workspaceId}:${conversationId}`
+
+        if (composedRegisteredPairs.has(pairKey)) {
+            return
+        }
+
+        try {
+            await addWorkspaceConversation(workspaceId, conversationId)
+
+            composedRegisteredPairs.add(pairKey)
+            showToast('新对话已归入 Workspace', 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : 'Workspace 对话登记失败')
+        }
+    }
+
+    /**
+     * 他人共享对话只读视图(对齐原版 openWorkspaceSharedConversation):
+     * 覆盖在 Workspaces 内容层;顶栏返回先回到项目视图。
+     */
+    interface WorkspaceSharedViewState {
+        loading: boolean
+        error: string
+        title: string
+        ownerUsername: string
+        messages: ChatMessage[]
+    }
+
+    const workspaceShared = ref<WorkspaceSharedViewState | null>(null)
+
+    async function openWorkspaceSharedConversation(meta: WorkspaceConversationOpenMeta, conversationId: string): Promise<void> {
+        workspaceShared.value = {
+            loading: true,
+            error: '',
+            title: '',
+            ownerUsername: meta.ownerUsername,
+            messages: [],
+        }
+
+        try {
+            const data = await fetchSharedWorkspaceConversation(meta.workspaceId, conversationId)
+
+            workspaceShared.value = {
+                loading: false,
+                error: '',
+                title: data.title,
+                ownerUsername: data.ownerUsername || meta.ownerUsername,
+                messages: data.messages,
+            }
+        } catch (error) {
+            workspaceShared.value = {
+                loading: false,
+                error: error instanceof Error ? error.message : '共享对话读取失败',
+                title: '',
+                ownerUsername: meta.ownerUsername,
+                messages: [],
+            }
+        }
+    }
+
+    function closeWorkspaceSharedConversation(): void {
+        workspaceShared.value = null
+
+        // 关闭共享对话即回到项目视图;来源定位同时失效,避免后续顶栏返回误重开 Workspace
+        workspaceReturnId.value = ''
+    }
+
     /** 内容级视图统一由浮层协调器(GDDP)单一状态机管理,切换时彼此互斥 */
     const filesCenterOpen = computed(() => overlay.view === 'files')
     const workspacesOpen = computed(() => overlay.view === 'workspaces')
+
+    /**
+     * Teleport 停靠开关:目标槽位真实出现在文档后的下一拍才置 true,
+     * v-if 届时才创建 Teleport 实例(挂载期解析目标,必然成功)。
+     * 离开详情立即置 false,输入坞以普通节点渲染回常驻的聊天视图容器。
+     */
+    const workspaceComposerDocked = ref(false)
+
+    /**
+     * ChatInput 公共绑定:停靠(Teleport)与未停靠两个分支共用一份,
+     * 监听器以 on* 键传入 v-bind,避免模板重复(AGENTS 严禁重复代码)。
+     */
+    const chatInputBindings = computed(() => ({
+        attachments: pendingAttachments.value,
+        onSend: handleSend,
+        onStop: handleStop,
+        onRemoveAttachment: (index: number) => pendingAttachments.value.splice(index, 1),
+        onFilesUploaded: handleUploadedFiles,
+        onOpenTokenDetail: () => {
+            tokenDetailOpen.value = true
+        },
+    }))
+
+    watch(
+        [workspacesOpen, workspaceComposeTarget, workspaceShared],
+        ([open, target, shared]) => {
+            // 共享只读视图无输入框:此处不启用停靠,输入坞按普通节点留在聊天视图
+            if (!open || !target || shared !== null) {
+                workspaceComposerDocked.value = false
+
+                return
+            }
+
+            void nextTick(() => {
+                const slot = document.getElementById('ws-detail-input-slot')
+
+                if (slot && open && workspacesViewRef.value?.composerTarget === target) {
+                    workspaceComposerDocked.value = true
+                }
+            })
+        },
+        { immediate: true }
+    )
     const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
     const knowledgeOpen = computed(() => overlay.view === 'knowledge')
+    const mailCenterOpen = computed(() => overlay.view === 'mail')
     const knowledgeTitle = ref('')
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'>(() => {
         return overlay.view || 'chat'
     })
 
-    /** 返回聊天视图(对齐原版 closeFileCenterOrReturn) */
+    /** 顶栏中央标题覆盖(Workspaces 子态:详情页显示「Workspace」,共享对话显示其标题) */
+    const headerOverrideTitle = computed(() => {
+        if (workspacesOpen.value && workspaceShared.value !== null) {
+            return workspaceShared.value.title || '共享对话'
+        }
+
+        if (workspacesOpen.value && workspacesViewRef.value?.isInDetail()) {
+            return 'Workspace'
+        }
+
+        return ''
+    })
+
+    /** 覆盖标题悬停说明:只读共享时标注归属者(对齐原版 headerTitle.title) */
+    const headerOverrideTooltip = computed(() => {
+        if (workspacesOpen.value && workspaceShared.value !== null) {
+            return workspaceShared.value.ownerUsername
+                ? `只读共享 · @${workspaceShared.value.ownerUsername}`
+                : '只读共享'
+        }
+
+        return ''
+    })
+
+    /** 返回聊天视图(对齐原版 closeFileCenterOrReturn);离开 Workspaces 层时一并复位共享只读态 */
     function backToChat(): void {
         closeAllOverlays()
 
         knowledgeTitle.value = ''
         fileDetail.value = null
-        fileDetailReturnView.value = 'files'
+        workspaceShared.value = null
     }
 
     /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。
-     *  Workspace 内容多级返回:文件详情 → Workspace 首页 → 聊天 */
+     *  Workspace 内容多级返回:共享只读对话 → 项目详情/首页 → 聊天 */
     function handleHeaderBack(): void {
         // 文件详情:先从内容返回其来源视图(文件中心首页 / Workspaces 首页)
         if (filesCenterOpen.value && fileDetail.value !== null) {
             handleFileDetailBack()
+
+            return
+        }
+
+        // Workspaces 共享只读对话:先回到项目视图
+        if (workspacesOpen.value && workspaceShared.value !== null) {
+            closeWorkspaceSharedConversation()
 
             return
         }
@@ -299,11 +542,68 @@
             return
         }
 
+        // 从 Workspace 内打开了对话/知识库:顶栏返回应回到来源 Workspace 详情。
+        // WorkspacesView 全程 v-show 保活,detail 与当前 tab 原样保留,直接切回即可,无需重开。
+        if (workspaceReturnId.value) {
+            returnToWorkspace()
+
+            return
+        }
+
+        // 邮件阅读态:先返回邮件列表,列表态才关闭整个视图
+        if (mailCenterOpen.value && mailViewRef.value?.isInDetail()) {
+            mailViewRef.value.backToList()
+
+            return
+        }
+
         backToChat()
     }
 
-    /** 从 Workspaces 详情点击对话:回到聊天并打开该会话(对齐原版 workspace 对话跳转) */
-    async function handleOpenWorkspaceConversation(conversationId: string): Promise<void> {
+    /**
+     * 回到来源 Workspace 详情(顶栏返回与聊天视图的「返回 Workspace」按钮共用):
+     * WorkspacesView 全程 v-show 保活,detail 与当前 tab 原样保留,直接切回即可。
+     */
+    function returnToWorkspace(): void {
+        if (!workspaceReturnId.value) {
+            return
+        }
+
+        workspaceReturnId.value = ''
+
+        backToChat()
+        openView('workspaces')
+    }
+
+    /**
+     * Workspace 内打开对话/知识库的入口包装:先记录来源 Workspace id,
+     * 再走既有分流逻辑;顶栏返回时据此回退到原 Workspace 详情。
+     */
+    function onWorkspaceOpenConversation(conversationId: string, meta?: WorkspaceConversationOpenMeta): void {
+        workspaceReturnId.value = workspacesViewRef.value?.currentWorkspaceId() || ''
+
+        void handleOpenWorkspaceConversation(conversationId, meta)
+    }
+
+    function onWorkspaceOpenKnowledge(title: string): void {
+        workspaceReturnId.value = workspacesViewRef.value?.currentWorkspaceId() || ''
+
+        handleOpenKnowledgeDocument(title)
+    }
+
+    /**
+     * 从 Workspaces 详情点击对话(对齐原版 openWorkspaceDetailConversation 的分流):
+     *   - 无归属元数据:自己的会话,回到聊天直接打开(来源 Workspace 已记录,可经顶栏返回)
+     *   - 带归属元数据:他人共享会话,留在 Workspaces 内容层渲染只读视图
+     */
+    async function handleOpenWorkspaceConversation(conversationId: string, meta?: WorkspaceConversationOpenMeta): Promise<void> {
+        if (meta) {
+            await openWorkspaceSharedConversation(meta, conversationId)
+
+            return
+        }
+
+        // 离开 Workspace 视图进入聊天,但保留 workspaceReturnId 以便顶栏返回
         backToChat()
 
         try {
@@ -316,6 +616,7 @@
     /** 选区右键菜单与笔记面板引用 */
     const selectionMenuRef = ref<InstanceType<typeof SelectionContextMenu> | null>(null)
     const notesPanelRef = ref<InstanceType<typeof NotesPanel> | null>(null)
+    const mailViewRef = ref<InstanceType<typeof MailCenterView> | null>(null)
 
     /** 图片查看器:非空 url 即打开(对齐原版 openImageViewer/closeImageViewer) */
     const imageViewerUrl = ref('')
@@ -357,6 +658,25 @@
         showToast('已附加到输入框', 'success')
     }
 
+    /** 输入区直选文件上传完成:按 sandbox_path 去重后并入待发送附件列表 */
+    function handleUploadedFiles(list: AttachmentInput[]): void {
+        list.forEach((attachment) => {
+            const sandbox = String(attachment.sandbox_path || '').trim()
+
+            if (!sandbox) {
+                return
+            }
+
+            if (pendingAttachments.value.some((att) => att.sandbox_path === sandbox)) {
+                return
+            }
+
+            pendingAttachments.value.push(attachment)
+        })
+
+        chatInputRef.value?.focus()
+    }
+
     /**
      * 轮次预览点击跳转(对齐原版 scrollToAndHighlight):
      * 目标消息居中于消息视口(而非顶部对齐),跳转后临时高亮 3 秒;
@@ -367,6 +687,9 @@
         // prepending 必须保持到"目标滚动完成之后"再释放,否则"消息变化自动滚底"
         // 监听在 nextTick 刷新期执行时 prepending 已为 false,仍会把视图拉到底、覆盖目标滚动。
         const needLoad = !conversationStore.messages.some((item) => Number(item.index) === messageIndex)
+
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
 
         if (needLoad) {
             prepending.value = true
@@ -430,17 +753,18 @@
         return index === conversationStore.messages.length - 1
     }
 
-    /** 发送:唯一入口,经 StreamService 同步锁防重入;生成中消息自动入队 */
+    /** 发送:唯一入口,经网络层同步锁防重入;生成中消息自动入队 */
     async function handleSend(content: string, options: {
         enableThinking: boolean
         enableWebSearch: boolean
         enableTools: boolean
+        toolsMode: string
     }): Promise<void> {
         // 附件随消息快照,进入队列/发送后清空输入区附件条(对齐原版发送后 reset files)
         const attachments = pendingAttachments.value.slice()
 
         // 生成中:消息进入待发送队列,当前流结束后自动发送(消息队列功能)
-        if (streamService.isSending) {
+        if (chatStream.isSending) {
             conversationStore.enqueueMessage({ content, options, attachments })
 
             pendingAttachments.value = []
@@ -454,7 +778,7 @@
         if (!conversationStore.currentId) {
             await conversationStore.ensureConversationId()
 
-            if (streamService.isSending) {
+            if (chatStream.isSending) {
                 conversationStore.enqueueMessage({ content, options, attachments })
 
                 pendingAttachments.value = []
@@ -466,24 +790,50 @@
         await doSend(content, options, attachments)
     }
 
-    /** 执行一次真实发送(经 StreamService 同步锁) */
+    /** 执行一次真实发送(经网络层同步锁) */
     async function doSend(content: string, options: {
         enableThinking: boolean
         enableWebSearch: boolean
         enableTools: boolean
+        toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
+        // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)
+        const composeWorkspace = workspaceComposeTarget.value
+
+        if (composeWorkspace) {
+            void registerComposedConversation(composeWorkspace, conversationId)
+        }
+
+        // Workspace 详情页发送即切到该对话(对齐原版:详情页输入框发送跳进会话查看回复);
+        // 来源 Workspace 已记录,顶栏可一键返回。登记与跳转不互相等待,保证立即看到流式回复。
+        if (composeWorkspace) {
+            workspaceReturnId.value = workspacesViewRef.value?.currentWorkspaceId() || composeWorkspace
+
+            backToChat()
+
+            try {
+                await conversationStore.openConversation(conversationId)
+            } catch {
+                // 打开失败不影响已发起的发送;错误由流终帧统一上报
+            }
+        }
+
+        // 发送即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
+        resumeBottomFollow()
+
         conversationStore.beginStream(content)
 
-        const accepted = await streamService.send({
+        const accepted = await chatStream.send({
             message: content,
             conversationId,
             modelName: modelStore.selectedId || undefined,
             enableThinking: options.enableThinking,
             enableWebSearch: options.enableWebSearch,
             enableTools: options.enableTools,
+            toolMode: options.toolsMode,
             includeContext: true,
             attachments,
         }, {
@@ -509,7 +859,12 @@
                 return
             }
 
-            if (conversationStore.queueCount > 0 && !streamService.isSending) {
+            if (conversationStore.queueCount > 0 && !chatStream.isSending) {
+                // 队列只在其所属会话被查看时排空,避免后台流期间把排队消息发进别的会话
+                if (conversationStore.streamingConversationId !== conversationStore.currentId) {
+                    return
+                }
+
                 const next = conversationStore.dequeueNext()
 
                 if (next) {
@@ -520,7 +875,7 @@
     )
 
     /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误 */
-    function handleStreamChunk(chunk: StreamChunk): void {
+    function handleStreamChunk(chunk: ChatStreamChunk): void {
         // 会话 ID 同步(后端懒创建会话时通过 conversation_id chunk 返回)
         if (chunk.type === 'conversation_id' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
@@ -542,6 +897,20 @@
         // token 画像:记录本次请求的 token 构成(CTX/Token 显示数据源)
         if (chunk.type === 'prompt_token_profile') {
             conversationStore.setStreamingTokenProfile(chunk)
+
+            return
+        }
+
+        // 流式 usage:驱动输入区 TK mini 增量展示(对齐原版 onTokenStreamUsageChunk)
+        if (chunk.type === 'token_usage') {
+            conversationStore.accumulateStreamUsage(chunk as unknown as Record<string, unknown>)
+
+            return
+        }
+
+        // 上下文压缩状态:更新当前助手消息的压缩卡片(对齐原版 updateMessageDivTools 的 context_compression_status 分支)
+        if (chunk.type === 'context_compression_status') {
+            conversationStore.setStreamingContextCompression(chunk)
 
             return
         }
@@ -578,12 +947,48 @@
             const delta = String(chunk.content || chunk.delta || '')
 
             conversationStore.appendStreamReasoning(delta)
+
+            return
+        }
+
+        // 工具事件:delta 阶段并入调用分段实现参数流式,call/result 维持配对时序;
+        // question 为交互问题卡片,等待用户作答后作为普通消息发送
+        if (
+            chunk.type === 'function_call_delta'
+            || chunk.type === 'function_call'
+            || chunk.type === 'function_result'
+            || chunk.type === 'question'
+        ) {
+            conversationStore.appendStreamToolStep(chunk as unknown as Record<string, unknown>)
+        }
+
+        // 增量落地后节流写快照(跨刷新恢复数据源,由网络层负责持久化)
+        if (
+            chunk.type === 'content_delta'
+            || chunk.type === 'content'
+            || chunk.type === 'reasoning_content'
+            || chunk.type === 'reasoning_delta'
+            || chunk.type === 'function_call'
+            || chunk.type === 'function_result'
+            || chunk.type === 'question'
+        ) {
+            chatStream.persistSnapshot()
         }
     }
 
     /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
         const detail = info as { error?: string; finalContent?: string; finalMessage?: Record<string, unknown> } | undefined
+
+        // 跨刷新重连发现服务端流已结束/不存在:
+        // 快照内容按"已完成部分"保留展示,静默收尾(不弹错误、不写错误文本)
+        if (reason === 'error' && typeof detail?.error === 'string' && detail.error.startsWith('STREAM_GONE')) {
+            conversationStore.finishRestoredStream()
+
+            streamErrorToastShown = false
+
+            return
+        }
 
         if (reason === 'error') {
             // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标
@@ -606,6 +1011,18 @@
             return
         }
 
+        // 用户终止:保留本地已流式接收的交错分段(多轮思考/工具链不塌缩);
+        // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
+        if (reason === 'aborted') {
+            conversationStore.applyFinalMessage(detail?.finalMessage)
+
+            conversationStore.abortStream()
+
+            streamErrorToastShown = false
+
+            return
+        }
+
         // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
         conversationStore.applyFinalMessage(detail?.finalMessage)
 
@@ -616,9 +1033,13 @@
 
     /** 停止生成:中断当前流并清空待发送队列 */
     function handleStop(): void {
-        streamService.cancel()
-
-        conversationStore.abortStream()
+        // 仅发起取消;生成状态与流式目标索引由 onEnd('aborted') 收尾复位,
+        // 保证取消终帧的 applyFinalMessage 仍能定位到正确的目标消息(重答场景)
+        if (chatStream.isSending) {
+            chatStream.cancel()
+        } else {
+            conversationStore.abortStream()
+        }
 
         conversationStore.clearQueue()
     }
@@ -699,7 +1120,38 @@
         await doSend(content, {
             enableThinking: true,
             enableWebSearch: false,
-            enableTools: true,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolsMode: readCurrentToolsMode(),
+        })
+    }
+
+    /** 读取输入区当前 Tools 模式(重答/编辑重发沿用,对齐原版 tool_mode 取值) */
+    function readCurrentToolsMode(): string {
+        return chatInputRef.value?.getToolsMode() || 'auto_off'
+    }
+
+    /**
+     * question 卡片作答:回答作为普通用户消息进入会话
+     * (上一条助手消息以 await 收尾,模型自然把该消息当作问题的回答继续执行)
+     */
+    async function handleQuestionAnswer(_message: ChatMessage, _questionId: string, answer: string): Promise<void> {
+        const content = String(answer || '').trim()
+
+        if (!content) {
+            return
+        }
+
+        if (chatStream.isSending) {
+            showToast('已有回复生成中,请稍候', 'warning')
+
+            return
+        }
+
+        await doSend(content, {
+            enableThinking: true,
+            enableWebSearch: false,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolsMode: readCurrentToolsMode(),
         })
     }
 
@@ -715,7 +1167,7 @@
             return
         }
 
-        if (streamService.isSending) {
+        if (chatStream.isSending) {
             showToast('已有回复生成中,请稍候', 'warning')
 
             return
@@ -732,13 +1184,17 @@
         // 本地清空目标回答,锁定流式更新该消息(后端将按 regenerate_index 截断上下文并覆盖)
         conversationStore.beginStreamAt(assistantMessage.index)
 
-        const accepted = await streamService.send({
+        // 重答即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
+        resumeBottomFollow()
+
+        const accepted = await chatStream.send({
             message: String(userMessage.content || ''),
             conversationId,
             modelName: modelStore.selectedId || undefined,
             enableThinking: true,
             enableWebSearch: false,
-            enableTools: true,
+            enableTools: readCurrentToolsMode() !== 'off',
+            toolMode: readCurrentToolsMode(),
             includeContext: true,
             isRegenerate: true,
             regenerateIndex: assistantMessage.index,
@@ -844,31 +1300,33 @@
         }
 
         openView('workspaces')
+
+        // 进入项目视图即清空会话选中(对齐原版 clearCurrentConversationSelectionForWorkspaceNavigation),
+        // 详情页输入框发送时才会懒创建新会话并归入项目;生成中不重置,避免流写入错误会话
+        if (!conversationStore.generating) {
+            void conversationStore.newConversation()
+        }
+    }
+
+    /** 顶栏 Mail 按钮:打开/关闭邮件中心视图(与 Files/Workspaces 同为互斥内容级视图) */
+    function handleOpenMailCenter(): void {
+        if (mailCenterOpen.value) {
+            backToChat()
+
+            return
+        }
+
+        openView('mail')
     }
 
     /** 打开文件详情 */
     function openFileDetail(file: CloudFileItem): void {
         fileDetail.value = file
-        fileDetailReturnView.value = 'files'
-    }
-
-    /** Workspace 文件复用 Files 详情视图,返回时恢复原 Workspace 详情页。 */
-    function handleOpenWorkspaceFile(file: CloudFileItem): void {
-        openView('files')
-        fileDetail.value = file
-        fileDetailReturnView.value = 'workspace'
     }
 
     function handleFileDetailBack(): void {
+        // 文件详情 → 文件中心列表(Workspace 文件已改为内置预览,不再借道此处)
         fileDetail.value = null
-
-        if (fileDetailReturnView.value === 'workspace') {
-            openView('workspaces')
-            // 从 Workspace 内容返回时重置到项目首页,而非停留在详情页
-            workspacesViewRef.value?.backToList()
-        }
-
-        fileDetailReturnView.value = 'files'
     }
 
     function handleOpenSettings(): void {
@@ -950,6 +1408,9 @@
     /** 查看分支处:打开父会话并跳转到分支消息(对齐原版 viewConversationBranchSourceFromContextMenu) */
     async function handleViewBranchSource(parentConversationId: string, messageIndex: number): Promise<void> {
         backToChat()
+
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
 
         try {
             await conversationStore.openConversation(parentConversationId)
@@ -1072,11 +1533,18 @@
         }
     }
 
-    /** 滚动到顶部附近时自动加载更早消息(对齐原版 maybeLoadPreviousConversationMessagesFromScroll) */
+    /** 消息区滚动:更新跟随底部状态;滚动到顶部附近时自动加载更早消息(对齐原版 maybeLoadPrevious...) */
     function handleMessagesScroll(): void {
         const container = document.getElementById('messagesContainer')
 
-        if (!container || conversationStore.loadingBefore) {
+        if (!container) {
+            return
+        }
+
+        // 先更新跟随状态:距底部超过阈值视为用户主动上滑,暂停流式期间的自动滚底
+        syncWithScroll(container)
+
+        if (conversationStore.loadingBefore) {
             return
         }
 
@@ -1086,13 +1554,18 @@
         }
     }
 
-    /** 消息变化后滚动到底部(仅当非"加载更早消息"前置插入、且非会话加载中时) */
+    /** 消息变化后滚动到底部(仅当跟随底部、非"加载更早消息"前置插入、且非会话加载中时) */
     watch(
         () => conversationStore.messages,
         async () => {
             // 会话加载期间消息先替换为占位高度,此时滚动会错位;交由 messagesLoading 监听收尾
             // 向前补载更早消息由其自身的滚动高度增量还原负责,避免被强行拉到底
             if (conversationStore.messagesLoading || prepending.value) {
+                return
+            }
+
+            // 用户已上滑离开底部:不再强制拉回,保证生成中可自由回看(思考链展开时尤其关键)
+            if (!autoFollowBottom.value) {
                 return
             }
 
@@ -1107,7 +1580,7 @@
         { deep: true }
     )
 
-    /** 会话加载完成:真实消息已渲染,滚动到底部展示最新一轮(避免停在顶部触发自动补载) */
+    /** 会话加载完成:真实消息已渲染,恢复跟随并滚到底部展示最新一轮(避免停在顶部触发自动补载) */
     watch(
         () => conversationStore.messagesLoading,
         async (loading) => {
@@ -1120,7 +1593,7 @@
             const container = document.getElementById('messagesContainer')
 
             if (container) {
-                container.scrollTop = container.scrollHeight
+                followNow(container)
             }
         }
     )
@@ -1159,6 +1632,9 @@
             showError(error instanceof Error ? error.message : '模型列表加载失败')
         }
 
+        // 地图渲染器:仅预取 provider 配置;脚本在消息出现真实地图结果时按需加载
+        primeNexoraMapRendererConfig()
+
         chatInputRef.value?.focus()
 
         // 消息区滚动监听:滚动到顶部自动加载更早消息
@@ -1169,6 +1645,61 @@
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
+
+        // 跨刷新恢复:必须先重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
+        // 缓冲还不存在,恢复内容既不上屏也不接续;顺序颠倒即"刷新后只有 Stop Generation")。
+        const snapshot = chatStream.takeSnapshot()
+
+        if (snapshot) {
+            conversationStore.restorePendingStream(snapshot)
+            console.debug(`[conv-load] restored stream registered conv=${snapshot.conversationId} seq=${snapshot.lastSeq}`)
+        }
+
+        // URL 直达:?cid= 指向的会话优先加载(对齐原前端"URL 目标 > 流恢复目标"的导航优先级);
+        // 与恢复会话相同时,openConversation 内部会把缓冲助理消息合并进可见列表
+        const urlConversationId = readConversationIdFromLocation()
+
+        if (urlConversationId) {
+            try {
+                await conversationStore.openConversation(urlConversationId)
+            } catch (error) {
+                showError(error instanceof Error ? error.message : '打开会话失败')
+            }
+        }
+
+        if (snapshot) {
+            // 无 URL 直达目标(或目标即恢复会话)时才自动回到恢复中的会话;
+            // URL 指向其他会话时流在后台续播并进入分离缓冲,切回时零丢失接回
+            if (!urlConversationId || urlConversationId === snapshot.conversationId) {
+                void conversationStore.openConversation(snapshot.conversationId).catch(() => {})
+            }
+
+            void chatStream.resume(
+                {
+                    streamId: snapshot.streamId,
+                    fromSeq: snapshot.lastSeq,
+                    conversationId: snapshot.conversationId,
+                },
+                {
+                    onChunk: handleStreamChunk,
+                    onEnd: handleStreamEnd,
+                },
+            )
+        }
+
+        // 临时诊断钩子(复现完成后移除)
+        ;(window as unknown as { __dbgConv?: () => Record<string, unknown> }).__dbgConv = () => ({
+            currentId: conversationStore.currentId,
+            loading: conversationStore.messagesLoading,
+            count: conversationStore.messages.length,
+            generating: conversationStore.generating,
+            streamingConv: conversationStore.streamingConversationId,
+            target: conversationStore.streamingTargetIndex,
+            pendingKeys: Object.keys(conversationStore.pendingStreams),
+            lastContent: conversationStore.messages.length
+                ? String(conversationStore.messages[conversationStore.messages.length - 1].content || '').slice(0, 80)
+                : '',
+        })
     })
 
     onBeforeUnmount(() => {
@@ -1178,6 +1709,11 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
+    })
+
+    // 刷新/关闭前强制落盘活动流快照(节流窗口内的尾部增量不丢)
+    window.addEventListener('beforeunload', () => {
+        chatStream.persistSnapshot(true)
     })
 
     /** 在可选中文本区域右键且存在选区时,弹出选区菜单(对齐原版 contextmenu 监听) */
@@ -1226,12 +1762,6 @@
 
     /** 点击菜单外任意处关闭选区菜单(对齐原版 click 监听);移动端点击侧边栏外空白关闭抽屉 */
     function handleDocumentClick(event: MouseEvent): void {
-        const menu = document.querySelector('.notes-context-menu')
-
-        if (menu && menu.contains(event.target as Node)) {
-            return
-        }
-
         if (selectionMenuRef.value?.isOpen()) {
             selectionMenuRef.value.close()
         }
@@ -1287,6 +1817,9 @@
 
         // 回到聊天视图(若在 Files/Workspaces 中)
         backToChat()
+
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
 
         try {
             await conversationStore.openConversation(anchor.conversationId)
@@ -1357,6 +1890,9 @@
     async function handleSearchJumpToMessage(hit: SearchMessageHit): Promise<void> {
         backToChat()
 
+        // 主动跳转离开底部:暂停跟随,避免流式增量把视图拉回底部
+        suspendBottomFollow()
+
         try {
             if (conversationStore.currentId !== hit.conversation_id) {
                 await conversationStore.openConversation(hit.conversation_id)
@@ -1404,7 +1940,6 @@
 
         openView('files')
         fileDetail.value = file
-        fileDetailReturnView.value = 'files'
     }
 </script>
 
@@ -1421,10 +1956,10 @@
         align-items: center;
         gap: 8px;
         padding: 5px 14px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 14px;
-        background: #fff;
-        color: #6b7280;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
         font-size: 12px;
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -1432,7 +1967,7 @@
 
     .messages-history-load-btn:hover:not(:disabled) {
         background: #f9fafb;
-        color: #374151;
+        color: var(--color-text-secondary);
         border-color: #d1d5db;
     }
 
@@ -1445,7 +1980,7 @@
         width: 12px;
         height: 12px;
         border: 2px solid #d1d5db;
-        border-top-color: #6b7280;
+        border-top-color: var(--color-text-secondary);
         border-radius: 50%;
         animation: messages-history-spin 0.8s linear infinite;
     }
@@ -1458,7 +1993,7 @@
 
     .messages-history-load-end {
         padding: 5px 14px;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 12px;
     }
 
@@ -1471,15 +2006,15 @@
         gap: 12px;
         height: 100%;
         min-height: 240px;
-        color: #9ca3af;
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
     .messages-loading-spinner {
         width: 22px;
         height: 22px;
-        border: 2px solid #e5e7eb;
-        border-top-color: #6b7280;
+        border: 2px solid var(--color-border);
+        border-top-color: var(--color-text-secondary);
         border-radius: 50%;
         animation: messages-history-spin 0.8s linear infinite;
     }

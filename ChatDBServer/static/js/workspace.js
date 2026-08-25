@@ -187,7 +187,7 @@ function clearCurrentConversationSelectionForWorkspaceNavigation() {
     clearWorkspaceHierarchySlot();
 
     if (activeConversationId || hasConversationUrl) {
-        window.history.replaceState({}, '', '/chat');
+        window.history.replaceState({}, '', window.location.pathname);
     }
 }
 
@@ -2575,7 +2575,7 @@ async function openWorkspaceSharedConversation(conversationId, addedBy = '') {
         prepareWorkspaceReadonlyConversationView(payload);
 
         if (window.history && window.history.pushState) {
-            window.history.pushState({}, '', `/chat?workspace=${encodeURIComponent(workspaceId)}&shared_cid=${encodeURIComponent(cid)}`);
+            window.history.pushState({}, '', `${window.location.pathname}?workspace=${encodeURIComponent(workspaceId)}&shared_cid=${encodeURIComponent(cid)}`);
         }
     } catch (error) {
         console.error('openWorkspaceSharedConversation failed', error);

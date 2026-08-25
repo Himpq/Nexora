@@ -1,0 +1,324 @@
+/**
+ * toastui-theme.css — Toast UI Editor 暗色适配(GDDP 令牌化,逐条压制官方浅色规则)
+ *
+ * 根因(为什么之前只设容器颜色无效):
+ *   官方 toastui-editor.css 对元素是【直接定色】而非可继承值——
+ *   `.toastui-editor-contents p{color:#222}`、`h1-h6{color:#222}`、
+ *   `code{color:#c1798b;background:#f9f2f4}`(粉字灰底来源)、
+ *   `pre{background:#f4f7f8}`、`table th{background:#555;color:#fff}`、
+ *   `ul li::before{background:#ccc}` 等。CSS 继承打不过任何直接规则,
+ *   因此容器上传颜色救不了正文。本文件用「html[data-theme='dark'] + 官方同选择器」
+ *   一条条对应压制(属性选择器额外加权,必胜官方),浅色主题零影响。
+ */
+
+/* ---------- 外框 ---------- */
+
+html[data-theme='dark'] .toastui-editor-defaultUI {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI button {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI .toastui-editor-close-button {
+    background: var(--color-bg-sunken);
+    border-color: var(--color-border);
+    color: var(--color-text-secondary);
+}
+
+/* ---------- 工具栏 ---------- */
+
+html[data-theme='dark'] .toastui-editor-defaultUI-toolbar {
+    background-color: var(--color-bg-elevated);
+    border-bottom: 1px solid var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI-toolbar button {
+    border: 1px solid transparent;
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI-toolbar button:not(:disabled):hover {
+    border: 1px solid var(--color-border);
+    background-color: var(--color-bg-hover);
+}
+
+html[data-theme='dark'] .toastui-editor-toolbar-divider {
+    background-color: var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-defaultUI-toolbar .scroll-sync {
+    color: var(--color-text-secondary);
+}
+
+/* ---------- 主区容器与分屏 ---------- */
+
+html[data-theme='dark'] .toastui-editor-main {
+    background: var(--color-bg-elevated);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-preview {
+    background: var(--color-bg-elevated);
+}
+
+html[data-theme='dark'] .toastui-editor-md-splitter {
+    background-color: var(--color-border);
+}
+
+/* ---------- 编辑区(ProseMirror 直接定色的元素逐条映射) ---------- */
+
+html[data-theme='dark'] .ProseMirror {
+    color: var(--color-text-primary);
+    caret-color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .ProseMirror .placeholder {
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents-placeholder::before {
+    color: var(--color-text-secondary);
+}
+
+/* ---------- 正文排版(p/h/del/引用/代码/表格/列表/hr/链接) ---------- */
+
+html[data-theme='dark'] .toastui-editor-contents {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents p {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents h1,
+html[data-theme='dark'] .toastui-editor-contents h2,
+html[data-theme='dark'] .toastui-editor-contents h3,
+html[data-theme='dark'] .toastui-editor-contents h4,
+html[data-theme='dark'] .toastui-editor-contents h5,
+html[data-theme='dark'] .toastui-editor-contents h6 {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents h1 {
+    border-bottom: 3px double var(--color-border-strong);
+}
+
+html[data-theme='dark'] .toastui-editor-contents h2 {
+    border-bottom: 1px solid var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-contents del {
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents blockquote {
+    border-left: 4px solid var(--color-border-strong);
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents blockquote p,
+html[data-theme='dark'] .toastui-editor-contents blockquote ul,
+html[data-theme='dark'] .toastui-editor-contents blockquote ol {
+    color: var(--color-text-secondary);
+}
+
+/* 行内代码:官方为粉字(#c1798b)+粉灰底(#f9f2f4),暗色下不可读 */
+html[data-theme='dark'] .toastui-editor-contents code {
+    color: var(--color-accent-text);
+    background: var(--color-accent-surface);
+}
+
+html[data-theme='dark'] .toastui-editor-contents pre {
+    background-color: var(--color-bg-page);
+    border: 1px solid var(--color-border);
+}
+
+/* ---------- 表格(表头官方为 #555 底白字) ---------- */
+
+html[data-theme='dark'] .toastui-editor-contents table {
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents table th,
+html[data-theme='dark'] .toastui-editor-contents table td {
+    border: 1px solid var(--color-border);
+    background: transparent;
+}
+
+html[data-theme='dark'] .toastui-editor-contents table th {
+    background-color: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents table th p {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents td.toastui-editor-cell-selected {
+    background-color: var(--color-bg-hover);
+}
+
+html[data-theme='dark'] .toastui-editor-contents th.toastui-editor-cell-selected {
+    background-color: var(--color-control-active, var(--color-bg-hover));
+}
+
+/* ---------- 列表标记与序号 ---------- */
+
+html[data-theme='dark'] .toastui-editor-contents ul,
+html[data-theme='dark'] .toastui-editor-contents menu,
+html[data-theme='dark'] .toastui-editor-contents ol,
+html[data-theme='dark'] .toastui-editor-contents dir {
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-contents ul > li::before {
+    background-color: var(--color-border-strong);
+}
+
+html[data-theme='dark'] .toastui-editor-contents ol > li::before {
+    color: var(--color-text-secondary);
+}
+
+/* ---------- 分割线 / 链接 / 图片悬浮 ---------- */
+
+html[data-theme='dark'] .toastui-editor-contents hr {
+    border-top: 1px solid var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-contents a {
+    color: var(--color-accent-text);
+}
+
+html[data-theme='dark'] .toastui-editor-contents a:hover {
+    color: var(--color-accent-text);
+    text-decoration: underline;
+}
+
+html[data-theme='dark'] .toastui-editor-contents .image-link:hover::before {
+    border: 1px solid var(--color-border);
+    background-color: var(--color-bg-elevated);
+}
+
+/* ---------- 自定义块(custom-block) ---------- */
+
+html[data-theme='dark'] .toastui-editor-custom-block .toastui-editor-custom-block-editor {
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+    border: solid 1px var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-custom-block.ProseMirror-selectednode .toastui-editor-custom-block-view {
+    border: solid 1px var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-custom-block-view button {
+    border: solid 1px var(--color-border);
+}
+
+/* ---------- 编辑区 markdown 源码语法着色(官方逐类直接定色,暗色逐条映射) ---------- */
+
+/* 分隔符(竖杠/星号/井号等):官方 #ccc,深色下尚可读但统一为令牌 */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-delimiter,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-thematic-break,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-link,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-table,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-block-quote {
+    color: var(--color-text-secondary);
+}
+
+/* 表格单元格文字:官方 color:#222 —— 竖杠之间内容全黑的元凶 */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-table .toastui-editor-md-table-cell {
+    color: var(--color-text-primary);
+}
+
+/* 元数据/HTML/链接 URL */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-meta,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-html,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-link.toastui-editor-md-link-url.toastui-editor-md-marked-text {
+    color: var(--color-text-secondary);
+}
+
+/* 引用内文与列表项元数据:官方 #555,深色下不可读 */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-block-quote .toastui-editor-md-marked-text,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-list-item .toastui-editor-md-meta {
+    color: var(--color-text-secondary);
+}
+
+/* 链接描述文字 */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-link.toastui-editor-md-link-desc.toastui-editor-md-marked-text {
+    color: var(--color-accent-text);
+}
+
+/* 列表斑马纹(官方 奇数蓝 #4b96e6 / 偶数红 #cb4848) */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-list-item-style.toastui-editor-md-list-item-odd,
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-list-item-style.toastui-editor-md-list-item-even {
+    color: var(--color-text-primary);
+}
+
+/* 行内代码(源码态):官方 粉字 #c1798b + 半透明粉底 rgba(243,229,233,.5) */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-code {
+    color: var(--color-accent-text);
+    background: var(--color-accent-surface);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-code.toastui-editor-md-delimiter {
+    color: var(--color-accent-text);
+}
+
+/* 代码块行背景条:官方 #f5f7f8 亮灰横带 */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-code-block-line-background {
+    background-color: var(--color-bg-page);
+}
+
+/* 自定义块:官方紫字 #452d6b / 浅紫底 #f9f7fd */
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-custom-block {
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-custom-block .toastui-editor-md-delimiter {
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-md-container .toastui-editor-md-custom-block .toastui-editor-md-meta {
+    color: var(--color-accent-text);
+}
+
+/* 代码块语言下拉输入(白底) */
+html[data-theme='dark'] .toastui-editor-popup.toastui-editor-popup-add-heading,
+html[data-theme='dark'] .toastui-editor-popup .toastui-editor-ww-code-block-language {
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+}
+
+/* ---------- 弹窗(添加链接 / 添加图片) ---------- */
+
+html[data-theme='dark'] .toastui-editor-popup {
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body label {
+    color: var(--color-text-secondary);
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body input[type='text'] {
+    background: var(--color-bg-page);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body input[type='text']:focus {
+    outline: 1px solid var(--color-accent-text);
+    border-color: transparent;
+}
+
+html[data-theme='dark'] .toastui-editor-popup-body input[type='text'].disabled {
+    background: var(--color-bg-sunken);
+    border-color: var(--color-border);
+    color: var(--color-text-secondary);
+}

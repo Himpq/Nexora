@@ -21,6 +21,17 @@
     margin-top: -30px;
 }
 
+/* 消息区底部 margin 参与收起过渡:20px(原版)→ -30px,消息区内容盒平滑延伸到视口底部,
+   与 dock 收缩同步推进,dock 底边悬浮于消息区之上,消除白色条带且全程无跳变
+   (dock 顶部 = 900 - dock高度,与消息区 margin 无关,故按钮滑动不受此过渡影响) */
+#nexora-app #messagesContainer {
+    transition: margin-bottom 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#nexora-app .gddp-chat-view:has(.input-dock.input-dock-collapsed) #messagesContainer {
+    margin-bottom: -30px;
+}
+
 /* 收起时隐藏待发送附件条,仅保留右下角折叠按钮 */
 #nexora-app .input-dock.input-dock-collapsed .input-attachments {
     display: none;
@@ -38,7 +49,8 @@
     overflow: visible;
     transition:
         max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
-        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-bottom 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #nexora-app #inputWrapper .input-container {
@@ -52,10 +64,11 @@
         padding 0.32s ease;
 }
 
-/* 收起完成:wrapper 仅收缩 max-width(同一条右对齐 margin),按钮锚定右侧且整段动画不切换定位 */
+/* 收起完成:wrapper 仅收缩 max-width(同一条右对齐 margin),按钮锚定右侧且整段动画不切换定位;
+   底部间距随收起收缩到 16px,回收空白不残留白色 footer */
 #nexora-app #inputWrapper.input-wrapper-collapsed {
     max-width: 44px;
-    margin: 0 40px 40px auto;
+    margin: 0 40px 16px auto;
     background: transparent;
     overflow: hidden;
 }
@@ -125,21 +138,21 @@
     box-sizing: border-box;
 }
 
-/* 收起完成的圆钮:白底+圆角+轻投影,独立可点(对齐原版外观) */
+/* 收起完成的圆钮:白底+圆角,去边框去投影,贴合背景不残留深色抠图圈 */
 #nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn {
     pointer-events: auto;
     width: 44px;
     height: 44px;
     margin-left: auto;
     border-radius: 12px;
-    border: 1px solid var(--border-input);
-    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    background: var(--color-bg-elevated);
     color: var(--text-main);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    box-shadow: none;
 }
 
 #nexora-app #inputWrapper.input-wrapper-collapsed .input-collapse-btn:hover {
-    background: #f5f5f5;
+    background: var(--color-bg-sunken);
 }
 
 @media (max-width: 980px) {

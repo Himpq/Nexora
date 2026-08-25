@@ -988,6 +988,61 @@ class WorkspaceStore:
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, safe_actor)
 
+    def remove_file(
+        self,
+        workspace_id: str,
+        file_ref: str,
+        actor: str,
+    ) -> Dict[str, Any]:
+        """从工作区移除当前用户的文件标记(镜像 remove_knowledge_document;供右键菜单取消归入)。
+        文件归入路径已强制 added_by==actor(见 add_file),故移除按 actor 限定即可。"""
+        wid = validate_workspace_id(workspace_id)
+        safe_actor = validate_username(actor)
+        ref = normalize_workspace_file_ref(file_ref, safe_actor)
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, safe_actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        files = self._normalize_workspace_files(workspace.get("workspace_files", []), owner)
+        removed_alias = ref["alias"]
+        removed_ref = ref["file_ref"]
+        now = utc_now_iso()
+        kept: List[Dict[str, Any]] = []
+
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+
+            if (
+                item.get("added_by") != safe_actor
+                or (
+                    str(item.get("alias") or "").strip() != ref["alias"]
+                    and str(item.get("file_ref") or "").strip() != ref["file_ref"]
+                )
+            ):
+                kept.append(item)
+                continue
+
+            removed_alias = normalize_text(item.get("alias"), 260) or removed_alias
+            removed_ref = normalize_text(item.get("file_ref"), WORKSPACE_FILE_REF_LIMIT) or removed_ref
+
+        if len(kept) == len(files):
+            raise ValueError("file not in workspace")
+
+        workspace["workspace_files"] = kept
+        workspace["updated_at"] = now
+        self._append_workspace_activity(
+            workspace,
+            action="file_removed",
+            resource_type="file",
+            title=removed_alias,
+            actor=safe_actor,
+            time=now,
+            subtitle="移除了文件",
+            ref=removed_ref,
+        )
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, safe_actor)
+
     def _get_sandbox_file_entry(self, owner_username: str, file_ref: str) -> Dict[str, Any]:
         owner = validate_username(owner_username)
         ref = normalize_workspace_file_ref(file_ref, owner)
@@ -2169,9 +2224,16 @@ class WorkspaceStore:
     def _conversation_snapshot_for_detail(self, item: Dict[str, Any]) -> Dict[str, Any]:
         conversation_id = normalize_text(item.get("conversation_id"), 80)
         added_by = validate_username(str(item.get("added_by") or self.username))
-        conversation = ConversationManager(added_by).get_conversation(conversation_id)
-        messages = conversation.get("messages", [])
         snapshot = dict(item)
+
+        try:
+            conversation = ConversationManager(added_by).get_conversation(conversation_id)
+        except Exception:
+            # 对话已删除/暂不可读:沿用 Workspace 自存的标记数据展示。
+            # 单个失效资源的详情增强不应让整个 Workspace 打不开。
+            return snapshot
+
+        messages = conversation.get("messages", [])
         live_title = normalize_text(conversation.get("title"), 160)
         last_user_question = last_user_question_from_messages(messages)
 
@@ -2228,7 +2290,12 @@ class WorkspaceStore:
         snapshot = dict(item)
         added_by = validate_username(str(snapshot.get("added_by") or self.username))
         ref = normalize_workspace_file_ref(snapshot.get("file_ref") or snapshot.get("alias"), added_by)
-        entry = self._get_sandbox_file_entry(added_by, ref["file_ref"])
+
+        try:
+            entry = self._get_sandbox_file_entry(added_by, ref["file_ref"])
+        except Exception:
+            # 云端文件已删除/暂不可读:沿用自存标记,不影响 Workspace 打开
+            return snapshot
 
         snapshot["file_ref"] = normalize_text(entry.get("sandbox_path") or ref["file_ref"], WORKSPACE_FILE_REF_LIMIT)
         snapshot["alias"] = normalize_text(entry.get("alias") or ref["alias"], 180)
