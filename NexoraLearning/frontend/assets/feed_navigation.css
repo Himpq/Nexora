@@ -1,0 +1,155 @@
+.feed-layout {
+    gap: 0;
+    background: #ffffff;
+}
+
+.feed-channel-sidebar {
+    width: 184px;
+    padding: 0;
+    border-right: 1px solid #e1e5ea;
+    background: #f5f6f8;
+}
+
+.feed-channel-list {
+    min-height: 100%;
+    display: block;
+}
+
+.feed-channel-rail-head {
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid #e1e5ea;
+    color: #6b7280;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.feed-channel-rail-head strong {
+    color: #87919a;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.feed-channel-rail {
+    display: grid;
+    gap: 3px;
+    padding: 10px 8px;
+}
+
+.feed-channel-item {
+    min-width: 0;
+    min-height: 38px;
+    gap: 2px;
+    padding: 0;
+}
+
+.feed-channel-select-btn {
+    min-height: 38px;
+    gap: 9px;
+    padding: 0 9px;
+    border-radius: 6px;
+    color: #20242c;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.feed-channel-item:hover .feed-channel-select-btn,
+.feed-channel-select-btn:focus-visible {
+    background: rgba(31, 35, 42, 0.07);
+}
+
+.feed-channel-item.is-active .feed-channel-select-btn {
+    background: rgba(31, 35, 42, 0.10);
+    color: #3f4654;
+    font-weight: 600;
+}
+
+.feed-channel-item-icon {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    display: grid;
+    place-items: center;
+    color: inherit;
+}
+
+.feed-channel-item-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.feed-channel-item.is-active .feed-channel-item-icon {
+    color: inherit;
+}
+
+.feed-channel-item-name {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.feed-channel-item.is-active .feed-channel-item-name {
+    font-weight: 600;
+}
+
+.feed-channel-action-btn {
+    width: 26px;
+    height: 26px;
+    flex-basis: 26px;
+    border-radius: 4px;
+}
+
+.feed-content-area {
+    background: #ffffff;
+}
+
+.feed-stream-panel {
+    width: min(780px, 100%);
+    margin: 0 auto;
+}
+
+@media (max-width: 760px) {
+    .feed-layout {
+        flex-direction: column;
+    }
+
+    .feed-channel-sidebar {
+        width: 100%;
+        flex: 0 0 auto;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: 0;
+        border-bottom: 1px solid #e1e5ea;
+    }
+
+    .feed-channel-rail-head {
+        display: none;
+    }
+
+    .feed-channel-rail {
+        display: flex;
+        min-width: max-content;
+        padding: 7px 10px;
+    }
+
+    .feed-channel-item {
+        width: auto;
+        flex: 0 0 auto;
+    }
+
+    .feed-channel-select-btn {
+        min-width: 110px;
+    }
+
+    .feed-channel-action-btn {
+        display: none;
+    }
+}

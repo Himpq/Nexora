@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexora | 服务状态</title>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/public_site/rank.css?v=20260728_rank_assets_01">
+    <link rel="stylesheet" href="/static/css/public_site/service_status.css?v=20260807_service_status_05">
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Nexora 首页">Nexora<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/introduce" aria-haspopup="true"><span>产品</span></a>
+                <div class="nav-dropdown" role="group" aria-label="产品菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-products-title">
+                            <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/introduce">Nexora</a>
+                                <span class="nav-mega-link">NexoraLearning</span>
+                                <span class="nav-mega-link">NexoraMail</span>
+                                <span class="nav-mega-link">NexoraVideoGenerator</span>
+                                <span class="nav-mega-link">NexoraDB</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/status" aria-haspopup="true" aria-current="page"><span>状态</span></a>
+                <div class="nav-dropdown" role="group" aria-label="服务与数据菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-status-title">
+                            <p class="nav-dropdown-label" id="nav-status-title">服务与数据</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/status">服务状态</a>
+                                <a class="nav-mega-link" href="/rank">模型榜单</a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/blog" aria-haspopup="true"><span>博客</span></a>
+                <div class="nav-dropdown nav-blog-menu" role="group" aria-label="博客菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-blog-title">
+                            <p class="nav-dropdown-label" id="nav-blog-title">博客</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="https://himpqblog.cn">
+                                    <span>Himpq 的博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                                <a class="nav-mega-link" href="/blog">
+                                    <span>Nexora 博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="header-actions"><a class="ghost-button" href="/login">登录</a></div>
+    </header>
+
+    <main class="status-page">
+        <section class="status-shell" aria-labelledby="status-title">
+            <div class="status-heading">
+                <p class="eyebrow">Nexora Status</p>
+                <h1 id="status-title">服务状态</h1>
+                <p id="snapshotAt">等待服务端监控快照</p>
+            </div>
+
+            <div class="overall-status is-unknown" id="overallStatus" aria-live="polite">
+                <strong id="overallStatusTitle">监控数据未接入</strong>
+                <span id="overallStatusDescription">正在等待服务端返回第一份状态快照。</span>
+            </div>
+
+            <section class="status-panel status-service-list" aria-label="服务可用性">
+                <div class="status-list-heading">
+                    <span>服务可用性</span>
+                    <span>最近 60 次检查</span>
+                </div>
+                <div id="serviceList"></div>
+            </section>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <span>Nexora</span>
+        <a href="https://github.com/Himpq/Nexora">GitHub</a>
+        <a href="/introduce">Nexora</a>
+        <a href="/rank">模型榜单</a>
+    </footer>
+
+    <script src="/static/js/public_site/site.js?v=20260728_service_status_04"></script>
+    <script src="/static/js/public_site/service_status.js?v=20260807_service_status_05"></script>
+</body>
+</html>

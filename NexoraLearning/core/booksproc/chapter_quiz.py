@@ -10,9 +10,15 @@ import threading
 import time
 from collections.abc import Mapping as MappingABC
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from core.booksproc.modeling import build_profile_question_runner, get_profile_question_settings
+from core.booksproc.question import validate_question_distribution
+from core.cognition.question_binding import (
+    load_chapter_concept_candidates,
+    serialize_concept_candidates,
+    validate_question_concept_bindings,
+)
 from core.lectures import (
     get_book,
     get_lecture,
@@ -37,6 +43,17 @@ _QUESTION_BLOCK_RE = re.compile(r"<QUESTION>\s*(.*?)\s*</QUESTION>", flags=re.IG
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _emit_quiz_generation_status(
+    callback: Optional[Callable[[str], None]],
+    message: str,
+) -> None:
+    """向真实存在的章节测验流消费者发送生成阶段。"""
+    text = _safe_text(message)
+
+    if callback is not None and text:
+        callback(text)
 
 
 def _strip_markdown_answer(value: Any) -> str:
@@ -466,6 +483,7 @@ def _parse_profile_question_blocks(content: str) -> List[Dict[str, str]]:
             "question_reason": _xml_value(block, "question_reason"),
             "question_answer": _xml_value(block, "question_answer"),
             "related_chapter": _xml_value(block, "related_chapter"),
+            "related_concept_id": _xml_value(block, "related_concept_id"),
         }
 
         if row["question_title"] or row["question_content"]:
@@ -494,6 +512,7 @@ def _generate_profile_question_bank_questions(
     chapter_context: str,
     chapter_detail_xml: str,
     limit: int,
+    on_delta: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, Any]]:
     lecture = get_lecture(dict(cfg or {}), lecture_id)
     book = get_book(dict(cfg or {}), lecture_id, book_id)
@@ -502,6 +521,8 @@ def _generate_profile_question_bank_questions(
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
 
     settings = dict(get_profile_question_settings(cfg) or {})
+    concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)
+    concept_catalog = serialize_concept_candidates(concept_candidates)
     runner = build_profile_question_runner(cfg, _safe_text(settings.get("model_name")))
     loaded_chapter_context = _safe_text(chapter_context)
 
@@ -518,7 +539,7 @@ def _generate_profile_question_bank_questions(
     request_text = (
         "请为当前章节生成可用于阅读后小测的题目。"
         "题目要贴合章节内容，并结合用户画像中的薄弱点、兴趣和学习节奏。"
-        "本次优先生成选择题：前两题为选择题，最后一题为文本阅读题。"
+        "固定生成 6 道题：前 4 道为选择题，后 2 道为文本阅读题。"
         "题干必须短、清楚、口语化，每题只考一个明确点。"
         "答案不能包含 Markdown 标记。"
     )
@@ -527,15 +548,31 @@ def _generate_profile_question_bank_questions(
     if prompt_notes:
         request_text = f"{request_text}\n附加要求：{prompt_notes}"
 
+    model_name = _safe_text(settings.get("model_name"))
+    request_timeout = float(settings.get("request_timeout") or 240)
+    generation_options = {
+        "temperature": float(settings.get("temperature") or 0.2),
+        "max_output_tokens": int(settings.get("max_output_tokens") or 4000),
+        # 只有 SSE 路径提供增量消费者时才请求模型流，普通 JSON 接口保持完整响应。
+        "stream": on_delta is not None,
+        "think": False,
+    }
+    generation_started_at = time.monotonic()
+
     log_event(
         "chapter_quiz_profile_generate_start",
-        "章节小测题库为空，开始同步调用画像出题模型",
+        "章节小测题库为空，开始调用画像出题模型",
         payload={
             "user_id": user_id,
             "lecture_id": lecture_id,
             "book_id": book_id,
             "chapter_name": chapter_name,
             "chapter_range": chapter_range,
+            "model_name": model_name,
+            "api_mode": _safe_text(settings.get("api_mode")) or "chat",
+            "request_timeout": request_timeout,
+            "stream": generation_options["stream"],
+            "think": generation_options["think"],
         },
     )
     content = runner.run(
@@ -556,19 +593,76 @@ def _generate_profile_question_bank_questions(
             "chapter_detail_xml": loaded_chapter_detail_xml,
             "chapter_context": loaded_chapter_context[:12000],
             "coarse_bookinfo": str(load_book_info_xml(dict(cfg or {}), lecture_id, book_id) or ""),
+            "concept_catalog": concept_catalog,
         },
-        model_name=_safe_text(settings.get("model_name")) or None,
+        model_name=model_name or None,
         username=user_id,
         api_mode=_safe_text(settings.get("api_mode")) or "chat",
-        request_timeout=float(settings.get("request_timeout") or 240),
-        options={
-            "temperature": float(settings.get("temperature") or 0.2),
-            "max_output_tokens": int(settings.get("max_output_tokens") or 4000),
-            "stream": bool(settings.get("stream", True)),
-            "think": bool(settings.get("think", False)),
-        },
+        request_timeout=request_timeout,
+        options=generation_options,
+        on_delta=on_delta,
     )
     rows = _parse_profile_question_blocks(content)
+    candidate_types = [
+        _normalize_question_type(
+            row.get("question_type"),
+            _normalize_options(row.get("question_options")),
+        )
+        for row in rows
+    ]
+
+    log_event(
+        "chapter_quiz_profile_model_done",
+        "章节小测画像模型已返回完整结构化结果",
+        payload={
+            "user_id": user_id,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "duration_ms": round((time.monotonic() - generation_started_at) * 1000, 2),
+            "content_chars": len(str(content or "")),
+            "question_block_count": len(rows),
+            "choice_candidate_count": candidate_types.count("choice"),
+            "text_candidate_count": candidate_types.count("text"),
+        },
+    )
+    validation_error = validate_question_distribution(
+        rows,
+        expected_count=6,
+        minimum_choice_count=4,
+        maximum_text_count=2,
+    )
+
+    if validation_error:
+        log_event(
+            "chapter_quiz_profile_generate_rejected",
+            "章节小测画像题结果未通过结构校验",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": validation_error,
+            },
+        )
+        raise ValueError(f"章节小测题目未通过结构校验：{validation_error}")
+
+    concept_validation_error = validate_question_concept_bindings(rows, concept_candidates)
+
+    if concept_validation_error:
+        log_event(
+            "chapter_quiz_profile_generate_rejected",
+            "章节小测题目缺少有效知识概念绑定",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": concept_validation_error,
+            },
+        )
+        raise ValueError(f"章节小测题目未通过概念绑定校验：{concept_validation_error}")
+
     selected: List[Dict[str, Any]] = []
     question_group_raw = "|".join(
         [
@@ -600,6 +694,7 @@ def _generate_profile_question_bank_questions(
                 "visibility": "public",
                 "owner_user_id": user_id,
                 "generation_mode": "chapter_quiz_sync",
+                "concept_id": row["related_concept_id"],
                 "question": row,
             },
         )
@@ -641,8 +736,11 @@ def _select_chapter_quiz_questions(
     chapter_context: str,
     chapter_detail_xml: str,
     limit: int,
+    on_delta: Optional[Callable[[str], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, Any]]:
     candidate_limit = max(int(limit or 3) * 2, 6)
+    _emit_quiz_generation_status(on_status, "正在匹配个人练习题库")
     user_questions = _select_user_question_bank_questions(
         cfg,
         user_id=user_id,
@@ -654,8 +752,10 @@ def _select_chapter_quiz_questions(
     )
 
     if user_questions:
+        _emit_quiz_generation_status(on_status, "已从个人练习题库匹配本章题目")
         return _shape_chapter_quiz_questions(user_questions, limit)
 
+    _emit_quiz_generation_status(on_status, "正在匹配教材章节题库")
     book_questions = _select_book_question_bank_questions(
         cfg,
         lecture_id=lecture_id,
@@ -666,8 +766,10 @@ def _select_chapter_quiz_questions(
     )
 
     if book_questions:
+        _emit_quiz_generation_status(on_status, "已从教材章节题库匹配本章题目")
         return _shape_chapter_quiz_questions(book_questions, limit)
 
+    _emit_quiz_generation_status(on_status, "题库暂无可用题目，正在按本章内容生成")
     generated_questions = _generate_profile_question_bank_questions(
         cfg,
         user_id=user_id,
@@ -678,6 +780,7 @@ def _select_chapter_quiz_questions(
         chapter_context=chapter_context,
         chapter_detail_xml=chapter_detail_xml,
         limit=candidate_limit,
+        on_delta=on_delta,
     )
     return _shape_chapter_quiz_questions(generated_questions, limit)
 
@@ -694,6 +797,8 @@ def load_or_create_chapter_quiz(
     chapter_context: str = "",
     chapter_detail_xml: str = "",
     limit: int = 3,
+    on_delta: Optional[Callable[[str], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """读取或创建章节小测；一旦创建，题目固定写入用户文件。"""
     safe_user_id = _safe_text(user_id)
@@ -729,6 +834,7 @@ def load_or_create_chapter_quiz(
         )
 
     if existing:
+        _emit_quiz_generation_status(on_status, "已读取本章测验")
         return existing
 
     questions = _select_chapter_quiz_questions(
@@ -741,6 +847,8 @@ def load_or_create_chapter_quiz(
         chapter_context=str(chapter_context or ""),
         chapter_detail_xml=str(chapter_detail_xml or ""),
         limit=max(1, int(limit or 3)),
+        on_delta=on_delta,
+        on_status=on_status,
     )
 
     if not questions:

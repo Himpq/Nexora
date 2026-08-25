@@ -1,0 +1,221 @@
+#settings-admin-map-tab.admin-tab-content.active {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+#settingsModal #settings-admin-map-tab .admin-users-layout {
+    display: grid !important;
+    grid-template-columns: 280px minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-map-tab .admin-users-list,
+#settingsModal #settings-admin-map-tab .admin-user-detail {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow-y: auto !important;
+}
+
+body:not(.settings-companion-mode) #settingsModal #settings-admin-map-tab.admin-tab-content.active {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    gap: 12px;
+    overflow: hidden !important;
+}
+
+body:not(.settings-companion-mode) #settingsModal #settings-admin-map-tab .admin-users-layout {
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden !important;
+}
+
+body:not(.settings-companion-mode) #settingsModal #settings-admin-map-tab .admin-users-list,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-map-tab .admin-user-detail {
+    min-height: 0 !important;
+    overflow: auto !important;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-provider-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #0f172a;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    box-sizing: border-box;
+    line-height: 1;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-provider-icon i {
+    line-height: 1;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-provider-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+#settingsModal #settings-admin-map-tab .model-status-pill.warn {
+    color: #b45309;
+    background: #fffbeb;
+    border-color: #fde68a;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-ok-text {
+    color: #16a34a;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-missing-list {
+    display: grid;
+    gap: 6px;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-missing-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: #b45309;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-missing-item i {
+    margin-top: 2px;
+    flex: 0 0 auto;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-policy {
+    color: #334155;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-config-title {
+    margin: 8px 0 10px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-config-grid {
+    margin-bottom: 10px;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-config-field-full {
+    grid-column: 1 / -1;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-config-error {
+    margin-bottom: 10px;
+    color: #dc2626;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 9px 11px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+#settingsModal #settings-admin-map-tab .admin-user-actions {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+#settingsModal #settings-admin-map-tab.admin-tab-content.active > .admin-users-toolbar {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+}
+
+#settingsModal #settings-admin-map-tab.admin-tab-content.active > .admin-users-toolbar .btn-primary-outline {
+    width: auto !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    white-space: nowrap !important;
+}
+
+#settingsModal #settings-admin-map-tab #adminMapProviderSelect {
+    min-width: 0 !important;
+    max-width: 220px;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-detail-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-actions {
+    margin-top: 0;
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-actions > button {
+    width: auto !important;
+    min-width: 96px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    white-space: nowrap !important;
+    border-radius: 8px !important;
+}
+
+#settingsModal #settings-admin-map-tab .admin-map-config-title {
+    margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+    #settingsModal #settings-admin-map-tab .admin-users-layout {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    #settingsModal #settings-admin-map-tab .admin-map-config-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    #settingsModal #settings-admin-map-tab.admin-tab-content.active > .admin-users-toolbar {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+
+    #settingsModal #settings-admin-map-tab .admin-map-detail-head {
+        flex-direction: column;
+    }
+
+    #settingsModal #settings-admin-map-tab .admin-map-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+    }
+}

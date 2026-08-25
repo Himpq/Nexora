@@ -13,15 +13,51 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, render_template
 
-from core.tool_registry import ToolRegistry
-from core.config import config
+try:
+    from flask_sock import Sock as _FlaskSock
+except Exception as _flask_sock_import_error:
+    _FlaskSock = None
+    print(f"[NexoraProxy] flask-sock 不可用，WebSocket 转发已禁用: {_flask_sock_import_error}")
+
+try:
+    import websocket as _ws_client_lib
+except Exception as _ws_client_import_error:
+    _ws_client_lib = None
+    print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
+
+from local import build_default_executor
+from core.config import config, get_app_root
 
 LOCAL_PORT = 27700
 
 app = Flask(__name__, static_folder=None)
-registry = ToolRegistry()
+# 本地精简云端前端模板（NexoraCode/ui/chat.html）
+app.template_folder = str(get_app_root() / "ui")
+_LOCAL_STATIC_ROOT = Path(__file__).resolve().parents[2] / "ChatDBServer" / "static"
+sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
+registry = build_default_executor()
+
+
+@app.after_request
+def _api_global_no_store(resp):
+    """所有 /api/* 与页面路由一律不缓存，避免浏览器缓存导致本地数据更新后读到旧值。"""
+    try:
+        path = str(request.path or "")
+
+        if path.startswith("/api/") or path in ("/", "/chat", "/settings"):
+            resp.headers["Cache-Control"] = "no-store"
+    except Exception:
+        pass
+
+    return resp
+
+
+# 本地对话与会话路由（会话一律存本地，不依赖云端引擎）
+from model.Routes import register_local_routes
+
+register_local_routes(app, executor=registry)
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""
@@ -34,7 +70,13 @@ import sys
 
 def _get_vendor_roots():
     roots = []
-    
+
+    # 本地独立副本优先（拷贝自 ChatDBServer/static/vendor）
+    local_vendor = get_app_root() / "ui" / "static" / "vendor"
+
+    if local_vendor.is_dir():
+        roots.append(local_vendor)
+
     workspace = Path(__file__).resolve().parents[2]
     roots.append(workspace / "ChatDBServer" / "static" / "vendor")
     
@@ -603,7 +645,344 @@ def nc_vendor_asset(asset_path: str):
         return Response(status=502)
 
 
-@app.route("/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+if sock is not None:
+    def _local_browser_ws(client_ws) -> None:
+        """本地模式 /ws/browser：保持连接，周期推送 agent 在线状态，不依赖云端。"""
+        import json as _json
+        import threading as _threading
+
+        stop = _threading.Event()
+        send_lock = _threading.Lock()
+
+        def _safe_send(message: str) -> bool:
+            try:
+                with send_lock:
+                    client_ws.send(message)
+                return True
+            except Exception:
+                return False
+
+        def _pump() -> None:
+            while not stop.is_set():
+                if not _safe_send(_json.dumps({"type": "agent_status", "online": True})):
+                    break
+                stop.wait(15)
+
+        pump_thread = _threading.Thread(target=_pump, daemon=True, name="nc-local-browser-ws")
+        pump_thread.start()
+
+        try:
+            while not stop.is_set():
+                data = client_ws.receive()
+
+                if data is None:
+                    break
+        finally:
+            stop.set()
+
+    @sock.route("/ws/<path:ws_path>")
+    def ws_bridge(client_ws, ws_path: str):
+        """将浏览器侧 WebSocket 透明转发到远端 ChatDBServer。
+
+        本地代理原本只能转发普通 HTTP，/ws/browser 等升级请求会被以 400 拒绝，
+        导致 iframe 内页面收不到 agent_status / knowledge_changed 等实时事件。
+        """
+        # 本地模式：/ws/browser 由本地直接应答（agent 在线状态），不依赖云端 WSS
+        if str(ws_path or "").strip() == "browser":
+            _local_browser_ws(client_ws)
+            return
+
+        remote_base = _remote_base_url()
+        parts = urlsplit(remote_base)
+        ws_scheme = "wss" if parts.scheme == "https" else "ws"
+        query = request.query_string.decode("utf-8", errors="ignore")
+        safe_path = str(ws_path or "").lstrip("/")
+        remote_ws_url = urlunsplit((ws_scheme, parts.netloc, f"/ws/{safe_path}", query, ""))
+        remote_origin = f"{parts.scheme}://{parts.netloc}"
+
+        # 与 _proxy_request 相同的 cookie 语义：代理捕获的 HttpOnly 会话 cookie
+        # 打底，浏览器可见 cookie 覆盖，保证远端 Flask session 鉴权可用。
+        merged_cookies = {}
+        with _UPSTREAM_SESSION_LOCK:
+            for item in _UPSTREAM_SESSION.cookies:
+                merged_cookies[str(item.name)] = str(item.value or "")
+        for key, value in request.cookies.items():
+            merged_cookies[str(key)] = str(value)
+        cookie_header = "; ".join(f"{k}={v}" for k, v in merged_cookies.items())
+        handshake_headers = [f"Cookie: {cookie_header}"] if cookie_header else []
+
+        try:
+            remote_ws = _ws_client_lib.create_connection(
+                remote_ws_url,
+                timeout=10,
+                header=handshake_headers,
+                origin=remote_origin,
+                enable_multithread=True,
+            )
+        except Exception as e:
+            print(f"[NexoraProxy] WS 转发连接失败 path=/ws/{safe_path} error={e}")
+            return
+
+        remote_ws.settimeout(None)
+        print(f"[NexoraProxy] WS 转发已建立 path=/ws/{safe_path}")
+        closed = threading.Event()
+
+        def _close_both():
+            if closed.is_set():
+                return
+
+            closed.set()
+
+            try:
+                remote_ws.close()
+            except Exception:
+                pass
+
+            try:
+                client_ws.close()
+            except Exception:
+                pass
+
+        def _pump_remote_to_client():
+            try:
+                while not closed.is_set():
+                    frame = remote_ws.recv()
+
+                    if frame is None or frame == "":
+                        break
+
+                    client_ws.send(frame)
+            except Exception:
+                pass
+            finally:
+                _close_both()
+
+        pump_thread = threading.Thread(
+            target=_pump_remote_to_client,
+            daemon=True,
+            name=f"nc-ws-bridge-{safe_path}",
+        )
+        pump_thread.start()
+
+        try:
+            while not closed.is_set():
+                data = client_ws.receive()
+
+                if data is None:
+                    break
+
+                if isinstance(data, bytes):
+                    remote_ws.send_binary(data)
+                else:
+                    remote_ws.send(data)
+        except Exception:
+            pass
+        finally:
+            _close_both()
+            print(f"[NexoraProxy] WS 转发已关闭 path=/ws/{safe_path}")
+
+
+@app.route("/nc/api/select-folder", methods=["POST"])
+def nc_select_folder():
+    """弹出原生文件夹选择对话框（同源页面直接调用，不依赖 pywebview 注入桥）。"""
+    try:
+        import webview as _webview
+
+        win = _webview.windows[0] if _webview.windows else None
+
+        if win is None:
+            return jsonify({"success": False, "message": "主窗口未就绪"})
+
+        result = win.create_file_dialog(_webview.FOLDER_DIALOG)
+        path = ""
+
+        if isinstance(result, (list, tuple)) and result:
+            path = str(result[0] or "")
+        elif isinstance(result, str):
+            path = result
+
+        path = path.strip()
+
+        if not path:
+            return jsonify({"success": False, "cancelled": True})
+
+        print(f"[NexoraCode] project folder selected: {path}")
+        return jsonify({"success": True, "path": path})
+    except Exception as e:
+        print(f"[NexoraCode] select folder failed: {e}")
+        return jsonify({"success": False, "message": str(e)})
+
+
+def _serve_file(path: Path, cache_seconds: int = 300) -> Response:
+    try:
+        mime, _ = mimetypes.guess_type(str(path))
+        data = path.read_bytes()
+        resp = Response(data, status=200, mimetype=(mime or "application/octet-stream"))
+        if cache_seconds > 0:
+            resp.headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+        else:
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
+    except Exception:
+        return Response(status=500)
+
+
+@app.route("/static/<path:filename>")
+def local_cloud_static(filename: str):
+    """本地精简前端的静态资源（js/css/img）：优先本地副本，否则读 ChatDBServer/static。"""
+    safe_parts = [part for part in str(filename or "").replace("\\", "/").split("/") if part not in {"", ".", ".."}]
+    if not safe_parts:
+        return Response(status=404)
+
+    # 本地可改副本（如 chat.js）优先
+    local_root = get_app_root() / "ui" / "static"
+    local_target = local_root.joinpath(*safe_parts)
+
+    if str(local_target.resolve()).startswith(str(local_root.resolve())) and local_target.is_file():
+        return _serve_file(local_target)
+
+    target = _LOCAL_STATIC_ROOT.joinpath(*safe_parts)
+
+    if not str(target.resolve()).startswith(str(_LOCAL_STATIC_ROOT.resolve())):
+        return Response(status=404)
+
+    if not target.is_file():
+        return Response(status=404)
+
+    return _serve_file(target)
+
+
+@app.route("/")
+@app.route("/chat")
+def local_cloud_chat():
+    """本地精简云端前端入口；Jinja 变量取默认值（项目模式关闭邮件/地图），API 走本地代理。"""
+    try:
+        return render_template(
+            "chat.html",
+            username=str(config.get("local_username", "local") or "local"),
+            nexora_mail_enabled=False,
+            map_renderer_config={},
+        )
+    except Exception as e:
+        return Response(f"chat template render failed: {e}", status=500, mimetype="text/plain")
+
+
+def _local_agent_enabled_value() -> bool:
+    return str(config.get("local_agent", False)).strip().lower() in {"1", "true", "on", "yes"}
+
+
+@app.route("/settings.css")
+@app.route("/settings.js")
+def local_settings_asset():
+    """本地设置页静态资源。"""
+    name = str(request.path or "").lstrip("/")
+    target = get_app_root() / "ui" / name
+    if not target.is_file():
+        return Response(status=404)
+    return _serve_file(target, cache_seconds=0)
+
+
+@app.route("/settings")
+def local_settings_page():
+    """本地自绘设置页。"""
+    target = get_app_root() / "ui" / "settings.html"
+    if not target.is_file():
+        return Response("settings not built", status=503, mimetype="text/plain")
+    return _serve_file(target, cache_seconds=0)
+
+
+@app.route("/api/local/settings", methods=["GET"])
+def local_settings_get():
+    """读取本地设置（Provider 列表 + 对话配置）。api_key 不回显明文。"""
+    from model.Provider import load_providers
+
+    providers = load_providers()
+    default_id = ""
+
+    try:
+        import json as _json
+        from model.Provider import _PROVIDERS_PATH
+
+        if _PROVIDERS_PATH.is_file():
+            with open(_PROVIDERS_PATH, "r", encoding="utf-8") as f:
+                _data = _json.load(f)
+            default_id = str(_data.get("default_id") or "") if isinstance(_data, dict) else ""
+    except Exception:
+        default_id = ""
+
+    return jsonify({
+        "success": True,
+        "provider": {
+            "providers": [provider.to_dict() for provider in providers],
+            "default_id": default_id,
+        },
+        "general": {
+            "username": str(config.get("local_username", "local") or "local"),
+        },
+    }), 200, {"Cache-Control": "no-store"}
+
+
+@app.route("/api/local/settings", methods=["POST"])
+def local_settings_save():
+    """保存本地设置。api_key 留空表示保留原 key。"""
+    from model.Provider import ProviderConfig, load_providers, save_providers
+
+    body = request.get_json(silent=True) or {}
+    provider_payload = body.get("provider") if isinstance(body.get("provider"), dict) else {}
+    general_payload = body.get("general") if isinstance(body.get("general"), dict) else {}
+
+    raw_providers = provider_payload.get("providers")
+
+    if isinstance(raw_providers, list):
+        current = {p.provider_id: p for p in load_providers()}
+        new_list = []
+
+        for item in raw_providers:
+            if not isinstance(item, dict):
+                continue
+
+            provider_id = str(item.get("id") or "").strip()
+            old = current.get(provider_id)
+            api_key = str(item.get("api_key") or "").strip()
+
+            if not api_key and old is not None:
+                api_key = old.api_key
+
+            try:
+                temperature = float(item.get("temperature", 0.7))
+            except (TypeError, ValueError):
+                temperature = 0.7
+
+            try:
+                max_tokens = int(item.get("max_tokens", 4096))
+            except (TypeError, ValueError):
+                max_tokens = 4096
+
+            try:
+                context_window = int(item.get("context_window", 128000))
+            except (TypeError, ValueError):
+                context_window = 128000
+
+            new_list.append(ProviderConfig(
+                provider_id=provider_id or "",
+                name=str(item.get("name") or "").strip(),
+                base_url=str(item.get("base_url") or "").strip(),
+                api_key=api_key,
+                model=str(item.get("model") or "").strip(),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                context_window=context_window,
+            ))
+
+        default_id = str(provider_payload.get("default_id") or "").strip()
+        save_providers(new_list, default_id)
+
+    if "username" in general_payload and str(general_payload.get("username") or "").strip():
+        config.set("local_username", str(general_payload.get("username") or "").strip())
+
+    return jsonify({"success": True, "message": "设置已保存"})
+
+
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def proxy_all(path: str):
     # 已有精确路由会优先命中；其余统一走远端代理。

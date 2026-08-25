@@ -1,0 +1,8 @@
+{
+    "package": "@antv/g6",
+    "version": "5.1.1",
+    "source": "https://unpkg.com/@antv/g6@5.1.1/dist/g6.min.js",
+    "script": "g6.min.js",
+    "script_sha256": "3E091A94FD08994A383FF34BFBA256BB8E382E4BE4042197A206D2ECC0957331",
+    "license": "MIT"
+}

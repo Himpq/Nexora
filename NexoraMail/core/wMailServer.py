@@ -1,14 +1,15 @@
 try:
     from . import Configure, SMTPService, UserManager, DebugLog, POP3Service
+    from .app_context import init_context
 except Exception:
     import Configure, SMTPService, UserManager, DebugLog, POP3Service
+    from app_context import init_context
 import time, threading
 import sys, traceback
 
 def init_services():
     """Initialize all required modules and return success status"""
     Configure.checkConf()
-    # Ensure new default configuration keys are present (camelCase keys)
     defaults = {
         "SMTPServices": {
             "MailRelay": {
@@ -25,23 +26,20 @@ def init_services():
         Configure.ensureDefaults(defaults)
     except Exception:
         pass
-    # Ensure SMTPWhiteList config exists (whitelist/blacklist patterns)
     try:
-        # Ensure nested keys exist and persist defaults using Configure.ensureDefaults
         Configure.ensureDefaults({'SMTPServices': {'SMTPWhiteList': {'mode': 'disable', 'whitelist': [], 'blacklist': []}}})
         smtp_services = Configure.get('SMTPServices', {})
         sw = smtp_services.get('SMTPWhiteList', {})
-        # normalize placement of lists if specified at top-level keys
         wl = sw.get('whitelist') or smtp_services.get('whitelist') or []
         bl = sw.get('blacklist') or smtp_services.get('blacklist') or []
         mode = sw.get('mode') or smtp_services.get('mode') or 'disable'
-        # write normalized structure back and save
         smtp_services['SMTPWhiteList'] = {'mode': mode, 'whitelist': wl, 'blacklist': bl}
         Configure.save()
         DebugLog.write(f"[wMailServer] SMTPWhiteList loaded/normalized: mode={mode} whitelist={len(wl)} patterns, blacklist={len(bl)} patterns")
     except Exception as e:
         DebugLog.write(f"[wMailServer] Error ensuring SMTPWhiteList in config: {e}")
     DebugLog.init()
+    init_context(DebugLog, Configure.config)
     UserManager.initModule()
     SMTPService.initModule(DebugLog, Configure)
     POP3Service.initModule(DebugLog, Configure)

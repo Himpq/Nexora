@@ -25,10 +25,12 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
+_LECTURE_LIST_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
+_BOOK_LIST_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
 _BOOK_SUMMARY_KEYS = {
     "coarse_output",
     "coarse_model_name",
@@ -128,6 +130,41 @@ def _book_chunks_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Pat
     return _book_vectors_dir(cfg, lecture_id, book_id) / "chunks.jsonl"
 
 
+def _json_children_signature(root: Path, json_filename: str) -> Tuple[Tuple[str, int, int], ...]:
+    if not root.exists():
+        return tuple()
+
+    rows: List[Tuple[str, int, int]] = []
+
+    for entry in sorted(root.iterdir()):
+        json_path = entry / json_filename
+
+        if not entry.is_dir() or not json_path.exists():
+            continue
+
+        stat = json_path.stat()
+        rows.append((entry.name, int(stat.st_mtime_ns), int(stat.st_size)))
+
+    return tuple(rows)
+
+
+def _copy_metadata_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(row or {}) for row in rows]
+
+
+def _invalidate_lecture_metadata_cache(cfg: Dict[str, Any], lecture_id: str = "") -> None:
+    root_key = str(_lectures_root(cfg).resolve())
+    _LECTURE_LIST_CACHE.pop(root_key, None)
+
+    lecture_key = str(lecture_id or "").strip()
+
+    if lecture_key:
+        _BOOK_LIST_CACHE.pop(str(_books_dir(cfg, lecture_key).resolve()), None)
+        return
+
+    _BOOK_LIST_CACHE.clear()
+
+
 def ensure_lecture_root(cfg: Dict[str, Any]) -> Path:
     root = _lectures_root(cfg)
     root.mkdir(parents=True, exist_ok=True)
@@ -139,6 +176,13 @@ def list_lectures(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not root.exists():
         return []
 
+    cache_key = str(root.resolve())
+    signature = _json_children_signature(root, "lecture.json")
+    cached = _LECTURE_LIST_CACHE.get(cache_key)
+
+    if cached and cached[0] == signature:
+        return _copy_metadata_rows(cached[1])
+
     lectures: List[Dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
         lecture_path = entry / "lecture.json"
@@ -146,6 +190,8 @@ def list_lectures(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             data = _read_json(lecture_path)
             if data:
                 lectures.append(data)
+
+    _LECTURE_LIST_CACHE[cache_key] = (signature, _copy_metadata_rows(lectures))
     return lectures
 
 
@@ -183,6 +229,7 @@ def create_lecture(
         "vector_count": 0,
     }
     _write_json(_lecture_json_path(cfg, lecture_id), lecture)
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     return lecture
 
 
@@ -206,6 +253,7 @@ def update_lecture(
     lecture["teacher"] = _normalize_teacher_list(lecture.get("teacher"))
     lecture["updated_at"] = int(time.time())
     _write_json(_lecture_json_path(cfg, lecture_id), lecture)
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     return lecture
 
 
@@ -214,6 +262,7 @@ def delete_lecture(cfg: Dict[str, Any], lecture_id: str) -> bool:
     if not lecture_dir.exists():
         return False
     shutil.rmtree(str(lecture_dir))
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     return True
 
 
@@ -222,6 +271,13 @@ def list_books(cfg: Dict[str, Any], lecture_id: str) -> List[Dict[str, Any]]:
     if not books_dir.exists():
         return []
 
+    cache_key = str(books_dir.resolve())
+    signature = _json_children_signature(books_dir, "book.json")
+    cached = _BOOK_LIST_CACHE.get(cache_key)
+
+    if cached and cached[0] == signature:
+        return _copy_metadata_rows(cached[1])
+
     books: List[Dict[str, Any]] = []
     for entry in sorted(books_dir.iterdir()):
         book_path = entry / "book.json"
@@ -229,6 +285,8 @@ def list_books(cfg: Dict[str, Any], lecture_id: str) -> List[Dict[str, Any]]:
             data = _read_json(book_path)
             if data:
                 books.append(_sanitize_book_metadata(cfg, lecture_id, data))
+
+    _BOOK_LIST_CACHE[cache_key] = (signature, _copy_metadata_rows(books))
     return books
 
 
@@ -291,6 +349,16 @@ def create_book(
         "section_status": "idle",
         "section_error": "",
         "section_model": "",
+        "annotation_status": "idle",
+        "annotation_error": "",
+        "annotation_model": "",
+        "video_status": "idle",
+        "video_error": "",
+        "pipeline_status": "idle",
+        "pipeline_error": "",
+        "pipeline_job_id": "",
+        "pipeline_requested_at": None,
+        "pipeline_finished_at": None,
         "summary_status": "idle",
         "summary_error": "",
         "summary_model": "",
@@ -307,6 +375,7 @@ def create_book(
     _write_text(_book_detail_xml_path(cfg, lecture_id, book_id), "")
     _write_text(_book_questions_xml_path(cfg, lecture_id, book_id), "")
     _write_text(_book_sections_xml_path(cfg, lecture_id, book_id), "")
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     _increment_lecture_field(cfg, lecture_id, "book_count", 1)
     return book
 
@@ -332,6 +401,7 @@ def update_book(
         book.pop(key, None)
     book["updated_at"] = int(time.time())
     _write_json(_book_json_path(cfg, lecture_id, book_id), book)
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     return book
 
 
@@ -341,6 +411,7 @@ def delete_book(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> bool:
     if not book_dir.exists():
         return False
     shutil.rmtree(str(book_dir))
+    _invalidate_lecture_metadata_cache(cfg, lecture_id)
     _increment_lecture_field(cfg, lecture_id, "book_count", -1)
     _increment_lecture_field(cfg, lecture_id, "vector_count", -int(book.get("vector_count") or 0) if book else 0)
     return True
@@ -528,6 +599,19 @@ def save_book_original_file(
             "section_status": "idle",
             "section_error": "",
             "section_model": "",
+            "summary_status": "idle",
+            "summary_error": "",
+            "summary_model": "",
+            "annotation_status": "idle",
+            "annotation_error": "",
+            "annotation_model": "",
+            "video_status": "idle",
+            "video_error": "",
+            "pipeline_status": "idle",
+            "pipeline_error": "",
+            "pipeline_job_id": "",
+            "pipeline_requested_at": None,
+            "pipeline_finished_at": None,
         },
     ) or book
 
@@ -681,18 +765,14 @@ def _increment_lecture_field(cfg: Dict[str, Any], lecture_id: str, field: str, d
         lecture[field] = max(0, int(lecture.get(field) or 0) + delta)
         lecture["updated_at"] = int(time.time())
         _write_json(_lecture_json_path(cfg, lecture_id), lecture)
+        _invalidate_lecture_metadata_cache(cfg, lecture_id)
 
 
 def _sanitize_book_metadata(cfg: Dict[str, Any], lecture_id: str, book: Dict[str, Any]) -> Dict[str, Any]:
-    """清理 book.json 中不应存放的模型摘要字段。"""
+    """返回不含模型摘要字段的 book 元数据副本，读路径不写回磁盘。"""
     data = dict(book or {})
-    changed = False
+
     for key in _BOOK_SUMMARY_KEYS:
-        if key in data:
-            data.pop(key, None)
-            changed = True
-    if changed:
-        book_id = str(data.get("id") or "").strip()
-        if book_id:
-            _write_json(_book_json_path(cfg, lecture_id, book_id), data)
+        data.pop(key, None)
+
     return data

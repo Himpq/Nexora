@@ -1,0 +1,167 @@
+.learning-feed-compose-shell {
+    position: absolute;
+    right: 18px;
+    bottom: 18px;
+    width: 38px;
+    height: 38px;
+    z-index: 12;
+    overflow: visible;
+}
+
+.learning-feed-compose-shell[hidden] {
+    display: none !important;
+}
+
+.learning-feed-compose-shell .nxl-floating-feed-btn {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    z-index: 2;
+    width: 38px;
+    height: 38px;
+    border-radius: 4px;
+    box-shadow: none;
+}
+
+.learning-feed-compose-shell .nxl-floating-feed-btn svg {
+    width: 18px;
+    height: 18px;
+    transition: transform 160ms ease;
+}
+
+.learning-feed-compose-shell.is-open .nxl-floating-feed-btn svg {
+    transform: rotate(45deg);
+}
+
+.learning-feed-composer {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: min(390px, calc(100vw - 76px));
+    min-height: 142px;
+    box-sizing: border-box;
+    padding: 12px 12px 48px;
+    border: 1px solid #d8dee6;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 14px 32px rgba(17, 24, 39, 0.16);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(10px, 10px) scale(0.78);
+    transform-origin: right bottom;
+    transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.learning-feed-composer.is-open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(0, 0) scale(1);
+}
+
+.learning-feed-compose-input-wrap {
+    position: relative;
+}
+
+.learning-feed-post-input {
+    display: block;
+    width: 100%;
+    min-height: 74px;
+    max-height: 160px;
+    box-sizing: border-box;
+    resize: vertical;
+    padding: 9px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #111827;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.55;
+    outline: none;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.learning-feed-post-input:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.learning-feed-post-input:disabled {
+    background: #f8fafc;
+    color: #64748b;
+}
+
+.learning-feed-post-mention-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: 4;
+    max-height: 210px;
+    overflow-y: auto;
+    border: 1px solid #d8dee6;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 10px 24px rgba(17, 24, 39, 0.14);
+}
+
+.learning-feed-compose-footer {
+    position: absolute;
+    left: 12px;
+    right: 48px;
+    bottom: 10px;
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.learning-feed-compose-channel {
+    min-width: 0;
+    overflow: hidden;
+    color: #64748b;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.learning-feed-post-submit {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: #111111;
+    color: #ffffff;
+    cursor: pointer;
+    transition: background-color 140ms ease, opacity 140ms ease;
+}
+
+.learning-feed-post-submit:hover:not(:disabled) {
+    background: #2d2d2d;
+}
+
+.learning-feed-post-submit:disabled {
+    cursor: default;
+    opacity: 0.38;
+}
+
+.learning-feed-post-submit svg {
+    width: 16px;
+    height: 16px;
+}
+
+@media (max-width: 768px) {
+    .learning-feed-compose-shell {
+        right: 10px;
+        bottom: 10px;
+    }
+
+    .learning-feed-composer {
+        width: min(360px, calc(100vw - 40px));
+    }
+}

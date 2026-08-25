@@ -28,6 +28,15 @@ def _default_config():
                 "max_message_size": 50,
                 "max_recipients": 5,
                 "direct_ports": [25],
+                "ip_send_limit": {
+                    "enabled": False,
+                    "max_messages": 50,
+                    "window_seconds": 3600,
+                    "cooldown_seconds": 3600,
+                    "report_threshold_percent": 50,
+                    "report_recipient": "",
+                    "recent_subject_count": 5,
+                },
             },
             "services": {
                 "25": {"bind_ip": "0.0.0.0", "ssl": False, "user_group": "default"},

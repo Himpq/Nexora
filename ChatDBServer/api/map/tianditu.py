@@ -1,8 +1,8 @@
 import copy
 from typing import Any, Dict
 
-from map.baidu import BaiduMapToolService
-from map_tools import BAIDU_PROVIDER, TIANDITU_PROVIDER
+from Map.baidu import BaiduMapToolService
+from basis.Map import BAIDU_PROVIDER, TIANDITU_PROVIDER
 
 
 class TiandituMapToolService(BaiduMapToolService):

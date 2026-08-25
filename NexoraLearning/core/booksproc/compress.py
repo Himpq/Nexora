@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 try:
     from NexoraLearning import prompts as learning_prompts
@@ -48,8 +48,16 @@ def _load_prompt_text(cfg: Mapping[str, Any], key: str, fallback_text: str) -> s
     return str(fallback_text or "")
 
 
-def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[str], str]:
-    """构建统一的 LLM 上下文压缩函数。"""
+def build_proxy_llm_compress_func(
+    proxy: Any,
+    model_name: Optional[str],
+    cfg: Mapping[str, Any],
+    *,
+    username: str = "",
+    cancel_event: Any = None,
+    trace_meta: Optional[Mapping[str, Any]] = None,
+) -> Callable[[str], str]:
+    """基于现有代理构建统一的 LLM 上下文压缩函数。"""
     system_prompt = _load_prompt_text(
         cfg,
         "llm_compress_system",
@@ -89,18 +97,25 @@ def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[st
             {"role": "user", "content": str(user_prompt or "").strip()},
         ]
 
-        response = runner.nexora_client.proxy.complete_raw(
-            messages=request_messages,
-            model=runner.model_name,
-            username=None,
-            api_mode="chat",
-            options={
+        request_kwargs: dict[str, Any] = {
+            "messages": request_messages,
+            "model": model_name,
+            "username": str(username or "").strip() or None,
+            "api_mode": "chat",
+            "options": {
                 "temperature": 0.2,
                 "max_tokens": 1200,
                 "stream": False,
                 "think": False,
             },
-            request_timeout=60,
+            "request_timeout": 60,
+        }
+
+        if cancel_event is not None:
+            request_kwargs["cancel_event"] = cancel_event
+
+        response = proxy.complete_raw(
+            **request_kwargs,
         )
 
         if bool(response.get("success")):
@@ -113,7 +128,8 @@ def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[st
             {
                 "trace_meta": {
                     "flow": "llm_compress_call",
-                    "model_name": str(runner.model_name or ""),
+                    "model_name": str(model_name or ""),
+                    **dict(trace_meta or {}),
                 },
                 "request": {
                     "messages": request_messages,
@@ -128,3 +144,12 @@ def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[st
         )
 
     return _llm_compress_func
+
+
+def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[str], str]:
+    """基于 booksproc runner 构建统一的 LLM 上下文压缩函数。"""
+    return build_proxy_llm_compress_func(
+        runner.nexora_client.proxy,
+        runner.model_name,
+        cfg,
+    )

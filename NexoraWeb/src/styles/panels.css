@@ -1,0 +1,30 @@
+/**
+ * panels.css — GDDP 浮动面板开合动效(General Design Development Package)
+ *
+ * 职责:
+ *   - 时间线/笔记等浮动面板复用原版全局类(.timeline-panel / .notes-panel),
+ *     原版 display:none → .active 无过渡;此处覆盖为 visibility/opacity/transform
+ *     双向过渡,开/合均有 GDDP 动效
+ *   - 动画只作用于 transform/opacity,不触碰 usePanelDrag 直写的 left/top,无冲突
+ */
+
+.timeline-panel,
+.notes-panel {
+    display: flex;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+    pointer-events: none;
+    transition:
+        opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+        visibility 0.18s;
+}
+
+.timeline-panel.active,
+.notes-panel.active {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}

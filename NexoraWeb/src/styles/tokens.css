@@ -1,0 +1,164 @@
+/**
+ * tokens.css — 设计令牌(z-index 层级)
+ *
+ * 职责:
+ *   - 统一管理全站 z-index 层级,所有组件/样式必须引用令牌,禁止硬编码数字
+ *   - 新组件接入时按语义选择层级,避免互相覆盖(对齐 naive-ui 的层级管理思路)
+ *
+ * 层级语义(从低到高):
+ *   --z-dropdown       下拉菜单 / 工具模式菜单 / 用户菜单
+ *   --z-portal-dropdown Teleport 到 body 的下拉菜单(可跨越弹窗层)
+ *   --z-sidebar-panel  右侧滑入面板(知识库 / 文件)
+ *   --z-right-click    右键菜单
+ *   --z-floating       浮动面板(时间线等,原版 3601,低于右键菜单 3660)
+ *   --z-modal          弹窗(设置 / 小窗)
+ *   --z-viewer         全屏图片查看器(高于普通弹窗,低于确认框,对齐原版 5000 < 9300)
+ *   --z-confirm        确认框(高于普通弹窗)
+ *   --z-toast          全局提示
+ */
+
+:root {
+    --z-dropdown: 1000;
+    --z-portal-dropdown: 5200;
+    --z-sidebar-panel: 1200;
+    --z-right-click: 3660;
+    --z-floating: 3601;
+    --z-modal: 4000;
+    --z-viewer: 4600;
+    --z-confirm: 5000;
+    --z-toast: 40000;
+    --gddp-control-height: 34px;
+    --gddp-control-height-compact: 30px;
+    --gddp-action-min-width: 108px;
+    --gddp-action-gap: 10px;
+    --gddp-border-radius: 7px;
+}
+
+/*
+ * 工具模式菜单:原版根源是 input-container 的 overflow:hidden 裁剪,
+ * 打开菜单时通过 .tools-mode-menu-open 临时解除裁剪(ChatInput 已接入);
+ * 此处仅做 z-index 兜底(避免弹出后被同层元素覆盖),不再使用 !important。
+ */
+.tool-mode-menu {
+    z-index: var(--z-dropdown);
+}
+
+/* 修复 flex 子项滚动:sidebar-content 需要 min-height:0 才能正确溢出滚动 */
+.sidebar-content {
+    min-height: 0;
+}
+
+/*
+ * 图片查看器遮罩:原版 style.css 硬编码 z-index:5000,此处用令牌覆盖,
+ * 保持层级语义统一(--z-viewer 4600,低于确认框 5000)。
+ */
+.image-viewer-backdrop {
+    z-index: var(--z-viewer);
+}
+
+/* 时间线浮动面板:原版 style.css 硬编码 z-index:3601,用令牌覆盖 */
+.timeline-panel {
+    z-index: var(--z-floating);
+}
+
+/* 笔记浮动面板:原版 style.css 硬编码 z-index:3600,用令牌覆盖(与时间线同层) */
+.notes-panel {
+    z-index: var(--z-floating);
+}
+
+/* 选区右键菜单:原版 style.css 硬编码 z-index:3650,用令牌覆盖(低于会话右键菜单 3660) */
+.notes-context-menu {
+    z-index: var(--z-right-click);
+}
+
+/*
+ * 笔记 notebook 自建下拉:原版用原生 select,GDDP 规范禁用原生下拉,
+ * 此处用 button + 菜单复刻原版 .notes-notebook-select 的视觉。
+ */
+.notes-notebook-select-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.notes-notebook-select {
+    width: 100%;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid #dbe4f1;
+    background: #fff;
+    color: #0f172a;
+    font-size: 12px;
+    padding: 0 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.notes-notebook-select:hover {
+    border-color: #cbd5e1;
+}
+
+.notes-notebook-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: var(--z-dropdown);
+    display: none;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+    padding: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.notes-notebook-menu.open {
+    display: block;
+}
+
+.notes-notebook-menu button {
+    display: block;
+    width: 100%;
+    padding: 7px 9px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: #334155;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.notes-notebook-menu button:hover {
+    background: #f1f5f9;
+}
+
+.notes-notebook-menu button.active {
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-weight: 600;
+}
+
+/* turn indicator 跳转后的消息临时高亮(原版无此样式,补交互反馈) */
+.turn-jump-highlight {
+    animation: turn-jump-flash 3s ease-out forwards;
+}
+
+@keyframes turn-jump-flash {
+    0% {
+        background: #fef9c3;
+    }
+
+    60% {
+        background: #fef9c3;
+    }
+
+    100% {
+        background: transparent;
+    }
+}

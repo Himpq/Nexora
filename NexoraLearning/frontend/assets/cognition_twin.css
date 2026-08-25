@@ -1,0 +1,393 @@
+.cognition-twin-shell {
+  min-width: 0;
+}
+
+.cognition-twin {
+  color: var(--nxl-text);
+  padding: 18px 0 4px;
+}
+
+.cognition-twin-overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 4px 18px;
+}
+
+.cognition-twin-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 34px;
+}
+
+.cognition-twin-summary-primary,
+.cognition-twin-summary-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cognition-twin-summary strong {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.cognition-twin-summary-primary strong {
+  font-size: 34px;
+}
+
+.cognition-twin-summary span {
+  color: var(--nxl-soft);
+  font-size: 13px;
+}
+
+.cognition-twin-summary-item.is-due strong,
+.cognition-twin-summary-item.is-due span {
+  color: #a1460f;
+}
+
+.cognition-twin-refresh {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--nxl-line-strong);
+  border-radius: 6px;
+  color: var(--nxl-text);
+  background: var(--nxl-panel);
+  cursor: pointer;
+}
+
+.cognition-twin-refresh:hover {
+  border-color: var(--nxl-text);
+}
+
+.cognition-twin-refresh svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cognition-twin-distribution {
+  padding: 0 4px 18px;
+  border-bottom: 1px solid var(--nxl-line);
+}
+
+.cognition-twin-distribution-track {
+  height: 8px;
+  display: flex;
+  overflow: hidden;
+  background: #f2f2f2;
+  border-radius: 2px;
+}
+
+.cognition-twin-distribution-segment {
+  height: 100%;
+}
+
+.cognition-twin-distribution-segment.is-unknown,
+.cognition-twin-legend-item i.is-unknown {
+  background: #dedede;
+}
+
+.cognition-twin-distribution-segment.is-unverified,
+.cognition-twin-legend-item i.is-unverified {
+  background: #a8a8a8;
+}
+
+.cognition-twin-distribution-segment.is-developing,
+.cognition-twin-legend-item i.is-developing {
+  background: #707070;
+}
+
+.cognition-twin-distribution-segment.is-stable,
+.cognition-twin-legend-item i.is-stable {
+  background: #1f1f1f;
+}
+
+.cognition-twin-distribution-segment.is-at-risk,
+.cognition-twin-legend-item i.is-at-risk {
+  background: #b85b1d;
+}
+
+.cognition-twin-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding-top: 11px;
+}
+
+.cognition-twin-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--nxl-soft);
+  font-size: 12px;
+}
+
+.cognition-twin-legend-item i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.cognition-twin-legend-item strong {
+  color: var(--nxl-text);
+  font-size: 12px;
+}
+
+.cognition-twin-filters {
+  display: flex;
+  gap: 24px;
+  min-height: 50px;
+  align-items: flex-end;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--nxl-line);
+}
+
+.cognition-twin-filter {
+  position: relative;
+  padding: 0 0 12px;
+  border: 0;
+  color: var(--nxl-soft);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cognition-twin-filter::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+}
+
+.cognition-twin-filter:hover,
+.cognition-twin-filter.is-active {
+  color: var(--nxl-text);
+}
+
+.cognition-twin-filter.is-active::after {
+  background: var(--nxl-text);
+}
+
+.cognition-twin-body {
+  min-width: 0;
+}
+
+.cognition-twin-chapter {
+  border-bottom: 1px solid var(--nxl-line);
+}
+
+.cognition-twin-chapter-head {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 4px;
+}
+
+.cognition-twin-chapter-head h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--nxl-text);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cognition-twin-chapter-head span {
+  color: var(--nxl-soft);
+  font-size: 12px;
+}
+
+.cognition-twin-concept-list {
+  border-top: 1px solid var(--nxl-line);
+}
+
+.cognition-twin-concept-row {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 74px 82px 82px 88px 72px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--nxl-line);
+}
+
+.cognition-twin-concept-row:last-child {
+  border-bottom: 0;
+}
+
+.cognition-twin-concept-main {
+  min-width: 0;
+}
+
+.cognition-twin-concept-name {
+  overflow: hidden;
+  color: var(--nxl-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cognition-twin-concept-path {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--nxl-soft);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cognition-twin-status {
+  width: fit-content;
+  padding: 4px 7px;
+  border-radius: 4px;
+  color: #555;
+  background: #f2f2f2;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.cognition-twin-status.is-stable {
+  color: #fff;
+  background: #242424;
+}
+
+.cognition-twin-status.is-at-risk {
+  color: #8a3c0b;
+  background: #fff1e8;
+}
+
+.cognition-twin-measure {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--nxl-soft);
+  font-size: 11px;
+}
+
+.cognition-twin-measure strong {
+  color: var(--nxl-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.cognition-twin-evidence-count,
+.cognition-twin-review {
+  color: var(--nxl-soft);
+  font-size: 11px;
+  text-align: right;
+}
+
+.cognition-twin-review.is-due {
+  color: #a1460f;
+  font-weight: 650;
+}
+
+.cognition-twin-loading,
+.cognition-twin-empty,
+.cognition-twin-message {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--nxl-soft);
+  font-size: 13px;
+}
+
+.cognition-twin-message {
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+}
+
+.cognition-twin-message strong {
+  color: var(--nxl-text);
+  font-size: 16px;
+}
+
+.cognition-twin-message span {
+  max-width: 640px;
+  line-height: 1.6;
+}
+
+.cognition-twin-message button {
+  margin-top: 8px;
+  padding: 7px 13px;
+  border: 1px solid var(--nxl-line-strong);
+  border-radius: 5px;
+  color: var(--nxl-text);
+  background: var(--nxl-panel);
+  cursor: pointer;
+}
+
+@media (max-width: 920px) {
+  .cognition-twin-concept-row {
+    grid-template-columns: minmax(180px, 1fr) 70px 72px 72px;
+  }
+
+  .cognition-twin-evidence-count,
+  .cognition-twin-review {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .cognition-twin-overview-head {
+    gap: 12px;
+  }
+
+  .cognition-twin-summary {
+    gap: 16px;
+  }
+
+  .cognition-twin-summary-primary,
+  .cognition-twin-summary-item {
+    display: grid;
+    gap: 4px;
+  }
+
+  .cognition-twin-summary-primary strong {
+    font-size: 28px;
+  }
+
+  .cognition-twin-summary strong {
+    font-size: 20px;
+  }
+
+  .cognition-twin-filters {
+    gap: 18px;
+    overflow-x: auto;
+  }
+
+  .cognition-twin-filter {
+    flex: 0 0 auto;
+  }
+
+  .cognition-twin-concept-row {
+    grid-template-columns: minmax(0, 1fr) 68px;
+    gap: 10px;
+  }
+
+  .cognition-twin-measure {
+    display: none;
+  }
+}

@@ -2,13 +2,14 @@ import copy
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from datastorage import safe_read_json, safe_write_json
-from map_tools import BAIDU_PROVIDER, TIANDITU_PROVIDER, MapToolService
-from secure import safe_join_path
+from basis.Database import safe_read_json, safe_write_json
+from basis.Map import BAIDU_PROVIDER, TIANDITU_PROVIDER, MapToolService
+from App.Utils import safe_join_path
 
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -572,3 +573,66 @@ class BaiduMapToolService(MapToolService):
 
 def load_map_scene_for_map_id(username: str, conversation_id: str, map_id: str) -> Optional[Dict[str, Any]]:
     return BaiduMapRecordStore(username, conversation_id).scene_for_map_id(map_id)
+
+
+def rewrite_map_conversation_references(value: Any, source_conversation_id: str, target_conversation_id: str) -> Any:
+    """改写已复制消息中的地图会话引用，使旁路 scene 指向新分支。"""
+    source_id = str(source_conversation_id or "").strip()
+    target_id = str(target_conversation_id or "").strip()
+
+    if not source_id or not target_id:
+        raise ValueError("source_conversation_id and target_conversation_id are required")
+
+    if isinstance(value, str):
+        patterns = (
+            (rf'("conversationId"\s*:\s*"){re.escape(source_id)}("?)', rf'\g<1>{target_id}\g<2>'),
+            (rf'("conversation_id"\s*:\s*"){re.escape(source_id)}("?)', rf'\g<1>{target_id}\g<2>'),
+        )
+        rewritten = value
+
+        for pattern, replacement in patterns:
+            rewritten = re.sub(pattern, replacement, rewritten)
+
+        return rewritten
+
+    if isinstance(value, list):
+        return [
+            rewrite_map_conversation_references(item, source_id, target_id)
+            for item in value
+        ]
+
+    if isinstance(value, dict):
+        rewritten = {}
+
+        for key, item in value.items():
+            if key in {"conversationId", "conversation_id"} and str(item or "").strip() == source_id:
+                rewritten[key] = target_id
+            else:
+                rewritten[key] = rewrite_map_conversation_references(item, source_id, target_id)
+
+        return rewritten
+
+    return value
+
+
+def clone_map_records(username: str, source_conversation_id: str, target_conversation_id: str) -> bool:
+    """复制会话旁路地图记录；源会话没有地图时不创建空文件。"""
+    source_store = BaiduMapRecordStore(username, source_conversation_id)
+    target_store = BaiduMapRecordStore(username, target_conversation_id)
+    source_path = source_store.index_path
+    target_path = target_store.index_path
+
+    if not os.path.isfile(source_path):
+        return False
+
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    shutil.copy2(source_path, target_path)
+    return True
+
+
+def remove_map_records(username: str, conversation_id: str) -> None:
+    """删除分支创建失败后产生的地图旁路文件。"""
+    target_store = BaiduMapRecordStore(username, conversation_id)
+
+    if os.path.isfile(target_store.index_path):
+        os.remove(target_store.index_path)

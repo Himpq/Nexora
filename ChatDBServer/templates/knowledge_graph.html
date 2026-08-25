@@ -136,8 +136,8 @@
         function setupEvents() {
             document.getElementById('closeInspector').onclick = hideInspector;
             document.getElementById('shareNode').onclick = async () => {
-                const res = await fetch(`/api/knowledge/basis/` + encodeURIComponent(currentNoteTitle) + `/share`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                const res = await fetch(`/api/knowledge/basis/` + encodeURIComponent(currentNoteTitle) + `/public`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ public: true })
                 });
                 const data = await res.json();

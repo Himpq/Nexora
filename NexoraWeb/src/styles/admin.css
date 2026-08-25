@@ -1,0 +1,64 @@
+/**
+ * admin.css — Vue 管理员面板补充样式
+ *
+ * 职责:
+ *   - 原版 CSS 已覆盖 .admin-user-item / .admin-user-detail 等基础布局
+ *   - 本文件仅补充迁移版特有的组件样式:模型行、行内删除按钮,配色对齐原版
+ */
+
+/* 模型行(供应商详情内;settings.css 内覆盖为 grid 布局) */
+.admin-model-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    border-radius: 8px;
+    transition: background 0.15s ease;
+}
+
+.admin-model-row:hover {
+    background: #f8fafc;
+}
+
+.admin-model-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #0f172a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-model-status {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.admin-model-status.model-status-normal {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.admin-model-status.model-status-error {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.admin-model-status.model-status-disabled,
+.admin-model-status.model-status-unknown {
+    background: #f1f5f9;
+    color: #64748b;
+}
+
+.admin-model-ctx {
+    flex: none;
+    font-size: 11px;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}

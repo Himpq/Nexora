@@ -1,0 +1,249 @@
+/* 画像中心：纯展示页（左六维雷达图 / 右数据解析 + 数据内容）。
+   对齐 NexoraLearning 黑白墨色设计语言：#111111 主色、#e7e7e7 发丝线、白底面板。 */
+
+#profileCenterView.view-pane.is-active {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: clamp(14px, 1.8vw, 24px);
+}
+
+.profile-center-page {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.profile-center-page .panel-head {
+    min-height: 58px;
+    flex: 0 0 auto;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--nxl-line);
+}
+
+.profile-center-updated {
+    color: var(--nxl-soft);
+    font-size: 12px;
+}
+
+.profile-center-completion {
+    padding: 5px 10px;
+    border: 1px solid var(--nxl-line-strong);
+    border-radius: 6px;
+    color: var(--nxl-soft);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.profile-center-layout {
+    display: grid;
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 0;
+    overflow: hidden;
+}
+
+.profile-radar-pane,
+.profile-analysis-pane {
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.profile-radar-pane {
+    display: flex;
+    flex-direction: column;
+}
+
+.profile-radar-shell {
+    position: relative;
+    flex: 1;
+    min-height: 320px;
+}
+
+.profile-center-radar {
+    width: 100%;
+    height: 100%;
+}
+
+.profile-radar-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    text-align: center;
+}
+
+.profile-radar-empty p {
+    max-width: 320px;
+    margin: 0;
+    color: var(--nxl-soft);
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.profile-radar-empty[hidden],
+.profile-center-radar[hidden] {
+    display: none;
+}
+
+.profile-analysis-pane {
+    overflow: auto;
+    border-left: 1px solid var(--nxl-line);
+    padding: 4px 0 20px;
+}
+
+.profile-analysis-block {
+    padding: 0 18px;
+}
+
+.profile-analysis-block + .profile-analysis-block {
+    margin-top: 8px;
+}
+
+.profile-analysis-label {
+    padding: 16px 0 10px;
+    color: var(--nxl-soft);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.profile-analysis-block + .profile-analysis-block .profile-analysis-label {
+    border-top: 1px solid var(--nxl-line);
+}
+
+.profile-center-scores {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.profile-score-row {
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 12px 14px;
+    border: 1px solid var(--nxl-line);
+    border-radius: 6px;
+    background: #f9fafb;
+}
+
+.profile-score-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.profile-score-head strong {
+    color: #111827;
+    font-size: 13px;
+}
+
+.profile-score-head span {
+    color: #111111;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.profile-score-row.is-pending .profile-score-head span {
+    color: #98a2b3;
+}
+
+.profile-score-track {
+    height: 4px;
+    margin: 9px 0;
+    overflow: hidden;
+    border-radius: 2px;
+    background: #e9edf2;
+}
+
+.profile-score-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: #111111;
+    transition: width 0.45s ease;
+}
+
+.profile-score-row p {
+    min-height: 0;
+    margin: 0 0 6px;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.profile-score-row small {
+    color: #98a2b3;
+    font-size: 11px;
+}
+
+.profile-center-facts {
+    display: grid;
+    gap: 4px;
+}
+
+.profile-fact-row {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--nxl-line);
+}
+
+.profile-fact-row strong {
+    color: #111827;
+    font-size: 12px;
+}
+
+.profile-fact-row p {
+    margin: 0;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.profile-facts-empty {
+    padding: 22px 0;
+    color: #98a2b3;
+    font-size: 13px;
+}
+
+@media (max-width: 920px) {
+    #profileCenterView.view-pane.is-active {
+        display: block;
+        overflow: auto;
+    }
+
+    .profile-center-page {
+        height: auto;
+    }
+
+    .profile-center-layout {
+        grid-template-columns: 1fr;
+        overflow: visible;
+    }
+
+    .profile-radar-shell {
+        min-height: 340px;
+    }
+
+    .profile-analysis-pane {
+        border-left: 0;
+        border-top: 1px solid var(--nxl-line);
+    }
+}
+
+@media (max-width: 620px) {
+    .profile-center-scores {
+        grid-template-columns: 1fr;
+    }
+}

@@ -165,6 +165,13 @@ body {
   border-bottom-width: 2px;
 }
 
+/* 宿主侧栏接管功能区导航（桌面嵌入）时，dashboard 头部整行彻底隐藏
+   （kicker tab 与打开课程页入口均已迁到宿主侧栏）；
+   独立打开 / 移动端 overlay 布局下宿主下发 nav_visible=false，本地头部保留。 */
+body.host-dashboard-nav-active .progress-panel > .panel-head.materials-head {
+  display: none;
+}
+
 #dashboardView .nxl-icon-btn {
   border-radius: 4px;
   box-shadow: none;
@@ -1720,19 +1727,7 @@ body {
     transition: background 150ms ease, color 150ms ease;
 }
 
-.feed-channel-item:hover .feed-channel-select-btn,
-.feed-channel-select-btn:focus-visible {
-    background: #f3f4f6;
-}
-
-.feed-channel-item.is-active .feed-channel-select-btn {
-    background: #eff6ff;
-    color: #1d4ed8;
-}
-
 .feed-channel-item-name {
-    font-size: 13px;
-    font-weight: 500;
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -3638,6 +3633,7 @@ body {
 }
 
 .profile-status-icon,
+.profile-agents-icon,
 .profile-admin-settings-icon {
   position: absolute;
   top: 14px;
@@ -3657,11 +3653,24 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.profile-admin-settings-icon {
+.profile-agents-icon {
   right: 50px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-agents-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.profile-admin-settings-icon {
+  right: 86px;
 }
 
 .profile-status-icon:hover,
+.profile-agents-icon:hover,
 .profile-admin-settings-icon:hover {
   border-color: #111111;
   color: #111111;
@@ -3717,7 +3726,7 @@ body {
 .materials-upload-left,
 .materials-upload-right {
   border: 1px solid var(--nxl-line);
-  border-radius: 12px;
+  border-radius: 6px;
   background: #ffffff;
   min-width: 0;
   min-height: 0;
@@ -3734,7 +3743,7 @@ body {
 
 .lecture-item {
   border: 1px solid var(--nxl-line);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 10px;
   background: #f9fafb;
   cursor: pointer;
@@ -3745,8 +3754,8 @@ body {
 }
 
 .lecture-item.is-active {
-  border-color: #111111;
-  background: #f3f4f6;
+  border-color: #3f4654;
+  background: rgba(31, 35, 42, 0.06);
 }
 
 .lecture-title {
@@ -10121,6 +10130,11 @@ body.reader-theme-dark .chapter-loading-spinner {
 .log-entry-type-badge.type-tool {
   background: #fef3c7;
   color: #92400e;
+}
+
+.log-entry-type-badge.type-performance {
+  background: #dcfce7;
+  color: #166534;
 }
 
 .log-entry-type-badge.type-error {

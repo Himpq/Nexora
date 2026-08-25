@@ -9,6 +9,109 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+try:
+    from core import runlog as _runlog
+except Exception:  # pragma: no cover
+    try:
+        from . import runlog as _runlog  # type: ignore
+    except Exception:
+        _runlog = None  # type: ignore
+
+
+def _first_choice_text(payload: Any) -> str:
+    try:
+        choices = payload.get("choices") if isinstance(payload, Mapping) else None
+        message = (choices[0] or {}).get("message") if choices else None
+        return str((message or {}).get("content") or "")
+    except Exception:
+        return ""
+
+
+def _response_output_text(payload: Any) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+
+    parts: List[str] = []
+    output_items = payload.get("output")
+    if isinstance(output_items, list):
+        for item in output_items:
+            if not isinstance(item, Mapping):
+                continue
+
+            content_items = item.get("content")
+            if isinstance(content_items, list):
+                for content in content_items:
+                    if not isinstance(content, Mapping):
+                        continue
+
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                        continue
+
+                    value = content.get("value")
+                    if isinstance(value, str):
+                        parts.append(value)
+            else:
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+
+    return "\n".join(parts)
+
+
+def _request_prompt_chars(request_payload: Mapping[str, Any]) -> int:
+    prompt_chars = 0
+
+    for msg in (request_payload or {}).get("messages") or []:
+        if isinstance(msg, Mapping):
+            prompt_chars += len(str(msg.get("content") or ""))
+
+    instructions = (request_payload or {}).get("instructions")
+    if instructions is not None:
+        prompt_chars += len(str(instructions))
+
+    input_items = (request_payload or {}).get("input")
+    if input_items is not None:
+        try:
+            prompt_chars += len(json.dumps(input_items, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            prompt_chars += len(str(input_items))
+
+    return prompt_chars
+
+
+def _usage_tokens_from_result(result: Any, request_payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """优先取上游 usage；缺失时按 ~4 字符/token 估算并标记 estimated。"""
+    payload = result.get("payload") if isinstance(result, Mapping) else None
+    usage = payload.get("usage") if isinstance(payload, Mapping) else None
+
+    if isinstance(usage, Mapping):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+
+        if prompt is not None or completion is not None:
+            prompt_count = int(prompt or 0)
+            completion_count = int(completion or 0)
+            return {
+                "prompt": prompt_count,
+                "completion": completion_count,
+                "total": int(usage.get("total_tokens") or (prompt_count + completion_count)),
+            }
+
+    prompt_chars = _request_prompt_chars(request_payload)
+    completion_chars = len(_first_choice_text(payload) or _response_output_text(payload))
+    return {
+        "prompt": prompt_chars // 4,
+        "completion": completion_chars // 4,
+        "total": (prompt_chars + completion_chars) // 4,
+        "estimated": True,
+    }
+
 
 class NexoraProxy:
     """Thin HTTP client around fixed Nexora PAPI endpoints."""
@@ -78,6 +181,86 @@ class NexoraProxy:
             return piece, piece[len(current):]
 
         return f"{current}{piece}", piece
+
+    @staticmethod
+    def _merge_tool_argument_fragment(existing: str, incoming: str) -> str:
+        """Merge function.arguments fragments across delta and snapshot protocols."""
+        current = str(existing or "")
+        piece = str(incoming or "")
+
+        if not piece:
+            return current
+
+        if not current:
+            return piece
+
+        if piece == current:
+            return current
+
+        if piece.startswith(current):
+            return piece
+
+        if current.startswith(piece):
+            return current
+
+        if current.strip() in {"{}", "[]"} and piece.lstrip().startswith(("{", "[")):
+            return piece
+
+        return f"{current}{piece}"
+
+    @staticmethod
+    def _build_tool_arguments_debug(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+
+        for row in tool_calls:
+            if not isinstance(row, dict):
+                continue
+
+            func = row.get("function") if isinstance(row.get("function"), dict) else {}
+            arguments = str(func.get("arguments") or "")
+            json_valid = False
+            json_error = ""
+
+            if arguments.strip():
+                try:
+                    json_valid = isinstance(json.loads(arguments), dict)
+                except Exception as exc:
+                    json_error = str(exc)
+
+            rows.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "name": str(func.get("name") or ""),
+                    "arguments_len": len(arguments),
+                    "arguments_head": arguments[:240],
+                    "arguments_tail": arguments[-240:] if arguments else "",
+                    "arguments_json_valid": json_valid,
+                    "arguments_json_error": json_error[:240],
+                }
+            )
+
+        return rows
+
+    @staticmethod
+    def _stringify_stream_delta(value: Any) -> str:
+        """Extract text from OpenAI-compatible streaming delta fields."""
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, list):
+            parts: List[str] = []
+
+            for piece in value:
+                if isinstance(piece, str):
+                    parts.append(piece)
+                elif isinstance(piece, dict):
+                    text_piece = str(piece.get("text") or piece.get("content") or "")
+                    if text_piece:
+                        parts.append(text_piece)
+
+            return "".join(parts)
+
+        return ""
 
     def _build_headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -398,6 +581,7 @@ class NexoraProxy:
         use_chat_path: bool = False,
         request_timeout: Optional[float] = None,
         on_delta: Optional[Callable[[str], None]] = None,
+        on_reasoning_delta: Optional[Callable[[str], None]] = None,
         cancel_event: Any = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -428,24 +612,62 @@ class NexoraProxy:
                 payload[key] = value
 
         endpoint = self.chat_completions_path if use_chat_path else self.completions_path
-        if payload.get("stream") is True:
-            status, resp, used_endpoint = self._request_chat_stream(
-                endpoint,
-                payload=payload,
-                username=target_username,
-                request_timeout=request_timeout,
-                on_delta=on_delta,
-                cancel_event=cancel_event,
-            )
-        else:
-            status, resp, used_endpoint = self._request_json(
-                endpoint,
-                method="POST",
-                payload=payload,
-                username=target_username,
-                request_timeout=request_timeout,
-            )
-        return self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+        span_id = ""
+
+        if _runlog is not None:
+            try:
+                span_id = _runlog.start_span(
+                    "llm",
+                    str(payload.get("model") or "chat"),
+                    args={
+                        "endpoint": endpoint,
+                        "message_count": len(payload["messages"]),
+                        "stream": payload["stream"],
+                    },
+                )
+            except Exception:
+                span_id = ""
+
+        try:
+            if payload.get("stream") is True:
+                status, resp, used_endpoint = self._request_chat_stream(
+                    endpoint,
+                    payload=payload,
+                    username=target_username,
+                    request_timeout=request_timeout,
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                    cancel_event=cancel_event,
+                )
+            else:
+                status, resp, used_endpoint = self._request_json(
+                    endpoint,
+                    method="POST",
+                    payload=payload,
+                    username=target_username,
+                    request_timeout=request_timeout,
+                )
+            result = self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+        except Exception as exc:
+            if span_id:
+                try:
+                    _runlog.end_span(span_id, status="error", result=repr(exc))
+                except Exception:
+                    pass
+            raise
+
+        if span_id:
+            try:
+                _runlog.end_span(
+                    span_id,
+                    status="ok" if result.get("ok") else "error",
+                    tokens=_usage_tokens_from_result(result, payload),
+                    result=_first_choice_text(result.get("payload"))[:300],
+                )
+            except Exception:
+                pass
+
+        return result
 
     def responses(
         self,
@@ -490,14 +712,51 @@ class NexoraProxy:
             if value is not None:
                 payload[key] = value
 
-        status, resp, endpoint = self._request_json(
-            self.responses_path,
-            method="POST",
-            payload=payload,
-            username=target_username,
-            request_timeout=request_timeout,
-        )
-        return self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        span_id = ""
+
+        if _runlog is not None:
+            try:
+                span_id = _runlog.start_span(
+                    "llm",
+                    str(payload.get("model") or "responses"),
+                    args={
+                        "endpoint": self.responses_path,
+                        "input_count": len(payload.get("input") or []),
+                        "stream": False,
+                    },
+                )
+            except Exception:
+                span_id = ""
+
+        try:
+            status, resp, endpoint = self._request_json(
+                self.responses_path,
+                method="POST",
+                payload=payload,
+                username=target_username,
+                request_timeout=request_timeout,
+            )
+            result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        except Exception as exc:
+            if span_id:
+                try:
+                    _runlog.end_span(span_id, status="error", result=repr(exc))
+                except Exception:
+                    pass
+            raise
+
+        if span_id:
+            try:
+                _runlog.end_span(
+                    span_id,
+                    status="ok" if result.get("ok") else "error",
+                    tokens=_usage_tokens_from_result(result, payload),
+                    result=_response_output_text(result.get("payload"))[:300],
+                )
+            except Exception:
+                pass
+
+        return result
 
     def complete_raw(
         self,
@@ -569,6 +828,7 @@ class NexoraProxy:
         username: Optional[str],
         request_timeout: Optional[float],
         on_delta: Optional[Callable[[str], None]] = None,
+        on_reasoning_delta: Optional[Callable[[str], None]] = None,
         cancel_event: Any = None,
     ) -> Tuple[int, Dict[str, Any], str]:
         endpoint = self._resolve_path(path, username)
@@ -587,12 +847,79 @@ class NexoraProxy:
             method="POST",
         )
         full_text: List[str] = []
+        reasoning_text: List[str] = []
         raw_events: List[str] = []
         chunk_count = 0
         streamed_tool_calls: Dict[str, Dict[str, Any]] = {}
         streamed_tool_order: List[str] = []
         final_finish_reason = "stop"
         usage_payload: Dict[str, Any] = {}
+        chunk_key_counts: Dict[str, int] = {}
+        choice_key_counts: Dict[str, int] = {}
+        delta_key_counts: Dict[str, int] = {}
+        tool_fragment_count = 0
+
+        def bump_keys(bucket: Dict[str, int], obj: Any) -> None:
+            if not isinstance(obj, dict):
+                return
+
+            for key in obj.keys():
+                key_text = str(key or "").strip() or "-"
+                bucket[key_text] = int(bucket.get(key_text, 0) or 0) + 1
+
+        def record_tool_call_fragments(raw_tool_calls: Any) -> int:
+            if not isinstance(raw_tool_calls, list):
+                return 0
+
+            handled = 0
+
+            for idx, tc in enumerate(raw_tool_calls):
+                if not isinstance(tc, dict):
+                    continue
+
+                handled += 1
+                tc_id = str(tc.get("id") or "").strip()
+                tc_index = tc.get("index", idx)
+
+                try:
+                    tc_index_i = int(tc_index)
+                except Exception:
+                    tc_index_i = idx
+
+                key = tc_id or f"index:{tc_index_i}"
+                if key not in streamed_tool_calls:
+                    streamed_tool_calls[key] = {
+                        "id": tc_id or f"tool_call_{tc_index_i}",
+                        "type": str(tc.get("type") or "function"),
+                        "index": tc_index_i,
+                        "function": {"name": "", "arguments": ""},
+                    }
+                    streamed_tool_order.append(key)
+
+                entry = streamed_tool_calls[key]
+                func = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                name_part = str(func.get("name") or "")
+                args_part = str(func.get("arguments") or "")
+
+                if name_part:
+                    prev_name = str((entry.get("function") or {}).get("name") or "")
+                    merged_name, _name_delta = self._merge_stream_fragment(prev_name, name_part)
+                    (entry["function"])["name"] = merged_name
+
+                if args_part:
+                    prev_args = str((entry.get("function") or {}).get("arguments") or "")
+                    (entry["function"])["arguments"] = self._merge_tool_argument_fragment(prev_args, args_part)
+
+            return handled
+
+        def snapshot_content_delta(current_text: str, snapshot_value: Any) -> str:
+            snapshot_text = self._stringify_stream_delta(snapshot_value)
+            if not snapshot_text:
+                return ""
+
+            _merged_text, new_piece = self._merge_stream_fragment(current_text, snapshot_text)
+            return new_piece
+
         try:
             if cancel_event is not None and cancel_event.is_set():
                 return 499, {"success": False, "message": "request canceled"}, endpoint
@@ -630,77 +957,84 @@ class NexoraProxy:
                     if not isinstance(obj, dict):
                         continue
                     chunk_count += 1
+                    bump_keys(chunk_key_counts, obj)
 
                     # OpenAI chat.completions chunk -> choices[0].delta.content
                     delta_text = ""
+                    reasoning_delta_text = ""
                     choices = obj.get("choices")
                     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                         choice0 = choices[0]
+                        bump_keys(choice_key_counts, choice0)
                         delta = choices[0].get("delta")
                         if isinstance(delta, dict):
-                            content = delta.get("content")
-                            if isinstance(content, str):
-                                delta_text = content
-                            elif isinstance(content, list):
-                                parts: List[str] = []
-                                for piece in content:
-                                    if isinstance(piece, str):
-                                        parts.append(piece)
-                                    elif isinstance(piece, dict):
-                                        text_piece = str(piece.get("text") or piece.get("content") or "")
-                                        if text_piece:
-                                            parts.append(text_piece)
-                                delta_text = "".join(parts)
+                            bump_keys(delta_key_counts, delta)
+                            delta_text = self._stringify_stream_delta(delta.get("content"))
+
+                            for reasoning_key in ("reasoning_content", "reasoning", "thinking", "thinking_content"):
+                                reasoning_delta_text = self._stringify_stream_delta(delta.get(reasoning_key))
+                                if reasoning_delta_text:
+                                    break
 
                             # OpenAI-compatible tool-calls streaming fragments.
-                            raw_tool_calls = delta.get("tool_calls")
-                            if isinstance(raw_tool_calls, list):
-                                for idx, tc in enumerate(raw_tool_calls):
-                                    if not isinstance(tc, dict):
-                                        continue
-                                    tc_id = str(tc.get("id") or "").strip()
-                                    tc_index = tc.get("index", idx)
-                                    try:
-                                        tc_index_i = int(tc_index)
-                                    except Exception:
-                                        tc_index_i = idx
-                                    key = tc_id or f"index:{tc_index_i}"
-                                    if key not in streamed_tool_calls:
-                                        streamed_tool_calls[key] = {
-                                            "id": tc_id or f"tool_call_{tc_index_i}",
-                                            "type": str(tc.get("type") or "function"),
-                                            "index": tc_index_i,
-                                            "function": {"name": "", "arguments": ""},
-                                        }
-                                        streamed_tool_order.append(key)
-                                    entry = streamed_tool_calls[key]
-                                    func = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-                                    name_part = str(func.get("name") or "")
-                                    args_part = str(func.get("arguments") or "")
+                            tool_fragment_count += record_tool_call_fragments(delta.get("tool_calls"))
 
-                                    if name_part:
-                                        prev_name = str((entry.get("function") or {}).get("name") or "")
-                                        merged_name, _name_delta = self._merge_stream_fragment(prev_name, name_part)
-                                        (entry["function"])["name"] = merged_name
+                        message_snapshot = choice0.get("message")
+                        if isinstance(message_snapshot, dict):
+                            bump_keys(delta_key_counts, message_snapshot)
+                            if not delta_text:
+                                delta_text = snapshot_content_delta("".join(full_text), message_snapshot.get("content"))
 
-                                    if args_part:
-                                        prev_args = str((entry.get("function") or {}).get("arguments") or "")
-                                        merged_args, _args_delta = self._merge_stream_fragment(prev_args, args_part)
-                                        (entry["function"])["arguments"] = merged_args
+                            if not reasoning_delta_text:
+                                for reasoning_key in ("reasoning_content", "reasoning", "thinking", "thinking_content"):
+                                    reasoning_delta_text = snapshot_content_delta(
+                                        "".join(reasoning_text),
+                                        message_snapshot.get(reasoning_key),
+                                    )
+                                    if reasoning_delta_text:
+                                        break
+
+                            tool_fragment_count += record_tool_call_fragments(message_snapshot.get("tool_calls"))
 
                         finish_reason = choice0.get("finish_reason")
                         if isinstance(finish_reason, str) and finish_reason.strip():
                             final_finish_reason = finish_reason.strip()
+
+                    if not choices:
+                        if not delta_text:
+                            delta_text = snapshot_content_delta("".join(full_text), obj.get("content"))
+
+                        message_obj = obj.get("message")
+                        if isinstance(message_obj, dict):
+                            bump_keys(delta_key_counts, message_obj)
+                            if not delta_text:
+                                delta_text = snapshot_content_delta("".join(full_text), message_obj.get("content"))
+                            if not reasoning_delta_text:
+                                for reasoning_key in ("reasoning_content", "reasoning", "thinking", "thinking_content"):
+                                    reasoning_delta_text = snapshot_content_delta(
+                                        "".join(reasoning_text),
+                                        message_obj.get(reasoning_key),
+                                    )
+                                    if reasoning_delta_text:
+                                        break
+                            tool_fragment_count += record_tool_call_fragments(message_obj.get("tool_calls"))
 
                     usage_obj = obj.get("usage")
                     if isinstance(usage_obj, dict):
                         usage_payload = dict(usage_obj)
                     if delta_text:
                         full_text.append(delta_text)
+                    if reasoning_delta_text:
+                        reasoning_text.append(reasoning_delta_text)
                     if delta_text and on_delta is not None:
                         try:
                             # 仅向上游透传模型正文；工具调用由最终 message.tool_calls 和执行日志展示。
                             on_delta(delta_text)
+                        except Exception:
+                            pass
+                    if reasoning_delta_text and on_reasoning_delta is not None:
+                        try:
+                            on_reasoning_delta(reasoning_delta_text)
                         except Exception:
                             pass
                 if chunk_count == 0:
@@ -711,6 +1045,7 @@ class NexoraProxy:
                         "debug_events_preview": debug_preview,
                     }, endpoint
                 final_text = "".join(full_text).strip()
+                final_reasoning_text = "".join(reasoning_text).strip()
                 tool_calls_list: List[Dict[str, Any]] = []
                 for key in streamed_tool_order:
                     row = streamed_tool_calls.get(key) or {}
@@ -730,7 +1065,39 @@ class NexoraProxy:
                             },
                         }
                     )
+                tool_arguments_debug = self._build_tool_arguments_debug(tool_calls_list)
+                stream_debug = {
+                    "endpoint": endpoint,
+                    "model": str(payload.get("model") or ""),
+                    "chunk_count": int(chunk_count),
+                    "finish_reason": final_finish_reason,
+                    "content_chars": len(final_text),
+                    "reasoning_chars": len(final_reasoning_text),
+                    "tool_call_count": len(tool_calls_list),
+                    "tool_fragment_count": int(tool_fragment_count),
+                    "chunk_keys": chunk_key_counts,
+                    "choice_keys": choice_key_counts,
+                    "delta_keys": delta_key_counts,
+                    "tool_arguments": tool_arguments_debug,
+                    "raw_events_preview": raw_events[:8],
+                }
+
+                if not final_text and not final_reasoning_text and not tool_calls_list:
+                    try:
+                        from .runlog import log_event
+
+                        log_event(
+                            "nexora_proxy_stream_empty",
+                            "模型流未解析出正文、推理或工具调用",
+                            payload=stream_debug,
+                            content="\n".join(raw_events[:8]),
+                        )
+                    except Exception:
+                        pass
+
                 message_obj: Dict[str, Any] = {"role": "assistant", "content": final_text}
+                if final_reasoning_text:
+                    message_obj["reasoning_content"] = final_reasoning_text
                 if tool_calls_list:
                     message_obj["tool_calls"] = tool_calls_list
                     if final_finish_reason == "stop":
@@ -745,9 +1112,12 @@ class NexoraProxy:
                         }
                     ],
                     "_stream_chunks": chunk_count,
+                    "_stream_debug": stream_debug,
                 }
                 if usage_payload:
                     payload_obj["usage"] = usage_payload
+                if final_reasoning_text:
+                    payload_obj["reasoning_content"] = final_reasoning_text
                 return status, {
                     **payload_obj
                 }, endpoint

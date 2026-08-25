@@ -27,6 +27,7 @@
       enteredAt: 0,
       heartbeatTimer: null,
       basicContext: null,
+      savedContext: null,
     },
     backend: {
       pendingRecords: [],
@@ -546,12 +547,17 @@
   }
 
   function handleVisibilityHidden() {
-    stopReaderHeartbeat();
+    if (state.reader.currentContext) {
+      state.reader.savedContext = Object.assign({}, state.reader.currentContext);
+      clearReaderSessionContext("visibility_hidden");
+    }
   }
 
   function handleVisibilityVisible() {
-    if (state.reader.currentContext) {
-      startReaderHeartbeat();
+    if (state.reader.savedContext) {
+      const ctx = state.reader.savedContext;
+      state.reader.savedContext = null;
+      setReaderSessionContext(ctx);
     }
   }
 

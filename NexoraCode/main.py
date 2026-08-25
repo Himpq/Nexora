@@ -20,10 +20,10 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import requests
 import webview
 
-from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html
+from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html, _local_agent_enabled_value
 from core.tray import run_tray
 from core.config import config, get_app_root
-from core.tool_registry import ToolRegistry
+from local import build_default_executor
 from core import wintitle
 
 # WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
@@ -459,9 +459,10 @@ _WINDOW_MODE = _resolve_window_mode()
 _USE_FRAMELESS = (_WINDOW_MODE == "frameless")
 _USE_CUSTOM_TITLEBAR = (_WINDOW_MODE in {"frameless", "custom"})
 _PERSISTENT_OUTER_SHELL = str(config.get("persistent_outer_shell", True)).strip().lower() in {"1", "true", "on", "yes"}
-# Render a lightweight bootstrap document first for any custom titlebar mode,
-# then navigate to real URL after native frame hooks are stable.
-_USE_BOOTSTRAP_SHELL = _USE_CUSTOM_TITLEBAR
+# 去壳直载模式：主窗口直接加载本地代理 URL（http://127.0.0.1:27700/chat），
+# 不再经过 bootstrap shell + iframe 壳，避免 3p-cookie / SameSite / 登录环 hack。
+# 标题栏由 startup script（_TITLEBAR_JS）注入页面，窗口控制走 wintitle。
+_USE_BOOTSTRAP_SHELL = False
 
 _BOOTSTRAP_HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -1054,6 +1055,25 @@ class NexoraWindowApi:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    def select_project_folder(self):
+        """弹出原生文件夹选择对话框，供 NexoraCode 项目会话选择本地项目路径。"""
+        if not self._window:
+            return {"success": False, "message": "window not ready"}
+        try:
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            path = ""
+            if isinstance(result, (list, tuple)) and result:
+                path = str(result[0] or "")
+            elif isinstance(result, str):
+                path = result
+            path = path.strip()
+            if not path:
+                return {"success": False, "cancelled": True}
+            print(f"[NexoraCode] project folder selected: {path}")
+            return {"success": True, "path": path}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     def _get_notes_window(self):
         with self._notes_window_lock:
             nw = self._notes_window
@@ -1274,20 +1294,17 @@ class NexoraWindowApi:
                         pass
                     return {"success": True, "reused": True}
 
-                settings_html_path = get_app_root() / "ui" / "settings_local.html"
-                settings_html = settings_html_path.read_text(encoding="utf-8")
-
                 try:
-                    settings_w = int(config.get("settings_window_width", 900) or 900)
-                    settings_h = int(config.get("settings_window_height", 640) or 640)
+                    settings_w = int(config.get("settings_window_width", 860) or 860)
+                    settings_h = int(config.get("settings_window_height", 600) or 600)
                 except Exception:
-                    settings_w, settings_h = 900, 640
-                settings_w = max(700, min(1600, settings_w))
-                settings_h = max(520, min(1400, settings_h))
+                    settings_w, settings_h = 860, 600
+                settings_w = max(700, min(1400, settings_w))
+                settings_h = max(520, min(1200, settings_h))
 
                 settings_kwargs = {
                     "title": "Nexora Settings",
-                    "html": settings_html,
+                    "url": f"http://127.0.0.1:{LOCAL_PORT}/settings",
                     "width": settings_w,
                     "height": settings_h,
                     "min_size": (700, 520),
@@ -1295,8 +1312,6 @@ class NexoraWindowApi:
                     "frameless": _USE_FRAMELESS,
                     "text_select": True,
                     "js_api": self,
-                    "easy_drag": False,
-                    "background_color": "#0c0c0f",
                 }
                 try:
                     settings_window = webview.create_window(**settings_kwargs)
@@ -1606,6 +1621,35 @@ class NexoraWindowApi:
                 except Exception:
                     pass
             return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def refresh_main_window(self):
+        """设置保存后刷新主窗口模型列表：优先热调用 loadModels，失败再整页重载。"""
+        if not self._window:
+            return {"success": False, "message": "main window not found"}
+        try:
+            reloaded = bool(
+                self._window.evaluate_js(
+                    "(function(){ if (window.__ncLoadModels) { window.__ncLoadModels(); return true; } return false; })();"
+                )
+            )
+
+            if reloaded:
+                return {"success": True, "mode": "models"}
+        except Exception:
+            pass
+
+        try:
+            current_url = str(getattr(self._window, "url", "") or "")
+
+            if not current_url:
+                return {"success": False, "message": "main window url empty"}
+
+            separator = "&" if "?" in current_url else "?"
+            next_url = f"{current_url}{separator}_nc_ts={int(time.time())}"
+            self._window.load_url(next_url)
+            return {"success": True, "mode": "page", "url": next_url}
         except Exception as e:
             return {"success": False, "message": str(e)}
 
@@ -3133,7 +3177,7 @@ def _build_notes_local_shell_html() -> str:
 """
 
 
-def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
+def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
     """
     通过 WebSocket 持续与服务器保持长连接，作为远端 LLM 的本地 Tool 计算节点
     """
@@ -3141,6 +3185,10 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
     parsed = urlsplit(base_url)
     ws_scheme = "wss" if parsed.scheme == "https" else "ws"
     ws_url = f"{ws_scheme}://{parsed.netloc}/ws/agent"
+
+    # 连接失败退避状态：避免云端不可达时每 3 秒刷屏
+    retry_printed: dict = {}
+    backoff_seconds = 3.0
 
     while not _STOP_POLL.is_set():
         try:
@@ -3168,6 +3216,8 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                 continue
 
             print("[NexoraCode WSS] Tunnel Connected and Authenticated!")
+            retry_printed.clear()
+            backoff_seconds = 3.0
 
             # 2. 注册工具
             tools = registry.list_tools_llm_format()
@@ -3230,6 +3280,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                         task_id = payload.get("task_id")
                         tool_name = payload.get("tool_name")
                         args = payload.get("args", {})
+                        request_context = payload.get("context", {})
                         sent_at = payload.get("sent_at")
                         try:
                             server_to_agent_ms = max(0.0, (received_at - float(sent_at)) * 1000.0) if sent_at else None
@@ -3243,6 +3294,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                             task_id=task_id,
                             tool_name=tool_name,
                             args=args,
+                            request_context=request_context,
                             received_at=received_at,
                             server_to_agent_ms=server_to_agent_ms,
                         ):
@@ -3252,6 +3304,8 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                                     "task_id": str(task_id or ""),
                                     "is_cancelled": lambda: _is_tool_task_cancelled(task_id),
                                 }
+                                if isinstance(request_context, dict):
+                                    task_context.update(request_context)
                                 result = registry.execute(tool_name, args, context=task_context)
                                 exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
                             except Exception as e:
@@ -3321,21 +3375,41 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
             ws.close()
 
         except Exception as e:
-            print(f"[NexoraCode WSS] Disconnected or error: {e}")
-            time.sleep(3)
+            # 云端不可达时静默退避，避免每 3 秒刷屏 [WinError 10061]；
+            # 首次失败仍打印一次便于排查，之后进入退避循环。
+            if retry_printed.get("first_failure") is not True:
+                retry_printed["first_failure"] = True
+                print(f"[NexoraCode WSS] Disconnected or error: {e} (will retry with backoff)")
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(30.0, backoff_seconds * 2)
+            if backoff_seconds >= 30.0:
+                backoff_seconds = 30.0
+            # 退避达到上限后重置首次失败标记，每 30 秒提示一次连接状态
+            if backoff_seconds >= 30.0 and retry_printed.get("last_warn_at", 0) + 30 < time.time():
+                retry_printed["last_warn_at"] = time.time()
+                print(f"[NexoraCode WSS] still disconnected from {base_url}, retrying every 30s")
 
 
 def main():
-    registry = ToolRegistry()
+    # 项目模式照搬云端页面：窗口直载本地代理 /chat（云端渲染），
+    # 由 _PROJECT_MODE_PATCH_JS 裁剪掉与项目无关的 UI 模块，聚焦项目内容。
+    global _USE_FRAMELESS, _USE_CUSTOM_TITLEBAR
+    _LOCAL_UI_ENABLED = str(config.get("local_ui", False)).strip().lower() in {"1", "true", "on", "yes"}
+    if _LOCAL_UI_ENABLED:
+        _USE_FRAMELESS = False
+        _USE_CUSTOM_TITLEBAR = False
+    registry = build_default_executor()
     js_api = NexoraWindowApi()
     print(f"[NexoraWindow] mode={_WINDOW_MODE} frameless={_USE_FRAMELESS} custom_titlebar={_USE_CUSTOM_TITLEBAR}")
     runtime_base_url = _resolve_runtime_base_url()
     print(f"[NexoraProxy] runtime_base_url={runtime_base_url}")
     runtime_host = str(urlsplit(runtime_base_url).hostname or "chat.himpqblog.cn").strip().lower()
-    _allow_iframe_3p_cookie = str(config.get("allow_iframe_third_party_cookies", True)).strip().lower() in {"1", "true", "on", "yes"}
-    _unsafe_disable_web_security = str(config.get("unsafe_disable_web_security", True)).strip().lower() in {"1", "true", "on", "yes"}
-    _relax_iframe_samesite = str(config.get("relax_iframe_samesite", True)).strip().lower() in {"1", "true", "on", "yes"}
+    _allow_iframe_3p_cookie = str(config.get("allow_iframe_third_party_cookies", False)).strip().lower() in {"1", "true", "on", "yes"}
+    _unsafe_disable_web_security = str(config.get("unsafe_disable_web_security", False)).strip().lower() in {"1", "true", "on", "yes"}
+    _relax_iframe_samesite = str(config.get("relax_iframe_samesite", False)).strip().lower() in {"1", "true", "on", "yes"}
     _auto_escape_iframe_login_loop = str(config.get("auto_escape_iframe_login_loop", False)).strip().lower() in {"1", "true", "on", "yes"}
+    # 去壳直载模式为同源本地代理，无需 3p-cookie / SameSite / 关闭安全等 iframe hack；
+    # 仅当显式开启 persistent_outer_shell 且开启对应开关时才注入（旧模式回退）。
     _disable_features = []
     if _PERSISTENT_OUTER_SHELL and _allow_iframe_3p_cookie:
         _disable_features.extend(["BlockThirdPartyCookies", "ThirdPartyStoragePartitioning"])
@@ -4520,6 +4594,60 @@ def main():
   ensureStyle();
 })();"""
 
+    # 项目模式裁剪：隐藏与项目无关的云端 UI 入口（学习/工作区 tab、知识库/云盘/邮件/笔记面板），
+    # 保留聊天 + 会话 + 项目侧栏 + 模型选择等核心框架。持续观察防前端重排后恢复。
+    _PROJECT_MODE_PATCH_JS = r"""(function() {
+    const HIDE_SELECTORS = [
+        '#sidebarBrandLearningTab',
+        '#sidebarBrandWorkspaceTab',
+        '#toggleKnowledgePanel',
+        '#toggleFilePanel',
+        '#toggleMailView',
+        '#toggleNotesPanel'
+    ];
+    const STRIP_CLASSES = ['learning-mode-enabled', 'learning-workspace-active'];
+    # titlebar 渲染与页面重叠修复：body 顶部预留标题栏高度（固定 36px），
+    # 标题栏浮于预留区；同时隐藏普通会话列表，只保留项目侧栏。
+    const TITLEBAR_LAYOUT_STYLE = 'html.nc-titlebar-ready body{padding-top:36px !important;}html.nc-titlebar-ready .app-container{height:calc(100vh - 36px) !important;}';
+    function ensureTitlebarLayout() {
+        try {
+            let s = document.getElementById('nc-project-layout-style');
+            if (!s && document.head) {
+                s = document.createElement('style');
+                s.id = 'nc-project-layout-style';
+                document.head.appendChild(s);
+            }
+            if (s) s.textContent = TITLEBAR_LAYOUT_STYLE;
+        } catch (_) {}
+    }
+    function apply() {
+        ensureTitlebarLayout();
+        try {
+            for (const cls of STRIP_CLASSES) {
+                document.documentElement && document.documentElement.classList.remove(cls);
+                document.body && document.body.classList.remove(cls);
+            }
+        } catch (_) {}
+        try {
+            HIDE_SELECTORS.forEach(function(sel) {
+                const el = document.querySelector(sel);
+                if (el) el.style.display = 'none';
+            });
+        } catch (_) {}
+    }
+    apply();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply, { once: true });
+    }
+    setTimeout(apply, 300);
+    setTimeout(apply, 1200);
+    setTimeout(apply, 3000);
+    try {
+        const mo = new MutationObserver(function() { apply(); });
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
+})();"""
+
     def on_shown():
         if not _USE_CUSTOM_TITLEBAR:
             return
@@ -4586,6 +4714,11 @@ def main():
         except Exception:
             pass
         threading.Thread(target=_titlebar_keepalive_loop, args=(win, _TITLEBAR_JS, 1.2), daemon=True).start()
+        # 项目模式裁剪 JS：每次页面加载注入，隐藏与项目无关的云端 UI 入口。
+        try:
+            wintitle.add_startup_script(win, _PROJECT_MODE_PATCH_JS)
+        except Exception:
+            pass
         if _WINDOW_MODE == "custom":
             try:
                 wintitle.add_startup_script(win, _PAGE_PATCH_JS)
@@ -4888,12 +5021,17 @@ def main():
                 remote_base_url = str(config.get("nexora_url", DEFAULT_NEXORA_URL) or DEFAULT_NEXORA_URL).strip()
                 if not remote_base_url: remote_base_url = DEFAULT_NEXORA_URL
                 
-                poll_thread = threading.Thread(
-                    target=_agent_tunnel_loop,
-                    args=(registry, agent_token, remote_base_url),
-                    daemon=True,
-                )
-                poll_thread.start()
+                # local_agent 模式下对话由本地 AgentLoop 驱动，不需要连远端 WSS 工具隧道；
+                # 若仍去连云端地址（如 127.0.0.1:5000），云端未启动时会反复刷 WinError 10061。
+                if _local_agent_enabled_value():
+                    print("[NexoraCode WSS] local_agent mode enabled, skip remote agent tunnel")
+                else:
+                    poll_thread = threading.Thread(
+                        target=_agent_tunnel_loop,
+                        args=(registry, agent_token, remote_base_url),
+                        daemon=True,
+                    )
+                    poll_thread.start()
             finally:
                 _release_bootstrap_slot()
 

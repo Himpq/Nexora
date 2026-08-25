@@ -1158,12 +1158,119 @@
 }
 
 .resource-review-markdown p,
-.resource-review-markdown ul {
+.resource-review-markdown ul,
+.resource-review-markdown ol,
+.resource-review-markdown blockquote,
+.resource-review-markdown .nxl-markdown-table-wrap,
+.resource-review-markdown .nxl-markdown-code,
+.resource-reader-body .learning-push-markdown .nxl-markdown-table-wrap,
+.resource-reader-body .learning-push-markdown .nxl-markdown-code {
   margin: 0 0 12px;
 }
 
-.resource-review-markdown ul {
+.resource-review-markdown ul,
+.resource-review-markdown ol {
   padding-left: 22px;
+}
+
+.resource-review-markdown li + li {
+  margin-top: 5px;
+}
+
+.resource-review-markdown blockquote {
+  padding: 10px 14px;
+  border-left: 3px solid #93b4ef;
+  background: #f6f9ff;
+  color: #435268;
+}
+
+.resource-review-markdown blockquote p {
+  margin: 0;
+}
+
+.resource-review-markdown code,
+.resource-reader-body .learning-push-markdown code {
+  padding: 2px 5px;
+  border: 1px solid #dce4ef;
+  background: #f4f7fb;
+  color: #1f3f72;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 0.9em;
+}
+
+.resource-review-markdown .nxl-markdown-code,
+.resource-reader-body .learning-push-markdown .nxl-markdown-code {
+  position: relative;
+  overflow: auto;
+  padding: 38px 16px 16px;
+  border: 1px solid #d7dee8;
+  background: #111827;
+  color: #e5e7eb;
+  line-height: 1.65;
+}
+
+.resource-review-markdown .nxl-markdown-code > span,
+.resource-reader-body .learning-push-markdown .nxl-markdown-code > span {
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.resource-review-markdown .nxl-markdown-code code,
+.resource-reader-body .learning-push-markdown .nxl-markdown-code code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  white-space: pre;
+}
+
+.resource-review-markdown a,
+.resource-reader-body .learning-push-markdown a {
+  color: #1d5fc4;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.resource-review-markdown hr,
+.resource-reader-body .learning-push-markdown hr {
+  height: 1px;
+  margin: 20px 0;
+  border: 0;
+  background: #dfe5ed;
+}
+
+.resource-review-markdown .nxl-markdown-table-wrap,
+.resource-reader-body .learning-push-markdown .nxl-markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.resource-review-markdown table,
+.resource-reader-body .learning-push-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.resource-review-markdown th,
+.resource-review-markdown td,
+.resource-reader-body .learning-push-markdown th,
+.resource-reader-body .learning-push-markdown td {
+  padding: 9px 11px;
+  border: 1px solid #dce3ec;
+  vertical-align: top;
+}
+
+.resource-review-markdown th,
+.resource-reader-body .learning-push-markdown th {
+  background: #f3f6fa;
+  color: #1f2937;
+  font-weight: 750;
 }
 
 .learning-resource-tool .question-bank-action[disabled] {

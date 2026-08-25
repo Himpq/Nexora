@@ -42,6 +42,29 @@ python3 NexoraMail.py
 - `sample/config` includes example config and template files to copy and adapt.
 - `APIServer` (optional) controls the lightweight management API service.
 
+### Per-IP SMTP send limit
+
+Configure SMTP submission quotas under `smtp_services.settings.ip_send_limit`:
+
+```json
+{
+    "enabled": true,
+    "max_messages": 10,
+    "window_seconds": 3600,
+    "cooldown_seconds": 3600,
+    "report_threshold_percent": 50,
+    "report_recipient": "admin@example.com",
+    "recent_subject_count": 5
+}
+```
+
+- One accepted SMTP `DATA` transaction consumes one message slot, regardless of recipient count.
+- The message that reaches `max_messages` is accepted and starts the cooldown immediately.
+- Further messages from the same IP receive SMTP `451` until the cooldown expires.
+- A local report is sent once per quota window after usage exceeds `report_threshold_percent`.
+- The report recipient must be an existing mailbox in the SMTP listener's user group.
+- Quota state is process-local and resets when the SMTP process restarts.
+
 ## Security notes
 
 - Always require TLS for AUTH PLAIN (credentials must not be sent in cleartext).

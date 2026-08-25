@@ -7,13 +7,15 @@ All functions are pure data readers — they never modify lecture.json.
 from __future__ import annotations
 
 import csv
+import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core import user as user_store
 from core.lectures import load_book_info_xml, load_book_text
 from core.lectures import list_lectures as _list_all_lectures, list_books as _list_lecture_books
+from core.runlog import log_event
 
 _cfg: Dict[str, Any] = {}
 _TELEMETRY_READING_COLUMNS = ["ts", "uid", "bid", "ci", "si", "event", "scroll", "focus", "sel_text", "extra"]
@@ -31,6 +33,7 @@ _LEARNING_ACTIVE_RECORD_TYPES = frozenset({
     "study_session",
     "learning_time",
 })
+_UNMEASURED_READING_LOG_KEYS: set = set()
 
 
 def init_learning_progress(cfg: Dict[str, Any]) -> None:
@@ -220,18 +223,18 @@ def build_user_study_hours_map(
     except Exception:
         pass
 
-    # --- telemetry reading.csv (snapshot events) -----------------------------------
-    try:
-        per_book_seconds = _telemetry_reading_seconds_per_book(user_id)
-        if per_book_seconds:
-            mapping = _build_book_to_lecture_mapping()
-            for bid, seconds in per_book_seconds.items():
-                lid = mapping.get(bid)
-                if lid:
-                    hours = seconds / 3600.0
-                    hours_map[lid] = max(float(hours_map.get(lid, 0.0)), hours)
-    except Exception:
-        pass
+    # --- telemetry reading.csv (verified active duration) --------------------------
+    per_book_seconds = _telemetry_reading_seconds_per_book(user_id)
+
+    if per_book_seconds:
+        mapping = _build_book_to_lecture_mapping()
+
+        for bid, seconds in per_book_seconds.items():
+            lid = mapping.get(bid)
+
+            if lid:
+                hours = seconds / 3600.0
+                hours_map[lid] = max(float(hours_map.get(lid, 0.0)), hours)
 
     return hours_map
 
@@ -261,93 +264,103 @@ def _timestamp_to_unix_seconds(value: Any) -> int:
     return int(raw)
 
 
-def _timestamp_to_milliseconds(value: Any) -> float:
-    """Normalize telemetry timestamps before calculating duration spans."""
-    try:
-        raw = float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-    if raw <= 0:
-        return 0.0
-
-    if raw > 10_000_000_000:
-        return raw
-
-    return raw * 1000.0
-
-
 def _telemetry_reading_seconds_per_book(user_id: str) -> Dict[str, float]:
-    """Estimate per-book reading seconds from telemetry.
+    """Return measurable per-book reading seconds from telemetry.
 
-    Three sources are combined per book — the final value is ``max(s1, s2, s3)``:
-
-    1. **snapshot** heartbeats — each ≈ 10 s.
-    2. **session durations** — ``focus_out`` / ``session_complete`` rows whose
-       ``extra`` JSON contains a positive ``duration_ms``.
-    3. **event span** — ``first_event_ts`` to ``last_event_ts`` per book,
-       covering worst-case scenarios where no snapshots / durations exist
-       (e.g. missing sections.xml → no session tracking at all).
+    Heartbeats and explicit session durations are evidence of active reading.
+    Event timestamps only describe when activity happened and must never be
+    converted into duration across idle gaps or separate visits.
     """
     csv_path = _resolve_telemetry_csv(user_id)
-    snapshot_seconds: Dict[str, float] = {}
-    duration_seconds: Dict[str, float] = {}
-    # For span-based estimation: (min_ts, max_ts) per book
-    book_first_ts: Dict[str, float] = {}
-    book_last_ts: Dict[str, float] = {}
     if not csv_path.exists():
-        return snapshot_seconds
+        return {}
 
-    try:
-        with csv_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f, fieldnames=_TELEMETRY_READING_COLUMNS)
-            next(reader, None)  # skip header
-            for raw in reader:
-                bid = str(raw.get("bid") or "").strip()
-                if not bid:
-                    continue
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f, fieldnames=_TELEMETRY_READING_COLUMNS)
+        next(reader, None)
+        result, diagnostics = _measured_reading_seconds_per_book(list(reader))
 
-                ts_val = _timestamp_to_milliseconds(raw.get("ts"))
-                event = str(raw.get("event") or "").strip()
+    if diagnostics["unmeasured_engaging_events"] > 0 and not result:
+        log_key = (str(user_id or "").strip(), csv_path.stat().st_mtime_ns)
 
-                # ── source 1: snapshot heartbeats ──
-                if event == "snapshot":
-                    snapshot_seconds[bid] = snapshot_seconds.get(bid, 0.0) + 10.0
+        if log_key not in _UNMEASURED_READING_LOG_KEYS:
+            _UNMEASURED_READING_LOG_KEYS.add(log_key)
+            log_event(
+                "learning_duration_unmeasured",
+                "阅读事件缺少可验证时长，已拒绝按首末时间推算",
+                payload={
+                    "user_id": str(user_id or "").strip(),
+                    "event_count": diagnostics["event_count"],
+                    "unmeasured_engaging_events": diagnostics["unmeasured_engaging_events"],
+                },
+            )
 
-                # ── source 2: explicit duration_ms in extra ──
-                if event in ("focus_out", "session_complete"):
-                    ms = _parse_duration_ms_from_extra(raw.get("extra", ""))
-                    if ms > 0:
-                        duration_seconds[bid] = duration_seconds.get(bid, 0.0) + ms / 1000.0
-
-                # ── source 3: track event span for engaging events ──
-                if event in _ENGAGING_READING_EVENTS and ts_val > 0:
-                    if bid not in book_first_ts or ts_val < book_first_ts[bid]:
-                        book_first_ts[bid] = ts_val
-                    if ts_val > book_last_ts.get(bid, 0.0):
-                        book_last_ts[bid] = ts_val
-    except Exception:
-        pass
-
-    # 计算 span-based 秒数
-    span_seconds: Dict[str, float] = {}
-    all_bids = set(book_first_ts)
-    for bid in all_bids:
-        first = book_first_ts.get(bid, 0.0)
-        last = book_last_ts.get(bid, 0.0)
-        if first > 0 and last > first:
-            span_seconds[bid] = (last - first) / 1000.0
-
-    # 合并：优先用 snapshot/duration 的精确值；仅当两者均为 0 时才回退到 span
-    all_result_bids = set(snapshot_seconds) | set(duration_seconds) | set(span_seconds)
-    result: Dict[str, float] = {}
-    for bid in all_result_bids:
-        precise = max(snapshot_seconds.get(bid, 0.0), duration_seconds.get(bid, 0.0))
-        if precise > 0:
-            result[bid] = precise
-        else:
-            result[bid] = span_seconds.get(bid, 0.0)
     return result
+
+
+def _measured_reading_seconds_per_book(
+    rows: List[Mapping[str, Any]],
+) -> Tuple[Dict[str, float], Dict[str, int]]:
+    """Aggregate heartbeat and explicit session evidence without wall-clock inference."""
+    snapshot_seconds: Dict[str, float] = {}
+    session_duration_seconds: Dict[str, Dict[str, float]] = {}
+    unmeasured_engaging_events = 0
+
+    for raw in rows:
+        bid = str(raw.get("bid") or "").strip()
+        if not bid:
+            continue
+
+        event = str(raw.get("event") or "").strip()
+
+        if event == "snapshot":
+            snapshot_seconds[bid] = snapshot_seconds.get(bid, 0.0) + 10.0
+            continue
+
+        if event not in ("focus_out", "session_complete"):
+            if event in _ENGAGING_READING_EVENTS:
+                unmeasured_engaging_events += 1
+
+            continue
+
+        extra = _parse_extra_dict(raw.get("extra", ""))
+        duration_ms = _parse_duration_ms_from_extra_dict(extra)
+
+        if duration_ms <= 0:
+            unmeasured_engaging_events += 1
+            continue
+
+        session_key = str(extra.get("session_key") or "").strip()
+
+        if not session_key:
+            session_key = "|".join([
+                str(raw.get("ts") or "").strip(),
+                str(raw.get("ci") or "").strip(),
+                str(raw.get("si") or "").strip(),
+                event,
+            ])
+
+        per_book_sessions = session_duration_seconds.setdefault(bid, {})
+        per_book_sessions[session_key] = max(
+            per_book_sessions.get(session_key, 0.0),
+            duration_ms / 1000.0,
+        )
+
+    result: Dict[str, float] = {}
+    all_bids = set(snapshot_seconds) | set(session_duration_seconds)
+
+    for bid in all_bids:
+        heartbeat_total = snapshot_seconds.get(bid, 0.0)
+        session_total = sum(session_duration_seconds.get(bid, {}).values())
+        measured_seconds = max(heartbeat_total, session_total)
+
+        if measured_seconds > 0:
+            result[bid] = measured_seconds
+
+    return result, {
+        "event_count": len(rows),
+        "unmeasured_engaging_events": unmeasured_engaging_events,
+    }
 
 
 def _telemetry_reading_last_ts_per_book(user_id: str) -> Dict[str, int]:
@@ -377,26 +390,37 @@ def _telemetry_reading_last_ts_per_book(user_id: str) -> Dict[str, int]:
     return last_by_book
 
 
-def _parse_duration_ms_from_extra(raw_extra: str) -> float:
-    """Extract duration_ms / active_duration_ms from the extra JSON column."""
+def _parse_extra_dict(raw_extra: Any) -> Dict[str, Any]:
+    """Parse telemetry extra JSON while keeping invalid data visibly unmeasured."""
     text = str(raw_extra or "").strip()
+
     if not text:
-        return 0.0
+        return {}
+
     try:
-        import json as _json
-        obj = _json.loads(text)
-        if isinstance(obj, dict):
-            for key in ("duration_ms", "active_duration_ms"):
-                val = obj.get(key)
-                if val is not None:
-                    try:
-                        num = float(val)
-                        if num > 0:
-                            return num
-                    except (ValueError, TypeError):
-                        pass
-    except Exception:
-        pass
+        value = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_duration_ms_from_extra_dict(extra: Mapping[str, Any]) -> float:
+    """Read the first positive explicit duration from parsed telemetry metadata."""
+    for key in ("duration_ms", "active_duration_ms"):
+        value = extra.get(key)
+
+        if value is None:
+            continue
+
+        try:
+            duration_ms = float(value)
+        except (ValueError, TypeError):
+            continue
+
+        if duration_ms > 0:
+            return duration_ms
+
     return 0.0
 
 

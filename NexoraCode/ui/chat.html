@@ -1,0 +1,2166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexora</title>
+    <!-- Fonts & Vendor Assets -->
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css">
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <script src="/static/vendor/marked/marked.min.js"></script>
+    <script src="/static/vendor/highlightjs/highlight.min.js"></script>
+    <script src="/static/vendor/katex/katex.min.js"></script>
+    <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+    <script src="/static/vendor/easymde/easymde.min.js"></script>
+    <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
+
+    <!-- App Styles -->
+    <link rel="stylesheet" href="/static/css/style.css?v=20260810_mail_neutral_01">
+    <link rel="stylesheet" href="/static/css/sidebar_brand_navigation.css?v=20260809_learning_off_hide_02">
+    <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
+    <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
+    <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
+    <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260714_tool_flow_01">
+    <link rel="stylesheet" href="/static/css/chat_memory_settings.css?v=20260729_memory_model_layer_01">
+    <link rel="stylesheet" href="/static/css/chat_skill_market.css?v=20260725_skill_market_01">
+    <link rel="stylesheet" href="/static/css/chat_token_details.css?v=20260715_token_detail_01">
+    <link rel="stylesheet" href="/static/css/chat_conversation_branches.css?v=20260716_conversation_branches_01">
+    <link rel="stylesheet" href="/static/css/global_search.css?v=20260710_global_search_02">
+    <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
+    <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
+    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260730_style_unify_01">
+    <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
+    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260729_multi_transfer_01">
+    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260728_papi_list_08">
+    <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07">
+    <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260728_settings_management_06">
+    <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
+    <style>
+        /* ===== NexoraCode 项目模式精简 ===== */
+        /* 品牌 logo：Nexora.Code，点蓝色，无动画无图标 */
+        .sidebar-brand-tab .logo { display: inline-flex; align-items: center; }
+        .sidebar-brand-tab .logo .dot { color: #6ea8ff; animation: none !important; }
+        .sidebar-brand-tab .logo .dot::after { content: none !important; }
+        /* toast 避开自绘标题栏 */
+        .toast-notification { top: calc(var(--nc-titlebar-h) + 20px) !important; }
+        /* 学习/工作区面板隐藏 */
+        #learningSidebarPanel, #learningCourseWorkspacePanel { display: none !important; }
+        /* titlebar 与页面重叠修复：强制标题栏 36px，body 顶部预留同高 */
+        #nc-titlebar { height: 36px !important; min-height: 36px !important; max-height: 36px !important; }
+        html.nc-titlebar-ready body { padding-top: 36px !important; }
+        html.nc-titlebar-ready .app-container { height: calc(100vh - 36px) !important; }
+    </style>
+</head>
+<body>
+    <script>
+    // 项目模式精简：为已删除入口创建隐藏占位，避免 chat.js 初始化绑定报错
+    (function () {
+        var PLACEHOLDER_IDS = [
+            'workspacesBtn', 'fileCenterBtn', 'learningProgressBtn', 'learningCoursesBtn',
+            'learningResourcesBtn', 'learningResourcesToggleBtn', 'learningPracticeBtn',
+            'learningPracticeToggleBtn', 'learningProfileBtn', 'learningFeedBtn',
+            'toggleNotesPanel', 'toggleNotificationPanel', 'chatNotificationBadge',
+            'chatNotificationPopover', 'mobileHeaderMenu', 'mobileHeaderMenuTrigger',
+            'mobileHeaderNotificationBadge', 'mobileHeaderMenuPanel', 'mobileNotificationMenuItem',
+            'mobileNotificationMenuBadge', 'mobileNotesMenuItem', 'mobileTimelineMenuItem',
+            'toggleFilePanel', 'toggleKnowledgePanel'
+        ];
+        function createPlaceholders() {
+            var body = document.body;
+            if (!body) return;
+            PLACEHOLDER_IDS.forEach(function (id) {
+                if (document.getElementById(id)) return;
+                var el = document.createElement('div');
+                el.id = id;
+                el.style.display = 'none';
+                body.appendChild(el);
+            });
+        }
+        createPlaceholders();
+        document.addEventListener('DOMContentLoaded', createPlaceholders);
+
+        // 左下角"设置"：捕获阶段拦截，打开本地设置窗口（替代云端设置页面）
+        document.addEventListener('click', function (e) {
+            var el = e.target && e.target.closest ? e.target.closest('#settingsBtn') : null;
+            if (!el) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var bridge = window.pywebview && window.pywebview.api;
+            if (bridge && bridge.open_settings) {
+                bridge.open_settings();
+            }
+        }, true);
+    })();
+    </script>
+    <div class="app-container">
+        <!-- Sidebar: Navigation -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand-tabs" id="sidebarBrandTabs">
+                    <button type="button" class="sidebar-brand-tab active" id="sidebarBrandNexoraTab" data-sidebar-mode="nexora" aria-pressed="true">
+                        <span class="logo">Nexora<span class="dot">.</span>Code</span>
+                    </button>
+                    <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false" hidden>
+                        <span class="sidebar-brand-learning-text">Learning</span>
+                    </button>
+                    <button type="button" class="sidebar-brand-tab sidebar-brand-tab-workspace" id="sidebarBrandWorkspaceTab" data-sidebar-mode="workspace" aria-pressed="false" hidden>
+                        <span class="sidebar-brand-workspace-text">Workspace</span>
+                    </button>
+                </div>
+                <button class="btn-icon" id="toggleSidebarMobile">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            
+            <div class="sidebar-action">
+                <div class="sidebar-toolbar" aria-label="顶部工具栏">
+                    <button id="newChatBtn" class="toolbar-item" type="button">
+                        <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                        <span>New Chat</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="sidebar-content" id="conversationList">
+                <!-- Dynamic List -->
+            </div>
+            <div class="sidebar-content learning-sidebar-panel" id="learningSidebarPanel" style="display:none;"></div>
+            <div class="sidebar-content learning-course-workspace-panel" id="learningCourseWorkspacePanel" hidden></div>
+
+            <div class="sidebar-footer">
+                <!--<a href="/knowledge_graph" class="footer-link">-->
+                <!--    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>-->
+                <!--    <span>知识图谱</span>-->
+                <!--</a>-->
+                
+                <div class="user-profile-button" id="usernameBtn">
+                    <div class="avatar-circle" id="sidebar-avatar">{{ username[0] | upper }}</div>
+                    <div class="user-info">
+                        <span class="user-name profile-name">{{ username }}</span>
+                    </div>
+                    <i class="fa-solid fa-ellipsis"></i>
+                    
+                    <div class="user-menu" id="userMenu">
+                        <a href="#" class="menu-item" id="settingsBtn">
+                            <i class="fa-solid fa-gear"></i>
+                            <span>设置</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Chat Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="chat-header">
+                <div class="header-left">
+                    <button class="btn-icon" id="toggleSidebar" title="Toggle Sidebar">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                    </button>
+                    <div class="workspace-hierarchy-slot" id="workspaceHierarchySlot" aria-label="Workspace 层级"></div>
+                    <!-- Custom Select Container -->
+                    <div class="custom-select-container" id="modelSelectContainer">
+                        <div class="select-selected" id="currentModelDisplay">Select Model</div>
+                        <div class="select-items select-hide" id="modelOptions">
+                            <!-- Options Injected via JS -->
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="header-center" id="conversationTitle">Untitled Conversation</div>
+
+                <div class="header-right">
+                </div>
+            </header>
+
+            <!-- Messages -->
+            <div id="messagesContainer" class="messages-area">
+                <div class="welcome-screen">
+                    <h1>Hello, {{ username }}.</h1>
+                    <p>How can I assist you today?</p>
+                </div>
+            </div>
+            <div id="learningMainPanel" class="messages-area learning-main-panel" style="display:none;"></div>
+
+            <!-- Turn Indicator Panel -->
+            <div id="turnIndicatorPanel" class="turn-indicator-panel">
+                <div id="turnIndicatorLines" class="turn-indicator-lines"></div>
+            </div>
+
+            <!-- Knowledge Viewer -->
+            <div id="knowledgeViewer" style="display:none; flex:1; flex-direction: column; overflow: hidden; min-height: 0;">
+                <div id="knowledgeEditor" class="knowledge-toast-editor"></div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-dock">
+                <div id="longtermPlanPanel" class="longterm-plan-panel" style="display:none;" data-collapsed="1">
+                    <button type="button" class="longterm-plan-head" id="longtermPlanToggle">
+                        <span class="longterm-plan-head-left">
+                            <i class="fa-solid fa-diagram-project"></i>
+                            <span class="longterm-plan-title">Plan</span>
+                        </span>
+                        <span class="longterm-plan-status" id="longtermPlanStatus">已启用</span>
+                        <i class="fa-solid fa-chevron-up longterm-plan-chevron"></i>
+                    </button>
+                    <div class="longterm-plan-meta">
+                        <div class="longterm-plan-task" id="longtermPlanTask">等待任务说明</div>
+                    </div>
+                    <div class="longterm-plan-body" id="longtermPlanBody"></div>
+                </div>
+
+                <div id="inputWrapper" class="input-wrapper">
+                    <div class="input-container">
+                    <div class="input-options">
+                        <div class="input-options-tools">
+                            <div class="input-options-tools-inner">
+                                <label class="btn-icon-small" title="Upload File / Image" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);">
+                                    <input type="file" id="fileInput" style="display:none" multiple>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                                </label>
+                                <label class="check-box" title="Deep Thinking">
+                                    <input type="checkbox" id="enableThinking">
+                                    <span class="check-label-wrap">
+                                        <i class="fa-solid fa-brain check-label-icon" aria-hidden="true"></i>
+                                        <span class="check-label check-label-text">Thinking</span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+                        <button type="button" class="btn-icon-small input-collapse-btn" id="inputCollapseBtn" title="折叠输入框" aria-label="折叠输入框" aria-expanded="true">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </button>
+                    </div>
+
+                    <div id="filePreviewArea" class="file-preview-area" style="display:none; padding: 4px 8px; gap: 8px; flex-wrap: wrap; background: rgba(0,0,0,0.02); border-bottom: 1px solid var(--border-color);"></div>
+                    <div id="fileUploadProgressWrap" class="upload-progress-chip" style="display:none;">
+                        <div id="fileUploadProgressFill" class="upload-progress-chip-fill"></div>
+                        <span id="fileUploadProgressText" class="upload-progress-chip-text">上传中...</span>
+                        <button id="cancelFileUploadBtn" type="button" class="upload-progress-chip-cancel" title="中断上传">&times;</button>
+                    </div>
+
+                    <textarea id="messageInput" placeholder="Type a message..." rows="1"></textarea>
+                    
+                    <div class="input-footer">
+                        <div class="token-footer-left">
+                            <div class="token-budget-mini" id="tokenBudgetMini">
+                                <span class="token-budget-ring" id="tokenBudgetRing"></span>
+                            </div>
+                            <div class="token-budget-usage" id="tokenBudgetUsage">CTX --/--</div>
+                            <div class="token-mini" id="tokenDisplay">
+                                TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span><span id="tokenCacheHitRate" class="token-cache-hit-rate" style="display:none;"> 缓存命中 0%</span>
+                            </div>
+                            <div id="desktopAgentIndicator" title="本地计算节点状态校验中..." style="display:inline-block; width:6px; height:6px; flex-shrink:0; background:#9e9e9e; border-radius:50%; margin-left:2px; box-shadow: 0 0 4px rgba(0,0,0,0.2);"></div>
+                        </div>
+                        <button id="sendBtn" class="btn-send">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        </button>
+                    </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Knowledge Panel (Right Sidebar) -->
+        <aside class="knowledge-sidebar" id="knowledgePanel">
+            <div class="k-header">
+                <div style="flex:1;">
+                    <h3 style="margin-bottom: 6px;">Knowledge</h3>
+                    <div class="k-search" style="display:flex; gap:6px;">
+                        <input id="knowledgeSearchInput" class="input-modern" placeholder="搜索向量库..." style="flex:1; font-size:12px; height: 28px; padding: 4px 8px;">
+                        <button id="knowledgeSearchBtn" class="btn-primary" style="padding: 4px 10px; height: 28px; background:#111; color:#fff; border:1px solid #111;">搜索</button>
+                    </div>
+                </div>
+                <div class="k-actions" style="align-self: flex-start; margin-top: 2px;">
+                    <button class="btn-icon-small" id="refreshKnowledgeBtn" title="Refresh">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                    </button>
+                    <button class="btn-icon-small" id="btnTogglePanel" title="Close">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="k-content">
+                <div class="k-section">
+                    <div class="k-section-title">
+                        <div style="display:flex; align-items:center; justify-content: space-between;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span>BASIS</span>
+                                <span class="badge" id="panelBasisCount">0</span>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <button id="createBlankBasisBtn" class="btn-primary" title="新建空白知识库" aria-label="新建空白知识库" style="width: 24px; height: 24px; padding: 0; display: inline-flex; align-items:center; justify-content:center; background: transparent; color:#111; border:1px solid #cbd5e1; border-radius: 50%;">
+                                    <i class="fa-solid fa-plus" style="font-size: 11px;"></i>
+                                </button>
+                                <button id="bulkVectorizeBtn" class="btn-primary" title="全部向量化" hidden style="width: 24px; height: 24px; padding: 0; display: inline-flex; align-items:center; justify-content:center; background: transparent; color:#111; border:1px solid #cbd5e1; border-radius: 50%;">
+                                    <i class="fa-solid fa-arrows-rotate" style="font-size: 11px;"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="panelBasisKnowledgeList" class="k-list"></div>
+                </div>
+
+            </div>
+        </aside>
+
+        <!-- Cloud Files Panel (Right Sidebar) -->
+        <aside class="knowledge-sidebar" id="filePanel">
+            <div class="k-header">
+                <div style="flex:1;">
+                    <h3 style="margin-bottom: 6px;">Cloud Files</h3>
+                    <div class="k-search" style="display:flex; gap:6px;">
+                        <input id="cloudFileSearchInput" class="input-modern" placeholder="搜索文件..." style="flex:1; font-size:12px; height: 28px; padding: 4px 8px;">
+                        <button id="cloudFileSearchBtn" class="btn-primary" style="padding: 4px 10px; height: 28px; background:#111; color:#fff; border:1px solid #111;">搜索</button>
+                    </div>
+                </div>
+                <div class="k-actions" style="align-self: flex-start; margin-top: 2px;">
+                    <button class="btn-icon-small" id="uploadCloudFilesBtn" title="Upload">
+                        <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                    </button>
+                    <input id="cloudFileUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp" multiple hidden>
+                    <button class="btn-icon-small" id="refreshCloudFilesBtn" title="Refresh">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                    </button>
+                    <button class="btn-icon-small" id="btnToggleFilePanel" title="Close">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="k-content">
+                <div class="k-section" style="margin-bottom:0;">
+                    <div class="k-section-title">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span>FILES</span>
+                            <span class="badge" id="cloudFileCount">0</span>
+                        </div>
+                    </div>
+                    <div id="cloudFileList" class="k-list"></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Token Modal (Overlay) -->
+        <div id="tokenModal" class="modal-backdrop">
+            <div class="modal token-modal-custom">
+                <div class="modal-head">
+                    <div class="head-title">
+                        <h3>Token 使用详情</h3>
+                    </div>
+                    <button id="closeModalBtn" class="btn-close-circle" type="button">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="token-summary-grid">
+                        <div class="stat-card total">
+                            <span class="label">累计消耗</span>
+                            <span id="modalTotalTokens" class="value mono">0</span>
+                        </div>
+                        <div class="stat-card today">
+                            <span class="label">今日消耗</span>
+                            <span id="modalTodayTokens" class="value mono">0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="token-logs-section">
+                        <div class="section-header">
+                            <h4>最近记录</h4>
+                            <span class="hint">显示最近 20 条</span>
+                        </div>
+                        <div class="token-table-wrapper">
+                            <table class="token-table">
+                                <colgroup>
+                                    <col class="col-time">
+                                    <col class="col-title">
+                                    <col class="col-type">
+                                    <col class="col-num">
+                                </colgroup>
+                                <thead>
+                                    <tr>
+                                        <th>时间</th>
+                                        <th>对话/操作</th>
+                                        <th>类型</th>
+                                        <th class="num">合计</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tokenLogsTableBody">
+                                    <!-- 由 JS 注入 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tokenUsageDetailModal" class="modal-backdrop token-usage-detail-backdrop" aria-hidden="true">
+            <div class="modal token-usage-detail-modal" role="dialog" aria-modal="true" aria-labelledby="tokenUsageDetailTitle">
+                <div class="modal-head token-usage-detail-head">
+                    <div class="head-title">
+                        <h3 id="tokenUsageDetailTitle">Token 调用详情</h3>
+                        <div id="tokenUsageDetailMeta" class="token-usage-detail-meta"></div>
+                    </div>
+                    <button id="closeTokenUsageDetailBtn" class="btn-close-circle" type="button" aria-label="关闭 Token 调用详情">
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div id="tokenUsageDetailBody" class="modal-body token-usage-detail-body">
+                    <section class="token-usage-detail-section" aria-labelledby="tokenUsageUserTitle">
+                        <h4 id="tokenUsageUserTitle">用户提问</h4>
+                        <div id="tokenUsageUserContent" class="token-usage-markdown markdown-content"></div>
+                    </section>
+                    <section class="token-usage-detail-section" aria-labelledby="tokenUsageResponseTitle">
+                        <h4 id="tokenUsageResponseTitle">模型响应</h4>
+                        <div id="tokenUsageResponseContent" class="token-usage-markdown markdown-content"></div>
+                    </section>
+                </div>
+            </div>
+        </div>
+
+        <div id="trashModal" class="modal-backdrop" aria-hidden="true">
+            <div class="modal trash-modal-custom">
+                <div class="modal-head">
+                    <h3>回收站</h3>
+                    <div class="trash-modal-head-actions">
+                        <button id="clearTrashBtn" class="trash-head-btn trash-head-btn-danger" type="button" title="清空回收站">
+                            <i class="fa-regular fa-trash-can"></i>
+                            <span>清空</span>
+                        </button>
+                        <button id="refreshTrashBtn" class="trash-head-btn" type="button" title="刷新">
+                            <i class="fa-solid fa-rotate"></i>
+                            <span>刷新</span>
+                        </button>
+                        <button id="closeTrashModalBtn" class="btn-modal-close" type="button">×</button>
+                    </div>
+                </div>
+                <div class="modal-body trash-modal-body">
+                    <div id="trashList" class="trash-list">
+                        <div class="trash-empty">暂无回收站内容</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fullscreen Image Viewer -->
+        <div id="imageViewerBackdrop" class="image-viewer-backdrop" aria-hidden="true">
+            <div class="image-viewer-shell" role="dialog" aria-modal="true" aria-label="Image Viewer">
+                <div class="image-viewer-toolbar">
+                    <button id="imageViewerZoomOut" type="button" class="image-viewer-btn" title="缩小">-</button>
+                    <span id="imageViewerScaleLabel" class="image-viewer-scale">100%</span>
+                    <button id="imageViewerZoomIn" type="button" class="image-viewer-btn" title="放大">+</button>
+                    <button id="imageViewerReset" type="button" class="image-viewer-btn" title="重置">重置</button>
+                    <button id="imageViewerClose" type="button" class="image-viewer-btn close" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div id="imageViewerViewport" class="image-viewer-viewport">
+                    <img id="imageViewerImage" class="image-viewer-image" alt="preview">
+                </div>
+            </div>
+        </div>
+
+        <!-- Notes Panel -->
+        <div id="notesPanel" class="notes-panel" aria-hidden="true">
+            <div class="notes-panel-head">
+                <h3>笔记</h3>
+                <div class="notes-panel-head-actions">
+                    <button class="notes-panel-popout" id="openNotesCompanionBtn" type="button" title="独立窗口">
+                        <i class="fa-solid fa-up-right-from-square"></i>
+                    </button>
+                    <button class="notes-panel-close" id="closeNotesPanelBtn" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="notes-notebook-row">
+                <select id="notesNotebookSelect" class="notes-notebook-select"></select>
+                <button id="createNotebookBtn" class="notes-notebook-add" type="button" title="新建笔记本">
+                    <i class="fa-solid fa-plus"></i>
+                </button>
+                <button id="clearNotebookBtn" class="notes-notebook-tool" type="button" title="清空当前笔记本">
+                    <i class="fa-solid fa-eraser"></i>
+                </button>
+                <button id="deleteNotebookBtn" class="notes-notebook-tool danger" type="button" title="删除当前笔记本">
+                    <i class="fa-solid fa-trash"></i>
+                </button>
+                <button id="downloadNotebookBtn" class="notes-notebook-tool" type="button" title="下载当前笔记本">
+                    <i class="fa-solid fa-download"></i>
+                </button>
+            </div>
+            <div class="notes-list" id="notesList"></div>
+            <div id="notesResizeHandle" class="notes-resize-handle" aria-hidden="true"></div>
+        </div>
+
+        <div id="timelinePanel" class="timeline-panel" aria-hidden="true">
+            <div class="timeline-panel-head">
+                <div class="timeline-panel-head-main">
+                    <h3>时间线</h3>
+                    <span class="timeline-panel-hint" id="timelinePanelHint">知识库 / 笔记</span>
+                </div>
+                <div class="timeline-panel-head-actions">
+                    <button class="timeline-panel-close" id="closeTimelinePanelBtn" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="timeline-list" id="timelineList"></div>
+            <div id="timelineResizeHandle" class="timeline-resize-handle" aria-hidden="true"></div>
+        </div>
+
+        <div id="debugConsolePanel" class="debug-console-panel" aria-hidden="true">
+            <div class="debug-console-head">
+                <div class="debug-console-head-main">
+                    <h3>模型调试</h3>
+                    <div class="debug-console-tabs" id="debugConsoleTabs">
+                        <button id="debugConsolePromptTab" class="debug-console-tab active" type="button" data-tab="prompt">Prompt Debug</button>
+                        <button id="debugConsoleFunctionTab" class="debug-console-tab" type="button" data-tab="function">Function Call</button>
+                    </div>
+                    <span id="debugConsoleStatus" class="debug-console-status">OFF</span>
+                </div>
+                <div class="debug-console-head-actions">
+                    <button id="forceContextCompressionBtn" class="debug-console-action" type="button" title="下次请求强制触发上下文压缩（一次）">
+                        <i class="fa-solid fa-compress"></i>
+                    </button>
+                    <button id="copyDebugConsoleBtn" class="debug-console-action" type="button" title="复制日志">
+                        <i class="fa-solid fa-copy"></i>
+                    </button>
+                    <button id="clearDebugConsoleBtn" class="debug-console-action" type="button" title="清空日志">
+                        <i class="fa-solid fa-broom"></i>
+                    </button>
+                    <button id="closeDebugConsoleBtn" class="debug-console-action" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="debugConsolePages" class="debug-console-pages">
+                <div id="debugConsolePromptPage" class="debug-console-page active" data-tab="prompt">
+                    <div id="debugConsoleBody" class="debug-console-body">
+                        <div class="debug-console-empty">按 Ctrl+D 开启模型调试</div>
+                    </div>
+                </div>
+                <div id="debugConsoleFunctionPage" class="debug-console-page" data-tab="function">
+                    <div class="debug-tool-panel">
+                        <div class="debug-tool-toolbar">
+                            <select id="debugToolSelect" class="input-modern debug-tool-select"></select>
+                            <button id="refreshDebugToolsBtn" class="debug-console-action debug-tool-refresh" type="button" title="刷新工具列表">
+                                <i class="fa-solid fa-rotate"></i>
+                            </button>
+                        </div>
+                        <div id="debugToolMeta" class="debug-tool-meta">载入工具中...</div>
+                        <textarea id="debugToolArgsInput" class="input-modern debug-tool-args-input" spellcheck="false"></textarea>
+                        <div class="debug-tool-actions">
+                            <button id="executeDebugToolBtn" class="btn-primary" type="button">Execute</button>
+                        </div>
+                        <pre id="debugToolResult" class="debug-tool-result">尚未执行工具</pre>
+                    </div>
+                </div>
+            </div>
+            <div id="debugConsoleResizeHandle" class="debug-console-resize-handle" aria-hidden="true"></div>
+        </div>
+
+        <!-- Notes Right-Click Menu -->
+        <div id="notesContextMenu" class="notes-context-menu" aria-hidden="true">
+            <button id="notesAddSelectionBtn" type="button">
+                <i class="fa-solid fa-note-sticky"></i>
+                <span>添加到笔记</span>
+            </button>
+            <button id="notesCopySelectionBtn" type="button">
+                <i class="fa-regular fa-copy"></i>
+                <span>复制选中文本</span>
+            </button>
+            <button id="notesExplainSelectionBtn" type="button">
+                <i class="fa-solid fa-lightbulb"></i>
+                <span>解释</span>
+            </button>
+        </div>
+
+        <!-- Pin Right-Click Menu -->
+        <div id="pinContextMenu" class="pin-context-menu" aria-hidden="true">
+            <button id="pinContextMenuAction" type="button">
+                <i class="fa-solid fa-thumbtack"></i>
+                <span>置顶</span>
+            </button>
+            <button id="pinContextMenuRename" type="button">
+                <i class="fa-solid fa-pen"></i>
+                <span>修改标题</span>
+            </button>
+            <button id="pinContextMenuBranch" type="button">
+                <i class="fa-solid fa-code-branch"></i>
+                <span>查看分支处</span>
+            </button>
+            <button id="pinContextMenuProjectDelete" class="pin-context-danger" type="button">
+                <i class="fa-solid fa-folder-minus"></i>
+                <span>删除项目</span>
+            </button>
+            <div id="pinContextMenuWorkspaceWrap" class="pin-context-submenu-wrap">
+                <button id="pinContextMenuWorkspace" type="button">
+                    <i class="fa-regular fa-folder-open"></i>
+                    <span>归入工作区</span>
+                    <i class="fa-solid fa-chevron-right pin-context-submenu-arrow"></i>
+                </button>
+                <div id="pinContextMenuWorkspaceList" class="pin-context-submenu" aria-label="归入工作区"></div>
+            </div>
+        </div>
+
+        <div id="announcementModal" class="modal-backdrop chat-announcement-modal-backdrop" aria-hidden="true">
+            <div class="modal chat-announcement-modal" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle">
+                <div class="modal-head">
+                    <h3 id="announcementModalTitle">设置公告</h3>
+                    <button id="closeAnnouncementModalBtn" class="btn-modal-close" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="modal-body chat-announcement-modal-body">
+                    <div class="form-group">
+                        <label for="announcementTitleInput">标题</label>
+                        <input id="announcementTitleInput" class="input-modern" type="text" maxlength="120" placeholder="输入公告标题">
+                    </div>
+                    <div class="form-group">
+                        <label for="announcementContentInput">内容</label>
+                        <textarea id="announcementContentInput" class="input-modern chat-announcement-textarea" maxlength="4000" rows="6" placeholder="输入公告内容"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="announcementLevelSelect">级别</label>
+                        <input id="announcementLevelSelect" type="hidden" value="info">
+                        <div class="chat-announcement-level-select" data-announcement-level-select>
+                            <button id="announcementLevelSelectButton" class="chat-announcement-level-button" type="button" aria-haspopup="listbox" aria-expanded="false">
+                                <span data-announcement-level-label>普通</span>
+                                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <div id="announcementLevelSelectMenu" class="chat-announcement-level-menu" role="listbox" aria-label="公告级别" hidden>
+                                <button type="button" role="option" data-announcement-level-option data-value="info" aria-selected="true">普通</button>
+                                <button type="button" role="option" data-announcement-level-option data-value="success" aria-selected="false">完成</button>
+                                <button type="button" role="option" data-announcement-level-option data-value="warning" aria-selected="false">提醒</button>
+                                <button type="button" role="option" data-announcement-level-option data-value="error" aria-selected="false">重要</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer chat-announcement-modal-footer">
+                        <button id="cancelAnnouncementModalBtn" class="btn-cancel" type="button">取消</button>
+                        <button id="submitAnnouncementBtn" class="btn-confirm" type="button">发布</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="conversationRenameModal" class="modal-backdrop" aria-hidden="true">
+            <div class="modal" style="max-width: 420px;">
+                <div class="modal-head">
+                    <h3>修改会话标题</h3>
+                    <button id="closeConversationRenameModalBtn" class="btn-modal-close" type="button">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="conversationRenameInput">标题</label>
+                        <input id="conversationRenameInput" type="text" class="input-modern" maxlength="120" placeholder="输入新标题...">
+                    </div>
+                    <div class="modal-actions">
+                        <button id="cancelConversationRenameBtn" type="button" class="btn-secondary">取消</button>
+                        <button id="confirmConversationRenameBtn" type="button" class="btn-primary">保存</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Selection Quick Actions -->
+        <div id="mobileSelectionActionsBar" class="mobile-selection-actions" aria-hidden="true">
+            <button id="mobileSelectionAddBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-solid fa-note-sticky"></i>
+                <span>添加到笔记</span> 
+            </button>
+            <button id="mobileSelectionCopyBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-regular fa-copy"></i>
+                <span>复制</span>
+            </button>
+            <button id="mobileSelectionExplainBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-solid fa-lightbulb"></i>
+                <span>解释</span>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Scripts (ESM modules, 按文档顺序 deferred 执行) -->
+    <script type="module" src="/static/js/chat_logger.js?v=20260726_esm_01"></script>
+    <script>
+        window.NEXORA_MAIL_ENABLED = {{ nexora_mail_enabled | tojson }};
+    </script>
+    <script type="module" src="/static/js/learning_navigation_state.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/learning_workspace_layout.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_shared.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin_users.js?v=20260726_esm_01"></script>
+    {% if nexora_mail_enabled %}
+    <script type="module" src="/static/js/chat_mails.js?v=20260810_mail_unread_list_01"></script>
+    {% endif %}
+    <script type="module" src="/static/js/chat_message_window.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_message_versions.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/knowledge_collab_client.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_knowledge.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_model_select.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_memory_settings.js?v=20260729_memory_model_select_01"></script>
+    <script type="module" src="/static/js/chat_tools.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_tool_canvas.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_conversation_branches.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_messages.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_latex.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_streaming.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_stream_lifecycle.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_stream_reconnect.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_conversations.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin_system.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_settings_management.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_admin.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_skill_market.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/chat_markdown.js?v=20260815_table_fix_01"></script>
+    <script type="module" src="/static/js/chat_files.js?v=20260729_multi_transfer_02"></script>
+    <script type="module" src="/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01"></script>
+    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>
+    <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260809_learning_tab_hide_01"></script>
+    <script type="module" src="/static/js/chat_input.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_image_viewer.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_render.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_notes.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_workflow.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_avatar.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_nexoracode.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_wss_sync.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_lifecycle.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat_app.js?v=20260810_chatjs_split_01"></script>
+    <script type="module" src="/static/js/chat.js?v=20260731_profile_center_01"></script>
+    <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/workspace.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/notification.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/message_avatar.js?v=20260726_esm_01"></script>
+    <script>
+        window.NEXORA_MAP_RENDERER_CONFIG = {{ map_renderer_config | tojson }};
+    </script>
+    <script type="module" src="/static/js/nexora_map_renderer.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/admin_map_settings.js?v=20260726_esm_01"></script>
+    <script type="module" src="/static/js/learning_course_workspace.js?v=20260731_course_context_01"></script>
+
+    <!-- 添加用户表单 -->
+    <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
+        <div class="modal" style="width: 400px; padding: 0;">
+            <div class="modal-head">
+                <div class="head-title">
+                    <h3>新增用户</h3>
+                </div>
+                <button id="cancelAddUser" class="btn-close-circle" type="button">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="admin-form">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="formUsername" class="input-modern" placeholder="用户名...">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="formPassword" class="input-modern" placeholder="密码...">
+                    </div>
+                    <div class="form-group">
+                        <label>角色</label>
+                        <select id="formRole" class="input-modern">
+                            <option value="member">Member</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-footer" style="margin-top: 16px;">
+                        <button id="addUserBtn" class="btn-primary" style="width: 100%;">确认添加</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        /* Specific overrides */
+        .knowledge-sidebar.visible { border-left: 1px solid #eee; }
+        .knowledge-sidebar:not(.visible) { border-left: none; }
+        .modal-backdrop { display: none; }
+        .modal-backdrop.active { display: flex; }
+        .cm-search-highlight { background: rgba(34, 197, 94, 0.25); border-bottom: 1px solid rgba(34, 197, 94, 0.7); }
+        #chroma-tab .admin-stats-grid { gap: 14px; }
+        #chroma-tab .stat-card { padding: 12px 14px; }
+        #chroma-tab .admin-search-bar { align-items: center; gap: 10px; }
+        #chroma-tab .admin-search-bar .input-modern { height: 34px; padding: 6px 10px; }
+        #chroma-tab .admin-search-bar .btn-primary { height: 34px; }
+        #chroma-tab .admin-table th,
+        #chroma-tab .admin-table td { padding: 10px 12px; }
+        #chroma-tab .admin-table-wrapper { max-height: 320px; }
+    </style>
+    <!-- 模型权限管理模态框 -->
+    <div id="modelPermModal" class="modal-backdrop" style="z-index: 2300;">
+        <div class="modal" style="width: 600px; max-height: 80vh; padding: 0; display: flex; flex-direction: column;">
+            <div class="modal-head" style="flex-shrink: 0;">
+                <div class="head-title">
+                    <h3>模型可见性配置</h3>
+                    <span id="permTargetUser" style="margin-left: 12px; font-size: 13px; color: #666; background: #f1f5f9; padding: 4px 10px; border-radius: 4px; font-weight: 500;"></span>
+                </div>
+                    <button class="btn-modal-close" type="button" data-admin-user-action="close-model-perm">×</button>
+            </div>
+            <div class="modal-body" style="padding: 0; flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                <div style="background: linear-gradient(135deg, #f8fafc 0%, #f0f4f8 100%); padding: 14px 20px; border-bottom: 2px solid #e2e8f0; font-size: 13px; color: #475569;">
+                    <p style="margin: 0; font-weight: 500;">✓ 勾选的模型用户可以使用 | × 未勾选的模型用户无法访问</p>
+                </div>
+                <div id="modelPermList" style="flex: 1; overflow-y: auto; padding: 12px 8px;">
+                    <!-- JS 会动态填充 -->
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px; flex-shrink: 0;">
+                <button class="btn-cancel" type="button" data-admin-user-action="close-model-perm" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #cbd5e1; background: white; color: #334155; cursor: pointer; font-size: 13px; font-weight: 500;">取消</button>
+                <button class="btn-confirm" type="button" data-admin-user-action="save-model-perm" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: white; padding: 8px 20px; border-radius: 4px; border: none; cursor: pointer; font-size: 13px; font-weight: 600;">保存更改</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirmBackdrop" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-head">
+                <h3 id="confirmTitle">确认操作</h3>
+                <button class="btn-modal-close" onclick="closeConfirmModal()" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmMessage">确定要执行此操作吗？</p>
+                <div class="modal-footer">
+                    <button class="btn-cancel" onclick="closeConfirmModal()">取消</button>
+                    <button id="confirmOkBtn" class="btn-confirm">确认</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识库单项设置模态框 -->
+    <div id="adminTextConfirmModal" class="modal-backdrop" style="z-index: 4200;">
+        <div class="modal" style="width: 420px; padding: 0;">
+            <div class="modal-head">
+                <h3>确认删除</h3>
+                <button class="btn-modal-close" onclick="closeAdminTextConfirmModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <p style="margin-bottom: 10px;">请输入 <code>确认修改</code> 来继续删除。</p>
+                <input id="adminTextConfirmInput" class="input-modern" placeholder="确认修改" style="width: 100%; margin-bottom: 12px;">
+                <div class="modal-footer" style="margin-top: 0;">
+                    <button class="btn-cancel" onclick="closeAdminTextConfirmModal()">取消</button>
+                    <button id="adminTextConfirmOkBtn" class="btn-confirm btn-confirm-del">删除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="adminConfigModal" class="modal-backdrop" style="z-index: 4201;">
+        <div class="modal" style="width: 520px; padding: 0;">
+            <div class="modal-head">
+                <h3 id="adminConfigModalTitle">配置项</h3>
+                <button class="btn-modal-close" onclick="closeAdminConfigModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div id="adminConfigProviderFields">
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>Provider 标识名</label>
+                        <input id="adminProviderNameInput" class="input-modern" placeholder="provider key">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>api_type</label>
+                        <div class="admin-system-select admin-provider-api-type-select" data-admin-system-select="adminProviderApiTypeInput">
+                            <input id="adminProviderApiTypeInput" type="hidden" data-admin-system-value value="openai">
+                            <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                <span class="admin-system-select-label" data-admin-system-select-label>openai</span>
+                                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox" aria-label="api_type">
+                                <button class="admin-system-select-option active" type="button" data-admin-system-select-option data-value="openai" data-label="openai" role="option" aria-selected="true">
+                                    <span class="admin-system-select-option-main">openai</span>
+                                    <span class="admin-system-select-option-meta">OpenAI</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="openai_compatible" data-label="openai_compatible" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">openai_compatible</span>
+                                    <span class="admin-system-select-option-meta">OpenAI-compatible</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="dashscope" data-label="dashscope" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">dashscope</span>
+                                    <span class="admin-system-select-option-meta">DashScope</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="volcengine" data-label="volcengine" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">volcengine</span>
+                                    <span class="admin-system-select-option-meta">Ark</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="ollama" data-label="ollama" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">ollama</span>
+                                    <span class="admin-system-select-option-meta">Local</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="vllm" data-label="vllm" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">vllm</span>
+                                    <span class="admin-system-select-option-meta">vLLM</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">这是 provider_factory 的分流键；默认值为 openai。</div>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>API Key</label>
+                        <input id="adminProviderApiKeyInput" class="input-modern" placeholder="api key">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>Base URL</label>
+                        <input id="adminProviderBaseUrlInput" class="input-modern" placeholder="https://...">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>User-Agent</label>
+                        <input id="adminProviderUserAgentInput" class="input-modern" placeholder="Nexora/1.0">
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">留空使用 Nexora 默认 UA；仅在供应商网关拦截时修改。</div>
+                    </div>
+                    <div id="adminProviderOllamaSettings" class="form-group" style="margin-top: 10px; margin-bottom: 0; display: none;">
+                        <label>Ollama keep_alive</label>
+                        <input id="adminProviderKeepAliveInput" class="input-modern" placeholder="5m">
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">仅 ollama 使用，保存到 settings.keep_alive；下线时会发送 keep_alive=0。</div>
+                    </div>
+                </div>
+                <div id="adminConfigModelFields" style="display:none;">
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>模型 ID</label>
+                        <input id="adminModelIdInput" class="input-modern" placeholder="model id">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>模型名称</label>
+                        <input id="adminModelNameInput" class="input-modern" placeholder="display name">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>Provider</label>
+                        <select id="adminModelProviderInput" class="input-modern"></select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>上下文窗口</label>
+                        <input id="adminModelContextWindowInput" class="input-modern" type="number" min="1024" max="4000000" step="1" placeholder="tokens">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>状态</label>
+                        <input id="adminModelStatusInput" class="input-modern" placeholder="normal">
+                    </div>
+                </div>
+                <div class="modal-footer" style="margin-top: 14px;">
+                    <button class="btn-cancel" onclick="closeAdminConfigModal()">取消</button>
+                    <button id="adminConfigSaveBtn" class="btn-confirm">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="adminPublicApiKeyModal" class="modal-backdrop settings-dialog-backdrop" aria-hidden="true">
+        <div class="modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby="adminPublicApiKeyModalTitle" aria-describedby="adminPublicApiKeyModalDesc">
+            <div class="modal-head settings-dialog-head">
+                <h3 id="adminPublicApiKeyModalTitle">生成 Public API Key</h3>
+                <button id="adminPublicApiKeyModalCloseBtn" class="btn-close-circle settings-dialog-close" type="button" data-settings-dialog-close title="关闭" aria-label="关闭">×</button>
+            </div>
+            <div class="modal-body settings-dialog-body">
+                <div id="adminPublicApiKeyModalForm" class="papi-modal-form">
+                    <p id="adminPublicApiKeyModalDesc" class="settings-dialog-description">请选择 Key 过期时间。</p>
+                    <div class="form-group">
+                        <label>Key 名称</label>
+                        <input id="adminPublicApiKeyNameInput" class="input-modern" placeholder="例如：NexoraLearning / OpenCode / OpenClaw">
+                    </div>
+                    <div class="form-group">
+                        <label for="adminPublicApiExpireModalSliderInput">有效期</label>
+                        <div id="adminPublicApiExpireModalSlider" aria-label="有效期"></div>
+                    </div>
+                    <div id="adminPublicApiModalScopeFields" class="papi-scope-form">
+                        <div class="form-group">
+                            <label>访问范围</label>
+                            <div id="adminPublicApiModalScopeSegment" class="papi-segment" role="group" aria-label="访问范围">
+                                <button class="papi-segment-button" type="button" data-papi-scope="owner">用户私有</button>
+                                <button class="papi-segment-button active" type="button" data-papi-scope="global">全局访问</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="adminPublicApiModalOwnerInput">所属用户</label>
+                            <div id="adminPublicApiModalOwnerSelector" class="admin-user-token-selector papi-owner-selector">
+                                <input id="adminPublicApiModalOwnerInput" class="input-modern" placeholder="选择用户" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                <div id="adminPublicApiModalOwnerMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="adminPublicApiModalLatestKeyGroup" class="papi-plain-result" hidden>
+                    <div class="papi-plain-result-label">新 API Key（仅显示一次）</div>
+                    <div class="papi-plain-result-key-row">
+                        <div id="adminPublicApiModalLatestKey" class="papi-plain-result-value"></div>
+                        <button id="adminPublicApiModalCopyBtn" class="papi-copy-icon-button" type="button" title="复制 Key" aria-label="复制 Key">
+                            <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer settings-dialog-footer">
+                <button id="adminPublicApiKeyModalCancelBtn" class="btn-cancel" type="button" data-settings-dialog-close>取消</button>
+                <button id="adminPublicApiKeyModalConfirmBtn" class="btn-confirm" type="button">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="userPapiKeyModal" class="modal-backdrop settings-dialog-backdrop" aria-hidden="true">
+        <div class="modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby="userPapiKeyModalTitle">
+            <div class="modal-head settings-dialog-head">
+                <h3 id="userPapiKeyModalTitle">新建 API Key</h3>
+                <button id="userPapiKeyModalCloseBtn" class="btn-close-circle settings-dialog-close" type="button" data-settings-dialog-close title="关闭" aria-label="关闭">×</button>
+            </div>
+            <div class="modal-body settings-dialog-body">
+                <div id="userPapiKeyModalForm" class="papi-modal-form">
+                    <div class="form-group">
+                        <label for="userPapiKeyModalNameInput">Key 名称</label>
+                        <input id="userPapiKeyModalNameInput" class="input-modern" placeholder="例如：个人脚本">
+                    </div>
+                    <div class="form-group">
+                        <label for="userPapiKeyModalExpireSliderInput">有效期</label>
+                        <div id="userPapiKeyModalExpireSlider" aria-label="有效期"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>权限</label>
+                        <div id="userPapiKeyModalPermissions" class="settings-toggle-grid"></div>
+                    </div>
+                </div>
+                <div id="userPapiKeyPlainResult" class="papi-plain-result" hidden>
+                    <div class="papi-plain-result-label">新 API Key</div>
+                    <div class="papi-plain-result-key-row">
+                        <div id="userPapiKeyPlainValue" class="papi-plain-result-value"></div>
+                        <button id="userPapiKeyCopyBtn" class="papi-copy-icon-button" type="button" title="复制 Key" aria-label="复制 Key">
+                            <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer settings-dialog-footer">
+                <button id="userPapiKeyModalCancelBtn" class="btn-cancel" type="button" data-settings-dialog-close>取消</button>
+                <button id="userPapiKeyModalConfirmBtn" class="btn-confirm" type="button">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="ollamaModelStatusModal" class="modal-backdrop" style="z-index: 9950;">
+        <div class="modal ollama-status-modal" style="width: min(640px, 94vw); padding: 0;">
+            <div class="modal-head">
+                <h3>Ollama 模型状态</h3>
+                <button id="ollamaModelStatusCloseBtn" class="btn-modal-close" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="ollama-status-summary">
+                    <div class="ollama-status-summary-item"><span>Provider</span><strong id="ollamaModelStatusProvider">-</strong></div>
+                    <div class="ollama-status-summary-item"><span>模型</span><strong id="ollamaModelStatusModel">-</strong></div>
+                    <div class="ollama-status-summary-item"><span>状态</span><strong id="ollamaModelStatusState">-</strong></div>
+                </div>
+                <div id="ollamaModelStatusDetail" style="margin-top: 14px;"></div>
+                <div class="modal-footer" style="margin-top: 14px; gap: 8px;">
+                    <button id="ollamaModelStatusRefreshBtn" class="btn-cancel">刷新</button>
+                    <button id="ollamaModelStatusActionBtn" class="btn-confirm">Load</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="knowledgeSettingsModal" class="modal-backdrop">
+        <div class="modal knowledge-settings-modal">
+            <div class="modal-head knowledge-settings-head">
+                <div>
+                    <h3>知识点设置</h3>
+                    <p>管理标题、模型访问权限、共享协作和向量状态。</p>
+                </div>
+                <button onclick="closeKnowledgeSettingsModal()" class="btn-modal-close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body knowledge-settings-body">
+                <div class="admin-tabs knowledge-settings-tabs">
+                    <button class="admin-tab active" data-tab="ks-basic">基础信息</button>
+                    <button class="admin-tab" data-tab="ks-share">共享协作</button>
+                    <button class="admin-tab" data-tab="ks-vector">向量</button>
+                    <button class="admin-tab" data-tab="ks-history">记录</button>
+                </div>
+
+                <div id="ks-basic-tab" class="admin-tab-content active">
+                    <div class="form-group knowledge-settings-field">
+                        <label>标题</label>
+                        <input type="text" id="settingTargetTitle" class="input-modern" style="width: 100%;" placeholder="修改标题...">
+                    </div>
+                    <label class="knowledge-settings-switch">
+                        <input type="checkbox" id="settingModelReadonly">
+                        <span class="knowledge-settings-switch-main">
+                            <span class="knowledge-settings-switch-title">
+                                <i class="fa-solid fa-lock"></i>
+                                模型只读
+                            </span>
+                            <span class="knowledge-settings-switch-desc">开启后，模型只能读取和引用这条知识，不能通过工具修改、重命名或删除。</span>
+                        </span>
+                    </label>
+                </div>
+
+                <div id="ks-share-tab" class="admin-tab-content">
+                    <label class="knowledge-settings-switch">
+                        <input type="checkbox" id="settingPublic">
+                        <span class="knowledge-settings-switch-main">
+                            <span class="knowledge-settings-switch-title">
+                                <i class="fa-solid fa-eye"></i>
+                                开启公开分享
+                            </span>
+                            <span class="knowledge-settings-switch-desc">开启后，任何人可以通过链接查看此知识点的渲染效果。</span>
+                        </span>
+                    </label>
+                    <label class="knowledge-settings-switch">
+                        <input type="checkbox" id="settingCollaborative">
+                        <span class="knowledge-settings-switch-main">
+                            <span class="knowledge-settings-switch-title">
+                                <i class="fa-solid fa-pen-to-square"></i>
+                                开启多人协作编辑
+                            </span>
+                            <span class="knowledge-settings-switch-desc">开启后，访客可以直接在页面上编辑内容并实时保存。</span>
+                        </span>
+                    </label>
+
+                    <div id="shareLinkSection" style="display:none; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; margin-top: 10px;">
+                        <label style="font-size: 12px; color: #64748b; font-weight: 600;">公开访问链接:</label>
+                        <div style="display: flex; gap: 8px; margin-top: 6px;">
+                            <input type="text" id="shareUrlDisplay" readonly style="flex: 1; font-size: 11px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                            <button class="btn-primary" onclick="copyShareUrl()" style="padding: 0 12px; font-size: 11px; height: auto;">复制</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="ks-vector-tab" class="admin-tab-content">
+                    <div style="display:flex; gap: 8px; margin-bottom: 8px;">
+                        <button class="btn-primary" onclick="updateVectorInSettings()" style="background:#0f172a;">更新向量</button>
+                        <button class="btn-primary" onclick="deleteVectorInSettings()" style="background:#ef4444;">删除向量</button>
+                    </div>
+                    <div id="vectorProgressWrap" style="display:none; margin-bottom: 8px;">
+                        <div style="height: 6px; background: #e2e8f0; border-radius: 999px; overflow: hidden;">
+                            <div id="vectorProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #0f172a, #1e293b); transition: width 200ms ease;"></div>
+                        </div>
+                        <div id="vectorProgressText" style="font-size: 11px; color: #64748b; margin-top: 6px;">向量处理中...</div>
+                    </div>
+                    <div id="vectorStatusText" style="font-size: 11px; color: #64748b; margin-bottom: 8px;">未加载</div>
+                    <div id="vectorChunkList" style="font-size: 12px; color: #475569; max-height: 180px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; background: #f8fafc;">
+                        <div style="color:#94a3b8;">暂无分块</div>
+                    </div>
+                </div>
+
+                <div id="ks-history-tab" class="admin-tab-content">
+                    <div id="editHistoryList" style="font-size: 12px; color: #666; max-height: 140px; overflow-y: auto;">
+                        <div style="padding: 4px 0;">最后修改: <span id="lastModifyTime">-</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer knowledge-settings-footer">
+                <button class="btn-cancel" onclick="closeKnowledgeSettingsModal()">取消</button>
+                <button class="btn-confirm" onclick="applyKnowledgeSettings()" style="background: #111; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer;">保存设置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识库搜索结果 -->
+    <div id="knowledgeSearchModal" class="modal-backdrop">
+        <div class="modal" style="width: 520px; padding: 0;">
+            <div class="modal-head" style="padding: 14px 18px; border-bottom: 1px solid #eee;">
+                <h3>向量库搜索结果</h3>
+                <button onclick="closeKnowledgeSearchModal()" class="btn-modal-close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 14px 18px;">
+                <div id="knowledgeSearchResults" style="font-size: 12px; color: #475569; max-height: 320px; overflow-y: auto;"></div>
+            </div>
+        </div>
+    </div>
+    <div id="settingsModal" class="modal-backdrop">
+        <div class="modal settings-modal-custom">
+            <div class="modal-head">
+                <h3>设置</h3>
+                <button onclick="closeSettingsModal()" class="btn-close-circle" type="button">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="admin-shell settings-shell">
+                    <aside class="admin-nav settings-nav">
+                        <button type="button" class="admin-tab active" data-tab="profile">个人资料</button>
+                        <button type="button" class="admin-tab" data-tab="preferences">偏好设置</button>
+                        <button type="button" class="admin-tab" data-tab="skills">Skill</button>
+                        <button type="button" class="admin-tab" data-tab="statistics">使用统计</button>
+                        <button type="button" class="admin-tab" data-tab="user-api-keys">我的 API Key</button>
+                        <div id="settingsAdminGap" class="settings-nav-gap" style="display:none;"></div>
+                        <button type="button" id="settingsAdminSystemBtn" class="admin-tab settings-admin-entry" data-tab="admin-system" style="display:none;">系统设置</button>
+                        <button type="button" id="settingsAdminUsersBtn" class="admin-tab settings-admin-entry" data-tab="admin-users" style="display:none;">用户管理</button>
+                        {% if nexora_mail_enabled %}
+                        <button type="button" id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
+                        {% endif %}
+                        <button type="button" id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
+                        <button type="button" id="settingsAdminGenImageBtn" class="admin-tab settings-admin-entry" data-tab="admin-gen-image" style="display:none;">生图 API</button>
+                        <button type="button" id="settingsAdminMapBtn" class="admin-tab settings-admin-entry" data-tab="admin-map" style="display:none;">地图 API</button>
+                        <button type="button" id="settingsAdminAuthBtn" class="admin-tab settings-admin-entry" data-tab="admin-auth" style="display:none;">认证管理</button>
+                        <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
+                        <button type="button" id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
+                    </aside>
+                    <section class="admin-content settings-content">
+                        <div id="settings-profile-tab" class="admin-tab-content active">
+                            <div class="settings-placeholder">个人资料</div>
+                            <div class="settings-profile-head">
+                                <div class="settings-avatar-panel">
+                                    <img id="settingsAvatarImg" class="settings-avatar" src="" alt="avatar">
+                                    <div class="settings-avatar-actions">
+                                        <button id="settingsAvatarUploadBtn" class="btn-primary-outline" type="button">上传头像</button>
+                                        <input id="settingsAvatarFileInput" type="file" accept="image/*" style="display:none;">
+                                    </div>
+                                </div>
+                                <div class="settings-profile-meta">
+                                    <div class="form-group">
+                                        <label>用户名</label>
+                                        <input id="set-username-input" class="input-modern" type="text" placeholder="输入用户名">
+                                    </div>
+                                    <div id="set-userid" class="settings-userid-inline">UserID: -</div>
+                                    <div class="form-group settings-profile-actions">
+                                        <button id="saveProfileBtn" class="btn-primary btn-compact" type="button">保存资料</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-profile-stats-grid">
+                                <div class="form-group"><label>创建时间</label><div id="set-created" class="settings-field">-</div></div>
+                                <div class="form-group"><label>最后登录</label><div id="set-lastlogin" class="settings-field">-</div></div>
+                            </div>
+                        </div>
+                        <div id="settings-preferences-tab" class="admin-tab-content">
+                            <div class="settings-placeholder">偏好设置</div>
+                            <div class="settings-preferences-grid">
+                                <div class="form-group"><label>主题</label><div id="set-theme" class="settings-field">-</div></div>
+                                <div class="form-group settings-pref-card settings-pref-card-wide">
+                                    <label>学习模式</label>
+                                    <div class="settings-pref-inline">
+                                        <div class="settings-mode-toggle" id="learningModeToggleGroup" role="tablist" aria-label="学习模式">
+                                            <button id="set-learning-mode-off" class="settings-mode-toggle-btn active" type="button" data-learning-mode="off">Nexora</button>
+                                            <button id="set-learning-mode-on" class="settings-mode-toggle-btn" type="button" data-learning-mode="on">Learning</button>
+                                        </div>
+                                    </div>
+                                    <div id="set-learning-mode-desc" class="settings-help-text">开启后默认进入 Learning 侧边栏；点击侧边栏里的 New Chat 可打开 NexoraLearning 学习界面。</div>
+                                </div>
+                                <div class="form-group settings-pref-card settings-pref-card-wide" id="defaultOpenViewCard" style="display:none;">
+                                    <label>默认打开</label>
+                                    <div class="settings-pref-inline">
+                                        <div class="settings-mode-toggle" id="defaultOpenViewToggleGroup" role="tablist" aria-label="默认打开">
+                                            <button id="set-default-open-nexora" class="settings-mode-toggle-btn" type="button" data-default-open-view="nexora">Nexora</button>
+                                            <button id="set-default-open-learning" class="settings-mode-toggle-btn active" type="button" data-default-open-view="learning">NexoraLearning</button>
+                                        </div>
+                                    </div>
+                                    <div id="set-default-open-desc" class="settings-help-text">学习模式开启时，默认打开的视图。</div>
+                                </div>
+                            </div>
+                            <section class="settings-memory-profile" aria-labelledby="settingsMemoryProfileTitle">
+                                <div class="settings-memory-profile-head">
+                                    <label id="settingsMemoryProfileTitle" for="settingsMemoryProfile">用户记忆</label>
+                                    <button id="refreshMemoryProfileBtn" class="settings-memory-refresh-button" type="button" title="刷新用户记忆" aria-label="刷新用户记忆">
+                                        <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <textarea id="settingsMemoryProfile" class="settings-memory-profile-textarea" rows="9" readonly></textarea>
+                                <div id="settingsMemoryProfileStatus" class="settings-memory-profile-status" aria-live="polite"></div>
+                                <div class="settings-memory-model-field">
+                                    <div id="settingsMemoryModelLabel" class="settings-memory-model-label">记忆更新模型</div>
+                                    <div id="memoryModelSelectContainer" class="custom-select-container settings-memory-model-select">
+                                        <button id="memoryModelSelected" class="select-selected settings-memory-model-selected" type="button" aria-label="选择记忆更新模型" aria-describedby="settingsMemoryModelStatus" aria-haspopup="listbox" aria-expanded="false">使用当前对话模型</button>
+                                        <div id="memoryModelOptions" class="select-items select-hide settings-memory-model-options" role="listbox"></div>
+                                    </div>
+                                    <div id="settingsMemoryModelStatus" class="settings-memory-model-status" aria-live="polite"></div>
+                                </div>
+                            </section>
+                        </div>
+                        <div id="settings-skills-tab" class="admin-tab-content">
+                            <div class="skill-subtabs">
+                                <button type="button" class="skill-subtab active" data-skill-subtab="my">我的 Skill</button>
+                                <button type="button" class="skill-subtab" data-skill-subtab="market">Skill 市场</button>
+                            </div>
+                            <div id="skill-subtab-my" class="skill-subtab-content active">
+                                <div class="skill-my-toolbar">
+                                    <button type="button" class="btn-skill-create" id="btnUploadPersonalSkill">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        上传 Skill
+                                    </button>
+                                    <input type="file" id="skillUploadFileInput" accept=".skill,.txt,.md,.markdown,.json,.yaml,.yml,.prompt" style="display:none;">
+                                    <button type="button" class="btn-skill-create" id="btnCreatePersonalSkill">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                        新建 Skill
+                                    </button>
+                                </div>
+                                <div id="settingsSkillList" class="settings-skill-list">
+                                    <div class="settings-skill-empty">加载中...</div>
+                                </div>
+                            </div>
+                            <div id="skill-subtab-market" class="skill-subtab-content">
+                                <div class="skill-market-toolbar">
+                                    <div class="skill-market-search">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                        <input type="text" id="skillMarketSearchInput" placeholder="搜索 Skill..." autocomplete="off">
+                                    </div>
+                                    <select id="skillMarketSortSelect" class="skill-market-sort">
+                                        <option value="installs">最热</option>
+                                        <option value="newest">最新</option>
+                                        <option value="name">名称</option>
+                                    </select>
+                                </div>
+                                <div id="skillMarketList" class="skill-market-list">
+                                    <div class="settings-skill-empty">加载中...</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-statistics-tab" class="admin-tab-content">
+                            <div class="settings-placeholder">使用统计</div>
+                            <div class="settings-stat-summary-grid">
+                                <div class="form-group"><label>对话数</label><div id="set-stat-convs" class="settings-stat">-</div></div>
+                                <div class="form-group"><label>Token 消耗</label><div id="set-stat-tokens" class="settings-stat">-</div></div>
+                                <div class="form-group"><label>知识点数</label><div id="set-stat-knowledge" class="settings-stat">-</div></div>
+                            </div>
+                            <div class="form-group">
+                                <label>模型使用统计</label>
+                                <div id="modelUsageStats" class="settings-field" style="min-height: 120px;">-</div>
+                            </div>
+                        </div>
+                        <div id="settings-user-api-keys-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button id="userPapiKeyCreateBtn" class="btn-primary" type="button" disabled>
+                                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                                    <span>新建 Key</span>
+                                </button>
+                                <button id="userPapiKeyRefreshBtn" class="btn-primary-outline btn-compact settings-management-icon-button" type="button" title="刷新 Key 列表" aria-label="刷新 Key 列表">
+                                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="userPapiKeyList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty settings-management-list-state" role="status">正在加载 API Key...</div>
+                                </div>
+                                <div id="userPapiKeyDetail" class="admin-user-detail settings-management-detail">
+                                    <div id="userPapiKeyEmpty" class="admin-user-detail-empty">请选择左侧 Key 查看详情</div>
+                                    <div id="userPapiKeyDetailContent" hidden>
+                                        <div class="admin-user-detail-grid">
+                                            <div class="form-group">
+                                                <label for="userPapiKeyNameInput">Key Name</label>
+                                                <input id="userPapiKeyNameInput" class="input-modern" placeholder="Key Name">
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Key 预览</label>
+                                                <div id="userPapiKeyPreview" class="admin-info-text mono">-</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>创建时间</label>
+                                                <div id="userPapiKeyCreatedAt" class="admin-info-text mono">-</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>过期时间</label>
+                                                <div id="userPapiKeyExpiresAt" class="admin-info-text mono">-</div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group papi-expire-field">
+                                            <label for="userPapiKeyExpireSliderInput">有效期</label>
+                                            <div id="userPapiKeyExpireSlider" aria-label="有效期"></div>
+                                        </div>
+                                        <div class="form-group papi-permission-field">
+                                            <label>权限</label>
+                                            <div id="userPapiKeyPermissions" class="settings-toggle-grid"></div>
+                                        </div>
+                                        <div class="papi-action-row">
+                                            <button id="userPapiKeySaveBtn" class="btn-primary-outline" type="button">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存设置</span>
+                                            </button>
+                                            <button id="userPapiKeyRotateBtn" class="btn-primary-outline" type="button">
+                                                <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                                                <span>轮换 Key</span>
+                                            </button>
+                                            <button id="userPapiKeyDeleteBtn" class="btn-danger-small" type="button">
+                                                <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                                                <span>删除 Key</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-system-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar admin-system-toolbar-row settings-management-toolbar">
+                                <div class="admin-system-toolbar-actions">
+                                    <button id="adminSystemReloadBtn" class="btn-primary-outline" type="button">
+                                        <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                                        <span>重新加载</span>
+                                    </button>
+                                </div>
+                                <div id="adminSystemStatus" class="settings-field">-</div>
+                            </div>
+
+                            <div class="admin-users-layout admin-system-layout settings-management-layout">
+                                <div id="adminSystemModuleList" class="admin-users-list admin-system-module-list settings-management-list">
+                                    <div class="admin-user-item admin-system-module-item active" data-admin-system-module="runtime">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">基础运行</div>
+                                            <div class="admin-user-meta">公开访问地址</div>
+                                        </div>
+                                    </div>
+                                    <div class="admin-user-item admin-system-module-item" data-admin-system-module="default_models">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-layer-group" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">默认模型</div>
+                                            <div class="admin-user-meta">对话 / 总结 / 整理</div>
+                                        </div>
+                                    </div>
+                                    <div class="admin-user-item admin-system-module-item" data-admin-system-module="rag_database">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">RAG 向量库</div>
+                                            <div class="admin-user-meta">向量检索服务</div>
+                                        </div>
+                                    </div>
+                                    <div class="admin-user-item admin-system-module-item" data-admin-system-module="nexora_search">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">NexoraSearch</div>
+                                            <div class="admin-user-meta">搜索服务</div>
+                                        </div>
+                                    </div>
+                                    <div class="admin-user-item admin-system-module-item" data-admin-system-module="nexora_learning">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-graduation-cap" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">NexoraLearning</div>
+                                            <div class="admin-user-meta">学习前端服务</div>
+                                        </div>
+                                    </div>
+                                    <div class="admin-user-item admin-system-module-item" data-admin-system-module="nexora_mail">
+                                        <span class="admin-user-avatar admin-system-module-icon"><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i></span>
+                                        <div>
+                                            <div class="admin-user-name">NexoraMail</div>
+                                            <div class="admin-user-meta">邮件服务</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="adminSystemDetail" class="admin-user-detail admin-system-detail settings-management-detail">
+                                    <div class="admin-system-grid">
+                                <section class="admin-system-section active" data-admin-system-section="runtime">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span>基础运行</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="runtime">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group admin-system-wide">
+                                            <label>Public Base URL</label>
+                                            <input id="adminSystemPublicBaseUrlInput" class="input-modern" placeholder="https://chat.example.com">
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="admin-system-section" data-admin-system-section="default_models">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>默认模型</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="default_models">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group">
+                                            <label>默认对话模型</label>
+                                            <div class="admin-system-select" data-admin-system-select="adminSystemDefaultModelSelect">
+                                                <input id="adminSystemDefaultModelSelect" type="hidden" data-admin-system-value>
+                                                <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                                    <span class="admin-system-select-label" data-admin-system-select-label>不指定</span>
+                                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                                </button>
+                                                <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox"></div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>总结模型</label>
+                                            <div class="admin-system-select" data-admin-system-select="adminSystemConclusionModelSelect">
+                                                <input id="adminSystemConclusionModelSelect" type="hidden" data-admin-system-value>
+                                                <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                                    <span class="admin-system-select-label" data-admin-system-select-label>不指定</span>
+                                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                                </button>
+                                                <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox"></div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>整理模型</label>
+                                            <div class="admin-system-select" data-admin-system-select="adminSystemOrganizationModelSelect">
+                                                <input id="adminSystemOrganizationModelSelect" type="hidden" data-admin-system-value>
+                                                <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                                    <span class="admin-system-select-label" data-admin-system-select-label>不指定</span>
+                                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                                </button>
+                                                <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox"></div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>联网搜索模型</label>
+                                            <div class="admin-system-select" data-admin-system-select="adminSystemWebsearchModelSelect">
+                                                <input id="adminSystemWebsearchModelSelect" type="hidden" data-admin-system-value>
+                                                <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                                    <span class="admin-system-select-label" data-admin-system-select-label>不指定</span>
+                                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                                </button>
+                                                <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="admin-system-section" data-admin-system-section="rag_database">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-database" aria-hidden="true"></i><span>RAG 向量库</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <label class="admin-system-enable-check">
+                                                <input id="adminSystemRagEnabledInput" type="checkbox" data-admin-system-switch>
+                                                <span>启用</span>
+                                            </label>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-health" type="button" data-admin-system-health-test="rag_database" data-admin-system-url-input="adminSystemRagServiceUrlInput" data-admin-system-health-path="/health">
+                                                <i class="fa-solid fa-plug" aria-hidden="true"></i>
+                                                <span>测试</span>
+                                            </button>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="rag_database">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group">
+                                            <label>模式</label>
+                                            <div class="admin-system-select" data-admin-system-select="adminSystemRagModeInput">
+                                                <input id="adminSystemRagModeInput" type="hidden" value="service" data-admin-system-value>
+                                                <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                                    <span class="admin-system-select-label" data-admin-system-select-label>service</span>
+                                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                                </button>
+                                                <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox">
+                                                    <button class="admin-system-select-option active" type="button" data-admin-system-select-option data-value="service" role="option" aria-selected="true">service</button>
+                                                    <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="local" role="option" aria-selected="false">local</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Host</label>
+                                            <input id="adminSystemRagHostInput" class="input-modern" placeholder="127.0.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Port</label>
+                                            <input id="adminSystemRagPortInput" class="input-modern" type="number" min="1" max="65535">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>Service URL</label>
+                                            <input id="adminSystemRagServiceUrlInput" class="input-modern" placeholder="http://127.0.0.1:8100">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>API Key</label>
+                                            <input id="adminSystemRagApiKeyInput" class="input-modern" placeholder="api key">
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="admin-system-section" data-admin-system-section="nexora_search">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span>NexoraSearch</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <label class="admin-system-enable-check">
+                                                <input id="adminSystemSearchEnabledInput" type="checkbox" data-admin-system-switch>
+                                                <span>启用</span>
+                                            </label>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-health" type="button" data-admin-system-health-test="nexora_search" data-admin-system-url-input="adminSystemSearchServiceUrlInput" data-admin-system-health-path="/health">
+                                                <i class="fa-solid fa-plug" aria-hidden="true"></i>
+                                                <span>测试</span>
+                                            </button>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="nexora_search">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group">
+                                            <label>Host</label>
+                                            <input id="adminSystemSearchHostInput" class="input-modern" placeholder="127.0.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Port</label>
+                                            <input id="adminSystemSearchPortInput" class="input-modern" type="number" min="1" max="65535">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Timeout</label>
+                                            <input id="adminSystemSearchTimeoutInput" class="input-modern" type="number" min="1" max="3600">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>Service URL</label>
+                                            <input id="adminSystemSearchServiceUrlInput" class="input-modern" placeholder="http://127.0.0.1:45678">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>API Key</label>
+                                            <input id="adminSystemSearchApiKeyInput" class="input-modern" placeholder="api key">
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="admin-system-section" data-admin-system-section="nexora_learning">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-graduation-cap" aria-hidden="true"></i><span>NexoraLearning</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <label class="admin-system-enable-check">
+                                                <input id="adminSystemLearningEnabledInput" type="checkbox" data-admin-system-switch>
+                                                <span>启用</span>
+                                            </label>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-health" type="button" data-admin-system-health-test="nexora_learning" data-admin-system-url-input="adminSystemLearningFrontendUrlInput" data-admin-system-health-path="/health">
+                                                <i class="fa-solid fa-plug" aria-hidden="true"></i>
+                                                <span>测试</span>
+                                            </button>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="nexora_learning">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group">
+                                            <label>Host</label>
+                                            <input id="adminSystemLearningHostInput" class="input-modern" placeholder="127.0.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Port</label>
+                                            <input id="adminSystemLearningPortInput" class="input-modern" type="number" min="1" max="65535">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Request Timeout</label>
+                                            <input id="adminSystemLearningTimeoutInput" class="input-modern" type="number" min="1" max="3600">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>Frontend URL</label>
+                                            <input id="adminSystemLearningFrontendUrlInput" class="input-modern" placeholder="http://127.0.0.1:5001">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>API Key</label>
+                                            <input id="adminSystemLearningApiKeyInput" class="input-modern" placeholder="api key">
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="admin-system-section" data-admin-system-section="nexora_mail">
+                                    <div class="admin-system-section-head">
+                                        <h4><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i><span>NexoraMail</span></h4>
+                                        <div class="admin-system-section-actions">
+                                            <label class="admin-system-enable-check">
+                                                <input id="adminSystemMailEnabledInput" type="checkbox" data-admin-system-switch>
+                                                <span>启用</span>
+                                            </label>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-health" type="button" data-admin-system-health-test="nexora_mail" data-admin-system-url-input="adminSystemMailServiceUrlInput" data-admin-system-health-path="/api/health">
+                                                <i class="fa-solid fa-plug" aria-hidden="true"></i>
+                                                <span>测试</span>
+                                            </button>
+                                            <button class="btn-primary-outline btn-compact admin-system-section-save" type="button" data-admin-system-save="nexora_mail">
+                                                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                                <span>保存</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="admin-system-form-grid">
+                                        <div class="form-group">
+                                            <label>Host</label>
+                                            <input id="adminSystemMailHostInput" class="input-modern" placeholder="127.0.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Port</label>
+                                            <input id="adminSystemMailPortInput" class="input-modern" type="number" min="1" max="65535">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Timeout</label>
+                                            <input id="adminSystemMailTimeoutInput" class="input-modern" type="number" min="1" max="3600">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Send Timeout</label>
+                                            <input id="adminSystemMailSendTimeoutInput" class="input-modern" type="number" min="1" max="3600">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Default Group</label>
+                                            <input id="adminSystemMailDefaultGroupInput" class="input-modern" placeholder="default">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>Service URL</label>
+                                            <input id="adminSystemMailServiceUrlInput" class="input-modern" placeholder="http://127.0.0.1:17171">
+                                        </div>
+                                        <div class="form-group admin-system-wide">
+                                            <label>API Key</label>
+                                            <input id="adminSystemMailApiKeyInput" class="input-modern" placeholder="api key">
+                                        </div>
+                                    </div>
+                                </section>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-users-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button class="btn-primary" id="openAddUserForm">+ 添加新用户</button>
+                                <input id="adminUserFilterInput" class="input-modern" placeholder="筛选用户：用户名 / ID / 角色 / IP">
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminUsersList" class="admin-users-list settings-management-list"></div>
+                                <div id="adminUserDetail" class="admin-user-detail settings-management-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧用户查看详情</div>
+                                </div>
+                            </div>
+                        </div>
+                        {% if nexora_mail_enabled %}
+                        <div id="settings-admin-mail-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button class="btn-primary" id="openAddMailUserForm">+ 添加邮箱用户</button>
+                                <select id="adminMailGroupSelect" class="input-modern" style="max-width: 220px;"></select>
+                                <input id="adminMailUserFilterInput" class="input-modern" placeholder="筛选邮箱用户：用户名 / 权限 / 路径">
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminMailUsersList" class="admin-users-list settings-management-list"></div>
+                                <div id="adminMailUserDetail" class="admin-user-detail settings-management-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧邮箱用户查看详情</div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        <div id="settings-admin-stats-tab" class="admin-tab-content">
+                            <div class="admin-stats-grid">
+                                <div class="stat-card">
+                                    <span class="label">总用户数</span>
+                                    <span id="statTotalUsers" class="value mono">-</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="label">管理员数</span>
+                                    <span id="statAdminCount" class="value mono">-</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="label">总Token消耗</span>
+                                    <span id="statTotalTokens" class="value mono">-</span>
+                                </div>
+                            </div>
+                            <div class="admin-token-trend-card">
+                                <div class="admin-token-trend-head">
+                                    <h4>Token Trend (30d)</h4>
+                                    <span id="adminTokenTrendMeta" class="admin-token-trend-meta">-</span>
+                                </div>
+                                <div id="adminTokenTrendChart" class="admin-token-trend-chart"></div>
+                                <div id="adminTokenTrendTop" class="admin-token-trend-top"></div>
+                            </div>
+                            <div class="admin-token-trend-card admin-user-token-card">
+                                <div class="admin-token-trend-head">
+                                    <h4>单用户 Token 查询</h4>
+                                    <span id="adminUserTokenStatsMeta" class="admin-token-trend-meta">请选择用户</span>
+                                </div>
+                                <div class="admin-user-token-query">
+                                    <div class="admin-user-token-selector" id="adminUserTokenStatsUserSelector">
+                                        <input id="adminUserTokenStatsUsernameInput" class="input-modern" placeholder="输入用户 ID" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                        <button id="adminUserTokenStatsClearBtn" class="admin-user-token-clear" type="button" aria-label="清空用户 ID" title="清空">
+                                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                                        </button>
+                                        <div id="adminUserTokenStatsUserMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                    </div>
+                                    <select id="adminUserTokenStatsRangeSelect" class="input-modern">
+                                        <option value="today">今日</option>
+                                        <option value="7d">7 天</option>
+                                        <option value="30d" selected>30 天</option>
+                                        <option value="all">全部</option>
+                                    </select>
+                                    <button id="adminUserTokenStatsQueryBtn" class="btn-primary-outline" type="button">查询</button>
+                                </div>
+                                <div class="admin-user-token-summary-grid">
+                                    <div class="stat-card">
+                                        <span class="label">PAPI 调用 Token</span>
+                                        <span id="adminUserTokenRequests" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">输入 Token</span>
+                                        <span id="adminUserTokenInput" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">输出 Token</span>
+                                        <span id="adminUserTokenOutput" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">总 Token</span>
+                                        <span id="adminUserTokenTotal" class="value mono">-</span>
+                                    </div>
+                                </div>
+                                <div id="adminUserTokenStatsTop" class="admin-token-trend-top"></div>
+                                <div class="admin-user-token-recent-wrap">
+                                    <table class="admin-user-token-recent-table">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>来源</th>
+                                                <th>模型</th>
+                                                <th>Token</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminUserTokenRecentRows">
+                                            <tr><td colspan="4">暂无查询结果</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="admin-token-trend-card">
+                                <div class="admin-token-trend-head">
+                                    <h4>Tool Observability (30d)</h4>
+                                    <span id="adminToolTrendMeta" class="admin-token-trend-meta">-</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">工具调用总数</span>
+                                        <span id="toolStatTotalCalls" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">错误率</span>
+                                        <span id="toolStatErrorRate" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">平均耗时(ms)</span>
+                                        <span id="toolStatAvgLatency" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">24h 失败工具数</span>
+                                        <span id="toolStatFailed24h" class="value mono">-</span>
+                                    </div>
+                                </div>
+                                <div id="adminToolTrendChart" class="admin-token-trend-chart"></div>
+                                <div id="adminToolTrendTop" class="admin-token-trend-top"></div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-models-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar settings-management-toolbar-models">
+                                <button id="btnAddProvider" class="btn-primary" type="button">+ 添加供应商</button>
+                                <button id="btnAddModel" class="btn-primary" type="button">+ 添加模型</button>
+                                <input id="adminModelSearchInput" class="input-modern model-admin-search" placeholder="筛选模型：Provider / BaseURL / 模型ID / 名称 / 状态">
+                                <div class="model-admin-toolbar-unit">
+                                    <label for="adminQuotaUnitSelect">单位</label>
+                                    <select id="adminQuotaUnitSelect" class="input-modern" title="额度显示单位">
+                                        <option value="auto">自动</option>
+                                        <option value="k">K</option>
+                                        <option value="w">w</option>
+                                        <option value="m">M</option>
+                                        <option value="token">token</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="admin-users-layout model-admin-users-layout settings-management-layout">
+                                <div id="adminModelProviderList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty">Loading...</div>
+                                </div>
+                                <div id="adminModelConfigList" class="admin-user-detail settings-management-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-gen-image-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button id="btnAddGenImageApi" class="btn-primary-outline" type="button">
+                                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                                    <span>添加接口</span>
+                                </button>
+                                <input id="adminGenImageApiSearchInput" class="input-modern model-admin-search" placeholder="筛选接口：名称 / BaseURL / 模型 / 状态">
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminGenImageApiList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty">Loading...</div>
+                                </div>
+                                <div id="adminGenImageApiDetail" class="admin-user-detail settings-management-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧接口查看详情</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-map-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button id="adminMapProviderRefreshBtn" class="btn-primary-outline" type="button">
+                                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                                    <span>刷新状态</span>
+                                </button>
+                                <select id="adminMapProviderSelect" class="input-modern">
+                                    <option value="baidu">baidu</option>
+                                    <option value="tianditu">tianditu</option>
+                                </select>
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminMapProviderList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty">Loading...</div>
+                                </div>
+                                <div id="adminMapProviderDetail" class="admin-user-detail settings-management-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧 Provider 查看详情</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-auth-tab" class="admin-tab-content settings-management-panel">
+                            <div class="admin-users-toolbar settings-management-toolbar">
+                                <button id="adminPublicApiGenerateBtn" class="btn-primary-outline" type="button">
+                                    <i class="fa-solid fa-key" aria-hidden="true"></i>
+                                    <span>生成 Public API Key</span>
+                                </button>
+                                <div id="adminPapiOwnerFilterSelector" class="admin-user-token-selector papi-owner-filter-selector">
+                                    <input id="adminPapiOwnerFilterInput" class="input-modern" placeholder="按用户筛选" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                    <div id="adminPapiOwnerFilterMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                </div>
+                                <label class="admin-public-api-global-toggle" hidden style="display:none !important;">
+                                    <input id="adminPublicApiEnabledToggle" type="checkbox">
+                                    启用 Public API（总开关）
+                                </label>
+                                <button id="adminPublicApiSaveGlobalBtn" class="btn-primary admin-public-api-global-save" type="button" hidden style="display:none !important;">保存总开关</button>
+                            </div>
+                            <div class="admin-users-layout settings-management-layout">
+                                <div id="adminPublicApiKeyList" class="admin-users-list settings-management-list">
+                                    <div class="admin-user-detail-empty" style="padding: 12px;">Loading...</div>
+                                </div>
+                                <div class="admin-user-detail settings-management-detail" style="padding: 12px 14px;">
+                                    <div class="form-group admin-public-api-status-group" style="display:none !important;" hidden>
+                                        <label>API 状态</label>
+                                        <div id="adminPublicApiStatus" class="settings-field">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>Key Name</label>
+                                        <input id="adminPublicApiNameInput" class="input-modern" placeholder="Key Name">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>Key 预览</label>
+                                        <div id="adminPublicApiKeyPreview" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>访问范围</label>
+                                        <div id="adminPublicApiScopeSegment" class="papi-segment" role="group" aria-label="访问范围">
+                                            <button class="papi-segment-button" type="button" data-papi-scope="owner">用户私有</button>
+                                            <button class="papi-segment-button" type="button" data-papi-scope="global">全局访问</button>
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label for="adminPublicApiOwnerInput">所属用户</label>
+                                        <div id="adminPublicApiOwnerSelector" class="admin-user-token-selector papi-owner-selector">
+                                            <input id="adminPublicApiOwnerInput" class="input-modern" placeholder="选择用户" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                            <div id="adminPublicApiOwnerMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label>创建时间</label>
+                                        <div id="adminPublicApiCreatedAt" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label>过期时间</label>
+                                        <div id="adminPublicApiExpiresAt" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>剩余时长</label>
+                                        <div id="adminPublicApiRemaining" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>权限（Lite Permission Manager）</label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                                            <input id="adminPublicApiPermModel" type="checkbox" checked>
+                                            模型推理
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermImage" type="checkbox" checked>
+                                            生图 API 调用
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermKnowledge" type="checkbox" checked>
+                                            知识库读取
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermConversation" type="checkbox" checked>
+                                            对话读取（conversations_read）
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermConversationWrite" type="checkbox" checked>
+                                            对话写入（conversations_write）
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermToken" type="checkbox" checked>
+                                            Token 统计读取
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermUserRead" type="checkbox" checked>
+                                            用户信息读取
+                                        </label>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px; display:flex; gap:8px; flex-wrap: wrap;">
+                                        <button id="adminPublicApiSaveSettingsBtn" class="btn-primary-outline" type="button">
+                                            <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                                            <span>保存当前 Key 设置</span>
+                                        </button>
+                                        <button id="adminPublicApiRegenerateBtn" class="btn-primary-outline" type="button">
+                                            <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                                            <span>重新生成当前 Key</span>
+                                        </button>
+                                        <button id="adminPublicApiRevokeBtn" class="btn-danger-small" type="button">
+                                            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                                            <span>删除当前 Key</span>
+                                        </button>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;" hidden>
+                                        <label>最新明文 Key（仅展示一次）</label>
+                                        <textarea id="adminPublicApiLatestKey" class="input-modern mono" rows="3" placeholder="生成后会在此处展示一次" readonly></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-chroma-tab" class="admin-tab-content">
+                            <div class="admin-stats-grid" style="margin-bottom: 12px;">
+                                <div class="stat-card">
+                                    <span class="label" style="font-size: 11px;">ChromaDB 状态</span>
+                                    <span id="statChromaStatus" class="value mono" style="font-size: 14px;">-</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="label" style="font-size: 11px;">向量总数</span>
+                                    <span id="statChromaTotal" class="value mono" style="font-size: 14px;">-</span>
+                                </div>
+                            </div>
+                            <div class="admin-search-bar" style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                <input id="chromaSearchInput" class="input-modern" placeholder="搜索向量库..." style="flex: 1; font-size: 12px;">
+                                <button class="btn-primary" onclick="searchChroma()" style="padding: 6px 12px; min-width: 64px; background: #111; color: #fff; border: 1px solid #111;">搜索</button>
+                            </div>
+                            <div id="chromaSearchResults" style="display:none; margin-bottom: 12px; font-size: 12px; color: #475569;"></div>
+                            <div class="admin-table-wrapper">
+                                <table class="admin-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Collection</th>
+                                            <th>向量数</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adminChromaList"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="skillEditorModal" class="modal-backdrop">
+        <div class="modal" style="width: 820px; max-width: 94vw; padding: 0;">
+            <div class="modal-head">
+                <h3 id="skillEditorTitle">编辑 Skill</h3>
+                <button class="btn-close-circle" id="closeSkillEditorBtn" type="button" onclick="closeSkillEditorModal()">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>适用工具</label>
+                    <div id="skillEditorTools" class="settings-field">-</div>
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>内容</label>
+                    <textarea id="skillEditorContent" class="settings-skill-editor-input" placeholder="输入 Skill 内容"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; display:flex; justify-content:flex-end; gap:10px;">
+                <button class="btn-cancel" id="cancelSkillEditorBtn" type="button" onclick="closeSkillEditorModal()">取消</button>
+                <button class="btn-confirm" id="saveSkillEditorBtn" type="button" onclick="saveSkillEditorModal()">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- 个人 Skill 编辑器弹窗 -->
+    <div id="personalSkillEditorModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-head">
+                <h3 id="psEditorModalTitle">新建 Skill</h3>
+                <button class="btn-close-circle" type="button" onclick="NexoraSkillMarket && NexoraSkillMarket.openPersonalSkillEditor ? document.getElementById('personalSkillEditorModal').classList.remove('active') : null">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="ps-editor-grid">
+                    <div class="form-group">
+                        <label>标题 *</label>
+                        <input type="text" id="psEditorTitle" placeholder="Skill 名称">
+                    </div>
+                    <div class="form-group">
+                        <label>ID</label>
+                        <input type="text" id="psEditorId" placeholder="留空自动生成">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>描述</label>
+                        <input type="text" id="psEditorDesc" placeholder="一句话描述（市场展示用）">
+                    </div>
+                    <div class="form-group">
+                        <label>标签（逗号分隔）</label>
+                        <input type="text" id="psEditorTags" placeholder="如：开发, 写作">
+                    </div>
+                    <div class="form-group">
+                        <label>绑定工具（逗号分隔）</label>
+                        <input type="text" id="psEditorTools" placeholder="留空为全局 Skill">
+                    </div>
+                    <div class="form-group">
+                        <label>默认模式</label>
+                        <select id="psEditorMode">
+                            <option value="auto">Auto（工具激活时生效）</option>
+                            <option value="force">Force（始终生效）</option>
+                            <option value="off">Off（默认关闭）</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>指令内容</label>
+                    <textarea id="psEditorContent" class="ps-editor-content" placeholder="输入 Skill 指令正文..."></textarea>
+                </div>
+            </div>
+            <div class="ps-editor-footer">
+                <button type="button" class="btn-skill-publish" id="psEditorPublishBtn" style="display:none;">发布到市场</button>
+                <button type="button" class="btn-cancel" id="psEditorCancelBtn">取消</button>
+                <button type="button" class="btn-confirm" id="psEditorSaveBtn">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- 市场 Skill 详情弹窗 -->
+    <div id="skillMarketDetailModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-head">
+                <h3 id="skillDetailTitle">Skill 详情</h3>
+                <button class="btn-close-circle" id="skillDetailCloseBtn" type="button">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div id="skillDetailMeta" class="skill-detail-meta"></div>
+                <textarea id="skillDetailContent" class="skill-detail-content" readonly></textarea>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; display:flex; justify-content:flex-end; gap:10px;">
+                <button type="button" class="btn-skill-install" id="skillDetailInstallBtn">安装</button>
+            </div>
+        </div>
+    </div>
+    <div id="avatarCropModal" class="modal-backdrop">
+        <div class="modal avatar-crop-modal">
+            <div class="modal-head">
+                <h3>裁切头像</h3>
+                <button class="btn-close-circle" id="closeAvatarCropBtn" type="button">×</button>
+            </div>
+            <div class="modal-body avatar-crop-body">
+                <div class="avatar-crop-layout">
+                    <div class="avatar-crop-main">
+                        <div class="avatar-crop-canvas-wrap">
+                            <canvas id="avatarCropCanvas" class="avatar-crop-canvas"></canvas>
+                        </div>
+                        <div class="avatar-crop-controls">
+                            <label for="avatarCropZoom">缩放</label>
+                            <input id="avatarCropZoom" type="range" min="100" max="250" value="100">
+                            <button class="btn-primary-outline btn-compact avatar-crop-reset" id="avatarCropResetBtn" type="button">重置</button>
+                        </div>
+                    </div>
+                    <div class="avatar-crop-preview-wrap">
+                        <div class="avatar-crop-preview-title">圆形预览</div>
+                        <canvas id="avatarPreviewCanvas" width="160" height="160" class="avatar-preview-canvas"></canvas>
+                        <div class="avatar-crop-tip">拖动图片定位，圆形区域将作为头像。</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer avatar-crop-footer">
+                <button class="btn-cancel" id="cancelAvatarCropBtn" type="button">取消</button>
+                <button class="btn-confirm" id="applyAvatarCropBtn" type="button">应用并上传</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

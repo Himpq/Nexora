@@ -7,6 +7,16 @@ import re
 from typing import Any, Dict, List, Mapping
 
 from core.booksproc import build_profile_question_runner, get_profile_question_settings
+from core.booksproc.question import (
+    _normalize_question_options,
+    _normalize_question_type,
+    validate_question_distribution,
+)
+from core.cognition.question_binding import (
+    load_chapter_concept_candidates,
+    serialize_concept_candidates,
+    validate_question_concept_bindings,
+)
 from core.lectures import get_book, get_lecture, load_book_detail_xml, load_book_info_xml, load_book_text
 from core.runlog import log_event
 from core.user import (
@@ -31,16 +41,22 @@ def _xml_value(block: str, tag: str) -> str:
     return str(match.group(1) or "").strip()
 
 
-def _parse_question_blocks(content: str) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+def _parse_question_blocks(content: str) -> List[Dict[str, Any]]:
+    """解析画像题模型输出，并保留可作答题型所需的结构字段。"""
+    rows: List[Dict[str, Any]] = []
+
     for block in QUESTION_BLOCK_RE.findall(str(content or "")):
+        options = _normalize_question_options(_xml_value(block, "question_options"))
         row = {
             "question_title": _xml_value(block, "question_title"),
             "question_difficulty": _xml_value(block, "question_difficulty"),
+            "question_type": _normalize_question_type(_xml_value(block, "question_type"), options),
+            "question_options": options,
             "question_content": _xml_value(block, "question_content"),
             "question_reason": _xml_value(block, "question_reason"),
             "question_answer": _xml_value(block, "question_answer"),
             "related_chapter": _xml_value(block, "related_chapter"),
+            "related_concept_id": _xml_value(block, "related_concept_id"),
         }
         if row["question_title"] or row["question_content"]:
             rows.append(row)
@@ -109,6 +125,8 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
     user_memory = str(read_memory(dict(cfg or {}), user_id, "user") or "")
     coarse_bookinfo = str(load_book_info_xml(dict(cfg or {}), lecture_id, book_id) or "") if book_id else ""
 
+    concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)
+    concept_catalog = serialize_concept_candidates(concept_candidates)
     runner = build_profile_question_runner(cfg, str(settings.get("model_name") or "").strip())
     request_text = (
         "请基于该用户画像与当前课程/章节，为题库生成一组高质量复习题。"
@@ -134,6 +152,7 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
             "chapter_detail_xml": chapter_detail_xml,
             "chapter_context": chapter_context[:12000],
             "coarse_bookinfo": coarse_bookinfo,
+            "concept_catalog": concept_catalog,
         },
         model_name=str(settings.get("model_name") or "").strip() or None,
         username=user_id,
@@ -147,6 +166,47 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
         },
     )
     rows = _parse_question_blocks(content)
+    validation_error = validate_question_distribution(
+        rows,
+        expected_count=6,
+        minimum_choice_count=4,
+        maximum_text_count=2,
+    )
+
+    if validation_error:
+        log_event(
+            "profile_question_job_rejected",
+            "用户画像出题结果未通过结构校验",
+            payload={
+                "source": "profile_question",
+                "job_id": job_id,
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": validation_error,
+            },
+        )
+        raise ValueError(f"用户画像题目未通过结构校验：{validation_error}")
+
+    concept_validation_error = validate_question_concept_bindings(rows, concept_candidates)
+
+    if concept_validation_error:
+        log_event(
+            "profile_question_job_rejected",
+            "用户画像题目缺少有效知识概念绑定",
+            payload={
+                "source": "profile_question",
+                "job_id": job_id,
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "validation_error": concept_validation_error,
+            },
+        )
+        raise ValueError(f"用户画像题目未通过概念绑定校验：{concept_validation_error}")
+
     question_group_id = f"qg_{job_id}" if job_id else ""
     for idx, row in enumerate(rows, start=1):
         append_question_bank_item(
@@ -167,6 +227,7 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
                 "visibility": "public",
                 "owner_user_id": user_id,
                 "generation_mode": "profile_adaptive",
+                "concept_id": row["related_concept_id"],
                 "question": row,
             },
         )

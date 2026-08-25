@@ -1,0 +1,354 @@
+:root {
+    color-scheme: light;
+    font-family: Inter, "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    background: #f6f7fb;
+    color: #111827;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 247, 251, 0.98)),
+        #f6f7fb;
+}
+
+.share-page {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 18px;
+}
+
+.share-panel {
+    width: min(100%, 560px);
+    padding: 34px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+}
+
+.share-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 28px;
+    color: #111827;
+    font-weight: 700;
+}
+
+.share-brand-mark {
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: #111827;
+    color: #ffffff;
+    font-size: 15px;
+}
+
+.share-brand-name {
+    font-size: 16px;
+    line-height: 1;
+}
+
+.share-header {
+    margin-bottom: 22px;
+}
+
+.share-header h1 {
+    margin: 0 0 8px;
+    font-size: 26px;
+    line-height: 1.2;
+    letter-spacing: 0;
+}
+
+.share-header p {
+    margin: 0;
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.share-code-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: end;
+}
+
+.share-code-field {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.share-code-field span {
+    color: #475569;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.share-code-field input {
+    width: 100%;
+    height: 44px;
+    padding: 0 13px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    outline: none;
+    background: #ffffff;
+    color: #111827;
+    font-size: 16px;
+    letter-spacing: 0;
+    text-transform: uppercase;
+}
+
+.share-code-field input:focus {
+    border-color: #111827;
+    box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
+}
+
+.share-primary-btn,
+.share-download-btn {
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+    background: #111827;
+    color: #ffffff;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background 140ms ease, transform 140ms ease;
+}
+
+.share-primary-btn {
+    padding: 0 18px;
+    white-space: nowrap;
+}
+
+.share-primary-btn:hover,
+.share-download-btn:hover {
+    background: #0f172a;
+}
+
+.share-primary-btn:active,
+.share-download-btn:active {
+    transform: translateY(1px);
+}
+
+.share-primary-btn:disabled,
+.share-download-btn:disabled {
+    cursor: not-allowed;
+    background: #94a3b8;
+    transform: none;
+}
+
+.share-status {
+    min-height: 22px;
+    margin-top: 14px;
+    color: #64748b;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.share-status.is-error {
+    color: #b91c1c;
+}
+
+.share-file-panel {
+    margin-top: 18px;
+    padding: 18px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    display: grid;
+    grid-template-columns: 42px 1fr auto;
+    gap: 14px;
+    align-items: center;
+}
+
+.share-file-panel[hidden] {
+    display: none;
+}
+
+/* 多文件清单：占面板整行，列在头部信息下方 */
+.share-file-list {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.share-file-list[hidden] {
+    display: none;
+}
+
+.share-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.share-file-row-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.share-file-row-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.share-file-row-size {
+    color: #64748b;
+    font-size: 12px;
+}
+
+.share-file-row-side {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.share-file-row-status {
+    color: #0369a1;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.share-file-row-btn {
+    height: 32px;
+    padding: 0 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #0f172a;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 140ms ease;
+}
+
+.share-file-row-btn:hover {
+    background: #f1f5f9;
+}
+
+.share-file-icon {
+    width: 42px;
+    height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: #e0f2fe;
+    color: #0369a1;
+    font-size: 18px;
+}
+
+.share-file-main {
+    min-width: 0;
+}
+
+.share-file-main h2 {
+    margin: 0 0 10px;
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font-size: 17px;
+    line-height: 1.35;
+    letter-spacing: 0;
+}
+
+.share-file-meta {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+}
+
+.share-file-meta div {
+    min-width: 0;
+}
+
+.share-file-meta dt {
+    margin: 0 0 3px;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.3;
+}
+
+.share-file-meta dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: #1f2937;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.35;
+}
+
+.share-download-btn {
+    min-width: 96px;
+    padding: 0 18px;
+}
+
+@media (max-width: 640px) {
+    .share-page {
+        align-items: stretch;
+        padding: 18px;
+    }
+
+    .share-panel {
+        padding: 24px;
+    }
+
+    .share-code-form {
+        grid-template-columns: 1fr;
+    }
+
+    .share-primary-btn,
+    .share-download-btn {
+        width: 100%;
+    }
+
+    .share-file-panel {
+        grid-template-columns: 42px 1fr;
+    }
+
+    .share-download-btn {
+        grid-column: 1 / -1;
+    }
+
+    .share-file-meta {
+        grid-template-columns: 1fr;
+    }
+}

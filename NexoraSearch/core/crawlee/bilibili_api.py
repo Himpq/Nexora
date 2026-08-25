@@ -6,12 +6,21 @@ API: https://api.bilibili.com/x/web-interface/search/type
 
 import json
 import re
+import ssl
 import urllib.request
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+import certifi
+
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+CERTIFI_CA_BUNDLE = certifi.where()
+
+
+def _build_verified_ssl_context() -> ssl.SSLContext:
+    """Create a verified SSL context using certifi's CA bundle."""
+    return ssl.create_default_context(cafile=CERTIFI_CA_BUNDLE)
 
 
 def crawl_bilibili_api(
@@ -55,7 +64,11 @@ def crawl_bilibili_api(
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        _emit("log", {"content": f"使用CA证书包: {CERTIFI_CA_BUNDLE}"})
+
+        ssl_context = _build_verified_ssl_context()
+
+        with urllib.request.urlopen(req, timeout=15, context=ssl_context) as resp:
             content = resp.read().decode("utf-8")
             data = json.loads(content)
 

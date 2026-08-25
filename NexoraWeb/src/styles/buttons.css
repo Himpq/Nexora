@@ -1,0 +1,137 @@
+/*
+ * buttons.css — GDDP 全局按钮语言(General Design Development Package)
+ *
+ * 全应用统一按钮规范:白底描边,禁止黑底。
+ * 规则为全局作用域(无设置壳前缀),保证聊天区侧栏(文件/知识库)、
+ * 设置壳与管理面板的按钮语言完全一致——按钮只有一种视觉体系,
+ * 不再出现"一会黑色按钮一会其他颜色按钮"的分叉。
+ *
+ * 原版 style.css 的 .btn-primary(黑底白字)与 .btn-primary-outline(width:100% 白字)
+ * 由本文件统一覆盖(构建产物 CSS 注入位置晚于 index.html 中的原版样式)。
+ *
+ * 层级:
+ *   .btn-primary / .btn-confirm — 主操作:黑边 + 白底 + 黑字,34px
+ *   .btn-primary-outline        — 次操作:灰边 + 白底 + 深灰字,34px
+ *   .btn-cancel                 — 取消操作:浅灰底,34px
+ *   .btn-danger-small           — 危险操作:淡红底 + 红字,34px
+ *   .btn-compact                — 紧凑尺寸修饰:30px,可与上述按钮叠加
+ */
+
+.btn-primary,
+.btn-confirm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    height: 34px;
+    padding: 0 16px;
+    border: 1px solid #111111;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #111111;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.btn-primary:hover,
+.btn-confirm:hover {
+    background: #f5f5f5;
+}
+
+.btn-primary:active,
+.btn-confirm:active {
+    transform: scale(0.97);
+}
+
+/* 原版 .btn-primary-outline 是 width:100% + 白字,此处统一为内容宽度白底描边 */
+.btn-primary-outline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    height: 34px;
+    padding: 0 16px;
+    border: 1px solid #c9c9c9;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #2e2e2e;
+    font-size: 13px;
+    font-weight: 550;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.btn-primary-outline:hover {
+    border-color: #111111;
+    color: #111111;
+    background: #fafafa;
+}
+
+.btn-cancel {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    height: 34px;
+    padding: 0 16px;
+    border: 1px solid #e2e2e2;
+    border-radius: 7px;
+    background: #f7f7f7;
+    color: #5a5a5a;
+    font-size: 13px;
+    font-weight: 550;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.btn-cancel:hover {
+    background: #eeeeee;
+}
+
+.btn-danger-small {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    height: var(--gddp-control-height);
+    padding: 0 12px;
+    border: 1px solid #f0c4c4;
+    border-radius: 7px;
+    background: #fff7f7;
+    color: #c0392b;
+    font-size: 12.5px;
+    font-weight: 550;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+}
+
+.btn-danger-small:hover {
+    background: #fdecec;
+    color: #c0392b;
+    border-color: #f0c4c4;
+}
+
+.btn-compact {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12.5px;
+}
+
+.btn-primary:disabled,
+.btn-confirm:disabled,
+.btn-primary-outline:disabled,
+.btn-cancel:disabled,
+.btn-danger-small:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}

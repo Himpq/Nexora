@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -29,6 +30,16 @@ def _read_json(path: Path) -> Optional[Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def build_outline_source_book_ids(books: List[Mapping[str, Any]]) -> List[str]:
+    """返回参与课程大纲生成的已完成概述教材 ID。"""
+    return sorted(
+        str(book.get("id") or "").strip()
+        for book in books
+        if str(book.get("id") or "").strip()
+        and str(book.get("summary_status") or "").strip().lower() == "done"
+    )
 
 
 def _safe_json_obj(raw: str) -> Dict[str, Any]:
@@ -207,6 +218,24 @@ def _build_outline_tools() -> List[Dict[str, Any]]:
                             "type": "string",
                             "description": "Course title"
                         },
+                        "course_summary": {
+                            "type": "string",
+                            "description": "课程简介：一两句话概括这门课程是什么、适合谁、学完能收获什么（80-150字）"
+                        },
+                        "course_long_summary": {
+                            "type": "string",
+                            "description": "课程长简介：面向课程知识领域本身的泛化性介绍，不绑定具体教材章节，阐述课程背景、核心内容脉络与价值（300-500字）"
+                        },
+                        "learning_objectives": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "学习目标：学完本课程后应具备的知识与能力（3-6条，泛化性表述）"
+                        },
+                        "learning_tasks": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "学习任务：为达成学习目标需要完成的关键学习任务（3-6条，泛化性表述）"
+                        },
                         "sections": {
                             "type": "array",
                             "description": "List of learning sections",
@@ -324,6 +353,14 @@ def _normalize_outline_sections(raw_sections: Any) -> List[Dict[str, Any]]:
     return parsed_sections
 
 
+def _normalize_str_list(raw: Any) -> List[str]:
+    """把模型返回的字符串数组字段规范化为非空字符串列表。"""
+    if not isinstance(raw, list):
+        return []
+
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
 def generate_outline(
     cfg: Mapping[str, Any],
     lecture_id: str,
@@ -335,7 +372,7 @@ def generate_outline(
     """生成课程大纲（使用工具调用模式）。"""
     from core.lectures import get_lecture, list_books, load_book_info_xml
     from core.models import NexoraCompletionClient, load_scheduler_models_config
-    from core.runlog import log_event
+    from core.runlog import append_log_text, log_event
 
     safe_lecture_id = str(lecture_id or "").strip()
     if not safe_lecture_id:
@@ -352,6 +389,8 @@ def generate_outline(
         piece = str(delta_text or "")
         if not piece:
             return
+        # 大纲生成可能走队列或 SSE，模型 delta 统一在核心流程实时落日志。
+        append_log_text(piece)
         if callable(on_delta):
             try:
                 on_delta(piece)
@@ -413,7 +452,7 @@ def generate_outline(
     model_name = str(models_cfg.get("default_nexora_model") or "").strip()
     temperature = 0.3
     max_output_tokens = 8000
-    request_timeout = 300
+    request_timeout = 90
 
     # 工具定义
     tools = _build_outline_tools()
@@ -440,10 +479,18 @@ def generate_outline(
         log_event(
             "outline_round",
             "大纲生成轮次",
-            payload={"turn": turn, "messages_count": len(request_messages)},
+            payload={
+                "turn": turn,
+                "messages_count": len(request_messages),
+                "model_stream": False,
+                "tool_choice": "submit_outline",
+                "request_timeout": request_timeout,
+            },
         )
 
         round_fragments: List[str] = []
+        round_reasoning_fragments: List[str] = []
+        round_reasoning_started = False
 
         def _on_round_delta(delta_text: str) -> None:
             piece = str(delta_text or "")
@@ -452,19 +499,37 @@ def generate_outline(
             round_fragments.append(piece)
             emit_delta(piece)
 
+        def _on_round_reasoning_delta(delta_text: str) -> None:
+            nonlocal round_reasoning_started
+
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            round_reasoning_fragments.append(piece)
+
+            if not round_reasoning_started:
+                append_log_text(f"\n[outline_reasoning turn={turn}]\n")
+                round_reasoning_started = True
+
+            append_log_text(piece)
+
         response = proxy.chat_completions(
             messages=request_messages,
             model=model_name or None,
             options={
                 "temperature": temperature,
                 "max_tokens": max_output_tokens,
-                "stream": True,
+                # PAPI 上游在工具调用开启时不会返回有效流式增量；浏览器 SSE
+                # 仍由 generate-stream 路由持续发送状态，模型工具请求固定非流式。
+                "stream": False,
                 "tools": tools,
-                "tool_choice": "auto",
+                "tool_choice": {"type": "function", "function": {"name": "submit_outline"}},
             },
             use_chat_path=False,
             request_timeout=request_timeout,
             on_delta=_on_round_delta,
+            on_reasoning_delta=_on_round_reasoning_delta,
         )
 
         if not bool(response.get("ok")):
@@ -476,7 +541,10 @@ def generate_outline(
             raise RuntimeError("Model returned no choices")
 
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        finish_reason = str(choices[0].get("finish_reason") or "").strip() if isinstance(choices[0], dict) else ""
+        stream_debug = payload.get("_stream_debug") if isinstance(payload.get("_stream_debug"), dict) else {}
         content = str((msg or {}).get("content") or "")
+        reasoning_content = str((msg or {}).get("reasoning_content") or payload.get("reasoning_content") or "")
 
         # 推送模型输出到日志
         if content.strip():
@@ -495,6 +563,23 @@ def generate_outline(
                 payload={"turn": turn, "content_len": len(streamed_text)},
                 content=streamed_text[:4000],
             )
+        if reasoning_content.strip():
+            log_event(
+                "outline_model_reasoning_output",
+                "大纲模型推理输出",
+                payload={"turn": turn, "content_len": len(reasoning_content)},
+                content=reasoning_content[:4000],
+            )
+            emit_status(f"模型第 {turn} 轮返回推理输出")
+        elif round_reasoning_fragments:
+            streamed_reasoning_text = "".join(round_reasoning_fragments)
+            log_event(
+                "outline_model_reasoning_stream",
+                "大纲模型推理流式输出",
+                payload={"turn": turn, "content_len": len(streamed_reasoning_text)},
+                content=streamed_reasoning_text[:4000],
+            )
+            emit_status(f"模型第 {turn} 轮返回推理输出")
 
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
         tool_calls: List[Dict[str, Any]] = []
@@ -514,6 +599,18 @@ def generate_outline(
             }
             tool_calls.append(normalized_call)
 
+        if not content.strip() and not reasoning_content.strip() and not tool_calls:
+            log_event(
+                "outline_model_empty_stream",
+                "大纲模型流未解析出正文、推理或工具调用",
+                payload={
+                    "turn": turn,
+                    "finish_reason": finish_reason,
+                    "stream_debug": stream_debug,
+                },
+                content=json.dumps(stream_debug, ensure_ascii=False, indent=2)[:4000],
+            )
+
         log_event(
             "outline_tool_calls",
             "大纲工具调用检测",
@@ -521,6 +618,10 @@ def generate_outline(
                 "turn": turn,
                 "has_tool_calls": bool(tool_calls),
                 "tool_names": [tc.get("function", {}).get("name", "") for tc in tool_calls],
+                "finish_reason": finish_reason,
+                "content_len": len(content),
+                "reasoning_len": len(reasoning_content),
+                "stream_debug": stream_debug,
             },
             content=_safe_json_dumps(tool_calls)[:2400] if tool_calls else "",
         )
@@ -571,10 +672,18 @@ def generate_outline(
                 emit_status("模型已调用 submit_outline，正在校验大纲结构")
                 course_title = str(args_obj.get("course_title") or lecture_title).strip()
                 parsed_sections = _normalize_outline_sections(args_obj.get("sections"))
+                course_summary = str(args_obj.get("course_summary") or "").strip()
+                course_long_summary = str(args_obj.get("course_long_summary") or "").strip()
+                learning_objectives = _normalize_str_list(args_obj.get("learning_objectives"))
+                learning_tasks = _normalize_str_list(args_obj.get("learning_tasks"))
 
                 if parsed_sections:
                     result_outline = {
                         "course_title": course_title,
+                        "course_summary": course_summary,
+                        "course_long_summary": course_long_summary,
+                        "learning_objectives": learning_objectives,
+                        "learning_tasks": learning_tasks,
                         "sections": parsed_sections,
                     }
                     outline_submitted = True
@@ -649,6 +758,8 @@ def generate_outline(
     # 补充元数据
     result_outline["lecture_id"] = safe_lecture_id
     result_outline["lecture_title"] = lecture_title
+    result_outline["source_book_ids"] = build_outline_source_book_ids(books)
+    result_outline["generated_at"] = int(time.time())
     result_outline["total_sections"] = len(sections)
     result_outline["total_estimated_minutes"] = sum(
         int(s.get("estimated_minutes") or 0) for s in sections if isinstance(s, dict)

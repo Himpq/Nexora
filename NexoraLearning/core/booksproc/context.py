@@ -404,9 +404,14 @@ class Context:
         wanted_keys = [
             "offset",
             "length",
+            "start",
+            "end",
             "range_start",
             "range_end",
             "keyword",
+            "query",
+            "book_id",
+            "limit",
             "chapter_range",
             "chapter_name",
             "old_chapter_name",
@@ -418,6 +423,12 @@ class Context:
 
             if length > 0:
                 summary["range_for_model"] = f"{start}:{start + length}"
+
+        if "start" in data and "end" in data:
+            start, end = self._coerce_range_bounds(data.get("start"), data.get("end"))
+
+            if end > start:
+                summary["range_for_model"] = f"{start}:{end}"
 
         if "chapter_summary" in data:
             summary["chapter_summary_chars"] = len(str(data.get("chapter_summary") or ""))
@@ -450,8 +461,13 @@ class Context:
             "message",
             "offset",
             "length",
+            "start",
+            "end",
             "remaining",
             "keyword",
+            "query",
+            "book_id",
+            "book_title",
             "count",
             "hits_count",
             "chapter_range",
@@ -466,6 +482,12 @@ class Context:
 
             if length > 0:
                 summary["range_for_model"] = f"{start}:{start + length}"
+
+        if "start" in result and "end" in result:
+            start, end = self._coerce_range_bounds(result.get("start"), result.get("end"))
+
+            if end > start:
+                summary["range_for_model"] = f"{start}:{end}"
 
         for text_key in ["text", "content"]:
 
@@ -485,16 +507,47 @@ class Context:
                 if isinstance(hit, Mapping)
             ]
 
+        items = result.get("items")
+
+        if isinstance(items, list):
+            summary["items_preview"] = [
+                self._summarize_hit(item)
+                for item in items[:8]
+                if isinstance(item, Mapping)
+            ]
+
         return summary
 
     def _summarize_hit(self, hit: Mapping[str, Any]) -> Dict[str, Any]:
         """压缩搜索命中结果。"""
         row = dict(hit or {})
-        return {
+        summary = {
             key: row.get(key)
-            for key in ["offset", "match_start", "match_end", "range", "range_start", "range_end"]
+            for key in [
+                "book_id",
+                "book_title",
+                "offset",
+                "start",
+                "end",
+                "match_start",
+                "match_end",
+                "range",
+                "range_start",
+                "range_end",
+            ]
             if key in row
         }
+
+        for text_key in ["snippet", "text", "content"]:
+
+            if text_key not in row:
+                continue
+
+            text_value = str(row.get(text_key) or "")
+            summary[f"{text_key}_chars"] = len(text_value)
+            summary[f"{text_key}_preview"] = self._compact_history_text(text_value, limit=260)
+
+        return summary
 
     def _safe_json_dict(self, value: Any) -> Dict[str, Any]:
         """解析 JSON 对象文本。"""
@@ -529,6 +582,20 @@ class Context:
             length = 0
 
         return max(0, start), max(0, length)
+
+    def _coerce_range_bounds(self, start_value: Any, end_value: Any) -> Tuple[int, int]:
+        """将工具 start/end 转为非负范围。"""
+        try:
+            start = int(start_value)
+        except Exception:
+            start = 0
+
+        try:
+            end = int(end_value)
+        except Exception:
+            end = 0
+
+        return max(0, start), max(0, end)
 
     def _serialize_messages(self, msgs: List[Message]) -> List[Dict[str, Any]]:
         """序列化消息列表用于日志记录。"""

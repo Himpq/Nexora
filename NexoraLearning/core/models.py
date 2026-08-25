@@ -152,7 +152,7 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "temperature": 0.3,
         "max_output_tokens": 6000,
         "max_input_chars": 16000,
-        "request_timeout": 300,
+        "request_timeout": 90,
         "stream": True,
         "think": False,
         "prompt_notes": "",

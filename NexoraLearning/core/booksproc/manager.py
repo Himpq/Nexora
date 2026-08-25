@@ -123,6 +123,14 @@ _READ_PROGRESS = READ_PROGRESS
 _MAX_READ_CHARS_PER_CALL = _RUNTIME_MAX_READ_CHARS_PER_CALL
 _MAX_ROUND_CONTEXT_CHARS = 120000
 _ROUND_MAX_RETRIES = 3
+_BOOK_PIPELINE_STAGES = (
+    ("coarse", "概读"),
+    ("intensive", "精读"),
+    ("section", "分节"),
+    ("summary", "概述"),
+    ("annotation", "批注"),
+    ("video", "视频"),
+)
 
 
 def _render_prompt(template: str, values: Mapping[str, Any]) -> str:
@@ -244,7 +252,52 @@ def init_booksproc(cfg: Mapping[str, Any]) -> None:
     _CFG.clear()
     _CFG.update(dict(cfg or {}))
     _reset_stuck_jobs(_CFG)
+    _reconcile_video_cache_statuses(_CFG)
     init_booksproc_queue(_CFG, run_job=_run_job, log_event=log_event)
+
+
+def _reconcile_video_cache_statuses(cfg: Mapping[str, Any]) -> None:
+    """启动时用真实缓存产物修正旧版视频处理状态。"""
+    from ..video_search import has_video_search_cache
+
+    updated_count = 0
+
+    for lecture in list_lectures(cfg):
+        lecture_id = str((lecture or {}).get("id") or "").strip()
+
+        if not lecture_id:
+            continue
+
+        for book in list_books(cfg, lecture_id):
+            book_id = str((book or {}).get("id") or "").strip()
+
+            if not book_id or not has_video_search_cache(cfg, lecture_id, book_id):
+                continue
+
+            video_status = str((book or {}).get("video_status") or "").strip().lower()
+            video_error = str((book or {}).get("video_error") or "").strip()
+
+            if video_status == "done" and not video_error:
+                continue
+
+            updated = update_book(
+                dict(cfg),
+                lecture_id,
+                book_id,
+                {"video_status": "done", "video_error": ""},
+            )
+
+            if updated is None:
+                raise ValueError(f"Book not found while reconciling video cache: {lecture_id}/{book_id}")
+
+            updated_count += 1
+
+    if updated_count:
+        log_event(
+            "video_cache_status_reconciled",
+            "已根据视频缓存修正教材处理状态",
+            payload={"updated_count": updated_count},
+        )
 
 
 def _reset_stuck_jobs(cfg: Mapping[str, Any]) -> None:
@@ -262,7 +315,7 @@ def _reset_stuck_jobs(cfg: Mapping[str, Any]) -> None:
                 for status_key in [
                     "coarse_status", "section_status", "intensive_status",
                     "question_status", "annotation_status", "summary_status",
-                    "video_status",
+                    "video_status", "pipeline_status",
                 ]:
                     val = str(book.get(status_key) or "").strip().lower()
                     if val in ("queued", "running"):
@@ -308,13 +361,29 @@ def mark_book_uploaded(
             "refinement_status": "uploaded",
             "refinement_error": "",
             "coarse_status": "idle",
+            "coarse_error": "",
+            "intensive_status": "idle",
+            "intensive_error": "",
+            "section_status": "idle",
+            "section_error": "",
+            "summary_status": "idle",
+            "summary_error": "",
+            "annotation_status": "idle",
+            "annotation_error": "",
+            "video_status": "idle",
+            "video_error": "",
+            "pipeline_status": "idle",
+            "pipeline_error": "",
+            "pipeline_job_id": "",
+            "pipeline_requested_at": 0,
+            "pipeline_finished_at": 0,
         },
     )
     if updated is None:
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
     log_event(
         "book_upload",
-        "教材上传完成（等待手动提炼）",
+        "教材上传完成（等待自动处理）",
         payload={
             "lecture_id": lecture_id,
             "book_id": book_id,
@@ -412,6 +481,87 @@ def enqueue_book_refinement(
             "job_id": job_id,
             "actor": actor,
             "force": bool(force),
+        },
+    )
+    return queued
+
+
+def enqueue_book_pipeline(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    """将教材加入自动处理流水线，按固定阶段顺序串行执行。"""
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        raise ValueError("lecture_id and book_id are required.")
+
+    if get_lecture(resolved_cfg, lecture_key) is None:
+        raise ValueError(f"Lecture not found: {lecture_key}")
+
+    book = get_book(resolved_cfg, lecture_key, book_key)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_key}/{book_key}")
+
+    original_path = str(book.get("original_path") or "").strip()
+    text_ready = str(book.get("text_status") or "").strip().lower() == "ready"
+    if not original_path and not text_ready:
+        raise ValueError("Book has no source file and no text content.")
+
+    pipeline_status = str(book.get("pipeline_status") or "").strip().lower()
+    if pipeline_status in {"queued", "running"}:
+        raise ValueError("Book pipeline is already running.")
+
+    existing_jobs = queue_get_snapshot().get("jobs", [])
+    for existing in existing_jobs if isinstance(existing_jobs, list) else []:
+        if not isinstance(existing, Mapping):
+            continue
+        same_book = (
+            str(existing.get("lecture_id") or "").strip() == lecture_key
+            and str(existing.get("book_id") or "").strip() == book_key
+        )
+        existing_status = str(existing.get("status") or "").strip().lower()
+        if same_book and existing_status in {"queued", "running"}:
+            raise ValueError("Book already has a processing task.")
+
+    queued = queue_enqueue_job(
+        lecture_key,
+        book_key,
+        actor=actor,
+        force=force,
+        job_type="pipeline",
+    )
+    job = dict(queued.get("job") or {})
+    job_id = str(job.get("job_id") or "")
+    now = int(job.get("created_at") or time.time())
+
+    update_book(
+        resolved_cfg,
+        lecture_key,
+        book_key,
+        {
+            "pipeline_status": "queued",
+            "pipeline_error": "",
+            "pipeline_job_id": job_id,
+            "pipeline_requested_at": now,
+        },
+    )
+    _set_book_progress(lecture_key, book_key, "教材自动处理已排队...")
+    log_event(
+        "book_pipeline_queue",
+        "教材自动处理流水线已加入队列",
+        payload={
+            "lecture_id": lecture_key,
+            "book_id": book_key,
+            "job_id": job_id,
+            "actor": actor,
+            "force": bool(force),
+            "stages": [stage for stage, _label in _BOOK_PIPELINE_STAGES],
         },
     )
     return queued
@@ -859,30 +1009,115 @@ def _worker_loop() -> None:
         _run_job(dict(job))
 
 
-def _check_and_trigger_outline(lecture_id: str) -> None:
-    """检查课程下所有教材是否完成 summary，如果是则触发大纲生成。"""
+def _find_active_course_jobs(
+    lecture_id: str,
+    job_type: str,
+    *,
+    exclude_job_id: str = "",
+) -> List[Dict[str, Any]]:
+    """返回当前课程指定类型的排队中或执行中任务。"""
+    lecture_key = str(lecture_id or "").strip()
+    type_key = str(job_type or "").strip().lower()
+    excluded_id = str(exclude_job_id or "").strip()
+    jobs = queue_get_snapshot().get("jobs", [])
+    active_jobs: List[Dict[str, Any]] = []
+
+    for job in jobs if isinstance(jobs, list) else []:
+        if not isinstance(job, Mapping):
+            continue
+
+        job_id = str(job.get("job_id") or "").strip()
+        if excluded_id and job_id == excluded_id:
+            continue
+
+        if str(job.get("lecture_id") or "").strip() != lecture_key:
+            continue
+
+        if str(job.get("job_type") or "").strip().lower() != type_key:
+            continue
+
+        status = str(job.get("status") or "").strip().lower()
+        if status not in {"queued", "running"}:
+            continue
+
+        active_jobs.append(dict(job))
+
+    return active_jobs
+
+
+def _check_and_trigger_outline(lecture_id: str, *, completed_pipeline_job_id: str = "") -> None:
+    """课程教材流水线全部收尾后，只排入一次课程大纲生成任务。"""
     try:
         books = list_books(_CFG, lecture_id)
         if not books:
             return
 
-        # 检查所有 book 的 summary_status
-        all_done = all(
-            str(b.get("summary_status") or "").strip().lower() == "done"
-            for b in books
+        pending_pipeline_jobs = _find_active_course_jobs(
+            lecture_id,
+            "pipeline",
+            exclude_job_id=completed_pipeline_job_id,
         )
-        if not all_done:
+        if pending_pipeline_jobs:
+            log_event(
+                "outline_deferred",
+                "课程仍有教材自动处理任务，大纲生成已延后",
+                payload={
+                    "lecture_id": lecture_id,
+                    "pending_pipeline_job_ids": [
+                        str(job.get("job_id") or "")
+                        for job in pending_pipeline_jobs
+                    ],
+                    "pending_book_ids": [
+                        str(job.get("book_id") or "")
+                        for job in pending_pipeline_jobs
+                    ],
+                },
+            )
             return
 
-        # 检查是否已有大纲
-        outline_path = Path(_CFG["data_dir"]) / "lectures" / lecture_id / "solidified" / "outline.json"
-        if outline_path.exists():
-            return  # 已有大纲，不重复生成
+        incomplete_books = [
+            {
+                "book_id": str(book.get("id") or "").strip(),
+                "title": str(book.get("title") or "").strip(),
+                "summary_status": str(book.get("summary_status") or "").strip().lower(),
+            }
+            for book in books
+            if str(book.get("summary_status") or "").strip().lower() != "done"
+        ]
+        if incomplete_books:
+            log_event(
+                "outline_waiting_for_summaries",
+                "课程存在未完成概述的教材，暂不生成课程大纲",
+                payload={
+                    "lecture_id": lecture_id,
+                    "incomplete_books": incomplete_books,
+                },
+            )
+            return
 
-        # 添加大纲生成任务到队列（使用特殊的 book_id "outline"）
+        active_outline_jobs = _find_active_course_jobs(lecture_id, "outline")
+        if active_outline_jobs:
+            log_event(
+                "outline_queue_duplicate",
+                "课程大纲生成任务已存在，本次不重复入队",
+                payload={
+                    "lecture_id": lecture_id,
+                    "outline_job_ids": [
+                        str(job.get("job_id") or "")
+                        for job in active_outline_jobs
+                    ],
+                },
+            )
+            return
+
+        from core.booksproc.outline import build_outline_source_book_ids
+
+        completed_book_ids = build_outline_source_book_ids(books)
+        if not completed_book_ids:
+            return
+
         try:
-            from core.booksproc.queue import enqueue_job
-            enqueue_job(
+            queued = queue_enqueue_job(
                 lecture_id,
                 "outline",
                 actor="system",
@@ -891,8 +1126,13 @@ def _check_and_trigger_outline(lecture_id: str) -> None:
             )
             log_event(
                 "outline_queued",
-                "课程大纲生成任务已加入队列",
-                payload={"lecture_id": lecture_id},
+                "课程大纲自动生成任务已加入队列",
+                payload={
+                    "lecture_id": lecture_id,
+                    "reason": "course_pipeline_queue_drained",
+                    "source_book_ids": completed_book_ids,
+                    "duplicate": bool(queued.get("duplicate")),
+                },
             )
         except Exception as exc:
             log_event(
@@ -908,7 +1148,242 @@ def _check_and_trigger_outline(lecture_id: str) -> None:
         )
 
 
+_JOB_TYPE_AGENT = {
+    "coarse": "rough_reading",
+    "intensive": "intensive_reading",
+    "question": "question_generation",
+    "pipeline": "material_pipeline",
+}
+
+
 def _run_job(job: Dict[str, Any]) -> None:
+    """执行单个教材提炼任务（带执行时间线 run 上下文）。"""
+    from core import runlog as _rl
+
+    job_data = job if isinstance(job, dict) else {}
+    job_type = str(job_data.get("job_type") or "coarse").strip().lower() or "coarse"
+    run_id = _rl.begin_run(f"book_{job_type}", meta={
+        "job_id": str(job_data.get("job_id") or ""),
+        "lecture_id": str(job_data.get("lecture_id") or ""),
+        "book_id": str(job_data.get("book_id") or ""),
+        "model_name": str(job_data.get("model_name") or ""),
+    })
+    _rl.set_agent(_JOB_TYPE_AGENT.get(job_type, job_type))
+
+    try:
+        _run_job_impl(job)
+    except Exception as exc:
+        _rl.end_run(run_id, status="error", meta={"error": str(exc)})
+        raise
+    else:
+        _rl.end_run(run_id, status="ok")
+    finally:
+        _rl.set_agent("")
+
+
+def _pipeline_stage_done(book: Mapping[str, Any], stage: str) -> bool:
+    status = str((book or {}).get(f"{stage}_status") or "").strip().lower()
+    return status in {"done", "completed", "success"}
+
+
+def _run_pipeline_job(job: Dict[str, Any]) -> None:
+    """按固定顺序执行教材处理阶段，任一阶段失败即停止。"""
+    lecture_id = str(job.get("lecture_id") or "").strip()
+    book_id = str(job.get("book_id") or "").strip()
+    job_id = str(job.get("job_id") or "").strip()
+    actor = str(job.get("actor") or "").strip()
+    force = bool(job.get("force"))
+    key = _job_key(lecture_id, book_id)
+    current_stage = ""
+    now = int(time.time())
+
+    if _is_cancelled_key(key):
+        _update_job(job_id, {"status": "cancelled", "started_at": now, "finished_at": now, "error": "cancelled by admin"})
+        _reset_book_unrefined(_CFG, lecture_id, book_id, now=now)
+        _clear_cancelled_key(key)
+        return
+
+    _update_job(job_id, {"status": "running", "started_at": now, "error": "", "pipeline_stage": ""})
+    update_book(
+        _CFG,
+        lecture_id,
+        book_id,
+        {
+            "pipeline_status": "running",
+            "pipeline_error": "",
+            "pipeline_job_id": job_id,
+        },
+    )
+    _set_book_progress(lecture_id, book_id, "教材自动处理开始...")
+
+    try:
+        for stage, label in _BOOK_PIPELINE_STAGES:
+            if _is_cancelled_key(key):
+                raise RuntimeError("cancelled by admin")
+
+            book = get_book(_CFG, lecture_id, book_id)
+            if book is None:
+                raise ValueError(f"Book not found while running: {lecture_id}/{book_id}")
+
+            if _pipeline_stage_done(book, stage) and not force:
+                _push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {"type": "pipeline_stage", "title": f"自动流程：{label}", "preview": "已完成，跳过"},
+                )
+                continue
+
+            current_stage = stage
+            _update_job(job_id, {"pipeline_stage": stage})
+            _set_book_progress(lecture_id, book_id, f"自动流程：正在执行{label}...")
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {"type": "pipeline_stage", "title": f"自动流程：{label}", "preview": "开始执行"},
+            )
+
+            stage_job = dict(job)
+            stage_job.update(
+                {
+                    "job_id": f"{job_id}:{stage}",
+                    "job_type": stage,
+                    "force": force,
+                }
+            )
+
+            coarse_pass = 0
+            while True:
+                _run_job_impl(stage_job)
+                coarse_pass += 1
+
+                updated_book = get_book(_CFG, lecture_id, book_id) or {}
+                if _pipeline_stage_done(updated_book, stage):
+                    break
+
+                stage_status = str(updated_book.get(f"{stage}_status") or "").strip().lower()
+                if stage != "coarse" or stage_status != "outlined" or coarse_pass >= _ROUND_MAX_RETRIES:
+                    break
+
+                _set_book_progress(lecture_id, book_id, "自动流程：继续补全概读章节摘要...")
+                _push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {"type": "pipeline_stage", "title": "自动流程：概读", "preview": f"继续补全，第 {coarse_pass + 1} 次"},
+                )
+
+            if _is_cancelled_key(key):
+                raise RuntimeError("cancelled by admin")
+
+            updated_book = get_book(_CFG, lecture_id, book_id) or {}
+            if not _pipeline_stage_done(updated_book, stage):
+                stage_error = str(updated_book.get(f"{stage}_error") or "").strip()
+                raise RuntimeError(f"{label}阶段未完成：{stage_error or '执行器未返回完成状态'}")
+
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {"type": "pipeline_stage", "title": f"自动流程：{label}", "preview": "执行完成"},
+            )
+
+        finished_at = int(time.time())
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "pipeline_status": "done",
+                "pipeline_error": "",
+                "pipeline_job_id": job_id,
+                "pipeline_finished_at": finished_at,
+            },
+        )
+        _set_book_progress(lecture_id, book_id, "教材自动处理完成")
+        _update_job(
+            job_id,
+            {
+                "status": "done",
+                "finished_at": finished_at,
+                "error": "",
+                "pipeline_stage": "",
+            },
+        )
+        log_event(
+            "book_pipeline_done",
+            "教材自动处理流水线完成",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "job_id": job_id,
+                "stages": [stage for stage, _label in _BOOK_PIPELINE_STAGES],
+            },
+        )
+        _check_and_trigger_outline(
+            lecture_id,
+            completed_pipeline_job_id=job_id,
+        )
+    except Exception as exc:
+        message = str(exc)
+        if _is_cancelled_key(key) or "cancelled by admin" in message.lower():
+            _reset_book_unrefined(_CFG, lecture_id, book_id, now=int(time.time()))
+            update_book(
+                _CFG,
+                lecture_id,
+                book_id,
+                {
+                    "pipeline_status": "cancelled",
+                    "pipeline_error": "cancelled by admin",
+                    "pipeline_job_id": job_id,
+                },
+            )
+            _update_job(job_id, {"status": "cancelled", "finished_at": int(time.time()), "error": "cancelled by admin", "pipeline_stage": current_stage})
+            _clear_cancelled_key(key)
+            _set_book_progress(lecture_id, book_id, "教材自动处理已取消")
+            return
+
+        if current_stage:
+            update_book(
+                _CFG,
+                lecture_id,
+                book_id,
+                {
+                    f"{current_stage}_status": "error",
+                    f"{current_stage}_error": message,
+                },
+            )
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "pipeline_status": "error",
+                "pipeline_error": message,
+                "pipeline_job_id": job_id,
+            },
+        )
+        _update_job(
+            job_id,
+            {
+                "status": "error",
+                "finished_at": int(time.time()),
+                "error": message,
+                "pipeline_stage": current_stage,
+            },
+        )
+        _set_book_progress(lecture_id, book_id, f"自动流程在{current_stage or '启动'}阶段失败：{message[:120]}")
+        log_event(
+            "book_pipeline_error",
+            "教材自动处理流水线失败",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "job_id": job_id,
+                "stage": current_stage,
+            },
+            content=message,
+        )
+
+
+def _run_job_impl(job: Dict[str, Any]) -> None:
     """执行单个教材提炼任务。"""
     lecture_id = str(job.get("lecture_id") or "").strip()
     book_id = str(job.get("book_id") or "").strip()
@@ -918,6 +1393,10 @@ def _run_job(job: Dict[str, Any]) -> None:
     model_name = str(job.get("model_name") or "").strip()
     key = _job_key(lecture_id, book_id)
     now = int(time.time())
+
+    if job_type == "pipeline":
+        _run_pipeline_job(job)
+        return
 
     if _is_cancelled_key(key):
         _update_job(job_id, {"status": "cancelled", "started_at": now, "finished_at": now, "error": "cancelled by admin"})
@@ -1148,8 +1627,6 @@ def _run_job(job: Dict[str, Any]) -> None:
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"summary_chars={int(result.get('summary_chars') or 0)}; chapter_count={int(result.get('chapter_count') or 0)}",
             )
-            # 检查是否所有教材都完成了 summary，如果是则触发大纲生成
-            _check_and_trigger_outline(lecture_id)
         elif job_type == "video":
             from core.video_search import search_and_cache_videos
             lecture = get_lecture(_CFG, lecture_id)
@@ -4629,6 +5106,19 @@ def _reset_book_unrefined(cfg: Mapping[str, Any], lecture_id: str, book_id: str,
             "section_status": "idle",
             "section_error": "",
             "section_model": "",
+            "summary_status": "idle",
+            "summary_error": "",
+            "summary_model": "",
+            "annotation_status": "idle",
+            "annotation_error": "",
+            "annotation_model": "",
+            "video_status": "idle",
+            "video_error": "",
+            "pipeline_status": "idle",
+            "pipeline_error": "",
+            "pipeline_job_id": "",
+            "pipeline_requested_at": 0,
+            "pipeline_finished_at": 0,
             "updated_at": ts,
         },
     )

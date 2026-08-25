@@ -142,57 +142,17 @@
   }
 
   function renderInlineMarkdown(ctx, value) {
-    const escapeHtml = ctx.escapeHtml || ((text) => String(text || ""));
-    let text = escapeHtml(String(value || ""));
-    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
-    text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    return text;
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.renderInline !== "function") {
+      throw new Error("NXLMarkdown.renderInline is required.");
+    }
+    return window.NXLMarkdown.renderInline(value);
   }
 
   function renderMarkdown(ctx, markdown) {
-    const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
-    const text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    const lines = text.split("\n");
-    const rows = [];
-    let paragraph = [];
-    let list = [];
-    const flushParagraph = () => {
-      if (!paragraph.length) return;
-      rows.push(`<p>${renderInlineMarkdown(ctx, paragraph.join(" "))}</p>`);
-      paragraph = [];
-    };
-    const flushList = () => {
-      if (!list.length) return;
-      rows.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(ctx, item)}</li>`).join("")}</ul>`);
-      list = [];
-    };
-    lines.forEach((line) => {
-      const trimmed = String(line || "").trim();
-      if (!trimmed) {
-        flushParagraph();
-        flushList();
-        return;
-      }
-      const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
-      if (heading) {
-        flushParagraph();
-        flushList();
-        const level = Math.min(4, heading[1].length + 1);
-        rows.push(`<h${level}>${renderInlineMarkdown(ctx, heading[2])}</h${level}>`);
-        return;
-      }
-      const bullet = trimmed.match(/^[-*+]\s+(.+)$/) || trimmed.match(/^\d+[.)]\s+(.+)$/);
-      if (bullet) {
-        flushParagraph();
-        list.push(bullet[1]);
-        return;
-      }
-      paragraph.push(trimmed);
-    });
-    flushParagraph();
-    flushList();
-    return rows.join("") || `<p>${escapeHtml(text)}</p>`;
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.render !== "function") {
+      throw new Error("NXLMarkdown.render is required.");
+    }
+    return window.NXLMarkdown.render(markdown);
   }
 
   function formatDate(timestamp) {

@@ -55,6 +55,41 @@ def _normalize_question_options(value: Any) -> List[str]:
     return rows[:4]
 
 
+def validate_question_distribution(
+    items: Any,
+    *,
+    expected_count: int,
+    minimum_choice_count: int,
+    maximum_text_count: int,
+) -> str:
+    """校验模型题目数量、题型配比与选择题选项完整性。"""
+    questions = _normalize_questions(items)
+
+    if len(questions) != expected_count:
+        return f"题目数量必须为 {expected_count}，实际为 {len(questions)}"
+
+    choice_questions = [item for item in questions if item.get("question_type") == "choice"]
+    text_questions = [item for item in questions if item.get("question_type") == "text"]
+
+    if len(choice_questions) < minimum_choice_count:
+        return f"选择题至少需要 {minimum_choice_count} 道，实际为 {len(choice_questions)} 道"
+
+    if len(text_questions) > maximum_text_count:
+        return f"文本题最多允许 {maximum_text_count} 道，实际为 {len(text_questions)} 道"
+
+    invalid_option_indexes = [
+        index
+        for index, item in enumerate(questions, start=1)
+        if item.get("question_type") == "choice" and len(item.get("question_options") or []) != 4
+    ]
+
+    if invalid_option_indexes:
+        indexes = "、".join(str(index) for index in invalid_option_indexes)
+        return f"第 {indexes} 题为选择题，但选项数量不是 4"
+
+    return ""
+
+
 def _parse_range(value: str) -> Tuple[int, int]:
     text = str(value or "").strip()
     if ":" not in text:
@@ -479,6 +514,7 @@ def run_question_with_tools_strict(
                                     "question_title",
                                     "question_difficulty",
                                     "question_type",
+                                    "question_options",
                                     "question_content",
                                     "question_hint",
                                     "question_answer",
@@ -586,8 +622,15 @@ def run_question_with_tools_strict(
                 args = safe_json_obj(str(func.get("arguments") or "{}"))
                 if tool_name == "write":
                     question_items = _normalize_questions(args.get("questions"))
-                    if len(question_items) != 9:
-                        tool_result = {"ok": False, "error": f"questions count must be 9, got {len(question_items)}"}
+                    validation_error = validate_question_distribution(
+                        question_items,
+                        expected_count=9,
+                        minimum_choice_count=6,
+                        maximum_text_count=3,
+                    )
+
+                    if validation_error:
+                        tool_result = {"ok": False, "error": validation_error}
                         log_tool_flow(
                             tool_name=str(tool_name or ""),
                             arguments=args,
@@ -822,6 +865,15 @@ def generate_session_quiz(
 
         # 解析JSON
         questions = _parse_quiz_json(content)
+        validation_error = validate_question_distribution(
+            questions,
+            expected_count=3,
+            minimum_choice_count=2,
+            maximum_text_count=1,
+        )
+
+        if validation_error:
+            raise ValueError(f"Session 测验题目未通过结构校验：{validation_error}")
 
         log_event(
             "session_quiz_done",

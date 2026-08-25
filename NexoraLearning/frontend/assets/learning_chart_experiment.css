@@ -1,0 +1,162 @@
+.lp-lab-chart-experiment {
+    gap: 16px;
+}
+
+.lp-chart-status {
+    flex: 0 0 auto;
+    max-width: min(48%, 420px);
+    overflow: hidden;
+    color: #475467;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lp-chart-prediction {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(280px, auto);
+    align-items: center;
+    gap: 16px;
+    padding: 14px;
+    border: 1px solid #dbeafe;
+    border-radius: 8px;
+    background: #f8fbff;
+}
+
+.lp-chart-prediction-copy {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+}
+
+.lp-chart-prediction-copy span {
+    color: #2563eb;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0;
+}
+
+.lp-chart-prediction-copy strong {
+    color: #111827;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.lp-chart-prediction-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.lp-chart-prediction-options button {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.lp-chart-prediction-options button:hover {
+    border-color: #93c5fd;
+    background: #eff6ff;
+}
+
+.lp-chart-prediction-options button.is-selected {
+    border-color: #2563eb;
+    background: #2563eb;
+    color: #ffffff;
+}
+
+.lp-chart-controls {
+    padding: 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f8fafc;
+}
+
+.lp-chart-controls .lp-lab-controls {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    align-items: end;
+}
+
+.lp-chart-controls .lp-lab-result {
+    min-height: 40px;
+}
+
+.lp-chart-stage {
+    width: 100%;
+    height: 500px;
+    min-height: 420px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.lp-lab-chart-experiment.is-stale .lp-chart-stage {
+    border-color: #bfdbfe;
+}
+
+.lp-lab-chart-experiment.is-invalid .lp-chart-stage {
+    border-color: #fda29b;
+}
+
+.lp-chart-conclusion {
+    display: grid;
+    gap: 4px;
+    padding: 12px 14px;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    background: #fff7f7;
+    color: #b42318;
+}
+
+.lp-chart-conclusion.is-correct {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+}
+
+.lp-chart-conclusion[hidden] {
+    display: none;
+}
+
+.lp-chart-conclusion strong {
+    color: inherit;
+    font-size: 13px;
+}
+
+.lp-chart-conclusion span {
+    color: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+    .lp-chart-prediction {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .lp-chart-status {
+        max-width: 100%;
+        text-align: left;
+        white-space: normal;
+    }
+
+    .lp-chart-prediction-options {
+        justify-content: flex-start;
+    }
+
+    .lp-chart-stage {
+        height: 460px;
+        min-height: 380px;
+    }
+}

@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, List
 
 
 KB_CITATION_RULES = """知识库引用规则：
-- 只有当你的回答结论实际依赖 knowledge_basis_read、knowledge_search_keyword、knowledge_search_vector 等知识库工具返回的内容时，才添加 [kb] 引用标记。
+- 只有当你的回答结论实际依赖 knowledge_basis_read、search 等知识库工具返回的内容时，才添加 [kb] 引用标记。
 - 禁止为了演示引用格式、测试引用能力或随机举例而主动读取用户知识库；用户只问引用格式时，用普通文字或代码块说明格式，不要输出真实 [kb] 引用。
 - 每个 [kb] 引用必须紧跟在它支撑的句子后面，格式为：[kb]知识标题或basis_id,原文连续片段[/kb]。
 - 原文连续片段必须是工具返回内容里的真实连续子串，不能改写、不能拼接、不能跨越不连续位置；优先选择 6 到 80 个字的短片段。
@@ -14,97 +14,57 @@ KB_CITATION_RULES = """知识库引用规则：
 - 默认不要修改用户知识库文档；如需修改，只提出建议并等待用户明确要求。"""
 
 
-default_verbose = """
-你是Nexora接入的大模型，是知识库的AI助手，能够高效、精准地回答用户的问题。
-现在是{{time}}。
-你是由{{provider_name}}提供的{{model_name}}模型，与你对话的用户为{{user}}，权限为{{permission}}。
-请使用 Markdown 回答。
-
-""" + KB_CITATION_RULES + """
-"""
-
-
 default_base = """
 你是 Nexora 的 AI 助手。
 当前模型：{{model_name}}（provider={{provider_name}}），当前用户：{{user}}，权限：{{permission}}。
+默认使用中文和 Markdown 回答，除非用户明确要求其他语言。
+先给结论，再补充必要细节；不编造事实、来源、URL 或工具结果。
+需要核验或执行时，使用当前会话已开放的能力直接处理。
 
-工作原则：
-1. 先给结论，再给必要细节；默认简洁，用户要求详细时再展开。
-2. 不编造事实、不编造 URL；不确定就明确说明并继续检索。
-3. 需要外部信息时，按当前会话可用能力检索（本地知识/搜索/联网）。
-4. 工具调用应直接、果断；不要为了“规划可能的后续工具”而拖延当前步骤。
-5. 对可确认的用户偏好、长期有用信息可写入记忆（短期/长期）。
-6. 默认使用中文回答，除非用户明确要求其他语言。
-
-补充：
-- 短期记忆记录近期事项、偏好、情绪；长期记忆/知识库记录稳定知识。
-""" + KB_CITATION_RULES + """
-- 系统可能自动注入时间；除非用户明确问时间，否则忽略该注入。
-- 回答风格：准确、直接、可执行。使用 Markdown。
-
-"""
-
-nexoracode_prompt = """
-用户现已接入 NexoraCode，你可以调用一些工具执行本地命令、在用户电脑上渲染内容等。
-{{nexoracode_uploaded_prompt}}
-"""
-
-
-system_web_search_enabled = """
-当前会话能力：
-- 用户已启用 Web Search。
-- 当问题具有时效性、需要外部事实核验、需要来源链接或明显依赖联网信息时，优先使用当前会话可用的搜索能力。
-- 若无需联网即可稳定回答，不要为了调用搜索而调用搜索。
-"""
-
-
-system_tools_enabled_auto_select = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Auto(Select)。
-- 若你已明确知道要调用的工具，可直接调用。
-- 如需查看当前轮更完整的工具目录，再调用 runtime_tool_select。
-- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
-"""
-
-system_tools_enabled_auto_off = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Auto(OFF)。
-- 当前默认不开放业务工具；先调用 runtime_tool_enable，启用工具后会自动注入工具内容。
-- 请务必必要时先启用工具，然后获取足够多的信息再回答问题，而不是一味的根据上下文回答问题。
-"""
-
-
-system_tools_enabled_force = """
-当前会话能力：
-- 用户已启用工具调用，模式为 Force。
-- 直接使用当前可用工具完成任务，避免重复或无意义调用。
-- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 
 SYSTEM_PROMPT_SEP = "\n\n"
+knowledge_citation_tool_hint = "\n\n" + KB_CITATION_RULES
+SKILL_INSTRUCTIONS_HEADER = "## Skill Instructions\n以下是当前启用的 Skill 指令；优先级低于基础系统规则，高于普通对话上下文。"
+GLOBAL_SKILL_INSTRUCTIONS_HEADER = "### Global Instructions\n以下 Skill 不绑定具体工具，作为全局行为指令生效。"
+TOOL_SKILL_INSTRUCTIONS_HEADER = "### Tool Skill Instructions\n以下 Skill 只在相关工具或工具流程中生效。"
+GLOBAL_SKILL_BLOCK_TEMPLATE = """<GLOBAL-INSTRUCTION>
+[{{title}}]
+{{content}}
+<END>"""
 TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 [{{title}} 生效于 {{tools}}的工具]
 {{content}}
 <END>"""
 
-USER_PROFILE_MEMORY_TEMPLATE = """[短期记忆-用户画像]
-当你觉得需要更新用户画像的时候调用 memory_short_update 进行更新。
-以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：
-<USER_PROFILE>
-{{profile_text}}
-</USER_PROFILE>
+USER_PROFILE_MEMORY_TEMPLATE = """## 用户画像上下文
+以下材料用于理解用户偏好与背景，回答时可参考但不要逐字复述。
 
-[近期浓缩对话]
-<RECENT_DIALOGUE>
-{{recent_dialogue}}
-</RECENT_DIALOGUE>
-
-[用户知识库列表]
-<USER_KNOWLEDGE>
-{{user_knowledge}}
-</USER_KNOWLEDGE>
+{{profile_blocks}}
 """
+
+
+MEMORY_ANALYSIS_SYSTEM_PROMPT = """你负责判断一轮普通对话是否产生了值得保存的用户记忆。
+
+你必须且只能调用一次工具，不得输出普通文本。
+
+可保存：
+- 用户明确表达、未来多次对话仍有价值的沟通偏好、长期习惯和长期背景。
+- 对接下来数轮对话有帮助的最新状态、近期计划、最近关注点和当前阶段变化。记录这类近期信息时必须保留明确的时间语义，例如“最近”“目前”“本周”或用户给出的日期，不能把它写成永久事实。
+- 已有近期信息发生变化、完成、取消或过期时，应更新或移除旧信息，避免画像长期保留失效状态。
+
+不可保存：
+- 纯一次性操作步骤、项目或 Workspace 内可直接读取的事实、工具输出、日志、推测、密钥和敏感隐私。
+- 助手提出但用户没有确认的信息。
+- 仅对当前回答有用、对后续对话没有帮助的临时细节。
+
+工具选择：
+- 没有新增或需要修改的记忆：调用 memory_keep，reason 必须简短说明不记录的原因，不得复述敏感内容。
+- 新增独立且不冲突的长期或近期记忆：调用 memory_append。
+- 新信息会修正、替换、移除或重组已有记忆：调用 memory_overwrite，content 必须是完整的新用户画像。
+
+不要解释决定，不要在工具调用之外输出任何内容。"""
 
 def _current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -117,6 +77,29 @@ def render_prompt_template(template: Any, **values: Any) -> str:
     for key, value in replacements.items():
         text = text.replace(f"{{{{{key}}}}}", str(value))
     return text
+
+
+def _render_xml_text_block(tag: str, content: Any, attrs: Dict[str, Any] = None) -> str:
+    """仅在正文有内容时渲染 XML 风格上下文块，避免 debug 中出现空标签。"""
+    tag_text = str(tag or "").strip()
+    content_text = str(content or "").strip()
+
+    if not tag_text or not content_text:
+        return ""
+
+    attr_parts: List[str] = []
+
+    if isinstance(attrs, dict):
+
+        for key, value in attrs.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+
+            if key_text and value_text:
+                attr_parts.append(f'{key_text}="{value_text}"')
+
+    attr_text = f" {' '.join(attr_parts)}" if attr_parts else ""
+    return f"<{tag_text}{attr_text}>\n{content_text}\n</{tag_text}>"
 
 longterm_system_prompt = """
 现在是长程任务模式，你必须严格遵守：
@@ -186,26 +169,30 @@ def build_main_system_prompt(
     tool_mode: str = "auto"
 ) -> str:
     parts = [str(base_prompt or "").strip()]
-    if enable_web_search:
-        parts.append(system_web_search_enabled.strip())
-    if enable_tools:
-        mode = str(tool_mode or "").strip().lower()
-        if mode == "force":
-            parts.append(system_tools_enabled_force.strip())
-        elif mode == "auto_off":
-            parts.append(system_tools_enabled_auto_off.strip())
-        else:
-            parts.append(system_tools_enabled_auto_select.strip())
     return render_prompt_template(SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip())
+
+
+def _normalize_skill_tool_list(tools) -> List[str]:
+    if isinstance(tools, (list, tuple, set)):
+        return [str(x).strip() for x in tools if str(x).strip()]
+
+    raw = str(tools or "")
+    return [seg.strip() for seg in raw.replace("，", ",").split(",") if seg.strip()]
+
+
+def build_global_skill_block(title: Any, content: Any) -> str:
+    title_text = str(title or "").strip() or "Unnamed Skill"
+    content_text = str(content or "").strip()
+    if not content_text:
+        return ""
+    out = GLOBAL_SKILL_BLOCK_TEMPLATE.replace("{{title}}", title_text)
+    out = out.replace("{{content}}", content_text)
+    return out.strip()
 
 
 def build_tool_skill_block(title: Any, tools, content: Any) -> str:
     title_text = str(title or "").strip() or "Unnamed Skill"
-    if isinstance(tools, (list, tuple, set)):
-        tool_list = [str(x).strip() for x in tools if str(x).strip()]
-    else:
-        raw = str(tools or "")
-        tool_list = [seg.strip() for seg in raw.replace("，", ",").split(",") if seg.strip()]
+    tool_list = _normalize_skill_tool_list(tools)
     tools_text = ", ".join(tool_list) if tool_list else "any"
     content_text = str(content or "").strip()
     if not content_text:
@@ -216,46 +203,106 @@ def build_tool_skill_block(title: Any, tools, content: Any) -> str:
     return out.strip()
 
 
-def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
-    blocks: List[str] = []
+def _build_skill_instruction_blocks(skills: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    global_blocks: List[str] = []
+    tool_blocks: List[str] = []
+
     for item in (skills or []):
         if not isinstance(item, dict):
             continue
-        block = build_tool_skill_block(
+
+        required_tools = _normalize_skill_tool_list(item.get("required_tools", []))
+        if required_tools:
+            block = build_tool_skill_block(
+                item.get("title", ""),
+                required_tools,
+                item.get("main_content", "")
+            )
+            if block:
+                tool_blocks.append(block)
+            continue
+
+        block = build_global_skill_block(
             item.get("title", ""),
-            item.get("required_tools", []),
             item.get("main_content", "")
         )
         if block:
-            blocks.append(block)
-    return "\n\n".join(blocks).strip()
+            global_blocks.append(block)
+
+    return {
+        "global": global_blocks,
+        "tool": tool_blocks,
+    }
+
+
+def build_skill_instructions_prompt(skills: List[Dict[str, Any]]) -> str:
+    """将启用的 Skill 分成全局指令和工具指令两个段落，作为独立 system message 注入。"""
+    blocks = _build_skill_instruction_blocks(skills)
+    global_blocks = blocks.get("global", [])
+    tool_blocks = blocks.get("tool", [])
+    sections: List[str] = []
+
+    if global_blocks:
+        sections.append(f"{GLOBAL_SKILL_INSTRUCTIONS_HEADER}\n" + "\n\n".join(global_blocks))
+
+    if tool_blocks:
+        sections.append(f"{TOOL_SKILL_INSTRUCTIONS_HEADER}\n" + "\n\n".join(tool_blocks))
+
+    if not sections:
+        return ""
+
+    return f"{SKILL_INSTRUCTIONS_HEADER}\n\n" + "\n\n".join(sections)
+
+
+def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
+    blocks = _build_skill_instruction_blocks(skills)
+    return "\n\n".join(blocks.get("tool", [])).strip()
+
+
+def build_longdoc_skill_catalog_prompt(skills: List[Dict[str, Any]]) -> str:
+    rows: List[str] = []
+
+    for item in (skills or []):
+
+        if not isinstance(item, dict):
+            continue
+
+        sid = str(item.get("id", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        description = str(item.get("description", "") or "").strip()
+        aliases_raw = item.get("aliases", [])
+        aliases = []
+
+        if isinstance(aliases_raw, list):
+            aliases = [str(x).strip() for x in aliases_raw if str(x).strip()]
+
+        if not sid or not title or not description:
+            continue
+
+        alias_sep = " 别名：" if description.endswith(("。", "！", "？", ".", "!", "?")) else "；别名："
+        alias_text = f"{alias_sep}{', '.join(aliases)}" if aliases else ""
+        rows.append(f"- {sid}｜{title}：{description}{alias_text}")
+
+    if not rows:
+        return ""
+
+    return (
+        "## Longdoc Skill Catalog\n"
+        "- 以下长文档默认不注入正文。\n"
+        "- 问题涉及对应产品、流程、配置、操作指南或排障时，先调用 `skill(name=\"文档ID或别名\")` 读取正文。\n"
+        "- 工具未开放时先调用 `runtime_tool_enable`。\n\n"
+        "### Available Longdoc Skills\n"
+        + "\n".join(rows)
+    ).strip()
 
 
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
 RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 
-runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力。"""
-
-runtime_tool_selector_empty = f"""{RUNTIME_HINT_TOOL_TAG}
-本轮可调用工具仅有 runtime_tool_select，但当前可选目录为空。
-"""
-
-runtime_tool_selector_template = f"""{RUNTIME_HINT_TOOL_TAG}
-Auto 模式下可调用 runtime_tool_select 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
-示例：{{"tools":["client_js_exec","knowledge_search_vector"]}}
-可选工具目录（工具名 - 工具概览）：
-{{catalog}}
-"""
-
-select_tools_catalog_empty = "当前没有可选工具目录。"
-select_tools_catalog_marker = "当前可选工具名:"
-select_tools_catalog_suffix = "当前可选工具名: {{names}}。请仅按工具名调用 {{selector_tool}}。"
-select_tools_catalog_suffix_more = "当前可选工具名: {{names}} 等 {{total}} 个。请仅按工具名调用 {{selector_tool}}。"
-
 runtime_tool_not_enabled_template = (
     "错误：工具 '{{function_name}}' 当前未启用。"
     "当前允许工具: {{allowed_names}}。"
-    "如需继续启用/切换工具，请调用 {{selector_tool}}，"
+    "如需继续启用工具，请调用 {{selector_tool}}，"
     "随后在当前回复的后续轮次生效。"
 )
 
@@ -270,11 +317,77 @@ learning_mode_default_prompt = """
 如果用户问题与学习直接无关，也可以正常回答，但应优先尝试连接到学习场景。
 """
 
-learning_context_injection_header = "[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考："
+learning_context_injection_header = "## Learning Context\n当前对话处于 NexoraLearning 学习模式。以下学习上下文是本轮回答的参考材料，请优先参考。"
 
 learning_context_block_template = """<LEARNING_CONTEXT_BLOCK type="{{block_type}}" title="{{block_title}}">
 {{block_content}}
 </LEARNING_CONTEXT_BLOCK>"""
+
+workspace_operating_contract_header = (
+    "## Workspace Operating Contract\n"
+    "当前对话已进入 Workspace 专用工作模式。以下规则用于决定回答视角和任务优先级。"
+)
+
+workspace_operating_contract_template = """<WORKSPACE_CONTRACT workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+- 当前 Workspace 是本轮项目边界；回答优先围绕其目标、资源、记忆和任务。
+- Workspace 自定义提示、记忆、知识库索引和文件只作为本项目材料；在不违背上层规则时按项目规则使用，不扩散为用户全局偏好，不无意义复述。
+- 记忆写入遵循 Memory Write Policy；未获明确授权不主动写入。
+{{workspace_prompt_section}}
+</WORKSPACE_CONTRACT>"""
+
+workspace_prompt_contract_section_template = """
+<WORKSPACE_CUSTOM_INSTRUCTIONS>
+{{prompt_content}}
+</WORKSPACE_CUSTOM_INSTRUCTIONS>"""
+
+workspace_memory_injection_header = "## Workspace Memory Context\n以下是当前 Workspace 自动记忆，请作为项目事实参考。"
+
+workspace_memory_block_template = """<WORKSPACE_MEMORY workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{memory_content}}
+</WORKSPACE_MEMORY>"""
+
+workspace_prompt_injection_header = "## Workspace Custom Instructions\n以下是当前 Workspace 自定义提示词；在不违背上层系统与工具规则的前提下优先遵循。"
+
+workspace_prompt_block_template = """<WORKSPACE_PROMPT workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{prompt_content}}
+</WORKSPACE_PROMPT>"""
+
+workspace_knowledge_injection_header = (
+    "## Workspace Knowledge Index\n"
+    "以下是当前 Workspace 绑定的知识库索引，仅作为资料目录。"
+    "当回答结论依赖知识正文时，先调用 knowledge_basis_read 或知识库搜索工具读取内容。"
+)
+
+workspace_knowledge_block_template = """<WORKSPACE_KNOWLEDGE_INDEX workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{knowledge_rows}}
+</WORKSPACE_KNOWLEDGE_INDEX>"""
+
+workspace_resource_injection_header = "## Workspace Resource Index"
+
+workspace_resource_block_template = """<WORKSPACE_RESOURCE_INDEX>
+{{resource_rows}}
+</WORKSPACE_RESOURCE_INDEX>"""
+
+memory_write_policy_prompt_template = """## Memory Write Policy
+原则：透明、可解释、可拒绝，不静默写入。
+
+触发：
+- 用户明确要求记住、保存偏好、以后按此执行、更新或删除记忆时，才调用记忆工具。
+- 用户只是表达可能有长期价值的信息时，只询问是否记住。
+
+归属：
+- 用户画像：个人偏好、长期背景、沟通风格。
+- Workspace 记忆：项目事实、稳定约束、决策、术语、待办、反复问题。
+
+禁止：
+- 不写入一次性任务、临时日志、工具输出细节、未经确认的推测。
+- 不把项目事实写入用户画像。
+- 敏感信息、密钥、隐私标识必须先获明确同意。
+
+回执：
+- 写入前说明将记录、更新或删除的摘要。
+- 写入后只反馈结果和简短摘要。
+- 用户要求修改或删除已有记忆时，优先编辑或删除原记录，避免追加冲突记忆。"""
 
 learning_mode_tool_nudge_prompt = (
     "当前为 NexoraLearning 学习模式。不要只输出思考。"
@@ -282,14 +395,25 @@ learning_mode_tool_nudge_prompt = (
     "再基于工具结果继续回答用户。"
 )
 
-cloud_file_sandbox_paths_prompt_template = """[系统注入] 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_file_remove 工具操作以下路径：
+cloud_file_sandbox_paths_prompt_template = """## Sandbox Files
+已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
+如果需要在回答中手动引用某个云端文件，只输出 [file]文件路径[/file]，不要手写文件大小、下载链接或摘要，这些信息由系统自动补全。
+
+<SANDBOX_FILES>
 {{paths}}
+</SANDBOX_FILES>
 """
+
+cloud_file_reference_tool_hint = (
+    "当回答需要手动引用用户云端文件时，只输出 [file]文件路径[/file]，"
+    "不要手写文件大小、下载链接或摘要，这些信息由系统自动补全。"
+)
 
 cloud_file_read_tool_description = (
     "读取用户云端文件区文件的模型可读文本内容。上传文件已由系统完成文本提取并存为 UTF-8 文本，"
     "本工具返回转换后的正文，不返回原始二进制内容。三种读取方式三选一：不传范围参数读全文；"
     "传 from_line/to_line 按行读取；传 offset/length 按字符切片读取。单次最多返回500行且10000字符。"
+    + cloud_file_reference_tool_hint
 )
 
 cloud_file_read_truncate_notice_template = (
@@ -312,42 +436,18 @@ conversation_title_prompt_template = """根据以下对话内容，生成一个�
 
 你只用快速输出标题："""
 
-context_compression_prompt_template = """[上下文压缩任务]
+context_compression_prompt_template = """## Context Compression Task
 你需要把给定历史对话压缩为后续回复仍可直接复用的稳定上下文记忆。
-这是一个两段式任务：
-1. 先更新用户短期记忆。
-2. 再输出压缩后的上下文摘要。
 
-注意：最终输出只能是压缩后的上下文摘要，不要输出短期记忆更新过程、工具执行结果或解释过程。
-<HISTORY> 是上下文摘要的主体；<PROFILE_TEXT> 和 <RECENT_DIALOGUE> 只能作为辅助参考，不能替代 <HISTORY>。
+注意：最终输出只能是压缩后的上下文摘要，不要输出解释过程。
+<CONVERSATION_HISTORY> 是上下文摘要的主体；用户画像和近期摘要只能作为辅助参考，不能替代 <CONVERSATION_HISTORY>。
 
 输入信息：
-<PROFILE_TEXT>
-{{profile_text}}
-</PROFILE_TEXT>
+{{auxiliary_context_blocks}}
 
-<RECENT_DIALOGUE>
-{{recent_dialogue}}
-</RECENT_DIALOGUE>
-
-<HISTORY>
+<CONVERSATION_HISTORY>
 {{history_text}}
-</HISTORY>
-
-可用短期记忆工具说明：
-<UPDATE_SHORT>
-{{update_short}}
-</UPDATE_SHORT>
-
-<ADD_SHORT>
-{{add_short}}
-</ADD_SHORT>
-
-短期记忆要求：
-1. 保留用户长期稳定信息，如兴趣、偏好、背景等。
-2. 删除短期临时信息，如近期情绪、近期事项等。
-3. 保留关键数据与已确认约束。
-4. 简短但完整，不要只写笼统总结。
+</CONVERSATION_HISTORY>
 
 上下文压缩输出要求：
 1. 只输出压缩结果，不要解释过程。
@@ -365,15 +465,11 @@ context_compression_prompt_template = """[上下文压缩任务]
 注意力集中
 近期细节
 回答方式
-6. 最大长度约 {{max_chars}} 字；如果 <HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
+6. 最大长度约 {{max_chars}} 字；如果 <CONVERSATION_HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
 7. 对于关键信息直接照搬，有必要保留的上下文直接执行输出进行保留。
 """
 
 context_compression_system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
-
-context_compression_update_short_instruction = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
-
-context_compression_add_short_instruction = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
 
 knowledge_graph_analysis_prompt_template = """分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
 1. 分类方案：将知识点归纳到3-5个主要领域。
@@ -406,20 +502,11 @@ knowledge_category_index_prompt_template = """请为【{{category}}】分类生�
 3. 使用Markdown格式输出，简洁明了"""
 
 
-def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
-    catalog = str(catalog_prompt or "").strip()
-    if not catalog:
-        return runtime_tool_selector_empty.strip()
-    out = runtime_tool_selector_template.replace("{{catalog}}", catalog)
-    out = out.replace("{catalog}", catalog)
-    return out.strip()
-
-
-def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "runtime_tool_select") -> str:
+def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "runtime_tool_enable") -> str:
     fn = str(function_name or "").strip() or "unknown"
     allowed = [str(x).strip() for x in (allowed_names or []) if str(x).strip()]
     allowed_text = ", ".join(allowed) if allowed else "(none)"
-    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
+    selector = str(selector_tool or "runtime_tool_enable").strip() or "runtime_tool_enable"
     out = runtime_tool_not_enabled_template.replace("{{function_name}}", fn)
     out = out.replace("{{allowed_names}}", allowed_text)
     out = out.replace("{{selector_tool}}", selector)
@@ -471,6 +558,282 @@ def build_learning_context_injection_prompt(context_blocks: List[Dict[str, Any]]
     return f"{learning_context_injection_header}\n" + "\n\n".join(rendered_blocks) + "\n"
 
 
+def _workspace_context_text(context: Any, key: str) -> str:
+    if not isinstance(context, dict):
+        return ""
+
+    return str(context.get(key) or "").strip()
+
+
+def _workspace_text_block_content(context: Any, key: str) -> str:
+    if not isinstance(context, dict):
+        return ""
+
+    block = context.get(key)
+
+    if not isinstance(block, dict):
+        return ""
+
+    if block.get("enabled") is False:
+        return ""
+
+    return str(block.get("content") or "").strip()
+
+
+def _workspace_knowledge_documents(context: Any) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_documents = context.get("knowledge_documents", [])
+
+    if not isinstance(raw_documents, list):
+        return []
+
+    return [item for item in raw_documents if isinstance(item, dict)]
+
+
+def _workspace_knowledge_field(value: Any, limit: int = 160) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text
+
+
+def build_workspace_mode_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建兼容旧调用点的 Workspace 模式规则。"""
+    return build_workspace_operating_contract_prompt(workspace_context).strip()
+
+
+def build_workspace_operating_contract_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建 Workspace 独立运行契约，和 Nexora/Learning 通用提示词分层注入。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    prompt_content = _workspace_text_block_content(workspace_context, "workspace_prompt")
+
+    if not workspace_id:
+        return ""
+
+    prompt_section = ""
+
+    if prompt_content:
+        prompt_section = workspace_prompt_contract_section_template.replace("{{prompt_content}}", prompt_content)
+
+    block = workspace_operating_contract_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{workspace_prompt_section}}", prompt_section)
+
+    return f"{workspace_operating_contract_header}\n{block.strip()}\n"
+
+
+def build_workspace_memory_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 自动记忆注入，供模型参考项目事实。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    memory_content = _workspace_text_block_content(workspace_context, "workspace_memory")
+
+    if not workspace_id or not memory_content:
+        return ""
+
+    block = workspace_memory_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{memory_content}}", memory_content)
+
+    return f"{workspace_memory_injection_header}\n{block}\n"
+
+
+def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 自定义提示词注入，放在记忆之后强化项目约束。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    prompt_content = _workspace_text_block_content(workspace_context, "workspace_prompt")
+
+    if not workspace_id or not prompt_content:
+        return ""
+
+    block = workspace_prompt_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{prompt_content}}", prompt_content)
+
+    return f"{workspace_prompt_injection_header}\n{block}\n"
+
+
+def build_workspace_knowledge_injection_prompt(
+    workspace_context: Dict[str, Any],
+    max_items: int = 80
+) -> str:
+    """构建当前 Workspace 绑定知识库索引，不注入知识正文。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    documents = _workspace_knowledge_documents(workspace_context)
+
+    if not workspace_id or not documents:
+        return ""
+
+    limit = max(1, min(200, int(max_items or 80)))
+    rows: List[str] = []
+
+    for item in documents[:limit]:
+        title = _workspace_knowledge_field(item.get("title") or item.get("name"), 160)
+
+        if not title:
+            continue
+
+        meta_parts: List[str] = []
+        knowledge_type = _workspace_knowledge_field(item.get("knowledge_type") or item.get("type") or "basis", 32)
+        basis_id = _workspace_knowledge_field(item.get("basis_id"), 80)
+        added_by = _workspace_knowledge_field(item.get("added_by"), 80)
+        visibility = _workspace_knowledge_field(item.get("visibility"), 32)
+        updated_at = _workspace_knowledge_field(item.get("updated_at"), 64)
+
+        if basis_id:
+            meta_parts.append(f"basis_id={basis_id}")
+
+        if knowledge_type:
+            meta_parts.append(f"type={knowledge_type}")
+
+        if added_by:
+            meta_parts.append(f"added_by={added_by}")
+
+        if visibility:
+            meta_parts.append(f"visibility={visibility}")
+
+        if item.get("pin") is True:
+            meta_parts.append("pinned=true")
+
+        if updated_at:
+            meta_parts.append(f"updated_at={updated_at}")
+
+        meta_text = f" ({'; '.join(meta_parts)})" if meta_parts else ""
+        rows.append(f"- {title}{meta_text}")
+
+    remaining = max(0, len(documents) - limit)
+
+    if remaining > 0:
+        rows.append(f"- ... 还有 {remaining} 条 Workspace 知识索引未列出。")
+
+    if not rows:
+        return ""
+
+    block = workspace_knowledge_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{knowledge_rows}}", "\n".join(rows))
+
+    return f"{workspace_knowledge_injection_header}\n{block}\n"
+
+
+def _workspace_resource_items(context: Any, key: str) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_items = context.get(key, [])
+
+    if not isinstance(raw_items, list):
+        return []
+
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _build_workspace_file_resource_rows(files: List[Dict[str, Any]], limit: int) -> List[str]:
+    rows: List[str] = []
+
+    for item in files[:limit]:
+        file_ref = _workspace_knowledge_field(item.get("file_ref") or item.get("sandbox_path"), 260)
+
+        if not file_ref:
+            continue
+
+        try:
+            size = int(item.get("size") or 0)
+        except Exception:
+            size = 0
+
+        rows.append(f"- file: {file_ref}; size={size}")
+
+    return rows
+
+
+def _build_workspace_task_resource_rows(tasks: List[Dict[str, Any]], limit: int) -> List[str]:
+    rows: List[str] = []
+
+    for item in tasks[:limit]:
+        title = _workspace_knowledge_field(item.get("title"), 160)
+
+        if not title:
+            continue
+
+        meta_parts: List[str] = []
+        status = _workspace_knowledge_field(item.get("status"), 32)
+        start_date = _workspace_knowledge_field(item.get("start_date"), 32)
+        due_date = _workspace_knowledge_field(item.get("due_date"), 32)
+
+        if status:
+            meta_parts.append(f"status={status}")
+
+        if start_date:
+            meta_parts.append(f"from={start_date}")
+
+        if due_date:
+            meta_parts.append(f"to={due_date}")
+
+        if meta_parts:
+            rows.append(f"- task: {title}; {'; '.join(meta_parts)}")
+        else:
+            rows.append(f"- task: {title}")
+
+    return rows
+
+
+def build_workspace_resource_index_prompt(
+    workspace_context: Dict[str, Any],
+    max_files: int = 40,
+    max_tasks: int = 40,
+) -> str:
+    """构建当前 Workspace 的文件与任务轻量索引，不注入正文。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    files = _workspace_resource_items(workspace_context, "workspace_files")
+    tasks = _workspace_resource_items(workspace_context, "workspace_tasks")
+
+    if not workspace_id or (not files and not tasks):
+        return ""
+
+    file_limit = max(1, min(100, int(max_files or 40)))
+    task_limit = max(1, min(100, int(max_tasks or 40)))
+    rows: List[str] = []
+    file_rows = _build_workspace_file_resource_rows(files, file_limit)
+    task_rows = _build_workspace_task_resource_rows(tasks, task_limit)
+
+    if file_rows:
+        rows.append("Files:")
+        rows.extend(file_rows)
+        remaining_files = max(0, len(files) - file_limit)
+
+        if remaining_files > 0:
+            rows.append(f"- ... 还有 {remaining_files} 个 Workspace 文件索引未列出。")
+
+    if task_rows:
+        if rows:
+            rows.append("")
+
+        rows.append("Tasks:")
+        rows.extend(task_rows)
+        remaining_tasks = max(0, len(tasks) - task_limit)
+
+        if remaining_tasks > 0:
+            rows.append(f"- ... 还有 {remaining_tasks} 个 Workspace 任务索引未列出。")
+
+    if not rows:
+        return ""
+
+    block = workspace_resource_block_template.replace("{{resource_rows}}", "\n".join(rows))
+
+    return f"{workspace_resource_injection_header}\n{block}\n"
+
+
+def build_memory_write_policy_prompt(workspace_context: Dict[str, Any] = None) -> str:
+    """构建透明记忆写入规则，避免模型静默写入记忆。"""
+    return memory_write_policy_prompt_template.strip()
+
+
 def build_cloud_file_sandbox_paths_prompt(sandbox_paths: Iterable[str]) -> str:
     paths = [str(path or "").strip() for path in (sandbox_paths or []) if str(path or "").strip()]
 
@@ -520,83 +883,38 @@ def build_user_profile_memory_prompt(
     user_knowledge: str = ""
 ) -> str:
     template = str(USER_PROFILE_MEMORY_TEMPLATE or "")
-    if not any([str(profile_text or "").strip(), str(recent_dialogue or "").strip(), str(user_knowledge or "").strip()]):
+    blocks = [
+        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
+        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
+        _render_xml_text_block("USER_KNOWLEDGE_INDEX", user_knowledge),
+    ]
+    profile_blocks = "\n\n".join([block for block in blocks if block]).strip()
+
+    if not profile_blocks:
         return ""
-    out = template.replace("{{profile_text}}", str(profile_text or "").strip())
-    out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
-    out = out.replace("{{user_knowledge}}", str(user_knowledge or "").strip())
+
+    out = template.replace("{{profile_blocks}}", profile_blocks)
     return out.strip()
+
 
 def build_context_compression_prompt(
     history_text: str,
     *,
     profile_text: str = "",
     recent_dialogue: str = "",
-    update_short: str = "",
-    add_short: str = "",
     max_chars: int = 6000
 ) -> str:
     limit = max(600, min(120000, int(max_chars or 6000)))
+    auxiliary_blocks = [
+        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
+        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
+    ]
+    auxiliary_context = "\n\n".join([block for block in auxiliary_blocks if block]).strip()
+
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
-    out = out.replace("{{profile_text}}", str(profile_text or "").strip())
-    out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
-    out = out.replace("{{update_short}}", str(update_short or "").strip())
-    out = out.replace("{{add_short}}", str(add_short or "").strip())
+    out = out.replace("{{auxiliary_context_blocks}}", auxiliary_context)
     out = out.replace("{{max_chars}}", str(limit))
     return out
-
-
-def _lightweight_tool_overview(desc: Any, max_len: int = 42) -> str:
-    text = re.sub(r"\s+", " ", str(desc or "")).strip()
-    if not text:
-        return "无概览"
-    first = re.split(r"[。.!?；;]", text, maxsplit=1)[0].strip() or text
-    if len(first) > max_len:
-        return first[:max_len].rstrip() + "..."
-    return first
-
-
-def build_select_tools_catalog_prompt(catalog: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
-    for item in (catalog or []):
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "") or "").strip()
-        if not name:
-            continue
-        overview = _lightweight_tool_overview(item.get("description", ""))
-        lines.append(f"- {name} - {overview}")
-    return "\n".join(lines)
-
-
-def build_select_tools_catalog_suffix(
-    names: Iterable[str],
-    max_items: int = 128,
-    selector_tool: str = "runtime_tool_select"
-) -> str:
-    clean_names = [str(x).strip() for x in (names or []) if str(x).strip()]
-    if not clean_names:
-        return select_tools_catalog_empty
-    cap = max(1, int(max_items or 24))
-    shown = clean_names[:cap]
-    joined = ", ".join(shown)
-    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
-    if len(clean_names) > len(shown):
-        out = select_tools_catalog_suffix_more.replace("{{names}}", joined)
-        out = out.replace("{{total}}", str(len(clean_names)))
-        out = out.replace("{{selector_tool}}", selector)
-        return out
-    out = select_tools_catalog_suffix.replace("{{names}}", joined)
-    out = out.replace("{{selector_tool}}", selector)
-    return out
-
-
-def strip_select_tools_catalog_suffix(desc: Any) -> str:
-    text = str(desc or "").strip()
-    marker = select_tools_catalog_marker
-    if marker in text:
-        text = text.split(marker, 1)[0].rstrip(" \n。")
-    return text
 
 
 web_search_default = """
@@ -617,18 +935,3 @@ default = default_base
 others = {
 }
 
-
-experiment_prompts = """
-If you think the task haven't been completed yet:
-Use <title></title> to output the title of your next step, and use <think></think> to output the content of your planning.
-title and think should be used together, and you can use them multiple times in the conversation to continuously plan your next steps.
-content inside title and think will presented to the user as your thought process.
-it should be frank and detailed, and can include your analysis, reasoning, doubts, plans, etc. to show how you think about the task and how you plan to complete it.
-
-
-If you think the task has been completed:
-Use <final></final> to output your final answer to the user.
-
-Things without "final", "title" or "think" tags will not be presented to the user.
-"""
-# 要求

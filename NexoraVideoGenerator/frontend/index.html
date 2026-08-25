@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NexoraVideoGenerator 媒体生成流水线</title>
+    <link rel="stylesheet" href="/assets/video_workbench.css?v=20260703_01">
+</head>
+<body>
+    <main class="video-workbench-shell" id="videoWorkbenchApp">
+        <header class="workbench-topbar">
+            <div class="workbench-title-block">
+                <div class="workbench-kicker">NexoraVideoGenerator</div>
+                <h1>媒体生成流水线</h1>
+            </div>
+
+            <div class="workbench-topbar-actions">
+                <span id="serviceStatus" class="service-status">连接中</span>
+                <button id="refreshProjectsBtn" class="icon-text-button" type="button">
+                    <span data-icon="refresh"></span>
+                    <span>刷新</span>
+                </button>
+            </div>
+        </header>
+
+        <section class="workbench-layout">
+            <aside class="workbench-sidebar">
+                <section class="create-project-panel">
+                    <div class="section-heading">
+                        <div>
+                            <span class="section-kicker">Project</span>
+                            <h2>创建项目</h2>
+                        </div>
+                    </div>
+
+                    <div class="project-form">
+                        <label class="form-field">
+                            <span>标题</span>
+                            <input id="projectTitleInput" type="text" autocomplete="off" placeholder="视频项目标题">
+                        </label>
+
+                        <div class="form-field">
+                            <span>目标时长</span>
+                            <div class="segmented-control" data-option-group="duration">
+                                <button type="button" data-option-value="60">60 秒</button>
+                                <button type="button" data-option-value="90">90 秒</button>
+                                <button type="button" data-option-value="180">180 秒</button>
+                            </div>
+                        </div>
+
+                        <div class="form-field">
+                            <span>呈现方式</span>
+                            <div class="segmented-control" data-option-group="style">
+                                <button type="button" data-option-value="ppt">PPT</button>
+                                <button type="button" data-option-value="storyboard">分镜</button>
+                                <button type="button" data-option-value="case">案例</button>
+                            </div>
+                        </div>
+
+                        <div class="form-field">
+                            <span>画面比例</span>
+                            <div class="segmented-control" data-option-group="ratio">
+                                <button type="button" data-option-value="16:9">16:9</button>
+                                <button type="button" data-option-value="9:16">9:16</button>
+                                <button type="button" data-option-value="1:1">1:1</button>
+                            </div>
+                        </div>
+
+                        <label class="form-field">
+                            <span>上下文 JSON</span>
+                            <textarea id="projectContextInput" spellcheck="false" rows="6">{}</textarea>
+                        </label>
+
+                        <label class="form-field">
+                            <span>补充提示 JSON</span>
+                            <textarea id="projectPromptsInput" spellcheck="false" rows="5">{}</textarea>
+                        </label>
+
+                        <button id="createProjectBtn" class="primary-button" type="button">
+                            <span data-icon="plus"></span>
+                            <span>创建项目</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="project-list-panel">
+                    <div class="section-heading">
+                        <div>
+                            <span class="section-kicker">Queue</span>
+                            <h2>项目列表</h2>
+                        </div>
+                        <span id="projectCount" class="section-count">0 项</span>
+                    </div>
+
+                    <div id="projectList" class="project-list"></div>
+                </section>
+            </aside>
+
+            <section class="workbench-main">
+                <section class="project-detail-panel">
+                    <div id="projectSummary" class="project-summary"></div>
+                    <div id="stageGrid" class="stage-grid"></div>
+                </section>
+
+                <section class="project-lower-grid">
+                    <section class="log-panel">
+                        <div class="section-heading">
+                            <div>
+                                <span class="section-kicker">Logs</span>
+                                <h2>运行日志</h2>
+                            </div>
+                        </div>
+                        <div id="projectLogs" class="project-logs"></div>
+                    </section>
+
+                    <section class="artifact-panel">
+                        <div class="section-heading">
+                            <div>
+                                <span class="section-kicker">Artifacts</span>
+                                <h2>产物文件</h2>
+                            </div>
+                            <div id="fileFilters" class="file-filters"></div>
+                        </div>
+
+                        <div class="artifact-workspace">
+                            <div id="fileList" class="file-list"></div>
+                            <div id="filePreview" class="file-preview"></div>
+                        </div>
+                    </section>
+                </section>
+            </section>
+        </section>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+
+    <script src="/assets/video_workbench.js?v=20260703_01"></script>
+</body>
+</html>

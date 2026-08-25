@@ -1,0 +1,89 @@
+/* knowledge-collab.css — 知识库在线协作(运行时注入到 Toast UI DOM 的样式)
+ *
+ * 注意:光标 overlay / 离线遮罩元素由 src/stream/knowledge-collab.ts 动态创建,
+ * 挂在 Toast UI md 容器内部,无法命中 Vue scoped 选择器,必须全局定义。
+ * 成员条等 Vue 组件内样式见 KnowledgeViewer.vue scoped 段。
+ */
+
+.knowledge-collab-cursor-bookmark {
+    position: relative;
+    display: inline-block;
+    width: 0;
+    height: 1.25em;
+    overflow: visible;
+    vertical-align: text-bottom;
+    pointer-events: none;
+    z-index: 8;
+}
+
+.knowledge-collab-cursor-overlay-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 12;
+}
+
+.knowledge-collab-cursor-overlay-layer .knowledge-collab-cursor-bookmark {
+    position: absolute;
+}
+
+.knowledge-collab-selection-rect {
+    position: absolute;
+    border-radius: 2px;
+    background: var(--knowledge-collab-color, #2563eb);
+    opacity: 0.16;
+    pointer-events: none;
+}
+
+.knowledge-collab-cursor-line {
+    position: absolute;
+    left: 0;
+    top: -0.12em;
+    width: 2px;
+    height: 1.35em;
+    border-radius: 999px;
+    background: var(--knowledge-collab-color, #2563eb);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+
+.knowledge-collab-cursor-label {
+    position: absolute;
+    left: 3px;
+    top: -1.65em;
+    max-width: 160px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--knowledge-collab-color, #2563eb);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.16);
+}
+
+.knowledge-collab-offline-mask {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(241, 245, 249, 0.55);
+    backdrop-filter: grayscale(1) blur(1px);
+    z-index: 30;
+    cursor: not-allowed;
+}
+
+.knowledge-collab-offline-tip {
+    padding: 8px 16px;
+    border: 1px solid #fecaca;
+    border-radius: 999px;
+    background: #fff1f2;
+    color: #991b1b;
+    font-size: 13px;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}

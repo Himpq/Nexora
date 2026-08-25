@@ -2,11 +2,41 @@ import json
 import os
 import time
 import uuid
+import glob
 from typing import Any, Dict, List, Tuple
 
 
 EVENT_DIR = os.path.join(".", "data", "events")
 EVENT_FILE = os.path.join(EVENT_DIR, "mail_events.jsonl")
+MAX_EVENT_FILE_SIZE = 10 * 1024 * 1024
+MAX_EVENT_FILES = 5
+
+
+def _rotate_if_needed():
+    if not os.path.exists(EVENT_FILE):
+        return
+    if os.path.getsize(EVENT_FILE) < MAX_EVENT_FILE_SIZE:
+        return
+
+    base, ext = os.path.splitext(EVENT_FILE)
+    existing = sorted(glob.glob(f"{base}.*{ext}"), reverse=True)
+    for old in existing:
+        try:
+            head, tail = os.path.splitext(old)
+            num = int(tail.split('.')[-1]) + 1
+            new_name = f"{head}.{num}{ext}"
+            if num <= MAX_EVENT_FILES:
+                os.rename(old, new_name)
+        except Exception:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+
+    try:
+        os.rename(EVENT_FILE, f"{base}.1{ext}")
+    except Exception:
+        pass
 
 
 def _normalize_text(value: Any) -> str:
@@ -53,6 +83,7 @@ def append_mail_event(action: str, folder: str, user_group: Any, mail_info: Dict
     }
 
     os.makedirs(EVENT_DIR, exist_ok=True)
+    _rotate_if_needed()
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
     with open(EVENT_FILE, "ab") as f:

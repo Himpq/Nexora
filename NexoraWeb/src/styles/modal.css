@@ -1,0 +1,198 @@
+/**
+ * modal.css — 现代窗口组件样式(General Design Development Package)
+ *
+ * 设计语言:
+ *   - Modern:柔和阴影 + 大圆角 + 背景模糊
+ *   - Simplify:清晰层级(遮罩 → 卡片 → 头部/正文/底部),减少视觉噪音
+ *   - Interactive:入场/出场动画、hover/active 反馈、键盘交互(Esc 关闭)
+ *
+ * 统一由 ui/Modal.vue 与 stores/confirm.ts 使用,禁止组件各自写弹窗样式。
+ */
+
+/* ---------- 遮罩 ---------- */
+.g-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal, 4000);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+/* ---------- 卡片 ---------- */
+.g-modal {
+    display: flex;
+    flex-direction: column;
+    width: 440px;
+    max-height: min(560px, calc(100vh - 40px));
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
+    overflow: hidden;
+    transform-origin: center;
+}
+
+.g-modal-sm {
+    width: 360px;
+    max-height: min(420px, calc(100vh - 40px));
+}
+
+.g-modal-lg {
+    width: 640px;
+    max-height: min(600px, calc(100vh - 40px));
+}
+
+/* ---------- 头部 ---------- */
+.g-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px 12px;
+    flex-shrink: 0;
+}
+
+.g-modal-head h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.g-modal-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.g-modal-close:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+/* ---------- 正文 ---------- */
+.g-modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 4px 20px 16px;
+    overflow-y: auto;
+    font-size: 14px;
+    color: #334155;
+    line-height: 1.6;
+}
+
+/* ---------- 底部 ---------- */
+.g-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 20px 16px;
+    border-top: 1px solid #f1f5f9;
+    flex-shrink: 0;
+}
+
+/* ---------- 按钮(通用,统一白底描边——Nexora 克制风格) ---------- */
+.g-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    padding: 8px 16px;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.g-btn:active {
+    transform: scale(0.97);
+}
+
+.g-btn-primary {
+    background: #ffffff;
+    color: #111111;
+    border: 1px solid #111111;
+}
+
+.g-btn-primary:hover {
+    background: #f5f5f5;
+}
+
+.g-btn-ghost {
+    background: #ffffff;
+    color: #5a5a5a;
+    border: 1px solid #d9d9d9;
+}
+
+.g-btn-ghost:hover {
+    background: #f5f5f5;
+    color: #111111;
+    border-color: #111111;
+}
+
+.g-btn-danger {
+    background: #ffffff;
+    color: #c0392b;
+    border: 1px solid #e0a0a0;
+}
+
+.g-btn-danger:hover {
+    background: #fdecec;
+}
+
+/* GDDP 弹窗内 btn-* 按钮语言已上收全局层 buttons.css(单一按钮体系,
+ * Teleport 到 body 的弹窗同样生效),此处不再重复定义。 */
+
+/* ---------- 输入(通用) ---------- */
+.g-input {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #0f172a;
+    background: #fff;
+    outline: none;
+    transition: all 0.15s ease;
+    box-sizing: border-box;
+}
+
+.g-input:focus {
+    border-color: #94a3b8;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}
+
+/* ---------- 动画 ---------- */
+.g-modal-enter-active,
+.g-modal-leave-active {
+    transition: opacity 0.2s ease;
+}
+
+.g-modal-enter-active .g-modal,
+.g-modal-leave-active .g-modal {
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.g-modal-enter-from,
+.g-modal-leave-to {
+    opacity: 0;
+}
+
+.g-modal-enter-from .g-modal,
+.g-modal-leave-to .g-modal {
+    transform: scale(0.96) translateY(8px);
+}

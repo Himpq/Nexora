@@ -9,9 +9,11 @@
     <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_13">
+    <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
     <script src="/static/vendor/marked/marked.min.js"></script>
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
     <script src="/static/js/secure_render.js"></script>
+    <script src="/static/js/knowledge_collab_client.js?v=20260708_06"></script>
     <style>
         :root {
             --bg: #f3f4f6;
@@ -198,7 +200,13 @@
                 <h1 class="public-edit-title">{{ title | e }}</h1>
                 <div class="public-edit-meta">由 @{{ username | e }} 开启协作 · `Ctrl+S` 可立即同步</div>
             </div>
-            <div id="saveStatus" class="status-badge status-ok">已同步</div>
+            <div>
+                <div id="saveStatus" class="status-badge status-ok">已同步</div>
+                <div class="knowledge-collab-strip public-edit-collab">
+                    <input id="publicCollabNameInput" class="knowledge-collab-name-input" type="text" maxlength="24" placeholder="匿名协作者">
+                    <div id="publicCollabMembers" class="knowledge-collab-members"></div>
+                </div>
+            </div>
         </header>
         <section class="public-editor-wrap">
             <div id="knowledgeViewer">
@@ -234,6 +242,9 @@
     <script>
         const OWNER_USERNAME = {{ username | tojson }};
         const SHARE_ID = {{ share_id | tojson }};
+        const INITIAL_CONTENT_REVISION = {{ content_revision | default('') | tojson }};
+        const INITIAL_CONTENT_HASH = {{ content_hash | default('') | tojson }};
+        const INITIAL_UPDATED_AT = {{ updated_at | default(0) | tojson }};
 
         function rewriteHtmlFragmentLinksToNewTab(html) {
             const div = document.createElement('div');
@@ -308,9 +319,57 @@
         let toastEditor = null;
         let saveTimer = null;
         let savingNow = false;
+        let queuedSaveAfterCurrent = false;
+        let queuedForceSaveAfterCurrent = false;
+        let applyingRemoteUpdate = false;
+        let pendingRemoteKnowledgePayload = null;
         let lastValue = '';
         let lastSyncedValue = ''; // 上次从服务端拉取的原始内容，用于三方合并
+        let lastContentRevision = String(INITIAL_CONTENT_REVISION || '').trim();
+        let lastContentHash = String(INITIAL_CONTENT_HASH || '').trim();
+        let lastUpdatedAt = Number(INITIAL_UPDATED_AT || 0);
         let currentMode = 'split'; // 'edit', 'preview', 'split'
+        let publicKnowledgeSocket = null;
+        let publicKnowledgeReconnectTimer = null;
+        let publicKnowledgePingTimer = null;
+        let publicKnowledgeSocketClosedByServer = false;
+        let publicKnowledgeCollab = null;
+        let publicKnowledgeCursorOverlay = null;
+        let publicCollabOfflineMask = null;
+        let publicPresenceToastTimer = 0;
+        const PUBLIC_KNOWLEDGE_RECONNECT_MS = 1800;
+        const PUBLIC_KNOWLEDGE_PING_MS = 25000;
+        const PUBLIC_KNOWLEDGE_AUTOSAVE_MS = 800;
+        const PUBLIC_KNOWLEDGE_REMOTE_MERGE_SAVE_MS = 650;
+
+        function isPublicKnowledgeSyncDebugEnabled() {
+            try {
+                return window.__NEXORA_PUBLIC_KNOWLEDGE_SYNC_DEBUG === true
+                    || window.localStorage.getItem('nexora.publicKnowledgeSyncDebug') === '1';
+            } catch (_) {
+                return window.__NEXORA_PUBLIC_KNOWLEDGE_SYNC_DEBUG === true;
+            }
+        }
+
+        function logPublicKnowledgeSync(message, details = {}) {
+            if (!isPublicKnowledgeSyncDebugEnabled()) {
+                return;
+            }
+
+            console.debug('[PublicKnowledgeSync]', message, details);
+        }
+
+        function warnPublicKnowledgeSync(message, details = {}) {
+            console.warn('[PublicKnowledgeSync]', message, details);
+        }
+
+        function schedulePublicKnowledgeSave(delay = PUBLIC_KNOWLEDGE_AUTOSAVE_MS) {
+            if (saveTimer) {
+                clearTimeout(saveTimer);
+            }
+
+            saveTimer = setTimeout(() => saveData(false), Math.max(0, Number(delay || 0)));
+        }
 
         async function uploadImageForEditor(file, onSuccess, onError) {
             try {
@@ -339,10 +398,10 @@
         // ── 行级三方合并 ──
         // base: 上次同步的服务端内容, local: 当前编辑器内容, remote: 新拉取的服务端内容
         function mergeContent(base, local, remote) {
-            if (!remote) return local;
-            if (!base || base === remote) return remote;
+            if (remote === local) return remote;
             if (local === remote) return remote;
             if (local === base) return remote;
+            if (!base || base === remote) return local;
 
             const baseLines = base.split('\n');
             const localLines = local.split('\n');
@@ -380,26 +439,452 @@
             return merged.join('\n');
         }
 
+        function updateContentVersion(payload, syncedValue = null) {
+            const data = payload && typeof payload === 'object' ? payload : {};
+            lastContentRevision = String(data.content_revision || data.contentRevision || lastContentRevision || '').trim();
+            lastContentHash = String(data.content_hash || data.contentHash || lastContentHash || '').trim();
+            lastUpdatedAt = Number(data.updated_at || data.updatedAt || lastUpdatedAt || 0);
+
+            if (syncedValue !== null) {
+                lastSyncedValue = String(syncedValue || '');
+            }
+        }
+
+        function capturePublicEditorViewportSnapshot() {
+            const selectors = [
+                '#editor .toastui-editor-md-container',
+                '#editor .toastui-editor-md-preview',
+                '#editor .toastui-editor-ww-container',
+                '#editor .ProseMirror',
+                '#editor .toastui-editor-contents',
+                '#editor .toastui-editor-defaultUI',
+                '#editor'
+            ];
+            const nodes = selectors
+                .map((selector) => {
+                    const node = document.querySelector(selector);
+
+                    if (!node) return null;
+
+                    return {
+                        selector,
+                        top: Math.max(0, Number(node.scrollTop || 0)),
+                        left: Math.max(0, Number(node.scrollLeft || 0))
+                    };
+                })
+                .filter(Boolean);
+
+            return {
+                cursor: getEditorLineCol(),
+                nodes,
+                windowX: Number(window.scrollX || 0),
+                windowY: Number(window.scrollY || window.pageYOffset || 0)
+            };
+        }
+
+        function restorePublicEditorViewportSnapshot(snapshot) {
+            const data = snapshot && typeof snapshot === 'object' ? snapshot : null;
+
+            if (!data) return;
+
+            const apply = () => {
+                if (data.cursor) restoreEditorLineCol(data.cursor);
+
+                (Array.isArray(data.nodes) ? data.nodes : []).forEach((item) => {
+                    const node = document.querySelector(item.selector);
+
+                    if (!node) return;
+
+                    node.scrollTop = Math.max(0, Number(item.top || 0));
+                    node.scrollLeft = Math.max(0, Number(item.left || 0));
+                });
+
+                window.scrollTo(Number(data.windowX || 0), Number(data.windowY || 0));
+            };
+
+            apply();
+
+            [0, 80].forEach((delay) => {
+                setTimeout(() => requestAnimationFrame(apply), delay);
+            });
+        }
+
+        function getPublicToastCodeMirror() {
+            try {
+                if (toastEditor && toastEditor.mdEditor && toastEditor.mdEditor.cm) {
+                    return toastEditor.mdEditor.cm;
+                }
+            } catch (_) {}
+
+            try {
+                if (toastEditor && typeof toastEditor.getCurrentModeEditor === 'function') {
+                    const modeEditor = toastEditor.getCurrentModeEditor();
+
+                    if (modeEditor && modeEditor.cm) {
+                        return modeEditor.cm;
+                    }
+                }
+            } catch (_) {}
+
+            return null;
+        }
+
+        function publicOffsetToCodeMirrorPos(text, offset) {
+            const source = String(text || '');
+            const safeOffset = Math.max(0, Math.min(source.length, Number(offset || 0)));
+            const before = source.slice(0, safeOffset);
+            const lines = before.split('\n');
+
+            return {
+                line: Math.max(0, lines.length - 1),
+                ch: Math.max(0, String(lines[lines.length - 1] || '').length)
+            };
+        }
+
+        function applyPublicCollabText(value, operation) {
+            const nextValue = String(value || '');
+            const op = operation && typeof operation === 'object' ? operation : null;
+
+            if (
+                op
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.applyToastOperation === 'function'
+                && window.NexoraKnowledgeCollab.applyToastOperation(toastEditor, op, nextValue)
+            ) {
+                return true;
+            }
+
+            const cm = getPublicToastCodeMirror();
+
+            if (op && cm && typeof cm.replaceRange === 'function') {
+                const current = toastEditor ? String(toastEditor.getMarkdown() || '') : '';
+                const start = Math.max(0, Math.min(current.length, Number(op.start || 0)));
+                const deleteCount = Math.max(0, Number(op.delete_count || 0));
+                const end = Math.max(start, Math.min(current.length, start + deleteCount));
+                const from = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(start) : publicOffsetToCodeMirrorPos(current, start);
+                const to = typeof cm.posFromIndex === 'function' ? cm.posFromIndex(end) : publicOffsetToCodeMirrorPos(current, end);
+
+                cm.replaceRange(String(op.insert_text || ''), from, to, '+remote');
+
+                if (String(toastEditor.getMarkdown() || '') === nextValue) {
+                    return true;
+                }
+            }
+
+            toastEditor.setMarkdown(nextValue);
+            return false;
+        }
+
+        function clearPublicCollabCursorMarkers() {
+            if (publicKnowledgeCursorOverlay) {
+                publicKnowledgeCursorOverlay.clear();
+            }
+        }
+
+        function getPublicCollabCursorColor(clientId) {
+            const palette = ['#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#0891b2', '#ea580c', '#be123c'];
+            const key = String(clientId || '');
+            let hash = 0;
+
+            for (let i = 0; i < key.length; i += 1) {
+                hash = ((hash * 31) + key.charCodeAt(i)) >>> 0;
+            }
+
+            return palette[hash % palette.length];
+        }
+
+        function getPublicCollabCursorOverlay() {
+            if (
+                !publicKnowledgeCursorOverlay
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createToastCursorOverlay === 'function'
+            ) {
+                publicKnowledgeCursorOverlay = window.NexoraKnowledgeCollab.createToastCursorOverlay({
+                    getEditor: () => toastEditor,
+                    getHost: () => (
+                        document.querySelector('#editor .toastui-editor-md-container')
+                        || document.querySelector('#editor')
+                    ),
+                    getColor: getPublicCollabCursorColor,
+                    getName: (member) => (
+                        String(member.display_name || (member.role === 'owner' ? 'Owner' : '匿名协作者')).trim() || '协作者'
+                    ),
+                });
+            }
+
+            return publicKnowledgeCursorOverlay;
+        }
+
+        function renderPublicCollabCursors(members, selfClientId) {
+            const overlay = getPublicCollabCursorOverlay();
+
+            if (overlay) {
+                overlay.render(members, selfClientId);
+            }
+        }
+
+        function applyRemoteKnowledgePayload(payload, statusText = '已同步（远端更新）') {
+            const server = payload && payload.server && typeof payload.server === 'object' ? payload.server : payload;
+            const remote = String((server && server.content) || '');
+
+            if (!toastEditor) return false;
+
+            const local = toastEditor.getMarkdown();
+            const base = lastSyncedValue;
+
+            if (remote === local) {
+                updateContentVersion(server, remote);
+                lastValue = remote;
+                logPublicKnowledgeSync('remote payload already equals local editor', {
+                    revision: server && (server.content_revision || server.contentRevision) || '',
+                    hash: server && server.content_hash ? String(server.content_hash).slice(0, 12) : '',
+                    length: remote.length
+                });
+                return true;
+            }
+
+            const merged = mergeContent(base, local, remote);
+            const remoteChangedAgainstBase = remote !== String(base || '');
+
+            if (merged === local) {
+                updateContentVersion(server, remote);
+                lastValue = remote;
+                logPublicKnowledgeSync('remote payload kept local editor content', {
+                    remoteChangedAgainstBase,
+                    localLength: local.length,
+                    remoteLength: remote.length,
+                    revision: server && (server.content_revision || server.contentRevision) || ''
+                });
+
+                if (remoteChangedAgainstBase) {
+                    setSaveStatus('ok', statusText);
+                    schedulePublicKnowledgeSave(PUBLIC_KNOWLEDGE_REMOTE_MERGE_SAVE_MS);
+                }
+
+                return true;
+            }
+
+            const viewportSnapshot = capturePublicEditorViewportSnapshot();
+            applyingRemoteUpdate = true;
+
+            if (saveTimer) {
+                clearTimeout(saveTimer);
+                saveTimer = null;
+            }
+
+            try {
+                toastEditor.setMarkdown(merged);
+                updateContentVersion(server, remote);
+                lastValue = remote;
+                restorePublicEditorViewportSnapshot(viewportSnapshot);
+                logPublicKnowledgeSync('remote payload rewrote editor content', {
+                    localLength: local.length,
+                    remoteLength: remote.length,
+                    mergedLength: merged.length,
+                    revision: server && (server.content_revision || server.contentRevision) || ''
+                });
+
+                if (merged !== remote) {
+                    schedulePublicKnowledgeSave(PUBLIC_KNOWLEDGE_REMOTE_MERGE_SAVE_MS);
+                }
+            } finally {
+                setTimeout(() => {
+                    applyingRemoteUpdate = false;
+                }, 240);
+            }
+
+            setSaveStatus('ok', statusText);
+            return true;
+        }
+
+        function queueRemoteKnowledgePayload(payload, statusText) {
+            pendingRemoteKnowledgePayload = {
+                mode: Object.prototype.hasOwnProperty.call(payload || {}, 'content') ? 'apply' : 'refresh',
+                payload: payload && typeof payload === 'object' ? payload : {},
+                statusText: String(statusText || '已同步（远端更新）')
+            };
+        }
+
+        function flushPendingRemoteKnowledgePayload() {
+            const pending = pendingRemoteKnowledgePayload;
+
+            pendingRemoteKnowledgePayload = null;
+
+            if (!pending || !pending.payload) return false;
+
+            if (pending.mode === 'refresh') {
+                void refreshRemoteKnowledgeFromHttp(pending.statusText);
+                return true;
+            }
+
+            return applyRemoteKnowledgePayload(pending.payload, pending.statusText);
+        }
+
+        function getPublicKnowledgeWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return `${protocol}//${window.location.host}/ws/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`;
+        }
+
+        function sendPublicKnowledgeWsMessage(message) {
+            if (!publicKnowledgeSocket || publicKnowledgeSocket.readyState !== WebSocket.OPEN) return false;
+
+            publicKnowledgeSocket.send(JSON.stringify(message && typeof message === 'object' ? message : {}));
+            return true;
+        }
+
+        async function refreshRemoteKnowledgeFromHttp(statusText = '已同步（远端更新）') {
+            if (!toastEditor || savingNow) return false;
+
+            try {
+                const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`);
+                const data = await res.json().catch(() => ({}));
+
+                if (!res.ok || !data || !data.success) return false;
+
+                return applyRemoteKnowledgePayload(data, statusText);
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function handlePublicKnowledgeSocketMessage(payload) {
+            const msgType = String(payload && payload.type ? payload.type : '').trim();
+
+            if (msgType === 'public_knowledge_ready') {
+                setSaveStatus('ok', '实时同步已连接');
+                sendPublicKnowledgeWsMessage({ type: 'sync_knowledge' });
+                return;
+            }
+
+            if (msgType === 'knowledge_state' || msgType === 'knowledge_changed') {
+                const remoteRevision = String((payload && payload.content_revision) || '').trim();
+                const remoteHash = String((payload && payload.content_hash) || '').trim();
+                const hasPayloadContent = Object.prototype.hasOwnProperty.call(payload, 'content');
+
+                logPublicKnowledgeSync('received websocket payload', {
+                    type: msgType,
+                    remoteRevision,
+                    localRevision: lastContentRevision,
+                    remoteHash: remoteHash ? remoteHash.slice(0, 12) : '',
+                    localHash: lastContentHash ? lastContentHash.slice(0, 12) : '',
+                    hasPayloadContent,
+                    savingNow,
+                    pendingRemote: !!pendingRemoteKnowledgePayload
+                });
+
+                if (
+                    remoteRevision
+                    && remoteRevision === lastContentRevision
+                    && (!remoteHash || remoteHash === lastContentHash)
+                ) {
+                    return;
+                }
+
+                const statusText = msgType === 'knowledge_state' ? '已校验最新版本' : '已同步（远端更新）';
+
+                if (savingNow) {
+                    queueRemoteKnowledgePayload(payload, statusText);
+                    return;
+                }
+
+                if (hasPayloadContent) {
+                    applyRemoteKnowledgePayload(payload, statusText);
+                    return;
+                }
+
+                void refreshRemoteKnowledgeFromHttp(statusText);
+                return;
+            }
+
+            if (msgType === 'public_knowledge_closed') {
+                publicKnowledgeSocketClosedByServer = true;
+                clearPublicKnowledgeSocketTimers();
+                if (publicKnowledgeSocket) {
+                    publicKnowledgeSocket.close();
+                    publicKnowledgeSocket = null;
+                }
+                setSaveStatus('error', String((payload && payload.message) || '协作链接已关闭'));
+            }
+        }
+
+        function clearPublicKnowledgeSocketTimers() {
+            if (publicKnowledgeReconnectTimer) {
+                clearTimeout(publicKnowledgeReconnectTimer);
+                publicKnowledgeReconnectTimer = null;
+            }
+
+            if (publicKnowledgePingTimer) {
+                clearInterval(publicKnowledgePingTimer);
+                publicKnowledgePingTimer = null;
+            }
+        }
+
+        function schedulePublicKnowledgeReconnect() {
+            if (publicKnowledgeSocketClosedByServer) return;
+            if (publicKnowledgeReconnectTimer) return;
+
+            publicKnowledgeReconnectTimer = setTimeout(() => {
+                publicKnowledgeReconnectTimer = null;
+                startPublicKnowledgeSocket();
+            }, PUBLIC_KNOWLEDGE_RECONNECT_MS);
+        }
+
+        function startPublicKnowledgePing() {
+            if (publicKnowledgePingTimer) clearInterval(publicKnowledgePingTimer);
+
+            publicKnowledgePingTimer = setInterval(() => {
+                sendPublicKnowledgeWsMessage({
+                    type: 'ping',
+                    ts: Date.now()
+                });
+            }, PUBLIC_KNOWLEDGE_PING_MS);
+        }
+
+        function startPublicKnowledgeSocket() {
+            if (publicKnowledgeSocketClosedByServer) return;
+            if (publicKnowledgeSocket && publicKnowledgeSocket.readyState === WebSocket.OPEN) return;
+
+            clearPublicKnowledgeSocketTimers();
+
+            try {
+                publicKnowledgeSocket = new WebSocket(getPublicKnowledgeWsUrl());
+            } catch (e) {
+                setSaveStatus('error', '实时同步通道启动失败');
+                schedulePublicKnowledgeReconnect();
+                return;
+            }
+
+            publicKnowledgeSocket.addEventListener('open', () => {
+                setSaveStatus('ok', '实时同步连接中');
+                startPublicKnowledgePing();
+            });
+
+            publicKnowledgeSocket.addEventListener('message', (event) => {
+                try {
+                    handlePublicKnowledgeSocketMessage(JSON.parse(event.data || '{}'));
+                } catch (_) {}
+            });
+
+            publicKnowledgeSocket.addEventListener('close', () => {
+                publicKnowledgeSocket = null;
+                clearPublicKnowledgeSocketTimers();
+                if (publicKnowledgeSocketClosedByServer) return;
+                setSaveStatus('error', '实时同步断开，正在重连');
+                schedulePublicKnowledgeReconnect();
+            });
+
+            publicKnowledgeSocket.addEventListener('error', () => {
+                setSaveStatus('error', '实时同步通道异常');
+            });
+        }
+
         // ── 光标位置辅助 ──
         function getEditorLineCol() {
             try {
-                if (!toastEditor) return null;
+                if (!toastEditor || !window.NexoraKnowledgeCollab) return null;
                 const md = toastEditor.getMarkdown();
-                let offset = null;
-                // 优先 ToastUI getSelection
-                if (typeof toastEditor.getSelection === 'function') {
-                    const sel = toastEditor.getSelection();
-                    if (Array.isArray(sel) && typeof sel[0] === 'number') offset = sel[0];
-                }
-                // fallback: ProseMirror view
-                if (offset == null) {
-                    const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
-                    if (view && view.state) offset = view.state.selection.from;
-                }
-                if (offset == null) return null;
-                const before = md.slice(0, offset);
-                const lines = before.split('\n');
-                return { line: lines.length - 1, col: (lines[lines.length - 1] || '').length };
+                const offset = window.NexoraKnowledgeCollab.getToastCursorOffset(toastEditor);
+                return window.NexoraKnowledgeCollab.offsetToLineCol(md, offset);
             } catch (_) { return null; }
         }
 
@@ -413,19 +898,15 @@
                 for (let i = 0; i < line; i++) offset += allLines[i].length + 1;
                 offset += Math.min(lc.col, (allLines[line] || '').length);
 
-                // ProseMirror view（ToastUI markdown 模式的底层编辑器）
-                const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
-                if (view && view.state) {
-                    const docSize = view.state.doc.content.size;
-                    const pos = Math.min(Math.max(1, offset + 1), docSize);
-                    try {
-                        const $pos = view.state.doc.resolve(pos);
-                        const sel = view.state.selection.constructor.near($pos);
-                        view.dispatch(view.state.tr.setSelection(sel));
-                        view.focus();
-                        return;
-                    } catch (_) {}
+                // ProseMirror view（ToastUI markdown 模式的底层编辑器），不聚焦、不滚动
+                if (
+                    window.NexoraKnowledgeCollab
+                    && typeof window.NexoraKnowledgeCollab.setToastCursorOffset === 'function'
+                    && window.NexoraKnowledgeCollab.setToastCursorOffset(toastEditor, offset)
+                ) {
+                    return;
                 }
+
                 // fallback: ToastUI API
                 if (typeof toastEditor.setSelection === 'function') {
                     toastEditor.setSelection(offset, offset);
@@ -433,23 +914,288 @@
             } catch (_) {}
         }
 
+        function getPublicEditorCursorOffset() {
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(toastEditor).head;
+            }
+
+            return 0;
+        }
+
+        function getPublicEditorCursorAnchor() {
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.getToastSelectionOffsets === 'function'
+            ) {
+                return window.NexoraKnowledgeCollab.getToastSelectionOffsets(toastEditor).anchor;
+            }
+
+            return 0;
+        }
+
+        function getPublicCollabOfflineMask() {
+            if (
+                !publicCollabOfflineMask
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.createOfflineMask === 'function'
+            ) {
+                publicCollabOfflineMask = window.NexoraKnowledgeCollab.createOfflineMask(() => (
+                    document.querySelector('#editor .toastui-editor-md-container')
+                    || document.querySelector('#editor')
+                ));
+            }
+
+            return publicCollabOfflineMask;
+        }
+
+        function showPublicPresenceToast(text) {
+            let toast = document.querySelector('.knowledge-collab-presence-toast');
+
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.className = 'knowledge-collab-presence-toast';
+                document.body.appendChild(toast);
+            }
+
+            toast.textContent = String(text || '');
+            toast.classList.add('is-visible');
+
+            if (publicPresenceToastTimer) {
+                clearTimeout(publicPresenceToastTimer);
+            }
+
+            publicPresenceToastTimer = setTimeout(() => {
+                toast.classList.remove('is-visible');
+            }, 2600);
+        }
+
+        function setPublicEditorCursorOffset(cursor) {
+            const data = cursor && typeof cursor === 'object' ? cursor : {};
+
+            if (
+                toastEditor
+                && window.NexoraKnowledgeCollab
+                && typeof window.NexoraKnowledgeCollab.setToastCursorOffset === 'function'
+                && window.NexoraKnowledgeCollab.setToastCursorOffset(toastEditor, Number(data.offset || 0))
+            ) {
+                return;
+            }
+
+            restoreEditorLineCol({
+                line: Number(data.line || 0),
+                col: Number(data.col || 0)
+            });
+        }
+
+        function getPublicCollabDisplayName() {
+            const input = document.getElementById('publicCollabNameInput');
+            const value = String((input && input.value) || '').trim();
+
+            return value || '匿名协作者';
+        }
+
+        function bindPublicCollabNameInput() {
+            const input = document.getElementById('publicCollabNameInput');
+
+            if (!input || input.dataset.bound === '1') return;
+
+            input.dataset.bound = '1';
+
+            try {
+                const savedName = String(window.localStorage.getItem('nexora.publicKnowledgeCollabName') || '').trim();
+
+                if (savedName) {
+                    input.value = savedName;
+                }
+            } catch (_) {}
+
+            input.addEventListener('change', () => {
+                try {
+                    window.localStorage.setItem('nexora.publicKnowledgeCollabName', getPublicCollabDisplayName());
+                } catch (_) {}
+
+                if (publicKnowledgeCollab) {
+                    publicKnowledgeCollab.stop();
+                    publicKnowledgeCollab = null;
+                    clearPublicCollabCursorMarkers();
+                    startPublicKnowledgeCollab();
+                }
+            });
+        }
+
+        function renderPublicCollabMembers(members, selfClientId) {
+            const host = document.getElementById('publicCollabMembers');
+
+            if (!host) return;
+
+            const list = Array.isArray(members) ? members : [];
+
+            host.innerHTML = list.map((member) => {
+                const name = String(member.display_name || (member.role === 'owner' ? 'Owner' : '匿名协作者')).trim();
+                const cursor = member.cursor && typeof member.cursor === 'object' ? member.cursor : null;
+                const cursorText = cursor ? `L${Number(cursor.line || 0) + 1}:C${Number(cursor.col || 0) + 1}` : '在线';
+                const isSelf = String(member.client_id || '') === String(selfClientId || '');
+
+                return [
+                    '<span class="knowledge-collab-member',
+                    isSelf ? ' is-self' : '',
+                    '"><span class="knowledge-collab-dot"></span><span class="knowledge-collab-name">',
+                    name.replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
+                    '</span><span class="knowledge-collab-cursor">',
+                    cursorText,
+                    '</span></span>'
+                ].join('');
+            }).join('');
+        }
+
+        function getPublicKnowledgeCollabWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const params = new URLSearchParams();
+            params.set('role', 'public');
+            params.set('display_name', getPublicCollabDisplayName());
+            return `${protocol}//${window.location.host}/ws/knowledge/collab/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}?${params.toString()}`;
+        }
+
+        function startPublicKnowledgeCollab() {
+            if (!window.NexoraKnowledgeCollab || !toastEditor) {
+                setSaveStatus('error', '协作客户端未加载');
+                return;
+            }
+
+            bindPublicCollabNameInput();
+
+            if (publicKnowledgeSocket) {
+                publicKnowledgeSocketClosedByServer = true;
+                clearPublicKnowledgeSocketTimers();
+                publicKnowledgeSocket.close();
+                publicKnowledgeSocket = null;
+            }
+
+            publicKnowledgeCollab = window.NexoraKnowledgeCollab.createClient({
+                wsUrl: getPublicKnowledgeCollabWsUrl(),
+                getText: () => toastEditor ? toastEditor.getMarkdown() : '',
+                setText: (value, meta = {}) => {
+                    if (!toastEditor) return false;
+                    const snapshot = capturePublicEditorViewportSnapshot();
+                    applyingRemoteUpdate = true;
+                    const incremental = applyPublicCollabText(value, meta.operation) === true;
+                    lastValue = String(value || '');
+                    lastSyncedValue = String(value || '');
+                    if (!incremental) {
+                        logPublicKnowledgeSync('collab incremental apply fell back to full replace', {
+                            operation: meta.operation || null
+                        });
+                        restorePublicEditorViewportSnapshot(snapshot);
+                    }
+                    setTimeout(() => {
+                        applyingRemoteUpdate = false;
+                    }, 120);
+                    return incremental;
+                },
+                getCursorOffset: getPublicEditorCursorOffset,
+                getCursorAnchor: getPublicEditorCursorAnchor,
+                setCursorOffset: setPublicEditorCursorOffset,
+                notifyPresence: (member, action) => {
+                    const name = String(
+                        (member && member.display_name)
+                        || (member && member.role === 'owner' ? 'Owner' : '匿名协作者')
+                    ).trim() || '协作者';
+                    showPublicPresenceToast(action === 'join' ? `${name} 加入了协作` : `${name} 离开了协作`);
+                },
+                onConnectionChange: (connected) => {
+                    const mask = getPublicCollabOfflineMask();
+
+                    if (!mask) return;
+
+                    if (connected) {
+                        mask.hide();
+                    } else {
+                        mask.show('实时协作已断开，正在重连…');
+                    }
+                },
+                setStatus: setSaveStatus,
+                renderMembers: renderPublicCollabMembers,
+                renderCursors: renderPublicCollabCursors,
+            });
+            publicKnowledgeCollab.start();
+
+            const editorHost = document.querySelector('#editor');
+
+            if (editorHost && editorHost.dataset.collabCursorBound !== '1') {
+                editorHost.dataset.collabCursorBound = '1';
+                ['keyup', 'mouseup', 'touchend'].forEach((eventName) => {
+                    editorHost.addEventListener(eventName, () => {
+                        if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                            publicKnowledgeCollab.scheduleCursorSend();
+                        }
+                    }, true);
+                });
+            }
+        }
+
         async function saveData(force = false) {
-            if (!toastEditor || savingNow) return;
+            if (!toastEditor) return;
+
+            if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                publicKnowledgeCollab.flushNow();
+                setSaveStatus('ok', force ? '已请求立即同步' : '实时协作中');
+                return;
+            }
+
+            if (savingNow) {
+                queuedSaveAfterCurrent = true;
+                queuedForceSaveAfterCurrent = queuedForceSaveAfterCurrent || !!force;
+                logPublicKnowledgeSync('public save queued during in-flight save', {
+                    force: !!force
+                });
+                return;
+            }
+
             const val = toastEditor.getMarkdown();
             if (!force && val === lastValue) return;
             savingNow = true;
             setSaveStatus('saving', '同步中...');
             try {
+                logPublicKnowledgeSync('saving public knowledge', {
+                    force,
+                    baseRevision: lastContentRevision,
+                    baseHash: lastContentHash ? lastContentHash.slice(0, 12) : '',
+                    contentLength: val.length
+                });
+
                 const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: val })
+                    body: JSON.stringify({
+                        content: val,
+                        base_content_revision: lastContentRevision,
+                        base_content_hash: lastContentHash
+                    })
                 });
                 const data = await res.json().catch(() => ({}));
                 if (res.ok && data && data.success) {
                     lastValue = val;
-                    lastSyncedValue = val;
+                    updateContentVersion(data, val);
                     setSaveStatus('ok', '已同步');
+                    logPublicKnowledgeSync('public save accepted', {
+                        revision: data.content_revision || data.contentRevision || '',
+                        hash: data.content_hash ? String(data.content_hash).slice(0, 12) : ''
+                    });
+                } else if (data && data.code === 'knowledge_content_conflict') {
+                    warnPublicKnowledgeSync('public save conflict', {
+                        baseRevision: lastContentRevision,
+                        serverRevision: data.server && (data.server.content_revision || data.server.contentRevision) || '',
+                        serverHash: data.server && data.server.content_hash ? String(data.server.content_hash).slice(0, 12) : ''
+                    });
+
+                    if (!applyRemoteKnowledgePayload(data, '远端更新已合并，请检查后保存')) {
+                        setSaveStatus('error', String(data.message || '远端内容已更新，请刷新后重试'));
+                    }
                 } else {
                     setSaveStatus('error', `同步失败: ${String((data && data.message) || '未知错误')}`);
                 }
@@ -457,6 +1203,14 @@
                 setSaveStatus('error', `离线: ${String((e && e.message) || e || '网络错误')}`);
             } finally {
                 savingNow = false;
+                flushPendingRemoteKnowledgePayload();
+
+                if (queuedSaveAfterCurrent) {
+                    const queuedForce = queuedForceSaveAfterCurrent;
+                    queuedSaveAfterCurrent = false;
+                    queuedForceSaveAfterCurrent = false;
+                    void saveData(queuedForce);
+                }
             }
         }
 
@@ -602,8 +1356,22 @@
             lastValue = toastEditor.getMarkdown();
             lastSyncedValue = lastValue;
             toastEditor.on('change', () => {
-                if (saveTimer) clearTimeout(saveTimer);
-                saveTimer = setTimeout(() => saveData(false), 1500);
+                if (applyingRemoteUpdate) return;
+
+                if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                    publicKnowledgeCollab.notifyLocalChange();
+                    return;
+                }
+
+                schedulePublicKnowledgeSave();
+            });
+
+            ['keyup', 'mouseup', 'touchend'].forEach((eventName) => {
+                document.getElementById('editor')?.addEventListener(eventName, () => {
+                    if (publicKnowledgeCollab && publicKnowledgeCollab.isActive()) {
+                        publicKnowledgeCollab.scheduleCursorSend();
+                    }
+                }, true);
             });
         }
 
@@ -616,49 +1384,8 @@
             }
         }, true);
 
-        setInterval(async () => {
-            if (!toastEditor || savingNow) return;
-
-            try {
-                const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`);
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || !data || !data.success) return;
-                const remote = String(data.content || '');
-                if (remote === lastSyncedValue) return; // 远端无变化
-
-                const local = toastEditor.getMarkdown();
-                if (remote === local) {
-                    // 内容一致，仅更新基准
-                    lastSyncedValue = remote;
-                    lastValue = remote;
-                    return;
-                }
-
-                // 三方合并：保留本地编辑 + 远端变更
-                const cursorLC = getEditorLineCol();
-                const merged = mergeContent(lastSyncedValue, local, remote);
-                lastSyncedValue = remote;
-                lastValue = merged;
-
-                // 记录滚动位置，setMarkdown 后恢复
-                const editorEl = document.querySelector('#editor .ProseMirror')
-                    || document.querySelector('#editor .toastui-editor-ww-mode')
-                    || document.querySelector('#editor');
-                const scrollTop = editorEl ? editorEl.scrollTop : 0;
-
-                toastEditor.setMarkdown(merged);
-
-                // 恢复光标 + 滚动位置
-                requestAnimationFrame(() => {
-                    if (cursorLC) restoreEditorLineCol(cursorLC);
-                    if (editorEl) editorEl.scrollTop = scrollTop;
-                });
-
-                setSaveStatus('ok', '已同步（远端更新）');
-            } catch (_) {}
-        }, 2500);
-
         initEditor();
+        startPublicKnowledgeCollab();
     </script>
 </body>
 </html>

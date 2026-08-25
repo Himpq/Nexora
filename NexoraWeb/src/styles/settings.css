@@ -1,0 +1,2244 @@
+/**
+ * settings.css — 设置面板视觉(对齐 Nexora 设计语言,不拷贝原版)
+ *
+ * 设计语言:
+ *   - 克制:白底 / 黑主操作 / 浅灰边界 / 无重阴影,拒绝"光鲜紫白"
+ *   - 主按钮黑色 #111,次按钮白底 #111 描边;激活态黑字 + 浅灰底
+ *   - 布局:管理面板撑满可用高度(list/detail 内部滚动),按钮永不 100% 宽
+ *   - 分组卡片 + 左右行复用组件;统计用等宽网格
+ *   - 头像一律 background-cover 圆形,杜绝 img 溢出
+ */
+
+/* ==================== 外层(填满弹窗正文) ==================== */
+
+.settings-modal > .g-modal-body {
+    padding: 0;
+    overflow: hidden;
+}
+
+.settings-modal-shell {
+    display: flex;
+    height: 100%;
+    min-height: 500px;
+}
+
+/* ==================== 侧栏导航 ==================== */
+
+.settings-nav {
+    flex: none;
+    width: 210px;
+    padding: 18px 12px;
+    background: #fafafa;
+    border-right: 1px solid #ececec;
+    overflow-y: auto;
+}
+
+.settings-nav-group + .settings-nav-group {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #eeeeee;
+}
+
+.settings-nav-group-label {
+    padding: 0 12px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: #a0a0a0;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 36px;
+    padding: 0 12px;
+    margin-bottom: 2px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    font-size: 13px;
+    font-weight: 500;
+    color: #3c3c3c;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.settings-nav-item i {
+    flex: none;
+    width: 16px;
+    font-size: 13px;
+    color: #9c9c9c;
+    text-align: center;
+    transition: color 0.15s ease;
+}
+
+.settings-nav-item:hover {
+    background: #f1f1f1;
+    color: #111111;
+}
+
+.settings-nav-item.active {
+    background: #f1f1f1;
+    color: #111111;
+    font-weight: 600;
+}
+
+.settings-nav-item.active i {
+    color: #111111;
+}
+
+/* ==================== 主区 ==================== */
+
+.settings-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+}
+
+.settings-page-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-height: 58px;
+    padding: 10px 28px;
+    border-bottom: 1px solid #f2f2f2;
+}
+
+.settings-page-head-main {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 标题/说明单行省略,防止窄窗口下中文换行撑高页头 */
+.settings-page-head h2 {
+    margin: 0 0 4px;
+    font-size: 17px;
+    font-weight: 700;
+    color: #111111;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-page-head p {
+    margin: 0;
+    font-size: 12.5px;
+    color: #7a7a7a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-page-head-actions {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.settings-page-head-commands {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 8px;
+    min-width: max-content;
+}
+
+.settings-page-head-actions .settings-page-head-tabs {
+    flex: none;
+}
+
+/* 页头按钮 subtab 条件显隐:visibility 隐藏保留占位,切换时 tabs 位置不跳动 */
+.settings-page-head-actions .is-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.settings-page-head-actions .gddp-button.is-hidden {
+    min-width: var(--gddp-action-min-width);
+}
+
+/* ==================== 胶囊分段(GDDP 统一:页头 subtabs / 模式切换 / 分段选择共用一套视觉) ==================== */
+
+.settings-page-head-tabs,
+.settings-mode-toggle,
+.setting-segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: #f3f3f3;
+    border-radius: 8px;
+    width: max-content;
+    max-width: 100%;
+}
+
+.settings-page-head-tab,
+.settings-mode-toggle-btn,
+.setting-segmented-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 550;
+    color: #7a7a7a;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.settings-page-head-tab:hover:not(.active),
+.settings-mode-toggle-btn:hover:not(.active),
+.setting-segmented-btn:hover:not(.active) {
+    color: #111111;
+}
+
+.settings-page-head-tab.active,
+.settings-mode-toggle-btn.active,
+.setting-segmented-btn.active {
+    background: #ffffff;
+    color: #111111;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.settings-mode-toggle-btn:disabled,
+.setting-segmented-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* 页头自带 padding-bottom + 发丝线,body 顶部不再叠加留白(修复双倍间距) */
+.settings-page-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0 28px 20px;
+    overflow-y: auto;
+}
+
+/* 仅管理面板类占满剩余高度;表单页(资料/偏好等)自然高度 + 外层滚动 */
+.settings-page-body > .admin-stats-panel,
+.settings-page-body > .admin-models-panel,
+.settings-page-body > .admin-auth-panel,
+.settings-page-body > .admin-system-panel,
+.settings-page-body > .admin-mail-panel,
+.settings-page-body > .admin-chroma-panel,
+.settings-page-body > .admin-gen-image-panel,
+.settings-page-body > .admin-map-panel,
+.settings-page-body > .admin-users-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* ==================== 分组卡片 + 左右行 ==================== */
+
+.setting-card {
+    background: #ffffff;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+}
+
+.setting-card + .setting-card {
+    margin-top: 16px;
+}
+
+.setting-card-head {
+    padding: 14px 18px 0;
+}
+
+.setting-card-head h4 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 650;
+    color: #111111;
+}
+
+.setting-card-head p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: #7a7a7a;
+}
+
+.setting-card-body {
+    padding: 6px 18px 8px;
+}
+
+.setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    min-height: 50px;
+    padding: 9px 0;
+    border-bottom: 1px solid #f4f4f4;
+}
+
+.setting-card-body > .setting-row:last-child {
+    border-bottom: none;
+}
+
+.setting-row-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.setting-row-label {
+    font-size: 13px;
+    font-weight: 550;
+    color: #222222;
+}
+
+.setting-row-hint {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #9c9c9c;
+}
+
+.setting-row-control {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* ==================== 表单 ==================== */
+
+.settings-modal-shell .form-group {
+    margin-bottom: 14px;
+}
+
+.settings-modal-shell .form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 12.5px;
+    font-weight: 550;
+    color: #3c3c3c;
+}
+
+.settings-modal-shell .input-modern,
+.setting-input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    font-size: 13px;
+    color: #111111;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-modal-shell .input-modern:focus,
+.setting-input:focus {
+    border-color: #111111;
+    box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.07);
+}
+
+.settings-modal-shell textarea.input-modern {
+    height: auto;
+    padding: 10px 12px;
+    resize: vertical;
+}
+
+.settings-modal-shell .settings-help-text {
+    font-size: 12px;
+    color: #7a7a7a;
+    line-height: 1.6;
+}
+
+/* ==================== 按钮:已上收 GDDP 全局层 buttons.css(白底描边,禁止黑底) ==================== */
+/* 全应用统一按钮语言,设置壳不再单独定义;操作行布局见下方 .setting-action-row */
+
+/* ==================== 操作按钮行(GDDP 统一:内容宽度 + 稳定最小宽度) ==================== */
+/* 统一替换 mail-actions / auth-actions / papi-action-row / admin-user-action-row 等历史写法 */
+
+.settings-modal-shell .setting-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--gddp-action-gap);
+    margin-top: 14px;
+}
+
+.settings-modal-shell .setting-action-row > button {
+    flex: 0 1 auto;
+    min-width: var(--gddp-action-min-width);
+    height: var(--gddp-control-height);
+    justify-content: center;
+}
+
+/* GDDP 按钮组件与旧 class 共用同一套几何令牌。 */
+.gddp-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: var(--gddp-action-min-width);
+    height: var(--gddp-control-height);
+    padding: 0 16px;
+    border: 1px solid #c9c9c9;
+    border-radius: var(--gddp-border-radius);
+    background: #fff;
+    color: #2e2e2e;
+    font-size: 13px;
+    font-weight: 550;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.gddp-button-primary {
+    border-color: #111;
+    color: #111;
+    font-weight: 600;
+}
+
+.gddp-button-danger {
+    border-color: #f0c4c4;
+    background: #fff7f7;
+    color: #c0392b;
+}
+
+.gddp-button-quiet {
+    border-color: transparent;
+    background: transparent;
+    color: #6b7280;
+}
+
+.gddp-button-compact {
+    min-width: auto;
+    height: var(--gddp-control-height-compact);
+    padding: 0 12px;
+    font-size: 12.5px;
+}
+
+.gddp-button-icon {
+    min-width: var(--gddp-control-height);
+    width: var(--gddp-control-height);
+    padding: 0;
+}
+
+/* ==================== 开关行 / 模式切换 ==================== */
+
+.settings-toggle-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 550;
+    color: #222222;
+    cursor: pointer;
+}
+
+.settings-toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #111111;
+    cursor: pointer;
+}
+
+/* 分段切换视觉已并入上方"胶囊分段"统一规则组(settings-mode-toggle 与 setting-segmented 共用) */
+
+/* ==================== 管理面板(左列表 + 右详情,撑满高度) ==================== */
+/* 页面级工具栏已全部上移 settings-page-head,面板内不再有 toolbar */
+
+.settings-modal-shell .admin-system-toolbar-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e8e8e8;
+}
+
+.settings-modal-shell .admin-users-toolbar {
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e8e8e8;
+}
+
+.settings-modal-shell .admin-system-toolbar-row h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    color: #111111;
+}
+
+/* 布局:占满剩余高度,列表/详情内部滚动(不再是 fit-content) */
+.settings-modal-shell .admin-users-layout,
+.settings-modal-shell .settings-management-layout {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 250px minmax(0, 1fr);
+    gap: 14px;
+}
+
+.settings-modal-shell .admin-users-list,
+.settings-modal-shell .settings-management-list {
+    min-height: 0;
+    height: 100%;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+    overflow-y: auto;
+}
+
+.settings-modal-shell .admin-user-detail,
+.settings-modal-shell .settings-management-detail {
+    min-height: 0;
+    height: 100%;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+.settings-modal-shell .admin-user-detail-empty {
+    padding: 28px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: #a0a0a0;
+}
+
+/* 列表项(div,非 button——对齐原版) */
+.settings-modal-shell .admin-user-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 12px;
+    border: none;
+    border-bottom: 1px solid #f4f4f4;
+    background: #fff;
+    text-align: left;
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: background 0.15s ease;
+}
+
+.settings-modal-shell .admin-user-item:hover {
+    background: #fafafa;
+}
+
+.settings-modal-shell .admin-user-item.active {
+    background: #f3f3f3;
+}
+
+.settings-modal-shell .admin-user-item.active .admin-user-name {
+    color: #111111;
+}
+
+.settings-modal-shell .admin-user-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #222222;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 列表项主区(名称在上、meta 在下两行,杜绝挤成一团) */
+.settings-modal-shell .admin-user-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-modal-shell .admin-user-meta {
+    flex: none;
+    font-size: 11.5px;
+    color: #999999;
+}
+
+/* 头像(列表):圆形 + 背景裁剪,杜绝 img 溢出 */
+.settings-modal-shell .admin-user-avatar {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: #f0f0f0;
+    color: #7a7a7a;
+    font-size: 13px;
+}
+
+.settings-modal-shell .admin-user-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.settings-modal-shell .admin-public-api-key-icon i {
+    font-size: 13px;
+    color: #a0a0a0;
+}
+
+/* Provider 图标(模型管理) */
+.settings-modal-shell .provider-icon {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: #f5f5f5;
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 700;
+    color: #666666;
+}
+
+.settings-modal-shell .provider-icon img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    display: block;
+}
+
+.settings-modal-shell .provider-icon-sm {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    font-size: 11px;
+}
+
+.settings-modal-shell .provider-icon-sm img {
+    width: 14px;
+    height: 14px;
+}
+
+/* 详情信息文本与网格 */
+.settings-modal-shell .admin-info-text {
+    font-size: 13px;
+    color: #3c3c3c;
+    padding: 8px 12px;
+    background: #fafafa;
+    border-radius: 7px;
+    border: 1px solid #f0f0f0;
+}
+
+.settings-modal-shell .admin-user-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 20px;
+}
+
+.settings-modal-shell .admin-user-detail-grid .form-group:nth-child(odd):last-child {
+    grid-column: 1 / -1;
+}
+
+.settings-modal-shell .admin-system-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 20px;
+}
+
+/* 统计网格(等宽多列) */
+.settings-modal-shell .admin-stats-grid,
+.settings-modal-shell .settings-stat-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.settings-modal-shell .stat-card,
+.settings-modal-shell .settings-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.settings-modal-shell .stat-card .label,
+.settings-modal-shell .settings-stat-card .label {
+    font-size: 12px;
+    font-weight: 550;
+    color: #8a8a8a;
+}
+
+.settings-modal-shell .stat-card .value,
+.settings-modal-shell .settings-stat-card .value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #111111;
+    line-height: 1.2;
+}
+
+.settings-stat-empty {
+    padding: 18px 0;
+    text-align: center;
+    font-size: 13px;
+    color: #a0a0a0;
+}
+
+.settings-stat-count {
+    font-size: 13px;
+    font-weight: 550;
+    color: #3c3c3c;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 系统设置卡片 */
+.settings-modal-shell .admin-system-card {
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+}
+
+.settings-modal-shell .admin-system-card h4 {
+    margin: 0 0 10px;
+    font-size: 13.5px;
+    font-weight: 650;
+    color: #111111;
+}
+
+/* ==================== 模型行 + 状态徽标 ==================== */
+
+/* 模型面板:外层 flex 列,撑满高度(修复 fit-content 下推) */
+.settings-modal-shell .admin-models-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.settings-modal-shell .model-admin-toolbar-unit {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.settings-modal-shell .model-admin-toolbar-unit label {
+    font-size: 12px;
+    color: #7a7a7a;
+}
+
+/* 模型行(对齐原版 model-admin-item:grid 36px icon + 1fr 内容,hover 显示编辑/删除) */
+.settings-modal-shell .admin-model-row {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #f4f4f4;
+    border-radius: 7px;
+    transition: background 0.15s ease;
+}
+
+.settings-modal-shell .admin-model-row:hover {
+    background: #fafafa;
+}
+
+/* 内容列(名称行 + 上下文 + 额度条) */
+.settings-modal-shell .admin-model-row-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* 名称行(对齐原版 model-admin-item-name-row:flex space-between) */
+.settings-modal-shell .admin-model-name-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+}
+
+.settings-modal-shell .admin-model-name-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+/* hover 显示编辑/删除按钮(对齐原版 model-admin-item-actions;按钮样式走通用 .model-icon-btn) */
+.settings-modal-shell .admin-model-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.settings-modal-shell .admin-model-row:hover .admin-model-row-actions,
+.settings-modal-shell .admin-model-row:focus-within .admin-model-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.settings-modal-shell .admin-model-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #222222;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-modal-shell .admin-model-status {
+    flex: none;
+    min-width: 44px;
+    text-align: center;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.settings-modal-shell .admin-model-ctx {
+    flex: none;
+    min-width: 120px;
+    text-align: right;
+    font-size: 11.5px;
+    color: #999999;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.settings-modal-shell .admin-model-status.model-status-normal {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.settings-modal-shell .admin-model-status.model-status-error {
+    background: #fdecea;
+    color: #c0392b;
+}
+
+.settings-modal-shell .admin-model-status.model-status-disabled,
+.settings-modal-shell .admin-model-status.model-status-unknown {
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+/* Ollama 模型状态点(对齐原版 model-status-btn,点击打开状态弹窗) */
+.settings-modal-shell .model-status-btn {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.15s ease;
+}
+
+.settings-modal-shell .model-status-btn:hover {
+    background: #f5f5f5;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-loading {
+    color: #94a3b8;
+    background: #fafafa;
+    border-color: #eeeeee;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-warn {
+    color: #b7791f;
+    background: #fdf6e3;
+    border-color: #f3e2b3;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-success {
+    color: #2e7d32;
+    background: #e8f5e9;
+    border-color: #c8e6c9;
+}
+
+.settings-modal-shell .model-status-btn.model-status-btn-danger {
+    color: #c0392b;
+    background: #fdecea;
+    border-color: #f5c6c0;
+}
+
+/* Ollama 状态弹窗详情(对齐原版 ollama-status-grid / -row / -message) */
+.settings-modal-shell .ollama-status-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-modal-shell .ollama-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 0;
+    border-bottom: 1px solid #f4f4f4;
+    font-size: 13px;
+}
+
+.settings-modal-shell .ollama-status-row span {
+    color: #7a7a7a;
+}
+
+.settings-modal-shell .ollama-status-row strong {
+    color: #222222;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.settings-modal-shell .ollama-status-empty {
+    padding: 24px 0;
+    text-align: center;
+    font-size: 13px;
+    color: #999999;
+}
+
+.settings-modal-shell .ollama-status-message {
+    margin-top: 10px;
+    padding: 9px 12px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    border: 1px solid #eeeeee;
+    background: #fafafa;
+    color: #3c3c3c;
+    word-break: break-word;
+}
+
+.settings-modal-shell .ollama-status-message.level-success {
+    background: #e8f5e9;
+    border-color: #c8e6c9;
+    color: #2e7d32;
+}
+
+.settings-modal-shell .ollama-status-message.level-warning {
+    background: #fdf6e3;
+    border-color: #f3e2b3;
+    color: #8a6116;
+}
+
+.settings-modal-shell .ollama-status-message.level-danger {
+    background: #fdecea;
+    border-color: #f5c6c0;
+    color: #c0392b;
+}
+
+/* ==================== 额度策略(对齐原版 model-provider-quota-row:provider 行内下拉) ==================== */
+
+.settings-modal-shell .model-provider-quota-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.settings-modal-shell .model-provider-quota-label {
+    font-size: 11px;
+    color: #999999;
+    white-space: nowrap;
+}
+
+/* 通用小图标按钮(模型行/provider 列表 hover 操作复用) */
+.settings-modal-shell .model-icon-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    background: #fff;
+    color: #111827;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.settings-modal-shell .model-icon-btn:hover {
+    background: #f3f4f6;
+}
+
+.settings-modal-shell .model-icon-btn-danger {
+    color: #dc2626;
+    border-color: #fecaca;
+}
+
+.settings-modal-shell .model-icon-btn-danger:hover {
+    background: #fef2f2;
+}
+
+/* 列表项 hover 操作:provider 编辑/删除仅在 hover(含键盘 focus)时展示 */
+.settings-modal-shell .model-provider-item-actions {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.settings-modal-shell .model-provider-item:hover .model-provider-item-actions,
+.settings-modal-shell .model-provider-item:focus-within .model-provider-item-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 模型行头部 quota 区(对齐原版 quota-model-head / quota-total-icon-btn) */
+.settings-modal-shell .quota-model-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.settings-modal-shell .quota-model-head-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.settings-modal-shell .quota-total-icon-btn {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    color: #3c3c3c;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.settings-modal-shell .quota-total-icon-btn:hover {
+    border-color: #111111;
+    color: #111111;
+}
+
+/* 额度计量条(对齐原版 quota-meter-shell) */
+.settings-modal-shell .quota-meter-wrap {
+    width: 100%;
+    margin-top: 6px;
+    cursor: pointer;
+}
+
+.settings-modal-shell .quota-meter-track {
+    position: relative;
+    height: 12px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.18);
+    overflow: hidden;
+}
+
+.settings-modal-shell .quota-meter-seg {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+}
+
+.settings-modal-shell .quota-meter-seg-remaining {
+    background: #16a34a;
+}
+
+.settings-modal-shell .quota-meter-seg-used {
+    background: #eab308;
+}
+
+.settings-modal-shell .quota-meter-seg-overage {
+    background: #dc2626;
+}
+
+.settings-modal-shell .quota-meter-midline {
+    position: absolute;
+    left: 50%;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: #334155;
+    opacity: 0.9;
+}
+
+/* 标签行:绝对定位,由 JS 布局引擎计算 left 防重叠(对齐原版 data-role="quota-meter-label-row") */
+.settings-modal-shell .quota-meter-label-row {
+    position: relative;
+    height: 18px;
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 18px;
+}
+
+.settings-modal-shell .quota-meter-label-item {
+    position: absolute;
+    top: 0;
+    white-space: nowrap;
+}
+
+.settings-modal-shell .quota-meter-label-item.debt {
+    color: #b91c1c;
+}
+
+.settings-modal-shell .quota-meter-label-item.remaining {
+    color: #166534;
+}
+
+.settings-modal-shell .quota-meter-label-item.used {
+    color: #a16207;
+}
+
+.settings-modal-shell .quota-meter-label-item.total {
+    color: #0f172a;
+}
+
+/* 额度调整 popover(fixed 锚点跟随,对齐原版 quotaAdjustPopover) */
+.quota-adjust-popover-fixed {
+    position: fixed;
+    z-index: 12020;
+    min-width: 340px;
+    max-width: calc(100vw - 24px);
+    padding: 12px;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    background: #ffffff;
+    box-shadow: 0 14px 34px rgba(2, 6, 23, 0.18);
+}
+
+.quota-adjust-title {
+    font-size: 13px;
+    color: #111111;
+    font-weight: 700;
+}
+
+.quota-adjust-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: #3c3c3c;
+    white-space: nowrap;
+}
+
+.quota-adjust-mode {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.quota-adjust-mode-label {
+    font-size: 12px;
+    color: #3c3c3c;
+    white-space: nowrap;
+}
+
+.quota-adjust-save-btn {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #111111;
+    cursor: pointer;
+}
+
+.quota-adjust-save-btn:hover {
+    border-color: #111111;
+}
+
+.quota-adjust-hint-text {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #8b95a7;
+    line-height: 1.4;
+}
+
+/* ==================== 个人资料 ==================== */
+
+.settings-profile-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 28px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #f4f4f4;
+}
+
+.settings-avatar-panel {
+    flex: 0 0 132px;
+    width: 132px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-avatar {
+    width: 104px;
+    height: 104px;
+    border-radius: 50%;
+    background-size: cover;
+    background-position: center;
+    background-color: #f0f0f0;
+    border: 1px solid #e2e2e2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.settings-avatar.settings-avatar-placeholder {
+    font-size: 30px;
+    font-weight: 600;
+    color: #999999;
+}
+
+.settings-avatar-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.settings-profile-meta {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-profile-meta .setting-row {
+    border-bottom: none;
+    min-height: 44px;
+}
+
+.settings-profile-name-input {
+    width: min(240px, 100%);
+}
+
+.settings-userid-inline {
+    font-size: 12px;
+    color: #999999;
+    margin-bottom: 14px;
+}
+
+.settings-field {
+    padding: 8px 12px;
+    background: #fafafa;
+    border: 1px solid #f0f0f0;
+    border-radius: 7px;
+    font-size: 13px;
+    color: #3c3c3c;
+}
+
+.settings-profile-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    justify-content: flex-end;
+}
+
+/* ==================== 偏好设置 ==================== */
+
+.settings-preferences-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-pref-card {
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    padding: 16px;
+}
+
+.settings-pref-inline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-pref-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* ==================== 我的 API Key ==================== */
+
+.settings-modal-shell .papi-key-list-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-modal-shell .papi-key-list-main .mono {
+    font-size: 11px;
+    color: #999999;
+}
+
+/* 操作按钮行已统一为 .setting-action-row(见上方 GDDP 按钮区),papi-action-row 历史写法已移除 */
+
+.settings-modal-shell .papi-key-plain {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.settings-modal-shell .papi-key-plain code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    color: #111111;
+    word-break: break-all;
+    user-select: all;
+}
+
+.settings-modal-shell .papi-key-plain-tip {
+    font-size: 12px;
+    color: #b45309;
+}
+
+/* ==================== Skill(原生全局类,在设置壳内统一风格) ==================== */
+/* 子 tab 与工具栏已上移 settings-page-head(见 .settings-page-head-tabs) */
+
+/* 我的 Skill 卡片:响应式网格与内容驱动高度,不继承 legacy 固定高度。 */
+.settings-modal-shell .settings-skill-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+    gap: 14px;
+    padding-right: 6px;
+}
+
+.settings-modal-shell .settings-skill-card {
+    height: auto;
+    min-height: 140px;
+    min-width: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 14px 14px 12px;
+    background: #ffffff;
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-modal-shell .settings-skill-top {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) minmax(76px, 92px);
+    gap: 10px;
+    align-items: start;
+    min-width: 0;
+}
+
+.settings-modal-shell .settings-skill-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 10px;
+    background: #fafafa;
+    border: 1px solid #eeeeee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7a7a7a;
+}
+
+.settings-modal-shell .settings-skill-main {
+    min-width: 0;
+    cursor: pointer;
+    outline: none;
+}
+
+.settings-modal-shell .settings-skill-main:focus-visible {
+    box-shadow: 0 0 0 2px #d0d0d0;
+    border-radius: 8px;
+}
+
+.settings-modal-shell .settings-skill-title {
+    font-size: 14px;
+    color: #111111;
+    font-weight: 700;
+    line-height: 1.3;
+    margin-bottom: 3px;
+    word-break: break-word;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-modal-shell .settings-skill-preview {
+    color: #7a7a7a;
+    font-size: 12px;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 100%;
+}
+
+.settings-modal-shell .settings-skill-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    min-width: 0;
+}
+
+.settings-modal-shell .settings-skill-controls .setting-select {
+    width: 100% !important;
+    min-width: 0;
+}
+
+.settings-modal-shell .settings-skill-mode-label {
+    font-size: 10px;
+    color: #999999;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.settings-modal-shell .settings-skill-divider {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 10px 0;
+}
+
+.settings-modal-shell .settings-skill-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: auto;
+}
+
+.settings-modal-shell .settings-skill-badge {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+    border-radius: 999px;
+    background: #f5f5f5;
+    color: #3c3c3c;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 6px 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-modal-shell .settings-skill-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+}
+
+.settings-modal-shell .settings-skill-empty {
+    padding: 30px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: #a0a0a0;
+}
+
+/* Skill 市场 */
+.settings-modal-shell .skill-market-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.settings-modal-shell .skill-market-search {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    transition: border-color 0.15s ease;
+}
+
+.settings-modal-shell .skill-market-search:focus-within {
+    border-color: #111111;
+}
+
+.settings-modal-shell .skill-market-search svg {
+    flex: none;
+    color: #a0a0a0;
+}
+
+.settings-modal-shell .skill-market-search input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 13px;
+    color: #111111;
+}
+
+.settings-modal-shell .skill-market-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    max-height: 460px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.settings-modal-shell .skill-market-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-modal-shell .skill-market-card:hover {
+    border-color: #c9c9c9;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.settings-modal-shell .skill-market-card-actions {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.settings-modal-shell .skill-market-card-title {
+    font-size: 13.5px;
+    font-weight: 650;
+    color: #111111;
+}
+
+.settings-modal-shell .skill-market-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Skill 编辑器两列网格(对齐原版 ps-editor-grid) */
+.settings-modal-shell .ps-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 20px;
+    margin-bottom: 4px;
+}
+
+.settings-modal-shell .ps-editor-grid .full-width {
+    grid-column: 1 / -1;
+}
+
+/* Skill 编辑器正文文本域(防止溢出) */
+.settings-modal-shell .skill-content-textarea {
+    width: 100%;
+    min-height: 120px;
+    max-height: 300px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    box-sizing: border-box;
+}
+
+.settings-modal-shell .skill-market-card-desc {
+    margin-top: 3px;
+    font-size: 12.5px;
+    color: #7a7a7a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-modal-shell .skill-market-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+}
+
+.settings-modal-shell .skill-market-tag {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #f2f2f2;
+    color: #7a7a7a;
+    font-size: 11px;
+    font-weight: 550;
+}
+
+.settings-modal-shell .skill-market-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 7px;
+    font-size: 11.5px;
+    color: #999999;
+}
+
+.settings-modal-shell .skill-market-card-actions {
+    flex: none;
+    display: flex;
+    gap: 8px;
+}
+
+.settings-modal-shell .btn-skill-install {
+    height: 30px;
+    padding: 0 14px;
+    border: 1px solid #111111;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #111111;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.settings-modal-shell .btn-skill-install:hover {
+    background: #f5f5f5;
+}
+
+.settings-modal-shell .btn-skill-installed {
+    height: 30px;
+    padding: 0 14px;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #f7f7f7;
+    color: #999999;
+    font-size: 12.5px;
+    cursor: default;
+}
+
+.settings-modal-shell .btn-skill-detail {
+    height: 30px;
+    padding: 0 14px;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    color: #3c3c3c;
+    font-size: 12.5px;
+    font-weight: 550;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.settings-modal-shell .btn-skill-detail:hover {
+    border-color: #111111;
+    color: #111111;
+}
+
+/* ==================== 邮箱 ==================== */
+
+.settings-modal-shell .admin-mail-permissions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.settings-modal-shell .admin-mail-permission {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #f2f2f2;
+    color: #3c3c3c;
+    font-size: 11.5px;
+    font-weight: 550;
+}
+
+/* ==================== 地图 API ==================== */
+
+.settings-modal-shell .admin-map-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.settings-modal-shell .admin-map-errors {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-modal-shell .admin-map-errors h4 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 650;
+    color: #111111;
+}
+
+.settings-modal-shell .admin-map-error {
+    padding: 10px 12px;
+    border: 1px solid #f0c4c4;
+    border-radius: 7px;
+    background: #fff7f7;
+    color: #b03a2e;
+    font-size: 12.5px;
+}
+
+/* 地图 provider 徽标(对齐原版 model-status-pill) */
+.settings-modal-shell .model-status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+.settings-modal-shell .model-status-pill.ok {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.settings-modal-shell .model-status-pill.warn {
+    background: #fdf6e3;
+    color: #8a6116;
+}
+
+.settings-modal-shell .model-status-pill.muted {
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+/* 邮箱用户绑定对(对齐原版 admin-bind-pair / -card / -arrow) */
+.settings-modal-shell .admin-bind-pair {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.settings-modal-shell .admin-bind-pair-single {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-modal-shell .admin-bind-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fff;
+    min-width: 0;
+}
+
+.settings-modal-shell .admin-bind-arrow {
+    color: #999999;
+    font-size: 16px;
+    user-select: none;
+}
+
+.settings-modal-shell .admin-mail-bind-row {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-modal-shell .admin-mail-bind-row .input-modern {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 头像裁切(对齐原版 chat_avatar.js 布局) */
+.avatar-crop-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px;
+    gap: 16px;
+    align-items: stretch;
+    min-height: 360px;
+}
+
+.avatar-crop-main {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+}
+
+.avatar-crop-canvas-wrap {
+    min-width: 0;
+    min-height: 360px;
+    overflow: hidden;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    background: #9ca3af;
+}
+
+.avatar-crop-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+}
+
+.avatar-crop-controls {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e2e2e2;
+    border-radius: 10px;
+    background: #fafafa;
+}
+
+.avatar-crop-controls label {
+    color: #3c3c3c;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.avatar-crop-controls input[type="range"] {
+    width: 100%;
+    min-width: 0;
+}
+
+.avatar-crop-preview-wrap {
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    background: #fafafa;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.avatar-crop-preview-title {
+    font-size: 12px;
+    color: #3c3c3c;
+    font-weight: 600;
+}
+
+.avatar-crop-preview {
+    width: 140px;
+    height: 140px;
+    border-radius: 999px;
+    border: 1px solid #dbeafe;
+    background: #ffffff;
+}
+
+.avatar-crop-tip {
+    font-size: 11px;
+    color: #7a7a7a;
+    line-height: 1.5;
+    text-align: center;
+}
+
+/* ==================== 向量库 ==================== */
+
+.settings-modal-shell .admin-chroma-collections {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.settings-modal-shell .admin-chroma-collection {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px;
+    border-bottom: 1px solid #f4f4f4;
+}
+
+.settings-modal-shell .admin-chroma-collection:last-child {
+    border-bottom: none;
+}
+
+.settings-modal-shell .admin-chroma-collection-name {
+    font-size: 13px;
+    font-weight: 550;
+    color: #222222;
+}
+
+/* ==================== 通用下拉(SettingSelect) ==================== */
+
+.setting-select {
+    position: relative;
+    flex: none;
+}
+
+.setting-select-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid #dddddd;
+    border-radius: 7px;
+    background: #fff;
+    font-size: 13px;
+    color: #111111;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+}
+
+.setting-select-trigger:hover,
+.setting-select-trigger.open {
+    border-color: #111111;
+}
+
+.setting-select-trigger i {
+    font-size: 11px;
+    color: #999999;
+    transition: transform 0.15s ease;
+}
+
+.setting-select-trigger.open i {
+    transform: rotate(180deg);
+}
+
+/* Teleport 到 body 后 position 由 absolute → fixed,绕过祖先 transform/filter
+ * 约束(参见 SettingSelect.vue)。z-index 用 --z-portal-dropdown(> --z-modal),
+ * 确保下拉始终悬浮在设置弹窗遮罩之上 */
+.setting-select-menu {
+    position: fixed;
+    z-index: var(--z-portal-dropdown);
+    min-width: 140px;
+    max-height: 320px;
+    padding: 4px;
+    border: 1px solid #e2e2e2;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    overflow-y: auto;
+}
+
+/* 菜单内搜索框(search 模式:认证 owner 用户选择等长列表过滤) */
+.setting-select-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 4px 6px;
+    padding: 0 8px;
+    height: 30px;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+    background: #fafafa;
+}
+
+.setting-select-search i {
+    flex: none;
+    font-size: 11px;
+    color: #a0a0a0;
+}
+
+.setting-select-search input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 12.5px;
+    color: #111111;
+}
+
+.setting-select-search input::placeholder {
+    color: #b0b0b0;
+}
+
+.setting-select-menu-state {
+    padding: 12px 10px;
+    color: #999999;
+    font-size: 12px;
+    text-align: center;
+}
+
+.setting-select-menu button {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12.5px;
+    color: #3c3c3c;
+    text-align: left;
+    cursor: pointer;
+}
+
+.setting-select-menu button:hover,
+.setting-select-menu button.active {
+    background: #f1f1f1;
+    color: #111111;
+    font-weight: 550;
+}
+
+/* 分组标题(对齐原版 admin-system-model-group-title) */
+.setting-select-group-title {
+    padding: 6px 10px 4px;
+    font-size: 11px;
+    font-weight: 650;
+    color: #999999;
+}
+
+.setting-select-group-title:first-child {
+    padding-top: 4px;
+}
+
+/* ==================== 通用开关(SettingToggle) ==================== */
+
+.setting-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    cursor: pointer;
+}
+
+.setting-toggle-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.setting-toggle-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 550;
+    color: #222222;
+}
+
+.setting-toggle-hint {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: #9c9c9c;
+}
+
+.setting-toggle input[type="checkbox"] {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    accent-color: #111111;
+    cursor: pointer;
+}
+
+/* ==================== 模型权限弹窗 ==================== */
+
+.model-perm-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+}
+
+.model-perm-row {
+    padding: 8px 14px;
+    border-bottom: 1px solid #f4f4f4;
+}
+
+.model-perm-row:last-child {
+    border-bottom: none;
+}
+
+.model-perm-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #222222;
+}
+
+.model-perm-id {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: #999999;
+}
+
+.model-perm-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 550;
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+.model-perm-badge.provider-ollama {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.model-perm-badge.status-error {
+    background: #fdecea;
+    color: #b03a2e;
+}
+
+.model-perm-badge.status-disabled {
+    background: #f2f2f2;
+    color: #7a7a7a;
+}
+
+/* ==================== 窄宽响应式规则 ==================== */
+@media (max-width: 760px) {
+    .settings-page-head {
+        gap: 10px;
+        padding-inline: 18px;
+    }
+
+    .settings-page-head-actions {
+        justify-content: flex-end;
+    }
+
+    .settings-profile-head {
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .settings-avatar-panel {
+        width: 100%;
+        flex-basis: auto;
+    }
+
+    .settings-profile-meta {
+        width: 100%;
+    }
+
+    .settings-modal-shell .settings-management-layout,
+    .settings-modal-shell .admin-users-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .settings-modal-shell .settings-management-list,
+    .settings-modal-shell .admin-users-list {
+        height: auto;
+        max-height: 220px;
+    }
+
+    .settings-modal-shell .settings-skill-top {
+        grid-template-columns: 44px minmax(0, 1fr);
+    }
+
+    .settings-modal-shell .settings-skill-controls {
+        grid-column: 2;
+        align-items: flex-start;
+    }
+
+    .settings-modal-shell .settings-skill-footer {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .mail-bind-pair {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .mail-bind-arrow {
+        transform: rotate(90deg);
+        align-self: center;
+    }
+
+    .mail-info-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mail-info-cell-full {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 480px) {
+    .settings-modal-shell .settings-page-head-main {
+        min-width: 120px;
+    }
+
+    .settings-modal-shell .mail-bind-input-row {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+
+    .settings-modal-shell .mail-bind-input-row .input-modern {
+        flex-basis: 100%;
+    }
+}
+
+.settings-modal-shell ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.settings-modal-shell ::-webkit-scrollbar-thumb {
+    background: #d9d9d9;
+    border-radius: 4px;
+}
+
+.settings-modal-shell ::-webkit-scrollbar-thumb:hover {
+    background: #c4c4c4;
+}
+
+.settings-modal-shell ::-webkit-scrollbar-track {
+    background: transparent;
+}
+

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>读取码下载 - Nexora</title>
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/share.css?v=20260729_multi_transfer_01">
+</head>
+<body>
+    <main class="share-page">
+        <section class="share-panel" aria-labelledby="shareTitle">
+            <div class="share-brand">
+                <span class="share-brand-mark">N</span>
+                <span class="share-brand-name">Nexora</span>
+            </div>
+
+            <header class="share-header">
+                <h1 id="shareTitle">读取码下载</h1>
+                <p>输入读取码查看文件信息，确认后开始下载。</p>
+            </header>
+
+            <form class="share-code-form" id="shareCodeForm" autocomplete="off">
+                <label class="share-code-field" for="shareCodeInput">
+                    <span>读取码</span>
+                    <input id="shareCodeInput" name="code" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="ABCD-EFGH-JKLM">
+                </label>
+
+                <button class="share-primary-btn" id="shareQueryBtn" type="submit">
+                    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                    <span>查看文件</span>
+                </button>
+            </form>
+
+            <div class="share-status" id="shareStatus" role="status" aria-live="polite"></div>
+
+            <section class="share-file-panel" id="shareFilePanel" aria-label="文件信息" hidden>
+                <div class="share-file-icon">
+                    <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i>
+                </div>
+
+                <div class="share-file-main">
+                    <h2 id="shareFileName"></h2>
+                    <dl class="share-file-meta">
+                        <div>
+                            <dt>大小</dt>
+                            <dd id="shareFileSize"></dd>
+                        </div>
+                        <div>
+                            <dt>有效期</dt>
+                            <dd id="shareFileExpires"></dd>
+                        </div>
+                        <div>
+                            <dt>剩余次数</dt>
+                            <dd id="shareFileDownloads"></dd>
+                        </div>
+                        <div>
+                            <dt>传输方式</dt>
+                            <dd id="shareFileType"></dd>
+                        </div>
+                    </dl>
+                </div>
+
+                <button class="share-download-btn" id="shareDownloadBtn" type="button">
+                    <i class="fa-solid fa-download" aria-hidden="true"></i>
+                    <span>下载</span>
+                </button>
+
+                <button class="share-download-btn" id="shareDownloadAllBtn" type="button" hidden>
+                    <i class="fa-solid fa-download" aria-hidden="true"></i>
+                    <span>下载全部</span>
+                </button>
+
+                <div class="share-file-list" id="shareFileList" hidden></div>
+            </section>
+        </section>
+    </main>
+
+    <script src="/static/js/share.js?v=20260729_multi_transfer_03"></script>
+</body>
+</html>

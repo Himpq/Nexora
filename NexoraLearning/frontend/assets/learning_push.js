@@ -7,6 +7,7 @@
     loading: false,
     videoErrors: [],
     stats: { total: 0, article: 0, video: 0 },
+    filter: "all",
   };
 
   function canManageResources(ctx) {
@@ -106,70 +107,17 @@
   }
 
   function renderInlineMarkdown(ctx, value) {
-    const escapeHtml = ctx.escapeHtml || ((text) => String(text || ""));
-    let text = escapeHtml(String(value || ""));
-    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
-    text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    return text;
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.renderInline !== "function") {
+      throw new Error("NXLMarkdown.renderInline is required.");
+    }
+    return window.NXLMarkdown.renderInline(value);
   }
 
   function renderMarkdown(ctx, markdown) {
-    const lines = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-    const html = [];
-    let paragraph = [];
-    let list = [];
-    const flushParagraph = () => {
-      if (!paragraph.length) return;
-      html.push(`<p>${renderInlineMarkdown(ctx, paragraph.join(" "))}</p>`);
-      paragraph = [];
-    };
-    const flushList = () => {
-      if (!list.length) return;
-      html.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(ctx, item)}</li>`).join("")}</ul>`);
-      list = [];
-    };
-    lines.forEach((line) => {
-      const raw = String(line || "");
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        flushParagraph();
-        flushList();
-        return;
-      }
-      const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
-      if (heading) {
-        flushParagraph();
-        flushList();
-        const level = Math.min(4, heading[1].length + 1);
-        html.push(`<h${level}>${renderInlineMarkdown(ctx, heading[2])}</h${level}>`);
-        return;
-      }
-      const bullet = trimmed.match(/^[-*+]\s+(.+)$/);
-      if (bullet) {
-        flushParagraph();
-        list.push(bullet[1]);
-        return;
-      }
-      const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
-      if (ordered) {
-        flushParagraph();
-        list.push(ordered[1]);
-        return;
-      }
-      if (trimmed.startsWith(">")) {
-        flushParagraph();
-        flushList();
-        html.push(`<blockquote>${renderInlineMarkdown(ctx, trimmed.replace(/^>\s*/, ""))}</blockquote>`);
-        return;
-      }
-      flushList();
-      paragraph.push(trimmed);
-    });
-    flushParagraph();
-    flushList();
-    return html.join("") || "<p></p>";
+    if (!window.NXLMarkdown || typeof window.NXLMarkdown.render !== "function") {
+      throw new Error("NXLMarkdown.render is required.");
+    }
+    return window.NXLMarkdown.render(markdown);
   }
 
   function renderBlocks(ctx, blocks, itemId) {
@@ -200,34 +148,51 @@
     `;
   }
 
-  function renderCard(ctx, item) {
+  function compactResourceDescription(title, description) {
+    const titleText = String(title || "").trim();
+    let summary = String(description || "").trim();
+
+    if (!summary || !titleText) return summary;
+
+    if (summary === titleText) return "";
+
+    if (summary.startsWith(titleText)) {
+      summary = summary.slice(titleText.length).replace(/^[\s:：|—-]+/, "").trim();
+    }
+
+    return summary;
+  }
+
+  function renderCard(ctx, item, index) {
     const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
     const itemId = String(item && item.id || "").trim();
-    const action = String(item && item.action || "").trim();
-    const lectureId = String(item && item.lectureId || "").trim();
-    const externalUrl = String(item && item.externalUrl || "").trim();
     const coverUrl = String(item && item.coverUrl || "").trim();
     const videoPreviewUrl = String(item && item.videoPreviewUrl || "").trim();
-    const secondaryLabel = String(item && item.type || "").trim() === "video" ? "详情" : "阅读";
+    const title = String(item && item.title || "学习资源").trim();
+    const contextLabel = String(item && (item.subtitle || item.badge) || "").trim();
+    const itemType = String(item && item.type || "article").trim() === "video" ? "video" : "article";
+    const summary = itemType === "video"
+      ? ""
+      : compactResourceDescription(title, item && item.description);
+
+    const cardClass = [
+      "learning-stream-item",
+      `is-${itemType}`,
+      index === 0 ? "is-featured" : "",
+    ].filter(Boolean).join(" ");
 
     return `
-      <article class="learning-push-card is-${escapeHtml(String(item && item.type || "article"))}" data-push-resource-id="${escapeHtml(itemId)}">
+      <article class="${cardClass}" data-push-resource-id="${escapeHtml(itemId)}" data-resource-id="${escapeHtml(itemId)}" data-push-action="open-resource-reader" role="button" tabindex="0">
         ${renderCardMedia(ctx, coverUrl, videoPreviewUrl, item)}
-        <div class="learning-push-card-head">
-          <span class="learning-push-badge">${escapeHtml(String(item && item.badge || "学习资源"))}</span>
-          ${item && item.subtitle ? `<span class="learning-push-subtitle">${escapeHtml(item.subtitle)}</span>` : ""}
-        </div>
-        <h3>${escapeHtml(String(item && item.title || "学习资源"))}</h3>
-        <p class="learning-push-card-summary">${escapeHtml(String(item && item.description || ""))}</p>
-        <div class="learning-push-card-foot">
-          ${item && item.reason ? `<span class="learning-push-reason is-compact">${escapeHtml(item.reason)}</span>` : "<span></span>"}
-          <div class="learning-push-actions">
-            <button class="question-bank-action question-bank-action-secondary" type="button" data-push-action="open-resource-reader" data-resource-id="${escapeHtml(itemId)}">${escapeHtml(secondaryLabel)}</button>
-            ${action ? `
-            <button class="question-bank-action question-bank-action-primary" type="button" data-push-action="${escapeHtml(action)}" data-lecture-id="${escapeHtml(lectureId)}" data-external-url="${escapeHtml(externalUrl)}">
-              ${escapeHtml(String(item.actionLabel || "打开"))}
-            </button>
-            ` : ""}
+        <div class="learning-stream-body">
+          <div class="learning-stream-meta">
+            <span class="learning-stream-type">${escapeHtml(itemType === "video" ? "视频" : "文章")}</span>
+            ${contextLabel ? `<span>${escapeHtml(contextLabel)}</span>` : ""}
+          </div>
+          <h3>${escapeHtml(title)}</h3>
+          ${summary ? `<p class="learning-stream-summary">${escapeHtml(summary)}</p>` : ""}
+          <div class="learning-stream-open-hint" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></svg>
           </div>
         </div>
       </article>
@@ -274,21 +239,14 @@
   function renderResourceStudioEntry(ctx) {
     if (!canManageResources(ctx)) return "";
     return `
-      <section class="learning-resource-admin-entry">
-        <div>
-          <div class="question-bank-kicker">Resource Studio</div>
-          <h3>生成工作台</h3>
-          <p>组织资源文章、审核发布和伪视频项目；学习资源页只保留阅读、练习和观看入口。</p>
-        </div>
-        <div class="learning-resource-admin-actions">
-          <button class="question-bank-action question-bank-action-soft" type="button" data-push-action="open-resource-studio">
-            资源工作台
-          </button>
-          <button class="question-bank-action question-bank-action-soft" type="button" data-push-action="open-video-studio">
-            视频工作台
-          </button>
-        </div>
-      </section>
+      <div class="learning-stream-admin-actions" aria-label="内容管理">
+        <button class="learning-stream-tool-btn" type="button" data-push-action="open-resource-studio" aria-label="资源工作台" title="资源工作台">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2h8v12H4Z"></path><path d="M8 12h8M8 15h5"></path></svg>
+        </button>
+        <button class="learning-stream-tool-btn" type="button" data-push-action="open-video-studio" aria-label="视频工作台" title="视频工作台">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="14" height="14" rx="1"></rect><path d="m17 10 4-2v8l-4-2Z"></path></svg>
+        </button>
+      </div>
     `;
   }
 
@@ -655,22 +613,39 @@
     const total = Number(resourceState.stats.total || feedItems.length) || feedItems.length;
     const articleCount = Number(resourceState.stats.article || 0) || feedItems.filter((item) => item.type !== "video").length;
     const videoCount = Number(resourceState.stats.video || 0) || feedItems.filter((item) => item.type === "video").length;
+    const activeFilter = ["all", "video", "article"].includes(resourceState.filter) ? resourceState.filter : "all";
+    const filteredItems = feedItems.filter((item) => {
+      const itemType = String(item && item.type || "article").trim() === "video" ? "video" : "article";
+      return activeFilter === "all" || itemType === activeFilter;
+    });
     el.learningPushPanel.innerHTML = `
-      <section class="learning-push-hero">
-        <div>
-          <div class="question-bank-kicker">AI Resource Feed</div>
-          <h2>学习资源</h2>
-          <p>从已选课程范围内随机抽取缓存视频、资源文章和已生成视频，保持资源中心专注而不过载。</p>
-        </div>
-        <div class="learning-push-stats">
-          <div><strong>${total}</strong><span>本轮展示</span></div>
-          <div><strong>${articleCount}</strong><span>文章</span></div>
-          <div><strong>${videoCount}</strong><span>视频</span></div>
+      <section class="learning-stream-shell">
+        <header class="learning-stream-toolbar">
+          <div class="learning-stream-filters" role="tablist" aria-label="资源类型">
+            ${[
+              ["all", "全部", total],
+              ["video", "视频", videoCount],
+              ["article", "文章", articleCount],
+            ].map(([value, label, count]) => `
+              <button class="learning-stream-filter${activeFilter === value ? " is-active" : ""}" type="button" data-push-action="filter-feed" data-filter="${value}" aria-selected="${activeFilter === value ? "true" : "false"}">
+                ${label}<span>${count}</span>
+              </button>
+            `).join("")}
+          </div>
+          <div class="learning-stream-toolbar-actions">
+            ${renderResourceStudioEntry(ctx)}
+            <button class="learning-stream-refresh" type="button" data-push-action="refresh-feed" aria-label="刷新推荐" title="刷新推荐">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"></path><path d="M4 17v-5h5"></path><path d="M6.1 9A7 7 0 0 1 18 6l2 1M17.9 15A7 7 0 0 1 6 18l-2-1"></path></svg>
+            </button>
+          </div>
+        </header>
+        ${renderVideoStatus(ctx)}
+        <div class="learning-stream-list">
+          ${filteredItems.length
+            ? filteredItems.map((item, index) => renderCard(ctx, item, index)).join("")
+            : '<div class="learning-stream-empty">当前类型暂无推荐资源</div>'}
         </div>
       </section>
-      ${renderVideoStatus(ctx)}
-      ${renderResourceStudioEntry(ctx)}
-      ${renderResourceSection(ctx, "推荐资源流", feedItems)}
     `;
   }
 
@@ -708,6 +683,17 @@
         if (typeof ctx.showToast === "function") ctx.showToast(`刷新失败：${err.message || "未知错误"}`);
       } finally {
         actionNode.disabled = false;
+      }
+
+      return true;
+    }
+
+    if (action === "filter-feed") {
+      const filter = String(actionNode.getAttribute("data-filter") || "").trim();
+
+      if (["all", "video", "article"].includes(filter)) {
+        resourceState.filter = filter;
+        render(ctx);
       }
 
       return true;
@@ -798,6 +784,18 @@
       if (item && typeof ctx.openLearningResourceReader === "function") {
         ctx.openLearningResourceReader(item);
       }
+    });
+    panel.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const card = target.closest(".learning-stream-item[data-push-action]");
+      if (!card || !panel.contains(card)) return;
+
+      event.preventDefault();
+      await handlePushAction(ctx, card);
     });
   }
 

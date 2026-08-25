@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
+FRONTEND_DIR = ROOT / "frontend"
 
 os.chdir(ROOT)
 
@@ -32,6 +33,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "script": "",
             "storyboard": "",
             "canvas": "",
+            "template": "",
         },
         "image_model": "",
         "vision_model": "",
@@ -91,12 +93,26 @@ def create_app():
     CORS(app)
 
     from api.routes import bp, init_routes
+    from api.template_routes import bp as template_bp, init_template_routes
+
     init_routes(cfg)
+    init_template_routes(cfg)
     app.register_blueprint(bp)
+    app.register_blueprint(template_bp)
 
     @app.route("/health")
     def health():
         return jsonify({"status": "ok", "service": "NexoraVideoGenerator"})
+
+    @app.route("/")
+    @app.route("/workbench")
+    @app.route("/workbench/")
+    def workbench():
+        return send_from_directory(FRONTEND_DIR, "index.html")
+
+    @app.route("/assets/<path:filename>")
+    def frontend_asset(filename: str):
+        return send_from_directory(FRONTEND_DIR / "assets", filename)
 
     return app, cfg
 

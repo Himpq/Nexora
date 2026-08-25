@@ -1,24 +1,19 @@
-"""课程思维导图（知识图谱）生成模块。
+"""课程知识图谱生成模块。
 
-思维导图 Agent 作为 booksproc 多智能体体系的一员，基于课程大纲（outline.json）
-生成课程级思维导图，并支持按 section 深挖生成更细的子树。
+知识图谱 Agent 作为 booksproc 多智能体体系的一员，基于课程大纲（outline.json）
+生成课程级知识图谱（节点 + 边 + 横向关联），支持按 section 深挖生成更细的子图。
 
-数据结构（JSON 树）：
+数据结构（扁平图）：
     {
         "course_title": str,
-        "chapters": [
-            {
-                "section_id": str,
-                "name": str,
-                "summary": str,
-                "concepts": [
-                    {
-                        "name": str,
-                        "detail": str,
-                        "children": [ ... ]   # 最多 3 层
-                    }
-                ]
-            }
+        "nodes": [
+            { "id": str, "label": str, "type": "chapter"|"concept"|"sub",
+              "detail": str, "parent": str|None }
+        ],
+        "edges": [
+            { "source": str, "target": str,
+              "type": "hierarchy"|"prerequisite"|"related"|"extends",
+              "label": str }
         ]
     }
 
@@ -210,13 +205,13 @@ def _render_section_mindmap_prompt(
 # ==================== 工具定义 ====================
 
 def _build_mindmap_tools() -> List[Dict[str, Any]]:
-    """构建 submit_mindmap 工具定义。"""
+    """构建 submit_mindmap 工具定义（含横向关联 relations）。"""
     return [
         {
             "type": "function",
             "function": {
                 "name": "submit_mindmap",
-                "description": "Submit the knowledge graph mindmap. Call this tool to submit the chapter/concept tree.",
+                "description": "Submit a compact, flat course relationship graph with concepts and cross-chapter relations.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -244,7 +239,7 @@ def _build_mindmap_tools() -> List[Dict[str, Any]]:
                                     },
                                     "concepts": {
                                         "type": "array",
-                                        "description": "3-6 core concepts",
+                                        "description": "Exactly two concise core concepts for this unit",
                                         "items": {
                                             "type": "object",
                                             "properties": {
@@ -256,19 +251,6 @@ def _build_mindmap_tools() -> List[Dict[str, Any]]:
                                                     "type": "string",
                                                     "description": "One-sentence explanation",
                                                 },
-                                                "children": {
-                                                    "type": "array",
-                                                    "description": "Sub-concepts (same structure, max 3 levels)",
-                                                    "items": {
-                                                        "type": "object",
-                                                        "properties": {
-                                                            "name": {"type": "string"},
-                                                            "detail": {"type": "string"},
-                                                            "children": {"type": "array"},
-                                                        },
-                                                        "required": ["name", "detail"],
-                                                    },
-                                                },
                                             },
                                             "required": ["name", "detail"],
                                         },
@@ -277,98 +259,257 @@ def _build_mindmap_tools() -> List[Dict[str, Any]]:
                                 "required": ["name", "concepts"],
                             },
                         },
+                        "relations": {
+                            "type": "array",
+                            "description": "Exactly 12 cross-chapter semantic relations between concepts",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "from": {
+                                        "type": "string",
+                                        "description": "Source concept name (must match a concept name in chapters)",
+                                    },
+                                    "to": {
+                                        "type": "string",
+                                        "description": "Target concept name (must match a concept name in chapters)",
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["prerequisite", "related", "extends"],
+                                        "description": "prerequisite=A is needed before B; related=mutual association; extends=B deepens A",
+                                    },
+                                },
+                                "required": ["from", "to", "type"],
+                            },
+                        },
                     },
-                    "required": ["course_title", "chapters"],
+                    "required": ["course_title", "chapters", "relations"],
                 },
             },
         }
     ]
 
 
-# ==================== 结果规范化 ====================
+# ==================== 结果规范化（树 → 扁平图） ====================
 
-def _normalize_concept(raw: Any, depth: int = 0) -> Optional[Dict[str, Any]]:
-    """规范化单个知识点，递归处理 children，限制最大深度 3 层。"""
-    if not isinstance(raw, dict):
-        return None
+# 横向关系类型白名单
+_RELATION_TYPES = ("prerequisite", "related", "extends")
 
-    name = str(raw.get("name") or "").strip()
-    detail = str(raw.get("detail") or "").strip()
-
-    if not name:
-        return None
-
-    node: Dict[str, Any] = {
-        "name": name[:60],
-        "detail": detail[:200],
-    }
-
-    # 递归处理 children，深度限制 3 层（depth 从 0 开始）
-    if depth < 2:
-        raw_children = raw.get("children")
-        if isinstance(raw_children, list) and raw_children:
-            children: List[Dict[str, Any]] = []
-            for child in raw_children:
-                normalized = _normalize_concept(child, depth + 1)
-                if normalized:
-                    children.append(normalized)
-            if children:
-                node["children"] = children
-
-    return node
+# 关系类型对应的中文标签
+_RELATION_LABELS = {
+    "prerequisite": "前置",
+    "related": "关联",
+    "extends": "延伸",
+}
 
 
-def _normalize_chapter(raw: Any) -> Optional[Dict[str, Any]]:
-    """规范化单个章节（学习单元）。"""
-    if not isinstance(raw, dict):
-        return None
+def _flatten_concepts(
+    concepts: List[Any],
+    parent_id: str,
+    prefix: str,
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    name_to_id: Dict[str, str],
+    depth: int = 0,
+) -> None:
+    """递归拍平知识点树为 nodes + hierarchy edges，同时记录 name→id 映射。"""
+    if not isinstance(concepts, list):
+        return
 
-    name = str(raw.get("name") or raw.get("title") or "").strip()
-    if not name:
-        return None
+    for idx, raw in enumerate(concepts):
+        if not isinstance(raw, dict):
+            continue
 
-    section_id = str(raw.get("section_id") or "").strip()
-    summary = str(raw.get("summary") or "").strip()
+        name = str(raw.get("name") or "").strip()[:60]
+        detail = str(raw.get("detail") or "").strip()[:200]
 
-    raw_concepts = raw.get("concepts")
-    if not isinstance(raw_concepts, list):
-        return None
+        if not name:
+            continue
 
-    concepts: List[Dict[str, Any]] = []
-    for concept in raw_concepts:
-        normalized = _normalize_concept(concept, depth=0)
-        if normalized:
-            concepts.append(normalized)
+        node_id = f"{prefix}_k{idx}" if depth == 0 else f"{prefix}_c{idx}"
+        node_type = "concept" if depth == 0 else "sub"
 
-    if not concepts:
-        return None
+        nodes.append({
+            "id": node_id,
+            "label": name,
+            "type": node_type,
+            "detail": detail,
+            "parent": parent_id,
+        })
 
-    return {
-        "section_id": section_id[:40],
-        "name": name[:80],
-        "summary": summary[:300],
-        "concepts": concepts[:8],   # 每章最多保留 8 个知识点
-    }
+        edges.append({
+            "source": parent_id,
+            "target": node_id,
+            "type": "hierarchy",
+            "label": "",
+        })
+
+        # 记录 name→id（用于解析 relations）
+        if name not in name_to_id:
+            name_to_id[name] = node_id
+
+        # 递归子知识点，深度限制 3 层
+        if depth < 2:
+            raw_children = raw.get("children")
+            if isinstance(raw_children, list) and raw_children:
+                _flatten_concepts(
+                    raw_children, node_id, node_id,
+                    nodes, edges, name_to_id, depth + 1,
+                )
 
 
-def _normalize_mindmap(mindmap_data: Dict[str, Any]) -> Dict[str, Any]:
-    """规范化 submit_mindmap 返回的完整思维导图结构。"""
+def _normalize_mindmap(
+    mindmap_data: Dict[str, Any],
+    *,
+    minimum_relations: int = 0,
+    minimum_relation_coverage: float = 0.0,
+) -> Dict[str, Any]:
+    """规范化 submit_mindmap 返回数据，拍平为 nodes + edges 图结构。
+
+    LLM 仍以 chapters/concepts/children 树形提交（更易生成），
+    此函数负责拍平为前端 G6 消费的扁平图格式，并解析 relations。
+    """
     raw_chapters = mindmap_data.get("chapters")
     if not isinstance(raw_chapters, list):
         raise ValueError("模型未返回有效的 chapters 数组")
 
-    chapters: List[Dict[str, Any]] = []
-    for raw in raw_chapters:
-        normalized = _normalize_chapter(raw)
-        if normalized:
-            chapters.append(normalized)
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    name_to_id: Dict[str, str] = {}
 
-    if not chapters:
+    for ci, raw_chapter in enumerate(raw_chapters):
+        if not isinstance(raw_chapter, dict):
+            continue
+
+        ch_name = str(raw_chapter.get("name") or raw_chapter.get("title") or "").strip()[:80]
+        if not ch_name:
+            continue
+
+        section_id = str(raw_chapter.get("section_id") or "").strip()[:40]
+        summary = str(raw_chapter.get("summary") or "").strip()[:300]
+        chapter_id = section_id if section_id else f"ch_{ci}"
+
+        nodes.append({
+            "id": chapter_id,
+            "label": ch_name,
+            "type": "chapter",
+            "detail": summary,
+            "parent": None,
+        })
+
+        # 拍平该章节下的知识点
+        raw_concepts = raw_chapter.get("concepts")
+        if isinstance(raw_concepts, list):
+            _flatten_concepts(
+                raw_concepts[:8], chapter_id, chapter_id,
+                nodes, edges, name_to_id, depth=0,
+            )
+
+    if not nodes:
         raise ValueError("模型未返回有效的章节知识点")
+
+    node_by_id = {str(node.get("id") or ""): node for node in nodes}
+
+    def chapter_id_for(node_id: str) -> str:
+        """向上追溯节点所属章节，用于拒绝章节内伪横向关联。"""
+        current_id = node_id
+
+        for _ in range(4):
+            current = node_by_id.get(current_id)
+
+            if not current:
+                return ""
+
+            if current.get("type") == "chapter":
+                return current_id
+
+            current_id = str(current.get("parent") or "")
+
+            if not current_id:
+                return ""
+
+        return ""
+
+    # 解析横向关联 relations → edges
+    raw_relations = mindmap_data.get("relations")
+    relation_errors: List[str] = []
+    relation_keys = set()
+    related_node_ids = set()
+    valid_relation_count = 0
+
+    if isinstance(raw_relations, list):
+        for rel in raw_relations[:24]:
+            if not isinstance(rel, dict):
+                relation_errors.append("关联项不是对象")
+                continue
+
+            from_name = str(rel.get("from") or "").strip()
+            to_name = str(rel.get("to") or "").strip()
+            rel_type = str(rel.get("type") or "").strip()
+
+            if rel_type not in _RELATION_TYPES:
+                relation_errors.append(f"关系类型无效：{rel_type or '空'}")
+                continue
+
+            from_id = name_to_id.get(from_name)
+            to_id = name_to_id.get(to_name)
+
+            if not from_id or not to_id or from_id == to_id:
+                relation_errors.append(f"无法解析关联：{from_name} -> {to_name}")
+                continue
+
+            from_chapter_id = chapter_id_for(from_id)
+            to_chapter_id = chapter_id_for(to_id)
+
+            if not from_chapter_id or not to_chapter_id or from_chapter_id == to_chapter_id:
+                relation_errors.append(f"关联必须连接不同章节：{from_name} -> {to_name}")
+                continue
+
+            relation_key = (
+                rel_type,
+                min(from_id, to_id) if rel_type == "related" else from_id,
+                max(from_id, to_id) if rel_type == "related" else to_id,
+            )
+
+            if relation_key in relation_keys:
+                relation_errors.append(f"重复关联：{from_name} -> {to_name}")
+                continue
+
+            relation_keys.add(relation_key)
+            related_node_ids.add(from_id)
+            related_node_ids.add(to_id)
+
+            edges.append({
+                "source": from_id,
+                "target": to_id,
+                "type": rel_type,
+                "label": _RELATION_LABELS.get(rel_type, ""),
+            })
+
+            valid_relation_count += 1
+
+    elif minimum_relations > 0:
+        relation_errors.append("模型未提交 relations 数组")
+
+    if valid_relation_count < minimum_relations:
+        reason = "；".join(relation_errors[:5]) or "未返回可用的跨章节关联"
+        raise ValueError(
+            f"有效横向关联不足：至少需要 {minimum_relations} 条，实际 {valid_relation_count} 条。{reason}"
+        )
+
+    relation_candidates = [node for node in nodes if node.get("type") != "chapter"]
+    relation_coverage = len(related_node_ids) / len(relation_candidates) if relation_candidates else 0.0
+
+    if relation_coverage < minimum_relation_coverage:
+        raise ValueError(
+            f"语义关系覆盖不足：至少需要覆盖 {minimum_relation_coverage:.0%} 的知识点，"
+            f"实际覆盖 {relation_coverage:.0%}。请补充跨章节的前置、关联或延伸关系。"
+        )
 
     return {
         "course_title": str(mindmap_data.get("course_title") or "").strip()[:120],
-        "chapters": chapters,
+        "nodes": nodes,
+        "edges": edges,
     }
 
 
@@ -383,6 +524,9 @@ def _run_mindmap_agent(
     stream: bool,
     on_delta: Optional[Callable[[str], None]],
     log_scope: str,
+    minimum_relations: int = 0,
+    minimum_relation_coverage: float = 0.0,
+    cancel_event: Any = None,
 ) -> Dict[str, Any]:
     """思维导图 Agent 的工具调用主循环。
 
@@ -392,6 +536,11 @@ def _run_mindmap_agent(
     tools = _build_mindmap_tools()
     proxy = runner.nexora_client.proxy
     model_name = runner.model_name
+    try:
+        stream_timeout = float(settings.get("request_timeout") or 90)
+    except Exception:
+        stream_timeout = 90.0
+    stream_timeout = max(30.0, min(stream_timeout, 90.0))
 
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -408,6 +557,8 @@ def _run_mindmap_agent(
         on_delta(piece)
 
     for turn in range(1, 5):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("知识图谱生成已取消")
         request_messages = list(messages) + turn_history
         round_deltas: List[str] = []
 
@@ -425,18 +576,27 @@ def _run_mindmap_agent(
             model=model_name or None,
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
-                "max_tokens": int(settings.get("max_output_tokens") or 6000),
-                "stream": bool(stream),
+                "max_tokens": min(2800, int(settings.get("max_output_tokens") or 2800)),
+                # usst / qwen3.5-27b will not return any stream events when
+                # function tools are attached. The browser SSE still reports
+                # the agent lifecycle and renders the completed tool payload.
+                "stream": False,
                 "tools": tools,
-                "tool_choice": "auto",
+                "tool_choice": {"type": "function", "function": {"name": "submit_mindmap"}},
             },
             use_chat_path=False,
-            request_timeout=float(settings.get("request_timeout") or 300),
+            request_timeout=stream_timeout,
             on_delta=_on_round_delta,
+            cancel_event=cancel_event,
         )
 
         if not bool(response.get("ok")):
-            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
+            message = str(response.get("message") or "request failed").strip()
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("知识图谱生成已取消")
+            if "timed out" in message.lower() or "timeout" in message.lower():
+                raise RuntimeError("模型在 90 秒内未返回数据，请稍后重试。")
+            raise RuntimeError(f"Nexora API Error: {message}")
 
         payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
         choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
@@ -493,7 +653,7 @@ def _run_mindmap_agent(
         if not tool_calls:
             turn_history.append({
                 "role": "user",
-                "content": "You must call submit_mindmap(course_title=..., chapters=[...]) to submit. Do not output plain text JSON.",
+                "content": "You must call submit_mindmap(course_title=..., chapters=[...], relations=[...]) to submit. Do not output plain text JSON.",
             })
             continue
 
@@ -506,17 +666,27 @@ def _run_mindmap_agent(
 
             if tool_name == "submit_mindmap":
                 try:
-                    result_mindmap = _normalize_mindmap(args_obj)
+                    result_mindmap = _normalize_mindmap(
+                        args_obj,
+                        minimum_relations=minimum_relations,
+                        minimum_relation_coverage=minimum_relation_coverage,
+                    )
                     mindmap_submitted = True
                     turn_history.append({
                         "role": "tool",
                         "tool_call_id": call_id,
                         "content": _safe_json_dumps({
                             "ok": True,
-                            "chapters_count": len(result_mindmap.get("chapters") or []),
+                            "nodes_count": len(result_mindmap.get("nodes") or []),
+                            "edges_count": len(result_mindmap.get("edges") or []),
                         }),
                     })
                 except Exception as exc:
+                    log_event(
+                        f"{log_scope}_submission_rejected",
+                        "知识图谱提交未通过结构校验",
+                        payload={"turn": turn, "error": str(exc)},
+                    )
                     turn_history.append({
                         "role": "tool",
                         "tool_call_id": call_id,
@@ -546,6 +716,7 @@ def generate_mindmap(
     on_status: Optional[Callable[[str], None]] = None,
     on_delta: Optional[Callable[[str], None]] = None,
     stream: bool = False,
+    cancel_event: Any = None,
 ) -> Dict[str, Any]:
     """生成课程级思维导图（基于已有 outline.json）。
 
@@ -555,7 +726,8 @@ def generate_mindmap(
         user_id: 用户 id（可选，用于注入画像）
         on_status: 状态回调
         on_delta: 流式输出回调
-        stream: 是否流式
+    stream: 是否流式
+        cancel_event: 请求取消事件（可选）
 
     Returns:
         规范化后的思维导图字典
@@ -631,6 +803,9 @@ def generate_mindmap(
         stream=stream,
         on_delta=emit_delta,
         log_scope="mindmap",
+        minimum_relations=min(12, max(8, len(outline.get("sections") or []))),
+        minimum_relation_coverage=0.65,
+        cancel_event=cancel_event,
     )
 
     # 补充元数据并落盘
@@ -643,10 +818,11 @@ def generate_mindmap(
 
     log_event(
         "mindmap_done",
-        "课程级思维导图生成完成",
+        "课程级知识图谱生成完成",
         payload={
             "lecture_id": safe_lecture_id,
-            "chapters_count": len(result_mindmap.get("chapters") or []),
+            "nodes_count": len(result_mindmap.get("nodes") or []),
+            "edges_count": len(result_mindmap.get("edges") or []),
         },
     )
 
@@ -778,11 +954,12 @@ def generate_section_mindmap(
 
     log_event(
         "section_mindmap_done",
-        "Section 级思维导图生成完成",
+        "Section 级知识图谱生成完成",
         payload={
             "lecture_id": safe_lecture_id,
             "section_id": safe_section_id,
-            "chapters_count": len(result_mindmap.get("chapters") or []),
+            "nodes_count": len(result_mindmap.get("nodes") or []),
+            "edges_count": len(result_mindmap.get("edges") or []),
         },
     )
 

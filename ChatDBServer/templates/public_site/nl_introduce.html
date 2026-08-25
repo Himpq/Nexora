@@ -1,0 +1,3218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="NexoraLearning 个性化学习与多智能体系统">
+    <title>NexoraLearning</title>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/public_site/landing.css?v=20260706_public_site_assets_01">
+    <style>
+.ow-topbar {
+  height: 64px;
+  border-bottom: 1px solid rgba(232, 235, 241, 0.92);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.ow-topbar .ow-brand {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 8px 0 12px;
+  color: #0f172a;
+  text-decoration: none;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  transform-origin: left center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), color 180ms ease;
+}
+
+.ow-topbar .ow-brand::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 18%, currentColor 82%, transparent 100%);
+  opacity: 0;
+  transform: scaleX(0.45);
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.ow-topbar .ow-brand:hover {
+  transform: scale(1.03);
+}
+
+.ow-topbar .ow-brand:hover::after,
+.ow-topbar .ow-brand[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.ow-topbar .ow-brand[aria-current="page"] {
+  transform: scale(1.05);
+}
+
+.ow-topbar .ow-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.ow-topbar .ow-nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 2px 12px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #475569;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transform-origin: center bottom;
+  transform: translateZ(0) scale(1);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+.ow-topbar .ow-nav-link::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 4px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 22%, currentColor 78%, transparent 100%);
+  opacity: 0;
+  transform: scaleX(0.35);
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.ow-topbar .ow-nav-link:hover {
+  color: #0f172a;
+  transform: scale(1.08);
+}
+
+.ow-topbar .ow-nav-link:hover::after {
+  opacity: 0.5;
+  transform: scaleX(0.85);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"] {
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 700;
+  transform: scale(1.12);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"]:hover {
+  transform: scale(1.12);
+}
+
+.ow-topbar .ow-nav-link.menu-item,
+.ow-topbar .ow-nav-link.menu-login {
+  height: auto;
+  min-height: 0;
+  padding-left: 2px;
+  padding-right: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ow-topbar .ow-nav-link.menu-login:hover {
+  border-color: transparent;
+  background: transparent;
+  color: #0f172a;
+}
+
+@media (max-width: 820px) {
+  .ow-topbar {
+    height: 64px;
+    padding: 0 14px;
+  }
+
+  .ow-topbar .ow-brand {
+    font-size: 24px;
+  }
+
+  .ow-topbar .ow-nav {
+    gap: 6px;
+  }
+
+  .ow-topbar .ow-nav-link {
+    font-size: 14px;
+    padding: 8px 2px 10px;
+  }
+
+  .ow-topbar .ow-nav-link[aria-current="page"] {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ow-topbar .ow-brand,
+  .ow-topbar .ow-brand::after,
+  .ow-topbar .ow-nav-link,
+  .ow-topbar .ow-nav-link::after {
+    transition: none;
+  }
+}
+
+
+:root {
+    --ink: #12151b;
+    --muted: #657083;
+    --line: #dfe3e9;
+    --soft-line: #eceff3;
+    --paper: #ffffff;
+    --panel: #f8f9fb;
+    --blue: #3568e8;
+    --orange: #f59e0b;
+    --green: #286b4b;
+    --danger: #d92d20;
+    --frame-shadow: 0 30px 80px rgba(21, 30, 46, 0.2);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    margin: 0;
+    min-width: 320px;
+    color: var(--ink);
+    background: var(--showcase-bg);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
+body.theme-reader {
+    --showcase-bg: #dbe4f4;
+    --showcase-accent: #3159aa;
+    --showcase-accent-soft: #c5d4ec;
+}
+
+body.theme-process {
+    --showcase-bg: #d9ebe1;
+    --showcase-accent: #286b4b;
+    --showcase-accent-soft: #bedbc9;
+}
+
+button,
+textarea,
+a {
+    font: inherit;
+}
+
+button {
+    color: inherit;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+    outline: 3px solid rgba(53, 104, 232, 0.28);
+    outline-offset: 3px;
+}
+
+.showcase-page {
+    position: relative;
+    min-height: 100vh;
+    overflow: hidden;
+    isolation: isolate;
+}
+
+.showcase-page::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 34%;
+    z-index: -2;
+    width: 22%;
+    background: var(--showcase-accent-soft);
+}
+
+.showcase-page::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: -2;
+    width: 12%;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.background-grid {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    pointer-events: none;
+}
+
+.background-grid span {
+    border-right: 1px solid rgba(30, 50, 69, 0.1);
+}
+
+.showcase-header {
+    position: relative;
+    z-index: 20;
+    height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 0 34px;
+    border-bottom: 1px solid rgba(20, 36, 51, 0.13);
+}
+
+.showcase-brand {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 23px;
+    line-height: 1;
+    font-weight: 850;
+}
+
+.showcase-brand span {
+    color: rgba(18, 21, 27, 0.4);
+}
+
+.page-switcher {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.page-link {
+    color: rgba(18, 21, 27, 0.58);
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.page-link:hover,
+.page-link.is-active {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 6px;
+}
+
+.showcase-stage {
+    width: min(1540px, calc(100% - 72px));
+    min-height: calc(100vh - 72px);
+    margin: 0 auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 62px 0 76px;
+}
+
+.showcase-copy {
+    position: relative;
+    z-index: 5;
+    width: min(540px, 37%);
+}
+
+.showcase-kicker {
+    margin: 0 0 18px;
+    color: var(--showcase-accent);
+    font-size: 13px;
+    line-height: 1.4;
+    font-weight: 850;
+}
+
+.showcase-title {
+    max-width: 9ch;
+    margin: 0;
+    font-size: 58px;
+    line-height: 1.02;
+    letter-spacing: 0;
+}
+
+.showcase-lead {
+    max-width: 500px;
+    margin: 24px 0 0;
+    color: #354155;
+    font-size: 17px;
+    line-height: 1.72;
+}
+
+.feature-list {
+    display: grid;
+    gap: 13px;
+    margin-top: 30px;
+}
+
+.feature-item {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+}
+
+.feature-index {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: 1px solid rgba(18, 21, 27, 0.32);
+    font-size: 11px;
+    font-weight: 850;
+}
+
+.feature-item h2 {
+    margin: 5px 0 0;
+    font-size: 16px;
+    line-height: 1.45;
+}
+
+.interface-clip {
+    position: absolute;
+    right: calc(50% - 50vw);
+    bottom: 0;
+    left: 42%;
+    z-index: 2;
+    height: min(650px, calc(100vh - 104px));
+    overflow: hidden;
+}
+
+/* 右侧始终按参考图的 2048px 工作台原尺寸绘制，外层只负责裁切。 */
+.interface-frame {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 2048px;
+    height: 1058px;
+    overflow: hidden;
+    border: 1px solid rgba(18, 21, 27, 0.18);
+    border-radius: 6px 0 0 6px;
+    background: #ffffff;
+    box-shadow: var(--frame-shadow);
+}
+
+.app-shell {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    grid-template-columns: 310px minmax(0, 1fr);
+    grid-template-rows: 86px minmax(0, 1fr);
+    background: #ffffff;
+}
+
+.app-topbar {
+    display: contents;
+}
+
+.app-identity {
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    gap: 20px;
+    padding: 0 18px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: #fbfbfc;
+}
+
+.app-brand {
+    font-size: 19px;
+    font-weight: 850;
+}
+
+.app-brand span {
+    color: #8a919d;
+}
+
+.app-area {
+    padding-bottom: 5px;
+    border-bottom: 2px solid #111318;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.app-area.is-muted {
+    padding-bottom: 0;
+    border-bottom: 0;
+    color: #778092;
+}
+
+.app-centerbar {
+    min-width: 0;
+    grid-column: 2;
+    grid-row: 1;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 20px;
+    padding: 0 190px 0 30px;
+    border-bottom: 1px solid var(--line);
+    background: #ffffff;
+}
+
+.app-model {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: #343b47;
+    font-size: 16px;
+    font-weight: 750;
+}
+
+.app-model svg {
+    width: 16px;
+    height: 16px;
+}
+
+.app-title {
+    grid-column: 2;
+    font-size: 17px;
+    font-weight: 800;
+}
+
+.app-tools {
+    grid-column: 2;
+    grid-row: 1;
+    z-index: 2;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 5px;
+    padding: 0 28px;
+    justify-self: end;
+}
+
+.icon-button {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+}
+
+.icon-button:hover {
+    border-color: #d9dde4;
+    background: #f7f8fa;
+}
+
+.icon-button svg {
+    width: 17px;
+    height: 17px;
+}
+
+.tool-badge {
+    position: absolute;
+    top: -3px;
+    right: -2px;
+    min-width: 15px;
+    height: 15px;
+    display: grid;
+    place-items: center;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: #e5484d;
+    color: #ffffff;
+    font-size: 8px;
+    font-weight: 850;
+}
+
+.app-body {
+    min-width: 0;
+    min-height: 0;
+    grid-column: 1 / -1;
+    grid-row: 2;
+}
+
+@media (max-width: 1180px) {
+    .showcase-title {
+        font-size: 50px;
+    }
+
+    .interface-clip {
+        left: 39%;
+    }
+}
+
+@media (max-width: 860px) {
+    .showcase-page {
+        min-height: auto;
+    }
+
+    .showcase-page::before {
+        inset: 0 0 auto auto;
+        width: 48%;
+        height: 100%;
+    }
+
+    .showcase-header {
+        height: 64px;
+        padding: 0 18px;
+    }
+
+    .showcase-stage {
+        width: min(100% - 36px, 720px);
+        min-height: auto;
+        display: block;
+        padding: 62px 0 0;
+    }
+
+    .showcase-copy {
+        width: 100%;
+        max-width: 620px;
+    }
+
+    .showcase-title {
+        max-width: 12ch;
+    }
+
+    .interface-clip {
+        position: relative;
+        top: auto;
+        right: auto;
+        bottom: auto;
+        left: auto;
+        width: 100vw;
+        height: 470px;
+        margin-top: 46px;
+        margin-left: calc(50% - 50vw);
+    }
+
+    .interface-frame {
+        top: 0;
+        left: 18px;
+    }
+
+}
+
+@media (max-width: 560px) {
+    .showcase-brand {
+        font-size: 19px;
+    }
+
+    .page-switcher {
+        gap: 12px;
+    }
+
+    .showcase-stage {
+        padding-top: 48px;
+    }
+
+    .showcase-title {
+        font-size: 39px;
+    }
+
+    .showcase-lead {
+        font-size: 15px;
+    }
+
+    .interface-clip {
+        height: 380px;
+    }
+
+    .interface-frame {
+        left: 12px;
+    }
+}
+
+
+/* Reader workspace */
+/* 三栏宽度严格对应参考图，不允许为了完整展示而压缩各栏。 */
+.reader-layout {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 310px 1087px 381px;
+}
+
+.course-sidebar,
+.outline-sidebar {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: #fbfbfc;
+}
+
+.course-sidebar {
+    border-right: 1px solid var(--line);
+}
+
+.outline-sidebar {
+    border-left: 1px solid var(--line);
+}
+
+.course-summary {
+    padding: 28px 18px 22px;
+    border-bottom: 1px solid var(--line);
+}
+
+.course-summary-main {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+}
+
+.book-cover {
+    width: 84px;
+    height: 116px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 12px 8px 10px 12px;
+    border-left: 4px solid rgba(26, 59, 96, 0.18);
+    background: #d9e8f5;
+    color: #20405d;
+}
+
+.book-cover strong {
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.book-cover small {
+    font-size: 7px;
+    font-weight: 750;
+}
+
+.course-summary h2 {
+    margin: 2px 0 0;
+    font-size: 16px;
+    line-height: 1.35;
+}
+
+.status-chip {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 7px;
+    border: 1px solid #cbd3df;
+    color: #4a5566;
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.course-description {
+    margin: 10px 0 0;
+    color: #5f6979;
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+.progress-block {
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--soft-line);
+}
+
+.progress-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.progress-track {
+    height: 5px;
+    margin-top: 10px;
+    background: #e3e7ec;
+}
+
+.progress-track span {
+    display: block;
+    width: 42%;
+    height: 100%;
+    background: #111318;
+}
+
+.assistant-panel {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    padding: 22px 18px 18px;
+}
+
+.assistant-label {
+    color: #7a8494;
+    font-size: 11px;
+    font-weight: 850;
+}
+
+.assistant-copy {
+    margin: 12px 0 0;
+    color: #3f4958;
+    font-size: 12px;
+    line-height: 1.65;
+}
+
+.assistant-answer {
+    margin-top: 14px;
+    padding: 12px;
+    border-left: 2px solid #3568e8;
+    background: #f0f5ff;
+    color: #344a70;
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+.ask-form {
+    margin-top: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 7px;
+    padding-top: 12px;
+    border-top: 1px solid var(--soft-line);
+}
+
+.ask-form textarea {
+    min-width: 0;
+    height: 54px;
+    resize: none;
+    padding: 9px;
+    border: 1px solid #d9dde4;
+    border-radius: 0;
+    background: #ffffff;
+    color: #303846;
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.ask-submit {
+    align-self: end;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid #111318;
+    background: #111318;
+    color: #ffffff;
+    cursor: pointer;
+}
+
+.ask-submit svg {
+    width: 15px;
+    height: 15px;
+}
+
+.reading-pane {
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+.reading-tools {
+    position: absolute;
+    top: 26px;
+    left: 26px;
+    z-index: 2;
+    display: grid;
+    gap: 8px;
+}
+
+.reading-tool {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid #dce0e6;
+    border-radius: 6px;
+    background: #ffffff;
+    cursor: pointer;
+}
+
+.reading-tool svg {
+    width: 18px;
+    height: 18px;
+}
+
+.reading-document {
+    height: 100%;
+    overflow: hidden;
+    padding: 76px 88px 90px 112px;
+}
+
+.document-kicker {
+    color: #737d8d;
+    font-size: 16px;
+    font-weight: 750;
+}
+
+.reading-document h2 {
+    margin: 8px 0 0;
+    font-size: 38px;
+    line-height: 1.25;
+}
+
+.reading-document h3 {
+    margin: 40px 0 0;
+    font-size: 25px;
+}
+
+.reading-document p,
+.reading-document li {
+    color: #3e4757;
+    font-size: 18px;
+    line-height: 1.8;
+}
+
+.reading-document ol {
+    margin: 10px 0 0;
+    padding-left: 20px;
+}
+
+.reader-quote {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border-left: 3px solid #3568e8;
+    background: #edf4ff;
+    color: #2f4f88;
+    font-size: 17px;
+    line-height: 1.75;
+}
+
+.video-resource {
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid #e0e4ea;
+    background: #fafbfc;
+}
+
+.video-poster {
+    width: 74px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    background: #dfe8f7;
+    color: #3159aa;
+}
+
+.video-poster svg {
+    width: 19px;
+    height: 19px;
+}
+
+.video-resource strong,
+.video-resource small {
+    display: block;
+}
+
+.video-resource strong {
+    font-size: 10px;
+}
+
+.video-resource small {
+    margin-top: 5px;
+    color: #818999;
+    font-size: 8px;
+}
+
+.resource-source {
+    color: #6c7686;
+    font-size: 8px;
+    font-weight: 750;
+}
+
+.outline-tabs {
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    align-items: center;
+    padding: 8px 11px;
+    border-bottom: 1px solid var(--line);
+}
+
+.outline-tab {
+    height: 32px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #747e8f;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.outline-tab.is-active {
+    border-color: #e0e4ea;
+    background: #ffffff;
+    color: #111318;
+}
+
+.outline-list {
+    min-height: 0;
+    overflow: hidden;
+    padding: 9px 10px;
+}
+
+.outline-item {
+    width: 100%;
+    min-height: 56px;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    padding: 9px 8px;
+    border: 0;
+    border-left: 3px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
+.outline-item:hover,
+.outline-item.is-active {
+    border-left-color: #111318;
+    background: #eceff3;
+}
+
+.outline-number {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    background: #111827;
+    color: #ffffff;
+    font-size: 9px;
+    font-weight: 850;
+}
+
+.outline-number.is-recommended {
+    background: var(--orange);
+}
+
+.outline-item strong,
+.outline-item small {
+    display: block;
+}
+
+.outline-item strong {
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.outline-item small {
+    margin-top: 3px;
+    color: #697386;
+    font-size: 8px;
+    font-weight: 750;
+}
+
+.outline-item small.is-recommended {
+    color: #b76b00;
+}
+
+
+/* Material processing workspace */
+.process-layout {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 310px 1738px;
+    background: #f7f8fa;
+}
+
+.material-sidebar {
+    min-width: 0;
+    border-right: 1px solid var(--line);
+    background: #fbfbfc;
+}
+
+.material-sidebar-head {
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.material-sidebar-head strong {
+    font-size: 15px;
+}
+
+.material-add {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid #d7dce4;
+    background: #ffffff;
+    cursor: pointer;
+}
+
+.material-add svg {
+    width: 15px;
+    height: 15px;
+}
+
+.material-item {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 13px;
+    align-items: center;
+    padding: 15px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--soft-line);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
+.material-item:hover,
+.material-item.is-active {
+    background: #eaf2ff;
+}
+
+.mini-cover {
+    width: 58px;
+    height: 76px;
+    display: flex;
+    align-items: flex-start;
+    padding: 8px 6px;
+    border-left: 3px solid rgba(31, 67, 97, 0.18);
+    background: #dbe9f5;
+    color: #264860;
+    font-size: 7px;
+    line-height: 1.3;
+    font-weight: 850;
+}
+
+.mini-cover.is-purple {
+    background: #e7e0f3;
+    color: #544167;
+}
+
+.material-item strong,
+.material-item small {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.material-item strong {
+    font-size: 13px;
+}
+
+.material-item small {
+    margin-top: 6px;
+    color: #788294;
+    font-size: 10px;
+}
+
+.process-content {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 130px 56px minmax(0, 1fr);
+    padding: 22px;
+}
+
+.material-banner {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #ffffff;
+}
+
+.material-banner h2 {
+    margin: 0;
+    font-size: 22px;
+}
+
+.material-banner p {
+    margin: 7px 0 0;
+    color: #758093;
+    font-size: 14px;
+}
+
+.edit-button {
+    min-height: 34px;
+    padding: 0 13px;
+    border: 1px solid #d5dae2;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 750;
+}
+
+.process-tabs {
+    display: flex;
+    align-items: end;
+    gap: 20px;
+}
+
+.process-tab {
+    min-height: 34px;
+    padding: 0 0 8px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: #6b7585;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.process-tab.is-active {
+    border-bottom-color: #111318;
+    color: #111318;
+}
+
+.process-panel {
+    min-height: 0;
+    display: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.process-panel.is-active {
+    display: grid;
+}
+
+.pipeline-panel {
+    grid-template-columns: 620px minmax(0, 1fr);
+}
+
+.pipeline-steps {
+    padding: 22px 22px 26px;
+    border-right: 1px solid var(--line);
+}
+
+.pipeline-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.pipeline-heading h3 {
+    margin: 0;
+    font-size: 17px;
+}
+
+.pipeline-status {
+    color: #2563eb;
+    font-size: 12px;
+    font-weight: 850;
+}
+
+.pipeline-list {
+    position: relative;
+    display: grid;
+    gap: 0;
+    margin-top: 18px;
+}
+
+.pipeline-list::before {
+    content: "";
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    left: 18px;
+    width: 1px;
+    background: #bdd0f4;
+}
+
+.pipeline-step {
+    position: relative;
+    z-index: 1;
+    min-height: 64px;
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) 64px;
+    gap: 12px;
+    align-items: center;
+}
+
+.step-number {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 1px solid #8bb6ff;
+    border-radius: 50%;
+    background: #f0f6ff;
+    color: #135cdd;
+    font-size: 9px;
+    font-weight: 850;
+}
+
+.pipeline-step strong,
+.pipeline-step small {
+    display: block;
+}
+
+.pipeline-step strong {
+    font-size: 13px;
+}
+
+.pipeline-step small {
+    margin-top: 5px;
+    color: #7a8494;
+    font-size: 10px;
+}
+
+.step-status {
+    padding: 7px 8px;
+    background: #edf4ff;
+    color: #175cd3;
+    font-size: 9px;
+    font-weight: 850;
+    text-align: center;
+}
+
+.model-activity {
+    min-width: 0;
+    padding: 22px;
+}
+
+.model-activity h3 {
+    margin: 0;
+    color: #626c7b;
+    font-size: 12px;
+}
+
+.activity-log {
+    display: grid;
+    gap: 1px;
+    margin-top: 18px;
+    background: var(--soft-line);
+    border: 1px solid var(--soft-line);
+}
+
+.activity-row {
+    min-height: 65px;
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    gap: 11px;
+    align-items: center;
+    padding: 11px;
+    background: #ffffff;
+}
+
+.activity-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid #dce1e8;
+    background: #f7f8fa;
+}
+
+.activity-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.activity-row strong,
+.activity-row small {
+    display: block;
+}
+
+.activity-row strong {
+    font-size: 10px;
+}
+
+.activity-row small {
+    margin-top: 4px;
+    color: #818a99;
+    font-size: 8px;
+}
+
+.activity-time {
+    color: #9aa2ae;
+    font-size: 8px;
+}
+
+.assessment-panel {
+    grid-template-columns: minmax(0, 1fr) 290px;
+}
+
+.assessment-main {
+    min-width: 0;
+    padding: 26px 30px;
+    overflow: hidden;
+}
+
+.assessment-kicker {
+    color: #778191;
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.assessment-main h3 {
+    margin: 8px 0 0;
+    font-size: 19px;
+}
+
+.assessment-intro {
+    margin: 8px 0 0;
+    color: #737d8d;
+    font-size: 10px;
+}
+
+.question-card {
+    margin-top: 18px;
+    padding: 20px;
+    border: 1px solid #dce1e8;
+    border-radius: 8px;
+    background: #fafbfc;
+}
+
+.question-card h4 {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.answer-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.answer-option {
+    min-height: 48px;
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid #dce1e8;
+    border-radius: 6px;
+    background: #ffffff;
+    cursor: pointer;
+    text-align: left;
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.answer-option:hover,
+.answer-option.is-selected {
+    border-color: #3568e8;
+    background: #f0f5ff;
+}
+
+.answer-radio {
+    width: 18px;
+    height: 18px;
+    border: 1px solid #7d8591;
+    border-radius: 50%;
+}
+
+.answer-option.is-selected .answer-radio {
+    border: 5px solid #3568e8;
+}
+
+.community-panel {
+    min-width: 0;
+    border-left: 1px solid var(--line);
+    background: #fbfbfc;
+}
+
+.community-head {
+    padding: 18px 16px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    font-weight: 850;
+}
+
+.community-item {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 10px;
+    padding: 14px 14px;
+    border-bottom: 1px solid var(--soft-line);
+}
+
+.community-avatar {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid #dce1e8;
+    border-radius: 50%;
+    background: #edf1f5;
+    color: #4f5d70;
+    font-size: 9px;
+    font-weight: 850;
+}
+
+.community-item strong {
+    display: block;
+    font-size: 9px;
+}
+
+.community-item p {
+    margin: 5px 0 0;
+    color: #697486;
+    font-size: 8px;
+    line-height: 1.55;
+}
+
+.community-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 7px;
+    color: #9aa2ae;
+    font-size: 7px;
+}
+
+
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    margin: 0;
+    min-width: 320px;
+    overflow-x: hidden;
+    background: #ffffff;
+    color: #111319;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif;
+}
+
+.topbar {
+    height: 64px;
+}
+
+.brand-dot {
+    color: #8c98ab;
+    display: inline-flex;
+    min-width: 12px;
+}
+
+.brand-dot::after {
+    content: ".";
+    animation: learningBrandDots 4.5s infinite;
+}
+
+@keyframes learningBrandDots {
+    0%, 22%, 100% { content: "."; opacity: 1; }
+    33% { content: ".."; opacity: 1; }
+    44%, 77% { content: "..."; opacity: 1; }
+    55%, 70% { content: "...?"; opacity: 1; }
+    84% { content: ""; opacity: 1; }
+}
+
+.reader-showcase {
+    --showcase-bg: #dbe4f4;
+    --showcase-accent: #3159aa;
+    --showcase-accent-soft: #c5d4ec;
+}
+
+.process-showcase {
+    --showcase-bg: #d9ebe1;
+    --showcase-accent: #286b4b;
+    --showcase-accent-soft: #bedbc9;
+}
+
+.showcase-page,
+.showcase-stage {
+    min-height: calc(100vh - 72px);
+}
+
+.showcase-page {
+    background: var(--showcase-bg);
+}
+
+.nl-home {
+    position: relative;
+    min-height: calc(100vh - 72px);
+    overflow: hidden;
+    isolation: isolate;
+    background: #6673ee;
+}
+
+.nl-home::before,
+.nl-home::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: -2;
+}
+
+.nl-home::before {
+    left: 31%;
+    width: 31%;
+    background: #9680e8;
+}
+
+.nl-home::after {
+    right: 0;
+    width: 14%;
+    background: #b294e6;
+}
+
+.nl-home-grid {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    pointer-events: none;
+}
+
+.nl-home-grid span {
+    border-right: 1px solid rgba(28, 34, 88, 0.16);
+}
+
+.nl-home-inner {
+    width: min(1540px, calc(100% - 72px));
+    min-height: calc(100vh - 72px);
+    margin: 0 auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 64px 0 76px;
+}
+
+.nl-home-copy {
+    position: relative;
+    z-index: 5;
+    width: min(560px, 39%);
+    color: #ffffff;
+}
+
+.nl-home-kicker {
+    margin: 0 0 18px;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.nl-home-title {
+    max-width: 9ch;
+    margin: 0;
+    font-size: 70px;
+    line-height: 0.96;
+    overflow-wrap: anywhere;
+}
+
+.nl-home-lead {
+    max-width: 500px;
+    margin: 26px 0 0;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 18px;
+    line-height: 1.7;
+}
+
+.nl-dashboard-clip {
+    position: absolute;
+    right: calc(50% - 50vw);
+    bottom: 0;
+    left: 43%;
+    height: min(690px, calc(100vh - 92px));
+    overflow: hidden;
+}
+
+.nl-dashboard {
+    width: 1320px;
+    height: 760px;
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    border: 1px solid rgba(17, 19, 24, 0.18);
+    background: #ffffff;
+    box-shadow: 0 30px 80px rgba(20, 25, 45, 0.2);
+}
+
+.nl-dashboard-sidebar {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 22px 20px;
+    border-right: 1px solid #e4e7ec;
+    background: #fbfbfc;
+}
+
+.nl-dashboard-brand-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+}
+
+.nl-dashboard-brand {
+    font-size: 22px;
+    font-weight: 850;
+}
+
+.nl-dashboard-area {
+    padding-bottom: 6px;
+    border-bottom: 2px solid #111318;
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.nl-new-learning {
+    margin-top: 30px;
+    padding: 18px 4px;
+    border-bottom: 1px solid #e4e7ec;
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.nl-recent-label {
+    margin-top: 28px;
+    color: #8a93a2;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.nl-recent-list {
+    display: grid;
+    gap: 4px;
+    margin-top: 10px;
+}
+
+.nl-recent-item {
+    padding: 12px 10px;
+    color: #384252;
+    font-size: 13px;
+}
+
+.nl-recent-item.is-active {
+    background: #eef0f3;
+    color: #111318;
+}
+
+.nl-dashboard-main {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: 70px minmax(0, 1fr);
+}
+
+.nl-dashboard-topbar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 28px;
+    border-bottom: 1px solid #e4e7ec;
+}
+
+.nl-dashboard-model,
+.nl-dashboard-title {
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.nl-dashboard-title {
+    grid-column: 2;
+}
+
+.nl-dashboard-tools {
+    display: flex;
+    justify-content: flex-end;
+    gap: 14px;
+    color: #535e70;
+}
+
+.nl-dashboard-body {
+    padding: 24px;
+    background: #fbfbfc;
+}
+
+.nl-workbench {
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    border: 1px solid #e4e7ec;
+    background: #ffffff;
+}
+
+.nl-progress-pane,
+.nl-notice-pane {
+    min-width: 0;
+}
+
+.nl-notice-pane {
+    border-left: 1px solid #e4e7ec;
+}
+
+.nl-dashboard-tabs,
+.nl-notice-head {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 0 20px;
+    border-bottom: 1px solid #e4e7ec;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.nl-dashboard-tabs span:first-child,
+.nl-notice-head span {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    border-bottom: 2px solid #111318;
+}
+
+.nl-focus {
+    min-height: 118px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 20px;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid #e4e7ec;
+    background: #fafbfc;
+}
+
+.nl-focus small,
+.nl-course-card small,
+.nl-notice small {
+    color: #788293;
+}
+
+.nl-focus h2 {
+    margin: 7px 0 5px;
+    font-size: 22px;
+}
+
+.nl-focus-stats {
+    display: flex;
+    gap: 24px;
+}
+
+.nl-focus-stat strong,
+.nl-focus-stat span {
+    display: block;
+}
+
+.nl-focus-stat strong {
+    font-size: 22px;
+}
+
+.nl-focus-stat span {
+    margin-top: 5px;
+    color: #7d8695;
+    font-size: 10px;
+}
+
+.nl-course-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.nl-course-card {
+    min-height: 150px;
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 14px;
+    padding: 18px;
+    border-right: 1px solid #edf0f3;
+    border-bottom: 1px solid #edf0f3;
+}
+
+.nl-book {
+    width: 62px;
+    height: 88px;
+    padding: 11px 8px;
+    border-left: 4px solid rgba(23, 52, 78, 0.18);
+    background: #dce9f5;
+    color: #24445f;
+    font-size: 10px;
+    font-weight: 850;
+}
+
+.nl-book.is-green {
+    background: #dcecdf;
+    color: #2c5138;
+}
+
+.nl-course-card strong {
+    display: block;
+    font-size: 14px;
+}
+
+.nl-course-card small {
+    display: block;
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.nl-course-bar {
+    height: 4px;
+    margin-top: 14px;
+    background: #e4e8ee;
+}
+
+.nl-course-bar span {
+    display: block;
+    height: 100%;
+    background: #111318;
+}
+
+.nl-notice {
+    padding: 18px;
+    border-bottom: 1px solid #edf0f3;
+}
+
+.nl-notice strong {
+    display: block;
+    font-size: 13px;
+}
+
+.nl-notice p {
+    margin: 7px 0 0;
+    color: #667184;
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+@media (max-width: 860px) {
+    .ow-topbar .ow-nav-link:nth-child(2),
+    .ow-topbar .ow-nav-link:nth-child(3),
+    .ow-topbar .ow-nav-link:nth-child(4),
+    .ow-topbar .ow-nav-link:nth-child(6) {
+        display: none;
+    }
+
+    .nl-home-inner {
+        width: min(100% - 36px, 720px);
+        display: block;
+        padding-top: 64px;
+    }
+
+    .nl-home-copy {
+        width: 100%;
+    }
+
+    .nl-home-title {
+        font-size: 50px;
+    }
+
+    .nl-dashboard-clip {
+        position: relative;
+        right: auto;
+        bottom: auto;
+        left: auto;
+        width: 100vw;
+        height: 470px;
+        margin-top: 48px;
+        margin-left: calc(50% - 50vw);
+    }
+
+    .nl-dashboard {
+        margin-left: 18px;
+    }
+}
+
+@media (max-width: 560px) {
+    .ow-topbar .ow-brand {
+        font-size: 20px;
+    }
+
+    .nl-home-title {
+        font-size: 39px;
+    }
+
+    .nl-home-lead {
+        font-size: 15px;
+    }
+}
+
+        .section {
+            padding: 110px 36px;
+        }
+
+        .section-inner {
+            width: min(1180px, 100%);
+            margin: 0 auto;
+        }
+
+        .section-label {
+            margin: 0 0 18px;
+            color: #6c7584;
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .section h2 {
+            max-width: 820px;
+            margin: 0;
+            font-size: 50px;
+            line-height: 1.08;
+            letter-spacing: 0;
+        }
+
+        .section-lead {
+            max-width: 690px;
+            margin: 22px 0 0;
+            color: var(--muted);
+            font-size: 17px;
+            line-height: 1.75;
+        }
+
+        .learning-flow {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            margin-top: 62px;
+            border-top: 1px solid #cfd4dc;
+        }
+
+        .flow-step {
+            position: relative;
+            min-height: 240px;
+            padding: 28px 34px 24px 0;
+            border-right: 1px solid var(--line);
+        }
+
+        .flow-step + .flow-step {
+            padding-left: 34px;
+        }
+
+        .flow-step:last-child {
+            border-right: 0;
+        }
+
+        .flow-number {
+            color: #9aa1ad;
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .flow-step h3 {
+            margin: 54px 0 0;
+            font-size: 22px;
+            line-height: 1.25;
+        }
+
+        .flow-step p {
+            margin: 14px 0 0;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.65;
+        }
+
+        .profile-section {
+            background: #edf6f1;
+        }
+
+        .profile-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 0.85fr) minmax(520px, 1.15fr);
+            gap: 70px;
+            align-items: center;
+        }
+
+        .profile-visual {
+            min-height: 470px;
+            display: grid;
+            grid-template-columns: repeat(8, minmax(0, 1fr));
+            grid-template-rows: repeat(6, minmax(0, 1fr));
+            border: 1px solid rgba(42, 73, 55, 0.18);
+            background: #f9fcfa;
+        }
+
+        .profile-visual-cell {
+            border-right: 1px solid rgba(42, 73, 55, 0.09);
+            border-bottom: 1px solid rgba(42, 73, 55, 0.09);
+        }
+
+        .profile-card {
+            grid-column: 2 / 8;
+            grid-row: 2 / 6;
+            z-index: 2;
+            display: grid;
+            grid-template-columns: 150px minmax(0, 1fr);
+            gap: 30px;
+            align-items: center;
+            padding: 34px;
+            border: 1px solid rgba(42, 73, 55, 0.2);
+            background: #ffffff;
+            box-shadow: 16px 18px 0 #c8e8d5;
+        }
+
+        .profile-ring {
+            width: 140px;
+            height: 140px;
+            display: grid;
+            place-items: center;
+            border: 16px solid #e4e9e6;
+            border-top-color: #2e6b48;
+            border-right-color: #2e6b48;
+            border-radius: 50%;
+            transform: rotate(18deg);
+        }
+
+        .profile-ring span {
+            color: #183e2a;
+            font-size: 27px;
+            font-weight: 850;
+            transform: rotate(-18deg);
+        }
+
+        .profile-card h3 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .profile-card p {
+            margin: 12px 0 0;
+            color: #627268;
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .dimension-list {
+            display: grid;
+            gap: 10px;
+            margin-top: 24px;
+        }
+
+        .dimension-row {
+            display: grid;
+            grid-template-columns: 76px minmax(0, 1fr) 32px;
+            gap: 10px;
+            align-items: center;
+            color: #405449;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .dimension-bar {
+            height: 5px;
+            background: #e5ebe7;
+        }
+
+        .dimension-bar span {
+            display: block;
+            height: 100%;
+            background: #2e6b48;
+        }
+
+        .capability-section {
+            background: #111318;
+            color: #ffffff;
+        }
+
+        .capability-section .section-label,
+        .capability-section .section-lead {
+            color: #aeb5c1;
+        }
+
+        .capability-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1px;
+            margin-top: 62px;
+            background: #343841;
+            border: 1px solid #343841;
+        }
+
+        .capability {
+            min-height: 220px;
+            padding: 28px;
+            background: #171a20;
+        }
+
+        .capability-icon {
+            width: 38px;
+            height: 38px;
+            display: grid;
+            place-items: center;
+            border: 1px solid #494f5b;
+        }
+
+        .capability-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .capability h3 {
+            margin: 52px 0 0;
+            font-size: 17px;
+        }
+
+        .capability p {
+            margin: 12px 0 0;
+            color: #aeb5c1;
+            font-size: 13px;
+            line-height: 1.65;
+        }
+
+        .site-footer {
+            min-height: 128px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            padding: 30px 36px;
+            border-top: 1px solid #282c34;
+            background: #111318;
+            color: #aeb5c1;
+        }
+
+        .footer-brand {
+            color: #ffffff;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .site-footer p {
+            margin: 5px 0 0;
+            font-size: 12px;
+        }
+
+        .footer-link {
+            color: #ffffff;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+
+
+.site-header .brand {
+    flex-basis: 280px;
+    width: 280px;
+}
+
+.learning-lower {
+    color: #111319;
+    background: #ffffff;
+}
+
+.learning-lower .capability-section {
+    position: static;
+    min-height: 0;
+    display: block;
+    overflow: visible;
+}
+
+.interface-frame .icon-button {
+    min-height: 0;
+    border-radius: 0;
+}
+
+@media (max-width: 1180px) {
+    .profile-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .profile-copy {
+        max-width: 760px;
+    }
+
+    .learning-lower .capability-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 900px) {
+    .site-header .brand {
+        flex-basis: 230px;
+        width: 230px;
+        font-size: 24px;
+    }
+
+    .site-header .brand-mark {
+        flex-basis: 40px;
+        width: 40px;
+        min-width: 40px;
+    }
+}
+
+@media (max-width: 860px) {
+    .section {
+        padding: 84px 24px;
+    }
+
+    .section h2 {
+        font-size: 40px;
+    }
+
+    .learning-flow {
+        grid-template-columns: 1fr;
+    }
+
+    .flow-step,
+    .flow-step + .flow-step {
+        min-height: 190px;
+        padding: 24px 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .flow-step h3 {
+        margin-top: 34px;
+    }
+
+    .profile-layout {
+        gap: 46px;
+    }
+
+    .profile-visual {
+        min-height: 410px;
+    }
+
+    .profile-card {
+        grid-template-columns: 110px minmax(0, 1fr);
+        gap: 22px;
+        padding: 26px;
+    }
+
+    .profile-ring {
+        width: 104px;
+        height: 104px;
+        border-width: 12px;
+    }
+
+    .profile-ring span {
+        font-size: 22px;
+    }
+}
+
+@media (max-width: 560px) {
+    .site-header .brand {
+        flex-basis: 188px;
+        width: 188px;
+        min-height: 60px;
+        font-size: 20px;
+    }
+
+    .site-header .brand-mark {
+        flex-basis: 30px;
+        width: 30px;
+        min-width: 30px;
+    }
+
+    .main-nav .nav-menu-group:nth-child(2) {
+        display: none;
+    }
+
+    .section {
+        padding: 68px 18px;
+    }
+
+    .section h2 {
+        font-size: 32px;
+    }
+
+    .section-lead {
+        font-size: 15px;
+    }
+
+    .profile-visual {
+        min-height: 500px;
+    }
+
+    .profile-card {
+        grid-column: 2 / 8;
+        grid-row: 1 / 7;
+        grid-template-columns: 1fr;
+        align-content: center;
+        gap: 24px;
+        padding: 24px;
+        box-shadow: 10px 12px 0 #c8e8d5;
+    }
+
+    .profile-ring {
+        width: 94px;
+        height: 94px;
+    }
+
+    .learning-lower .capability-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .capability {
+        min-height: 190px;
+    }
+
+    .site-footer {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 30px 18px;
+    }
+}
+    </style>
+</head>
+<body id="top">
+    <header class="site-header">
+        <a class="brand" href="/nl_introduce" aria-label="NexoraLearning 首页">NexoraLearning<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/nl_introduce" aria-haspopup="true" aria-current="page">
+                    <span>项目</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="项目菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-products-title">
+                            <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
+                            <div class="nav-mega-list">
+                                <span class="nav-mega-link" onclick="location.href='/introduce';">Nexora</span>
+                                <span class="nav-mega-link" onclick="location.href='/nl_introduce';">NexoraLearning</span>
+                                <span class="nav-mega-link">NexoraMail</span>
+                                <span class="nav-mega-link">NexoraVideoGenerator</span>
+                                <span class="nav-mega-link">NexoraDB</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/status" aria-haspopup="true">
+                    <span>状态</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="状态菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-status-title">
+                            <p class="nav-dropdown-label" id="nav-status-title">状态</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/status">服务状态</a>
+                                <a class="nav-mega-link" href="/rank">模型榜单</a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/blog" aria-haspopup="true">
+                    <span>博客</span>
+                </a>
+
+                <div class="nav-dropdown nav-blog-menu" role="group" aria-label="博客菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-blog-title">
+                            <p class="nav-dropdown-label" id="nav-blog-title">博客</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="https://himpqblog.cn">
+                                    <span>Himpqの博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                                <a class="nav-mega-link" href="/blog">
+                                    <span>Nexora博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="header-actions">
+            <a class="ghost-button" href="/login">登录</a>
+        </div>
+    </header>
+
+    <main>
+
+        <section class="nl-home" aria-labelledby="learningHomeTitle">
+            <div class="nl-home-grid" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div class="nl-home-inner">
+                <div class="nl-home-copy">
+                    <p class="nl-home-kicker">Nexora 智能学习工作区</p>
+                    <h1 id="learningHomeTitle" class="nl-home-title">Nexora
+                    Learning</h1>
+                    <p class="nl-home-lead">聚合多平台模型，自动解析教材并组织课程、练习和学习反馈，让每一次学习都能自然接续。</p>
+                </div>
+                <div class="nl-dashboard-clip" aria-label="NexoraLearning 首页工作区预览">
+                    <div class="nl-dashboard">
+                        <aside class="nl-dashboard-sidebar">
+                            <div class="nl-dashboard-brand-row">
+                                <div class="nl-dashboard-brand">Nexora.</div>
+                                <div class="nl-dashboard-area">Learning</div>
+                            </div>
+                            <div class="nl-new-learning">New Learning</div>
+                            <div class="nl-recent-label">最近学习</div>
+                            <div class="nl-recent-list">
+                                <div class="nl-recent-item is-active">继续数据库基础课程</div>
+                                <div class="nl-recent-item">如何制定阶段复习计划</div>
+                                <div class="nl-recent-item">理解关系模型与范式</div>
+                                <div class="nl-recent-item">网络协议分层笔记</div>
+                                <div class="nl-recent-item">概率统计错题整理</div>
+                            </div>
+                        </aside>
+                        <div class="nl-dashboard-main">
+                            <header class="nl-dashboard-topbar">
+                                <div class="nl-dashboard-model">Learning Assistant</div>
+                                <div class="nl-dashboard-title">Learning</div>
+                                <div class="nl-dashboard-tools" aria-hidden="true">
+                                    <span>Report</span>
+                                    <span>Mail</span>
+                                </div>
+                            </header>
+                            <div class="nl-dashboard-body">
+                                <div class="nl-workbench">
+                                    <section class="nl-progress-pane">
+                                        <div class="nl-dashboard-tabs">
+                                            <span>课程进度</span><span>学习资源</span><span>模拟练习</span><span>动态中心</span>
+                                        </div>
+                                        <div class="nl-focus">
+                                            <div>
+                                                <small>当前焦点</small>
+                                                <h2>数据库导论</h2>
+                                                <small>当前：任务 4 · SQL 查询与数据更新</small>
+                                            </div>
+                                            <div class="nl-focus-stats">
+                                                <div class="nl-focus-stat"><strong>36%</strong><span>进度</span></div>
+                                                <div class="nl-focus-stat"><strong>12h</strong><span>最近</span></div>
+                                            </div>
+                                        </div>
+                                        <div class="nl-course-grid">
+                                            <article class="nl-course-card">
+                                                <div class="nl-book">数据库<br>导论</div>
+                                                <div><strong>数据库导论</strong><small>任务 4 · SQL 查询与数据更新</small><div class="nl-course-bar"><span style="width: 36%"></span></div></div>
+                                            </article>
+                                            <article class="nl-course-card">
+                                                <div class="nl-book is-green">计算机<br>网络</div>
+                                                <div><strong>计算机网络基础</strong><small>任务 2 · 网络体系结构</small><div class="nl-course-bar"><span style="width: 18%"></span></div></div>
+                                            </article>
+                                        </div>
+                                    </section>
+                                    <aside class="nl-notice-pane">
+                                        <div class="nl-notice-head"><span>通知</span></div>
+                                        <article class="nl-notice"><strong>学习画像已更新</strong><p>系统已根据近期记录更新掌握度与复习建议。</p></article>
+                                        <article class="nl-notice"><strong>新的章节资源可用</strong><p>数据库导论新增了一份关系模型可视化笔记。</p></article>
+                                        <article class="nl-notice"><strong>阶段练习已准备</strong><p>根据当前章节生成了新的巩固练习。</p></article>
+                                    </aside>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="showcase-page reader-showcase" aria-label="教材与阅读">
+
+            <div class="background-grid" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+<section class="showcase-stage" aria-labelledby="readerShowcaseTitle">
+            <div class="showcase-copy">
+                <p class="showcase-kicker">从一本教材开始</p>
+                <h1 id="readerShowcaseTitle" class="showcase-title">一本教材，展开一条学习路径。</h1>
+                <p class="showcase-lead">系统解析教材，生成课程介绍并关联网络视频。阅读时，可以直接结合当前原文向 AI 提问。</p>
+
+                <div class="feature-list">
+                    <article class="feature-item">
+                        <span class="feature-index">01</span>
+                        <div>
+                            <h2>解析教材，生成课程结构与介绍视频</h2>
+                        </div>
+                    </article>
+                    <article class="feature-item">
+                        <span class="feature-index">02</span>
+                        <div>
+                            <h2>原文、网络资源与 AI 问答同屏衔接</h2>
+                        </div>
+                    </article>
+                </div>
+            </div>
+
+            <div class="interface-clip" aria-label="课程阅读工作区预览">
+                <div class="interface-frame">
+                    <section class="app-shell">
+                        <header class="app-topbar">
+                            <div class="app-identity">
+                                <div class="app-brand">Nexora<span>.</span></div>
+                                <div class="app-area is-muted">Learning</div>
+                                <div class="app-area">Workspace</div>
+                            </div>
+                            <div class="app-centerbar">
+                                <div class="app-model">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                                        <path d="M9 4v16"></path>
+                                    </svg>
+                                    <span>Learning Assistant</span>
+                                </div>
+                                <div class="app-title">数据库导论</div>
+                            </div>
+                            <div class="app-tools">
+                                <button class="icon-button" type="button" aria-label="课程笔记" title="课程笔记">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="通知" title="通知">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7M10 20h4"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="邮箱" title="邮箱">
+                                    <span class="tool-badge">2</span>
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M3 5h18v14H3zM3 6l9 7 9-7"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="学习资料" title="学习资料">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M6 3h9l4 4v14H6zM15 3v5h4"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </header>
+
+                        <div class="app-body reader-layout">
+                            <aside class="course-sidebar">
+                                <section class="course-summary">
+                                    <div class="course-summary-main">
+                                        <div class="book-cover">
+                                            <strong>数据库<br>导论</strong>
+                                            <small>FOUNDATIONS</small>
+                                        </div>
+                                        <div>
+                                            <h2>数据库导论</h2>
+                                            <span class="status-chip">学习中</span>
+                                            <p class="course-description">从关系模型到查询优化，建立完整的数据库基础认知。</p>
+                                        </div>
+                                    </div>
+                                    <div class="progress-block">
+                                        <div class="progress-row">
+                                            <span>当前推进</span>
+                                            <strong>42%</strong>
+                                        </div>
+                                        <div class="progress-track"><span></span></div>
+                                    </div>
+                                </section>
+
+                                <section class="assistant-panel">
+                                    <div class="assistant-label">边读边问</div>
+                                    <p class="assistant-copy">可以结合当前教材内容和学习上下文继续提问，回答会保留章节语境。</p>
+                                    <div class="assistant-answer">索引通过额外的数据结构缩小查询范围，但会增加写入和维护成本。</div>
+                                    <form class="ask-form">
+                                        <textarea aria-label="向学习助手提问" placeholder="结合当前章节继续提问..."></textarea>
+                                        <button class="ask-submit" type="submit" aria-label="发送问题" title="发送问题">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path d="M5 12h14M13 6l6 6-6 6"></path>
+                                            </svg>
+                                        </button>
+                                    </form>
+                                </section>
+                            </aside>
+
+                            <article class="reading-pane">
+                                <div class="reading-tools">
+                                    <button class="reading-tool" type="button" aria-label="返回" title="返回">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path d="M15 18l-6-6 6-6"></path>
+                                        </svg>
+                                    </button>
+                                    <button class="reading-tool" type="button" aria-label="标记完成" title="标记完成">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path d="M5 12l4 4L19 6"></path>
+                                        </svg>
+                                    </button>
+                                    <button class="reading-tool" type="button" aria-label="添加笔记" title="添加笔记">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"></path>
+                                        </svg>
+                                    </button>
+                                </div>
+
+                                <div class="reading-document">
+                                    <div class="document-kicker">参考教材 · 数据库系统基础</div>
+                                    <h2>数据库系统概述与基本概念</h2>
+                                    <h3>导读</h3>
+                                    <p>本节从数据组织、持久化与访问方式出发，建立数据库管理系统的整体认识。读完后，你应能够解释数据库系统在信息系统中的作用。</p>
+                                    <ol>
+                                        <li>数据库系统如何组织和维护数据；</li>
+                                        <li>关系模型如何表达实体之间的联系；</li>
+                                        <li>查询语言如何把业务问题转化为数据操作。</li>
+                                    </ol>
+                                    <h3>原文阅读</h3>
+                                    <div class="reader-quote">数据库管理系统为数据定义、存储、检索和维护提供统一能力。它将应用逻辑与底层数据组织适度分离，使数据能够被安全、稳定地共享和使用。</div>
+                                    <div class="video-resource">
+                                        <div class="video-poster">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path d="M8 5l11 7-11 7z"></path>
+                                            </svg>
+                                        </div>
+                                        <div>
+                                            <strong>关系模型与表结构入门</strong>
+                                            <small>根据本节知识点关联的视频学习资源</small>
+                                        </div>
+                                        <span class="resource-source">网络资源 · 12 分钟</span>
+                                    </div>
+                                </div>
+                            </article>
+
+                            <aside class="outline-sidebar">
+                                <div class="outline-tabs" role="tablist" aria-label="课程侧栏">
+                                    <button class="outline-tab is-active" type="button" role="tab" aria-selected="true">学习大纲</button>
+                                    <button class="outline-tab" type="button" role="tab" aria-selected="false">学习报告</button>
+                                </div>
+                                <div class="outline-list">
+                                    <button class="outline-item is-active" type="button">
+                                        <span class="outline-number">1</span>
+                                        <span><strong>参考资料</strong><small>可学习</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number is-recommended">2</span>
+                                        <span><strong>任务 1 · 数据库环境</strong><small class="is-recommended">推荐</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number is-recommended">3</span>
+                                        <span><strong>任务 2 · SQL 基础</strong><small class="is-recommended">推荐</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number">4</span>
+                                        <span><strong>第 1 章 · 关系模型</strong><small>可学习</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number is-recommended">5</span>
+                                        <span><strong>任务 3 · 查询优化</strong><small class="is-recommended">推荐</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number">6</span>
+                                        <span><strong>第 2 章 · 索引结构</strong><small>可学习</small></span>
+                                    </button>
+                                    <button class="outline-item" type="button">
+                                        <span class="outline-number is-recommended">7</span>
+                                        <span><strong>章节综合练习</strong><small class="is-recommended">推荐</small></span>
+                                    </button>
+                                </div>
+                            </aside>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </section>
+        </section>
+
+        <section class="showcase-page process-showcase" aria-label="章节学习与交流">
+
+            <div class="background-grid" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+<section class="showcase-stage" aria-labelledby="processShowcaseTitle">
+            <div class="showcase-copy">
+                <p class="showcase-kicker">理解、检验、交流</p>
+                <h1 id="processShowcaseTitle" class="showcase-title">读完一章，立即知道掌握多少。</h1>
+                <p class="showcase-lead">AI 先生成章节导读，阅读完成后自动准备小测。邮箱与公共动态承接后续学习交流。</p>
+
+                <div class="feature-list">
+                    <article class="feature-item">
+                        <span class="feature-index">03</span>
+                        <div>
+                            <h2>章节导读与阅读后测评自动接续</h2>
+                        </div>
+                    </article>
+                    <article class="feature-item">
+                        <span class="feature-index">04</span>
+                        <div>
+                            <h2>用邮箱和公共动态分享问题与心得</h2>
+                        </div>
+                    </article>
+                </div>
+            </div>
+
+            <div class="interface-clip" aria-label="教材处理和章节测评工作区预览">
+                <div class="interface-frame">
+                    <section class="app-shell">
+                        <header class="app-topbar">
+                            <div class="app-identity">
+                                <div class="app-brand">Nexora<span>.</span></div>
+                                <div class="app-area is-muted">Learning</div>
+                                <div class="app-area">Workspace</div>
+                            </div>
+                            <div class="app-centerbar">
+                                <div class="app-model">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                                        <path d="M9 4v16"></path>
+                                    </svg>
+                                    <span>Multi-Agent Workspace</span>
+                                </div>
+                                <div class="app-title">教材与章节准备</div>
+                            </div>
+                            <div class="app-tools">
+                                <button class="icon-button" type="button" aria-label="公共动态" title="公共动态">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M4 6h16v11H8l-4 3zM8 10h8M8 13h5"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="通知" title="通知">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7M10 20h4"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="邮箱" title="邮箱">
+                                    <span class="tool-badge">3</span>
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M3 5h18v14H3zM3 6l9 7 9-7"></path>
+                                    </svg>
+                                </button>
+                                <button class="icon-button" type="button" aria-label="教材" title="教材">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M4 5h6a3 3 0 0 1 3 3v11a3 3 0 0 0-3-3H4zM20 5h-4a3 3 0 0 0-3 3v11a3 3 0 0 1 3-3h4z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </header>
+
+                        <div class="app-body process-layout">
+                            <aside class="material-sidebar">
+                                <div class="material-sidebar-head">
+                                    <strong>教材列表</strong>
+                                    <button class="material-add" type="button" aria-label="添加教材" title="添加教材">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path d="M12 5v14M5 12h14"></path>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <button class="material-item is-active" type="button">
+                                    <span class="mini-cover">数据库<br>管理系统</span>
+                                    <span>
+                                        <strong>数据库系统基础</strong>
+                                        <small>数据库导论 · 6/6</small>
+                                    </span>
+                                </button>
+                                <button class="material-item" type="button">
+                                    <span class="mini-cover is-purple">向量检索<br>与应用</span>
+                                    <span>
+                                        <strong>向量数据库与检索</strong>
+                                        <small>扩展课程 · 6/6</small>
+                                    </span>
+                                </button>
+                            </aside>
+
+                            <section class="process-content">
+                                <header class="material-banner">
+                                    <div class="mini-cover">数据库<br>管理系统</div>
+                                    <div>
+                                        <h2>数据库系统基础</h2>
+                                        <p>数据库导论 · file · ready · 教材解析任务已完成</p>
+                                    </div>
+                                    <button class="edit-button" type="button">编辑资料</button>
+                                </header>
+
+                                <div class="process-tabs" role="tablist" aria-label="教材工作区栏目">
+                                    <button class="process-tab is-active" type="button" role="tab" aria-selected="true" data-tab-group="process" data-tab="pipeline">处理流程</button>
+                                    <button class="process-tab" type="button" role="tab" aria-selected="false" data-tab-group="process" data-tab="assessment">章节测评</button>
+                                </div>
+
+                                <div class="process-panel pipeline-panel is-active" data-panel-group="process" data-panel="pipeline">
+                                    <section class="pipeline-steps">
+                                        <div class="pipeline-heading">
+                                            <h3>教材处理进度</h3>
+                                            <span class="pipeline-status">6/6 完成</span>
+                                        </div>
+                                        <div class="pipeline-list">
+                                            <article class="pipeline-step">
+                                                <span class="step-number">01</span>
+                                                <span><strong>概读</strong><small>分析教材结构</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                            <article class="pipeline-step">
+                                                <span class="step-number">02</span>
+                                                <span><strong>精读</strong><small>深度分析内容</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                            <article class="pipeline-step">
+                                                <span class="step-number">03</span>
+                                                <span><strong>分节</strong><small>拆分章节单元</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                            <article class="pipeline-step">
+                                                <span class="step-number">04</span>
+                                                <span><strong>导读</strong><small>生成章节导引</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                            <article class="pipeline-step">
+                                                <span class="step-number">05</span>
+                                                <span><strong>批注</strong><small>生成学习批注</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                            <article class="pipeline-step">
+                                                <span class="step-number">06</span>
+                                                <span><strong>视频</strong><small>关联网络资源</small></span>
+                                                <span class="step-status">已完成</span>
+                                            </article>
+                                        </div>
+                                    </section>
+
+                                    <section class="model-activity">
+                                        <h3>模型活动</h3>
+                                        <div class="activity-log">
+                                            <article class="activity-row">
+                                                <span class="activity-icon">
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                        <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"></path>
+                                                    </svg>
+                                                </span>
+                                                <span><strong>内容解析智能体</strong><small>已识别 12 个章节与 48 个核心知识点</small></span>
+                                                <span class="activity-time">刚刚</span>
+                                            </article>
+                                            <article class="activity-row">
+                                                <span class="activity-icon">
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                        <path d="M8 5l11 7-11 7z"></path>
+                                                    </svg>
+                                                </span>
+                                                <span><strong>资源智能体</strong><small>已生成课程介绍视频并关联 9 项外部资源</small></span>
+                                                <span class="activity-time">1 分钟前</span>
+                                            </article>
+                                            <article class="activity-row">
+                                                <span class="activity-icon">
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                        <path d="M5 12l4 4L19 6"></path>
+                                                    </svg>
+                                                </span>
+                                                <span><strong>测评智能体</strong><small>章节导读与阅读后小测已准备完成</small></span>
+                                                <span class="activity-time">2 分钟前</span>
+                                            </article>
+                                        </div>
+                                    </section>
+                                </div>
+
+                                <div class="process-panel assessment-panel" data-panel-group="process" data-panel="assessment">
+                                    <section class="assessment-main">
+                                        <div class="assessment-kicker">阅读前准备</div>
+                                        <h3>参考资料 · 数据库基础</h3>
+                                        <p class="assessment-intro">回答以下问题，系统将据此调整章节导读和练习难度。</p>
+                                        <div class="question-card">
+                                            <h4>你对关系模型、主键与数据约束的了解程度如何？</h4>
+                                            <div class="answer-list">
+                                                <button class="answer-option" type="button">
+                                                    <span class="answer-radio"></span>
+                                                    <span>尚不了解，希望从基本概念开始学习</span>
+                                                </button>
+                                                <button class="answer-option" type="button">
+                                                    <span class="answer-radio"></span>
+                                                    <span>了解基本概念，但还没有完成过综合练习</span>
+                                                </button>
+                                                <button class="answer-option" type="button">
+                                                    <span class="answer-radio"></span>
+                                                    <span>有一定基础，可以直接进入案例与实践</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <aside class="community-panel">
+                                        <div class="community-head">公共学习动态</div>
+                                        <article class="community-item">
+                                            <span class="community-avatar">L</span>
+                                            <div>
+                                                <strong>学习小组 · 数据库课程</strong>
+                                                <p>分享了一份关于范式与数据冗余的章节笔记。</p>
+                                                <div class="community-meta"><span>课程讨论</span><span>10 分钟前</span></div>
+                                            </div>
+                                        </article>
+                                        <article class="community-item">
+                                            <span class="community-avatar">R</span>
+                                            <div>
+                                                <strong>资源协作</strong>
+                                                <p>补充了一个讲解 B+ 树索引的公开视频。</p>
+                                                <div class="community-meta"><span>资源分享</span><span>今天</span></div>
+                                            </div>
+                                        </article>
+                                        <article class="community-item">
+                                            <span class="community-avatar">M</span>
+                                            <div>
+                                                <strong>站内邮箱</strong>
+                                                <p>收到一封关于下周学习计划的课程消息。</p>
+                                                <div class="community-meta"><span>未读邮件</span><span>今天</span></div>
+                                            </div>
+                                        </article>
+                                    </aside>
+                                </div>
+                            </section>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </section>
+        </section>
+        <div class="learning-lower">
+        <section id="workflow" class="section" aria-labelledby="workflowTitle">
+            <div class="section-inner">
+                <p class="section-label">持续学习，而不是一次性问答</p>
+                <h2 id="workflowTitle">从学习目标到真正掌握，过程始终有迹可循。</h2>
+                <p class="section-lead">NexoraLearning 将课程推进、练习反馈和学习资源组织在同一条路径中，让学习者清楚知道现在在哪里，接下来要做什么。</p>
+
+                <div class="learning-flow">
+                    <article class="flow-step">
+                        <span class="flow-number">01</span>
+                        <h3>建立学习路径</h3>
+                        <p>围绕课程目标拆分阶段任务，把章节、知识点和练习顺序组织成可执行的计划。</p>
+                    </article>
+                    <article class="flow-step">
+                        <span class="flow-number">02</span>
+                        <h3>在内容中练习</h3>
+                        <p>阅读、实验、题目和讨论彼此关联，让新知识在使用中完成理解与巩固。</p>
+                    </article>
+                    <article class="flow-step">
+                        <span class="flow-number">03</span>
+                        <h3>根据反馈调整</h3>
+                        <p>从完成度、答题表现和学习节奏中更新建议，形成下一轮更合适的学习安排。</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="profile" class="section profile-section" aria-labelledby="profileTitle">
+            <div class="section-inner profile-layout">
+                <div class="profile-copy">
+                    <p class="section-label">学习画像</p>
+                    <h2 id="profileTitle">反馈不只是一组分数，而是下一步行动。</h2>
+                    <p class="section-lead">系统持续整理掌握度、学习节奏和练习表现，把复杂记录转化为具体、可执行的学习建议。</p>
+                </div>
+
+                <div class="profile-visual" aria-label="示例学习画像">
+                    <span class="profile-visual-cell"></span><span class="profile-visual-cell"></span><span class="profile-visual-cell"></span><span class="profile-visual-cell"></span>
+                    <span class="profile-visual-cell"></span><span class="profile-visual-cell"></span><span class="profile-visual-cell"></span><span class="profile-visual-cell"></span>
+                    <article class="profile-card">
+                        <div class="profile-ring"><span>72</span></div>
+                        <div>
+                            <h3>本周学习状态</h3>
+                            <p>概念理解保持稳定，建议下一阶段增加综合查询练习，并在两天后回顾关系模型。</p>
+                            <div class="dimension-list">
+                                <div class="dimension-row">
+                                    <span>概念掌握</span>
+                                    <span class="dimension-bar"><span style="width: 78%"></span></span>
+                                    <span>78</span>
+                                </div>
+                                <div class="dimension-row">
+                                    <span>练习表现</span>
+                                    <span class="dimension-bar"><span style="width: 66%"></span></span>
+                                    <span>66</span>
+                                </div>
+                                <div class="dimension-row">
+                                    <span>学习节奏</span>
+                                    <span class="dimension-bar"><span style="width: 73%"></span></span>
+                                    <span>73</span>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="capabilities" class="section capability-section" aria-labelledby="capabilityTitle">
+            <div class="section-inner">
+                <p class="section-label">学习工作区</p>
+                <h2 id="capabilityTitle">每种学习活动，都在同一套上下文中发生。</h2>
+                <p class="section-lead">课程内容、学习资源、模拟练习和动态协作不再分散，学习过程可以自然地从理解走向应用。</p>
+
+                <div class="capability-grid">
+                    <article class="capability">
+                        <div class="capability-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                <path d="M4 5h6a3 3 0 0 1 3 3v11a3 3 0 0 0-3-3H4zM20 5h-4a3 3 0 0 0-3 3v11a3 3 0 0 1 3-3h4z"></path>
+                            </svg>
+                        </div>
+                        <h3>课程路径</h3>
+                        <p>清楚呈现当前任务、整体进度与后续安排。</p>
+                    </article>
+                    <article class="capability">
+                        <div class="capability-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                <path d="M6 3h12v18H6zM9 7h6M9 11h6M9 15h4"></path>
+                            </svg>
+                        </div>
+                        <h3>学习资源</h3>
+                        <p>按章节聚合讲义、笔记与扩展材料，随时回到上下文。</p>
+                    </article>
+                    <article class="capability">
+                        <div class="capability-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                <path d="M5 4h14v16H5zM8 8h8M8 12h5M8 16h3"></path>
+                                <path d="M15 14l1.5 1.5L20 12"></path>
+                            </svg>
+                        </div>
+                        <h3>模拟练习</h3>
+                        <p>针对当前知识阶段组织练习，并把结果带回学习建议。</p>
+                    </article>
+                    <article class="capability">
+                        <div class="capability-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                <path d="M4 6h16v11H8l-4 3zM8 10h8M8 13h5"></path>
+                            </svg>
+                        </div>
+                        <h3>学习动态</h3>
+                        <p>围绕课程讨论、分享进度，在共同学习中补充理解。</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+        </div>
+    </main>
+
+    <footer class="site-footer">
+        <div>
+            <div class="footer-brand">NexoraLearning</div>
+            <p>让学习过程清楚、连贯、可持续。</p>
+        </div>
+        <a class="footer-link" href="#top">返回顶部</a>
+    </footer>
+
+    <script src="/assets/js/public-site-landing.js?v=20260706_public_site_assets_01"></script>
+    <script>
+/** 管理两个 NexoraLearning 展示页中的标签、选项和局部预览交互。 */
+class NexoraShowcase {
+    constructor(root = document) {
+        this.root = root;
+    }
+
+    init() {
+        this.bindTabGroups();
+        this.bindSingleSelect(".outline-item");
+        this.bindSingleSelect(".material-item");
+        this.bindSingleSelect(".answer-option");
+        this.bindQuestionForm();
+    }
+
+    /** 以 data-tab-group 为边界切换对应的内容面板。 */
+    bindTabGroups() {
+        const tabGroups = new Set(
+            [...this.root.querySelectorAll("[data-tab-group]")].map((tab) => tab.dataset.tabGroup)
+        );
+
+        tabGroups.forEach((groupName) => {
+            const tabs = [...this.root.querySelectorAll(`[data-tab-group="${groupName}"]`)];
+            const panels = [...this.root.querySelectorAll(`[data-panel-group="${groupName}"]`)];
+
+            tabs.forEach((tab) => {
+                tab.addEventListener("click", () => {
+                    tabs.forEach((candidate) => {
+                        const isActive = candidate === tab;
+                        candidate.classList.toggle("is-active", isActive);
+                        candidate.setAttribute("aria-selected", String(isActive));
+                    });
+
+                    panels.forEach((panel) => {
+                        panel.classList.toggle("is-active", panel.dataset.panel === tab.dataset.tab);
+                    });
+                });
+            });
+        });
+    }
+
+    /** 让同一区域内只有一个项目保持选中状态。 */
+    bindSingleSelect(selector) {
+        const items = [...this.root.querySelectorAll(selector)];
+
+        items.forEach((item) => {
+            item.addEventListener("click", () => {
+                const container = item.parentElement;
+
+                [...container.querySelectorAll(selector)].forEach((candidate) => {
+                    candidate.classList.toggle("is-active", candidate === item);
+                    candidate.classList.toggle("is-selected", candidate === item);
+                });
+            });
+        });
+    }
+
+    /** 在展示稿中回显提问内容，避免按钮成为无响应装饰。 */
+    bindQuestionForm() {
+        const form = this.root.querySelector(".ask-form");
+
+        if (!form) {
+            return;
+        }
+
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const input = form.querySelector("textarea");
+            const answer = this.root.querySelector(".assistant-answer");
+            const question = input.value.trim();
+
+            if (!question) {
+                input.focus();
+                return;
+            }
+
+            answer.textContent = `已结合当前章节记录问题：“${question}”。展示页面不会发送真实请求。`;
+            input.value = "";
+        });
+    }
+}
+
+const showcase = new NexoraShowcase();
+showcase.init();
+
+    </script>
+</body>
+</html>

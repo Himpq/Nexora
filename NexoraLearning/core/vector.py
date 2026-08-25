@@ -19,6 +19,7 @@ from .lectures import (
     update_lecture,
 )
 from .utils import CHUNK_OVERLAP, CHUNK_SIZE, chunk_text
+from .runlog import log_event
 
 # NexoraDB 用 username 作为 collection 分区键；
 # NexoraLearning 使用固定 username，用 library 区分课程或讲座。
@@ -491,6 +492,11 @@ def queue_vectorize_book(
 
     with _THREAD_LOCK:
         update_book(cfg, lecture_id, book_id, {"vector_status": "queued", "error": ""})
+        log_event(
+            "book_vectorize_queue",
+            "教材已加入向量化队列",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "force": bool(force)},
+        )
         threading.Thread(
             target=_vectorize_book_safe,
             args=(dict(cfg), lecture_id, book_id, force),
@@ -502,6 +508,21 @@ def queue_vectorize_book(
 def _vectorize_book_safe(cfg: Dict[str, Any], lecture_id: str, book_id: str, force: bool) -> None:
     """后台线程安全包装。"""
     try:
-        vectorize_book(cfg, lecture_id, book_id, force=force)
+        result = vectorize_book(cfg, lecture_id, book_id, force=force)
+        log_event(
+            "book_vectorize_done",
+            "教材向量化完成",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chunks_count": int((result or {}).get("chunks_count") or 0),
+                "vector_count": int((result or {}).get("vector_count") or 0),
+            },
+        )
     except Exception as exc:
         update_book(cfg, lecture_id, book_id, {"vector_status": "error", "error": str(exc)})
+        log_event(
+            "book_vectorize_error",
+            "教材向量化失败",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "error": str(exc)},
+        )
