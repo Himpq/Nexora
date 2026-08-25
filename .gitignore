@@ -15,7 +15,7 @@ NexoraCode/data/
 NexoraCode/temp/
 NexoraCode/renderer_cookies.lwp
 todolist
-NexoraLearning/data
+NexoraLearning/data/
 NEXORALEARNING_WORKING.md
 ChatDBServer/api/conversation_repair.py
 venv
@@ -43,6 +43,26 @@ NexoraLearning/tests/test_cognition_course_catalog.py
 NexoraLearning/frontend/assets/vendor/echarts/LICENSE
 .arts
 
+# Local environments and credentials. Keep only sanitized *.env.example files.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local教材/imports and generated processing artifacts.
+**/*.epub
+NexoraLearning/logs/
+HarmonyosData/generated/
+HarmonyosData/local/
+HarmonyosData/*.docx
+HarmonyosData/*.pdf
+HarmonyosData/*.zip
+HarmonyosData/*.mp4
+HarmonyosData/*.jpg
+# Extracted competition forms may contain team members' personal information.
+HarmonyosData/_doc.txt
 data/
 NexoraSearch/storage
 .npm-cache/
