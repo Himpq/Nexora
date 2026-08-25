@@ -181,7 +181,7 @@ def ensure_bootstrap():
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
         print(f"[BOOTSTRAP] Created default config at {CONFIG_PATH}")
-        return config
+        return _apply_environment_overrides(config)
     
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         loaded = json.load(f)
@@ -190,7 +190,37 @@ def ensure_bootstrap():
     if normalized != loaded:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(normalized, f, indent=4, ensure_ascii=False)
-    return normalized
+    return _apply_environment_overrides(normalized)
+
+
+def _apply_environment_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply deployment-only settings without persisting secrets to config.json."""
+    cfg = config
+    nexora = cfg.setdefault("nexora", {})
+    nexoradb = cfg.setdefault("nexoradb", {})
+    runtime_api = cfg.setdefault("runtime_api", {})
+
+    scalar_overrides = (
+        ("NEXORALEARNING_NEXORA_BASE_URL", nexora, "base_url"),
+        ("NEXORALEARNING_NEXORA_API_KEY", nexora, "api_key"),
+        ("NEXORALEARNING_NEXORA_TARGET_USERNAME", nexora, "target_username"),
+        ("NEXORALEARNING_NEXORADB_SERVICE_URL", nexoradb, "service_url"),
+        ("NEXORALEARNING_NEXORADB_API_KEY", nexoradb, "api_key"),
+        ("NEXORALEARNING_RUNTIME_API_KEY", runtime_api, "api_key"),
+    )
+    for env_name, target, key in scalar_overrides:
+        value = str(os.environ.get(env_name) or "").strip()
+        if value:
+            target[key] = value
+
+    port_value = str(os.environ.get("NEXORALEARNING_PORT") or "").strip()
+    if port_value:
+        try:
+            cfg["port"] = max(1, min(65535, int(port_value)))
+        except ValueError:
+            pass
+
+    return cfg
 
 
 def _normalize_config_paths(config):
@@ -246,6 +276,10 @@ def create_app():
     from api.learning_progress import learning_progress_bp, init_learning_progress
     init_learning_progress(cfg)
     app.register_blueprint(learning_progress_bp)
+
+    from api.agent_facade import agent_facade_bp, init_agent_facade
+    init_agent_facade(cfg)
+    app.register_blueprint(agent_facade_bp)
 
     @app.route("/health")
     def health():

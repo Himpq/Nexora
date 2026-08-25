@@ -15721,6 +15721,48 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     renderUploadLectureInputDefault();
   }
 
+  // Agent Facade returns a controlled deep link. Keep this entry point narrow:
+  // only URLs explicitly marked source=agent may drive the learning workspace.
+  async function openAgentEntryFromQuery() {
+    const query = new URLSearchParams(window.location.search || "");
+    if (String(query.get("source") || "").trim().toLowerCase() !== "agent") return;
+
+    const lectureId = String(query.get("lecture_id") || "").trim();
+    const bookId = String(query.get("book_id") || "").trim();
+    const chapterIndex = Number(query.get("chapter_index"));
+    if (!lectureId || !bookId) return;
+
+    const lectureRow = state.allLectureRows.find(
+      (row) => String((row && row.lecture && row.lecture.id) || "").trim() === lectureId,
+    );
+    if (!lectureRow) {
+      showToast("Agent 指定的课程当前不可用");
+      return;
+    }
+
+    openLectureHome(lectureId, { returnTarget: "dashboard" });
+    await Promise.resolve();
+
+    const bookItem = el.courseHomePane
+      ? Array.from(el.courseHomePane.querySelectorAll(".book-item[data-book-id]")).find(
+          (node) => String(node.getAttribute("data-book-id") || "").trim() === bookId,
+        )
+      : null;
+    if (!(bookItem instanceof Element)) {
+      showToast("Agent 指定的教材当前不可用");
+      return;
+    }
+
+    await handleCourseHomeClick({ target: bookItem });
+    const index = Number.isInteger(chapterIndex) && chapterIndex >= 0 ? chapterIndex : 0;
+    const catalogItem = el.courseHomeContent
+      ? el.courseHomeContent.querySelector(`[data-material-catalog-index="${index}"]`)
+      : null;
+    if (catalogItem instanceof Element) {
+      await handleCatalogClick({ target: catalogItem, preventDefault() {}, stopPropagation() {} });
+    }
+  }
+
   async function createLectureWithPayload(payload) {
     const title = String(payload && payload.title || "").trim();
     const category = String(payload && payload.category || "").trim();
@@ -17646,6 +17688,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     updateAdminVisibility();
     await refreshAll();
     bindEvents();
+    await openAgentEntryFromQuery();
   }
 
   init().catch((err) => {
