@@ -148,28 +148,3 @@
     --file-icon-tone-code: #c4b5fd;
 }
 
-/* 文件图标暗色适配(浅彩底 -> 中性表面) */
-[data-theme='dark'] .file-center-file-icon {
-    background: var(--color-bg-hover);
-}
-
-[data-theme='dark'] .file-center-folder-card .file-center-file-icon {
-    background: var(--color-bg-hover);
-}
-
-[data-theme='dark'] .file-center-file-icon.tone-pdf {
-    color: var(--file-icon-tone-pdf);
-}
-
-[data-theme='dark'] .file-center-file-icon.tone-slide,
-[data-theme='dark'] .file-center-folder-card .file-center-file-icon {
-    color: var(--file-icon-tone-slide);
-}
-
-[data-theme='dark'] .file-center-file-icon.tone-archive {
-    color: var(--file-icon-tone-archive);
-}
-
-[data-theme='dark'] .file-center-file-icon.tone-code {
-    color: var(--file-icon-tone-code);
-}

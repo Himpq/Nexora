@@ -125,8 +125,8 @@
                         @close="backToChat"
                         @open-detail="openFileDetail"
                     />
-                    <section v-else class="file-center-view" aria-label="Files">
-                        <div class="file-center-shell">
+                    <section v-else class="gddp-files-view" aria-label="Files">
+                        <div class="gddp-files-shell">
                             <FileDetailView :file="fileDetail" @deleted="fileDetail = null" />
                         </div>
                     </section>

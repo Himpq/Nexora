@@ -9,7 +9,7 @@
 -->
 
 <template>
-    <section class="file-center-view mail-center-view" aria-label="Mail">
+    <section class="gddp-files-view mail-center-view" aria-label="Mail">
         <div class="mail-center-shell">
             <div class="mail-center-head">
                 <div>

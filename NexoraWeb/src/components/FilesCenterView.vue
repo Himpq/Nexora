@@ -2,25 +2,25 @@
     FilesCenterView.vue — 文件中心(对齐原版 openFilesFrameView 的 home 视图)
 
     设计:
-      - 复用原版全局样式类(.file-center-view / -shell / -head / -list / -card 等,来自 chat_files.css)
+      - 样式走 styles/files-center.css(gddp-files-* 域类,自 legacy/style.css 收编)
       - 文件列表(卡片网格) + 搜索 + 排序 + 上传 + 刷新 + 返回
       - 点击文件选中,双击打开详情(文本预览);删除/下载走右上角操作
       - 视图切换由父级控制(替换主内容区)
 -->
 
 <template>
-    <section class="file-center-view" aria-label="Files">
-        <div class="file-center-shell" id="fileCenterShell">
-            <div class="file-center-head">
+    <section class="gddp-files-view" aria-label="Files">
+        <div class="gddp-files-shell" id="fileCenterShell">
+            <div class="gddp-files-head">
                 <div>
                     <h1>Files</h1>
-                    <div class="file-center-count-line">
+                    <div class="gddp-files-count-line">
                         <span id="fileCenterCount">{{ files.length }}</span>
                         <span>项</span>
                     </div>
-                    <div class="file-center-breadcrumb" id="fileCenterBreadcrumb">{{ currentPath || '全部文件' }}</div>
+                    <div class="gddp-files-breadcrumb" id="fileCenterBreadcrumb">{{ currentPath || '全部文件' }}</div>
                 </div>
-                <div class="file-center-actions">
+                <div class="gddp-files-actions">
                     <Button
                         variant="secondary"
                         size="icon"
@@ -30,7 +30,7 @@
                         :disabled="!currentPath"
                         @click="goBack"
                     />
-                    <label class="file-center-search">
+                    <label class="gddp-files-search">
                         <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
                         <input
                             v-model="query"
@@ -44,7 +44,7 @@
                         v-model="sortBy"
                         :options="sortOptions"
                         width="150px"
-                        popover-key="file-center-sort"
+                        popover-key="files-sort"
                     />
                     <Button
                         variant="secondary"
@@ -79,15 +79,15 @@
                 </div>
             </div>
 
-            <div class="file-center-layout">
-                <div class="file-center-list" role="listbox" aria-label="文件列表">
-                    <div v-if="loading" class="file-center-empty">加载中...</div>
-                    <div v-else-if="!files.length" class="file-center-empty">暂无文件</div>
+            <div class="gddp-files-layout">
+                <div class="gddp-files-list" role="listbox" aria-label="文件列表">
+                    <div v-if="loading" class="gddp-files-empty">加载中...</div>
+                    <div v-else-if="!files.length" class="gddp-files-empty">暂无文件</div>
                     <template v-else>
                         <div
                             v-for="file in sortedFiles"
                             :key="fileRef(file)"
-                            class="file-center-card"
+                            class="gddp-files-card"
                             :class="{ active: selectedRef === fileRef(file) }"
                             role="option"
                             tabindex="0"
@@ -97,12 +97,12 @@
                             @dblclick="openDetail(file)"
                             @contextmenu.prevent="openFileMenu($event, file)"
                         >
-                            <div class="file-center-card-icon-wrap">
-                                <span class="file-center-file-icon" :class="fileToneClass(file)">
+                            <div class="gddp-files-card-icon-wrap">
+                                <span class="gddp-files-file-icon" :class="fileToneClass(file)">
                                     <i :class="fileIconClass(file)" aria-hidden="true"></i>
                                 </span>
                             </div>
-                            <div class="file-center-card-name">{{ fileDisplayName(file) }}</div>
+                            <div class="gddp-files-card-name">{{ fileDisplayName(file) }}</div>
                         </div>
                     </template>
                 </div>

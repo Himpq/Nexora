@@ -2,37 +2,37 @@
     FileDetailView.vue — 文件详情(对齐原版 openFileCenterFileDetail + loadFileCenterDetailContent)
 
     设计:
-      - 复用原版全局样式类(.file-center-detail / -head / -title / -meta / -content 等)
+      - 样式走 styles/files-center.css(gddp-files-* 域类,自 legacy/style.css 收编)
       - 文本文件走 /api/files/read 预览;图片文件走 inline 下载 URL
       - 返回按钮回到文件列表
 -->
 
 <template>
-    <div v-if="file" class="file-center-detail">
-        <div class="file-center-detail-head">
-            <span class="file-center-file-icon" :class="fileToneClass(file)" aria-hidden="true">
+    <div v-if="file" class="gddp-files-detail">
+        <div class="gddp-files-detail-head">
+            <span class="gddp-files-file-icon" :class="fileToneClass(file)" aria-hidden="true">
                 <i :class="fileIconClass(file)"></i>
             </span>
-            <div class="file-center-detail-title">
+            <div class="gddp-files-detail-title">
                 <h1 :title="fileDisplayName(file)">{{ fileDisplayName(file) }}</h1>
-                <div class="file-center-detail-meta">{{ metaText }}</div>
+                <div class="gddp-files-detail-meta">{{ metaText }}</div>
             </div>
-            <div class="file-center-detail-actions">
+            <div class="gddp-files-detail-actions">
                 <Button variant="secondary" size="icon" icon="fa-solid fa-download" title="下载文件" aria-label="下载文件" @click="handleDownload" />
                 <Button variant="danger" size="icon" icon="fa-solid fa-trash-can" title="删除文件" aria-label="删除文件" @click="handleDelete" />
             </div>
         </div>
-        <div class="file-center-detail-content" id="fileCenterDetailContent">
-            <div v-if="loading" class="file-center-empty">加载中...</div>
-            <div v-else-if="isImageFile(file)" class="file-center-detail-image-wrap">
+        <div class="gddp-files-detail-content" id="fileCenterDetailContent">
+            <div v-if="loading" class="gddp-files-empty">加载中...</div>
+            <div v-else-if="isImageFile(file)" class="gddp-files-detail-image-wrap">
                 <img
-                class="file-center-detail-image"
+                class="gddp-files-detail-image"
                 :src="fileDownloadUrl(fileRef(file), true)"
                 :alt="fileDisplayName(file)"
                 >
             </div>
-            <pre v-else-if="content" class="file-center-detail-pre">{{ content }}</pre>
-            <div v-else class="file-center-detail-empty">文件内容为空</div>
+            <pre v-else-if="content" class="gddp-files-detail-pre">{{ content }}</pre>
+            <div v-else class="gddp-files-detail-empty">文件内容为空</div>
         </div>
     </div>
 </template>
@@ -158,7 +158,7 @@
 
 <style scoped>
     /* 详情头部操作区(下载/删除右对齐) */
-    .file-center-detail-actions {
+    .gddp-files-detail-actions {
         margin-left: auto;
         display: flex;
         align-items: center;
