@@ -211,7 +211,7 @@
                 />
                 <input
                     v-model="adjustPopover.input"
-                    class="input-modern"
+                    class="gddp-input"
                     type="number"
                     min="0"
                     step="1"
@@ -228,23 +228,23 @@
 
         <!-- 添加/编辑模型弹窗 -->
         <Modal :open="modelFormOpen" :title="editingModel ? '编辑模型' : '添加模型'" size="sm" @close="modelFormOpen = false">
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>供应商</label>
                 <SettingSelect v-model="modelForm.provider" :options="providerSelectOptions" width="100%" />
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminModelId">模型 ID</label>
-                <input id="adminModelId" v-model="modelForm.model_id" class="input-modern" type="text" maxlength="120" placeholder="例如:my-model-v1">
+                <input id="adminModelId" v-model="modelForm.model_id" class="gddp-input" type="text" maxlength="120" placeholder="例如:my-model-v1">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminModelName">名称(可选)</label>
-                <input id="adminModelName" v-model="modelForm.name" class="input-modern" type="text" maxlength="120" placeholder="默认同模型 ID">
+                <input id="adminModelName" v-model="modelForm.name" class="gddp-input" type="text" maxlength="120" placeholder="默认同模型 ID">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminModelCtx">Context Window(可选)</label>
-                <input id="adminModelCtx" v-model="modelForm.context_window" class="input-modern" type="number" min="0" placeholder="例如:128000">
+                <input id="adminModelCtx" v-model="modelForm.context_window" class="gddp-input" type="number" min="0" placeholder="例如:128000">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>状态</label>
                 <SettingSelect v-model="modelForm.status" :options="modelStatusOptions" width="100%" />
             </div>
@@ -256,29 +256,29 @@
 
         <!-- 添加/编辑供应商弹窗 -->
         <Modal :open="providerFormOpen" :title="editingProvider ? '编辑供应商' : '添加供应商'" size="lg" @close="providerFormOpen = false">
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminProviderName">供应商名称</label>
-                <input id="adminProviderName" v-model="providerForm.provider" class="input-modern" type="text" maxlength="80" placeholder="例如:openai">
+                <input id="adminProviderName" v-model="providerForm.provider" class="gddp-input" type="text" maxlength="80" placeholder="例如:openai">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>接口类型</label>
                 <SettingSelect v-model="providerForm.api_type" :options="providerTypeOptions" width="100%" @update:model-value="syncProviderType" />
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminProviderBaseUrl">Base URL</label>
-                <input id="adminProviderBaseUrl" v-model="providerForm.base_url" class="input-modern" type="text" placeholder="https://api.example.com/v1">
+                <input id="adminProviderBaseUrl" v-model="providerForm.base_url" class="gddp-input" type="text" placeholder="https://api.example.com/v1">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminProviderApiKey">API Key</label>
-                <input id="adminProviderApiKey" v-model="providerForm.api_key" class="input-modern" type="password" autocomplete="off" placeholder="留空保持不变">
+                <input id="adminProviderApiKey" v-model="providerForm.api_key" class="gddp-input" type="password" autocomplete="off" placeholder="留空保持不变">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminProviderUserAgent">User-Agent(可选)</label>
-                <input id="adminProviderUserAgent" v-model="providerForm.user_agent" class="input-modern" type="text" maxlength="200" placeholder="请求 UA,留空自动">
+                <input id="adminProviderUserAgent" v-model="providerForm.user_agent" class="gddp-input" type="text" maxlength="200" placeholder="请求 UA,留空自动">
             </div>
-            <div v-if="providerForm.api_type === 'ollama'" class="form-group">
+            <div v-if="providerForm.api_type === 'ollama'" class="gddp-form-field">
                 <label for="adminProviderKeepAlive">Keep-Alive</label>
-                <input id="adminProviderKeepAlive" v-model="providerForm.keep_alive" class="input-modern" type="text" maxlength="20" placeholder="例如:5m">
+                <input id="adminProviderKeepAlive" v-model="providerForm.keep_alive" class="gddp-input" type="text" maxlength="20" placeholder="例如:5m">
             </div>
             <template #footer>
                 <button class="btn-cancel" type="button" @click="providerFormOpen = false">取消</button>
@@ -288,7 +288,7 @@
 
         <!-- Ollama 模型状态弹窗(对齐原版 ollamaModelStatusModal) -->
         <Modal :open="ollamaDialog.open" title="Ollama 模型状态" size="sm" @close="ollamaDialog.open = false">
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>供应商 / 模型</label>
                 <div class="admin-info-text mono">{{ ollamaDialog.provider }} / {{ ollamaDialog.model }}</div>
             </div>

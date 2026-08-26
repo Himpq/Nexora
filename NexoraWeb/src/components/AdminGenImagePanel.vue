@@ -46,62 +46,62 @@
                 </div>
 
                 <div class="admin-user-detail-grid">
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailId">接口标识</label>
-                        <input id="genDetailId" v-model="form.api_id" class="input-modern" type="text" maxlength="80" placeholder="openai_image">
+                        <input id="genDetailId" v-model="form.api_id" class="gddp-input" type="text" maxlength="80" placeholder="openai_image">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailName">接口名称</label>
-                        <input id="genDetailName" v-model="form.name" class="input-modern" type="text" maxlength="120" placeholder="OpenAI Image">
+                        <input id="genDetailName" v-model="form.name" class="gddp-input" type="text" maxlength="120" placeholder="OpenAI Image">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>API Type</label>
                         <SettingSelect v-model="form.api_type" :options="genApiTypeOptions" width="100%" />
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailKey">API Key</label>
                         <input
                             id="genDetailKey"
                             v-model="form.api_key"
-                            class="input-modern"
+                            class="gddp-input"
                             type="password"
                             autocomplete="off"
                             :placeholder="selectedApi?.api_key_masked || 'api key'"
                         >
                     </div>
-                    <div class="form-group" style="grid-column: 1 / -1;">
+                    <div class="gddp-form-field" style="grid-column: 1 / -1;">
                         <label for="genDetailBaseUrl">Base URL</label>
-                        <input id="genDetailBaseUrl" v-model="form.base_url" class="input-modern" type="text" placeholder="https://api.openai.com/v1">
+                        <input id="genDetailBaseUrl" v-model="form.base_url" class="gddp-input" type="text" placeholder="https://api.openai.com/v1">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailModel">模型 ID</label>
-                        <input id="genDetailModel" v-model="form.model" class="input-modern" type="text" maxlength="120" placeholder="gpt-image-1">
+                        <input id="genDetailModel" v-model="form.model" class="gddp-input" type="text" maxlength="120" placeholder="gpt-image-1">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailSize">尺寸</label>
-                        <input id="genDetailSize" v-model="form.size" class="input-modern" type="text" placeholder="1024x1024">
+                        <input id="genDetailSize" v-model="form.size" class="gddp-input" type="text" placeholder="1024x1024">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailQuality">质量</label>
-                        <input id="genDetailQuality" v-model="form.quality" class="input-modern" type="text" placeholder="auto">
+                        <input id="genDetailQuality" v-model="form.quality" class="gddp-input" type="text" placeholder="auto">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailFormat">返回格式</label>
-                        <input id="genDetailFormat" v-model="form.response_format" class="input-modern" type="text" placeholder="b64_json">
+                        <input id="genDetailFormat" v-model="form.response_format" class="gddp-input" type="text" placeholder="b64_json">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="genDetailTimeout">超时秒数</label>
-                        <input id="genDetailTimeout" v-model="form.timeout" class="input-modern" type="number" min="10" max="600" placeholder="120">
+                        <input id="genDetailTimeout" v-model="form.timeout" class="gddp-input" type="number" min="10" max="600" placeholder="120">
                     </div>
                     <label class="settings-toggle-row">
                         <input v-model="form.enabled" type="checkbox">
                         <span>保存后作为当前启用接口</span>
                     </label>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>创建时间</label>
                         <div class="admin-info-text">{{ formatTs(selectedApi?.created_at) }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>更新时间</label>
                         <div class="admin-info-text">{{ formatTs(selectedApi?.updated_at) }}</div>
                     </div>

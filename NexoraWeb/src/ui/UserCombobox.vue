@@ -25,7 +25,7 @@
             <input
                 ref="inputRef"
                 v-model="query"
-                class="input-modern user-combobox-input"
+                class="gddp-input user-combobox-input"
                 type="text"
                 :placeholder="placeholder"
                 autocomplete="off"

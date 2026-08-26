@@ -1,0 +1,61 @@
+/*
+ * form.css — GDDP 表单基元(自 legacy/style.css 收编)
+ *
+ * 收敛说明:
+ *   - .gddp-form-field / .gddp-input 是 legacy .form-group / .input-modern 的
+ *     第一方等价类(视觉逐属性对齐,含焦点环);
+ *   - 首批仅迁移零上下文耦合的消费者(LoginView / FilesPanel);
+ *   - settings-modal-shell 内部与 admin 网格的表单被 17 处上下文选择器
+ *     (.settings-modal-shell .input-modern 等,横跨 buttons 之外的
+ *      settings.css 与 legacy 双服务)覆盖,须连同选择器一起收口,
+ *     见 .codex/gddp_legacy_style_migration.md 的 D1 分片清单。
+ */
+
+.gddp-form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gddp-form-field > label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+
+.gddp-input {
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    transition: all 0.2s;
+    width: 100%;
+    background: var(--color-bg-sunken);
+}
+
+.gddp-input:focus {
+    outline: none;
+    border-color: var(--color-text-primary);
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
+    background: var(--color-bg-elevated);
+}
+
+/* ---------- SkillsPanel 编辑器网格例外(自 legacy/chat_skill_market.css 收编;
+   输入框视觉由 .ps-editor-grid input/select 元素选择器提供,不依赖类名) ---------- */
+
+.ps-editor-grid .gddp-form-field {
+    margin-bottom: 0;
+}
+
+.ps-editor-grid .gddp-form-field.full-width {
+    grid-column: 1 / -1;
+}
+
+.ps-editor-grid .gddp-form-field > label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--color-text-secondary);
+    font-size: 12.5px;
+    font-weight: 500;
+}

@@ -90,34 +90,34 @@
                     </div>
 
                     <div class="mail-compose-form">
-                        <div class="form-group">
+                        <div class="gddp-form-field">
                             <label for="mailComposeTo">收件人</label>
                             <input
                                 id="mailComposeTo"
                                 v-model="composeForm.to"
-                                class="input-modern"
+                                class="gddp-input"
                                 type="text"
                                 maxlength="320"
                                 placeholder="例如: user@example.com"
                             >
                         </div>
-                        <div class="form-group">
+                        <div class="gddp-form-field">
                             <label for="mailComposeSubject">主题</label>
                             <input
                                 id="mailComposeSubject"
                                 v-model="composeForm.subject"
-                                class="input-modern"
+                                class="gddp-input"
                                 type="text"
                                 maxlength="200"
                                 placeholder="邮件主题"
                             >
                         </div>
-                        <div class="form-group">
+                        <div class="gddp-form-field">
                             <label for="mailComposeContent">正文</label>
                             <textarea
                                 id="mailComposeContent"
                                 v-model="composeForm.content"
-                                class="input-modern mail-compose-content"
+                                class="gddp-input mail-compose-content"
                                 placeholder="输入邮件内容..."
                             ></textarea>
                         </div>

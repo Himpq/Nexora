@@ -66,7 +66,7 @@
                                         <input
                                             id="set-username-input"
                                             v-model="profileName"
-                                            class="input-modern settings-profile-name-input"
+                                            class="gddp-input settings-profile-name-input"
                                             type="text"
                                             maxlength="60"
                                         >

@@ -13,7 +13,7 @@
                 <div class="k-search" style="display:flex; gap:6px;">
                     <input
                         v-model="query"
-                        class="input-modern"
+                        class="gddp-input"
                         placeholder="搜索文件..."
                         style="flex:1; font-size:12px; height: 28px; padding: 4px 8px;"
                         @keydown.enter="loadFiles"

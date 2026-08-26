@@ -57,7 +57,7 @@
                     </div>
                 </div>
 
-                <div v-if="selectedInfo.missing?.length" class="form-group" style="margin-bottom:10px;">
+                <div v-if="selectedInfo.missing?.length" class="gddp-form-field" style="margin-bottom:10px;">
                     <label>缺失项</label>
                     <div class="admin-map-missing">
                         <div v-for="(item, index) in selectedInfo.missing" :key="index" class="admin-map-missing-item">{{ item }}</div>
@@ -67,7 +67,7 @@
                 <div class="admin-map-config-title">接口配置</div>
                 <div class="admin-user-detail-grid admin-map-config-grid">
                     <template v-for="field in fieldsFor(selectedProvider)" :key="field">
-                        <div class="form-group" :class="{ 'admin-map-config-field-full': isFullWidthField(field) }">
+                        <div class="gddp-form-field" :class="{ 'admin-map-config-field-full': isFullWidthField(field) }">
                             <label>{{ fieldLabel(field) }}</label>
                             <SettingSelect
                                 v-if="field === 'auth_mode'"
@@ -79,7 +79,7 @@
                             <input
                                 v-else
                                 v-model="configForm[field]"
-                                class="input-modern"
+                                class="gddp-input"
                                 :type="field === 'timeout' ? 'number' : 'text'"
                                 :min="field === 'timeout' ? 1 : undefined"
                                 :max="field === 'timeout' ? 120 : undefined"

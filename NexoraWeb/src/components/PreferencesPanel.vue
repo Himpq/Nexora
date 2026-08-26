@@ -73,7 +73,7 @@
             <textarea
                 id="settingsMemoryProfile"
                 v-model="memoryText"
-                class="input-modern settings-memory-textarea"
+                class="gddp-input settings-memory-textarea"
                 rows="7"
                 readonly
                 placeholder="正在读取用户记忆..."

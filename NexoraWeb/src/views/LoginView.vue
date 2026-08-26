@@ -24,7 +24,7 @@
                 </div>
 
                 <form id="loginForm" @submit.prevent="handleSubmit">
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="username">用户名</label>
                         <input
                             id="username"
@@ -35,7 +35,7 @@
                         />
                     </div>
 
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label for="password">密码</label>
                         <input
                             id="password"
@@ -296,11 +296,11 @@
         animation: fade-in 0.3s;
     }
 
-    .form-group {
+    .gddp-form-field {
         margin-bottom: 24px;
     }
 
-    .form-group label {
+    .gddp-form-field label {
         display: block;
         margin-bottom: 10px;
         color: var(--color-text-primary);
@@ -310,7 +310,7 @@
         letter-spacing: 0.5px;
     }
 
-    .form-group input {
+    .gddp-form-field input {
         width: 100%;
         padding: 14px 16px;
         border: 1px solid #eee;
@@ -320,7 +320,7 @@
         transition: all 0.2s ease;
     }
 
-    .form-group input:focus {
+    .gddp-form-field input:focus {
         outline: none;
         border-color: var(--color-text-primary);
         background: var(--color-bg-elevated);

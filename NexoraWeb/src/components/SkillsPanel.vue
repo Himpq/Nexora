@@ -205,27 +205,27 @@
         <!-- 个人 Skill 编辑器 -->
         <Modal :open="editorOpen" :title="editorMode === 'edit' ? '编辑 Skill' : (editorFromUpload ? '上传 Skill' : '新建 Skill')" size="lg" @close="editorOpen = false">
             <div class="ps-editor-grid">
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label for="psEditorTitle">标题 *</label>
-                    <input id="psEditorTitle" v-model="editorForm.title" class="input-modern" type="text" maxlength="120" placeholder="Skill 标题">
+                    <input id="psEditorTitle" v-model="editorForm.title" class="gddp-input" type="text" maxlength="120" placeholder="Skill 标题">
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label for="psEditorId">ID</label>
-                    <input id="psEditorId" v-model="editorForm.id" class="input-modern" type="text" maxlength="80" :readonly="editorMode === 'edit'" placeholder="留空自动生成">
+                    <input id="psEditorId" v-model="editorForm.id" class="gddp-input" type="text" maxlength="80" :readonly="editorMode === 'edit'" placeholder="留空自动生成">
                 </div>
-                <div class="form-group full-width">
+                <div class="gddp-form-field full-width">
                     <label for="psEditorDesc">描述</label>
-                    <input id="psEditorDesc" v-model="editorForm.description" class="input-modern" type="text" maxlength="300" placeholder="一句话描述(市场展示用)">
+                    <input id="psEditorDesc" v-model="editorForm.description" class="gddp-input" type="text" maxlength="300" placeholder="一句话描述(市场展示用)">
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label for="psEditorTags">标签(逗号分隔)</label>
-                    <input id="psEditorTags" v-model="editorTagsText" class="input-modern" type="text" maxlength="200" placeholder="例如:开发, 写作">
+                    <input id="psEditorTags" v-model="editorTagsText" class="gddp-input" type="text" maxlength="200" placeholder="例如:开发, 写作">
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label for="psEditorTools">绑定工具(逗号分隔)</label>
-                    <input id="psEditorTools" v-model="editorToolsText" class="input-modern" type="text" maxlength="300" placeholder="留空为全局 Skill">
+                    <input id="psEditorTools" v-model="editorToolsText" class="gddp-input" type="text" maxlength="300" placeholder="留空为全局 Skill">
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label>默认模式</label>
                     <SettingSelect
                         :model-value="editorForm.mode || 'auto'"
@@ -235,9 +235,9 @@
                     />
                 </div>
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="psEditorContent">指令内容</label>
-                <textarea id="psEditorContent" v-model="editorForm.main_content" class="input-modern skill-content-textarea" rows="8" placeholder="Skill 提示词/指令正文..."></textarea>
+                <textarea id="psEditorContent" v-model="editorForm.main_content" class="gddp-input skill-content-textarea" rows="8" placeholder="Skill 提示词/指令正文..."></textarea>
             </div>
             <template #footer>
                 <button class="btn-cancel" type="button" @click="editorOpen = false">取消</button>

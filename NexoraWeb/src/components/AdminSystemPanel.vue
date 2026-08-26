@@ -52,9 +52,9 @@
                         </div>
                     </div>
                     <div class="admin-system-form-grid">
-                        <div class="form-group admin-system-wide">
+                        <div class="gddp-form-field admin-system-wide">
                             <label for="sysPublicBaseUrl">Public Base URL</label>
-                            <input id="sysPublicBaseUrl" v-model="form.runtime.public_base_url" class="input-modern" type="text" placeholder="https://chat.example.com">
+                            <input id="sysPublicBaseUrl" v-model="form.runtime.public_base_url" class="gddp-input" type="text" placeholder="https://chat.example.com">
                         </div>
                     </div>
                 </template>
@@ -71,7 +71,7 @@
                         </div>
                     </div>
                     <div class="admin-system-form-grid">
-                        <div class="form-group" v-for="field in defaultModelFields" :key="field.key">
+                        <div class="gddp-form-field" v-for="field in defaultModelFields" :key="field.key">
                             <label>{{ field.label }}</label>
                             <SettingSelect
                                 :model-value="String(form.default_models[field.key] || '')"
@@ -114,12 +114,12 @@
                     </div>
                     <div class="admin-system-form-grid">
                         <template v-for="field in serviceFields" :key="field.key">
-                            <div class="form-group" :class="{ 'admin-system-wide': field.wide }">
+                            <div class="gddp-form-field" :class="{ 'admin-system-wide': field.wide }">
                                 <label>{{ field.label }}</label>
                                 <input
                                     v-if="field.type === 'number'"
                                     v-model.number="form.services[activeModule][field.key]"
-                                    class="input-modern"
+                                    class="gddp-input"
                                     type="number"
                                     min="1"
                                     :max="field.key === 'port' ? 65535 : 3600"
@@ -127,7 +127,7 @@
                                 <input
                                     v-else-if="field.type === 'password'"
                                     v-model="form.services[activeModule][field.key]"
-                                    class="input-modern"
+                                    class="gddp-input"
                                     type="password"
                                     autocomplete="off"
                                 >
@@ -141,7 +141,7 @@
                                 <input
                                     v-else
                                     v-model="form.services[activeModule][field.key]"
-                                    class="input-modern"
+                                    class="gddp-input"
                                     type="text"
                                 >
                             </div>

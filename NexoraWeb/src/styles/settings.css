@@ -330,11 +330,11 @@
 
 /* ==================== 表单 ==================== */
 
-.settings-modal-shell .form-group {
+.settings-modal-shell .gddp-form-field {
     margin-bottom: 14px;
 }
 
-.settings-modal-shell .form-group label {
+.settings-modal-shell .gddp-form-field > label {
     display: block;
     margin-bottom: 6px;
     font-size: 12.5px;
@@ -342,7 +342,7 @@
     color: var(--color-text-secondary);
 }
 
-.settings-modal-shell .input-modern,
+.settings-modal-shell .gddp-input,
 .setting-input {
     box-sizing: border-box;
     width: 100%;
@@ -357,13 +357,13 @@
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.settings-modal-shell .input-modern:focus,
+.settings-modal-shell .gddp-input:focus,
 .setting-input:focus {
     border-color: var(--color-text-primary);
     box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.07);
 }
 
-.settings-modal-shell textarea.input-modern {
+.settings-modal-shell textarea.gddp-input {
     height: auto;
     padding: 10px 12px;
     resize: vertical;
@@ -663,7 +663,7 @@
     gap: 6px 20px;
 }
 
-.settings-modal-shell .admin-user-detail-grid .form-group:nth-child(odd):last-child {
+.settings-modal-shell .admin-user-detail-grid .gddp-form-field:nth-child(odd):last-child {
     grid-column: 1 / -1;
 }
 
@@ -1805,7 +1805,7 @@
     gap: 8px;
 }
 
-.settings-modal-shell .admin-mail-bind-row .input-modern {
+.settings-modal-shell .admin-mail-bind-row .gddp-input {
     flex: 1;
     min-width: 0;
 }
@@ -2350,7 +2350,7 @@
         flex-wrap: wrap;
     }
 
-    .settings-modal-shell .mail-bind-input-row .input-modern {
+    .settings-modal-shell .mail-bind-input-row .gddp-input {
         flex-basis: 100%;
     }
 }

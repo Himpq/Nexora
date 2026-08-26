@@ -3,7 +3,7 @@
 
     设计:
       - 统一宽度策略:默认 260px,按需传 width,禁止无脑 100%
-      - 复用 .input-modern 视觉(白底/浅描边/focus 黑描边)
+      - 复用 .gddp-input 视觉(白底/浅描边/focus 黑描边)
       - v-model 双向绑定,透传原生 input 属性
 
     用法:
@@ -12,7 +12,7 @@
 
 <template>
     <input
-        class="input-modern"
+        class="gddp-input"
         :class="inputClass"
         :style="width ? { width } : undefined"
         :type="type"

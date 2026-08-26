@@ -29,7 +29,7 @@
             </div>
 
             <div class="admin-search-bar">
-                <input v-model="query" class="input-modern" placeholder="搜索向量库..." style="flex:1;" @keydown.enter="applyFilter">
+                <input v-model="query" class="gddp-input" placeholder="搜索向量库..." style="flex:1;" @keydown.enter="applyFilter">
                 <button class="btn-primary" type="button" @click="applyFilter">搜索</button>
             </div>
             <div v-if="searchHint" class="chroma-search-hint">{{ searchHint }}</div>

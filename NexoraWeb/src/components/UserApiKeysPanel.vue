@@ -32,28 +32,28 @@
             <div v-if="!selectedKey" class="admin-user-detail-empty">请选择左侧 Key 查看详情</div>
             <div v-else>
                 <div class="admin-user-detail-grid">
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>Key Name</label>
-                        <input v-model="detailName" class="input-modern" type="text" maxlength="120">
+                        <input v-model="detailName" class="gddp-input" type="text" maxlength="120">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>Key 预览</label>
                         <div class="admin-info-text mono">{{ selectedKey.key_preview || '-' }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>创建时间</label>
                         <div class="admin-info-text mono">{{ formatDateTime(selectedKey.created_at) }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>过期时间</label>
                         <div class="admin-info-text mono">{{ formatDateTime(selectedKey.expires_at) || '永久有效' }}</div>
                     </div>
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label>有效期</label>
                     <SettingExpirySlider v-model="detailExpire" :options="expireSliderOptions" />
                 </div>
-                <div class="form-group">
+                <div class="gddp-form-field">
                     <label>权限</label>
                     <div class="settings-toggle-grid">
                         <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">
@@ -83,22 +83,22 @@
 
     <!-- 创建 Key 弹窗 -->
     <Modal :open="createOpen" title="创建 API Key" size="sm" @close="createOpen = false">
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label for="userPapiKeyCreateName">名称</label>
             <input
                 id="userPapiKeyCreateName"
                 v-model="createName"
-                class="input-modern"
+                class="gddp-input"
                 type="text"
                 maxlength="120"
                 placeholder="例如:测试客户端"
             >
         </div>
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label>有效期</label>
             <SettingExpirySlider v-model="createExpire" :options="expireSliderOptions" />
         </div>
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label>权限</label>
             <div class="settings-toggle-grid">
                 <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">

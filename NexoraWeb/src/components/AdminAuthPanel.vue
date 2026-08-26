@@ -63,11 +63,11 @@
                     <div class="auth-card">
                         <div class="auth-card-title">基本设置</div>
                         <div class="auth-edit-grid">
-                            <div class="form-group">
+                            <div class="gddp-form-field">
                                 <label for="adminPublicApiNameInput">Key 名称</label>
-                                <input id="adminPublicApiNameInput" v-model="detailName" class="input-modern" type="text" maxlength="120" placeholder="Key 名称">
+                                <input id="adminPublicApiNameInput" v-model="detailName" class="gddp-input" type="text" maxlength="120" placeholder="Key 名称">
                             </div>
-                            <div class="form-group">
+                            <div class="gddp-form-field">
                                 <label>访问范围</label>
                                 <SettingSegmented
                                     :model-value="detailScope"
@@ -75,7 +75,7 @@
                                     @update:model-value="detailScope = $event as 'owner' | 'global'"
                                 />
                             </div>
-                            <div class="form-group">
+                            <div class="gddp-form-field">
                                 <label>所属用户</label>
                                 <SettingSelect
                                     v-model="detailOwner"
@@ -163,11 +163,11 @@
             <p v-if="keyModalMode === 'regenerate'" class="auth-modal-tip">
                 将为当前选中的 Key 重新生成明文 key,旧 key 会立即失效。
             </p>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="adminAuthCreateName">Key 名称</label>
-                <input id="adminAuthCreateName" v-model="keyName" class="input-modern" type="text" maxlength="120" placeholder="例如:外部客户端">
+                <input id="adminAuthCreateName" v-model="keyName" class="gddp-input" type="text" maxlength="120" placeholder="例如:外部客户端">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>有效期</label>
                 <SettingExpirySlider v-model="expire" :options="expireOptions" />
             </div>
@@ -719,7 +719,7 @@
         gap: 10px 20px;
     }
 
-    .auth-edit-grid .form-group:last-child {
+    .auth-edit-grid .gddp-form-field:last-child {
         grid-column: 1 / -1;
     }
 

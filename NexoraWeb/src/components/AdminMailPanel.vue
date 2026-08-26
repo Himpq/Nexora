@@ -63,7 +63,7 @@
                         <div class="mail-bind-input-row">
                             <input
                                 v-model="bindUserId"
-                                class="input-modern"
+                                class="gddp-input"
                                 type="text"
                                 placeholder="输入 Nexora 用户ID"
                             >
@@ -111,15 +111,15 @@
 
         <!-- 添加邮箱用户弹窗 -->
         <Modal :open="addOpen" title="添加邮箱用户" size="sm" @close="addOpen = false">
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="mailUserUsername">用户名</label>
-                <input id="mailUserUsername" v-model="addForm.mail_username" class="input-modern" type="text" maxlength="80" placeholder="例如:alice">
+                <input id="mailUserUsername" v-model="addForm.mail_username" class="gddp-input" type="text" maxlength="80" placeholder="例如:alice">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="mailUserPassword">密码</label>
-                <input id="mailUserPassword" v-model="addForm.password" class="input-modern" type="password" maxlength="120" placeholder="输入密码">
+                <input id="mailUserPassword" v-model="addForm.password" class="gddp-input" type="password" maxlength="120" placeholder="输入密码">
             </div>
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label>权限</label>
                 <div class="admin-mail-permissions">
                     <label v-for="permission in ['receive', 'sendlocal', 'sendrelay', 'sendoutside']" :key="permission" class="settings-toggle-row">
@@ -135,9 +135,9 @@
         </Modal>
         <!-- 重置密码弹窗 -->
         <Modal :open="resetOpen" title="重置邮箱密码" size="sm" @close="resetOpen = false">
-            <div class="form-group">
+            <div class="gddp-form-field">
                 <label for="mailUserResetPassword">新密码</label>
-                <input id="mailUserResetPassword" v-model="resetPassword" class="input-modern" type="password" maxlength="120" placeholder="输入新密码">
+                <input id="mailUserResetPassword" v-model="resetPassword" class="gddp-input" type="password" maxlength="120" placeholder="输入新密码">
             </div>
             <template #footer>
                 <button class="btn-cancel" type="button" @click="resetOpen = false">取消</button>
@@ -567,7 +567,7 @@
         gap: 8px;
     }
 
-    .mail-bind-input-row .input-modern {
+    .mail-bind-input-row .gddp-input {
         flex: 1;
         min-width: 0;
     }

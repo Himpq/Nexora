@@ -512,7 +512,7 @@
     gap: 14px;
 }
 
-.mail-compose-form .form-group {
+.mail-compose-form .gddp-form-field {
     margin-bottom: 0;
 }
 
@@ -524,7 +524,7 @@
     font-weight: 600;
 }
 
-.mail-compose-form .input-modern {
+.mail-compose-form .gddp-input {
     width: 100%;
     box-sizing: border-box;
 }
