@@ -5233,7 +5233,8 @@ textarea{
 }
 .cloud-file-item{
   padding: 10px 8px;
-  border-bottom: 1px solid #f3f4f6;
+  /* 分隔线走语义令牌:暗色模式下硬编码 #f3f4f6 会成为刺眼亮线 */
+  border-bottom: 1px solid var(--color-border);
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
