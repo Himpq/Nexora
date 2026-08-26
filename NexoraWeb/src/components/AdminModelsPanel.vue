@@ -355,6 +355,7 @@
 
     import Modal from '@/ui/Modal.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
+    import { isInsideOpenPopover } from '@/ui/overlay'
 
     interface ProviderInfo {
         api_key?: string
@@ -1244,7 +1245,9 @@
         window.addEventListener('scroll', onAdjustPopoverFollow, true)
     }
 
-    /** 外部点击关闭(点击锚点本身不关,对齐原版 _closeByOutside) */
+    /** 外部点击关闭(点击锚点本身不关,对齐原版 _closeByOutside);
+     *  点击打开中的 GDDP 下拉菜单(Teleport 到 body)同样不关,否则
+     *  "共/剩"下拉超出气泡范围的部分一按就把整个 quota 气泡误关 */
     function onAdjustPopoverOutside(event: PointerEvent): void {
         const state = adjustPopover.value
 
@@ -1265,6 +1268,10 @@
         }
 
         if (state.anchor && state.anchor.contains(target)) {
+            return
+        }
+
+        if (isInsideOpenPopover(target)) {
             return
         }
 

@@ -201,6 +201,7 @@
     import type { ToolStats, UserTokenStats } from '@/api/admin-stats'
     import { fetchAdminTokenStats, fetchToolStats, fetchTokenTimeseries, fetchUserTokenStats } from '@/api/admin-stats'
     import { showError } from '@/stores/notify'
+import { isInsideOpenPopover } from '@/ui/overlay'
 
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
@@ -332,6 +333,14 @@
 
     /** 单用户查询 */
     function onPageClick(event: MouseEvent): void {
+        const target = event.target as Node | null
+
+        // 点击打开中的 GDDP 下拉菜单(Teleport 到 body)不算外部点击,
+        // 否则在模型下拉里选选项时整个用户选择面板被误关
+        if (target && isInsideOpenPopover(target)) {
+            return
+        }
+
         if (userSelectorRef.value && !userSelectorRef.value.contains(event.target as Node)) {
             userMenuOpen.value = false
         }

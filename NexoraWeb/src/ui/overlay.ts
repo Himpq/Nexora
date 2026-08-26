@@ -33,8 +33,10 @@ export const overlay = reactive({
     modal: null as string | null,
 })
 
-/** 已注册 popover 的容器元素(id → 元素),用于外部点击判断 */
-const popoverElements = new Map<string, HTMLElement>()
+/** 已注册 popover 的容器元素(id → 边界元素集合):
+ *  同一下拉的触发器与 Teleport 到 body 的菜单本体都注册进来,
+ *  外部点击判定与 isInsideOpenPopover 才能正确识别"点击在浮层内"。 */
+const popoverElements = new Map<string, Set<HTMLElement>>()
 
 /** 已注册右侧栏面板的容器元素(id → 元素) */
 const panelElements = new Map<string, HTMLElement>()
@@ -51,7 +53,10 @@ const panelTriggerElements = new Map<string, Set<HTMLElement>>()
  */
 export function openPopover(id: string, container?: HTMLElement | null, options: { keepPanel?: boolean } = {}): void {
     if (container) {
-        popoverElements.set(id, container)
+        const set = popoverElements.get(id) || new Set<HTMLElement>()
+
+        set.add(container)
+        popoverElements.set(id, set)
     }
 
     overlay.popover = id
@@ -61,11 +66,39 @@ export function openPopover(id: string, container?: HTMLElement | null, options:
     }
 }
 
-/** 关闭指定下拉(仅当它是当前打开的那个) */
+/** 关闭指定下拉(仅当它是当前打开的那个),并清理其边界元素注册 */
 export function closePopover(id: string): void {
     if (overlay.popover === id) {
         overlay.popover = null
+        popoverElements.delete(id)
     }
+}
+
+/**
+ * 事件目标是否落在当前打开的 GDDP 浮层(下拉/右键菜单,含 Teleport 菜单本体)内。
+ *
+ * 宿主自绘浮层(如管理页的 quota 调整气泡)的"点击外部关闭"必须先经此判断:
+ * GDDP 下拉/菜单挂在 body 下,选项点击对宿主而言永远在自身 DOM 之外,
+ * 不豁免就会出现"点开下拉选第二项,整个宿主浮层被误关"的问题。
+ */
+export function isInsideOpenPopover(target: Node | null): boolean {
+    if (!target || !overlay.popover) {
+        return false
+    }
+
+    const containers = popoverElements.get(overlay.popover)
+
+    if (!containers) {
+        return false
+    }
+
+    for (const container of containers) {
+        if (container.contains(target)) {
+            return true
+        }
+    }
+
+    return false
 }
 
 /** 注册右侧栏面板(容器元素 + 触发按钮),用于外部点击关闭判断 */
@@ -150,9 +183,10 @@ document.addEventListener('click', (event) => {
     }
 
     if (overlay.popover) {
-        const container = popoverElements.get(overlay.popover)
+        // 无边界注册(未传容器)保持旧行为:任意点击即关;有边界则按集合判定
+        const containers = popoverElements.get(overlay.popover)
 
-        if (!container || !container.contains(target)) {
+        if (!containers || ![...containers].some((el) => el.contains(target))) {
             overlay.popover = null
         }
     }
@@ -165,11 +199,9 @@ document.addEventListener('click', (event) => {
 
             const clickedTrigger = triggers && Array.from(triggers).some((el) => el.contains(target))
 
-            // 点击当前打开的下拉容器(如右键菜单 Teleport 到 body)也不关闭面板,
+            // 点击当前打开的下拉容器(如右键菜单/下拉 Teleport 到 body)也不关闭面板,
             // 否则面板内触发的菜单被挂到 body 后,菜单内点击会误关面板
-            const popoverContainer = overlay.popover ? popoverElements.get(overlay.popover) : null
-
-            const clickedPopover = popoverContainer ? popoverContainer.contains(target) : false
+            const clickedPopover = isInsideOpenPopover(target)
 
             if (!clickedTrigger && !clickedPopover) {
                 overlay.panel = null

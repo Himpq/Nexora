@@ -223,7 +223,15 @@
 
         searchText.value = ''
         openPopover(effectivePopoverKey.value, wrapRef.value)
-        void nextTick(positionMenu)
+        void nextTick(() => {
+            positionMenu()
+
+            // 菜单 Teleport 到 body,必须把菜单本体也注册为边界:
+            // 宿主自绘浮层与 overlay 的外部点击判定才能识别"点击在菜单内"
+            if (menuRef.value) {
+                openPopover(effectivePopoverKey.value, menuRef.value)
+            }
+        })
     }
 
     /** 依据触发器位置定位菜单(Teleport 到 body 后 position:fixed 相对于视口,
