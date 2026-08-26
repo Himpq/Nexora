@@ -426,6 +426,13 @@ import { isInsideOpenPopover } from '@/ui/overlay'
         }
     }
 
+    /** 切换统计范围后自动重查当前用户:否则选完范围看似无效果,需再手点查询 */
+    watch(userQueryRange, () => {
+        if (userQueryInput.value.trim() && userStats.value) {
+            void submitUserQuery()
+        }
+    })
+
     /** Tool 观测图 */
     async function loadTools(): Promise<void> {
         try {
