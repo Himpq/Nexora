@@ -13,7 +13,6 @@
  */
 
 @import './legacy/style.css';
-@import './legacy/chat_papi_keys.css';
 @import './legacy/chat_settings_dialog.css';
 @import './legacy/chat_settings_management.css';
 @import './legacy/chat_memory_settings.css';

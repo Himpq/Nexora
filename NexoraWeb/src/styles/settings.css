@@ -2358,3 +2358,30 @@
 /* 滚动条视觉回归全局 scrollbar.css 统一规则(令牌化随主题切换);
    此前此处硬编码亮色 thumb 导致暗色模式下设置窗滚动条风格不统一 */
 
+
+/* ==================== 阶段2a 自 legacy/style.css 收编 ==================== */
+
+.papi-scope-badge.owner{
+    background: var(--color-accent-surface);
+    border-color: var(--color-accent-border);
+    color: var(--color-accent-text);
+}
+
+.papi-scope-badge.global{
+    background: #ecfdf5;
+    border-color: var(--color-success-border);
+    color: var(--color-success-text);
+}
+
+.papi-segment-button.active{
+    background: #0f172a;
+    border-color: var(--color-text-primary);
+    color: #ffffff;
+}
+
+.papi-action-row{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+}
