@@ -77,6 +77,12 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active{
   color: rgba(255,255,255,0.9);
 }
 
+.sidebar-brand-learning-text{
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
 body.learning-workspace-active .sidebar-brand-tab{
   color: #667085;
 }
@@ -300,6 +306,14 @@ body.learning-workspace-active .sidebar-content::-webkit-scrollbar-thumb:hover{
 .conversation-item:hover .conversation-stream-indicator.is-unread::before,.conversation-item.active .conversation-stream-indicator.is-unread::before{
     background: currentColor;
     box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+}
+
+.conversation-mode-icon{
+    margin-right: 6px;
+    font-size: 11px;
+    opacity: 0.72;
+    color: #f59e0b;
+    vertical-align: -1px;
 }
 
 .conversation-mode-icon.active{
@@ -676,9 +690,9 @@ body.notes-companion-mode .sidebar,body.notes-companion-mode .chat-header{
 
 .sidebar.collapsed{ width: 0; padding: 0; overflow: hidden; opacity: 0; }
 
-.sidebar{ position: absolute; z-index: 1000; height: 100%; transform: translateX(-100%); width: 260px; }
+@media (max-width: 768px){.sidebar{ position: absolute; z-index: 1000; height: 100%; transform: translateX(-100%); width: 260px; }}
 
-.sidebar.mobile-open{ transform: translateX(0); }
+@media (max-width: 768px){.sidebar.mobile-open{ transform: translateX(0); }}
 
 /* ===== 2026-03-06 mobile sidebar overlay lock ===== */
 @media (max-width: 980px){

@@ -163,6 +163,10 @@
     text-overflow: ellipsis;
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.16);
 }
+.public-edit-collab{
+    justify-content: flex-end;
+    margin-top: 8px;
+}
 @media (max-width: 960px){.knowledge-collab-strip{
         align-items: flex-start;
         flex-direction: column;

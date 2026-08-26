@@ -2361,6 +2361,18 @@
 
 /* ==================== 阶段2a 自 legacy/style.css 收编 ==================== */
 
+.papi-scope-badge{
+    align-items: center;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    display: inline-flex;
+    font-size: 11px;
+    line-height: 18px;
+    padding: 0 6px;
+    white-space: nowrap;
+}
+
 .papi-scope-badge.owner{
     background: var(--color-accent-surface);
     border-color: var(--color-accent-border);
@@ -2371,6 +2383,35 @@
     background: #ecfdf5;
     border-color: var(--color-success-border);
     color: var(--color-success-text);
+}
+
+.papi-owner-label{
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 18px;
+    overflow-wrap: anywhere;
+}
+
+.papi-segment{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.papi-segment-button{
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    min-height: 32px;
+    padding: 6px 10px;
+}
+
+.papi-segment-button:hover{
+    border-color: var(--color-text-secondary);
+    color: var(--color-text-primary);
 }
 
 .papi-segment-button.active{
