@@ -10,3 +10,10 @@
 ::selection {
     background: rgba(102, 126, 234, 0.25);
 }
+
+/* ========== 主题切换瞬间的过渡抑制(theme.ts 挂 theme-switching 类) ========== */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+    transition: none !important;
+}

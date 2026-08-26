@@ -96,10 +96,26 @@ export function initTheme(): void {
 
     media.addEventListener('change', () => {
         if (theme.preference === 'system') {
-            theme.resolved = readSystemTheme()
-            applyDocument()
+            withThemeSwitchGuard(() => {
+                theme.resolved = readSystemTheme()
+                applyDocument()
+            })
         }
     })
+}
+
+/**
+ * 切换瞬间的过渡抑制:大量组件对 background/color 声明了 transition,
+ * 直接切 data-theme 会看到颜色"分批渐变"的脏帧。
+ * 加 theme-switching 类全局禁用过渡,短延时后恢复,主题切换即变为瞬时硬切。
+ */
+function withThemeSwitchGuard(apply: () => void): void {
+    const root = document.documentElement
+
+    root.classList.add('theme-switching')
+    apply()
+
+    window.setTimeout(() => root.classList.remove('theme-switching'), 120)
 }
 
 /** 设置偏好档位:持久化并立即应用到文档 */
@@ -107,8 +123,10 @@ export function setTheme(preference: ThemePreference): void {
     theme.preference = preference
     localStorage.setItem(STORAGE_KEY, preference)
 
-    theme.resolved = preference === 'system' ? readSystemTheme() : preference
-    applyDocument()
+    withThemeSwitchGuard(() => {
+        theme.resolved = preference === 'system' ? readSystemTheme() : preference
+        applyDocument()
+    })
 }
 
 /*
