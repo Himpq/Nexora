@@ -1,6 +1,6 @@
 /* ─────── 全局搜索命令面板（Ctrl+K）─────────────────────────────── */
 
-.gsp-overlay {
+.gsp-overlay{
     position: fixed;
     inset: 0;
     z-index: 10050;
@@ -10,13 +10,11 @@
     align-items: flex-start;
     padding-top: 16vh;
 }
-
 /* display:flex 会覆盖 hidden 属性的 UA 样式，必须显式声明隐藏态 */
-.gsp-overlay[hidden] {
+.gsp-overlay[hidden]{
     display: none;
 }
-
-.gsp-panel {
+.gsp-panel{
     width: min(640px, 92vw);
     max-height: 62vh;
     display: flex;
@@ -26,18 +24,16 @@
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
     overflow: hidden;
 }
-
 /* ─────── 输入区 ─────────────────────────────────────────────────── */
 
-.gsp-input-row {
+.gsp-input-row{
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 14px 16px;
     border-bottom: 1px solid var(--color-border);
 }
-
-.gsp-input {
+.gsp-input{
     flex: 1;
     border: none;
     outline: none;
@@ -45,8 +41,7 @@
     background: transparent;
     color: var(--color-text-primary);
 }
-
-.gsp-kbd {
+.gsp-kbd{
     font-size: 11px;
     color: var(--color-text-secondary);
     border: 1px solid var(--color-border);
@@ -54,61 +49,52 @@
     padding: 1px 6px;
     background: var(--color-bg-sunken);
 }
-
 /* ─────── 结果区 ─────────────────────────────────────────────────── */
 
-.gsp-results {
+.gsp-results{
     flex: 1;
     overflow-y: auto;
     padding: 6px 0;
 }
-
-.gsp-status {
+.gsp-status{
     padding: 26px 16px;
     text-align: center;
     color: var(--color-text-secondary);
     font-size: 13px;
 }
-
-.gsp-group-title {
+.gsp-group-title{
     padding: 8px 16px 4px;
     font-size: 11px;
     color: var(--color-text-secondary);
     letter-spacing: 0.4px;
 }
-
-.gsp-item {
+.gsp-item{
     display: flex;
     align-items: flex-start;
     gap: 10px;
     padding: 9px 16px;
     cursor: pointer;
 }
-
-.gsp-item.is-active {
+.gsp-item.is-active{
     background: var(--color-bg-hover);
 }
-
-.gsp-icon {
+.gsp-icon{
     flex: none;
     width: 18px;
     height: 18px;
     margin-top: 2px;
     color: var(--color-text-secondary);
 }
-
-.gsp-icon svg {
+.gsp-icon svg{
     width: 18px;
     height: 18px;
     display: block;
 }
-
-.gsp-item-text {
+.gsp-item-text{
     flex: 1;
     min-width: 0;
 }
-
-.gsp-item-title {
+.gsp-item-title{
     font-size: 14px;
     color: var(--color-text-primary);
     line-height: 1.45;
@@ -117,8 +103,7 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
 }
-
-.gsp-item-meta {
+.gsp-item-meta{
     margin-top: 2px;
     font-size: 12px;
     color: var(--color-text-secondary);
@@ -126,30 +111,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-.gsp-mark {
+.gsp-mark{
     background: rgba(255, 205, 66, 0.55);
     color: inherit;
     border-radius: 2px;
     padding: 0 1px;
 }
-
 /* ─────── 底部提示 ───────────────────────────────────────────────── */
 
-.gsp-footer {
+.gsp-footer{
     padding: 8px 16px;
     border-top: 1px solid var(--color-border);
     font-size: 11px;
     color: var(--color-text-secondary);
 }
-
-@media (max-width: 640px) {
-
-    .gsp-overlay {
+@media (max-width: 640px){.gsp-overlay{
         padding-top: 8vh;
     }
-
-    .gsp-panel {
+.gsp-panel{
         max-height: 74vh;
-    }
-}
+    }}

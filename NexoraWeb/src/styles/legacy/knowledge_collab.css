@@ -1,4 +1,4 @@
-.knowledge-collab-strip {
+.knowledge-collab-strip{
     display: flex;
     align-items: center;
     gap: 8px;
@@ -6,15 +6,13 @@
     color: var(--color-text-secondary);
     font-size: 12px;
 }
-
-.knowledge-collab-members {
+.knowledge-collab-members{
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
 }
-
-.knowledge-collab-member {
+.knowledge-collab-member{
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -27,32 +25,27 @@
     line-height: 1;
     white-space: nowrap;
 }
-
-.knowledge-collab-dot {
+.knowledge-collab-dot{
     width: 7px;
     height: 7px;
     border-radius: 999px;
     background: #22c55e;
     flex: 0 0 auto;
 }
-
-.knowledge-collab-name {
+.knowledge-collab-name{
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-.knowledge-collab-cursor {
+.knowledge-collab-cursor{
     color: var(--color-text-secondary);
     font-variant-numeric: tabular-nums;
 }
-
-.knowledge-collab-member.is-self {
+.knowledge-collab-member.is-self{
     border-color: var(--color-accent-border);
     background: var(--color-accent-surface);
     color: var(--color-accent-text);
 }
-
-.knowledge-collab-name-input {
+.knowledge-collab-name-input{
     width: 150px;
     height: 30px;
     padding: 0 9px;
@@ -63,22 +56,19 @@
     font: inherit;
     font-size: 12px;
 }
-
-.knowledge-collab-name-input:focus {
+.knowledge-collab-name-input:focus{
     outline: none;
     border-color: #60a5fa;
     box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
 }
-
-.knowledge-collab-owner-bar {
+.knowledge-collab-owner-bar{
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
     min-width: 0;
 }
-
-.knowledge-collab-cursor-bookmark {
+.knowledge-collab-cursor-bookmark{
     position: relative;
     display: inline-block;
     width: 0;
@@ -88,28 +78,24 @@
     pointer-events: none;
     z-index: 8;
 }
-
-.knowledge-collab-cursor-overlay-layer {
+.knowledge-collab-cursor-overlay-layer{
     position: absolute;
     inset: 0;
     overflow: hidden;
     pointer-events: none;
     z-index: 12;
 }
-
-.knowledge-collab-cursor-overlay-layer .knowledge-collab-cursor-bookmark {
+.knowledge-collab-cursor-overlay-layer .knowledge-collab-cursor-bookmark{
     position: absolute;
 }
-
-.knowledge-collab-selection-rect {
+.knowledge-collab-selection-rect{
     position: absolute;
     border-radius: 2px;
     background: var(--knowledge-collab-color, #2563eb);
     opacity: 0.16;
     pointer-events: none;
 }
-
-.knowledge-collab-offline-mask {
+.knowledge-collab-offline-mask{
     position: absolute;
     inset: 0;
     display: flex;
@@ -120,8 +106,7 @@
     z-index: 30;
     cursor: not-allowed;
 }
-
-.knowledge-collab-offline-tip {
+.knowledge-collab-offline-tip{
     padding: 8px 16px;
     border: 1px solid var(--color-danger-border);
     border-radius: 999px;
@@ -131,8 +116,7 @@
     font-weight: 700;
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
-
-.knowledge-collab-presence-toast {
+.knowledge-collab-presence-toast{
     position: fixed;
     left: 50%;
     bottom: 34px;
@@ -149,12 +133,10 @@
     transition: opacity 0.2s ease;
     pointer-events: none;
 }
-
-.knowledge-collab-presence-toast.is-visible {
+.knowledge-collab-presence-toast.is-visible{
     opacity: 1;
 }
-
-.knowledge-collab-cursor-line {
+.knowledge-collab-cursor-line{
     position: absolute;
     left: 0;
     top: -0.12em;
@@ -164,8 +146,7 @@
     background: var(--knowledge-collab-color, #2563eb);
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
-
-.knowledge-collab-cursor-label {
+.knowledge-collab-cursor-label{
     position: absolute;
     left: 3px;
     top: -1.65em;
@@ -182,19 +163,10 @@
     text-overflow: ellipsis;
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.16);
 }
-
-.public-edit-collab {
-    justify-content: flex-end;
-    margin-top: 8px;
-}
-
-@media (max-width: 960px) {
-    .knowledge-collab-strip {
+@media (max-width: 960px){.knowledge-collab-strip{
         align-items: flex-start;
         flex-direction: column;
     }
-
-    .knowledge-collab-name-input {
+.knowledge-collab-name-input{
         width: 100%;
-    }
-}
+    }}
