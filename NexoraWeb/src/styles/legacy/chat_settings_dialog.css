@@ -2,65 +2,6 @@
 :root{
     --settings-dialog-layer-base: 20000;
 }
-.settings-dialog [hidden]{
-    display: none !important;
-}
-.modal.settings-dialog{
-    background: var(--color-bg-elevated) !important;
-    border: 1px solid var(--color-border) !important;
-    border-radius: 8px !important;
-    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22) !important;
-    display: grid !important;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    max-height: calc(100dvh - 40px) !important;
-    max-width: 520px !important;
-    overflow: hidden !important;
-    padding: 0 !important;
-    width: min(520px, calc(100vw - 40px)) !important;
-}
-.modal.settings-dialog.settings-dialog-compact{
-    max-width: 420px !important;
-    width: min(420px, calc(100vw - 40px)) !important;
-}
-.settings-dialog .settings-dialog-head h3{
-    color: var(--color-text-primary) !important;
-    font-size: 15px !important;
-    font-weight: 600 !important;
-    letter-spacing: 0 !important;
-    line-height: 1.35;
-    margin: 0 !important;
-}
-.settings-dialog .form-group{
-    margin-bottom: 14px;
-}
-.settings-dialog .form-group:last-child{
-    margin-bottom: 0;
-}
-.settings-dialog .form-group > label,
-.settings-dialog .papi-plain-result > label{
-    color: var(--color-text-secondary);
-    display: block;
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.35;
-    margin-bottom: 7px;
-}
-.settings-dialog .input-modern{
-    box-sizing: border-box;
-    font-size: 14px;
-    height: 40px;
-    width: 100%;
-}
-.settings-dialog .settings-dialog-footer > button{
-    align-items: center;
-    border-radius: 6px !important;
-    display: inline-flex;
-    font-size: 13px !important;
-    height: 38px;
-    justify-content: center;
-    min-width: 88px;
-    padding: 0 16px !important;
-}
 .settings-expiry-slider-current strong{
     color: var(--color-text-primary);
     font-size: 13px;
@@ -73,8 +14,7 @@
 .settings-expiry-slider.is-disabled{
     opacity: 0.58;
 }
-.settings-expiry-slider.is-disabled .settings-expiry-slider-input,
-.settings-expiry-slider.is-disabled .settings-expiry-slider-mark{
+.settings-expiry-slider.is-disabled .settings-expiry-slider-input,.settings-expiry-slider.is-disabled .settings-expiry-slider-mark{
     cursor: not-allowed;
 }
 .settings-toggle-grid{
@@ -93,23 +33,6 @@
 .papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-thumb{
     transform: translateX(14px);
 }
-.settings-dialog .papi-modal-form[hidden] + .papi-plain-result{
-    margin-top: 0;
-}
-.settings-dialog .admin-user-token-menu{
-    bottom: calc(100% + 6px);
-    max-height: min(240px, 40vh);
-    top: auto;
-}
-@media (max-width: 640px){.modal.settings-dialog,
-    .modal.settings-dialog.settings-dialog-compact{
-        max-height: calc(100dvh - 24px) !important;
-        max-width: none !important;
-        width: calc(100vw - 24px) !important;
-    }
-.settings-dialog .settings-dialog-footer > button{
-        flex: 1 1 0;
-    }
-.settings-toggle-grid{
+@media (max-width: 640px){.settings-toggle-grid{
         grid-template-columns: 1fr;
     }}

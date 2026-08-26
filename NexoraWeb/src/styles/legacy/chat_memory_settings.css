@@ -34,8 +34,7 @@
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
     z-index: 20010 !important;
 }
-.settings-memory-model-options .model-group-title .label,
-.settings-memory-model-options .model-chip-status{
+.settings-memory-model-options .model-group-title .label,.settings-memory-model-options .model-chip-status{
     letter-spacing: 0;
 }
 .settings-memory-model-status.is-error{
@@ -46,8 +45,7 @@
         transform: rotate(360deg);
     }
 }
-@media (prefers-reduced-motion: reduce){.settings-memory-refresh-button,
-    .settings-memory-refresh-button.is-loading i{
+@media (prefers-reduced-motion: reduce){.settings-memory-refresh-button,.settings-memory-refresh-button.is-loading i{
         animation: none;
         transition: none;
     }}
