@@ -48,32 +48,32 @@
                 </div>
 
                 <div class="admin-user-detail-grid">
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>用户名</label>
-                        <input v-model="detailDisplayName" class="input-modern" type="text" maxlength="32" placeholder="显示名称">
+                        <input v-model="detailDisplayName" class="gddp-input" type="text" maxlength="32" placeholder="显示名称">
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>角色</label>
                         <SettingSelect v-if="!isSelf" v-model="detailRole" :options="roleOptions" width="140px" />
                         <div v-else class="admin-info-text">{{ roleLabel(detailRole) }}(本人不可改)</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>最近登录</label>
                         <div class="admin-info-text">{{ formatTime(selected.last_login) }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>创建时间</label>
                         <div class="admin-info-text">{{ formatTime(selected.created_at) }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>Token 消耗</label>
                         <div class="admin-info-text mono">{{ Number(selected.total_token_usage || 0).toLocaleString() }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>最近 IP</label>
                         <div class="admin-info-text">{{ selected.last_ip || '未知' }}</div>
                     </div>
-                    <div class="form-group">
+                    <div class="gddp-form-field">
                         <label>密码</label>
                         <div class="admin-info-text">{{ selected.has_password ? '已设置' : '未设置' }}</div>
                     </div>
@@ -129,29 +129,29 @@
 
     <!-- 添加用户弹窗 -->
     <Modal :open="createOpen" title="添加新用户" size="sm" @close="createOpen = false">
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label for="adminUserCreateUsername">用户名</label>
             <input
                 id="adminUserCreateUsername"
                 v-model="createUsername"
-                class="input-modern"
+                class="gddp-input"
                 type="text"
                 maxlength="60"
                 placeholder="输入用户名"
             >
         </div>
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label for="adminUserCreatePassword">密码</label>
             <input
                 id="adminUserCreatePassword"
                 v-model="createPassword"
-                class="input-modern"
+                class="gddp-input"
                 type="password"
                 maxlength="120"
                 placeholder="输入密码"
             >
         </div>
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label>角色</label>
             <SettingSelect v-model="createRole" :options="roleOptions" width="140px" />
         </div>
@@ -163,12 +163,12 @@
 
     <!-- 重置密码弹窗 -->
     <Modal :open="resetOpen" title="重置密码" size="sm" @close="resetOpen = false">
-        <div class="form-group">
+        <div class="gddp-form-field">
             <label for="adminUserResetPassword">新密码</label>
             <input
                 id="adminUserResetPassword"
                 v-model="resetPassword"
-                class="input-modern"
+                class="gddp-input"
                 type="password"
                 maxlength="120"
                 placeholder="输入新密码"
