@@ -32,7 +32,7 @@
 
   /* toast 通知必须始终浮于全站所有弹窗/小窗之上（设置小窗弹窗栈基线 20000，每层 +20） */
   --z-toast: 40000;
-}.app-container{ display: flex; height: 100%; width: 100%; position: relative; overflow: hidden; }.logo{ font-weight: 600; font-size: 18px; color: #fff; letter-spacing: -0.5px; display: flex; align-items: baseline; }.logo .dot{ color: var(--color-text-secondary); margin-left: 2px; }body.learning-workspace-active .logo{
+}.logo{ font-weight: 600; font-size: 18px; color: #fff; letter-spacing: -0.5px; display: flex; align-items: baseline; }.logo .dot{ color: var(--color-text-secondary); margin-left: 2px; }body.learning-workspace-active .logo{
   color: var(--learning-sidebar-text);
 }body.learning-workspace-active .logo .dot{
   color: #20242c;
@@ -105,17 +105,7 @@
 }.user-profile .username{ 
     flex: 1; color: #fff; font-size: 14px; font-weight: 500;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}/* --- MAIN CONTENT --- */.main-content{
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-main);
-  position: relative;
-  min-width: 0;
-  height: 100vh; /* Ensure full height */
-  overflow-x: hidden;
-  overflow-y: clip;
-}.header-left{
+}/* --- MAIN CONTENT --- */.header-left{
     display: flex;
     align-items: center;
     gap: 10px;
