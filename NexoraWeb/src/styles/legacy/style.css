@@ -264,33 +264,6 @@
     border: 2px solid var(--color-bg-page);
 }.content-body pre.nc-code-block code::-webkit-scrollbar-track,.editor-preview pre.nc-code-block code::-webkit-scrollbar-track{
     background: var(--color-bg-hover);
-}.content-body .mermaid,.editor-preview .mermaid{
-    margin: 1em 0;
-    padding: 10px 12px;
-    border: 1px solid #e6e6e6;
-    border-radius: 10px;
-    background: var(--color-bg-elevated);
-    overflow-x: auto;
-    text-align: center;
-}.btn-action{
-    background: none;
-    border: none;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    padding: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    transition: all 0.2s;
-    width: 28px;
-    height: 28px;
-}.btn-action svg{
-    width: 16px;
-    height: 16px;
-}.btn-action:hover{
-    color: var(--color-text-primary);
-    background: var(--color-bg-sunken);
 }.btn-action.btn-del:hover{
     color: #ff4d4f;
     background: var(--color-danger-surface);

@@ -127,6 +127,32 @@
     border-color: var(--color-danger-text);
 }
 
+/* 图标按钮： legacy 手写优化迁移，无背景小尺寸图标按钮 */
+.btn-action {
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    transition: all 0.2s;
+    width: 28px;
+    height: 28px;
+}
+
+.btn-action svg {
+    width: 16px;
+    height: 16px;
+}
+
+.btn-action:hover {
+    color: var(--color-text-primary);
+    background: var(--color-bg-sunken);
+}
+
 .btn-compact {
     height: 30px;
     padding: 0 12px;

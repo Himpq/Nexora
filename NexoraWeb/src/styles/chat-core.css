@@ -526,6 +526,17 @@ body.learning-workspace-active .sidebar-footer{
     line-height: 1.6;
 }
 
+.content-body .mermaid,
+.editor-preview .mermaid {
+    margin: 1em 0;
+    padding: 10px 12px;
+    border: 1px solid #e6e6e6;
+    border-radius: 10px;
+    background: var(--color-bg-elevated);
+    overflow-x: auto;
+    text-align: center;
+}
+
 .message.user .message-content{
   background-color: transparent; /* Changed */
   color: var(--color-text-primary);
