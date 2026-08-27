@@ -74,9 +74,32 @@
     const scrollHeight = Number(scrollContainer.scrollHeight || 0);
     const minScrollable = Math.max(1, scrollHeight - clientHeight);
     const atBottom = scrollTop >= minScrollable - 2;
-    const chapterLength = Math.max(1, Number(chapter.end || 0) - Number(chapter.start || 0));
-    const scrollPercent = atBottom ? 1.0 : (scrollTop / minScrollable);
-    let currentRelativePos = Math.floor(chapterLength * scrollPercent);
+    const chapterStart = Number(chapter.start || 0);
+    const chapterLength = Math.max(1, Number(chapter.end || 0) - chapterStart);
+
+    // 优先用段落锚点定位当前阅读位置：段落上的 data-plain-start 是后端下发的
+    // 精确偏移，比“滚动百分比 × 章节长度”这种比例估算准得多（图片、标题、
+    // 长短段落都会让比例估算偏移）。锚点缺失时才退回比例估算。
+    let currentRelativePos = null;
+    if (!atBottom) {
+      const anchored = Array.from(scrollContainer.querySelectorAll("[data-plain-start]"));
+      if (anchored.length) {
+        const containerTop = scrollContainer.getBoundingClientRect().top;
+        let topmost = anchored[0];
+        for (const node of anchored) {
+          if (node.getBoundingClientRect().top - containerTop > 0) break;
+          topmost = node;
+        }
+        const absolute = Number(topmost.getAttribute("data-plain-start"));
+        if (Number.isFinite(absolute)) {
+          currentRelativePos = Math.max(0, Math.min(chapterLength, absolute - chapterStart));
+        }
+      }
+    }
+    if (currentRelativePos === null) {
+      const scrollPercent = atBottom ? 1.0 : (scrollTop / minScrollable);
+      currentRelativePos = Math.floor(chapterLength * scrollPercent);
+    }
     if (atBottom) currentRelativePos = chapterLength;
 
     let sessionIndex = sessions.length - 1;

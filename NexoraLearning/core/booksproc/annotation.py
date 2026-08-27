@@ -145,7 +145,7 @@ def _render_annotation_item(annotation: Dict[str, Any]) -> str:
 
 def _render_annotations_root(annotations: List[Dict[str, Any]]) -> str:
     items = "\n".join(_render_annotation_item(a) for a in annotations if a)
-    return f"<annotations>\n{items}\n</annotations>"
+    return f"<annotations>\n<coordinate_space>plain</coordinate_space>\n{items}\n</annotations>"
 
 
 def _parse_model_annotations(raw_text: str, chapter_name: str, chapter_start: int) -> List[Dict[str, Any]]:

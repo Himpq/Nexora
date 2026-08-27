@@ -29,6 +29,7 @@ from ..lectures import (
     list_books,
     list_lectures,
     load_book_detail_xml,
+    load_book_heading_candidates,
     load_book_info_xml,
     load_book_questions_xml,
     load_book_sections_xml,
@@ -41,6 +42,7 @@ from ..lectures import (
     update_book,
 )
 from ..bookextract import extract_epub_heading_candidates_from_text
+from ..bookindex import heading_candidate_block_end
 from .modeling import (
     build_coarse_reading_runner,
     build_intensive_reading_runner,
@@ -2444,7 +2446,10 @@ def _run_coarse_reading_chunked(
         plan_mode = "sectioned"
         heading_candidates: List[str] = []
     else:
-        section_plan = _discover_coarse_sections(full_text)
+        section_plan = _discover_coarse_sections(
+            full_text,
+            load_book_heading_candidates(_CFG, lecture_id, book_id),
+        )
         planned_sections = list(section_plan.get("sections") or [])
         plan_mode = str(section_plan.get("mode") or "fallback").strip()
         heading_candidates = list(section_plan.get("candidates") or [])
@@ -2472,10 +2477,7 @@ def _run_coarse_reading_chunked(
         else:
             section_plan["reason"] = "model_section_plan_empty"
         if planned_sections:
-            header_block_end = full_text.find("[/EPUB_HEADING_CANDIDATES]")
-            body_search_start = 0
-            if header_block_end >= 0:
-                body_search_start = header_block_end + len("[/EPUB_HEADING_CANDIDATES]")
+            body_search_start = heading_candidate_block_end(full_text)
             snapped_sections = _snap_outline_boundaries_by_index(
                 full_text=full_text,
                 sections=planned_sections,
@@ -3082,10 +3084,7 @@ def _run_coarse_section_planning(
     outline_submitted = False
     discovered_offsets: Dict[str, int] = {}
     raw_full_text = str(full_text or "")
-    body_search_start = 0
-    header_block_end = raw_full_text.find("[/EPUB_HEADING_CANDIDATES]")
-    if header_block_end >= 0:
-        body_search_start = header_block_end + len("[/EPUB_HEADING_CANDIDATES]")
+    body_search_start = heading_candidate_block_end(raw_full_text)
     candidate_block = _format_heading_hints(heading_candidates)
     planning_system_tpl = _load_prompt_text(
         "coarse_section_planning.system",
@@ -4180,9 +4179,7 @@ def _exec_index_book_text_tool(*, full_text: str, total_len: int, arguments: Map
     loose_needle = re.sub(r"\s+", "", needle)
     cursor = 0
     hits: List[Dict[str, Any]] = []
-    header_block_end = raw.find("[/EPUB_HEADING_CANDIDATES]")
-    if header_block_end >= 0:
-        header_block_end += len("[/EPUB_HEADING_CANDIDATES]")
+    header_block_end = heading_candidate_block_end(raw)
     while cursor < len(source) and len(hits) < max_hits:
         local_idx = source.find(needle, cursor)
         matched_len = len(needle)
@@ -4316,29 +4313,43 @@ def _format_read_progress(state: Mapping[str, Any]) -> str:
     )
 
 
-def _extract_epub_heading_candidates(full_text: str) -> List[str]:
-    """读取 EPUB 候选标题块；旧文本缺块时从 XHTML 结构中重建候选。"""
+def _extract_epub_heading_candidates(
+    full_text: str,
+    sidecar_candidates: Optional[List[str]] = None,
+) -> List[str]:
+    """读取 EPUB 候选标题；优先用抽取阶段写入的 structure.json 侧车。
+
+    新版抽取不再把候选标题写进正文，因此侧车是首选来源；旧文本仍保留内联块，
+    再缺失时才从 XHTML 结构中重建候选。
+    """
+    rows: List[str] = []
+    seen: set[str] = set()
+
+    def _push(values: List[str]) -> None:
+        for item in values:
+            value = re.sub(r"\s+", " ", str(item or "").strip())
+            if value.startswith("-"):
+                value = value[1:].strip()
+            if not value or len(value) > 80:
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(value)
+
+    if sidecar_candidates:
+        _push(list(sidecar_candidates))
+        if rows:
+            return rows
+
     raw = str(full_text or "")
     begin = raw.find("[EPUB_HEADING_CANDIDATES]")
     end = raw.find("[/EPUB_HEADING_CANDIDATES]")
     if begin < 0 or end < 0 or end <= begin:
-        return extract_epub_heading_candidates_from_text(raw)
-    block = raw[begin + len("[EPUB_HEADING_CANDIDATES]"):end]
-    rows: List[str] = []
-    seen: set[str] = set()
-    for line in block.splitlines():
-        value = re.sub(r"\s+", " ", str(line or "").strip())
-        if value.startswith("-"):
-            value = value[1:].strip()
-        if not value:
-            continue
-        if len(value) > 80:
-            continue
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(value)
+        _push(extract_epub_heading_candidates_from_text(raw))
+        return rows
+    _push(raw[begin + len("[EPUB_HEADING_CANDIDATES]"):end].splitlines())
     return rows
 
 
@@ -4546,14 +4557,17 @@ def _discover_html_chapter_heading_sections(full_text: str) -> List[Dict[str, An
     return sections
 
 
-def _discover_coarse_sections(full_text: str) -> Dict[str, Any]:
+def _discover_coarse_sections(
+    full_text: str,
+    sidecar_candidates: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """发现可用于概读的章级结构；可靠正文标题优先直接生成骨架。"""
     raw = str(full_text or "")
     total_len = len(raw)
     if total_len <= 0:
         return {"mode": "fallback", "sections": [], "reason": "empty_text", "candidates": []}
 
-    raw_headings = _extract_epub_heading_candidates(raw)
+    raw_headings = _extract_epub_heading_candidates(raw, sidecar_candidates)
     headings = _prioritize_heading_candidates([item for item in raw_headings if _is_probable_section_heading(item)])
     html_sections = _discover_html_chapter_heading_sections(raw)
     if html_sections:
@@ -4567,7 +4581,9 @@ def _discover_coarse_sections(full_text: str) -> Dict[str, Any]:
     reason = "no_structural_heading_candidates"
 
     if headings:
-        if "[EPUB_HEADING_CANDIDATES]" in raw:
+        if sidecar_candidates:
+            reason = "structure_sidecar_candidates_available"
+        elif "[EPUB_HEADING_CANDIDATES]" in raw:
             reason = "epub_heading_candidates_available"
         else:
             reason = "structural_heading_candidates_available"
@@ -4943,7 +4959,7 @@ def _build_planned_sections_from_existing_chapters(chapters: List[Dict[str, str]
 
 def _render_chapters_xml(chapters: List[Dict[str, str]]) -> str:
     """将章节结构渲染为 bookinfo.xml 文本。"""
-    lines: List[str] = []
+    lines: List[str] = ["<coordinate_space>plain</coordinate_space>", ""]
     for row in chapters:
         name = str(row.get("chapter_name") or "").strip()
         rng = str(row.get("chapter_range") or "").strip()

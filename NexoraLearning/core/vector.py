@@ -291,17 +291,25 @@ def upsert_chunks_to_library(
     return len(ids) if isinstance(ids, list) else len(chunks)
 
 
-def delete_material_chunks(cfg: Dict[str, Any], course_id: str, material_id: str) -> None:
+def delete_material_chunks(
+    cfg: Dict[str, Any],
+    course_id: str,
+    material_id: str,
+    *,
+    library: Optional[str] = None,
+) -> None:
     """删除某教材在 NexoraDB 中的所有向量。"""
-    _post(
+    resp = _post(
         cfg,
         "/delete",
         {
             "username": _NEXORA_USERNAME,
-            "library": _library(course_id),
+            "library": str(library or _library(course_id)),
             "where": {"material_id": material_id},
         },
     )
+    if not resp.get("success", True):
+        raise RuntimeError(resp.get("message") or "delete material chunks failed")
 
 
 def delete_course_collection(cfg: Dict[str, Any], course_id: str) -> None:
@@ -413,7 +421,14 @@ def vectorize_book(
     if book is None:
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
 
-    text = load_book_text(cfg, lecture_id, book_id)
+    # Vectorize the canonical reader text: chunks are embedded and later shown
+    # back to the user as snippets, so HTML markup and catalogue metadata would
+    # pollute both the embeddings and the displayed result.
+    from core.bookindex import get_book_index
+
+    text = get_book_index(cfg, lecture_id, book_id).plain
+    if not text.strip():
+        text = load_book_text(cfg, lecture_id, book_id)
     if not text.strip():
         raise ValueError("Book text is empty.")
     if not force and str(book.get("vector_status") or "").strip().lower() == "vectorizing":
@@ -426,6 +441,7 @@ def vectorize_book(
     chunk_count = save_book_chunks(cfg, lecture_id, book_id, chunks)
 
     library = f"lecture_{lecture_id}"
+    delete_material_chunks(cfg, lecture_id, book_id, library=library)
     vector_count = upsert_chunks_to_library(
         cfg,
         library=library,

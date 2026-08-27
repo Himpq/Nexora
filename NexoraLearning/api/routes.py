@@ -901,6 +901,8 @@ def _build_lecture_display_card_payload(lecture_id: str) -> Dict[str, Any]:
 
 
 def _build_chapter_range_card_payload(lecture_id: str, book_id: str, content_range: List[Any]) -> Dict[str, Any]:
+    from core.bookindex import get_book_index
+
     lecture = get_learning_lecture(_cfg, lecture_id)
     if lecture is None:
         raise ValueError("Lecture not found.")
@@ -909,10 +911,12 @@ def _build_chapter_range_card_payload(lecture_id: str, book_id: str, content_ran
         raise ValueError("Book not found.")
     if not isinstance(content_range, list) or len(content_range) != 2:
         raise ValueError("content_range must be [start, end].")
-    start = max(0, int(content_range[0] or 0))
-    end = max(start, int(content_range[1] or start))
-    content = load_book_text(_cfg, lecture_id, book_id)
-    snippet = content[start:end]
+    # content_range is in reader coordinates, matching chapter/session ranges.
+    index = get_book_index(_cfg, lecture_id, book_id)
+    total = index.total_chars
+    start = max(0, min(total, int(content_range[0] or 0)))
+    end = max(start, min(total, int(content_range[1] or start)))
+    snippet = index.plain[start:end]
     title = str(book.get("title") or book_id).strip() or book_id
     lecture_title = str(lecture.get("title") or lecture_id).strip() or lecture_id
     html = f"""
@@ -3474,11 +3478,35 @@ def _runtime_write_memory(username: str, memory_type: str, lecture_id: str, cont
     return str(user_store.write_memory(_cfg, username, memory_type, content) or "")
 
 
+def _runtime_require_selected_lecture(username: str, lecture_id: str) -> None:
+    selected = set(user_store.list_selected_lecture_ids(_cfg, username) or [])
+    if str(lecture_id or "").strip() not in selected:
+        raise PermissionError("lecture is not selected by this user.")
+
+
 def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     name = str(tool_name or "").strip()
     safe_args = dict(arguments or {})
     if name not in _RUNTIME_READONLY_TOOL_NAMES:
         raise ValueError(f"Learning mode only supports configured runtime tools: {name}")
+
+    selected_lecture_ids = set(user_store.list_selected_lecture_ids(_cfg, username) or [])
+    requested_lecture_id = str(safe_args.get("lecture_id") or "").strip()
+    if requested_lecture_id:
+        _runtime_require_selected_lecture(username, requested_lecture_id)
+
+    if name == "listLectures":
+        payload = dict(_runtime_executor(username).execute(name, safe_args) or {})
+        lectures = payload.get("lectures") if isinstance(payload.get("lectures"), list) else []
+        authorized = [
+            row
+            for row in lectures
+            if isinstance(row, dict)
+            and str(row.get("id") or "").strip() in selected_lecture_ids
+        ]
+        payload["lectures"] = authorized
+        payload["total"] = len(authorized)
+        return payload
 
     if name == "learning_card":
         card_type = str(safe_args.get("type") or "").strip()
@@ -3632,7 +3660,7 @@ def _runtime_select_lecture_rows(username: str, payload: Optional[Dict[str, Any]
     payload_map = payload if isinstance(payload, dict) else {}
     payload_lecture_id = str(payload_map.get("lecture_id") or "").strip()
     if payload_lecture_id:
-        lecture_filter = {payload_lecture_id}
+        lecture_filter &= {payload_lecture_id}
     lectures = list_learning_lectures(_cfg) or []
     rows: List[Dict[str, Any]] = []
     total_books = 0
@@ -3642,7 +3670,7 @@ def _runtime_select_lecture_rows(username: str, payload: Optional[Dict[str, Any]
         lecture_id = str(lecture.get("id") or "").strip()
         if not lecture_id:
             continue
-        if lecture_filter and lecture_id not in lecture_filter:
+        if lecture_id not in lecture_filter:
             continue
         books = list_lecture_books(_cfg, lecture_id) or []
         total_books += len(books)
@@ -3699,7 +3727,9 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
     payload_map = payload if isinstance(payload, dict) else {}
     lecture_rows, total_books = _runtime_select_lecture_rows(user_id, payload_map)
     book_rows = _runtime_select_book_rows(lecture_rows)
-    active_lecture_id = str(payload_map.get("lecture_id") or "").strip()
+    requested_lecture_id = str(payload_map.get("lecture_id") or "").strip()
+    authorized_lecture_ids = {str(row.get("id") or "").strip() for row in lecture_rows}
+    active_lecture_id = requested_lecture_id if requested_lecture_id in authorized_lecture_ids else ""
     if not active_lecture_id and lecture_rows:
         active_lecture_id = str(lecture_rows[0].get("id") or "").strip()
     recent_learning = user_store.list_learning_records(_cfg, user_id) or []

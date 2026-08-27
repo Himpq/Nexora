@@ -119,6 +119,68 @@ class AgentFacadeTests(unittest.TestCase):
             ).get_json()
             self.assertEqual(context_after_close["data"]["active_session"], {})
 
+    def test_requested_unselected_course_is_rejected(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            _seed_course(cfg)
+            hidden_lecture = create_lecture(cfg, "未授权课程", status="published")
+            hidden_book = create_book(cfg, hidden_lecture["id"], "未授权教材")
+            save_book_text(cfg, hidden_lecture["id"], hidden_book["id"], "不应被读取的正文")
+
+            client = app.test_client()
+            planned = client.post(
+                "/api/agent/v1/plan",
+                json={"username": "demo", "lecture_id": hidden_lecture["id"], "book_id": hidden_book["id"]},
+            )
+            self.assertEqual(planned.status_code, 404)
+
+            asked = client.post(
+                "/api/agent/v1/ask-in-context",
+                json={
+                    "username": "demo",
+                    "lecture_id": hidden_lecture["id"],
+                    "book_id": hidden_book["id"],
+                    "question": "教材写了什么？",
+                },
+            )
+            self.assertEqual(asked.status_code, 403)
+            self.assertEqual(asked.get_json()["error"]["code"], "PERMISSION_DENIED")
+
+    def test_invalid_chapter_index_is_rejected(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            client = app.test_client()
+
+            out_of_range = client.post(
+                "/api/agent/v1/open-session",
+                json={
+                    "username": "demo",
+                    "lecture_id": lecture["id"],
+                    "book_id": book["id"],
+                    "chapter_index": 99,
+                },
+            )
+            self.assertEqual(out_of_range.status_code, 400)
+            self.assertEqual(out_of_range.get_json()["error"]["code"], "INVALID_ARGUMENT")
+
+            invalid_type = client.post(
+                "/api/agent/v1/open-session",
+                json={
+                    "username": "demo",
+                    "lecture_id": lecture["id"],
+                    "book_id": book["id"],
+                    "chapter_index": "not-a-number",
+                },
+            )
+            self.assertEqual(invalid_type.status_code, 400)
+
     def test_api_key_and_event_idempotency(self):
         import tempfile
         from pathlib import Path
@@ -219,6 +281,37 @@ class AgentFacadeTests(unittest.TestCase):
                         break
                     time.sleep(0.01)
                 self.assertEqual(status, "completed")
+
+                # Simulate polling on another worker, where the creator's
+                # process-local cache does not contain the task.
+                from api import agent_facade
+
+                with agent_facade._LOCK:
+                    agent_facade._TASKS[task_id]["status"] = "running"
+                cross_worker = client.get(
+                    f"/api/agent/v1/tasks/{task_id}",
+                    headers={"X-Nexora-Username": "demo"},
+                )
+                self.assertEqual(cross_worker.status_code, 200)
+                self.assertEqual(cross_worker.get_json()["data"]["task"]["status"], "completed")
+
+    def test_public_base_url_overrides_request_host_for_deep_links(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            cfg["public_base_url"] = "https://chat.himpqblog.cn:5002"
+            lecture, book = _seed_course(cfg)
+            response = app.test_client().post(
+                "/api/agent/v1/open-session",
+                headers={"Host": "chat.himpqblog.cn"},
+                json={"username": "demo", "lecture_id": lecture["id"], "book_id": book["id"]},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(
+                response.get_json()["data"]["entry_url"].startswith("https://chat.himpqblog.cn:5002/api/frontend/?")
+            )
 
 
 if __name__ == "__main__":

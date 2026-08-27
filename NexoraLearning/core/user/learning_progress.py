@@ -42,25 +42,23 @@ def init_learning_progress(cfg: Dict[str, Any]) -> None:
 
 
 def parse_book_info_xml_chapters(xml_text: str, full_text_length: int) -> List[Dict[str, Any]]:
-    """Extract chapter list from bookinfo.xml."""
-    text = str(xml_text or "")
+    """Extract chapters from bookinfo.xml in stored (raw) coordinates.
+
+    Delegates to :mod:`core.bookindex.structure`, the single parser for this
+    XML. Offsets are raw ``content.txt`` offsets; use
+    ``core.bookindex.get_book_index`` when reader coordinates are needed.
+    """
+    from core.bookindex import parse_bookinfo_chapters
+
+    limit = max(0, int(full_text_length or 0))
     entries: List[Dict[str, Any]] = []
-    for match in re.finditer(
-        r"<chapter_name>\s*(.*?)\s*</chapter_name>[\s\S]*?<chapter_range>\s*(.*?)\s*</chapter_range>",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        title = str(match.group(1) or "").strip()
-        range_text = str(match.group(2) or "").strip()
-        if not title or ":" not in range_text:
+    for row in parse_bookinfo_chapters(xml_text):
+        title = str(row.get("title") or "").strip()
+        start = int(row.get("raw_start") or 0)
+        length = int(row.get("raw_length") or 0)
+        if not title or length <= 0:
             continue
-        left, right = range_text.split(":", 1)
-        try:
-            start = max(0, int(str(left).strip()))
-            length = max(0, int(str(right).strip()))
-        except Exception:
-            continue
-        end = min(max(0, int(full_text_length or 0)), start + length)
+        end = min(limit, start + length) if limit else start + length
         entries.append({
             "title": title,
             "start": start,
