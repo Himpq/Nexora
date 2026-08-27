@@ -477,6 +477,54 @@ body.learning-workspace-active .sidebar-footer{
     min-width: 9.5em;
 }
 
+.content-body pre {
+    max-width: 100%;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+}
+
+.content-body pre code {
+    display: block;
+    white-space: pre !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+}
+
+.content-body :not(pre) > code {
+    font-family: var(--font-mono);
+    background: var(--color-bg-hover);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    border-radius: 6px;
+    padding: 0.08em 0.38em;
+    font-size: 0.92em;
+}
+
+.content-body pre.nc-code-block,
+.editor-preview pre.nc-code-block {
+    position: relative;
+    margin: 0.9em 0;
+    border: 1px solid #d9e0ea;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #f8fafc 0%, #f4f7fb 100%);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    overflow: hidden !important;
+}
+
+.content-body pre.nc-code-block code,
+.editor-preview pre.nc-code-block code {
+    margin: 0;
+    padding: 12px 14px 14px 14px;
+    max-height: min(56vh, 680px);
+    overflow: auto !important;
+    background: transparent !important;
+    color: var(--color-text-primary);
+    border: 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
 .message.user .message-content{
   background-color: transparent; /* Changed */
   color: var(--color-text-primary);
