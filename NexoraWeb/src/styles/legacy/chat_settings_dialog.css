@@ -2,87 +2,10 @@
 :root{
     --settings-dialog-layer-base: 20000;
 }
-.settings-expiry-slider{
-    min-width: 0;
-    padding: 2px 2px 0;
-}
-.settings-expiry-slider-current{
-    align-items: baseline;
-    color: var(--color-text-secondary);
-    display: flex;
-    font-size: 12px;
-    gap: 6px;
-    justify-content: flex-end;
-    line-height: 1.4;
-    margin-bottom: 8px;
-}
 .settings-expiry-slider-current strong{
     color: var(--color-text-primary);
     font-size: 13px;
     font-weight: 650;
-}
-.settings-expiry-slider-input{
-    appearance: none;
-    background: linear-gradient(
-        to right,
-        #0f172a 0,
-        #0f172a var(--settings-expiry-progress),
-        #dbe2ea var(--settings-expiry-progress),
-        #dbe2ea 100%
-    );
-    border: 0;
-    border-radius: 2px;
-    cursor: pointer;
-    display: block;
-    height: 4px;
-    margin: 10px 0 8px;
-    outline: none;
-    padding: 0;
-    width: 100%;
-}
-.settings-expiry-slider-input::-webkit-slider-thumb{
-    appearance: none;
-    background: var(--color-bg-elevated);
-    border: 2px solid #0f172a;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
-    height: 18px;
-    width: 18px;
-}
-.settings-expiry-slider-input::-moz-range-thumb{
-    background: var(--color-bg-elevated);
-    border: 2px solid #0f172a;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
-    height: 14px;
-    width: 14px;
-}
-.settings-expiry-slider-input:focus-visible::-webkit-slider-thumb{
-    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.14);
-}
-.settings-expiry-slider-marks{
-    display: grid;
-    gap: 4px;
-    grid-template-columns: repeat(var(--settings-expiry-count), minmax(0, 1fr));
-}
-.settings-expiry-slider-mark{
-    appearance: none;
-    background: transparent;
-    border: 0;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    font-size: 11px;
-    line-height: 1.25;
-    min-width: 0;
-    padding: 4px 0;
-    text-align: center;
-    white-space: normal;
-}
-.settings-expiry-slider-mark:first-child{
-    text-align: left;
-}
-.settings-expiry-slider-mark:last-child{
-    text-align: right;
 }
 .settings-expiry-slider-mark.active{
     color: var(--color-text-primary);
@@ -99,55 +22,6 @@
     gap: 8px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.papi-permission-toggle{
-    align-items: center;
-    appearance: none;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    display: grid;
-    gap: 8px;
-    grid-template-columns: minmax(0, 1fr) 32px;
-    min-height: 40px;
-    padding: 5px 9px;
-    text-align: left;
-    width: 100%;
-}
-.papi-permission-toggle:hover{
-    border-color: var(--color-text-secondary);
-}
-.papi-permission-toggle:focus-visible{
-    outline: 3px solid rgba(15, 23, 42, 0.18);
-    outline-offset: 2px;
-}
-.papi-permission-toggle-label{
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 1.35;
-    min-width: 0;
-}
-.papi-permission-toggle-track{
-    background: #cbd5e1;
-    border: 1px solid #94a3b8;
-    border-radius: 999px;
-    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
-    height: 18px;
-    position: relative;
-    width: 32px;
-}
-.papi-permission-toggle-thumb{
-    background: var(--color-bg-elevated);
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.26);
-    height: 14px;
-    left: 2px;
-    position: absolute;
-    top: 2px;
-    transition: transform 0.15s ease;
-    width: 14px;
-}
 .papi-permission-toggle[aria-checked="true"]{
     background: var(--color-bg-sunken);
     border-color: var(--color-text-secondary);
@@ -159,9 +33,6 @@
 .papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-thumb{
     transform: translateX(14px);
 }
-@media (max-width: 640px){.settings-expiry-slider-mark{
-        font-size: 10px;
-    }
-.settings-toggle-grid{
+@media (max-width: 640px){.settings-toggle-grid{
         grid-template-columns: 1fr;
     }}

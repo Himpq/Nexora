@@ -2,4 +2,4 @@
  * chat_settings_management.css — 已确认为旧页(#settingsModal 壳)专属样式,
  * SPA 无此 id,全部规则对 Vue 工程无效;经阶段净化后置为空壳。
  * 设置管理面板的布局契约由第一方 settings.css 提供(settings-management-* 类)。
- */
+ */{}

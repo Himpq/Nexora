@@ -2,4 +2,4 @@
  * chat_papi_keys.css — 已整体收编(阶段2a):admin/papi 规则迁入
  * admin.css / settings.css,旧页专属规则随路由退役删除。
  * 保留空壳避免 legacy.css 入口 404。
- */
+ */{}
