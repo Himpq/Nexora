@@ -175,7 +175,8 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
   overflow-x: hidden; /* Prevent horizontal scroll */
   padding: 0 10px;
   scrollbar-width: thin;
-  scrollbar-color: #2f2f2f #070707;
+  scrollbar-color: #2f2f2f transparent;
+  background: var(--bg-sidebar);
 }
 
 .sidebar-content::-webkit-scrollbar{
@@ -183,7 +184,7 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
 }
 
 .sidebar-content::-webkit-scrollbar-track{
-  background: #070707;
+  background: transparent;
 }
 
 .sidebar-content::-webkit-scrollbar-thumb{
