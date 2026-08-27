@@ -482,17 +482,42 @@ def delete_book(lecture_id: str, book_id: str):
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/text", methods=["GET"])
 def get_book_text(lecture_id: str, book_id: str):
+    """返回教材正文。
+
+    默认返回 canonical 纯文本（阅读器坐标系）；所有章节 / 小节 / 批注偏移都以此
+    为准。需要模型侧的原始 HTML 文本时传 ``?format=raw``。
+    """
+    from core.bookindex import get_book_index
+
     _, book, error_response = _book_or_404(lecture_id, book_id)
     if error_response is not None:
         return error_response
 
-    content = load_book_text(_cfg, lecture_id, book_id)
+    text_format = str(request.args.get("format") or "plain").strip().lower()
     images = load_book_images_meta(_cfg, lecture_id, book_id)
+
+    if text_format == "raw":
+        raw = load_book_text(_cfg, lecture_id, book_id)
+        return jsonify({
+            "success": True,
+            "book": book,
+            "content": raw,
+            "content_format": "raw",
+            "coordinate_space": "raw",
+            "chars": len(raw),
+            "images": images,
+        })
+
+    index = get_book_index(_cfg, lecture_id, book_id)
     return jsonify({
         "success": True,
         "book": book,
-        "content": content,
-        "chars": len(content),
+        "content": index.plain,
+        "content_format": "plain",
+        "coordinate_space": index.coordinate_space,
+        "chars": index.total_chars,
+        "raw_chars": index.raw_chars,
+        "paragraph_count": len(index.paragraphs),
         "images": images,
     })
 
@@ -653,6 +678,7 @@ def parse_book_file(lecture_id: str, book_id: str):
     try:
         parsed_text = ""
         saved_images = []
+        structure = {}
         if source.suffix.lower() == ".epub":
             images_dir = Path(str(_cfg.get("data_dir") or "data")) / "lectures" / lecture_id / "books" / book_id / "assets" / "images"
             epub_result = extract_epub_with_assets(
@@ -663,6 +689,7 @@ def parse_book_file(lecture_id: str, book_id: str):
             )
             parsed_text = str(epub_result.get("text") or "")
             saved_images = save_book_images_meta(_cfg, lecture_id, book_id, epub_result.get("images") or [])
+            structure = dict(epub_result.get("structure") or {})
         else:
             parsed_text = extract_text(str(source))
         if not str(parsed_text or "").strip():
@@ -678,6 +705,22 @@ def parse_book_file(lecture_id: str, book_id: str):
             return jsonify({"success": False, "error": "parsed text is empty", "book": updated}), 422
 
         saved = save_book_text(_cfg, lecture_id, book_id, str(parsed_text), filename=filename)
+        from core.bookindex import invalidate_book_index, normalize_book_text
+        from core.lectures import save_book_structure
+
+        normalized = normalize_book_text(parsed_text)
+        structure.update(
+            {
+                "raw_chars": len(str(parsed_text)),
+                "plain_chars": normalized.length,
+                "paragraph_count": len(normalized.paragraphs),
+                "coordinate_space": "raw",
+            }
+        )
+        structure.setdefault("source", "epub" if source.suffix.lower() == ".epub" else "text")
+        structure.setdefault("heading_candidates", [])
+        save_book_structure(_cfg, lecture_id, book_id, structure)
+        invalidate_book_index(_cfg, lecture_id, book_id)
         log_event(
             "book_parse_done",
             "教材文本解析完成",
@@ -750,44 +793,104 @@ def get_book_info_xml(lecture_id: str, book_id: str):
     content = load_book_info_xml(_cfg, lecture_id, book_id)
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
 
+_CHAPTER_ERROR_STATUS = {
+    "no_chapters": 409,
+    "chapter_index_invalid": 400,
+    "chapter_index_out_of_range": 404,
+}
+_CHAPTER_ERROR_MESSAGE = {
+    "no_chapters": "教材尚未生成章节目录，请先完成粗读。",
+    "chapter_index_invalid": "chapter_index 必须是非负整数。",
+    "chapter_index_out_of_range": "chapter_index 超出章节范围。",
+}
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/index", methods=["GET"])
+def get_book_index_payload(lecture_id: str, book_id: str):
+    """返回校验后的全书结构（章节 / 小节 / 批注 / 诊断），统一阅读器坐标系。"""
+    from core.bookindex import get_book_index
+
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    include_paragraphs = _as_bool(request.args.get("paragraphs"), False)
+    index = get_book_index(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, **index.to_dict(include_paragraphs=include_paragraphs)})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/search", methods=["GET"])
+def search_book_text(lecture_id: str, book_id: str):
+    """全文检索：命中结果直接带章节 / 小节 / 段落锚点，可直接跳转。"""
+    from core.bookindex import search_book
+
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    query = str(request.args.get("q") or request.args.get("query") or "").strip()
+    if not query:
+        return jsonify({"success": False, "error": "q is required."}), 400
+
+    result = search_book(
+        _cfg,
+        lecture_id,
+        book_id,
+        query,
+        limit=_safe_int(request.args.get("limit"), 40),
+        context=_safe_int(request.args.get("context"), 60),
+    )
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result})
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/chapter/<int:chapter_index>", methods=["GET"])
 def get_book_chapter_text(lecture_id: str, book_id: str, chapter_index: int):
-    """按章节获取文本内容，支持按需加载。"""
+    """按章节获取正文（canonical 纯文本 + 段落锚点 + 该章的小节与批注）。
+
+    章节索引无效时返回明确错误，而不是静默回退整本书——静默回退会让前端把
+    整本书当成一章渲染，后续所有定位都跟着错。
+    """
+    from core.bookindex import build_chapter_payload
+
     _, book, error_response = _book_or_404(lecture_id, book_id)
     if error_response is not None:
         return error_response
 
-    content = load_book_text(_cfg, lecture_id, book_id)
-    if not content:
-        return jsonify({"success": True, "content": "", "chapter_index": chapter_index})
-
-    # 解析章节信息
-    bookinfo_xml = load_book_info_xml(_cfg, lecture_id, book_id)
-    from core.user.learning_progress import parse_book_info_xml_chapters
-    chapters = parse_book_info_xml_chapters(bookinfo_xml, len(content))
-
-    if not chapters or chapter_index < 0 or chapter_index >= len(chapters):
-        # 如果没有章节信息或索引无效，返回全部内容
+    payload, error = build_chapter_payload(
+        _cfg,
+        lecture_id,
+        book_id,
+        chapter_index,
+        include_paragraphs=_as_bool(request.args.get("paragraphs"), True),
+    )
+    if error:
+        if error == "book_text_empty":
+            # No text yet is a normal pre-extraction state, not a client error.
+            return jsonify({
+                "success": True,
+                "content": "",
+                "content_format": "plain",
+                "coordinate_space": "plain",
+                "chapter_index": chapter_index,
+                "paragraphs": [],
+                "sessions": [],
+                "annotations": [],
+                "total_chars": 0,
+            })
+        status = _CHAPTER_ERROR_STATUS.get(error, 400)
         return jsonify({
-            "success": True,
-            "content": content,
+            "success": False,
+            "error": error,
+            "message": _CHAPTER_ERROR_MESSAGE.get(error, "章节不可用。"),
             "chapter_index": chapter_index,
-            "total_chars": len(content),
-        })
-
-    chapter = chapters[chapter_index]
-    start = max(0, min(len(content), chapter.get("start", 0)))
-    end = max(start, min(len(content), chapter.get("end", len(content))))
-    chapter_content = content[start:end].strip()
+        }), status
 
     return jsonify({
         "success": True,
-        "content": chapter_content,
-        "chapter_index": chapter_index,
-        "chapter_title": chapter.get("title", ""),
-        "chapter_start": start,
-        "chapter_end": end,
-        "total_chars": len(chapter_content),
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "content_format": "plain",
+        **payload,
     })
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/bookinfo", methods=["POST"])

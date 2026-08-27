@@ -8,10 +8,12 @@ Agent-facing responses short and predictable.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -24,15 +26,10 @@ from core.lectures import (
     get_lecture,
     list_books,
     list_lectures,
-    load_book_info_xml,
-    load_book_text,
 )
 from core.nexora_proxy import NexoraProxy
 from core.runlog import log_event
-from core.user.learning_progress import (
-    compute_user_lecture_progress,
-    parse_book_info_xml_chapters,
-)
+from core.user.learning_progress import compute_user_lecture_progress
 
 
 agent_facade_bp = Blueprint("agent_facade", __name__, url_prefix="/api/agent/v1")
@@ -187,11 +184,14 @@ def _lecture_snapshot(username: str, lecture: Mapping[str, Any], records: list[D
 def _context(username: str, requested_lecture_id: str = "") -> Dict[str, Any]:
     records = user_store.list_learning_records(_CFG, username) or []
     selected_ids = _selected_lecture_ids(username)
-    lectures = [row for row in list_lectures(_CFG) if isinstance(row, Mapping)]
+    lectures = [
+        row
+        for row in list_lectures(_CFG)
+        if isinstance(row, Mapping)
+        and str(row.get("id") or "").strip() in selected_ids
+    ]
     if requested_lecture_id:
         lectures = [row for row in lectures if str(row.get("id") or "").strip() == requested_lecture_id]
-    elif selected_ids:
-        lectures = [row for row in lectures if str(row.get("id") or "").strip() in selected_ids]
     snapshots = [_lecture_snapshot(username, row, records) for row in lectures]
     recent = [dict(row) for row in records[-8:] if isinstance(row, Mapping)]
     user = user_store.get_user(_CFG, username) or {"id": username, "username": username}
@@ -252,32 +252,74 @@ def _active_session(records: list[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _chapters(lecture_id: str, book_id: str) -> list[Dict[str, Any]]:
-    xml = str(load_book_info_xml(_CFG, lecture_id, book_id) or "")
-    text = str(load_book_text(_CFG, lecture_id, book_id) or "")
-    rows = parse_book_info_xml_chapters(xml, len(text))
-    for index, row in enumerate(rows):
-        row["chapter_index"] = index
-        row["book_id"] = book_id
+    """Chapters in reader coordinates.
+
+    The agent hands ``chapter_index`` to the reader through a deep link, so both
+    sides must resolve it against the same validated index — parsing
+    bookinfo.xml separately here would drift as soon as the validator drops,
+    merges or inserts a chapter.
+    """
+    from core.bookindex import get_book_index
+
+    index = get_book_index(_CFG, lecture_id, book_id)
+    rows: list[Dict[str, Any]] = []
+    for chapter in index.chapters:
+        rows.append(
+            {
+                "chapter_index": chapter.index,
+                "book_id": book_id,
+                "title": chapter.title,
+                "start": chapter.start,
+                "end": chapter.end,
+                "range": chapter.range,
+            }
+        )
     return rows
 
 
-def _resolve_session_target(username: str, data: Mapping[str, Any], context: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def _chapter_context_text(lecture_id: str, book_id: str, chapter_index: int, limit: int = 12000) -> str:
+    """Return canonical reader text for a previously validated chapter."""
+    from core.bookindex import get_book_index
+
+    index = get_book_index(_CFG, lecture_id, book_id)
+    chapter = index.chapter_at(chapter_index)
+    if chapter is None:
+        return ""
+    return index.chapter_text(chapter.index)[:limit]
+
+
+def _resolve_session_target(
+    username: str,
+    data: Mapping[str, Any],
+    context: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[str, str, int]]]:
     requested_lecture = str(data.get("lecture_id") or "").strip()
     requested_book = str(data.get("book_id") or "").strip()
-    requested_chapter = _safe_int(data.get("chapter_index"), -1)
     lectures = context.get("lectures") if isinstance(context.get("lectures"), list) else []
     lecture = next((row for row in lectures if str(row.get("id") or "") == requested_lecture), None) if requested_lecture else (lectures[0] if lectures else None)
     if not isinstance(lecture, Mapping):
-        return None, "No selected lecture is available for this user."
+        return None, ("COURSE_NOT_FOUND", "No selected lecture is available for this user.", 404)
     lecture_id = str(lecture.get("id") or "").strip()
     books = lecture.get("books") if isinstance(lecture.get("books"), list) else []
     book = next((row for row in books if str(row.get("id") or "") == requested_book), None) if requested_book else (books[0] if books else None)
     if not isinstance(book, Mapping):
-        return None, "No textbook is available for the selected lecture."
+        return None, ("COURSE_NOT_FOUND", "No textbook is available for the selected lecture.", 404)
     book_id = str(book.get("id") or "").strip()
     chapters = _chapters(lecture_id, book_id)
-    if requested_chapter >= 0 and requested_chapter < len(chapters):
-        chapter = chapters[requested_chapter]
+    if "chapter_index" in data:
+        from core.bookindex import resolve_chapter
+
+        _, resolved_chapter, chapter_error = resolve_chapter(
+            _CFG, lecture_id, book_id, data.get("chapter_index")
+        )
+        if chapter_error or resolved_chapter is None:
+            return None, ("INVALID_ARGUMENT", "chapter_index is invalid or out of range.", 400)
+        chapter = next(
+            (row for row in chapters if int(row.get("chapter_index") or 0) == resolved_chapter.index),
+            None,
+        )
+        if chapter is None:
+            return None, ("INVALID_ARGUMENT", "chapter_index is invalid or out of range.", 400)
     else:
         current_name = str(lecture.get("current_chapter") or "").strip()
         chapter = next((row for row in chapters if str(row.get("title") or "") == current_name), None)
@@ -294,9 +336,13 @@ def _resolve_session_target(username: str, data: Mapping[str, Any], context: Dic
 
 
 def _frontend_entry_url(target: Mapping[str, Any], username: str) -> str:
-    host = str(request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
-    proto = str(request.headers.get("X-Forwarded-Proto") or request.scheme or "http").split(",")[0].strip()
-    base = f"{proto}://{host}/api/frontend/" if host else "/api/frontend/"
+    public_base = str(_CFG.get("public_base_url") or "").strip().rstrip("/")
+    if public_base:
+        base = f"{public_base}/api/frontend/"
+    else:
+        host = str(request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
+        proto = str(request.headers.get("X-Forwarded-Proto") or request.scheme or "http").split(",")[0].strip()
+        base = f"{proto}://{host}/api/frontend/" if host else "/api/frontend/"
     params = urlencode({
         "source": "agent",
         "username": username,
@@ -327,6 +373,51 @@ def _task_snapshot(task: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in dict(task).items() if key not in {"internal"}}
 
 
+def _task_path(task_id: str) -> Optional[Path]:
+    normalized = str(task_id or "").strip()
+    if not _valid_identifier(normalized) or not normalized.startswith("task_"):
+        return None
+    return Path(str(_CFG.get("data_dir") or "data")) / "agent_tasks" / f"{normalized}.json"
+
+
+def _persist_task_locked(task: Mapping[str, Any]) -> None:
+    snapshot = _task_snapshot(task)
+    path = _task_path(str(snapshot.get("task_id") or ""))
+    if path is None:
+        raise ValueError("Invalid Agent task id.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _save_task(task: Dict[str, Any]) -> None:
+    with _LOCK:
+        task_id = str(task.get("task_id") or "")
+        _TASKS[task_id] = task
+        _persist_task_locked(task)
+        while len(_TASKS) > _MAX_TASKS:
+            _TASKS.pop(next(iter(_TASKS)))
+
+
+def _load_task(task_id: str) -> Optional[Dict[str, Any]]:
+    path = _task_path(task_id)
+    if path is None or not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(value, dict) or str(value.get("task_id") or "") != str(task_id):
+        return None
+    with _LOCK:
+        _TASKS[str(task_id)] = value
+    return value
+
+
 def _start_review_task(username: str, target: Dict[str, Any], limit: int) -> Dict[str, Any]:
     task_id = f"task_{uuid.uuid4().hex[:20]}"
     task: Dict[str, Any] = {
@@ -340,15 +431,13 @@ def _start_review_task(username: str, target: Dict[str, Any], limit: int) -> Dic
         "created_at": int(time.time()),
         "updated_at": int(time.time()),
     }
-    with _LOCK:
-        _TASKS[task_id] = task
-        while len(_TASKS) > _MAX_TASKS:
-            _TASKS.pop(next(iter(_TASKS)))
+    _save_task(task)
 
     def run() -> None:
         with _LOCK:
             task["status"] = "running"
             task["updated_at"] = int(time.time())
+            _persist_task_locked(task)
         try:
             quiz = load_or_create_chapter_quiz(
                 _CFG,
@@ -371,11 +460,13 @@ def _start_review_task(username: str, target: Dict[str, Any], limit: int) -> Dic
                     "questions": quiz.get("questions") if isinstance(quiz.get("questions"), list) else [],
                 }
                 task["updated_at"] = int(time.time())
+                _persist_task_locked(task)
         except Exception as exc:
             with _LOCK:
                 task["status"] = "failed"
                 task["error"] = {"code": "TASK_FAILED", "message": str(exc)}
                 task["updated_at"] = int(time.time())
+                _persist_task_locked(task)
             log_event("agent_review_plan_failed", "Agent review plan task failed.", payload={"user_id": username, "task_id": task_id, "error": str(exc)})
 
     threading.Thread(target=run, name=f"agent-review-{task_id}", daemon=True).start()
@@ -408,10 +499,18 @@ def agent_plan():
     context = _context(username, str(data.get("lecture_id") or "").strip())
     lectures = context.get("lectures") if isinstance(context.get("lectures"), list) else []
     if not lectures:
+        if str(data.get("lecture_id") or "").strip():
+            return _failure(
+                action,
+                "COURSE_NOT_FOUND",
+                "Requested lecture is not selected by this user.",
+                status=404,
+            )
         return _response(action=action, data={"status": "needs_course", "message": "请先选择一门课程。"}, next_actions=[{"type": "select_course", "required": True}])
     target, target_error = _resolve_session_target(username, data, context)
     if target_error or target is None:
-        return _failure(action, "COURSE_NOT_FOUND", target_error or "No learning target is available.", status=404)
+        code, message, status = target_error or ("COURSE_NOT_FOUND", "No learning target is available.", 404)
+        return _failure(action, code, message, status=status)
     available_minutes = max(5, min(240, _safe_int(data.get("available_minutes"), 30)))
     intent = str(data.get("intent") or "continue_learning").strip() or "continue_learning"
     plan = {
@@ -438,7 +537,8 @@ def agent_open_session():
     context = _context(username, str(data.get("lecture_id") or "").strip())
     target, target_error = _resolve_session_target(username, data, context)
     if target_error or target is None:
-        return _failure(action, "COURSE_NOT_FOUND", target_error or "No learning target is available.", status=404)
+        code, message, status = target_error or ("COURSE_NOT_FOUND", "No learning target is available.", 404)
+        return _failure(action, code, message, status=status)
     session_id = f"session_{uuid.uuid4().hex[:20]}"
     data_out = {
         "session_id": session_id,
@@ -486,16 +586,31 @@ def agent_ask_in_context():
     if lecture_id and book_id:
         if not _valid_identifier(lecture_id) or not _valid_identifier(book_id):
             return _failure(action, "INVALID_ARGUMENT", "lecture_id or book_id is invalid.")
+        if lecture_id not in _selected_lecture_ids(username):
+            return _failure(
+                action,
+                "PERMISSION_DENIED",
+                "lecture is not selected by this user.",
+                status=403,
+            )
         if get_lecture(_CFG, lecture_id) is None or get_book(_CFG, lecture_id, book_id) is None:
             return _failure(action, "COURSE_NOT_FOUND", "lecture or book not found.", status=404)
-        if not context_text:
-            context_text = str(load_book_text(_CFG, lecture_id, book_id) or "")[:12000]
-        chapter_index = _safe_int(data.get("chapter_index"), -1)
-        if chapter_index >= 0:
-            chapters = _chapters(lecture_id, book_id)
-            if chapter_index < len(chapters):
-                row = chapters[chapter_index]
-                context_text = str(load_book_text(_CFG, lecture_id, book_id) or "")[int(row.get("start") or 0):int(row.get("end") or 0)][:12000]
+        from core.bookindex import get_book_index, resolve_chapter
+
+        if "chapter_index" in data:
+            _, chapter, chapter_error = resolve_chapter(
+                _CFG, lecture_id, book_id, data.get("chapter_index")
+            )
+            if chapter_error or chapter is None:
+                return _failure(
+                    action,
+                    "INVALID_ARGUMENT",
+                    "chapter_index is invalid or out of range.",
+                    status=400,
+                )
+            context_text = _chapter_context_text(lecture_id, book_id, chapter.index)
+        elif not context_text:
+            context_text = get_book_index(_CFG, lecture_id, book_id).plain[:12000]
     if not context_text:
         context_text = "当前没有可用的教材上下文。"
     if _PROXY is None:
@@ -537,7 +652,8 @@ def agent_review_plan():
     context = _context(username, str(data.get("lecture_id") or "").strip())
     target, target_error = _resolve_session_target(username, data, context)
     if target_error or target is None:
-        return _failure(action, "COURSE_NOT_FOUND", target_error or "No learning target is available.", status=404)
+        code, message, status = target_error or ("COURSE_NOT_FOUND", "No learning target is available.", 404)
+        return _failure(action, code, message, status=status)
     key = str(request.headers.get("Idempotency-Key") or data.get("idempotency_key") or "").strip()
     cache_key = f"{username}:review-plan:{key}" if key else ""
     cached = _idempotent(cache_key)
@@ -559,8 +675,11 @@ def agent_task(task_id: str):
     username, error = _require_user(None, action)
     if error is not None:
         return error
-    with _LOCK:
-        task = _TASKS.get(str(task_id or "").strip())
+    normalized_task_id = str(task_id or "").strip()
+    task = _load_task(normalized_task_id)
+    if task is None:
+        with _LOCK:
+            task = _TASKS.get(normalized_task_id)
     if task is None:
         return _failure(action, "TASK_NOT_FOUND", "task not found.", status=404)
     if username != str(task.get("user_id") or ""):

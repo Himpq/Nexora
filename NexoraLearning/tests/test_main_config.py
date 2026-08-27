@@ -22,6 +22,7 @@ class MainConfigTests(unittest.TestCase):
                 "NEXORALEARNING_NEXORA_API_KEY": "test-secret",
                 "NEXORALEARNING_NEXORADB_SERVICE_URL": "https://chat.himpqblog.cn:8100",
                 "NEXORALEARNING_RUNTIME_API_KEY": "agent-secret",
+                "NEXORALEARNING_PUBLIC_BASE_URL": "https://chat.himpqblog.cn:5002/",
                 "NEXORALEARNING_PORT": "5017",
             },
             clear=False,
@@ -32,6 +33,7 @@ class MainConfigTests(unittest.TestCase):
         self.assertEqual(resolved["nexora"]["api_key"], "test-secret")
         self.assertEqual(resolved["nexoradb"]["service_url"], "https://chat.himpqblog.cn:8100")
         self.assertEqual(resolved["runtime_api"]["api_key"], "agent-secret")
+        self.assertEqual(resolved["public_base_url"], "https://chat.himpqblog.cn:5002")
         self.assertEqual(resolved["port"], 5017)
 
 

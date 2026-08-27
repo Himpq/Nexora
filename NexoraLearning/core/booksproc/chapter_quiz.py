@@ -528,7 +528,9 @@ def _generate_profile_question_bank_questions(
 
     if not loaded_chapter_context:
         start, length = _parse_range(chapter_range)
-        full_text = load_book_text(dict(cfg or {}), lecture_id, book_id)
+        from ..bookindex import get_plain_text
+
+        full_text = get_plain_text(dict(cfg or {}), lecture_id, book_id)
         loaded_chapter_context = str(full_text or "")[start:start + length]
 
     loaded_chapter_detail_xml = str(chapter_detail_xml or "").strip()

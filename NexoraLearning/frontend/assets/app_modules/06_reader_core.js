@@ -58,6 +58,83 @@
     }
   }
 
+  async function fetchBookIndex() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return null;
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return null;
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/index`);
+      if (!data || data.success === false) return null;
+      return data;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  /**
+   * 用后端校验过的 /index 结果填充阅读器结构状态。
+   *
+   * 后端已经把章节 / 小节 / 批注全部映射到阅读器坐标系（canonical 纯文本），
+   * 并保证章节有序、无重叠、完整覆盖全书，因此前端不再重复解析 XML，也不再
+   * 用原始 HTML 偏移去猜段落位置。
+   */
+  function applyBookIndex(indexData) {
+    if (!indexData || !Array.isArray(indexData.chapters)) return false;
+
+    state.readerBookIndex = indexData;
+    state.readerCoordinateSpace = String(indexData.coordinate_space || "plain");
+    state.readerChapters = indexData.chapters.map((row) => ({
+      title: String(row.title || ""),
+      start: Number(row.start) || 0,
+      end: Number(row.end) || 0,
+      range: String(row.range || ""),
+      summary: String(row.summary || ""),
+      paragraphStart: Number(row.paragraph_start),
+      paragraphEnd: Number(row.paragraph_end),
+      synthetic: !!row.synthetic,
+    }));
+
+    const sections = {};
+    indexData.chapters.forEach((row) => {
+      const title = String(row.title || "").trim();
+      if (!title) return;
+      sections[title] = {
+        range: String(row.range || ""),
+        sessions: (Array.isArray(row.sessions) ? row.sessions : []).map((s) => ({
+          name: String(s.name || ""),
+          range: String(s.range || ""),
+          summary: String(s.summary || ""),
+          start: Number(s.start) || 0,
+          end: Number(s.end) || 0,
+          paragraphStart: Number(s.paragraph_start),
+          paragraphEnd: Number(s.paragraph_end),
+        })),
+      };
+    });
+    state.readerSectionsData = sections;
+
+    state.readerAnnotations = (Array.isArray(indexData.annotations) ? indexData.annotations : []).map((row) => ({
+      chapterName: String(row.chapter_name || ""),
+      chapterIndex: Number(row.chapter_index),
+      offset: Number(row.offset) || 0,
+      length: Number(row.length) || 0,
+      type: String(row.type || "思考点"),
+      content: String(row.content || ""),
+      anchorText: String(row.anchor_text || ""),
+      paragraphIndex: Number.isFinite(Number(row.paragraph_index)) ? Number(row.paragraph_index) : -1,
+      boundBy: String(row.bound_by || ""),
+    }));
+
+    const diagnostics = Array.isArray(indexData.diagnostics) ? indexData.diagnostics : [];
+    if (diagnostics.length) {
+      try {
+        console.warn("[Reader] book index diagnostics", diagnostics);
+      } catch (_err) {}
+    }
+    return true;
+  }
+
   function parseAnnotationsXml(xmlText) {
     const src = String(xmlText || "");
     if (!src.trim()) return [];
@@ -99,10 +176,13 @@
     const chapterName = String(chapter.title || "").trim();
     const chapterStart = Number(chapter.start) || 0;
     const chapterEnd = Math.max(chapterStart, Number(chapter.end) || chapterStart);
-    const chapterRawLength = Math.max(1, chapterEnd - chapterStart);
     const chapterNameNorm = normalizeChapterNameForCompare(chapterName);
     const chapterAnnotations = (state.readerAnnotations || []).filter(a => {
-      const annName = String(a && a.chapterName || "").trim();
+      if (!a) return false;
+      if (Number.isFinite(Number(a.chapterIndex)) && Number(a.chapterIndex) >= 0) {
+        return Number(a.chapterIndex) === Number(chapterIndex);
+      }
+      const annName = String(a.chapterName || "").trim();
       if (!annName) return false;
       if (annName === chapterName) return true;
       return normalizeChapterNameForCompare(annName) === chapterNameNorm;
@@ -115,78 +195,70 @@
     const paragraphs = chapterBody.querySelectorAll("p.materials-preview-paragraph");
     if (!paragraphs.length) return;
 
-    const paragraphRows = Array.from(paragraphs).map((p) => ({
-      el: p,
-      text: String(p.textContent || ""),
-      length: String(p.textContent || "").length + 1,
-    }));
-    const visibleTotalLength = Math.max(1, paragraphRows.reduce((sum, row) => sum + row.length, 0));
-
-    const annotationToParagraph = new Map();
-    let currentOffset = chapterStart;
-    paragraphRows.forEach((row, paragraphIndex) => {
-      const pLength = row.length;
-      const pStart = currentOffset;
-      const pEnd = currentOffset + pLength;
-
-      // Strict offset match (absolute offset in same coordinate system)
-      const pAnnotations = chapterAnnotations.filter((a) => {
-        return a.offset >= pStart && a.offset < pEnd;
-      });
-
-      if (pAnnotations.length > 0) {
-        row.el.classList.add("has-annotation");
-        pAnnotations.forEach((annotation) => {
-          annotationToParagraph.set(annotation, paragraphIndex);
-          const marker = createAnnotationMarker(annotation);
-          row.el.appendChild(marker);
-        });
-      }
-
-      currentOffset = pEnd;
+    const paragraphRows = Array.from(paragraphs).map((p, position) => {
+      const rawIndex = p.getAttribute("data-para-index");
+      const rawStart = p.getAttribute("data-plain-start");
+      const rawEnd = p.getAttribute("data-plain-end");
+      return {
+        el: p,
+        position,
+        text: String(p.textContent || ""),
+        paraIndex: rawIndex === null ? -1 : (Number(rawIndex) || 0),
+        start: rawStart === null ? null : (Number(rawStart) || 0),
+        end: rawEnd === null ? null : (Number(rawEnd) || 0),
+      };
+    });
+    const anchored = paragraphRows.every((row) => row.start !== null);
+    const byParaIndex = new Map();
+    paragraphRows.forEach((row) => {
+      if (row.paraIndex >= 0) byParaIndex.set(row.paraIndex, row);
     });
 
-    // Fallback path: when strict mapping misses, try anchor_text, then relative offset mapping.
-    const unmatched = chapterAnnotations.filter((a) => !annotationToParagraph.has(a));
-    if (unmatched.length > 0) {
-      unmatched.forEach((annotation) => {
-        let targetIndex = -1;
-        const anchor = String(annotation.anchorText || "").trim();
+    const placed = new Map();
+    chapterAnnotations.forEach((annotation) => {
+      let target = null;
+
+      // 1) 后端已绑定的段落序号：精确锚点，优先使用。
+      const paraIndex = Number(annotation.paragraphIndex);
+      if (Number.isFinite(paraIndex) && paraIndex >= 0 && byParaIndex.has(paraIndex)) {
+        target = byParaIndex.get(paraIndex);
+      }
+
+      // 2) 同坐标系下的绝对偏移落在哪个段落里。
+      if (!target && anchored) {
+        const offset = Number(annotation.offset) || 0;
+        target = paragraphRows.find((row) => offset >= row.start && offset < row.end)
+          || (offset >= chapterEnd ? paragraphRows[paragraphRows.length - 1] : null);
+      }
+
+      // 3) 兜底：按锚点文本查找。
+      if (!target) {
+        const anchor = String(annotation.anchorText || "").trim().replace(/\s+/g, "");
         if (anchor) {
-          const anchorNorm = anchor.replace(/\s+/g, "");
-          targetIndex = paragraphRows.findIndex((row) => row.text.replace(/\s+/g, "").includes(anchorNorm));
+          target = paragraphRows.find((row) => row.text.replace(/\s+/g, "").includes(anchor)) || null;
         }
-        if (targetIndex < 0) {
-          const rel = (Number(annotation.offset) - chapterStart) / chapterRawLength;
-          const safeRel = Math.max(0, Math.min(1, Number.isFinite(rel) ? rel : 0));
-          const targetVisiblePos = safeRel * visibleTotalLength;
-          let cursor = 0;
-          for (let i = 0; i < paragraphRows.length; i += 1) {
-            cursor += paragraphRows[i].length;
-            if (cursor >= targetVisiblePos) {
-              targetIndex = i;
-              break;
-            }
-          }
-          if (targetIndex < 0) targetIndex = paragraphRows.length - 1;
-        }
-        if (targetIndex < 0 || !paragraphRows[targetIndex]) return;
-        const target = paragraphRows[targetIndex].el;
-        target.classList.add("has-annotation");
-        const marker = createAnnotationMarker(annotation);
-        target.appendChild(marker);
-        annotationToParagraph.set(annotation, targetIndex);
-      });
-    }
+      }
+
+      // 4) 最后兜底：按章节内相对位置估算（仅在没有锚点信息时才会走到）。
+      if (!target) {
+        const span = Math.max(1, chapterEnd - chapterStart);
+        const ratio = Math.max(0, Math.min(1, ((Number(annotation.offset) || 0) - chapterStart) / span));
+        const idx = Math.min(paragraphRows.length - 1, Math.floor(ratio * paragraphRows.length));
+        target = paragraphRows[Math.max(0, idx)] || null;
+      }
+
+      if (!target) return;
+      target.el.classList.add("has-annotation");
+      target.el.appendChild(createAnnotationMarker(annotation));
+      placed.set(annotation, target.position);
+    });
 
     try {
       console.log("[Reader] annotation render", {
         chapter: chapterName,
-        chapterStart,
-        chapterEnd,
+        anchored,
         annotations: chapterAnnotations.length,
-        strictMatched: chapterAnnotations.length - unmatched.length,
-        fallbackMatched: unmatched.length,
+        placed: placed.size,
       });
     } catch (_err) {}
   }
@@ -838,33 +910,56 @@
       requestToken: state.readerRequestToken,
     });
 
-    // 检查缓存中是否有该章节内容
-    if (state.readerChapterCache && state.readerChapterCache[idx]) {
-      renderChapterContent(idx, state.readerChapterCache[idx], scrollToOffset, guideOptions);
+    // 检查缓存中是否有该章节内容（连同后端下发的段落锚点一起复用）
+    const cachedPayload = (state.readerChapterPayloads || {})[idx];
+    if (state.readerChapterCache && state.readerChapterCache[idx] !== undefined) {
+      renderChapterContent(idx, state.readerChapterCache[idx], scrollToOffset, guideOptions, cachedPayload);
     } else {
       // 按需加载章节内容
       loadChapterContent(idx, scrollToOffset, guideOptions);
     }
   }
 
+  /**
+   * 滚动到章节内的某个绝对偏移（阅读器坐标系）。
+   *
+   * 段落上的 data-plain-start / data-plain-end 是后端下发的精确锚点，直接命中
+   * 即可；只有在缺少锚点（旧渲染路径）时才退回按文本长度累加估算。
+   */
   function scrollToChapterOffset(chapterStart, sessionAbsoluteOffset) {
     requestAnimationFrame(() => {
       const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
       if (!chapterBody) return;
-      const paragraphs = chapterBody.querySelectorAll("p");
+      const paragraphs = Array.from(chapterBody.querySelectorAll("p, figure"));
       if (!paragraphs.length) return;
-      // 计算session在章节内的相对位置（session绝对偏移 - 章节起始偏移）
-      const relativeOffset = Math.max(0, Number(sessionAbsoluteOffset) - Number(chapterStart));
-      let accumulatedLength = 0;
+
+      const absoluteOffset = Number(sessionAbsoluteOffset) || 0;
       let targetParagraph = null;
-      for (const p of paragraphs) {
-        const pText = p.textContent || "";
-        accumulatedLength += pText.length + 1; // +1 for newline
-        if (accumulatedLength >= relativeOffset) {
-          targetParagraph = p;
-          break;
+
+      const anchored = paragraphs.filter((p) => p.hasAttribute("data-plain-start"));
+      if (anchored.length) {
+        targetParagraph = anchored.find((p) => {
+          const start = Number(p.getAttribute("data-plain-start")) || 0;
+          const end = Number(p.getAttribute("data-plain-end")) || start;
+          return absoluteOffset >= start && absoluteOffset < end;
+        }) || null;
+        if (!targetParagraph) {
+          // 落在段落之间或章节末尾：取第一个起点不早于目标的段落。
+          targetParagraph = anchored.find((p) => (Number(p.getAttribute("data-plain-start")) || 0) >= absoluteOffset)
+            || anchored[anchored.length - 1];
+        }
+      } else {
+        const relativeOffset = Math.max(0, absoluteOffset - (Number(chapterStart) || 0));
+        let accumulatedLength = 0;
+        for (const p of paragraphs) {
+          accumulatedLength += String(p.textContent || "").length + 1;
+          if (accumulatedLength >= relativeOffset) {
+            targetParagraph = p;
+            break;
+          }
         }
       }
+
       if (!targetParagraph) targetParagraph = paragraphs[0];
       targetParagraph.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -1258,6 +1353,7 @@
     state.readerFullTextRaw = String(content || "");
     // 初始化章节缓存
     state.readerChapterCache = {};
+    state.readerChapterPayloads = {};
     resetReaderSelectionTelemetry();
     syncFloatingBtnVisibility();
     if (Array.isArray(state.readerChapters) && state.readerChapters.length) {
@@ -1315,12 +1411,50 @@
     loadSectionsData();
   }
 
-  async function loadSectionsData() {
+  /**
+   * 按需加载全书 canonical 纯文本（阅读器坐标系）。
+   *
+   * state.readerFullTextRaw 必须与章节 / 小节 / 批注偏移处于同一坐标系，否则
+   * 任何基于它的切片都会错位。因此这里请求的是 plain 正文，而不是模型侧的
+   * 原始 HTML 文本。
+   */
+  async function ensureReaderFullPlainText() {
+    if (String(state.readerFullTextRaw || "")) return state.readerFullTextRaw;
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    const requestToken = state.readerRequestToken;
     try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/text`);
+      if (requestToken !== state.readerRequestToken) return "";
+      const content = String((data && data.content) || "");
+      state.readerFullTextRaw = content;
+      state.readerCoordinateSpace = String((data && data.coordinate_space) || "plain");
+      return content;
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  async function loadSectionsData() {
+    const requestToken = state.readerRequestToken;
+    try {
+      // 首选后端已校验并统一坐标系的 /index；旧部署或接口不可用时回退到 XML。
+      const indexData = await fetchBookIndex();
+      if (requestToken !== state.readerRequestToken) return;
+      if (applyBookIndex(indexData)) {
+        renderChapterList();
+        renderChapterAnnotations(state.readerActiveChapterIndex);
+        syncReaderTelemetrySessionContext("sections_loaded");
+        ensureReaderFullPlainText();
+        return;
+      }
       const [sectionsXml, annotationsXml] = await Promise.all([
         fetchSectionsXml(),
         fetchAnnotationsXml()
       ]);
+      if (requestToken !== state.readerRequestToken) return;
       state.readerSectionsData = parseSectionsXml(sectionsXml);
       state.readerAnnotations = parseAnnotationsXml(annotationsXml);
       renderChapterList();

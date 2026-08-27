@@ -2314,14 +2314,9 @@
       const chapter = state.readerChapters[chapterIndex];
       const chapterName = String(meta.chapterName || (chapter && chapter.title) || "").trim();
       const chapterRange = String(meta.chapterRange || getReaderChapterRange(chapter)).trim();
-      let chapterContext = "";
-
-      if (chapter) {
-        const start = Math.max(0, Math.min(state.readerFullTextRaw.length, Number(chapter.start) || 0));
-        const end = Math.max(start, Math.min(state.readerFullTextRaw.length, Number(chapter.end) || 0));
-        chapterContext = String(state.readerFullTextRaw.slice(start, end).trim() || "");
-      }
-
+      // 走统一的取文helper：优先用已缓存的章节正文，再回退到全书纯文本，
+      // 避免直接对 readerFullTextRaw 切片（该字段在按章加载时可能尚未填充）。
+      const chapterContext = getReaderChapterContext(chapterIndex);
       loadChapterQuiz(chapterIndex, chapterName, chapterRange, chapterContext);
       return;
     }
@@ -2516,6 +2511,9 @@
     state.readerSectionsData = {};
     state.readerAnnotations = [];
     state.readerChapterCache = {};
+    state.readerChapterPayloads = {};
+    state.readerBookIndex = null;
+    state.readerCoordinateSpace = "plain";
     state.readerGuidePromptedKey = "";
     state.readerPendingRestorePosition = null;
     readerGuideState = { status: "empty", target: null, guide: null, error: "", draft: "" };

@@ -127,11 +127,94 @@
     }
   }
 
+  const NXL_IMAGE_TOKEN_ONLY_RE = /^\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}$/;
+
+  /**
+   * 切分 canonical 纯文本为段落。
+   *
+   * 后端保证段落之间恰好一个空行、段内不含空行，因此按 \n\n 切分得到的段落
+   * 与后端 paragraphs 数组逐字一致，偏移也随之对齐。
+   */
+  function splitPlainReaderParagraphs(text, chapterStart) {
+    const raw = String(text || "").replace(/\r\n?/g, "\n");
+    const base = Number(chapterStart) || 0;
+    const rows = [];
+    let cursor = 0;
+    raw.split("\n\n").forEach((block) => {
+      const start = cursor;
+      cursor += block.length + 2;
+      if (!block) return;
+      rows.push({
+        index: rows.length,
+        start: base + start,
+        end: base + start + block.length,
+        text: block,
+        kind: NXL_IMAGE_TOKEN_ONLY_RE.test(block.trim()) ? "image" : "text",
+      });
+    });
+    return rows;
+  }
+
+  /** 把带精确偏移的段落数组渲染成阅读器 HTML，并写入定位锚点。 */
+  function renderReaderParagraphs(paragraphs) {
+    const rows = Array.isArray(paragraphs) ? paragraphs : [];
+    const html = rows
+      .map((row, position) => {
+        const body = String((row && row.text) || "");
+        if (!body.trim()) return "";
+        const index = Number.isFinite(Number(row && row.index)) ? Number(row.index) : position;
+        const start = Number(row && row.start) || 0;
+        const end = Number(row && row.end) || (start + body.length);
+        const anchors = ` data-para-index="${index}" data-plain-start="${start}" data-plain-end="${end}"`;
+
+        const imageMatch = body.trim().match(NXL_IMAGE_TOKEN_ONLY_RE);
+        if (imageMatch) {
+          const safeLectureId = encodeURIComponent(String(imageMatch[1] || "").trim());
+          const safeBookId = encodeURIComponent(String(imageMatch[2] || "").trim());
+          const safeImageId = encodeURIComponent(String(imageMatch[3] || "").trim());
+          const alt = escapeHtml(String(imageMatch[4] || imageMatch[3] || "图片"));
+          if (!safeLectureId || !safeBookId || !safeImageId) return "";
+          const src = resolveApiUrl(`/api/lectures/${safeLectureId}/books/${safeBookId}/images/${safeImageId}`);
+          return `<figure class="materials-preview-figure"${anchors}><img class="materials-preview-image" src="${src}" alt="${alt}" loading="lazy"></figure>`;
+        }
+
+        const kind = String((row && row.kind) || "text");
+        const level = Number(row && row.heading_level) || 0;
+        const cls = kind === "heading"
+          ? `materials-preview-paragraph materials-preview-heading materials-preview-heading-${Math.min(6, Math.max(1, level || 2))}`
+          : "materials-preview-paragraph";
+        const lines = body.split("\n").map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) return "";
+        return `<p class="${cls}"${anchors}>${lines.map(escapeHtml).join("<br>")}</p>`;
+      })
+      .filter(Boolean)
+      .join("");
+    return html || '<p class="materials-preview-paragraph">（暂无文本内容）</p>';
+  }
+
   /**
    * 将原始文本转换为阅读器 HTML（段落、图片占位、去脚本标签）。
    * 依赖 escapeHtml、resolveApiUrl、decodeBasicHtmlEntities。
+   *
+   * options:
+   *   - paragraphs: 后端下发的段落数组（含精确 plain 偏移），提供时优先使用；
+   *   - format: "plain" 表示内容已是 canonical 纯文本，此时不再剥离标签、不再
+   *     二次解码实体（否则正文里形如 &amp; 的字面量会被重复解码）；
+   *   - chapterStart: 该内容在全书 plain 坐标中的起点。
+   *
+   * 渲染出的段落都带 data-para-index / data-plain-start / data-plain-end，
+   * 批注、小节跳转与搜索定位一律读这些锚点，不再靠长度累加推算。
    */
-  function formatReaderText(text) {
+  function formatReaderText(text, options) {
+    const opts = (options && typeof options === "object") ? options : {};
+    if (Array.isArray(opts.paragraphs) && opts.paragraphs.length) {
+      return renderReaderParagraphs(opts.paragraphs);
+    }
+    if (String(opts.format || "").toLowerCase() === "plain") {
+      return renderReaderParagraphs(
+        splitPlainReaderParagraphs(text, Number(opts.chapterStart) || 0),
+      );
+    }
     const raw = String(text || "").replace(/\r\n?/g, "\n");
     const withImages = raw.replace(
       /\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}/g,
@@ -413,6 +496,8 @@
     // api / path
     resolveApiUrl,
     formatReaderText,
+    renderReaderParagraphs,
+    splitPlainReaderParagraphs,
     // status / labels
     normalizeStatusKey,
     statusText,

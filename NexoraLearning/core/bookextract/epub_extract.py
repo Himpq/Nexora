@@ -10,48 +10,332 @@ import html
 import mimetypes
 import re
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 
 IMAGE_TOKEN_RE = re.compile(
     r"\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}"
 )
 
+_CONTENT_SUFFIXES = (".xhtml", ".html", ".htm", ".xml")
+_NATURAL_KEY_RE = re.compile(r"(\d+)")
+
+
+@dataclass
+class SpineDocument:
+    """One reading-order document resolved from the EPUB package."""
+
+    name: str
+    order: int
+    item_id: str = ""
+    is_navigation: bool = False
+    reason: str = ""
+
+
+def _natural_sort_key(name: str) -> List[Any]:
+    """Sort ``txt2`` before ``txt10`` instead of lexicographically."""
+    parts = _NATURAL_KEY_RE.split(str(name or "").lower())
+    return [int(token) if token.isdigit() else token for token in parts]
+
+
+def _resolve_archive_path(base: str, href: str) -> str:
+    """Resolve an OPF-relative href against the archive root."""
+    target = str(href or "").split("#", 1)[0].strip()
+    if not target:
+        return ""
+    try:
+        target = unquote(target)
+    except Exception:
+        pass
+    base_dir = PurePosixPath(str(base or "")).parent
+    raw = (base_dir / target).as_posix() if base_dir.as_posix() not in {".", ""} else target
+    parts: List[str] = []
+    for chunk in str(raw).split("/"):
+        token = str(chunk or "").strip()
+        if not token or token == ".":
+            continue
+        if token == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(token)
+    return "/".join(parts)
+
+
+def _find_opf_path(archive: zipfile.ZipFile) -> str:
+    """Locate the OPF package document via META-INF/container.xml."""
+    names = archive.namelist()
+    for container in ("META-INF/container.xml", "meta-inf/container.xml"):
+        if container not in names:
+            continue
+        try:
+            raw = archive.read(container).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        match = re.search(r"""(?is)<rootfile\b[^>]*\bfull-path\s*=\s*["']([^"']+)["']""", raw)
+        if match:
+            candidate = _resolve_archive_path("", match.group(1))
+            if candidate in names:
+                return candidate
+    for name in names:
+        if name.lower().endswith(".opf"):
+            return name
+    return ""
+
+
+def _looks_like_toc_document(raw: str) -> bool:
+    """Detect an in-spine table-of-contents page by its link density."""
+    text = str(raw or "")
+    if not text:
+        return False
+    links = re.findall(r"(?is)<a\b[^>]*href\s*=", text)
+    if len(links) < 8:
+        return False
+    body_text = _strip_html_text(re.sub(r"(?is)<a\b[^>]*>.*?</a>", " ", text))
+    linked_text = " ".join(
+        _strip_html_text(m.group(1)) for m in re.finditer(r"(?is)<a\b[^>]*>(.*?)</a>", text)
+    )
+    linked_len = len(re.sub(r"\s+", "", linked_text))
+    other_len = len(re.sub(r"\s+", "", body_text))
+    if linked_len <= 0:
+        return False
+    return linked_len >= max(40, other_len * 1.5)
+
+
+def _iter_epub_spine_documents(archive: zipfile.ZipFile) -> List[SpineDocument]:
+    """Return body documents in publisher reading order.
+
+    EPUB reading order lives in the OPF ``<spine>``; sorting archive entries by
+    filename is wrong whenever names do not happen to be alphabetical (an
+    appendix named ``att001`` sorts before ``txt001`` and lands at the front of
+    the book). Navigation documents are flagged so they can be excluded from the
+    body without disturbing the order of real content.
+    """
+    names = archive.namelist()
+    name_set = set(names)
+    opf_path = _find_opf_path(archive)
+    documents: List[SpineDocument] = []
+
+    if opf_path and opf_path in name_set:
+        try:
+            opf = archive.read(opf_path).decode("utf-8", errors="ignore")
+        except Exception:
+            opf = ""
+        manifest: Dict[str, Dict[str, str]] = {}
+        for match in re.finditer(r"(?is)<item\b([^>]*)/?>", opf):
+            attrs = str(match.group(1) or "")
+            item_id = _attr(attrs, "id")
+            href = _attr(attrs, "href")
+            if not item_id or not href:
+                continue
+            manifest[item_id] = {
+                "href": _resolve_archive_path(opf_path, href),
+                "media_type": _attr(attrs, "media-type").lower(),
+                "properties": _attr(attrs, "properties").lower(),
+            }
+        spine_match = re.search(r"(?is)<spine\b([^>]*)>(.*?)</spine\s*>", opf)
+        if spine_match:
+            toc_id = _attr(str(spine_match.group(1) or ""), "toc")
+            order = 0
+            for ref in re.finditer(r"(?is)<itemref\b([^>]*)/?>", str(spine_match.group(2) or "")):
+                attrs = str(ref.group(1) or "")
+                item_id = _attr(attrs, "idref")
+                item = manifest.get(item_id)
+                if not item:
+                    continue
+                href = item["href"]
+                if not href or href not in name_set:
+                    continue
+                if not href.lower().endswith(_CONTENT_SUFFIXES):
+                    continue
+                is_nav = "nav" in item["properties"].split() or item_id == toc_id
+                documents.append(
+                    SpineDocument(
+                        name=href,
+                        order=order,
+                        item_id=item_id,
+                        is_navigation=is_nav,
+                        reason="opf_nav_property" if is_nav else "",
+                    )
+                )
+                order += 1
+
+    if not documents:
+        # No usable spine: fall back to natural (not lexicographic) ordering.
+        candidates = [
+            name
+            for name in names
+            if _is_fallback_content_document(archive, name)
+        ]
+        for order, name in enumerate(sorted(candidates, key=_natural_sort_key)):
+            base = PurePosixPath(name).name.lower()
+            is_nav = base in {"nav.xhtml", "nav.html", "toc.xhtml", "toc.html"}
+            documents.append(
+                SpineDocument(
+                    name=name,
+                    order=order,
+                    is_navigation=is_nav,
+                    reason="filename_nav" if is_nav else "",
+                )
+            )
+
+    # Flag in-spine table-of-contents pages so they stay out of the body text.
+    for doc in documents:
+        if doc.is_navigation:
+            continue
+        base = PurePosixPath(doc.name).name.lower()
+        if not re.search(r"(toc|contents|catalog|mulu)", base) and not re.search(
+            r"(toc|contents)", doc.item_id.lower()
+        ):
+            continue
+        try:
+            raw = archive.read(doc.name).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if _looks_like_toc_document(raw):
+            doc.is_navigation = True
+            doc.reason = "toc_link_density"
+
+    return documents
+
+
+def _is_fallback_content_document(archive: zipfile.ZipFile, name: str) -> bool:
+    """Identify body-like files without treating EPUB package XML as prose."""
+    lower = str(name or "").lower()
+    if not lower.endswith(_CONTENT_SUFFIXES):
+        return False
+    if lower.endswith((".xhtml", ".html", ".htm")):
+        return True
+    base = PurePosixPath(lower).name
+    if lower.startswith("meta-inf/") or base in {
+        "container.xml",
+        "encryption.xml",
+        "signatures.xml",
+        "metadata.xml",
+    }:
+        return False
+    try:
+        sample = archive.read(name).decode("utf-8", errors="ignore")[:8192]
+    except Exception:
+        return False
+    return bool(re.search(r"(?is)<(?:[a-z0-9_-]+:)?(?:html|body)\b", sample))
+
+
+def _attr(attrs: str, key: str) -> str:
+    match = re.search(rf"""(?is)\b{re.escape(key)}\s*=\s*["']([^"']*)["']""", str(attrs or ""))
+    return str(match.group(1) or "").strip() if match else ""
+
 
 def extract_epub_text(epub_path: str) -> str:
-    """Parse EPUB content into plain text with optional heading candidates."""
-    text_parts: List[str] = []
-    heading_candidates: List[str] = []
+    """Parse EPUB content into plain text in publisher reading order."""
     try:
         with zipfile.ZipFile(epub_path, "r") as zf:
-            for name in _iter_epub_navigation_names(zf):
-                try:
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                except Exception:
-                    continue
-                for row in extract_epub_heading_candidates_from_text(raw):
-                    heading_candidates.append(row)
-            for name in _iter_epub_html_names(zf):
-                try:
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                except Exception:
-                    continue
-                for row in extract_epub_heading_candidates_from_text(raw):
-                    heading_candidates.append(row)
-                parsed = _preserve_html_for_model(raw)
-                if parsed:
-                    text_parts.append(parsed)
+            result = _read_epub_documents(zf)
     except Exception as exc:
         raise RuntimeError(f"EPUB 解析失败: {exc}") from exc
+    return "\n\n".join(result["text_parts"])
 
-    uniq_headings = _dedupe_keep_order(heading_candidates)
-    if uniq_headings:
-        heading_block = ["[EPUB_HEADING_CANDIDATES]"]
-        heading_block.extend([f"- {item}" for item in uniq_headings[:400]])
-        heading_block.append("[/EPUB_HEADING_CANDIDATES]")
-        return "\n".join(heading_block) + "\n\n" + "\n\n".join(text_parts)
-    return "\n\n".join(text_parts)
+
+
+def _read_epub_documents(
+    archive: zipfile.ZipFile,
+    *,
+    image_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Read spine documents in order, collecting text, headings and images."""
+    documents = _iter_epub_spine_documents(archive)
+    text_parts: List[str] = []
+    heading_rows: List[Dict[str, Any]] = []
+    images: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    seen_headings: set = set()
+    image_index_ref = [0]
+
+    # NCX / nav / OPF documents carry the publisher's own outline. They are read
+    # for heading candidates only and never contribute body text.
+    for name in _iter_epub_navigation_names(archive):
+        try:
+            raw = archive.read(name).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        for value in extract_epub_heading_candidates_from_text(raw):
+            key = str(value or "").strip().lower()
+            if not key or key in seen_headings:
+                continue
+            seen_headings.add(key)
+            heading_rows.append(
+                {
+                    "title": str(value).strip(),
+                    "document": name,
+                    "spine_order": -1,
+                    "from_navigation": True,
+                }
+            )
+
+    for doc in documents:
+        try:
+            raw = archive.read(doc.name).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        for value in extract_epub_heading_candidates_from_text(raw):
+            key = str(value or "").strip().lower()
+            if not key or key in seen_headings:
+                continue
+            seen_headings.add(key)
+            heading_rows.append(
+                {
+                    "title": str(value).strip(),
+                    "document": doc.name,
+                    "spine_order": doc.order,
+                    "from_navigation": doc.is_navigation,
+                }
+            )
+
+        if doc.is_navigation:
+            # Navigation pages feed the heading index only; keeping them in the
+            # body would inject catalogue metadata into prose and search.
+            skipped.append({"document": doc.name, "reason": doc.reason or "navigation"})
+            continue
+
+        if image_context is None:
+            content = _preserve_html_for_model(raw)
+        else:
+            parsed = _preserve_html_with_image_tokens(
+                raw,
+                archive=archive,
+                page_name=doc.name,
+                lecture_id=str(image_context["lecture_id"]),
+                book_id=str(image_context["book_id"]),
+                assets_dir=image_context["assets_dir"],
+                images=images,
+                image_index_ref=image_index_ref,
+            )
+            parsed.pop("_image_index", None)
+            content = str(parsed.get("content") or "").strip()
+        if content:
+            text_parts.append(content)
+
+    return {
+        "text_parts": text_parts,
+        "headings": heading_rows,
+        "images": images,
+        "documents": [
+            {
+                "name": doc.name,
+                "document": doc.name,
+                "spine_order": doc.order,
+                "item_id": doc.item_id,
+                "is_navigation": doc.is_navigation,
+                "reason": doc.reason,
+            }
+            for doc in documents
+        ],
+        "skipped_documents": skipped,
+    }
 
 
 def extract_epub_with_assets(
@@ -61,60 +345,36 @@ def extract_epub_with_assets(
     book_id: str,
     assets_dir: Path,
 ) -> Dict[str, Any]:
-    text_parts: List[str] = []
-    heading_candidates: List[str] = []
-    images: List[Dict[str, Any]] = []
-    seen_headings = set()
-    image_index = 0
+    """Extract EPUB body text, image assets and a structural heading index.
+
+    Heading candidates are returned as ``structure`` rather than prepended to
+    ``text``. Inlining them used to shift every downstream offset by the size of
+    the block and made catalogue metadata searchable as if it were prose.
+    """
     assets_dir.mkdir(parents=True, exist_ok=True)
-
     with zipfile.ZipFile(epub_path, "r") as zf:
-        for name in _iter_epub_navigation_names(zf):
-            try:
-                raw = zf.read(name).decode("utf-8", errors="ignore")
-            except Exception:
-                continue
-            for row in extract_epub_heading_candidates_from_text(raw):
-                key = str(row or "").strip().lower()
-                if key and key not in seen_headings:
-                    seen_headings.add(key)
-                    heading_candidates.append(str(row).strip())
-        for name in _iter_epub_html_names(zf):
-            try:
-                raw = zf.read(name).decode("utf-8", errors="ignore")
-            except Exception:
-                continue
-            for row in extract_epub_heading_candidates_from_text(raw):
-                key = str(row or "").strip().lower()
-                if key and key not in seen_headings:
-                    seen_headings.add(key)
-                    heading_candidates.append(str(row).strip())
-            parsed = _preserve_html_with_image_tokens(
-                raw,
-                archive=zf,
-                page_name=name,
-                lecture_id=lecture_id,
-                book_id=book_id,
-                assets_dir=assets_dir,
-                images=images,
-                image_index_ref=[image_index],
-            )
-            image_index = int(parsed.pop("_image_index", image_index))
-            content = str(parsed.get("content") or "").strip()
-            if content:
-                text_parts.append(content)
+        result = _read_epub_documents(
+            zf,
+            image_context={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "assets_dir": assets_dir,
+            },
+        )
 
-    text = ""
-    if heading_candidates:
-        heading_block = ["[EPUB_HEADING_CANDIDATES]"]
-        heading_block.extend([f"- {item}" for item in heading_candidates[:400]])
-        heading_block.append("[/EPUB_HEADING_CANDIDATES]")
-        text = "\n".join(heading_block) + "\n\n"
-    text += "\n\n".join(text_parts)
+    heading_rows = result["headings"]
     return {
-        "text": text,
-        "images": images,
+        "text": "\n\n".join(result["text_parts"]),
+        "images": result["images"],
+        "structure": {
+            "source": "epub",
+            "heading_candidates": [str(row.get("title") or "") for row in heading_rows],
+            "headings": heading_rows,
+            "documents": result["documents"],
+            "skipped_documents": result["skipped_documents"],
+        },
     }
+
 
 
 def render_reader_image_tokens(text: str, base_url: str = "") -> str:
@@ -139,17 +399,8 @@ def render_reader_image_tokens(text: str, base_url: str = "") -> str:
     return IMAGE_TOKEN_RE.sub(repl, src)
 
 
-def _iter_epub_html_names(archive: zipfile.ZipFile) -> List[str]:
-    return sorted(
-        [
-            name
-            for name in archive.namelist()
-            if name.lower().endswith((".xhtml", ".html", ".htm", ".xml"))
-        ]
-    )
-
-
 def _iter_epub_navigation_names(archive: zipfile.ZipFile) -> List[str]:
+    """Navigation documents used for heading candidates only, never body text."""
     rows: List[str] = []
     for name in archive.namelist():
         lower = name.lower()

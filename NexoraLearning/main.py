@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "port": 5001,
     "debug": False,
     "data_dir": "data",
+    "public_base_url": "",
     "max_upload_mb": 50,
     "log_retention_count": 5,
     "runtime_api": {
@@ -240,6 +241,10 @@ def _apply_environment_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
         value = str(os.environ.get(env_name) or "").strip()
         if value:
             target[key] = value
+
+    public_base_url = str(os.environ.get("NEXORALEARNING_PUBLIC_BASE_URL") or "").strip()
+    if public_base_url:
+        cfg["public_base_url"] = public_base_url.rstrip("/")
 
     port_value = str(os.environ.get("NEXORALEARNING_PORT") or "").strip()
     if port_value:
