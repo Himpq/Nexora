@@ -2426,3 +2426,198 @@
     gap: 8px;
     margin-top: 16px;
 }
+
+/* ==================== 阶段收尾 settings-* 残余自 legacy/style.css 收编 ==================== */
+
+.settings-mode-toggle{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: transparent;
+}
+.settings-mode-toggle-btn{
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.settings-mode-toggle-btn:hover{
+  color: var(--color-text-primary);
+}
+.settings-mode-toggle-btn.active{
+  background: #0f172a;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+}
+.settings-mode-toggle-btn:disabled{
+  opacity: 0.65;
+  cursor: default;
+}
+.settings-help-text{
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* Settings profile */
+.settings-profile-head{
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+}
+.settings-avatar-panel{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px dashed var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-sunken);
+}
+.settings-avatar{
+    width: 108px;
+    height: 108px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--color-accent-border);
+    background: var(--color-bg-elevated);
+}
+.settings-profile-meta{
+    display: flex;
+    flex-direction: column;
+}
+.settings-avatar-actions{
+    display: flex;
+    gap: 8px;
+}
+@media (max-width: 980px){.settings-profile-head{
+        grid-template-columns: 1fr;
+    }}
+.settings-skill-list{
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding-right: 6px;
+}
+.settings-skill-card{
+    height: 140px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    padding: 14px 14px 12px;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
+    display: flex;
+    flex-direction: column;
+}
+.settings-skill-top{
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 92px;
+    gap: 10px;
+    align-items: start;
+}
+.settings-skill-icon{
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: var(--color-bg-sunken);
+    border: 1px solid #e8eef7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    line-height: 1;
+}
+.settings-skill-controls{
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+}
+.settings-skill-title{
+    font-size: 16px;
+    color: var(--color-text-primary);
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 4px;
+    word-break: break-word;
+}
+.settings-skill-mode-label{
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.settings-skill-preview{
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 100%;
+}
+.settings-skill-main{
+    min-width: 0;
+    min-height: 56px;
+    cursor: pointer;
+    outline: none;
+}
+.settings-skill-main:focus-visible{
+    box-shadow: 0 0 0 2px #93c5fd;
+    border-radius: 10px;
+}
+.settings-skill-divider{
+    height: 1px;
+    background: #e5e7eb;
+    margin: auto 0 10px;
+}
+.settings-skill-footer{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.settings-skill-badge{
+    display: inline-flex;
+    align-items: center;
+    max-width: 78%;
+    border-radius: 999px;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 8px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.settings-skill-empty{
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    padding: 10px 4px;
+    grid-column: 1 / -1;
+}
+@media (max-width: 1200px){.settings-skill-list{
+        grid-template-columns: 1fr;
+    }}
+@media (max-width: 1200px){.settings-skill-card{
+        height: 140px;
+    }}
+body:not(.settings-companion-mode).settings-modal-open{
+    overflow: hidden !important;
+}
