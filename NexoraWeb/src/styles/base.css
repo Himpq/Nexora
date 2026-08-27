@@ -1,0 +1,55 @@
+
+/**
+ * base.css — 全局基座（2d 收口，从 legacy/style.css 搬出）
+ * 仅含：通用元素重置(*、html、body)、滚动条、@keyframes。
+ * 颜色语义走 tokens-color.css，本文件不做主题取值。
+ */
+*{ box-sizing: border-box; outline: none; }
+body{
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  height: 100vh;
+  overflow: hidden;
+  overflow-x: hidden;
+  font-size: 14px;
+}
+::selection{
+  background: #5b3a21;
+  color: #ffe7bf;
+}
+::-moz-selection{
+  background: #5b3a21;
+  color: #ffe7bf;
+}
+@keyframes multiPhaseDots{
+    0%   { content: "."; opacity: 1; }
+    5%   { content: "."; opacity: 0; }
+    10%  { content: "."; opacity: 1; }
+    15%  { content: "."; opacity: 0; }
+    20%  { content: "."; opacity: 1; }
+    22%  { content: "."; opacity: 1; }
+    33%  { content: ".."; opacity: 1; }
+    44%  { content: "..."; opacity: 1; }
+    55%  { content: "...?"; opacity: 1; }
+    77%  { content: "...?"; opacity: 1; }
+    78%  { content: "..."; opacity: 1; }
+    82%  { content: ".."; opacity: 1; }
+    86%  { content: "."; opacity: 1; }
+    100% { content: "."; opacity: 1; }
+}
+@keyframes upload-progress-wave{
+  0% { background-position: 0% 0%; }
+  100% { background-position: 220% 0%; }
+}
+@keyframes knowledge-loading-spin{
+  to { transform: rotate(360deg); }
+}
+@keyframes vector-spin{
+  to { transform: rotate(360deg); }
+}
+@keyframes fadeIn{
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}

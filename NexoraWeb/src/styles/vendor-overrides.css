@@ -1,0 +1,52 @@
+
+/**
+ * vendor-overrides.css — 第三方渲染库覆盖（2d 收口）
+ * 仅含 katex / hljs 的容器级覆盖，随明暗模式由 theme store 管理。
+ */
+.content-body .katex-display,.editor-preview .katex-display{
+    margin: 2.5em 0;
+    padding: 0.08em 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: center !important;
+}
+.content-body .katex-display::-webkit-scrollbar,.editor-preview .katex-display::-webkit-scrollbar{
+    width: 0;
+    height: 0;
+}
+.content-body span.katex,.editor-preview span.katex{
+    margin: 0 0.16em;
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: left;
+    display: inline-block;
+    vertical-align: middle;
+}
+.content-body .katex-html,.editor-preview .katex-html,.content-body .katex-mathml,.editor-preview .katex-mathml{
+    direction: ltr;
+    unicode-bidi: isolate;
+}
+.content-body .katex-html,.editor-preview .katex-html{
+    user-select: text;
+    -webkit-user-select: text;
+}
+.content-body .katex-mathml,.content-body .katex-mathml *,.editor-preview .katex-mathml,.editor-preview .katex-mathml *{
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+.content-body .katex-display > span.katex,.editor-preview .katex-display > span.katex{
+    margin: 0;
+}
+.content-body .katex,.editor-preview .katex{
+    max-width: none !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+}
+.content-body pre.nc-code-block code.hljs,.editor-preview pre.nc-code-block code.hljs{
+    background: transparent !important;
+}
