@@ -2760,6 +2760,10 @@ def start_service_status_monitor() -> None:
 
 @app.before_request
 def ensure_service_status_monitor_started():
+    # ServiceStatusMonitor.start() 现为非阻塞（仅做线程存活检查与本地历史恢复），
+    # 后台探测在独立线程中立即执行，因此 before_request 不会堵塞首个请求。
+    # 保留此钩子作为兜底，确保任何入口（包括仅健康检查的部署）都能懒启动监控，
+    # 真正的进程级启动在 __main__ 中已提前执行，避免首个请求承担线程创建成本。
     start_service_status_monitor()
 
 
@@ -18115,5 +18119,10 @@ if __name__ == '__main__':
 
     if (not debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         start_nexora_mail_event_stream()
+        # 进程启动时即预热服务状态监控，避免首个 HTTP 请求触发同步探测而被堵塞
+        try:
+            start_service_status_monitor()
+        except Exception as exc:
+            print(f"[ServiceStatusMonitor] pre-start failed: {exc}")
     
     app.run(debug=debug, host='0.0.0.0', port=port, threaded=True)
