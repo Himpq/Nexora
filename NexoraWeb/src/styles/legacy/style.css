@@ -157,22 +157,6 @@ body.learning-workspace-active .logo .dot{
     color: #14b8a6;
     font-size: 14px;
 }
-.btn-primary-outline{
-  width: 100%;
-  background: transparent;
-  border: 1px solid var(--color-border-strong);
-  color: #fff;
-  padding: 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 13px;
-  transition: all 0.2s;
-}
-.btn-primary-outline:hover{ border-color: var(--color-text-secondary); background: var(--color-bg-hover); }
 .user-profile .avatar{ 
     width: 32px; height: 32px; 
     background: #333; color: #fff; 
@@ -1220,27 +1204,6 @@ body.settings-companion-mode #confirmBackdrop,body.settings-companion-mode #addU
     color: var(--color-text-secondary);
     font-size: 14px;
 }
-.btn-confirm,.btn-cancel{
-    padding: 8px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    border: none;
-    min-width: 80px;
-}
-.btn-confirm{ 
-    background: #000; 
-    color: #fff; 
-}
-.btn-confirm:hover{ background: #333; }
-.btn-cancel{ 
-    background: var(--color-bg-sunken); 
-    color: var(--color-text-secondary);
-    border: 1px solid transparent;
-}
-.btn-cancel:hover{ background: var(--color-bg-hover); color: var(--color-text-primary); }
 .chevron-icon{
     width: 12px;
     height: 12px;
@@ -3313,38 +3276,6 @@ body.learning-workspace-active .learning-sidebar-panel{
     color: var(--color-text-primary);
     letter-spacing: -0.3px;
 }
-.btn-confirm{
-    background: #000;
-    color: #fff;
-    padding: 10px 24px;
-    border-radius: 10px;
-    border: none;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.btn-confirm:hover{
-    background: #1a1a1a;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-}
-.btn-cancel{
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    color: var(--color-text-secondary);
-    padding: 10px 20px;
-    border-radius: 10px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-.btn-cancel:hover{
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-    border-color: var(--color-border);
-}
 .mail-placeholder-card h3{
     margin: 0 0 6px;
     font-size: 18px;
@@ -4046,20 +3977,6 @@ body.learning-workspace-active .learning-sidebar-panel{
     box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
     background: var(--color-bg-elevated);
 }
-.btn-primary{
-    padding: 8px 14px;
-    background: #000000;
-    color: #ffffff;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 600;
-    transition: all 0.15s;
-}
-.btn-primary:hover{
-    background: #333333;
-}
 .token-modal-custom .modal-head{
     flex-shrink: 0;
 }
@@ -4149,23 +4066,6 @@ body.learning-workspace-active .learning-sidebar-panel{
 .action-badge.search{
     background: #fef9c3;
     color: #a16207;
-}
-/* Danger Button */
-.btn-danger-small{
-    background: var(--color-danger-surface);
-    color: var(--color-danger-text);
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 1px solid var(--color-danger-border);
-    cursor: pointer;
-    transition: all 0.2s;
-}
-.btn-danger-small:hover{
-    background: #dc2626;
-    color: #ffffff;
-    border-color: var(--color-danger-text);
 }
 /* Toast Notification — 与新版本 Nexora 前端 nexora-toast 视觉统一(白底、左侧色条、图标) */
 #nexora-toast-root{
@@ -4456,12 +4356,6 @@ body.learning-workspace-active .learning-sidebar-panel{
 #adminModal .btn-primary:hover{
     background: #1e293b !important;
     border-color: #1e293b !important;
-}
-.btn-compact{
-    padding: 4px 10px !important;
-    font-size: 12px !important;
-    line-height: 1.2 !important;
-    min-height: 30px !important;
 }
 @media (max-width: 980px){#stats-tab{
         overflow: hidden;
