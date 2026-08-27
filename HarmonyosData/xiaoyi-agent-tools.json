@@ -2,7 +2,7 @@
   "schema_version": "nexora-learning-agent-tools/v1",
   "name": "nexora_learning",
   "description": "Nexora Learning 主动学习伙伴的 HTTP 工具契约草案",
-  "base_url": "https://YOUR_NEXORA_LEARNING_HOST",
+  "base_url": "https://chat.himpqblog.cn:5002",
   "authentication": {
     "type": "api_key",
     "header": "X-API-Key",
@@ -43,6 +43,16 @@
           "book_id": { "type": "string" },
           "chapter_index": { "type": "integer", "minimum": 0 }
         }
+      }
+    },
+    {
+      "name": "get_today_learning_brief",
+      "description": "读取今日学习摘要，并决定继续未关闭会话还是开始下一学习目标",
+      "method": "GET",
+      "path": "/api/agent/v1/today",
+      "parameters": {
+        "username": { "in": "query", "type": "string", "required": true },
+        "lecture_id": { "in": "query", "type": "string", "required": false }
       }
     },
     {

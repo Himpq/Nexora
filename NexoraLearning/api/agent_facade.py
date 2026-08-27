@@ -41,6 +41,11 @@ _TASKS: Dict[str, Dict[str, Any]] = {}
 _IDEMPOTENT_RESULTS: Dict[str, Dict[str, Any]] = {}
 _MAX_TASKS = 256
 _MAX_IDEMPOTENT_RESULTS = 512
+_SESSION_CLOSE_EVENTS = frozenset({
+    "session_completed",
+    "session_closed",
+    "learning_session_completed",
+})
 
 
 def _valid_identifier(value: Any, *, max_length: int = 160) -> bool:
@@ -221,11 +226,6 @@ def _active_session(records: list[Dict[str, Any]]) -> Dict[str, Any]:
     """
     opened: Dict[str, Dict[str, Any]] = {}
     closed: set[str] = set()
-    close_events = {
-        "session_completed",
-        "session_closed",
-        "learning_session_completed",
-    }
     for row in records:
         if not isinstance(row, Mapping):
             continue
@@ -236,7 +236,7 @@ def _active_session(records: list[Dict[str, Any]]) -> Dict[str, Any]:
         event_name = str(row.get("event") or "").strip().lower()
         if record_type == "agent_session_opened":
             opened[session_id] = dict(row)
-        elif record_type == "agent_session_closed" or (record_type == "agent_event" and event_name in close_events):
+        elif record_type == "agent_session_closed" or (record_type == "agent_event" and event_name in _SESSION_CLOSE_EVENTS):
             closed.add(session_id)
 
     for row in reversed(records):
@@ -249,6 +249,133 @@ def _active_session(records: list[Dict[str, Any]]) -> Dict[str, Any]:
             session["status"] = "open"
             return session
     return {}
+
+
+def _record_timestamp(value: Mapping[str, Any]) -> int:
+    """Return a learning record timestamp in seconds, accepting ms telemetry."""
+    raw = value.get("timestamp") or value.get("created_at") or value.get("ts") or 0
+    try:
+        timestamp = float(raw)
+    except (TypeError, ValueError):
+        return 0
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000
+    return max(0, int(timestamp))
+
+
+def _today_start_timestamp(now: Optional[int] = None) -> int:
+    current = int(now or time.time())
+    local = time.localtime(current)
+    midnight = (
+        local.tm_year,
+        local.tm_mon,
+        local.tm_mday,
+        0,
+        0,
+        0,
+        local.tm_wday,
+        local.tm_yday,
+        local.tm_isdst,
+    )
+    return int(time.mktime(midnight))
+
+
+def _record_duration_seconds(record: Mapping[str, Any]) -> float:
+    for key, multiplier in (("study_seconds", 1), ("study_minutes", 60), ("study_hours", 3600)):
+        value = record.get(key)
+        if value is not None:
+            try:
+                return max(0.0, float(value) * multiplier)
+            except (TypeError, ValueError):
+                return 0.0
+    if str(record.get("type") or "").strip() in {"study_time", "study_session", "learning_time"}:
+        try:
+            return max(0.0, float(record.get("duration") or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _today_data(
+    records: list[Dict[str, Any]],
+    question_records: list[Dict[str, Any]],
+    now: Optional[int] = None,
+) -> Dict[str, Any]:
+    current = int(now or time.time())
+    start = _today_start_timestamp(current)
+    learning_today = [
+        row for row in records
+        if isinstance(row, Mapping) and _record_timestamp(row) >= start
+    ]
+    questions_today = [
+        row for row in question_records
+        if isinstance(row, Mapping) and _record_timestamp(row) >= start
+    ]
+    completed_session_count = sum(
+        1
+        for row in learning_today
+        if str(row.get("type") or "").strip() == "session_completed"
+        or (
+            str(row.get("type") or "").strip() == "agent_event"
+            and str(row.get("event") or "").strip().lower() in _SESSION_CLOSE_EVENTS
+        )
+    )
+    completed_chapter_keys = {
+        (
+            str(row.get("lecture_id") or "").strip(),
+            str(row.get("book_id") or "").strip(),
+            str(
+                row.get("chapter_index")
+                if row.get("chapter_index") is not None
+                else row.get("chapter_name") or ""
+            ).strip(),
+        )
+        for row in learning_today
+        if str(row.get("type") or "").strip() == "chapter_completed"
+    }
+    correct_count = sum(1 for row in questions_today if row.get("is_correct") is True)
+    reviewed_count = sum(1 for row in questions_today if isinstance(row.get("is_correct"), bool))
+    return {
+        "date": time.strftime("%Y-%m-%d", time.localtime(current)),
+        "study_minutes": round(sum(_record_duration_seconds(row) for row in learning_today) / 60, 1),
+        "completed_sessions": completed_session_count,
+        "completed_chapters": len(completed_chapter_keys),
+        "submitted_questions": len(questions_today),
+        "correct_questions": correct_count,
+        "accuracy": round(correct_count / reviewed_count, 3) if reviewed_count else None,
+    }
+
+
+def _today_target(
+    username: str,
+    context: Dict[str, Any],
+    active_session: Mapping[str, Any],
+    requested_lecture_id: str = "",
+) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[str, str, int]]]:
+    """Resolve an active session first, then the normal next learning target."""
+    if active_session and not requested_lecture_id:
+        active_lecture_id = str(active_session.get("lecture_id") or "").strip()
+        active_book_id = str(active_session.get("book_id") or "").strip()
+        context_lecture_ids = {
+            str(row.get("id") or "").strip()
+            for row in context.get("lectures", [])
+            if isinstance(row, Mapping)
+        }
+        if active_lecture_id and active_book_id and active_lecture_id in context_lecture_ids:
+            return _resolve_session_target(
+                username,
+                {
+                    "lecture_id": active_lecture_id,
+                    "book_id": active_book_id,
+                    "chapter_index": active_session.get("chapter_index", 0),
+                },
+                context,
+            )
+    return _resolve_session_target(
+        username,
+        {"lecture_id": requested_lecture_id} if requested_lecture_id else {},
+        context,
+    )
 
 
 def _chapters(lecture_id: str, book_id: str) -> list[Dict[str, Any]]:
@@ -484,6 +611,70 @@ def agent_context():
         return error
     lecture_id = str(request.args.get("lecture_id") or "").strip()
     return _response(action=action, data=_context(username, lecture_id))
+
+
+@agent_facade_bp.route("/today", methods=["GET"])
+def agent_today():
+    """Return a compact, model-free daily brief for proactive Agent prompts."""
+    action = "today"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_user(None, action)
+    if error is not None:
+        return error
+
+    requested_lecture_id = str(request.args.get("lecture_id") or "").strip()
+    context = _context(username, requested_lecture_id)
+    lectures = context.get("lectures") if isinstance(context.get("lectures"), list) else []
+    if requested_lecture_id and not lectures:
+        return _failure(action, "COURSE_NOT_FOUND", "Requested lecture is not selected by this user.", status=404)
+
+    records = user_store.list_learning_records(_CFG, username) or []
+    question_records = user_store.list_question_completions(_CFG, username) or []
+    active_session = _active_session(records)
+    today = _today_data(records, question_records)
+    if not lectures:
+        return _response(
+            action=action,
+            data={"status": "needs_course", "today": today, "active_session": active_session},
+            next_actions=[{"type": "select_course", "required": True}],
+        )
+
+    target, target_error = _today_target(username, context, active_session, requested_lecture_id)
+    if target_error or target is None:
+        code, message, status = target_error or ("COURSE_NOT_FOUND", "No learning target is available.", 404)
+        return _failure(action, code, message, status=status)
+
+    resumes_active_session = bool(
+        active_session
+        and str(active_session.get("lecture_id") or "").strip() == str(target.get("lecture_id") or "").strip()
+        and str(active_session.get("book_id") or "").strip() == str(target.get("book_id") or "").strip()
+        and _safe_int(active_session.get("chapter_index"), -1) == _safe_int(target.get("chapter_index"), -2)
+    )
+    status = "resume" if resumes_active_session else "ready"
+    next_action_type = "resume_session" if resumes_active_session else "open_session"
+    return _response(
+        action=action,
+        data={
+            "status": status,
+            "today": today,
+            "focus": target,
+            "active_session": active_session,
+            "lectures": [
+                {
+                    "id": row.get("id"),
+                    "title": row.get("title"),
+                    "progress_percent": row.get("progress_percent"),
+                    "current_chapter": row.get("current_chapter"),
+                    "next_chapter": row.get("next_chapter"),
+                }
+                for row in lectures
+                if isinstance(row, Mapping)
+            ],
+        },
+        next_actions=[{"type": next_action_type, "target": target}],
+    )
 
 
 @agent_facade_bp.route("/plan", methods=["POST"])

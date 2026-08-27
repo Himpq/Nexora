@@ -337,7 +337,9 @@ HarmonyosApp/
 - 云端用户：`cjbpq`，`GET /api/frontend/context?username=cjbpq` 返回管理员上下文和模型连接状态。
 - 云端教材已存在：课程“数据库导论”（`l_d5a6224b163f`）下的“数据库管理系统中级（备份还原）”（`b_619ddb8070c9`）。
 - 云端教材状态：正文约 244,990 字符、557 张图片，教材提炼/精读/批注/总结/视频状态均为已完成；`bookinfo` 可读取真实章节摘要。
-- 云端尚未部署本阶段新增的 `/api/agent/v1` facade，访问该路径当前返回 `404`。因此 Agent 工具契约和测试已在本地完成，但接入小艺前仍需将本阶段代码部署到云端并重新验证公网接口。
+- 2026-08-27 已将 `0cd35b7` 部署到云端：`/api/agent/v1/context` 缺少用户时返回统一 `AUTH_REQUIRED` envelope，使用演示用户 `cjbpq` 的 `context`、`plan`、章节读取和 `ask-in-context` 均已获得 `200`；阅读器章节响应包含修复后的统一坐标字段。
+- 2026-08-27 线上检查发现 `runtime_api.api_key` 当前为空：携带无效 `X-API-Key` 仍可访问 Agent facade。接入小艺前必须在部署环境设置 `NEXORALEARNING_RUNTIME_API_KEY`，并重新验证错误 key 返回 `401`；该密钥不写入 Git。
+- 本地继续开发新增 `/api/agent/v1/today` 今日学习摘要工具，并已更新 `AGENT_FACADE_API.md` 与 `xiaoyi-agent-tools.json`；该变更尚未部署云端。
 - 本地同一 EPUB 也已导入到被 Git 忽略的 `NexoraLearning/data/`，用于离线调试；不把教材、密钥或生成文件纳入提交。
 - 已验证本地 facade 可以通过临时内存配置调用云端 PAPI 模型：`ask-in-context` 返回 `200`，回答来源标记为 `textbook_context`；云端密钥未写入配置文件。
 - `NexoraLearning/main.py` 现在支持 `NEXORALEARNING_NEXORA_BASE_URL`、`NEXORALEARNING_NEXORA_API_KEY`、`NEXORALEARNING_RUNTIME_API_KEY`、`NEXORALEARNING_NEXORADB_*` 和 `NEXORALEARNING_PORT` 环境变量覆盖，覆盖仅在当前进程内生效。

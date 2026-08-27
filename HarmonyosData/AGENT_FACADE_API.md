@@ -22,6 +22,8 @@ NexoraLearning 的用户、课程、教材、进度和模型服务，不要求 A
 
 请求可以使用 `X-API-Key`、`X-NexoraLearning-Key` 或 `Authorization: Bearer ...`。
 当配置中的 `api_key` 为空时，开发环境不强制 API Key，但仍必须提供用户标识。
+公网部署或接入小艺时必须设置 `NEXORALEARNING_RUNTIME_API_KEY`；空 key 只适用于本地开发，
+不能作为生产鉴权。
 
 部署到云端或从本地临时连接云端模型时，优先使用环境变量覆盖配置，不要把密钥写进
 `config.json`：
@@ -83,6 +85,13 @@ NexoraLearning 用户目录名，不是自动推断的华为账号。
 课程、教材和章节均可省略，省略时按用户已选课程和最近进度解析。无选课时返回
 `data.status = "needs_course"` 及 `select_course` 下一动作。
 
+### `GET /today`
+
+返回适合小艺主动播报的今日学习摘要：当天学习时长、完成的会话/章节、答题数与正确率，
+以及当前应继续或新建的学习目标。它不返回教材正文或完整画像原文。存在未关闭的 Agent
+会话时，优先返回 `resume_session`；否则返回 `open_session`。无选课时返回
+`data.status = "needs_course"` 及 `select_course` 下一动作。
+
 ### `POST /open-session`
 
 创建一个主动学习会话，返回可直接打开现有 NexoraLearning Web 工作区的深链接：
@@ -138,7 +147,7 @@ NexoraLearning 用户目录名，不是自动推断的华为账号。
 推荐主流程：
 
 ```text
-context -> plan -> open-session -> (ask-in-context | events) -> review-plan -> tasks/{id}
+today -> plan -> open-session -> (ask-in-context | events) -> review-plan -> tasks/{id}
 ```
 
 Agent 不应把教材全文放进长期记忆；问答上下文由服务端按课程、教材和章节即时裁剪。
@@ -164,3 +173,7 @@ python -m unittest discover -s tests -p "test_agent_facade.py" -v
 python -m py_compile api/agent_facade.py main.py
 node --check frontend/assets/app.js
 ```
+
+公网验证建议至少检查：`GET /health`、缺少用户时的 `AUTH_REQUIRED`、错误 API key 被拒绝，
+以及用脱敏演示账号跑通 `context -> plan -> open-session -> ask-in-context`。复习任务会
+写入用户数据，线上验证应使用固定演示账号并避免重复创建无意义任务。

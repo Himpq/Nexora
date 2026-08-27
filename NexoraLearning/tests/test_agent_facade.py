@@ -51,6 +51,69 @@ class AgentFacadeTests(unittest.TestCase):
             self.assertEqual(body["error"]["code"], "AUTH_REQUIRED")
             self.assertTrue(body["request_id"].startswith("req_"))
 
+    def test_today_returns_daily_brief_and_resumes_open_session(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            from core import user as user_store
+
+            user_store.append_learning_record(
+                cfg,
+                "demo",
+                {"type": "study_time", "lecture_id": lecture["id"], "study_seconds": 900},
+            )
+            user_store.append_question_completion(
+                cfg,
+                "demo",
+                {"lecture_id": lecture["id"], "book_id": book["id"], "is_correct": True},
+            )
+            user_store.append_question_completion(
+                cfg,
+                "demo",
+                {"lecture_id": lecture["id"], "book_id": book["id"], "is_correct": False},
+            )
+            client = app.test_client()
+
+            brief = client.get("/api/agent/v1/today", headers={"X-Nexora-Username": "demo"})
+            self.assertEqual(brief.status_code, 200)
+            brief_body = brief.get_json()
+            self.assertEqual(brief_body["action"], "today")
+            self.assertEqual(brief_body["data"]["status"], "ready")
+            self.assertEqual(brief_body["data"]["today"]["study_minutes"], 15.0)
+            self.assertEqual(brief_body["data"]["today"]["submitted_questions"], 2)
+            self.assertEqual(brief_body["data"]["today"]["accuracy"], 0.5)
+            self.assertEqual(brief_body["next_actions"][0]["type"], "open_session")
+
+            opened = client.post(
+                "/api/agent/v1/open-session",
+                headers={"X-Nexora-Username": "demo"},
+                json={"lecture_id": lecture["id"], "book_id": book["id"], "chapter_index": 1},
+            )
+            self.assertEqual(opened.status_code, 200)
+            resumed = client.get("/api/agent/v1/today", headers={"X-Nexora-Username": "demo"})
+            self.assertEqual(resumed.status_code, 200)
+            resumed_body = resumed.get_json()
+            self.assertEqual(resumed_body["data"]["status"], "resume")
+            self.assertEqual(resumed_body["next_actions"][0]["type"], "resume_session")
+            self.assertEqual(resumed_body["data"]["focus"]["chapter_index"], 1)
+
+            other_lecture = create_lecture(cfg, "另一门课程", status="published")
+            other_book = create_book(cfg, other_lecture["id"], "另一册教材")
+            save_book_text(cfg, other_lecture["id"], other_book["id"], "另一门课程正文")
+            set_lecture_selection(cfg, "demo", other_lecture["id"], selected=True, actor="test")
+            selected = client.get(
+                f"/api/agent/v1/today?lecture_id={other_lecture['id']}",
+                headers={"X-Nexora-Username": "demo"},
+            )
+            self.assertEqual(selected.status_code, 200)
+            selected_body = selected.get_json()
+            self.assertEqual(selected_body["data"]["status"], "ready")
+            self.assertEqual(selected_body["next_actions"][0]["type"], "open_session")
+            self.assertEqual(selected_body["data"]["focus"]["lecture_id"], other_lecture["id"])
+
     def test_external_identifiers_cannot_escape_local_store(self):
         import tempfile
         from pathlib import Path
