@@ -410,6 +410,17 @@ body.learning-workspace-active .sidebar-footer{
     border-color: #ef4444;
 }
 
+/* 消息基座：legacy 手写优化迁移，gap 替代 margin */
+.message {
+    line-height: 1.6;
+    opacity: 0;
+    animation: fadeIn 0.3s forwards;
+    width: 100%;
+    max-width: 800px;
+    min-width: 0;
+    overflow: visible;
+}
+
 .message.user .message-content{
   background-color: transparent; /* Changed */
   color: var(--color-text-primary);

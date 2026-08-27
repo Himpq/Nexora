@@ -42,6 +42,24 @@
     flex-direction: column;
 }
 
+/* 聊天消息滚动区：原 legacy .messages-area，手写优化版
+ * - flex:1 自适应主内容剩余高度，配合 .main-content 的 column 布局
+ * - gap 替代 margin-bottom 的消息间距，最后一项无需清 margin
+ * - align-items:center 保持消息块 800px 居中，滚动条不挤压内容
+ */
+.messages-area {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 40px 20px;
+    margin-bottom: 20px;
+    min-height: 0;
+}
+
 .gddp-content-view {
     z-index: 1;
     display: flex;
