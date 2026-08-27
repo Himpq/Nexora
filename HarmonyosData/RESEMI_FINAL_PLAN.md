@@ -343,3 +343,5 @@ HarmonyosApp/
 - 本地同一 EPUB 也已导入到被 Git 忽略的 `NexoraLearning/data/`，用于离线调试；不把教材、密钥或生成文件纳入提交。
 - 已验证本地 facade 可以通过临时内存配置调用云端 PAPI 模型：`ask-in-context` 返回 `200`，回答来源标记为 `textbook_context`；云端密钥未写入配置文件。
 - `NexoraLearning/main.py` 现在支持 `NEXORALEARNING_NEXORA_BASE_URL`、`NEXORALEARNING_NEXORA_API_KEY`、`NEXORALEARNING_RUNTIME_API_KEY`、`NEXORALEARNING_NEXORADB_*` 和 `NEXORALEARNING_PORT` 环境变量覆盖，覆盖仅在当前进程内生效。
+- 2026-08-27 确立本地优先开发工作流：`NexoraLearning/dev_local.ps1` 一键启动本地服务（加载 git 忽略的 `.env.local`，模型借道云端 PAPI）；`NexoraLearning/tools/agent_smoke.py` 为本地/云端同一套冒烟脚本，覆盖 `health → context → today → plan → open-session → ask-in-context`，支持 `--check-auth`（错误 key 必须 401）与 `--read-only`。本地全链路实测 6/6 PASS、`ask-in-context` 返回真实模型回答。
+- 2026-08-27 团队已将 `/today` 与配套测试提交（`6c0b38e`），但**尚未部署云端**；云端 `runtime_api.api_key` 为空的问题也仍未修复。下一步云端部署需处理：部署 `/today`、设置 `NEXORALEARNING_RUNTIME_API_KEY`、用 `agent_smoke.py --check-auth` 回归云端。
