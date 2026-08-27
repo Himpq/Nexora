@@ -66,6 +66,17 @@ def runtime_tool_execute():
             },
         )
         return jsonify({"success": True, "result": payload})
+    except PermissionError as exc:
+        log_event(
+            "runtime_tool_execute_denied",
+            "Runtime tool access denied.",
+            payload={
+                "username": username,
+                "tool_name": tool_name,
+                "error": str(exc),
+            },
+        )
+        return jsonify({"success": False, "error": str(exc)}), 403
     except Exception as exc:
         log_event(
             "runtime_tool_execute_error",
@@ -88,6 +99,10 @@ def runtime_memory_blocks():
     lecture_id = str(data.get("lecture_id") or "").strip()
     if not username or not lecture_id:
         return jsonify({"success": False, "error": "username and lecture_id are required."}), 400
+    try:
+        _runtime_require_selected_lecture(username, lecture_id)
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     rows = _build_runtime_memory_blocks(username, lecture_id)
     return jsonify({"success": True, "blocks": rows})
 
@@ -103,6 +118,10 @@ def runtime_memory_trigger():
     payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
     if not username or not lecture_id:
         return jsonify({"success": False, "error": "username and lecture_id are required."}), 400
+    try:
+        _runtime_require_selected_lecture(username, lecture_id)
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     log_event(
         "runtime_memory_trigger_request",
         "Runtime memory trigger request received.",
@@ -139,6 +158,10 @@ def runtime_memory_context_compression():
     job_id = str(data.get("job_id") or "").strip()
     if not username or not lecture_id:
         return jsonify({"success": False, "error": "username and lecture_id are required."}), 400
+    try:
+        _runtime_require_selected_lecture(username, lecture_id)
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     result = mark_context_compression_completed(_cfg, username, lecture_id, job_id=job_id)
     return jsonify({"success": True, "result": result})
 
@@ -153,6 +176,10 @@ def runtime_memory_turn():
     payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
     if not username or not lecture_id:
         return jsonify({"success": False, "error": "username and lecture_id are required."}), 400
+    try:
+        _runtime_require_selected_lecture(username, lecture_id)
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     log_event(
         "runtime_memory_turn_request",
         "Runtime memory turn request received.",

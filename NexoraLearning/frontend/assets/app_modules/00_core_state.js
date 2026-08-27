@@ -343,7 +343,10 @@
     confirmAction: null,
     readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
     readerSectionsData: {},     // { chapterName: { range, sessions: [{name, range, summary}] } }
-    readerAnnotations: [],      // [{ chapterName, offset, length, type, content, anchorText }]
+    readerAnnotations: [],      // [{ chapterName, chapterIndex, offset, length, type, content, anchorText, paragraphIndex }]
+    readerBookIndex: null,      // /index 原始响应：已校验的章节 / 小节 / 批注 / 诊断
+    readerCoordinateSpace: "plain", // 阅读器坐标系；"plain" = canonical 纯文本偏移
+    readerChapterPayloads: {},  // { chapterIndex: /chapter/<i> 响应（含段落锚点） }
     readerPendingRestorePosition: null,
   };
   let readerContextSyncTimer = null;

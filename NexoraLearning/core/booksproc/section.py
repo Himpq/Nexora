@@ -274,7 +274,7 @@ def _merge_section_block(existing_blocks: List[str], new_block: str) -> List[str
 
 def _render_sections_root(blocks: List[str]) -> str:
     body = "\n\n".join([str(item or "").strip() for item in blocks if str(item or "").strip()])
-    return "<sections>\n" + body + "\n</sections>"
+    return "<sections>\n<coordinate_space>plain</coordinate_space>\n\n" + body + "\n</sections>"
 
 
 def _normalize_sessions(value: Any) -> List[Dict[str, str]]:

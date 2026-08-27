@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
@@ -120,6 +120,10 @@ def _book_original_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Pa
 
 def _book_text_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_text_dir(cfg, lecture_id, book_id) / "content.txt"
+
+
+def _book_structure_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_text_dir(cfg, lecture_id, book_id) / "structure.json"
 
 
 def _book_vectors_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
@@ -686,6 +690,39 @@ def save_book_sections_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, c
     path = _book_sections_xml_path(cfg, lecture_id, book_id)
     _write_text(path, str(content or ""))
     return str(path)
+
+
+def save_book_structure(
+    cfg: Dict[str, Any],
+    lecture_id: str,
+    book_id: str,
+    structure: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Persist the extractor's structural sidecar (heading index, spine map).
+
+    Heading candidates live here instead of inside ``content.txt`` so they never
+    shift body offsets or leak into search results.
+    """
+    rows = dict(structure or {})
+    path = _book_structure_path(cfg, lecture_id, book_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path, rows)
+    return rows
+
+
+def load_book_structure(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Dict[str, Any]:
+    """Read the extractor's structural sidecar; returns ``{}`` when absent."""
+    data = _read_json(_book_structure_path(cfg, lecture_id, book_id))
+    return data if isinstance(data, dict) else {}
+
+
+def load_book_heading_candidates(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> List[str]:
+    """Return heading candidates recorded by the extractor, in document order."""
+    structure = load_book_structure(cfg, lecture_id, book_id)
+    rows = structure.get("heading_candidates")
+    if isinstance(rows, list):
+        return [str(item).strip() for item in rows if str(item or "").strip()]
+    return []
 
 
 def load_book_text(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:

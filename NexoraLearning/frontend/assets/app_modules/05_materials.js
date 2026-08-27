@@ -290,15 +290,30 @@
       loading: true,
     };
     renderLectureDetail();
-    const [bookInfoXml, bookDetailXml, summaryData] = await Promise.all([
+    const [bookInfoXml, bookDetailXml, summaryData, bookIndex] = await Promise.all([
       fetchBookInfoXml(),
       fetchBookDetailXml(),
       fetchBookSummary(),
+      fetchBookIndex(),
     ]);
     if (requestToken !== state.readerRequestToken) {
       return;
     }
-    const chapters = parseBookInfoChapters(bookInfoXml, Number(book.text_chars) || 0);
+    // 目录必须与阅读器用同一套坐标系，否则从目录进入阅读器后所有定位都会漂移。
+    // /index 已由后端校验（有序、无重叠、完整覆盖），优先采用；不可用时回退 XML。
+    const chapters = (bookIndex && Array.isArray(bookIndex.chapters) && bookIndex.chapters.length)
+      ? bookIndex.chapters.map((row) => ({
+          title: String(row.title || ""),
+          start: Number(row.start) || 0,
+          end: Number(row.end) || 0,
+          range: String(row.range || ""),
+          summary: String(row.summary || ""),
+          synthetic: !!row.synthetic,
+        }))
+      : parseBookInfoChapters(bookInfoXml, Number(book.text_chars) || 0);
+    if (bookIndex) {
+      applyBookIndex(bookIndex);
+    }
     state.readerBookInfoXml = String(bookInfoXml || "");
     state.readerBookDetailXml = String(bookDetailXml || "");
     state.catalogContext = {
@@ -2382,30 +2397,53 @@
 
   async function fetchChapterText(chapterIndex) {
     const row = getSelectedLectureRow();
-    if (!row || !state.selectedBookId) return "";
+    if (!row || !state.selectedBookId) return null;
     const lectureId = String((row.lecture || {}).id || "");
-    if (!lectureId) return "";
+    if (!lectureId) return null;
     try {
       const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/chapter/${chapterIndex}`);
-      return String(data.content || "");
-    } catch (_err) {
-      return "";
+      if (!data || data.success === false) {
+        console.warn("[Reader] chapter fetch rejected", chapterIndex, data && data.error, data && data.message);
+        return null;
+      }
+      return data;
+    } catch (err) {
+      console.warn("[Reader] chapter fetch failed", chapterIndex, err);
+      return null;
     }
   }
 
   async function loadChapterContent(chapterIndex, scrollToOffset, guideOptions) {
     const requestToken = state.readerRequestToken;
     showChapterLoading(chapterIndex);
-    const content = await fetchChapterText(chapterIndex);
+    const payload = await fetchChapterText(chapterIndex);
     if (requestToken !== state.readerRequestToken) return;
-    // 缓存章节内容
+
+    if (!payload) {
+      renderChapterUnavailable(chapterIndex);
+      return;
+    }
+
+    const content = String(payload.content || "");
     if (!state.readerChapterCache) state.readerChapterCache = {};
     state.readerChapterCache[chapterIndex] = content;
-    // 如果是第一次加载，设置完整文本（用于兼容旧逻辑）
-    if (!state.readerFullTextRaw) {
-      state.readerFullTextRaw = content;
-    }
-    renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions);
+    if (!state.readerChapterPayloads) state.readerChapterPayloads = {};
+    state.readerChapterPayloads[chapterIndex] = payload;
+    renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions, payload);
+  }
+
+  function renderChapterUnavailable(chapterIndex) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const chapter = chapters[chapterIndex];
+    const title = chapter ? (chapter.title || `第 ${chapterIndex + 1} 章`) : "章节不可用";
+    el.readerContent.innerHTML = `
+      <div class="materials-preview-text">
+        <div class="chapter-header text-center mb-4">
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <div class="materials-empty">该章节暂时无法加载，请稍后重试或重新生成教材目录。</div>
+      </div>
+    `;
   }
 
   function showChapterLoading(chapterIndex) {
@@ -2425,19 +2463,27 @@
     `;
   }
 
-  function renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions) {
+  function renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions, payload) {
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     const idx = Math.max(0, Math.min(chapters.length - 1, chapterIndex));
     state.readerActiveChapterIndex = idx;
     const chapter = chapters[idx];
     const prevDisabled = idx <= 0 ? "disabled" : "";
     const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
+    const data = payload || (state.readerChapterPayloads || {})[chapterIndex] || null;
+    const chapterStart = Number(data && data.chapter_start);
+    // 后端下发的段落带精确偏移锚点；缺失时按 canonical 纯文本切分，二者等价。
+    const body = formatReaderText(content || "", {
+      paragraphs: data && Array.isArray(data.paragraphs) ? data.paragraphs : null,
+      format: data ? String(data.content_format || "plain") : "",
+      chapterStart: Number.isFinite(chapterStart) ? chapterStart : (chapter ? Number(chapter.start) || 0 : 0),
+    });
     el.readerContent.innerHTML = `
       <div class="materials-preview-text">
         <div class="chapter-header text-center mb-4">
           <h2>${escapeHtml(chapter ? (chapter.title || `第 ${idx + 1} 章`) : "")}</h2>
         </div>
-        <div class="chapter-body">${formatReaderText(content || "")}</div>
+        <div class="chapter-body">${body}</div>
         <div class="chapter-navigation mt-5 d-flex justify-content-between">
           <button class="btn btn-outline-secondary btn-sm" data-reader-nav="prev" ${prevDisabled}>上一章</button>
           <button class="btn btn-outline-secondary btn-sm" data-reader-nav="next" ${nextDisabled}>下一章</button>

@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from ..bookextract import extract_epub_with_assets
-from ..lectures import load_book_text, save_book_images_meta, save_book_text
+from ..bookindex import heading_candidate_block_end, invalidate_book_index, normalize_book_text
+from ..lectures import (
+    load_book_text,
+    save_book_images_meta,
+    save_book_structure,
+    save_book_text,
+)
 from ..utils import extract_text
 
 MAX_READ_CHARS_PER_CALL = 8000
@@ -74,18 +80,19 @@ def resolve_book_text(
     if not force:
         existing = load_book_text(dict(cfg), lecture_id, book_id)
         if existing.strip():
-            return existing
+            return normalize_book_text(existing).plain
 
     original_path = str(book.get("original_path") or "").strip()
     if not original_path:
         existing = load_book_text(dict(cfg), lecture_id, book_id)
         if existing.strip():
-            return existing
+            return normalize_book_text(existing).plain
         raise ValueError("No original_path found for extraction.")
 
     source_path = Path(original_path)
     if not source_path.exists():
         raise ValueError(f"Original file not found: {source_path}")
+    structure: Dict[str, Any] = {}
     if source_path.suffix.lower() == ".epub":
         images_dir = Path(str(cfg.get("data_dir") or "data")) / "lectures" / lecture_id / "books" / book_id / "assets" / "images"
         epub_result = extract_epub_with_assets(
@@ -96,6 +103,7 @@ def resolve_book_text(
         )
         text = str(epub_result.get("text") or "")
         save_book_images_meta(dict(cfg), lecture_id, book_id, epub_result.get("images") or [])
+        structure = dict(epub_result.get("structure") or {})
     else:
         text = extract_text(str(source_path))
     if not text.strip():
@@ -107,7 +115,27 @@ def resolve_book_text(
         text,
         filename=str(book.get("original_filename") or "content.txt"),
     )
-    return text
+    save_book_structure(
+        dict(cfg),
+        lecture_id,
+        book_id,
+        _describe_extracted_structure(text, structure),
+    )
+    invalidate_book_index(dict(cfg), lecture_id, book_id)
+    return normalize_book_text(text).plain
+
+
+def _describe_extracted_structure(text: str, structure: Mapping[str, Any]) -> Dict[str, Any]:
+    """Record the canonical-space summary alongside the extractor's own output."""
+    rows = dict(structure or {})
+    normalized = normalize_book_text(text)
+    rows["raw_chars"] = len(str(text or ""))
+    rows["plain_chars"] = normalized.length
+    rows["paragraph_count"] = len(normalized.paragraphs)
+    rows["coordinate_space"] = "raw"
+    rows.setdefault("source", "text")
+    rows.setdefault("heading_candidates", [])
+    return rows
 
 
 def exec_read_book_text_tool(*, full_text: str, total_len: int, arguments: Mapping[str, Any]) -> Dict[str, Any]:
@@ -154,9 +182,9 @@ def exec_search_book_text_tool(*, full_text: str, total_len: int, arguments: Map
     needle = keyword.lower()
     cursor = 0
     hits = []
-    header_block_end = raw.find("[/EPUB_HEADING_CANDIDATES]")
-    if header_block_end >= 0:
-        header_block_end += len("[/EPUB_HEADING_CANDIDATES]")
+    # Legacy books still carry an inline heading-candidate block; skip it so the
+    # model never matches catalogue metadata as if it were body text.
+    header_block_end = heading_candidate_block_end(raw)
     while cursor < len(source) and len(hits) < max_hits:
         idx = source.find(needle, cursor)
         if idx < 0:
