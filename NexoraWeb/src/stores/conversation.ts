@@ -471,6 +471,15 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this.messages.push(userMessage, assistantMessage)
+
+            // 同步追加用户轮次(乐观更新):TurnIndicatorPanel 渲染轮次线依赖 turns,
+            // 发消息时若不同步增长,对话进行中指示器不会刷新
+            this.turns.push({
+                index: nextIndex,
+                role: 'user',
+                content: userContent,
+            })
+
             this.generating = true
             this.streamingConversationId = this.currentId
             this.streamingTargetIndex = assistantMessage.index

@@ -71,3 +71,6 @@ ChatDBServer/static/new/
 
 # pnpm content-addressable store (workspace root, never version this)
 .pnpm-store/
+
+# WorkBuddy Files
+.workbuddy/

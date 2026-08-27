@@ -33,7 +33,7 @@
     color: var(--color-text-primary);
     font: inherit;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 400;
     text-align: left;
     cursor: pointer;
     transition: background 0.12s ease;
@@ -52,6 +52,8 @@
 
 .gddp-context-item i:first-child {
     flex: none;
+    width: 16px;
+    text-align: center;
     font-size: 13px;
     color: var(--color-text-secondary);
 }
@@ -142,11 +144,6 @@
 .gddp-context-entry:hover .gddp-context-submenu,
 .gddp-context-entry:focus-within .gddp-context-submenu {
     display: block;
-}
-
-/* 子菜单内的通用项(业务 slot 复用 .gddp-context-item 视觉) */
-.gddp-context-submenu .gddp-context-item {
-    font-weight: 550;
 }
 
 /* 子菜单空态(加载中 / 无数据) */
