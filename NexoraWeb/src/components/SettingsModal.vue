@@ -258,7 +258,14 @@
     const avatarBackground = computed(() => {
         const src = pendingAvatarBase64.value || userStore.avatarUrl
 
-        return src ? { backgroundImage: `url("${src}")` } : {}
+        return src
+            ? {
+                  backgroundImage: `url("${src}")`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat',
+              }
+            : {}
     })
 
     /** 是否管理员(对齐原版 checkUserRole:管理员显示 admin 入口) */
