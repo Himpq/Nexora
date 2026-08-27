@@ -496,31 +496,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel{
 }
 .avatar.ai{ background-color: var(--color-text-primary); color: #fff; }
 .avatar.user{ display: none; }
-/* Usually don't show user avatar in chat bubbles if bubbles are clear enough */
-
-.model-badge{
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    margin-top: 8px;
-    opacity: 0.8;
-    user-select: none;
-    font-weight: 500;
-    display: inline-block;
-    order: 999; /* Ensure it stays at the bottom of the flex container */
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-    cursor: pointer;
-    transition: color 0.15s ease, opacity 0.15s ease;
-}
-.model-badge:hover{
-    color: var(--color-text-secondary);
-}
-.model-badge.collapsed{
-    opacity: 0.78;
-}
-.message .version-switcher,.message .tool-usage,.message .model-badge,.message .add-basis-view{
+.message .version-switcher,.message .tool-usage,.message .add-basis-view{
     user-select: none;
 }
 .content-body{
@@ -700,7 +676,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel{
     user-select: none !important;
     -webkit-user-select: none !important;
 }
-.message .avatar,.message .model-badge,.message .tool-usage,.message .add-basis-view{
+.message .avatar,.message .tool-usage,.message .add-basis-view{
     user-select: none !important;
     -webkit-user-select: none !important;
 }
@@ -5228,11 +5204,6 @@ body.learning-workspace-active .learning-sidebar-panel{
     flex-direction: column;
     flex: 1;
 }
-.perm-item .model-name{
-    font-weight: 600;
-    font-size: 14px;
-    color: var(--color-text-primary);
-}
 .perm-item .model-meta{
     display: flex;
     align-items: center;
@@ -6934,18 +6905,6 @@ body.learning-workspace-active .learning-sidebar-panel{
     color: var(--color-text-primary);
     word-break: break-all;
 }
-.model-admin-item-name-row{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-}
-.model-admin-item-name-row .model-status-btn{
-    flex: 0 0 auto;
-}
-.model-admin-item-name-row .model-admin-item-name{
-    min-width: 0;
-}
 .model-admin-item-meta{
     margin-top: 4px;
     font-size: 11px;
@@ -6960,7 +6919,7 @@ body.learning-workspace-active .learning-sidebar-panel{
     pointer-events: none;
     transition: opacity 0.15s ease;
 }
-.provider-item:hover .model-admin-item-actions,.model-provider-item:hover .model-admin-item-actions,.model-admin-item:hover .model-admin-item-actions{
+.provider-item:hover .model-admin-item-actions,.model-admin-item:hover .model-admin-item-actions{
     opacity: 1;
     pointer-events: auto;
 }
@@ -7041,53 +7000,6 @@ body.learning-workspace-active .learning-sidebar-panel{
     overflow-wrap: anywhere;
     white-space: normal;
 }
-.model-icon-btn{
-    width: 26px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-elevated);
-    color: var(--color-text-primary);
-    cursor: pointer;
-}
-.model-icon-btn:hover{
-    background: var(--color-bg-hover);
-}
-.model-status-btn{
-    color: var(--color-text-secondary);
-}
-.model-status-btn.model-status-btn-loading{
-    color: var(--color-text-secondary);
-    background: var(--color-bg-sunken);
-    border-color: var(--color-border);
-}
-.model-status-btn.model-status-btn-warn{
-    color: #ca8a04;
-    background: #fffbeb;
-    border-color: #fde68a;
-}
-.model-status-btn.model-status-btn-success{
-    color: var(--color-success-text);
-    background: var(--color-success-surface);
-    border-color: var(--color-success-border);
-}
-.model-status-btn.model-status-btn-danger{
-    color: var(--color-danger-text);
-    background: #fef2f2;
-    border-color: var(--color-danger-border);
-}
-.model-status-btn.model-status-btn-success:hover{
-    background: var(--color-success-surface);
-}
-.model-status-btn.model-status-btn-warn:hover{
-    background: #fef3c7;
-}
-.model-status-btn.model-status-btn-danger:hover{
-    background: var(--color-danger-surface);
-}
 .model-icon-btn-dark{
     background: #111;
     color: #fff;
@@ -7096,14 +7008,6 @@ body.learning-workspace-active .learning-sidebar-panel{
 .model-icon-btn-dark:hover{
     background: #334155;
     border-color: var(--color-text-secondary);
-}
-.model-icon-btn-danger{
-    color: var(--color-danger-text);
-    border-color: var(--color-danger-border);
-    background: var(--color-bg-elevated);
-}
-.model-icon-btn-danger:hover{
-    background: #fef2f2;
 }
 .avatar-crop-modal{
     width: min(900px, calc(100vw - 32px)) !important;
