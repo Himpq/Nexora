@@ -22,12 +22,12 @@
                 </div>
                 <div class="gddp-files-actions">
                     <Button
+                        v-if="currentPath"
                         variant="secondary"
                         size="icon"
                         icon="fa-solid fa-arrow-left"
                         title="返回上一级"
                         aria-label="返回上一级"
-                        :disabled="!currentPath"
                         @click="goBack"
                     />
                     <label class="gddp-files-search">
