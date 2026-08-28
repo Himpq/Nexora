@@ -9,6 +9,8 @@
  *   - 头像一律 background-cover 圆形,杜绝 img 溢出
  */
 
+@import './settings/account.css';
+
 /* ==================== 外层(填满弹窗正文) ==================== */
 
 .settings-modal > .g-modal-body {
@@ -1208,86 +1210,6 @@
     font-size: 11px;
     color: var(--color-text-secondary);
     line-height: 1.4;
-}
-
-/* ==================== 个人资料 ==================== */
-
-.settings-profile-head {
-    display: flex;
-    align-items: flex-start;
-    gap: 28px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid var(--color-border);
-}
-
-.settings-avatar-panel {
-    flex: 0 0 132px;
-    width: 132px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-}
-
-.settings-avatar {
-    width: 104px;
-    height: 104px;
-    border-radius: 50%;
-    background-size: cover;
-    background-position: center;
-    background-color: var(--color-bg-hover);
-    border: 1px solid var(--color-border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-}
-
-.settings-avatar.settings-avatar-placeholder {
-    font-size: 30px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-}
-
-.settings-avatar-actions {
-    display: flex;
-    gap: 6px;
-}
-
-.settings-profile-meta {
-    flex: 1;
-    min-width: 0;
-}
-
-.settings-profile-meta .setting-row {
-    border-bottom: none;
-    min-height: 44px;
-}
-
-.settings-profile-name-input {
-    width: min(240px, 100%);
-}
-
-.settings-userid-inline {
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    margin-bottom: 14px;
-}
-
-.settings-field {
-    padding: 8px 12px;
-    background: var(--color-bg-sunken);
-    border: 1px solid var(--color-border);
-    border-radius: 7px;
-    font-size: 13px;
-    color: var(--color-text-secondary);
-}
-
-.settings-profile-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 14px;
-    justify-content: flex-end;
 }
 
 /* ==================== 偏好设置 ==================== */

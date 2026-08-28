@@ -45,53 +45,22 @@
                 <div class="settings-page-body">
                     <!-- 个人资料 -->
                     <template v-if="activeTab === 'profile'">
-                        <SettingCard title="个人资料" description="与账号相关的基本信息与头像">
-                            <div class="settings-profile-head">
-                                <div class="settings-avatar-panel">
-                                    <div
-                                        v-if="userStore.avatarUrl"
-                                        id="settingsAvatarImg"
-                                        class="settings-avatar"
-                                        :style="avatarBackground"
-                                        alt="avatar"
-                                    ></div>
-                                    <div v-else id="settingsAvatarImg" class="settings-avatar settings-avatar-placeholder">{{ avatarChar }}</div>
-                                    <div class="settings-avatar-actions">
-                                        <button class="btn-primary-outline btn-compact" type="button" @click="openAvatarPicker">上传头像</button>
-                                        <input ref="avatarFileInput" type="file" accept="image/*" style="display:none" @change="handleAvatarFile" />
-                                    </div>
-                                </div>
-                                <div class="settings-profile-meta">
-                                    <SettingRow label="用户名" hint="登录与展示所用名称">
-                                        <input
-                                            id="set-username-input"
-                                            v-model="profileName"
-                                            class="gddp-input settings-profile-name-input"
-                                            type="text"
-                                            maxlength="60"
-                                        >
-                                    </SettingRow>
-                                    <SettingRow label="角色">
-                                        <span class="settings-field" style="background:transparent;border:none;padding:0;">{{ roleLabel }}</span>
-                                    </SettingRow>
-                                    <SettingRow label="UserID" hint="系统内部标识,不可修改">
-                                        <span class="mono" style="font-size:12.5px;color:#8b95a7;">{{ userStore.userId || '-' }}</span>
-                                    </SettingRow>
-                                </div>
-                            </div>
-                            <div class="settings-profile-actions" style="justify-content:flex-end;">
-                                <button class="btn-primary" type="button" @click="saveProfile">保存资料</button>
-                            </div>
-                        </SettingCard>
+                        <AccountPanel
+                            :profile-name="profileName"
+                            :avatar-url="userStore.avatarUrl"
+                            :avatar-background="avatarBackground"
+                            :avatar-char="avatarChar"
+                            :role-label="roleLabel"
+                            :user-id="userStore.userId || ''"
+                            :created-at="formatUserTime(userStore.user?.created_at)"
+                            :last-login="formatUserTime(userStore.user?.last_login)"
+                            @update:profileName="profileName = $event"
+                            @open-avatar-picker="openAvatarPicker"
+                            @save-profile="saveProfile"
+                        />
 
-                        <SettingCard title="账号概览" description="账号使用情况统计">
-                            <SettingRow label="创建时间">
-                                <span class="settings-field" style="min-width:160px;">{{ formatUserTime(userStore.user?.created_at) }}</span>
-                            </SettingRow>
-                            <SettingRow label="最后登录">
-                                <span class="settings-field" style="min-width:160px;">{{ formatUserTime(userStore.user?.last_login) }}</span>
-                            </SettingRow>
-                        </SettingCard>
+                        <!-- 头像文件输入（保留在父级，复用原有 ref 与 change 逻辑） -->
+                        <input ref="avatarFileInput" type="file" accept="image/*" style="display:none" @change="handleAvatarFile" />
                     </template>
 
                     <!-- 偏好设置 -->
@@ -172,8 +141,6 @@
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import Modal from '@/ui/Modal.vue'
-    import SettingCard from '@/ui/settings/SettingCard.vue'
-    import SettingRow from '@/ui/settings/SettingRow.vue'
     import SettingsNav, { type SettingsNavGroup } from '@/ui/settings/SettingsNav.vue'
     import SettingsPageHeader from '@/ui/settings/SettingsPageHeader.vue'
 
@@ -191,6 +158,7 @@
     import SkillsPanel from './SkillsPanel.vue'
     import UserApiKeysPanel from './UserApiKeysPanel.vue'
     import UserStatsPanel from './UserStatsPanel.vue'
+    import AccountPanel from './settings/AccountPanel.vue'
 
     const emit = defineEmits<{
         close: []
@@ -255,17 +223,19 @@
     const profileName = ref('')
 
     /** 头像背景(优先展示暂存裁切图,其次当前头像;background-cover 杜绝 img 溢出) */
-    const avatarBackground = computed(() => {
+    const avatarBackground = computed<Record<string, string>>(() => {
         const src = pendingAvatarBase64.value || userStore.avatarUrl
 
-        return src
-            ? {
-                  backgroundImage: `url("${src}")`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
-                  backgroundRepeat: 'no-repeat',
-              }
-            : {}
+        if (!src) {
+            return {} as Record<string, string>
+        }
+
+        return {
+            backgroundImage: `url("${src}")`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+        } as Record<string, string>
     })
 
     /** 是否管理员(对齐原版 checkUserRole:管理员显示 admin 入口) */
