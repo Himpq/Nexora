@@ -845,7 +845,7 @@
   z-index: 1201;
 }#filePanel{
   z-index: 1202;
-}.k-header{ padding: 20px; border-bottom: 1px solid var(--color-border); display: flex; justify-content: space-between; align-items: center; }.k-header h3{ font-size: 14px; font-weight: 600; margin: 0; }.k-actions{ display: flex; gap: 5px; }.k-content{ flex: 1; overflow-y: auto; padding: 20px; padding-right: 0; padding-left: 15px;}.k-section{ margin-bottom: 25px; }.k-section-title{ font-size: 11px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 10px; display: flex; justify-content: space-between; }.badge{ background: var(--color-bg-sunken); padding: 2px 6px; border-radius: 10px; color: var(--color-text-primary); }.k-list{ font-size: 13px; color: var(--color-text-secondary); }#knowledgeViewer{
+}#knowledgeViewer{
   position: relative;
 }.k-section.short-collapsed .k-list{
   max-height: 0;
@@ -923,14 +923,6 @@
 }#filePanel .k-section-title,.cloud-file-main,.cloud-file-name,.cloud-file-meta,.cloud-file-empty,.file-center-head h1,.file-center-count-line,.file-center-sort-trigger #fileCenterSortLabel,.file-center-upload-btn span,.file-center-list,.file-center-card,.file-center-card-name,.file-center-empty{
     -webkit-user-select: none;
     user-select: none;
-}.file-center-view{
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    background: var(--color-bg-elevated);
-    color: var(--color-text-primary);
-    box-sizing: border-box;
-    padding: 42px 40px 58px;
 }/* 拖拽文件悬停高亮：虚线内描边 + 淡蓝底色，提示松手即打开上传小窗 */.file-center-view.file-drop-active{
     outline: 2px dashed #2563eb;
     outline-offset: -6px;
@@ -1002,11 +994,7 @@
     color: #ffffff;
 }.file-center-upload-action.primary:hover{
     background: #0f172a;
-}@media (max-width: 1180px){.file-center-view{
-        padding: 32px 24px 56px;
-    }}@media (max-width: 720px){.file-center-view{
-        padding: 28px 16px 42px;
-    }.file-center-search,.file-center-sort-trigger{
+}@media (max-width: 720px){.file-center-search,.file-center-sort-trigger{
         width: 100%;
         min-width: 0;
         height: 38px;
