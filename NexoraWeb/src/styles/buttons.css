@@ -153,6 +153,16 @@
     background: var(--color-bg-sunken);
 }
 
+.btn-action.btn-del:hover {
+    color: #ff4d4f;
+    background: var(--color-danger-surface);
+}
+
+.btn-action.is-editing {
+    color: var(--color-text-primary);
+    background: #e6f4ff;
+}
+
 .btn-compact {
     height: 30px;
     padding: 0 12px;
