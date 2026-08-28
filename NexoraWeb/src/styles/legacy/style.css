@@ -344,22 +344,6 @@
     overflow-wrap: anywhere;
 }.tool-usage.expanded .tool-output{
     display: block;
-}.generate-image-progress-item.current{
-    border-color: var(--color-success-border);
-    background: var(--color-success-surface);
-    color: var(--color-success-text);
-}.tool-usage.context-compression-card .tool-badge{
-    background: #eef4ff;
-    border-color: #c7d7ff;
-    color: #1e3a8a;
-}.tool-usage.context-compression-card .tool-status{
-    color: var(--color-accent-text);
-}.tool-usage.context-compression-card.done .tool-badge{
-    background: #ecfdf3;
-    border-color: #b7e4c7;
-    color: #0f5132;
-}.tool-usage.context-compression-card.done .tool-status{
-    color: #0f766e;
 }.tool-canvas-card.error{
     border-color: var(--color-danger-border);
     background: var(--color-danger-surface);
@@ -409,30 +393,6 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }.input-wrapper.input-wrapper-collapsed .input-collapse-btn:hover{
     background: var(--color-bg-sunken);
-}.input-container{
-    width: 100%;
-    max-width: var(--input-container-max-width, 800px);
-    max-height: 320px;
-    margin: 0 auto;
-    border: 1px solid var(--border-input);
-    border-radius: 12px;
-    padding: 12px 16px;
-    overflow: hidden;
-    background: var(--color-bg-elevated);
-    box-shadow: 0 5px 20px rgba(0,0,0,0.03);
-    box-sizing: border-box;
-    transition:
-        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
-        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
-        border-color 0.2s,
-        box-shadow 0.2s,
-        padding 0.32s ease;
-}.input-container:focus-within{
-    border-color: var(--color-border-strong);
-    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
-}.input-container.file-drop-active{
-    border-color: var(--color-accent-text);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), 0 5px 20px rgba(0,0,0,0.08);
 }.input-options{
     display: flex;
     gap: 15px;

@@ -6,6 +6,37 @@
  * 使收起动画独立于旧页面。
  */
 
+/* Input card base： legacy 手写优化迁移，圆角卡片 + 悬浮阴影 */
+.input-container {
+    width: 100%;
+    max-width: var(--input-container-max-width, 800px);
+    max-height: 320px;
+    margin: 0 auto;
+    border: 1px solid var(--border-input);
+    border-radius: 12px;
+    padding: 12px 16px;
+    overflow: hidden;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.03);
+    box-sizing: border-box;
+    transition:
+        max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        max-height 0.36s cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 0.2s,
+        box-shadow 0.2s,
+        padding 0.32s ease;
+}
+
+.input-container:focus-within {
+    border-color: var(--color-border-strong);
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08);
+}
+
+.input-container.file-drop-active {
+    border-color: var(--color-accent-text);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), 0 5px 20px rgba(0, 0, 0, 0.08);
+}
+
 #nexora-app .input-dock {
     width: 100%;
 }

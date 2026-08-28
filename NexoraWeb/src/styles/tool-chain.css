@@ -413,6 +413,32 @@
     font-family: inherit;
 }
 
+.generate-image-progress-item.current {
+    border-color: var(--color-success-border);
+    background: var(--color-success-surface);
+    color: var(--color-success-text);
+}
+
+.tool-usage.context-compression-card .tool-badge {
+    background: #eef4ff;
+    border-color: #c7d7ff;
+    color: #1e3a8a;
+}
+
+.tool-usage.context-compression-card .tool-status {
+    color: var(--color-accent-text);
+}
+
+.tool-usage.context-compression-card.done .tool-badge {
+    background: #ecfdf3;
+    border-color: #b7e4c7;
+    color: #0f5132;
+}
+
+.tool-usage.context-compression-card.done .tool-status {
+    color: #0f766e;
+}
+
 /* 节点配色按工具分类(对齐原版 data-flow-kind 规则) */
 .message-content .tool-usage.execution-flow-item[data-flow-kind="file"] .execution-flow-node,
 .message-content .tool-usage.execution-flow-item[data-flow-kind="shell"] .execution-flow-node,
