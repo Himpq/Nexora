@@ -57,16 +57,18 @@
     display: none;
 }
 
-/* 头部网格:节点 | 标题 | 状态 | 展开箭头(工具/思考共用) */
+/* 头部网格:节点 | 标题 | 状态 | 展开箭头(工具/思考共用)
+ * - margin-left 16px 对齐正文 markdown-body 左缩进，修复 Batch3 后贴边
+ */
 .message-content .execution-flow-header {
     display: grid;
     grid-template-columns: 10px minmax(0, 1fr) auto 14px;
     align-items: center;
     gap: 10px;
     min-height: 26px;
-    width: 100%;
+    width: calc(100% - 16px);
+    margin-left: 16px;
     padding: 1px 8px 1px 0;
-    margin: 0;
     border: 0;
     background: transparent;
     color: var(--color-text-secondary);

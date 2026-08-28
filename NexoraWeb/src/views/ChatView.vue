@@ -787,6 +787,9 @@
             }
         }
 
+        // 发送即清空附件条（乐观更新，对齐原版 uploadedFileIds = [] 即时清理）
+        pendingAttachments.value = []
+
         await doSend(content, options, attachments)
     }
 
