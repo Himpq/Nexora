@@ -827,7 +827,7 @@
         // 发送即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
         resumeBottomFollow()
 
-        conversationStore.beginStream(content)
+        conversationStore.beginStream(content, attachments)
 
         const accepted = await chatStream.send({
             message: content,

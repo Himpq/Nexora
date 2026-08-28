@@ -445,8 +445,8 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
-        /** 发送前占位:追加用户消息并创建空的助手消息 */
-        beginStream(userContent: string): void {
+        /** 发送前占位:追加用户消息并创建空的助手消息(对齐原版 appendUserMessageWithAttachments) */
+        beginStream(userContent: string, attachments: AttachmentInput[] = []): void {
             // 新消息索引基于最后一条已有消息的后端索引递增,避免与分页加载的索引错位
             const lastIndex = this.messages.length > 0
                 ? Number(this.messages[this.messages.length - 1].index)
@@ -457,6 +457,21 @@ export const useConversationStore = defineStore('conversation', {
                 index: nextIndex,
                 role: 'user',
                 content: userContent,
+                // 附件乐观展示：ChatView 已按沙箱路径快照，MessageItem 通过 metadata.attachments 渲染
+                ...(attachments.length > 0 ? {
+                    metadata: {
+                        attachments: attachments.map((att) => ({
+                            type: att.type || 'sandbox_file',
+                            name: att.name || att.original_name || 'attachment',
+                            mime: '',
+                            url: att.sandbox_path ? `/api/files/download?file_ref=${encodeURIComponent(att.sandbox_path)}&inline=1` : '',
+                            asset_url: att.sandbox_path ? `/api/files/download?file_ref=${encodeURIComponent(att.sandbox_path)}&inline=1` : '',
+                            sandbox_path: att.sandbox_path || '',
+                            stored_path: att.stored_path || '',
+                            size: att.size,
+                        })),
+                    },
+                } : {}),
             }
 
             // pending 驱动回复气泡尾部闪烁 ●(思考/等待首 token 动画,见 legacy style.css
