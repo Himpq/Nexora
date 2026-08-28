@@ -44,7 +44,13 @@
             class="input-wrapper"
             :class="{ 'input-wrapper-collapsed': inputWrapperCollapsed }"
         >
-            <div class="input-container" :class="{ 'input-collapsed': inputContainerCollapsed, 'tools-mode-menu-open': toolsMenuOpen }">
+            <div
+                class="input-container"
+                :class="{ 'input-collapsed': inputContainerCollapsed, 'tools-mode-menu-open': toolsMenuOpen, 'file-drop-active': isDragOver }"
+                @dragover.prevent="handleDragOver"
+                @dragleave="handleDragLeave"
+                @drop.prevent="handleDrop"
+            >
                 <div class="input-options">
                     <div class="input-options-tools">
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
@@ -542,6 +548,66 @@
 
     /** 直选上传进行中(防重入,按钮置灰) */
     const uploadingFiles = ref(false)
+
+    /** 拖拽悬停高亮(对齐原版 input-container.file-drop-active) */
+    const isDragOver = ref(false)
+
+    function handleDragOver(): void {
+        isDragOver.value = true
+    }
+
+    function handleDragLeave(event: DragEvent): void {
+        // 仅当离开容器本身时清除，避免子元素间移动触发闪烁
+        const related = event.relatedTarget as HTMLElement | null
+
+        if (!related || !(event.currentTarget as HTMLElement).contains(related)) {
+            isDragOver.value = false
+        }
+    }
+
+    async function handleDrop(event: DragEvent): Promise<void> {
+        isDragOver.value = false
+
+        const files = Array.from(event.dataTransfer?.files || [])
+
+        if (!files.length || uploadingFiles.value) {
+            return
+        }
+
+        uploadingFiles.value = true
+
+        try {
+            const uploaded: AttachmentInput[] = []
+
+            for (const file of files) {
+                const result = await uploadFile(file)
+                const sandboxPath = String(result.sandbox_path || '').trim()
+
+                if (!sandboxPath) {
+                    throw new Error(`${file.name} 上传结果缺少文件路径`)
+                }
+
+                const displayName = String(result.original_name || file.name)
+
+                uploaded.push({
+                    type: 'sandbox_file',
+                    name: displayName,
+                    original_name: displayName,
+                    sandbox_path: sandboxPath,
+                    stored_path: String(result.stored_path || sandboxPath),
+                    size: Number(result.size || file.size || 0),
+                })
+            }
+
+            emit('files-uploaded', uploaded)
+
+            showToast(`已附加 ${uploaded.length} 个文件`, 'success')
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : '上传失败', 'error')
+        } finally {
+            uploadingFiles.value = false
+        }
+    }
 
     /**
      * 输入区直选文件上传(对齐原版 fileInput → uploadSingleFileWithProgress):
