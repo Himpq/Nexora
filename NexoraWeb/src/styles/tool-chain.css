@@ -415,6 +415,31 @@
     font-family: inherit;
 }
 
+/* Tool usage old base： legacy 手写优化迁移，保留非 execution-flow 的内联 badge 形态 */
+.tool-usage {
+    margin: 8px 0;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+}
+
+.tool-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--color-bg-sunken);
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.tool-usage:not(.has-output) .tool-badge {
+    cursor: default;
+}
+
 .generate-image-progress-item.current {
     border-color: var(--color-success-border);
     background: var(--color-success-surface);

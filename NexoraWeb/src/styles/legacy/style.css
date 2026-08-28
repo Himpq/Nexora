@@ -297,22 +297,6 @@
     margin-left: auto;
     transition: transform 0.2s;
     opacity: 0.5;
-}/* Tool Usage */.tool-usage{
-    margin: 8px 0;
-    font-size: 13px;
-    color: var(--color-text-secondary);
-}.tool-badge{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--color-bg-sunken);
-    padding: 4px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--color-border);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    cursor: pointer;
-    user-select: none;
 }.tool-usage:not(.has-output) .tool-badge{
     cursor: default;
 }.tool-status{ color: var(--color-text-secondary); font-size: 11px; margin-left: 4px; }.tool-toggle{
@@ -393,29 +377,6 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }.input-wrapper.input-wrapper-collapsed .input-collapse-btn:hover{
     background: var(--color-bg-sunken);
-}.input-options{
-    display: flex;
-    gap: 15px;
-    margin-bottom: 10px;
-    border-bottom: 1px solid var(--color-border);
-    padding-bottom: 8px;
-    user-select: none;
-    transition: margin 0.26s ease, padding 0.26s ease, border-color 0.26s ease;
-}/* 工具项容器：max-height 过渡实现展开/收起动画（原 grid 0fr 在部分场景下高度未归零） */.input-options-tools{
-    flex: 1;
-    min-width: 0;
-    max-height: 48px;
-    opacity: 1;
-    transform: translateY(0);
-    overflow: hidden;
-    transition: max-height 0.32s ease-in-out, opacity 0.2s ease, transform 0.32s ease-in-out;
-}.input-options-tools-inner{
-    display: flex;
-    gap: 15px;
-    align-items: center;
-    overflow: hidden;
-    min-width: 0;
-    min-height: 0;
 }.input-container.tools-mode-menu-open,.input-options-tools-inner.tools-mode-menu-open{
     overflow: visible;
 }/* 输入容器向下收起：保留右上角按钮，其余内容向下滑出并被容器裁剪 */#messageInput,.input-footer,.file-preview-area,.upload-progress-chip{
