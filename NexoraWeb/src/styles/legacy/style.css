@@ -642,20 +642,6 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}.token-budget-ring{
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  position: relative;
-  background: conic-gradient(var(--tb-color) var(--tb-angle), #e5e7eb 0deg);
-  border: 1px solid #d4dce7;
-  box-sizing: border-box;
-}.token-budget-ring::after{
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border-radius: 50%;
-  background: var(--color-bg-elevated);
 }.token-budget-mini.context-enabled .token-budget-context-toggle{
   background: var(--tb-color);
   border-color: var(--tb-color);

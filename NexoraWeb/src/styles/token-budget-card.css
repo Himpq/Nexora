@@ -120,3 +120,22 @@
 .token-budget-card-action:hover {
     background: var(--color-bg-hover);
 }
+
+/* Ring： legacy 手写优化迁移，conic-gradient token 化，去除硬编码灰白边 */
+.token-budget-ring {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    position: relative;
+    background: conic-gradient(var(--tb-color) var(--tb-angle), var(--color-bg-hover) 0deg);
+    border: 1px solid var(--color-border);
+    box-sizing: border-box;
+}
+
+.token-budget-ring::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--color-bg-elevated);
+}
