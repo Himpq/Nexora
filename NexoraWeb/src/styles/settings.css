@@ -2349,40 +2349,6 @@
     margin-top: 16px;
 }
 
-/* ==================== 阶段收尾 settings-* 残余自 legacy/style.css 收编 ==================== */
-
-.settings-mode-toggle{
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px;
-  border-radius: 999px;
-  background: transparent;
-}
-.settings-mode-toggle-btn{
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 8px 16px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
-}
-.settings-mode-toggle-btn:hover{
-  color: var(--color-text-primary);
-}
-.settings-mode-toggle-btn.active{
-  background: #0f172a;
-  color: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
-}
-.settings-mode-toggle-btn:disabled{
-  opacity: 0.65;
-  cursor: default;
-}
 .settings-help-text{
   margin-top: 10px;
   color: var(--color-text-secondary);
