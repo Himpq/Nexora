@@ -20,7 +20,7 @@
             ref="triggerRef"
             type="button"
             class="setting-select-trigger"
-            :class="{ open: open }"
+            :class="{ open: open, 'is-compact': size === 'compact' }"
             :aria-expanded="open"
             @click.stop="toggle"
         >
@@ -99,9 +99,12 @@
         popoverKey?: string
         /** 展开方向：auto 自动、top 向上、bottom 向下（输入框工具选择器需固定向上） */
         placement?: 'auto' | 'top' | 'bottom'
+        /** 尺寸：跟随 gddp-button 的 default/compact，保持页头按钮与下拉同高 */
+        size?: 'default' | 'compact'
     }>(), {
         popoverKey: undefined,
         placement: 'auto',
+        size: 'default',
     })
 
     /** 未显式传入 popoverKey 时按实例自增,避免同一面板内多下拉共用同一 key 导致联动弹出 */
