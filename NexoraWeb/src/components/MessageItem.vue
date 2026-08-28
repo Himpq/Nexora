@@ -1206,7 +1206,11 @@
             }
 
             const record = entry as Record<string, unknown>
-            const url = String(record.asset_url || record.url || '').trim()
+            // 兼容旧会话：仅有 sandbox_path / stored_path 时即时合成下载链接（对齐原版旧数据）
+            const sandbox = String(record.sandbox_path || record.stored_path || '').trim()
+            const url = String(
+                record.asset_url || record.url || (sandbox ? `/api/files/download?file_ref=${encodeURIComponent(sandbox)}&inline=1` : '')
+            ).trim()
 
             if (!url) {
                 return
@@ -1225,14 +1229,20 @@
         return list
     })
 
-    /** 图片附件:type 为 image/image_url 或 mime 以 image/ 开头(对齐原版过滤) */
+    /** 图片附件:type 为 image/image_url 或 mime 以 image/ 开头，兼容旧 sandbox_file 按扩展名判断(对齐原版缩略图) */
     const imageAttachments = computed(() => {
         return attachments.value.filter((att) => {
             if (att.type === 'image' || att.type === 'image_url') {
                 return true
             }
 
-            return (att.mime || '').startsWith('image/')
+            if ((att.mime || '').startsWith('image/')) {
+                return true
+            }
+
+            const name = String(att.name || att.sandbox_path || '').toLowerCase()
+
+            return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)
         })
     })
 
