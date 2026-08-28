@@ -290,6 +290,129 @@
     margin-bottom: 0;
 }
 
+/* Tool markdown fallback： legacy 手写优化迁移，旧 .tool-output-markdown 未走 execution-flow 时的排版
+ * - h1-h4 逐级 16→13px，mono code 令牌化，表格 fixed 布局
+ */
+.tool-output.tool-output-markdown {
+    display: none;
+    max-height: 360px;
+    white-space: normal;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.58;
+    color: var(--color-text-secondary);
+    overflow-x: hidden;
+    overflow-y: auto;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.tool-usage.expanded .tool-output.tool-output-markdown {
+    display: flow-root;
+}
+
+.tool-output-markdown > :first-child {
+    margin-top: 0;
+}
+
+.tool-output-markdown > :last-child {
+    margin-bottom: 0;
+}
+
+.tool-output-markdown h1,
+.tool-output-markdown h2,
+.tool-output-markdown h3,
+.tool-output-markdown h4 {
+    margin: 0.85em 0 0.45em;
+    color: var(--color-text-secondary);
+    font-weight: 700;
+    line-height: 1.3;
+}
+
+.tool-output-markdown h1 { font-size: 16px; }
+.tool-output-markdown h2 { font-size: 15px; }
+.tool-output-markdown h3 { font-size: 14px; }
+.tool-output-markdown h4 { font-size: 13px; }
+
+.tool-output-markdown p,
+.tool-output-markdown ul,
+.tool-output-markdown ol {
+    margin: 0.45em 0;
+}
+
+.tool-output-markdown pre {
+    display: block;
+    max-width: 100%;
+    margin: 0.65em 0;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-bg-sunken);
+}
+
+.tool-output-markdown pre code {
+    display: block;
+    max-width: 100%;
+    padding: 9px 10px;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.tool-output-markdown :not(pre) > code {
+    font-family: var(--font-mono);
+    background: var(--color-bg-hover);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    border-radius: 5px;
+    padding: 0.05em 0.3em;
+    font-size: 0.92em;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.tool-output-markdown table {
+    display: table;
+    width: 100%;
+    max-width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    margin: 0.65em 0;
+    white-space: normal;
+}
+
+.tool-output-markdown th,
+.tool-output-markdown td {
+    border: 1px solid var(--color-border);
+    padding: 5px 7px;
+    text-align: left;
+    vertical-align: top;
+    line-height: 1.45;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.tool-output-markdown th {
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
+    font-weight: 700;
+}
+
+.tool-output.generate-image-tool-output {
+    max-height: none;
+    overflow-y: visible;
+    white-space: normal;
+    font-family: inherit;
+}
+
 /* 节点配色按工具分类(对齐原版 data-flow-kind 规则) */
 .message-content .tool-usage.execution-flow-item[data-flow-kind="file"] .execution-flow-node,
 .message-content .tool-usage.execution-flow-item[data-flow-kind="shell"] .execution-flow-node,
