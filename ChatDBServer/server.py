@@ -8977,6 +8977,15 @@ def get_user_preferences():
                 if memory_update_model in _get_user_model_blacklist(username):
                     return jsonify({'success': False, 'message': '当前用户不可使用该记忆更新模型'}), 403
 
+            # learning_runtime 为用户级 Learning 入口开关({enabled: bool});管理端运行时配置经顶层 learning_runtime 下发,不落用户偏好
+            learning_runtime_payload = payload.get('learning_runtime')
+
+            if learning_runtime_payload is not None:
+                if not isinstance(learning_runtime_payload, dict) or not isinstance(learning_runtime_payload.get('enabled'), bool):
+                    return jsonify({'success': False, 'message': 'learning_runtime 配置格式不正确'}), 400
+
+                updates['learning_runtime'] = {'enabled': learning_runtime_payload['enabled']}
+
             quota_payload = payload.get('quota')
             if isinstance(quota_payload, dict):
                 updates['quota'] = quota_payload

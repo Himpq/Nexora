@@ -23,7 +23,7 @@
         </SettingCard>
 
         <SettingCard title="学习模式" description="学习模式开关与默认视图">
-            <SettingRow label="NexoraLearning 服务" hint="服务端门控:关闭后 Learning 功能不可用">
+            <SettingRow label="NexoraLearning 服务" hint="关闭后隐藏当前账号的 Learning 入口(管理端服务地址在系统配置中维护)">
                 <div class="settings-mode-toggle" role="tablist" aria-label="NexoraLearning 服务">
                     <button
                         class="settings-mode-toggle-btn"

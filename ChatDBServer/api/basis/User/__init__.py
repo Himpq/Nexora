@@ -1534,6 +1534,9 @@ class User:
             if "memory_update_model" in updates:
                 prefs["memory_update_model"] = str(updates.get("memory_update_model") or "").strip()
 
+            if "learning_runtime" in updates and isinstance(updates.get("learning_runtime"), dict):
+                prefs["learning_runtime"] = {"enabled": bool(updates["learning_runtime"].get("enabled", True))}
+
             quota_updates = updates.get("quota") if isinstance(updates.get("quota"), dict) else {}
             if quota_updates:
                 quota_payload = dict(prefs.get("quota", {}))

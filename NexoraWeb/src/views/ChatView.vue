@@ -312,7 +312,7 @@
     import type { WorkspaceConversationOpenMeta } from '@/components/workspaces/workspaceContext'
 
     import { addWorkspaceConversation, fetchSharedWorkspaceConversation } from '@/api/workspaces'
-    import { fetchUserPreferences } from '@/api/preferences'
+    import { fetchUserPreferencesPayload } from '@/api/preferences'
     import type { LearningHostEnvelope } from '@/bridge/learningBridge'
 
     const conversationStore = useConversationStore()
@@ -511,12 +511,14 @@
 
     async function refreshLearningPreference(): Promise<void> {
         try {
-            const prefs = await fetchUserPreferences()
-            if (!prefs) return
-            const runtime = prefs.learning_runtime as { enabled?: boolean; frontend_url?: string } | undefined
-            const enabled = runtime && typeof runtime === 'object' ? runtime.enabled !== false : true
-            learningEnabled.value = enabled
-            const url = runtime && typeof runtime === 'object' ? String(runtime.frontend_url || '').trim() : ''
+            const payload = await fetchUserPreferencesPayload()
+
+            // 管理端全局门控与用户个人开关任一关闭,均隐藏 Learning 入口
+            const globalEnabled = payload.learning_runtime?.enabled !== false
+            const userEnabled = payload.preferences.learning_runtime?.enabled !== false
+            learningEnabled.value = globalEnabled && userEnabled
+
+            const url = String(payload.learning_runtime?.frontend_url || '').trim()
             if (url) learningFrontendUrl.value = url
         } catch {
             // 偏好不可达不阻断主流程
