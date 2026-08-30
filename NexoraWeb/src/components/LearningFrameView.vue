@@ -184,13 +184,13 @@ defineExpose({ postCommand, postLayoutState })
 </script>
 
 <style scoped>
+/*
+ * 布局契约沿用 .gddp-content-view(absolute inset:0),此处严禁覆盖 position:
+ * scoped 选择器特异性更高,一旦写 position:relative 会把本节拉回文档流,
+ * 高度链断裂,iframe 的 height:100% 退化为替换元素默认高度(约150px)。
+ * 仅覆盖背景:iframe 应用固定白底,不随暗色令牌变化。
+ */
 .learning-frame-view {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
     background: #ffffff;
 }
 

@@ -14,7 +14,11 @@
   border-right: 1px solid transparent;
   box-shadow: none;
   flex-shrink: 0;
-  /* 强制独立合成层：width 动画不再触发布局树重算 */
+  /*
+   * 独立合成层只隔离绘制,隔离不了布局:width 是布局属性,过渡期间每帧都会
+   * 重排 .app-container 行与侧栏子树,这一点无法用 will-change 消除。
+   * 若要彻底免布局,需改为 transform 位移方案(见 Learning 切换掉帧分析)。
+   */
   will-change: width;
   transform: translateZ(0);
   backface-visibility: hidden;
@@ -215,7 +219,8 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
   scrollbar-width: thin;
   scrollbar-color: #2f2f2f transparent;
   background: var(--bg-sidebar);
-  /* 隔离滚动容器，避免 width 动画期间整列重排；重绘隔离即可，content-visibility 会额外触发尺寸估算反而掉帧 */
+  /* 绘制隔离:列表滚动/重绘不外溢到侧栏合成层。注意 contain:paint 不阻止
+     子元素随宽度变化重排,布局开销须从动画方案上解决(见 .sidebar 注释) */
   contain: paint;
 }
 
