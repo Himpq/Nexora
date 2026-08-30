@@ -36,7 +36,7 @@
                     :aria-pressed="brandMode === 'learning' ? 'true' : 'false'"
                     @click="handleBrandClick('learning')"
                 >
-                    <span class="sidebar-brand-learning-text"><i class="fa-solid fa-graduation-cap" aria-hidden="true" style="margin-right:6px"></i>Learning</span>
+                    <span class="sidebar-brand-learning-text">Learning</span>
                 </button>
                 <button
                     v-show="courseAvailable && brandMode !== 'nexora'"
@@ -76,7 +76,7 @@
                         <span>New Chat</span>
                     </template>
                 </button>
-                <template v-if="!isLearningMode">
+                <template v-if="!isLearningMode && !courseModeOn">
                     <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
                         <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
                         <span>Workspaces</span>
@@ -216,7 +216,7 @@
             </div>
         </div>
 
-        <div v-show="!isLearningMode" class="sidebar-content" id="conversationList">
+        <div v-show="!isLearningMode && !courseModeOn" class="sidebar-content" id="conversationList">
             <div
                 v-for="row in store.branchRows"
                 :key="row.conversation.id"
@@ -676,8 +676,9 @@
     const showNexoraTab = computed(() => brandMode.value !== 'workspace')
 
     // ── 课程 Workspace 接管(对齐原版 learningCourseWorkspacePanel) ──
+    // 接管态由 brandMode==='workspace' 表达(宿主在 learningOpen+课程激活时切换),不能再判 isLearningMode
     const courseAvailable = computed(() => !!props.courseWorkspace?.available)
-    const courseModeOn = computed(() => isLearningMode.value && !!props.courseWorkspace?.on)
+    const courseModeOn = computed(() => brandMode.value === 'workspace' && !!props.courseWorkspace?.on)
 
     /** 功能区图标(对齐原版 WORKSPACE_NAV_ICONS:feather 风格描边 SVG,严禁符号/emoji 替代) */
     const COURSE_NAV_ICONS: Record<string, string> = {

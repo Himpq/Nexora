@@ -260,7 +260,7 @@ body.learning-workspace-active{
   --learning-sidebar-border: #e1e5ea;
   --learning-sidebar-text: #20242c;
   --learning-sidebar-muted: #6b7280;
-  --learning-sidebar-accent: #3f4654;
+  --learning-sidebar-accent: #1d4ed8;
 }
 
 /*
@@ -1644,6 +1644,16 @@ body.learning-course-workspace-active .sidebar-brand-learning-text{
   font-weight: 600;
   letter-spacing: 0;
 }
+body.learning-course-workspace-active .sidebar-header{
+  padding: 16px 14px;
+}
+
+/* 面板容器(对齐原版 learning-course-workspace-panel 基础规则) */
+.learning-course-workspace-panel{
+  padding: 12px 14px 16px;
+  overflow: auto;
+  color: var(--learning-sidebar-text, #20242c);
+}
 
 /* 功能区竖排导航(iframe tabs 渲染,点击 switch-tab 回发) */
 .course-workspace-shell{
@@ -1695,6 +1705,16 @@ body.learning-course-workspace-active .sidebar-brand-learning-text{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 窄屏下课程侧栏保持可用(对齐原版 max-width:768px 规则) */
+@media (max-width: 768px){
+  body.learning-course-workspace-active .sidebar{
+    width: min(88vw, 420px);
+  }
+  .learning-course-workspace-panel{
+    padding: 10px 12px 14px;
+  }
 }
 
 @keyframes spin{ 100% { transform: rotate(360deg); } }
