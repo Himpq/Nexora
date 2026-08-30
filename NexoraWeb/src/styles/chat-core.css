@@ -31,7 +31,13 @@
 }
 
 body.learning-workspace-active .sidebar{
-  width: var(--sidebar-width-learning);
+  /*
+   * 原版路线(learning_mode.css:211):学习列表模式侧栏保持原宽,切换零布局动画,仅颜色过渡。
+   * 原版只有 course-workspace/conversation 子模式才放宽到 --sidebar-width-learning,
+   * Vue 版对应子模式落地前不得在基础 learning-workspace-active 上放宽,否则
+   * 每次切换都会触发 260px→clamp(400px,28vw,520px) 的逐帧布局动画导致掉帧。
+   */
+  width: var(--sidebar-width-normal);
   background-color: var(--learning-sidebar-bg);
   color: var(--learning-sidebar-text);
   border-right-color: var(--learning-sidebar-border);
