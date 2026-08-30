@@ -83,8 +83,6 @@ def _normalize_learning_base_url(
         text = text[:-len("/api/frontend")]
     elif text.endswith("/api/runtime"):
         text = text[:-len("/api/runtime")]
-    elif text.endswith("/frontend"):
-        text = text[:-len("/frontend")]
     text = text.rstrip("/")
     if text:
         return text
@@ -96,8 +94,6 @@ def _normalize_learning_base_url(
             legacy_service_url = legacy_service_url[:-len("/api/frontend")]
         elif legacy_service_url.endswith("/api/runtime"):
             legacy_service_url = legacy_service_url[:-len("/api/runtime")]
-        elif legacy_service_url.endswith("/frontend"):
-            legacy_service_url = legacy_service_url[:-len("/frontend")]
         legacy_service_url = legacy_service_url.rstrip("/")
         if legacy_service_url:
             return legacy_service_url
@@ -131,12 +127,12 @@ def _derive_frontend_url(cfg: Optional[Mapping[str, Any]] = None) -> str:
 
 
 def _derive_learning_page_url(cfg: Optional[Mapping[str, Any]] = None) -> str:
-    """Learning 前端应用页面地址(供宿主 iframe 挂载),区别于 /api/frontend 接口基址。"""
-    branch = dict(cfg or _learning_cfg())
-    base = _normalize_learning_base_url(branch.get("frontend_url"))
-    if base:
-        return f"{base}/frontend/"
-    return "http://127.0.0.1:5001/frontend/"
+    """Learning 前端应用页面地址(供宿主 iframe 挂载)。
+
+    页面路由为蓝图 /frontend/(url_prefix=/api),实际路径 /api/frontend/,
+    与前端 API 同前缀,故在接口基址上补尾斜杠直连页面(index.html)。
+    """
+    return _derive_frontend_url(cfg) + "/"
 
 
 def _normalize_frontend_url(frontend_url: str, cfg: Optional[Mapping[str, Any]] = None) -> str:
@@ -146,8 +142,7 @@ def _normalize_frontend_url(frontend_url: str, cfg: Optional[Mapping[str, Any]] 
 def get_learning_runtime_local_config() -> Dict[str, Any]:
     """宿主(Web 端)挂载所需的本地运行时配置。
 
-    注意 frontend_url 在此处是 iframe 页面地址(/frontend/),
-    服务端调用 Learning API 请使用 _derive_frontend_url() 的接口基址。
+    frontend_url 即 iframe 页面地址(/api/frontend/,页面与 API 同前缀)。
     """
     cfg = _learning_cfg()
     return {
