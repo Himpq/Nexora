@@ -637,8 +637,8 @@
 
     // ── Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS + learning nav 分组) ──
 
-    /** 分组展开态(key → 是否展开);原版折叠态为 is-collapsed,caret 旋转 -90deg */
-    const openNavGroups = ref(new Set<string>(['push', 'questionBank']))
+    /** 分组展开态(key → 是否展开);原版默认 is-collapsed 折叠 */
+    const openNavGroups = ref(new Set<string>())
 
     function toggleNavGroup(key: string): void {
         const next = new Set(openNavGroups.value)

@@ -263,12 +263,17 @@ body.learning-workspace-active{
   --learning-sidebar-accent: #3f4654;
 }
 
-/* 面板容器与双视图滚动模式 */
-.learning-sidebar-panel{
-  display: flex;
-  flex-direction: column;
-  padding-top: 10px;
-  padding-bottom: 14px;
+/*
+ * 面板保持原版的块级滚动容器模型(原版无 .learning-sidebar-panel 基础规则,
+ * 即 .sidebar-content 的 display:block + overflow-y:auto):layout 子块自然长到
+ * 内容高度、由面板滚动。严禁给面板加 display:flex——flex 子项默认收缩会把
+ * 压缩沿布局链传导到每个会话项(border-box 下 13px 高,padding 名存实亡)。
+ * 列表/对话两种滚动模式由 is-list-mode / is-conversation-mode 切换。
+ */
+/* 原版 .sidebar-content 无背景(透出侧栏自身底色);learning 模式下跟随
+   learning-sidebar-bg 浅色,不取 --bg-sidebar 的暗色主题值 */
+body.learning-workspace-active .sidebar .sidebar-content{
+  background: transparent;
 }
 .learning-sidebar-panel.is-list-mode{
   overflow-y: auto;
