@@ -248,6 +248,21 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
 
 /* ── Learning 侧栏面板与功能区入口(样式移植自原版 learning_mode.css / style.css,类名一致) ── */
 
+/*
+ * 学习模式侧栏主题(对齐原版 learning_mode.css:201 的机制):learning 变量在
+ * learning 模式下强制回浅色,不随暗色主题翻转——原版全部面板样式即按该浅色
+ * 语境硬编码,tokens-color 的暗色翻转会让移植样式深字配深底不可读。
+ * 取值为 base.css 桥接区的现行浅色值,亮色模式外观不变。
+ */
+body.learning-workspace-active{
+  --learning-sidebar-bg: #f5f6f8;
+  --learning-sidebar-surface: #ffffff;
+  --learning-sidebar-border: #e1e5ea;
+  --learning-sidebar-text: #20242c;
+  --learning-sidebar-muted: #6b7280;
+  --learning-sidebar-accent: #3f4654;
+}
+
 /* 面板容器与双视图滚动模式 */
 .learning-sidebar-panel{
   display: flex;
