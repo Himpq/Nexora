@@ -9,9 +9,34 @@
 <template>
     <nav class="sidebar" id="sidebar" :class="{ collapsed }">
         <div class="sidebar-header">
-            <div class="sidebar-brand-tabs" id="sidebarBrandTabs">
-                <button type="button" class="sidebar-brand-tab active" data-sidebar-mode="nexora" aria-pressed="true">
+            <div
+                class="sidebar-brand-tabs"
+                id="sidebarBrandTabs"
+                :data-sidebar-brand-mode="brandMode"
+            >
+                <button
+                    v-show="showNexoraTab"
+                    id="sidebarBrandNexoraTab"
+                    type="button"
+                    class="sidebar-brand-tab"
+                    :class="{ active: brandMode === 'nexora' }"
+                    data-sidebar-mode="nexora"
+                    :aria-pressed="brandMode === 'nexora' ? 'true' : 'false'"
+                    @click="handleBrandClick('nexora')"
+                >
                     <span class="logo">Nexora<span class="dot"></span></span>
+                </button>
+                <button
+                    v-show="learningEnabled"
+                    id="sidebarBrandLearningTab"
+                    type="button"
+                    class="sidebar-brand-tab"
+                    :class="{ active: brandMode === 'learning' }"
+                    data-sidebar-mode="learning"
+                    :aria-pressed="brandMode === 'learning' ? 'true' : 'false'"
+                    @click="handleBrandClick('learning')"
+                >
+                    <span class="sidebar-brand-learning-text"><i class="fa-solid fa-graduation-cap" aria-hidden="true" style="margin-right:6px"></i>Learning</span>
                 </button>
             </div>
             <button class="btn-icon" id="toggleSidebarMobile" title="折叠侧边栏" @click="emit('toggle-mobile')">
@@ -184,11 +209,14 @@
         'open-knowledge-mgmt': []
         'open-trash': []
         'open-timeline': []
+        'open-learning': []
         'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
     const props = defineProps<{
         collapsed?: boolean
+        learningEnabled?: boolean
+        brandMode?: 'nexora' | 'learning' | 'workspace'
     }>()
 
     const router = useRouter()
@@ -344,6 +372,23 @@
         }
 
         contextMenuRef.value?.open(event.clientX, event.clientY)
+    }
+
+    /** 品牌栏状态：徽标切换与下划线细节（对齐原版 sidebar_brand_navigation.js） */
+    const learningEnabled = computed(() => props.learningEnabled ?? false)
+    const brandMode = computed<'nexora' | 'learning' | 'workspace'>(() => props.brandMode ?? 'nexora')
+    const showNexoraTab = computed(() => brandMode.value !== 'workspace')
+
+    function handleBrandClick(mode: 'nexora' | 'learning' | 'workspace'): void {
+        if (mode === 'learning' && !learningEnabled.value) return
+        if (mode === 'learning') {
+            emit('open-learning')
+            return
+        }
+        if (mode === 'nexora') {
+            emit('open-chat')
+            return
+        }
     }
 
     /** 会话右键菜单目标(坐标经 open(x, y) 传入,不进状态) */

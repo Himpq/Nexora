@@ -13,12 +13,15 @@
 
         <Sidebar
             :collapsed="sidebarCollapsed"
+            :learning-enabled="learningEnabled"
+            :brand-mode="sidebarBrandMode"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
-            @open-chat="backToChat"
+            @open-chat="handleOpenLearningChat"
             @open-workspaces="handleOpenWorkspaces"
             @open-files="handleOpenFileCenter"
             @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
+            @open-learning="handleOpenLearning"
             @open-trash="trashOpen = true"
             @open-timeline="timelineOpen = true"
             @view-branch-source="handleViewBranchSource"
@@ -195,6 +198,16 @@
                         @close="backToChat"
                     />
                 </div>
+
+                <LearningFrameView
+                    v-show="learningOpen"
+                    ref="learningFrameRef"
+                    :open="learningOpen"
+                    :frame-url="learningFrameUrl"
+                    :title="learningFrameTitle"
+                    @request-open-settings="settingsOpen = true"
+                    @host-message="handleLearningHostMessage"
+                />
             </div>
         </main>
 
@@ -265,6 +278,7 @@
     import { useBottomFollow } from '@/composables/useBottomFollow'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
+    import { useLearningViewSync } from '@/composables/useLearningViewSync'
     import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
 
     import ChatHeader from '@/components/ChatHeader.vue'
@@ -283,6 +297,7 @@
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
+    import LearningFrameView from '@/components/LearningFrameView.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
     import TimelinePanel from '@/components/TimelinePanel.vue'
@@ -297,6 +312,8 @@
     import type { WorkspaceConversationOpenMeta } from '@/components/workspaces/workspaceContext'
 
     import { addWorkspaceConversation, fetchSharedWorkspaceConversation } from '@/api/workspaces'
+    import { fetchUserPreferences } from '@/api/preferences'
+    import type { LearningHostEnvelope } from '@/bridge/learningBridge'
 
     const conversationStore = useConversationStore()
     const modelStore = useModelStore()
@@ -336,6 +353,8 @@
 
     // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
     useConversationUrlSync()
+    // Learning 视图 ↔ URL ?view=learning 同步（与 cid 互不干扰）
+    useLearningViewSync()
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
@@ -478,10 +497,94 @@
     const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
     const knowledgeOpen = computed(() => overlay.view === 'knowledge')
     const mailCenterOpen = computed(() => overlay.view === 'mail')
+    const learningOpen = computed(() => overlay.view === 'learning')
     const knowledgeTitle = ref('')
 
+    // ── Learning 薄挂载状态（P0）──────────────────────
+    const learningFrameRef = ref<InstanceType<typeof LearningFrameView> | null>(null)
+    void learningFrameRef
+    const learningFrameTitle = ref('NexoraLearning')
+    const learningEnabled = ref(true)
+    const learningFrontendUrl = ref('')
+
+    const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
+
+    async function refreshLearningPreference(): Promise<void> {
+        try {
+            const prefs = await fetchUserPreferences()
+            if (!prefs) return
+            const runtime = prefs.learning_runtime as { enabled?: boolean; frontend_url?: string } | undefined
+            const enabled = runtime && typeof runtime === 'object' ? runtime.enabled !== false : true
+            learningEnabled.value = enabled
+            const url = runtime && typeof runtime === 'object' ? String(runtime.frontend_url || '').trim() : ''
+            if (url) learningFrontendUrl.value = url
+        } catch {
+            // 偏好不可达不阻断主流程
+        }
+    }
+
+    const sidebarBrandMode = computed<'nexora' | 'learning' | 'workspace'>(() => {
+        if (learningOpen.value) return 'learning'
+        return 'nexora'
+    })
+
+    // 合并 body class 写入到同一帧，避免两次样式重算；并在动画期间禁用 iframe 指针事件
+    function syncLearningBodyClass(): void {
+        const active = learningOpen.value
+        const enabled = learningEnabled.value
+        // 动画期间（220ms）让 iframe 不接收指针，减少合成层抖动
+        const frameEl = document.querySelector<HTMLIFrameElement>('.learning-frame')
+        if (frameEl && active) {
+            frameEl.style.pointerEvents = 'none'
+            window.setTimeout(() => { frameEl.style.pointerEvents = '' }, 260)
+        }
+        requestAnimationFrame(() => {
+            document.body.classList.toggle('learning-workspace-active', active)
+            document.body.classList.toggle('learning-mode-enabled', enabled)
+        })
+    }
+    watch([learningOpen, learningEnabled], syncLearningBodyClass, { immediate: true })
+
+    function handleOpenLearning(): void {
+        if (!learningEnabled.value) {
+            showToast('Learning 未启用，请在设置中开启', 'warning')
+            return
+        }
+        if (learningOpen.value) {
+            backToChat()
+            return
+        }
+        openView('learning')
+    }
+
+    function handleOpenLearningChat(): void {
+        if (learningOpen.value) {
+            backToChat()
+            return
+        }
+        backToChat()
+    }
+
+    function handleLearningHostMessage(message: LearningHostEnvelope): void {
+        if (message.type === 'state-snapshot') {
+            const title = String(message.title || '').trim()
+            if (title) learningFrameTitle.value = title
+            return
+        }
+        if (message.type === 'open-chat-conversation') {
+            const cid = String(message.conversation_id || '').trim()
+            if (cid) {
+                backToChat()
+                void conversationStore.openConversation(cid).catch((error: unknown) => {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                })
+            }
+            return
+        }
+    }
+
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'>(() => {
         return overlay.view || 'chat'
     })
 
@@ -521,6 +624,12 @@
     /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。
      *  Workspace 内容多级返回:共享只读对话 → 项目详情/首页 → 聊天 */
     function handleHeaderBack(): void {
+        // Learning 覆盖层：顶栏返回即回到聊天（与 Files/Workspaces 一致）
+        if (learningOpen.value) {
+            backToChat()
+            return
+        }
+
         // 文件详情:先从内容返回其来源视图(文件中心首页 / Workspaces 首页)
         if (filesCenterOpen.value && fileDetail.value !== null) {
             handleFileDetailBack()
@@ -1622,6 +1731,9 @@
     )
 
     onMounted(async () => {
+        // Learning 偏好预取（不阻塞主流程，决定侧栏品牌栏是否显示 Learning）
+        void refreshLearningPreference()
+
         // 会话列表与模型目录各自独立加载,单个失败不影响另一个
         try {
             await conversationStore.loadConversations()
