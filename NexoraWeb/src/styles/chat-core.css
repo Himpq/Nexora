@@ -13,8 +13,17 @@
   flex-direction: column;
   border-right: 1px solid transparent;
   box-shadow: none;
-  transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1), transform 0.24s ease, background-color 0.28s ease, color 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
   flex-shrink: 0;
+  /* 强制独立合成层：width 动画不再触发布局树重算 */
+  will-change: width;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: layout paint;
+  transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce){
+  .sidebar{ transition: none !important; }
 }
 
 body.learning-workspace-active .sidebar{
@@ -23,6 +32,8 @@ body.learning-workspace-active .sidebar{
   color: var(--learning-sidebar-text);
   border-right-color: var(--learning-sidebar-border);
   box-shadow: 1px 0 0 rgba(17, 24, 39, 0.04);
+  /* 颜色与宽度错峰：宽度先走，颜色延迟 40ms 后再过渡，避免同帧 layout+paint */
+  transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1), background-color 0.18s ease 0.04s, color 0.18s ease 0.04s, border-color 0.18s ease 0.04s;
 }
 
 body.learning-workspace-active .sidebar.collapsed{
@@ -62,6 +73,33 @@ body.learning-workspace-active .sidebar.collapsed{
 .sidebar-brand-tab[data-sidebar-mode="nexora"]{
   min-width: 92px;
   justify-content: flex-start;
+}
+
+/* 品牌栏 workspace 模式：双 tab 均分，避免切换时宽度跳动（对齐原版 sidebar_brand_navigation.css） */
+#sidebarBrandTabs[data-sidebar-brand-mode="workspace"]{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#sidebarBrandTabs[data-sidebar-brand-mode="workspace"] .sidebar-brand-tab{
+  width: 100%;
+  min-width: 0;
+  padding-bottom: 4px;
+  text-align: left;
+  white-space: nowrap;
+}
+#sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandNexoraTab,
+#sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab{
+  border-bottom-color: rgba(255,255,255,0.95);
+}
+#sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandLearningTab,
+#sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandNexoraTab{
+  border-bottom-color: transparent;
+}
+body.learning-workspace-active #sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab{
+  border-bottom-color: #20242c;
 }
 
 .sidebar-brand-tab.active{
@@ -177,6 +215,8 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
   scrollbar-width: thin;
   scrollbar-color: #2f2f2f transparent;
   background: var(--bg-sidebar);
+  /* 隔离滚动容器，避免 width 动画期间整列重排；重绘隔离即可，content-visibility 会额外触发尺寸估算反而掉帧 */
+  contain: paint;
 }
 
 .sidebar-content::-webkit-scrollbar{

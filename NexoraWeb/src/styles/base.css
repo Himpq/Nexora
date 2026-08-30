@@ -53,3 +53,45 @@ body{
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/*
+ * :root 变量桥接区(自 legacy/style.css 原样迁入,2026-08-28)
+ * 通用层变量指向 tokens-color.css 的语义令牌,暗色切换经令牌覆盖自动生效;
+ * 区域专属变量(侧边栏 / 学习模式侧栏)不桥接,暗色值由 tokens-color.css
+ * 的 legacy 过渡覆盖区按原版变量名提供。
+ */
+:root{
+  /*
+   * 变量桥接区(黑夜模式改造):
+   * 通用层变量指向 GDDP tokens-color.css 的语义令牌,暗色切换经令牌覆盖自动生效;
+   * 区域专属变量(侧边栏 / 学习模式侧栏)不桥接,暗色值由 tokens-color.css
+   * 的 legacy 过渡覆盖区按原版变量名提供。除本区外本文件保持视觉冻结。
+   */
+  --bg-sidebar: #050505;
+  --bg-sidebar-hover: #1a1a1a;
+  --bg-sidebar-active: #ffffff;
+  --text-sidebar: #a0a0a0;
+  --text-sidebar-active: #000000;
+
+  --bg-main: var(--color-bg-page);
+  --text-main: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+
+  --border-light: var(--color-border);
+  --border-input: var(--color-border-input);
+
+  --bg-user-msg: var(--color-bg-sunken);
+  --bg-ai-msg: var(--color-bg-page);
+  --sidebar-width-normal: 260px;
+  --sidebar-width-learning: clamp(400px, 28vw, 520px);
+  --sidebar-width-workspace: 200px;
+  --learning-sidebar-bg: #f5f6f8;
+  --learning-sidebar-surface: #ffffff;
+  --learning-sidebar-border: #e1e5ea;
+  --learning-sidebar-text: #20242c;
+  --learning-sidebar-muted: #6b7280;
+  --learning-sidebar-accent: #3f4654;
+
+  /* toast 通知必须始终浮于全站所有弹窗/小窗之上（设置小窗弹窗栈基线 20000，每层 +20） */
+  --z-toast: 40000;
+}

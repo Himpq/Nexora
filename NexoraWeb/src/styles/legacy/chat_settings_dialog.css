@@ -1,38 +1,7 @@
-/* Shared dialog and discrete expiry slider for settings management flows. */
-:root{
-    --settings-dialog-layer-base: 20000;
-}
-.settings-expiry-slider-current strong{
-    color: var(--color-text-primary);
-    font-size: 13px;
-    font-weight: 650;
-}
-.settings-expiry-slider-mark.active{
-    color: var(--color-text-primary);
-    font-weight: 650;
-}
-.settings-expiry-slider.is-disabled{
-    opacity: 0.58;
-}
-.settings-expiry-slider.is-disabled .settings-expiry-slider-input,.settings-expiry-slider.is-disabled .settings-expiry-slider-mark{
-    cursor: not-allowed;
-}
-.settings-toggle-grid{
+/* Shared dialog and discrete expiry slider for settings management flows. */.settings-toggle-grid{
     display: grid;
     gap: 8px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.papi-permission-toggle[aria-checked="true"]{
-    background: var(--color-bg-sunken);
-    border-color: var(--color-text-secondary);
-}
-.papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-track{
-    background: #0f172a;
-    border-color: var(--color-text-primary);
-}
-.papi-permission-toggle[aria-checked="true"] .papi-permission-toggle-thumb{
-    transform: translateX(14px);
-}
-@media (max-width: 640px){.settings-toggle-grid{
+}@media (max-width: 640px){.settings-toggle-grid{
         grid-template-columns: 1fr;
     }}

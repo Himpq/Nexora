@@ -1,51 +1,9 @@
-.knowledge-collab-strip{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-    color: var(--color-text-secondary);
-    font-size: 12px;
-}
 .knowledge-collab-members{
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
-}
-.knowledge-collab-member{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 220px;
-    padding: 5px 8px;
-    border: 1px solid var(--color-border);
-    border-radius: 999px;
-    background: var(--color-bg-elevated);
-    color: var(--color-text-secondary);
-    line-height: 1;
-    white-space: nowrap;
-}
-.knowledge-collab-dot{
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: #22c55e;
-    flex: 0 0 auto;
-}
-.knowledge-collab-name{
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.knowledge-collab-cursor{
-    color: var(--color-text-secondary);
-    font-variant-numeric: tabular-nums;
-}
-.knowledge-collab-member.is-self{
-    border-color: var(--color-accent-border);
-    background: var(--color-accent-surface);
-    color: var(--color-accent-text);
-}
-.knowledge-collab-name-input{
+}.knowledge-collab-name-input{
     width: 150px;
     height: 30px;
     padding: 0 9px;
@@ -55,68 +13,17 @@
     color: var(--color-text-primary);
     font: inherit;
     font-size: 12px;
-}
-.knowledge-collab-name-input:focus{
+}.knowledge-collab-name-input:focus{
     outline: none;
     border-color: #60a5fa;
     box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
-}
-.knowledge-collab-owner-bar{
+}.knowledge-collab-owner-bar{
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
     min-width: 0;
-}
-.knowledge-collab-cursor-bookmark{
-    position: relative;
-    display: inline-block;
-    width: 0;
-    height: 1.25em;
-    overflow: visible;
-    vertical-align: text-bottom;
-    pointer-events: none;
-    z-index: 8;
-}
-.knowledge-collab-cursor-overlay-layer{
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    pointer-events: none;
-    z-index: 12;
-}
-.knowledge-collab-cursor-overlay-layer .knowledge-collab-cursor-bookmark{
-    position: absolute;
-}
-.knowledge-collab-selection-rect{
-    position: absolute;
-    border-radius: 2px;
-    background: var(--knowledge-collab-color, #2563eb);
-    opacity: 0.16;
-    pointer-events: none;
-}
-.knowledge-collab-offline-mask{
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(241, 245, 249, 0.55);
-    backdrop-filter: grayscale(1) blur(1px);
-    z-index: 30;
-    cursor: not-allowed;
-}
-.knowledge-collab-offline-tip{
-    padding: 8px 16px;
-    border: 1px solid var(--color-danger-border);
-    border-radius: 999px;
-    background: var(--color-danger-surface);
-    color: var(--color-danger-text);
-    font-size: 13px;
-    font-weight: 700;
-    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
-}
-.knowledge-collab-presence-toast{
+}.knowledge-collab-presence-toast{
     position: fixed;
     left: 50%;
     bottom: 34px;
@@ -132,41 +39,11 @@
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: none;
-}
-.knowledge-collab-presence-toast.is-visible{
+}.knowledge-collab-presence-toast.is-visible{
     opacity: 1;
-}
-.knowledge-collab-cursor-line{
-    position: absolute;
-    left: 0;
-    top: -0.12em;
-    width: 2px;
-    height: 1.35em;
-    border-radius: 999px;
-    background: var(--knowledge-collab-color, #2563eb);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
-}
-.knowledge-collab-cursor-label{
-    position: absolute;
-    left: 3px;
-    top: -1.65em;
-    max-width: 160px;
-    padding: 2px 6px;
-    border-radius: 5px;
-    background: var(--knowledge-collab-color, #2563eb);
-    color: #ffffff;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.35;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.16);
-}
-@media (max-width: 960px){.knowledge-collab-strip{
+}@media (max-width: 960px){.knowledge-collab-strip{
         align-items: flex-start;
         flex-direction: column;
-    }
-.knowledge-collab-name-input{
+    }.knowledge-collab-name-input{
         width: 100%;
     }}

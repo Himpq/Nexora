@@ -1,51 +1,5 @@
-.settings-memory-profile-head label{
-    color: var(--color-text-primary);
-    font-size: 13px;
-    font-weight: 600;
-}
-.settings-memory-refresh-button.is-loading i{
-    animation: settings-memory-refresh-spin 0.8s linear infinite;
-}
-.settings-memory-profile-status.is-error{
-    color: var(--color-danger-text);
-}
-.settings-memory-model-field{
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid var(--color-border);
-}
-.settings-memory-model-label{
-    display: block;
-    margin-bottom: 7px;
-    color: var(--color-text-primary);
-    font-size: 13px;
-    font-weight: 600;
-}
-/* This menu is portaled to body while Settings remains in its own modal layer. */
-#memoryModelOptions.settings-memory-model-options{
-    position: fixed !important;
-    width: min(340px, calc(100vw - 24px)) !important;
-    min-width: 0 !important;
-    max-width: calc(100vw - 24px) !important;
-    max-height: 300px;
-    border-radius: 8px;
-    padding: 0 !important;
-    overflow: hidden !important;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-    z-index: 20010 !important;
-}
-.settings-memory-model-options .model-group-title .label,.settings-memory-model-options .model-chip-status{
-    letter-spacing: 0;
-}
-.settings-memory-model-status.is-error{
-    color: var(--color-danger-text);
-}
-@keyframes settings-memory-refresh-spin{
+/* This menu is portaled to body while Settings remains in its own modal layer. */@keyframes settings-memory-refresh-spin{
     to {
         transform: rotate(360deg);
     }
 }
-@media (prefers-reduced-motion: reduce){.settings-memory-refresh-button,.settings-memory-refresh-button.is-loading i{
-        animation: none;
-        transition: none;
-    }}

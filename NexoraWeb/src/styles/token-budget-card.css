@@ -139,3 +139,16 @@
     border-radius: 50%;
     background: var(--color-bg-elevated);
 }
+
+/* legacy 收编:.token-budget-mini 的取色变量与定位锚点
+   (ring 的 conic-gradient 与 absolute 子元素依赖,原定义在 legacy/style.css) */
+.token-budget-mini {
+    --tb-color: #22c55e;
+    --tb-angle: 0deg;
+    position: relative;
+}
+
+.token-budget-usage {
+    color: var(--color-text-secondary);
+    transition: color 0.16s ease, opacity 0.16s ease;
+}

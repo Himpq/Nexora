@@ -19,6 +19,9 @@
     min-height: 0;
     overflow: hidden;
     background: var(--bg-main);
+    /* 主内容区跟随侧栏宽度被动拉伸时不触发子树重排，与 sidebar 隔离 */
+    contain: layout paint;
+    transform: translateZ(0);
 }
 
 .gddp-view-stage {
@@ -215,8 +218,12 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
     overflow: visible;
 }
 
+/* 顶栏三件套的结构属性(display/gap/字色)自 legacy 收编(2026-08-28):
+ * gddp 只负责 grid 定位,行内布局与标题排版由以下声明承担 */
 .header-left,
 .header-right {
+    display: flex;
+    align-items: center;
     min-width: 0;
     width: auto;
     overflow: visible;
@@ -225,6 +232,7 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
 .header-left {
     grid-column: 1;
     justify-self: start;
+    gap: 10px;
 }
 
 .header-center {
@@ -236,12 +244,18 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-align: center;
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--color-text-primary);
 }
 
 .header-right {
     grid-column: 3;
     justify-self: end;
     flex: none;
+    gap: 8px;
+    justify-content: flex-end;
 }
 
 /* 文件中心视图容器由 gddp-content-view 统一治理,域样式见 files-center.css
@@ -272,6 +286,14 @@ body.gddp-markdown-fullscreen-active .gddp-content-view {
     body.mobile-sidebar-open .sidebar {
         transform: translateX(0) !important;
         box-shadow: 10px 0 28px rgba(0, 0, 0, 0.35) !important;
+    }
+
+    /* 移动端横向溢出封顶(自 legacy 双份 lock 收编为一;body 已由 base.css 全局承担) */
+    html,
+    .app-container,
+    .main-content {
+        max-width: 100vw !important;
+        overflow-x: hidden !important;
     }
 }
 
