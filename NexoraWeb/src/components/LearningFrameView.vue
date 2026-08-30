@@ -48,6 +48,8 @@ const props = defineProps<{
     open: boolean
     frameUrl: string
     title?: string
+    /** 宿主 Learning 侧栏视图:对话视图下宿主导航条隐藏,iframe 需恢复自身顶部 tab 行 */
+    learningSidebarView?: 'list' | 'conversation'
 }>()
 
 const emit = defineEmits<{
@@ -137,11 +139,14 @@ function isSidebarOverlayLayout(): boolean {
 }
 
 /**
- * 宿主侧栏功能区入口是否可见(对齐原版 isSidebarNavActuallyVisible):
- * iframe 据此隐藏自身顶部 kicker tab 行,避免宿主/iframe 双重导航
+ * 宿主侧栏功能区入口是否可见(对齐原版 isSidebarNavActuallyVisible +
+ * syncLearningSidebarNavigationVisibility 的 navVisible = learning && view==='list'):
+ * 对话视图下宿主无导航条,iframe 恢复自身顶部 kicker tab 行,避免导航真空
  */
 function isSidebarNavVisible(): boolean {
-    if (!props.open) return false
+    if (!props.open || props.learningSidebarView === 'conversation') {
+        return false
+    }
 
     try {
         const sidebar = document.getElementById('sidebar')
@@ -193,6 +198,16 @@ watch(
             if (hasLoaded.value) {
                 window.setTimeout(postLayoutState, 0)
             }
+        }
+    },
+)
+
+// 侧栏视图切换(list↔conversation)改变宿主导航可见性,iframe 顶部 tab 行需联动
+watch(
+    () => props.learningSidebarView,
+    () => {
+        if (hasLoaded.value) {
+            postLayoutState()
         }
     },
 )

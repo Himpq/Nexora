@@ -17,7 +17,7 @@
             :brand-mode="sidebarBrandMode"
             :learning-nav-state="learningDashboardState"
             :learning-sidebar-view="learningSidebarView"
-            @update:learning-sidebar-view="learningSidebarView = $event"
+            @update:learning-sidebar-view="handleLearningSidebarViewChange"
             @learning-send="handleLearningSend"
             @learning-stop="handleStop"
             @toggle-mobile="handleToggleMobile"
@@ -213,6 +213,7 @@
                     :open="learningOpen"
                     :frame-url="learningFrameUrl"
                     :title="learningFrameTitle"
+                    :learning-sidebar-view="learningSidebarView"
                     @request-open-settings="settingsOpen = true"
                     @host-message="handleLearningHostMessage"
                 />
@@ -522,6 +523,12 @@
      */
     const learningSidebarView = ref<'list' | 'conversation'>('list')
     const learningComposerDocked = computed(() => learningOpen.value && learningSidebarView.value === 'conversation')
+    /**
+     * 双作用域会话记忆(对齐原版 learningNavigationState):两套 sidebar 不共享当前 cid。
+     * 进 Learning 记住 nexora 当前会话、切回时恢复;learning 侧同理反向记忆
+     */
+    const rememberedNexoraConversationId = ref('')
+    const rememberedLearningConversationId = ref('')
 
     const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
 
@@ -566,8 +573,8 @@
     }
     watch([learningOpen, learningEnabled, learningSidebarView], syncLearningBodyClass, { immediate: true })
 
-    // 侧栏折叠改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
-    watch(sidebarCollapsed, () => {
+    // 侧栏折叠/视图切换改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
+    watch([sidebarCollapsed, learningSidebarView], () => {
         learningFrameRef.value?.postLayoutState()
     })
 
@@ -580,14 +587,49 @@
             backToChat()
             return
         }
+
+        // 进入 Learning:记住 nexora 当前会话;对话视图下恢复 learning 记忆会话(无记忆=草稿)
+        rememberedNexoraConversationId.value = conversationStore.currentId
         openView('learning')
+
+        if (learningSidebarView.value === 'conversation') {
+            const restore = rememberedLearningConversationId.value
+
+            if (restore) {
+                void conversationStore.openConversation(restore).catch((error: unknown) => {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                })
+            } else {
+                void conversationStore.newConversation()
+            }
+        }
     }
 
-    function handleOpenLearningChat(): void {
+    /**
+     * 品牌栏切回 Nexora(对齐原版 leaveLearningConversation):
+     * 对话视图中的会话记入 learning 作用域,解除占用(草稿)后恢复 nexora 记忆会话
+     */
+    async function handleOpenLearningChat(): Promise<void> {
         if (!learningOpen.value) {
             return
         }
+
+        if (learningSidebarView.value === 'conversation') {
+            rememberedLearningConversationId.value = conversationStore.currentId
+        }
+
         backToChat()
+        await conversationStore.newConversation()
+
+        const restore = rememberedNexoraConversationId.value
+
+        if (restore) {
+            try {
+                await conversationStore.openConversation(restore)
+            } catch (error: unknown) {
+                showError(error instanceof Error ? error.message : '打开会话失败')
+            }
+        }
     }
 
     function handleLearningHostMessage(message: LearningHostEnvelope): void {
@@ -637,14 +679,19 @@
         })
     }
 
-    /** 侧栏功能区入口 → iframe dashboard 指令(对齐原版 openLearningDashboardSurface/openLearningStudio) */
+    /**
+     * 侧栏功能区入口 → iframe dashboard 指令(对齐原版 openLearningDashboardSurface):
+     * 对话视图中先记住会话并返回列表主页(主面板让位给 iframe),再切换功能区
+     */
     function handleLearningNav(command: { kind: 'tab' | 'studio'; key: string }): void {
+        if (learningSidebarView.value === 'conversation') {
+            rememberedLearningConversationId.value = conversationStore.currentId
+            learningSidebarView.value = 'list'
+            void conversationStore.newConversation()
+        }
+
         const frame = learningFrameRef.value
         if (!frame) return
-
-        if (!learningOpen.value) {
-            openView('learning')
-        }
 
         if (command.kind === 'studio') {
             frame.postCommand({ type: 'open-studio', studio: command.key })
@@ -654,8 +701,17 @@
         frame.postCommand({ type: 'open-dashboard-tab', tab: command.key })
     }
 
-    /** New Learning:建立草稿会话并进入侧栏对话视图(对齐原版 startNewLearningConversation 的视图切换部分) */
+    /** 侧栏视图切换:回列表=一次明确导航,清除 learning 会话记忆(对齐原版 returnToLearningConversationList) */
+    function handleLearningSidebarViewChange(view: 'list' | 'conversation'): void {
+        if (view === 'list') {
+            rememberedLearningConversationId.value = ''
+        }
+        learningSidebarView.value = view
+    }
+
+    /** New Learning:清 learning 记忆,建立草稿会话并进入侧栏对话视图(对齐原版 startNewLearningConversation) */
     async function handleLearningNew(): Promise<void> {
+        rememberedLearningConversationId.value = ''
         learningSidebarView.value = 'conversation'
 
         try {

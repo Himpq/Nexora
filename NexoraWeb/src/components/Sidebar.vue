@@ -77,13 +77,12 @@
                         <span>Knowledge</span>
                     </button>
                 </template>
-                <template v-else>
-                    <!--
-                        Learning 功能区入口(结构/文案对齐原版 chat.html learning nav):
-                        平项走 toolbar-item,分组走 nexoracode-sidebar-project 行结构
-                        (主按钮=导航,独立 caret=折叠),点击经 bridge 下发 dashboard 指令,
-                        iframe 回报 dashboard-state 驱动 is-active 高亮
-                    -->
+                <!--
+                    Learning 功能区入口仅列表视图可见(对齐原版 syncLearningSidebarNavigationVisibility:
+                    navVisible = learning && view==='list',对话视图只保留返回按钮 + 侧栏聊天);
+                    点击经 bridge 下发 dashboard 指令,iframe 回报 dashboard-state 驱动高亮
+                -->
+                <template v-else-if="learningSidebarView === 'list'">
                     <button
                         id="learningProgressBtn"
                         class="toolbar-item learning-nav-item"
