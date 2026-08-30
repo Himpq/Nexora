@@ -38,6 +38,18 @@
                 >
                     <span class="sidebar-brand-learning-text"><i class="fa-solid fa-graduation-cap" aria-hidden="true" style="margin-right:6px"></i>Learning</span>
                 </button>
+                <button
+                    v-show="courseAvailable && brandMode !== 'nexora'"
+                    id="sidebarBrandWorkspaceTab"
+                    type="button"
+                    class="sidebar-brand-tab sidebar-brand-tab-workspace"
+                    :class="{ active: brandMode === 'workspace' }"
+                    data-sidebar-mode="workspace"
+                    :aria-pressed="brandMode === 'workspace' ? 'true' : 'false'"
+                    @click="handleBrandClick('workspace')"
+                >
+                    <span class="sidebar-brand-workspace-text">Workspace</span>
+                </button>
             </div>
             <button class="btn-icon" id="toggleSidebarMobile" title="折叠侧边栏" @click="emit('toggle-mobile')">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -49,7 +61,8 @@
 
         <div class="sidebar-action">
             <div class="sidebar-toolbar" aria-label="顶部工具栏">
-                <button id="newChatBtn" class="toolbar-item" type="button" @click="handlePrimaryAction">
+                <!-- 课程 Workspace 接管时工具栏整体让位(对齐原版 newChatBtn/learning-nav 隐藏) -->
+                <button v-if="!courseModeOn" id="newChatBtn" class="toolbar-item" type="button" @click="handlePrimaryAction">
                     <template v-if="isLearningMode">
                         <i
                             class="fa-solid"
@@ -82,7 +95,7 @@
                     navVisible = learning && view==='list',对话视图只保留返回按钮 + 侧栏聊天);
                     点击经 bridge 下发 dashboard 指令,iframe 回报 dashboard-state 驱动高亮
                 -->
-                <template v-else-if="learningSidebarView === 'list'">
+                <template v-else-if="learningSidebarView === 'list' && !courseModeOn">
                     <button
                         id="learningProgressBtn"
                         class="toolbar-item learning-nav-item"
@@ -269,7 +282,7 @@
             conversation = 侧栏内对话,compose 为原版极简 textarea + 发送/中断方块按钮
         -->
         <div
-            v-show="isLearningMode"
+            v-show="isLearningMode && !courseModeOn"
             class="sidebar-content learning-sidebar-panel"
             :class="learningSidebarView === 'conversation' ? 'is-conversation-mode' : 'is-list-mode'"
         >
@@ -371,6 +384,30 @@
             </div>
         </div>
 
+        <!--
+            课程 Workspace 导航面板(对齐原版 renderPanel):
+            tabs 由 iframe state-snapshot 上报,点击经 switch-tab 命令回发,乐观高亮
+        -->
+        <div v-show="courseModeOn" class="sidebar-content learning-course-workspace-panel">
+            <section class="course-workspace-shell" aria-label="课程 Workspace">
+                <nav class="course-workspace-nav" aria-label="功能区导航">
+                    <button
+                        v-for="tab in courseTabs"
+                        :key="tab.key"
+                        class="course-workspace-nav-item"
+                        :class="{ 'is-active': tab.key === courseActiveTab }"
+                        type="button"
+                        :aria-pressed="tab.key === courseActiveTab ? 'true' : 'false'"
+                        :title="tab.label"
+                        @click="emit('course-switch-tab', tab.key)"
+                    >
+                        <span class="course-workspace-nav-icon" aria-hidden="true" v-html="courseNavIcon(tab.key)"></span>
+                        <span class="course-workspace-nav-label">{{ tab.label }}</span>
+                    </button>
+                </nav>
+            </section>
+        </div>
+
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
             ref="contextMenuRef"
@@ -460,6 +497,8 @@
         'learning-stop': []
         'open-learning-conversation': [conversationId: string]
         'update:learning-sidebar-view': [view: 'list' | 'conversation']
+        'course-switch-tab': [tab: string]
+        'open-course-workspace': []
         'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
@@ -471,6 +510,8 @@
         learningNavState?: { view?: string; side_tab?: string }
         /** Learning 侧栏视图(list=会话列表 / conversation=侧栏内对话) */
         learningSidebarView?: 'list' | 'conversation'
+        /** 课程 Workspace 状态(对齐原版 learningCourseWorkspacePanel 数据面) */
+        courseWorkspace?: { available: boolean; on: boolean; tabs: Array<{ key: string; label: string }>; activeTab: string }
     }>()
 
     const router = useRouter()
@@ -634,6 +675,28 @@
     const isLearningMode = computed(() => brandMode.value === 'learning')
     const showNexoraTab = computed(() => brandMode.value !== 'workspace')
 
+    // ── 课程 Workspace 接管(对齐原版 learningCourseWorkspacePanel) ──
+    const courseAvailable = computed(() => !!props.courseWorkspace?.available)
+    const courseModeOn = computed(() => isLearningMode.value && !!props.courseWorkspace?.on)
+
+    /** 功能区图标(对齐原版 WORKSPACE_NAV_ICONS:feather 风格描边 SVG,严禁符号/emoji 替代) */
+    const COURSE_NAV_ICONS: Record<string, string> = {
+        content: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+        books: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+        outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+        mindmap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>',
+        report: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+        cognition: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+        videos: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>',
+    }
+
+    function courseNavIcon(key: string): string {
+        return COURSE_NAV_ICONS[key] || COURSE_NAV_ICONS.books
+    }
+
+    const courseTabs = computed(() => props.courseWorkspace?.tabs ?? [])
+    const courseActiveTab = computed(() => props.courseWorkspace?.activeTab ?? '')
+
     // ── Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS + learning nav 分组) ──
 
     /** 分组展开态(key → 是否展开);原版默认 is-collapsed 折叠 */
@@ -791,6 +854,9 @@
         if (mode === 'nexora') {
             emit('open-chat')
             return
+        }
+        if (mode === 'workspace') {
+            emit('open-course-workspace')
         }
     }
 

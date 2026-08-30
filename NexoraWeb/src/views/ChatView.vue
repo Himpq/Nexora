@@ -17,7 +17,10 @@
             :brand-mode="sidebarBrandMode"
             :learning-nav-state="learningDashboardState"
             :learning-sidebar-view="learningSidebarView"
+            :course-workspace="learningCourseState"
             @update:learning-sidebar-view="handleLearningSidebarViewChange"
+            @course-switch-tab="handleCourseSwitchTab"
+            @open-course-workspace="handleOpenCourseWorkspace"
             @learning-send="handleLearningSend"
             @learning-stop="handleStop"
             @toggle-mobile="handleToggleMobile"
@@ -531,6 +534,21 @@
      */
     const rememberedNexoraConversationId = ref('')
     const rememberedLearningConversationId = ref('')
+    /**
+     * 课程 Workspace 状态(对齐原版 learning_course_workspace.js syncFromPayload):
+     * 数据 = iframe state-snapshot 的 active/lecture_id/title/tabs/active_tab。
+     * available=课程活着(品牌栏 Workspace tab 可见);on=侧栏被课程导航接管
+     */
+    const learningCourseState = ref({
+        available: false,
+        on: false,
+        lectureId: '',
+        tabs: [] as Array<{ key: string; label: string }>,
+        activeTab: '',
+    })
+    const lastCourseLectureId = ref('')
+    /** 用户主动退出课程接管后,同课程的 active 抖动不得重新拉回(对齐原版 userLeftWorkspace) */
+    const courseLeftByUser = ref(false)
 
     const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
 
@@ -551,6 +569,8 @@
     }
 
     const sidebarBrandMode = computed<'nexora' | 'learning' | 'workspace'>(() => {
+        // 课程 Workspace 接管时品牌栏切 Workspace 形态(对齐原版 sidebar_brand_navigation.render)
+        if (learningOpen.value && learningCourseState.value.on) return 'workspace'
         if (learningOpen.value) return 'learning'
         return 'nexora'
     })
@@ -561,6 +581,8 @@
         const enabled = learningEnabled.value
         // conversation 子模式放宽侧栏(对齐原版 learning-sidebar-conversation-active 宽度规则)
         const conversationActive = active && learningSidebarView.value === 'conversation'
+        // 课程 Workspace 接管:紧凑宽侧栏(对齐原版 learning-course-workspace-active)
+        const courseActive = active && learningCourseState.value.on
         // 动画期间（220ms）让 iframe 不接收指针，减少合成层抖动
         const frameEl = document.querySelector<HTMLIFrameElement>('.learning-frame')
         if (frameEl && active) {
@@ -571,9 +593,10 @@
             document.body.classList.toggle('learning-workspace-active', active)
             document.body.classList.toggle('learning-mode-enabled', enabled)
             document.body.classList.toggle('learning-sidebar-conversation-active', conversationActive)
+            document.body.classList.toggle('learning-course-workspace-active', courseActive)
         })
     }
-    watch([learningOpen, learningEnabled, learningSidebarView], syncLearningBodyClass, { immediate: true })
+    watch([learningOpen, learningEnabled, learningSidebarView, learningCourseState], syncLearningBodyClass, { immediate: true, deep: true })
 
     // 侧栏折叠/视图切换改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
     watch([sidebarCollapsed, learningSidebarView], () => {
@@ -586,6 +609,13 @@
             return
         }
         if (learningOpen.value) {
+            // Workspace 态点 Learning:原子退出课程接管回 Learning 列表(对齐原版 switchToLearningSidebar)
+            if (learningCourseState.value.on) {
+                courseLeftByUser.value = true
+                learningCourseState.value.on = false
+                learningSidebarView.value = 'list'
+                return
+            }
             backToChat()
             return
         }
@@ -620,6 +650,10 @@
             rememberedLearningConversationId.value = conversationStore.currentId
         }
 
+        // 点 Nexora 退出课程接管但课程保持可用(Workspace tab 仍可见,对齐原版 handleDocumentClick)
+        learningCourseState.value.on = false
+        courseLeftByUser.value = true
+
         backToChat()
         await conversationStore.newConversation()
 
@@ -638,6 +672,35 @@
         if (message.type === 'state-snapshot') {
             const title = String(message.title || '').trim()
             if (title) learningFrameTitle.value = title
+
+            // 课程 Workspace 状态机(对齐原版 syncFromPayload):
+            // active=false → 关闭接管;active=true 时仅 activation==='user' 或
+            // lectureId 变化解除用户离开抑制,同课程 DOM 重建的抖动不拉回接管
+            const active = !!message.active
+            const lectureId = String(message.lecture_id || '').trim()
+
+            if (!active) {
+                learningCourseState.value = { available: false, on: false, lectureId: '', tabs: [], activeTab: '' }
+                lastCourseLectureId.value = ''
+                return
+            }
+
+            if (message.activation === 'user' || (lectureId && lectureId !== lastCourseLectureId.value)) {
+                courseLeftByUser.value = false
+            }
+            lastCourseLectureId.value = lectureId
+
+            learningCourseState.value = {
+                available: true,
+                on: learningCourseState.value.on && !courseLeftByUser.value,
+                lectureId,
+                tabs: (message.tabs || []).map((tab) => ({ key: String(tab.key || ''), label: String(tab.label || '') })).filter((tab) => tab.key && tab.label),
+                activeTab: String(message.active_tab || ''),
+            }
+
+            if (!courseLeftByUser.value) {
+                learningCourseState.value.on = true
+            }
             return
         }
         if (message.type === 'open-chat-conversation') {
@@ -679,6 +742,23 @@
         void conversationStore.openConversation(cid).catch((error: unknown) => {
             showError(error instanceof Error ? error.message : '打开会话失败')
         })
+    }
+
+    /** 品牌栏 Workspace tab:重新接管课程侧栏(对齐原版 handleWorkspaceTabClick → activateWorkspace) */
+    function handleOpenCourseWorkspace(): void {
+        if (!learningCourseState.value.available || !learningOpen.value) return
+
+        courseLeftByUser.value = false
+        learningCourseState.value.on = true
+    }
+
+    /** 课程面板 tab → iframe switch-tab(乐观高亮,由 iframe 下一次 state 回报纠正) */
+    function handleCourseSwitchTab(tab: string): void {
+        const key = String(tab || '').trim()
+        if (!key) return
+
+        learningCourseState.value.activeTab = key
+        learningFrameRef.value?.postCommand({ type: 'switch-tab', tab: key })
     }
 
     /**

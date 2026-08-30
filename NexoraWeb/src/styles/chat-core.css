@@ -1603,6 +1603,100 @@ body.notes-companion-mode .sidebar,body.notes-companion-mode .chat-header{
 
 @keyframes blink{ 50% { opacity: 0; } }
 
+
+/* ── 课程 Workspace 接管(样式移植自原版 learning_course_workspace.css / learning_mode.css) ── */
+
+/* 紧凑工作区宽(对齐原版 --sidebar-width-workspace),非 conversation 宽 */
+body.learning-workspace-active.learning-course-workspace-active .sidebar{
+  width: var(--sidebar-width-workspace);
+  background: var(--learning-sidebar-bg, #f5f6f8);
+  color: var(--learning-sidebar-text, #20242c);
+  border-right-color: var(--learning-sidebar-border, #e1e5ea);
+}
+body.learning-workspace-active.learning-course-workspace-active .sidebar.collapsed{
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-right-color: transparent;
+  box-shadow: none;
+}
+
+/* 品牌栏 Workspace 形态(Learning+Workspace 双 tab) */
+body.learning-course-workspace-active .sidebar-brand-tabs{
+  gap: 18px;
+}
+body.learning-course-workspace-active .sidebar-brand-tab{
+  flex: 0 0 auto;
+  padding-bottom: 4px;
+  color: #667085;
+}
+body.learning-course-workspace-active .sidebar-brand-tab.active{
+  color: var(--learning-sidebar-text, #20242c);
+  border-bottom-color: #20242c;
+}
+body.learning-course-workspace-active .sidebar-brand-tab:not(.active):hover{
+  color: #344054;
+}
+body.learning-course-workspace-active .sidebar-brand-workspace-text,
+body.learning-course-workspace-active .sidebar-brand-learning-text{
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* 功能区竖排导航(iframe tabs 渲染,点击 switch-tab 回发) */
+.course-workspace-shell{
+  width: 100%;
+  min-height: 100%;
+  display: block;
+}
+.course-workspace-nav{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+.course-workspace-nav-item{
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--learning-sidebar-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.course-workspace-nav-item svg{
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: inherit;
+  transition: color 0.15s ease;
+}
+.course-workspace-nav-item:hover{
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
+}
+.course-workspace-nav-item.is-active{
+  background: rgba(31, 35, 42, 0.10);
+  color: var(--learning-sidebar-accent);
+  font-weight: 600;
+}
+.course-workspace-nav-label{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes spin{ 100% { transform: rotate(360deg); } }
 
 /* ==================== 阶段2c 自 legacy 收编(question/thinking/turn) ==================== */
