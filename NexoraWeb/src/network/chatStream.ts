@@ -37,6 +37,8 @@ export interface ChatStreamSendOptions {
     isRegenerate?: boolean
     /** 重答目标 assistant 消息索引(配合 isRegenerate 使用) */
     regenerateIndex?: number
+    /** 会话模式(chat/learning),后端落库 conversation_mode 并按模式注入学习上下文 */
+    conversationMode?: string
 }
 
 /** SSE 原始数据块(与后端 yield 的块 1:1,不做名字改写,便于层内调试) */
@@ -385,6 +387,7 @@ export class ChatStreamClient {
                     user_attachments: options.attachments && options.attachments.length > 0 ? options.attachments : undefined,
                     is_regenerate: !!options.isRegenerate,
                     regenerate_index: options.isRegenerate ? Number(options.regenerateIndex) : undefined,
+                    conversation_mode: options.conversationMode || undefined,
                 }),
                 signal: controller?.signal,
             })

@@ -50,8 +50,18 @@
         <div class="sidebar-action">
             <div class="sidebar-toolbar" aria-label="顶部工具栏">
                 <button id="newChatBtn" class="toolbar-item" type="button" @click="handlePrimaryAction">
-                    <i class="fa-solid" :class="isLearningMode ? 'fa-graduation-cap' : 'fa-plus'" aria-hidden="true"></i>
-                    <span>{{ isLearningMode ? 'New Learning' : 'New Chat' }}</span>
+                    <template v-if="isLearningMode">
+                        <i
+                            class="fa-solid"
+                            :class="learningSidebarView === 'conversation' ? 'fa-arrow-left' : 'fa-graduation-cap'"
+                            aria-hidden="true"
+                        ></i>
+                        <span>{{ learningSidebarView === 'conversation' ? '返回上一级' : 'New Learning' }}</span>
+                    </template>
+                    <template v-else>
+                        <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                        <span>New Chat</span>
+                    </template>
                 </button>
                 <template v-if="!isLearningMode">
                     <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
@@ -178,25 +188,84 @@
         </div>
 
         <!--
-            Learning 侧栏面板(对齐原版 #learningSidebarPanel):
-            数据 = 宿主 learning 作用域会话(conversation_mode === 'learning'),
-            点击在主聊天区打开(侧栏内停靠聊天属阶段3,原版 renderSidebarChat 等价物)
+            Learning 侧栏面板(对齐原版 ensureLearningSidebarLayout 双视图):
+            list = 学习会话列表(宿主 learning 作用域会话);conversation = 侧栏内对话,
+            输入坞经 #learning-sidebar-input-slot 停靠(对齐原版 renderSidebarChat)
         -->
         <div v-show="isLearningMode" class="sidebar-content learning-sidebar-panel">
-            <div v-if="!learningSessions.length" class="learning-sidebar-empty">
-                暂无学习会话
-            </div>
-            <div
-                v-for="session in learningSessions"
-                :key="session.id"
-                class="conversation-item"
-                :class="{ active: session.id === store.currentId }"
-                :data-conversation-id="session.id"
-                :title="session.title"
-                @click="emit('open-learning-conversation', session.id)"
+            <section
+                v-show="learningSidebarView === 'list'"
+                class="learning-sidebar-conversation-section"
+                aria-label="Learning 对话列表"
             >
-                <span class="title">{{ session.title }}</span>
-            </div>
+                <div class="learning-sidebar-conversation-header">
+                    <span class="learning-sidebar-conversation-title">Learning 对话</span>
+                    <span class="learning-sidebar-conversation-count">{{ learningSessions.length }}</span>
+                </div>
+                <div v-if="!learningSessions.length" class="learning-sidebar-empty">
+                    暂无 Learning 对话
+                </div>
+                <div
+                    v-for="session in learningSessions"
+                    :key="session.id"
+                    class="conversation-item learning-sidebar-conversation-item"
+                    :class="{ active: session.id === store.currentId, 'is-streaming': isStreamingItem(session.id) }"
+                    :data-conversation-id="session.id"
+                    :data-pin="isPinned(session.id) ? '1' : '0'"
+                    :title="session.title"
+                    @click="emit('open-learning-conversation', session.id)"
+                >
+                    <span class="title">
+                        <i
+                            v-if="isPinned(session.id)"
+                            class="fa-solid fa-thumbtack conversation-pin-icon"
+                            aria-hidden="true"
+                        ></i>
+                        {{ session.title }}
+                    </span>
+                    <span class="conversation-item-right">
+                        <span
+                            v-if="isStreamingItem(session.id)"
+                            class="conversation-stream-indicator is-loading"
+                            title="模型正在回复"
+                            aria-hidden="true"
+                        >
+                            <i class="fa-solid fa-circle-notch fa-spin"></i>
+                        </span>
+                        <button
+                            class="btn-icon-small delete-chat"
+                            type="button"
+                            aria-label="删除 Learning 对话"
+                            title="删除对话"
+                            @click.stop="handleDelete(session)"
+                        >
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                        </button>
+                    </span>
+                </div>
+            </section>
+
+            <section
+                v-show="learningSidebarView === 'conversation'"
+                class="learning-sidebar-chat"
+                aria-label="Learning 对话"
+            >
+                <div ref="learningChatLogRef" class="learning-sidebar-chat-log" @scroll="handleChatLogScroll">
+                    <div v-if="!store.messages.length" class="learning-sidebar-chat-empty">
+                        结合当前学习上下文,开始提问…
+                    </div>
+                    <MessageItem
+                        v-for="message in store.messages"
+                        :key="message.index"
+                        :message="message"
+                        readonly
+                        @open-image="emit('open-image', $event)"
+                    />
+                </div>
+                <div class="learning-sidebar-chat-compose">
+                    <div id="learning-sidebar-input-slot"></div>
+                </div>
+            </section>
         </div>
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
@@ -257,7 +326,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, nextTick, ref, watch } from 'vue'
 
     import { useRouter } from 'vue-router'
 
@@ -270,6 +339,7 @@
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
     import ContextMenu from './ContextMenu.vue'
+    import MessageItem from './MessageItem.vue'
 
     const emit = defineEmits<{
         'toggle-mobile': []
@@ -284,6 +354,8 @@
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
         'learning-new': []
         'open-learning-conversation': [conversationId: string]
+        'update:learning-sidebar-view': [view: 'list' | 'conversation']
+        'open-image': [url: string]
         'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
@@ -293,6 +365,8 @@
         brandMode?: 'nexora' | 'learning' | 'workspace'
         /** iframe dashboard 状态回报(view/side_tab),驱动学习功能区入口高亮 */
         learningNavState?: { view?: string; side_tab?: string }
+        /** Learning 侧栏视图(list=会话列表 / conversation=侧栏内对话) */
+        learningSidebarView?: 'list' | 'conversation'
     }>()
 
     const router = useRouter()
@@ -549,13 +623,66 @@
         return store.conversations.filter((item) => item.conversation_mode === 'learning')
     })
 
-    /** 主按钮:learning 模式为 New Learning(草稿态,学习作用域标记随阶段3发送路径接通) */
+    // ── 侧栏对话视图(对齐原版 renderSidebarChat):消息跟随底部,用户上滚即暂停 ──
+    const learningChatLogRef = ref<HTMLElement | null>(null)
+    const chatLogPinned = ref(true)
+
+    function handleChatLogScroll(): void {
+        const el = learningChatLogRef.value
+
+        if (!el) return
+
+        chatLogPinned.value = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    }
+
+    /** 消息增长跟随底部(精简原版 atBottom 策略:仅在未上滚时贴底) */
+    watch(
+        () => [store.messages.length, store.messages[store.messages.length - 1]?.content?.length ?? 0],
+        () => {
+            if (!chatLogPinned.value) return
+
+            void nextTick(() => {
+                const el = learningChatLogRef.value
+
+                if (el) {
+                    el.scrollTop = el.scrollHeight
+                }
+            })
+        }
+    )
+
+    /** 进入对话视图/切换会话:回到底部并恢复跟随 */
+    watch(
+        () => [props.learningSidebarView, store.currentId],
+        () => {
+            if (props.learningSidebarView !== 'conversation') return
+
+            chatLogPinned.value = true
+
+            void nextTick(() => {
+                const el = learningChatLogRef.value
+
+                if (el) {
+                    el.scrollTop = el.scrollHeight
+                }
+            })
+        },
+        { immediate: true }
+    )
+
+    /** 主按钮三态(对齐原版 updateLearningSidebarPrimaryAction):New Chat / New Learning / 返回上一级 */
     function handlePrimaryAction(): void {
-        if (isLearningMode.value) {
-            emit('learning-new')
+        if (!isLearningMode.value) {
+            void handleNewChat()
             return
         }
-        void handleNewChat()
+
+        if (props.learningSidebarView === 'conversation') {
+            emit('update:learning-sidebar-view', 'list')
+            return
+        }
+
+        emit('learning-new')
     }
 
     function handleBrandClick(mode: 'nexora' | 'learning' | 'workspace'): void {

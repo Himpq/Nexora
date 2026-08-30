@@ -55,6 +55,22 @@ body.learning-workspace-active .sidebar.collapsed{
   box-shadow: none;
 }
 
+/* conversation 子模式放宽(对齐原版 learning_mode.css:215):仅侧栏内对话视图发生,
+   与列表模式同帧只有一个 width 目标,无逐帧布局竞争 */
+body.learning-workspace-active.learning-sidebar-conversation-active .sidebar{
+  width: var(--sidebar-width-learning);
+}
+
+/* 折叠态必须压过放宽规则(对齐原版 learning_mode.css:220),否则收起后残留占位 */
+body.learning-workspace-active.learning-sidebar-conversation-active .sidebar.collapsed{
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-right-color: transparent;
+  box-shadow: none;
+}
+
 .sidebar-header{
   padding: 20px;
   display: flex;
@@ -273,6 +289,62 @@ body.learning-workspace-active .sidebar .learning-nav-group.is-active > .learnin
   font-size: 12.5px;
   color: var(--learning-sidebar-muted, #6b7280);
   text-align: center;
+}
+
+/* 会话列表视图:标题行 + 计数(对齐原版 learning-sidebar-conversation-header) */
+.learning-sidebar-conversation-section{
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.learning-sidebar-conversation-header{
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 2px 8px 8px;
+}
+
+.learning-sidebar-conversation-title{
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--learning-sidebar-muted, #6b7280);
+}
+
+.learning-sidebar-conversation-count{
+  font-size: 11px;
+  color: var(--learning-sidebar-muted, #6b7280);
+}
+
+/* 侧栏对话视图:消息流跟随滚动 + 底部停靠输入坞(对齐原版 learning-sidebar-chat) */
+.learning-sidebar-chat{
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.learning-sidebar-chat-log{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 2px 10px;
+}
+
+.learning-sidebar-chat-empty{
+  padding: 24px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--learning-sidebar-muted, #6b7280);
+  text-align: center;
+}
+
+.learning-sidebar-chat-compose{
+  flex-shrink: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--learning-sidebar-border, #e1e5ea);
 }
 
 /* 学习会话列表复用 .conversation-item 结构,body learning 配色已由全局规则接管 */

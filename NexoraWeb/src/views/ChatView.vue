@@ -16,6 +16,9 @@
             :learning-enabled="learningEnabled"
             :brand-mode="sidebarBrandMode"
             :learning-nav-state="learningDashboardState"
+            :learning-sidebar-view="learningSidebarView"
+            @update:learning-sidebar-view="learningSidebarView = $event"
+            @open-image="handleOpenImage"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
             @open-chat="handleOpenLearningChat"
@@ -120,6 +123,10 @@
                     未停靠分支直接原地渲染,两分支共享同一份绑定(chatInputBindings)。
                 -->
                 <Teleport v-if="workspaceComposerDocked" to="#ws-detail-input-slot">
+                    <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
+                </Teleport>
+                <!-- Learning 侧栏对话视图:输入坞停靠进侧栏聊天区(对齐原版 learning-sidebar-chat-compose) -->
+                <Teleport v-else-if="learningComposerDocked" to="#learning-sidebar-input-slot">
                     <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
                 </Teleport>
                 <ChatInput v-else ref="chatInputRef" v-bind="chatInputBindings" />
@@ -511,6 +518,13 @@
     const learningFrontendUrl = ref('')
     /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
     const learningDashboardState = ref<{ view: string; side_tab: string }>({ view: '', side_tab: '' })
+    /**
+     * Learning 侧栏视图(list=会话列表 / conversation=侧栏内对话):
+     * 对齐原版 getLearningSidebarView;conversation 态驱动侧栏放宽(body class)
+     * 与输入坞停靠,发送经 doSend 附 conversation_mode='learning'
+     */
+    const learningSidebarView = ref<'list' | 'conversation'>('list')
+    const learningComposerDocked = computed(() => learningOpen.value && learningSidebarView.value === 'conversation')
 
     const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
 
@@ -539,6 +553,8 @@
     function syncLearningBodyClass(): void {
         const active = learningOpen.value
         const enabled = learningEnabled.value
+        // conversation 子模式放宽侧栏(对齐原版 learning-sidebar-conversation-active 宽度规则)
+        const conversationActive = active && learningSidebarView.value === 'conversation'
         // 动画期间（220ms）让 iframe 不接收指针，减少合成层抖动
         const frameEl = document.querySelector<HTMLIFrameElement>('.learning-frame')
         if (frameEl && active) {
@@ -548,9 +564,10 @@
         requestAnimationFrame(() => {
             document.body.classList.toggle('learning-workspace-active', active)
             document.body.classList.toggle('learning-mode-enabled', enabled)
+            document.body.classList.toggle('learning-sidebar-conversation-active', conversationActive)
         })
     }
-    watch([learningOpen, learningEnabled], syncLearningBodyClass, { immediate: true })
+    watch([learningOpen, learningEnabled, learningSidebarView], syncLearningBodyClass, { immediate: true })
 
     // 侧栏折叠改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
     watch(sidebarCollapsed, () => {
@@ -583,7 +600,14 @@
             return
         }
         if (message.type === 'open-chat-conversation') {
-            handleOpenLearningConversation(String(message.conversation_id || ''))
+            // iframe 语义:学习流落在主聊天会话,请宿主切过去(与侧栏列表点击的侧栏内打开不同)
+            const cid = String(message.conversation_id || '').trim()
+            if (cid) {
+                backToChat()
+                void conversationStore.openConversation(cid).catch((error: unknown) => {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                })
+            }
             return
         }
         if (message.type === 'dashboard-state') {
@@ -602,12 +626,15 @@
         }
     }
 
-    /** 学习会话在主聊天区打开(iframe open-chat-conversation 与侧栏列表点击共用) */
+    /**
+     * 侧栏学习会话点击:切到侧栏对话视图并加载会话(对齐原版 bridge.setSidebarView('conversation')
+     * + loadConversation),不离开 Learning 视图
+     */
     function handleOpenLearningConversation(conversationId: string): void {
         const cid = String(conversationId || '').trim()
         if (!cid) return
 
-        backToChat()
+        learningSidebarView.value = 'conversation'
         void conversationStore.openConversation(cid).catch((error: unknown) => {
             showError(error instanceof Error ? error.message : '打开会话失败')
         })
@@ -630,8 +657,10 @@
         frame.postCommand({ type: 'open-dashboard-tab', tab: command.key })
     }
 
-    /** New Learning:草稿态新会话;学习作用域标记随阶段3侧栏停靠聊天发送路径接通 */
+    /** New Learning:建立草稿会话并进入侧栏对话视图(对齐原版 startNewLearningConversation 的视图切换部分) */
     async function handleLearningNew(): Promise<void> {
+        learningSidebarView.value = 'conversation'
+
         try {
             await conversationStore.newConversation()
         } catch (error) {
@@ -968,6 +997,12 @@
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
+        // Learning 侧栏对话视图内的发送:会话标记 learning 作用域(本地即时标记 +
+        // 请求携带 conversation_mode 由后端落库),保证侧栏学习会话列表能过滤到
+        if (learningComposerDocked.value) {
+            conversationStore.setConversationMode(conversationId, 'learning')
+        }
+
         // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)
         const composeWorkspace = workspaceComposeTarget.value
 
@@ -1004,6 +1039,7 @@
             toolMode: options.toolsMode,
             includeContext: true,
             attachments,
+            conversationMode: learningComposerDocked.value ? 'learning' : undefined,
         }, {
             onChunk: handleStreamChunk,
             onEnd: handleStreamEnd,

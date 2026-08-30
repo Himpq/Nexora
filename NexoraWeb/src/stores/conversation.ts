@@ -246,6 +246,19 @@ export const useConversationStore = defineStore('conversation', {
             return this.currentId
         },
 
+        /**
+         * 标记本地会话模式(learning 等):新建会话走懒创建,列表项未经后端回填
+         * conversation_mode,发送路径在 dock 侧栏发首条消息时补标,保证
+         * Learning 侧栏会话列表能即时过滤到该会话
+         */
+        setConversationMode(conversationId: string, mode: string): void {
+            const item = this.conversations.find((entry) => entry.id === conversationId)
+
+            if (item) {
+                item.conversation_mode = mode
+            }
+        },
+
         /** 切换当前会话并加载消息(不立即清空旧消息,避免欢迎页闪烁) */
         async openConversation(conversationId: string): Promise<void> {
             if (!conversationId || conversationId === this.currentId) {
