@@ -297,8 +297,70 @@
         clickNode(tabBtn);
     }
 
-    function handleHostAction(payload) {
+    /**
+     * 归一化宿主消息：同时接受旧协议(source=nexora-host)与 NexoraWeb 新信封
+     * (protocol=nexora-learning v1, source=host)，新信封映射为旧协议后统一处理。
+     * 映射关系与 NexoraWeb/src/bridge/learningBridge.ts 的 HostLearningCommand 对齐。
+     */
+    function normalizeHostEnvelope(payload) {
         const src = payload && typeof payload === 'object' ? payload : {};
+
+        if (src.protocol !== 'nexora-learning' || Number(src.version) !== 1 || String(src.source || '') !== 'host') {
+            return src;
+        }
+
+        const type = String(src.type || '').trim().toLowerCase();
+
+        if (type === 'layout') {
+            return {
+                source: HOST_SOURCE,
+                type: LAYOUT_TYPE,
+                sidebar_auto_collapse: !!src.sidebar_auto_collapse,
+            };
+        }
+
+        if (type === 'action') {
+            return {
+                source: HOST_SOURCE,
+                type: ACTION_TYPE,
+                action: String(src.action || '').trim().toLowerCase(),
+                lecture_id: String(src.lecture_id || ''),
+                tab: String(src.tab || ''),
+            };
+        }
+
+        if (type === 'open-course') {
+            return {
+                source: HOST_SOURCE,
+                type: ACTION_TYPE,
+                action: 'toggle-learning',
+                lecture_id: String(src.lecture_id || ''),
+            };
+        }
+
+        if (type === 'start-learning-path') {
+            return {
+                source: HOST_SOURCE,
+                type: ACTION_TYPE,
+                action: 'start-learning-path',
+                lecture_id: String(src.lecture_id || ''),
+            };
+        }
+
+        if (type === 'switch-tab') {
+            return {
+                source: HOST_SOURCE,
+                type: ACTION_TYPE,
+                action: 'switch-tab',
+                tab: String(src.tab || ''),
+            };
+        }
+
+        return src;
+    }
+
+    function handleHostAction(payload) {
+        const src = normalizeHostEnvelope(payload);
 
         if (String(src.source || '').trim().toLowerCase() !== HOST_SOURCE) {
             return;

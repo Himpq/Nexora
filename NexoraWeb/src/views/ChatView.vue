@@ -558,8 +558,7 @@
     }
 
     function handleOpenLearningChat(): void {
-        if (learningOpen.value) {
-            backToChat()
+        if (!learningOpen.value) {
             return
         }
         backToChat()
@@ -578,6 +577,13 @@
                 void conversationStore.openConversation(cid).catch((error: unknown) => {
                     showError(error instanceof Error ? error.message : '打开会话失败')
                 })
+            }
+            return
+        }
+        if (message.type === 'pointer-down') {
+            // iframe 内的点击不会冒泡到宿主 document,移动端抽屉需按协定显式收起
+            if (window.matchMedia('(max-width: 980px)').matches && document.body.classList.contains('mobile-sidebar-open')) {
+                document.body.classList.remove('mobile-sidebar-open')
             }
             return
         }
