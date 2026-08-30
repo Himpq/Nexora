@@ -230,6 +230,53 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
   contain: paint;
 }
 
+/* ── Learning 侧栏功能区入口(对齐原版 learning nav)与学习会话面板 ── */
+.sidebar .learning-nav-item .learning-nav-caret{
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.65;
+  transition: transform 0.16s ease;
+}
+
+.sidebar .learning-nav-group.is-open .learning-nav-caret{
+  transform: rotate(180deg);
+}
+
+/* 分组容器激活:任一子功能区命中 dashboard 状态时父按钮同态(对齐原版 group is-active) */
+body.learning-workspace-active .sidebar .learning-nav-group.is-active > .learning-nav-item{
+  background: rgba(31, 35, 42, 0.10);
+  color: var(--learning-sidebar-accent);
+  font-weight: 600;
+}
+
+.sidebar .learning-nav-menu{
+  padding: 0 0 4px 20px;
+}
+
+.sidebar .learning-nav-subitem{
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  gap: 9px;
+}
+
+.learning-sidebar-panel{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 10px;
+  padding-bottom: 14px;
+}
+
+.learning-sidebar-empty{
+  padding: 18px 12px;
+  font-size: 12.5px;
+  color: var(--learning-sidebar-muted, #6b7280);
+  text-align: center;
+}
+
+/* 学习会话列表复用 .conversation-item 结构,body learning 配色已由全局规则接管 */
+
 .sidebar-content::-webkit-scrollbar{
   width: 5px;
 }

@@ -43,6 +43,12 @@ export type LearningHostMessage =
     | {
           type: 'pointer-down'
       }
+    | {
+          /** iframe dashboard 当前视图/功能区 tab 回报,驱动宿主侧栏功能区入口高亮 */
+          type: 'dashboard-state'
+          view: string
+          side_tab: string
+      }
 
 export type LearningHostEnvelope = LearningBridgeEnvelope & LearningHostMessage
 
@@ -52,6 +58,21 @@ export type HostLearningCommand =
     | { type: 'start-learning-path'; lecture_id: string }
     | { type: 'switch-tab'; tab: string }
     | { type: 'layout'; sidebar_auto_collapse: boolean }
+    | {
+          /** 打开 iframe dashboard 指定功能区(progress/push/questionBank/questionBankMistakes/profileCenter/feed/materials) */
+          type: 'open-dashboard-tab'
+          tab: string
+      }
+    | {
+          /** 打开资源/视频工作台独立视图(resource/video) */
+          type: 'open-studio'
+          studio: string
+      }
+    | {
+          /** 宿主侧栏功能区入口可见性:iframe 据此隐藏自身顶部 kicker tab 行,避免双重导航 */
+          type: 'dashboard-layout'
+          nav_visible: boolean
+      }
     // 兼容旧版 course_workspace_bridge.js 的 action 命名
     | { type: 'action'; action: 'toggle-learning' | 'start-learning-path' | 'switch-tab'; lecture_id?: string; tab?: string }
 
@@ -200,6 +221,16 @@ export function normalizeLegacyLearningMessage(raw: unknown): LearningHostEnvelo
             version: LEARNING_BRIDGE_VERSION,
             source: 'learning',
             type: 'pointer-down',
+        }
+    }
+    if (source === 'nexora-learning' && type === 'nexora:dashboard:state') {
+        return {
+            protocol: LEARNING_BRIDGE_PROTOCOL,
+            version: LEARNING_BRIDGE_VERSION,
+            source: 'learning',
+            type: 'dashboard-state',
+            view: String(v.view || ''),
+            side_tab: String(v.side_tab || ''),
         }
     }
     return null

@@ -58,6 +58,8 @@ const emit = defineEmits<{
 const frameRef = ref<HTMLIFrameElement | null>(null)
 const loading = ref(true)
 const hasLoaded = ref(false)
+/** load 前收到的宿主命令队列(load 后补发,见 postCommand) */
+const pendingCommands: Record<string, unknown>[] = []
 
 const frameSrc = computed(() => {
     const raw = String(props.frameUrl || '').trim()
@@ -100,14 +102,24 @@ function postToLearning(message: Record<string, unknown>): void {
     frame.contentWindow.postMessage(envelope, getFrameOrigin())
 }
 
-/** 对外暴露：供 ChatView 转发 HostLearningCommand */
+/**
+ * 对外暴露：供 ChatView 转发 HostLearningCommand。
+ * iframe 应用层监听器注册晚于 load 事件(对齐原版 pendingDashboardTab 指令留存):
+ * 首帧命令入队,load 后统一补发,避免挂载时序导致指令丢失。
+ */
 function postCommand(command: Record<string, unknown>): void {
+    if (!hasLoaded.value) {
+        pendingCommands.push(command)
+        return
+    }
     postToLearning(command)
 }
 
 function handleFrameLoad(): void {
     loading.value = false
     hasLoaded.value = true
+    const queued = pendingCommands.splice(0, pendingCommands.length)
+    queued.forEach((command) => postToLearning(command))
     // 首帧加载后立即下发 layout 状态（sidebar 是否为 overlay 抽屉）
     postLayoutState()
 }
@@ -124,10 +136,34 @@ function isSidebarOverlayLayout(): boolean {
     }
 }
 
+/**
+ * 宿主侧栏功能区入口是否可见(对齐原版 isSidebarNavActuallyVisible):
+ * iframe 据此隐藏自身顶部 kicker tab 行,避免宿主/iframe 双重导航
+ */
+function isSidebarNavVisible(): boolean {
+    if (!props.open) return false
+
+    try {
+        const sidebar = document.getElementById('sidebar')
+
+        if (!sidebar || sidebar.classList.contains('collapsed')) {
+            return false
+        }
+    } catch {
+        return false
+    }
+
+    return !isSidebarOverlayLayout()
+}
+
 function postLayoutState(): void {
     postToLearning({
         type: 'layout',
         sidebar_auto_collapse: isSidebarOverlayLayout(),
+    })
+    postToLearning({
+        type: 'dashboard-layout',
+        nav_visible: isSidebarNavVisible(),
     })
 }
 

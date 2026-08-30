@@ -49,26 +49,75 @@
 
         <div class="sidebar-action">
             <div class="sidebar-toolbar" aria-label="顶部工具栏">
-                <button id="newChatBtn" class="toolbar-item" type="button" @click="handleNewChat">
-                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
-                    <span>New Chat</span>
+                <button id="newChatBtn" class="toolbar-item" type="button" @click="handlePrimaryAction">
+                    <i class="fa-solid" :class="isLearningMode ? 'fa-graduation-cap' : 'fa-plus'" aria-hidden="true"></i>
+                    <span>{{ isLearningMode ? 'New Learning' : 'New Chat' }}</span>
                 </button>
-                <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
-                    <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
-                    <span>Workspaces</span>
-                </button>
-                <button id="fileCenterBtn" class="toolbar-item" type="button" @click="emit('open-files')">
-                    <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                    <span>Files</span>
-                </button>
-                <button id="knowledgeMgmtBtn" class="toolbar-item" type="button" @click="emit('open-knowledge-mgmt')">
-                    <i class="fa-solid fa-book" aria-hidden="true"></i>
-                    <span>Knowledge</span>
-                </button>
+                <template v-if="!isLearningMode">
+                    <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
+                        <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
+                        <span>Workspaces</span>
+                    </button>
+                    <button id="fileCenterBtn" class="toolbar-item" type="button" @click="emit('open-files')">
+                        <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+                        <span>Files</span>
+                    </button>
+                    <button id="knowledgeMgmtBtn" class="toolbar-item" type="button" @click="emit('open-knowledge-mgmt')">
+                        <i class="fa-solid fa-book" aria-hidden="true"></i>
+                        <span>Knowledge</span>
+                    </button>
+                </template>
+                <template v-else>
+                    <!--
+                        Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS):点击经 bridge
+                        下发 dashboard 指令,iframe 回报 dashboard-state 驱动 is-active 高亮
+                    -->
+                    <template v-for="entry in learningNavEntries" :key="entry.key">
+                        <div
+                            v-if="entry.children"
+                            class="learning-nav-group"
+                            :class="{ 'is-open': openNavGroups.has(entry.key), 'is-active': isNavActive(entry.key) }"
+                        >
+                            <button
+                                class="toolbar-item learning-nav-item"
+                                type="button"
+                                :aria-expanded="openNavGroups.has(entry.key) ? 'true' : 'false'"
+                                @click="handleLearningNavGroup(entry)"
+                            >
+                                <i class="fa-solid" :class="entry.icon" aria-hidden="true"></i>
+                                <span>{{ entry.label }}</span>
+                                <i class="fa-solid fa-chevron-down learning-nav-caret" aria-hidden="true"></i>
+                            </button>
+                            <div v-show="openNavGroups.has(entry.key)" class="learning-nav-menu">
+                                <button
+                                    v-for="child in entry.children"
+                                    :key="child.key"
+                                    class="toolbar-item learning-nav-subitem"
+                                    :class="{ 'is-active': isNavActive(child.key) }"
+                                    type="button"
+                                    @click="emitLearningNav(child.kind, child.key)"
+                                >
+                                    <i class="fa-solid" :class="child.icon" aria-hidden="true"></i>
+                                    <span>{{ child.label }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <button
+                            v-else
+                            class="toolbar-item learning-nav-item"
+                            :class="{ 'is-active': isNavActive(entry.key) }"
+                            type="button"
+                            @click="emitLearningNav('tab', entry.key)"
+                        >
+                            <i class="fa-solid" :class="entry.icon" aria-hidden="true"></i>
+                            <span>{{ entry.label }}</span>
+                        </button>
+                    </template>
+                </template>
             </div>
         </div>
 
-        <div class="sidebar-content" id="conversationList">
+        <div v-show="!isLearningMode" class="sidebar-content" id="conversationList">
             <div
                 v-for="row in store.branchRows"
                 :key="row.conversation.id"
@@ -125,6 +174,28 @@
 
             <div v-if="!store.conversations.length" class="sidebar-empty">
                 暂无会话
+            </div>
+        </div>
+
+        <!--
+            Learning 侧栏面板(对齐原版 #learningSidebarPanel):
+            数据 = 宿主 learning 作用域会话(conversation_mode === 'learning'),
+            点击在主聊天区打开(侧栏内停靠聊天属阶段3,原版 renderSidebarChat 等价物)
+        -->
+        <div v-show="isLearningMode" class="sidebar-content learning-sidebar-panel">
+            <div v-if="!learningSessions.length" class="learning-sidebar-empty">
+                暂无学习会话
+            </div>
+            <div
+                v-for="session in learningSessions"
+                :key="session.id"
+                class="conversation-item"
+                :class="{ active: session.id === store.currentId }"
+                :data-conversation-id="session.id"
+                :title="session.title"
+                @click="emit('open-learning-conversation', session.id)"
+            >
+                <span class="title">{{ session.title }}</span>
             </div>
         </div>
 
@@ -210,6 +281,9 @@
         'open-trash': []
         'open-timeline': []
         'open-learning': []
+        'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
+        'learning-new': []
+        'open-learning-conversation': [conversationId: string]
         'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
@@ -217,6 +291,8 @@
         collapsed?: boolean
         learningEnabled?: boolean
         brandMode?: 'nexora' | 'learning' | 'workspace'
+        /** iframe dashboard 状态回报(view/side_tab),驱动学习功能区入口高亮 */
+        learningNavState?: { view?: string; side_tab?: string }
     }>()
 
     const router = useRouter()
@@ -377,7 +453,110 @@
     /** 品牌栏状态：徽标切换与下划线细节（对齐原版 sidebar_brand_navigation.js） */
     const learningEnabled = computed(() => props.learningEnabled ?? false)
     const brandMode = computed<'nexora' | 'learning' | 'workspace'>(() => props.brandMode ?? 'nexora')
+    const isLearningMode = computed(() => brandMode.value === 'learning')
     const showNexoraTab = computed(() => brandMode.value !== 'workspace')
+
+    // ── Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS + 学习导航分组) ──
+    interface LearningNavChild {
+        key: string
+        label: string
+        icon: string
+        kind: 'tab' | 'studio'
+    }
+
+    interface LearningNavEntry {
+        key: string
+        label: string
+        icon: string
+        children?: LearningNavChild[]
+    }
+
+    const learningNavEntries: LearningNavEntry[] = [
+        { key: 'progress', label: '学习进度', icon: 'fa-chart-line' },
+        { key: 'materials', label: '课程', icon: 'fa-graduation-cap' },
+        {
+            key: 'push',
+            label: '资源工作台',
+            icon: 'fa-book-open',
+            children: [
+                { key: 'resource', label: '资源工作台', icon: 'fa-layer-group', kind: 'studio' },
+                { key: 'video', label: '视频工作台', icon: 'fa-clapperboard', kind: 'studio' },
+            ],
+        },
+        {
+            key: 'questionBank',
+            label: '模拟练习',
+            icon: 'fa-pen-to-square',
+            children: [
+                { key: 'questionBankMistakes', label: '错题本', icon: 'fa-book-bookmark', kind: 'tab' },
+            ],
+        },
+        { key: 'profileCenter', label: '画像中心', icon: 'fa-user-pen' },
+        { key: 'feed', label: '动态中心', icon: 'fa-rss' },
+    ]
+
+    /** 分组展开态(key → 是否展开),原版默认折叠 */
+    const openNavGroups = ref(new Set<string>())
+
+    /**
+     * 功能区入口高亮判定(对齐原版 handleDashboardStatePayload.matchesNavKey):
+     * 独立视图按 view 匹配;dashboard 内功能区按 view==='dashboard' + side_tab 匹配
+     */
+    function isNavActive(tabKey: string): boolean {
+        const state = props.learningNavState
+
+        if (!state) {
+            return false
+        }
+
+        const view = String(state.view || '').trim().toLowerCase()
+
+        if (tabKey === 'materials') {
+            return view === 'materials'
+        }
+
+        if (tabKey === 'profileCenter') {
+            return view === 'profilecenter'
+        }
+
+        if (tabKey === 'questionBankMistakes') {
+            return view === 'dashboard' && String(state.side_tab || '') === 'questionBank'
+        }
+
+        return view === 'dashboard' && String(state.side_tab || '') === tabKey
+    }
+
+    function emitLearningNav(kind: 'tab' | 'studio', key: string): void {
+        emit('learning-nav', { kind, key })
+    }
+
+    function handleLearningNavGroup(entry: LearningNavEntry): void {
+        // 分组父按钮 = 展开/收起子菜单 + 下发对应 dashboard tab(对齐原版父按钮绑定)
+        const next = new Set(openNavGroups.value)
+
+        if (next.has(entry.key)) {
+            next.delete(entry.key)
+        } else {
+            next.add(entry.key)
+        }
+
+        openNavGroups.value = next
+        emitLearningNav('tab', entry.key)
+    }
+
+    /** 学习会话列表(对齐原版 learningSidebarPanel:宿主 learning 作用域会话) */
+    const learningSessions = computed<ConversationSummary[]>(() => {
+        return store.conversations.filter((item) => item.conversation_mode === 'learning')
+    })
+
+    /** 主按钮:learning 模式为 New Learning(草稿态,学习作用域标记随阶段3发送路径接通) */
+    function handlePrimaryAction(): void {
+        if (isLearningMode.value) {
+            emit('learning-new')
+            return
+        }
+        void handleNewChat()
+    }
 
     function handleBrandClick(mode: 'nexora' | 'learning' | 'workspace'): void {
         if (mode === 'learning' && !learningEnabled.value) return

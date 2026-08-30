@@ -8,6 +8,9 @@
     const LAYOUT_TYPE = 'nexora:course-workspace:layout';
     const POINTER_TYPE = 'nexora:learning-frame:pointerdown';
     const USER_OPEN_TYPE = 'nexora:course-workspace:user-open';
+    const DASHBOARD_OPEN_TAB_TYPE = 'nexora:dashboard:open-tab';
+    const DASHBOARD_OPEN_STUDIO_TYPE = 'nexora:dashboard:open-studio';
+    const DASHBOARD_LAYOUT_TYPE = 'nexora:dashboard:layout';
 
     let lastPayloadKey = '';
     let lastLectureId = '';
@@ -356,10 +359,35 @@
             };
         }
 
+        if (type === 'open-dashboard-tab') {
+            return {
+                source: HOST_SOURCE,
+                type: DASHBOARD_OPEN_TAB_TYPE,
+                tab: String(src.tab || ''),
+            };
+        }
+
+        if (type === 'open-studio') {
+            return {
+                source: HOST_SOURCE,
+                type: DASHBOARD_OPEN_STUDIO_TYPE,
+                studio: String(src.studio || ''),
+            };
+        }
+
+        if (type === 'dashboard-layout') {
+            return {
+                source: HOST_SOURCE,
+                type: DASHBOARD_LAYOUT_TYPE,
+                nav_visible: !!src.nav_visible,
+            };
+        }
+
         return src;
     }
 
     function handleHostAction(payload) {
+        const isV1Envelope = !!(payload && typeof payload === 'object' && payload.protocol === 'nexora-learning');
         const src = normalizeHostEnvelope(payload);
 
         if (String(src.source || '').trim().toLowerCase() !== HOST_SOURCE) {
@@ -367,6 +395,16 @@
         }
 
         const type = String(src.type || '').trim().toLowerCase();
+
+        // dashboard 系消息的消费方是 iframe 内应用层监听器(09_events_init.js),bridge 只做
+        // 协议转换:新信封归一化为旧格式后回投同窗口一次,应用层按 source=nexora-host 接收。
+        // 回投仅限新信封来源,归一化产物本身无 protocol 字段,天然不会二次回投。
+        if (type === DASHBOARD_OPEN_TAB_TYPE || type === DASHBOARD_OPEN_STUDIO_TYPE || type === DASHBOARD_LAYOUT_TYPE) {
+            if (isV1Envelope) {
+                window.postMessage(src, '*');
+            }
+            return;
+        }
 
         if (type === LAYOUT_TYPE) {
             const nextCollapse = !!src.sidebar_auto_collapse;

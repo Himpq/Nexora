@@ -15,6 +15,7 @@
             :collapsed="sidebarCollapsed"
             :learning-enabled="learningEnabled"
             :brand-mode="sidebarBrandMode"
+            :learning-nav-state="learningDashboardState"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
             @open-chat="handleOpenLearningChat"
@@ -22,6 +23,9 @@
             @open-files="handleOpenFileCenter"
             @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
             @open-learning="handleOpenLearning"
+            @learning-nav="handleLearningNav"
+            @learning-new="handleLearningNew"
+            @open-learning-conversation="handleOpenLearningConversation"
             @open-trash="trashOpen = true"
             @open-timeline="timelineOpen = true"
             @view-branch-source="handleViewBranchSource"
@@ -502,10 +506,11 @@
 
     // ── Learning 薄挂载状态（P0）──────────────────────
     const learningFrameRef = ref<InstanceType<typeof LearningFrameView> | null>(null)
-    void learningFrameRef
     const learningFrameTitle = ref('NexoraLearning')
     const learningEnabled = ref(true)
     const learningFrontendUrl = ref('')
+    /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
+    const learningDashboardState = ref<{ view: string; side_tab: string }>({ view: '', side_tab: '' })
 
     const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
 
@@ -547,6 +552,11 @@
     }
     watch([learningOpen, learningEnabled], syncLearningBodyClass, { immediate: true })
 
+    // 侧栏折叠改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
+    watch(sidebarCollapsed, () => {
+        learningFrameRef.value?.postLayoutState()
+    })
+
     function handleOpenLearning(): void {
         if (!learningEnabled.value) {
             showToast('Learning 未启用，请在设置中开启', 'warning')
@@ -573,12 +583,13 @@
             return
         }
         if (message.type === 'open-chat-conversation') {
-            const cid = String(message.conversation_id || '').trim()
-            if (cid) {
-                backToChat()
-                void conversationStore.openConversation(cid).catch((error: unknown) => {
-                    showError(error instanceof Error ? error.message : '打开会话失败')
-                })
+            handleOpenLearningConversation(String(message.conversation_id || ''))
+            return
+        }
+        if (message.type === 'dashboard-state') {
+            learningDashboardState.value = {
+                view: String(message.view || ''),
+                side_tab: String(message.side_tab || ''),
             }
             return
         }
@@ -588,6 +599,43 @@
                 document.body.classList.remove('mobile-sidebar-open')
             }
             return
+        }
+    }
+
+    /** 学习会话在主聊天区打开(iframe open-chat-conversation 与侧栏列表点击共用) */
+    function handleOpenLearningConversation(conversationId: string): void {
+        const cid = String(conversationId || '').trim()
+        if (!cid) return
+
+        backToChat()
+        void conversationStore.openConversation(cid).catch((error: unknown) => {
+            showError(error instanceof Error ? error.message : '打开会话失败')
+        })
+    }
+
+    /** 侧栏功能区入口 → iframe dashboard 指令(对齐原版 openLearningDashboardSurface/openLearningStudio) */
+    function handleLearningNav(command: { kind: 'tab' | 'studio'; key: string }): void {
+        const frame = learningFrameRef.value
+        if (!frame) return
+
+        if (!learningOpen.value) {
+            openView('learning')
+        }
+
+        if (command.kind === 'studio') {
+            frame.postCommand({ type: 'open-studio', studio: command.key })
+            return
+        }
+
+        frame.postCommand({ type: 'open-dashboard-tab', tab: command.key })
+    }
+
+    /** New Learning:草稿态新会话;学习作用域标记随阶段3侧栏停靠聊天发送路径接通 */
+    async function handleLearningNew(): Promise<void> {
+        try {
+            await conversationStore.newConversation()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '创建会话失败')
         }
     }
 
