@@ -241,7 +241,7 @@ _BROWSER_OLLAMA_STATUS_POLL_SEC = 10.0
 _BROWSER_OLLAMA_STATUS_IDLE_SLEEP_SEC = 5.0
 _MODELS_CONFIG_SYNC_LAST_ERROR = ''
 _CLIENT_CACHE: Dict[str, Any] = {}
-_SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer()
+_SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer(model_module_name="App.Core.model")
 
 
 def _move_resource_file_if_needed(old_path: str, new_path: str):

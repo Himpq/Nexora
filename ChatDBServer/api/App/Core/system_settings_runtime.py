@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 class SystemSettingsRuntimeSyncer:
     """将管理员系统设置同步到当前 Python 进程。"""
 
-    def __init__(self, model_module_name: str = "model"):
+    def __init__(self, model_module_name: str = "App.Core.model"):
         self.model_module_name = model_module_name
 
     def sync_after_save(
