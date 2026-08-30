@@ -36,7 +36,9 @@
         />
 
         <main class="main-content">
+            <!-- Learning 视图由 iframe 占满内容区,宿主顶栏无承载信息,整体隐藏(返回走品牌栏) -->
             <ChatHeader
+                v-show="!learningOpen"
                 :models="modelStore.models"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
