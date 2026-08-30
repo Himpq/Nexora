@@ -79,50 +79,127 @@
                 </template>
                 <template v-else>
                     <!--
-                        Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS):点击经 bridge
-                        下发 dashboard 指令,iframe 回报 dashboard-state 驱动 is-active 高亮
+                        Learning 功能区入口(结构/文案对齐原版 chat.html learning nav):
+                        平项走 toolbar-item,分组走 nexoracode-sidebar-project 行结构
+                        (主按钮=导航,独立 caret=折叠),点击经 bridge 下发 dashboard 指令,
+                        iframe 回报 dashboard-state 驱动 is-active 高亮
                     -->
-                    <template v-for="entry in learningNavEntries" :key="entry.key">
-                        <div
-                            v-if="entry.children"
-                            class="learning-nav-group"
-                            :class="{ 'is-open': openNavGroups.has(entry.key), 'is-active': isNavActive(entry.key) }"
-                        >
+                    <button
+                        id="learningProgressBtn"
+                        class="toolbar-item learning-nav-item"
+                        :class="{ 'is-active': isNavActive('progress') }"
+                        type="button"
+                        @click="emitLearningNav('tab', 'progress')"
+                    >
+                        <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
+                        <span>课程进度</span>
+                    </button>
+                    <button
+                        id="learningCoursesBtn"
+                        class="toolbar-item learning-nav-item"
+                        :class="{ 'is-active': isNavActive('materials') }"
+                        type="button"
+                        @click="emitLearningNav('tab', 'materials')"
+                    >
+                        <i class="fa-solid fa-graduation-cap" aria-hidden="true"></i>
+                        <span>课程列表</span>
+                    </button>
+                    <div
+                        id="learningResourcesGroup"
+                        class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item"
+                        :class="{ 'is-collapsed': !openNavGroups.has('push'), 'is-active': isNavActive('push') }"
+                    >
+                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
                             <button
-                                class="toolbar-item learning-nav-item"
+                                id="learningResourcesBtn"
+                                class="nexoracode-sidebar-project-main learning-resource-nav-main"
                                 type="button"
-                                :aria-expanded="openNavGroups.has(entry.key) ? 'true' : 'false'"
-                                @click="handleLearningNavGroup(entry)"
+                                @click="emitLearningNav('tab', 'push')"
                             >
-                                <i class="fa-solid" :class="entry.icon" aria-hidden="true"></i>
-                                <span>{{ entry.label }}</span>
-                                <i class="fa-solid fa-chevron-down learning-nav-caret" aria-hidden="true"></i>
+                                <i class="fa-solid fa-book-open nexoracode-sidebar-project-icon" aria-hidden="true"></i>
+                                <span class="nexoracode-sidebar-project-name">学习资源</span>
                             </button>
-                            <div v-show="openNavGroups.has(entry.key)" class="learning-nav-menu">
+                            <span class="nexoracode-sidebar-actions">
                                 <button
-                                    v-for="child in entry.children"
-                                    :key="child.key"
-                                    class="toolbar-item learning-nav-subitem"
-                                    :class="{ 'is-active': isNavActive(child.key) }"
+                                    class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle"
                                     type="button"
-                                    @click="emitLearningNav(child.kind, child.key)"
+                                    aria-label="展开学习资源工作台"
+                                    title="展开学习资源工作台"
+                                    @click="toggleNavGroup('push')"
                                 >
-                                    <i class="fa-solid" :class="child.icon" aria-hidden="true"></i>
-                                    <span>{{ child.label }}</span>
+                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                </button>
+                            </span>
+                        </div>
+                        <div class="nexoracode-sidebar-project-conversations learning-resource-studio-menu">
+                            <div class="nexoracode-sidebar-project-conversations-inner">
+                                <button class="learning-resource-studio-item" type="button" @click="emitLearningNav('studio', 'resource')">
+                                    <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+                                    <span>学习资源工作台</span>
+                                </button>
+                                <button class="learning-resource-studio-item" type="button" @click="emitLearningNav('studio', 'video')">
+                                    <i class="fa-solid fa-clapperboard" aria-hidden="true"></i>
+                                    <span>视频工作台</span>
                                 </button>
                             </div>
                         </div>
-                        <button
-                            v-else
-                            class="toolbar-item learning-nav-item"
-                            :class="{ 'is-active': isNavActive(entry.key) }"
-                            type="button"
-                            @click="emitLearningNav('tab', entry.key)"
-                        >
-                            <i class="fa-solid" :class="entry.icon" aria-hidden="true"></i>
-                            <span>{{ entry.label }}</span>
-                        </button>
-                    </template>
+                    </div>
+                    <div
+                        id="learningPracticeGroup"
+                        class="nexoracode-sidebar-project learning-resource-nav-group learning-nav-item"
+                        :class="{ 'is-collapsed': !openNavGroups.has('questionBank'), 'is-active': isNavActive('questionBank') }"
+                    >
+                        <div class="nexoracode-sidebar-project-row learning-resource-nav-row">
+                            <button
+                                id="learningPracticeBtn"
+                                class="nexoracode-sidebar-project-main learning-resource-nav-main"
+                                type="button"
+                                @click="emitLearningNav('tab', 'questionBank')"
+                            >
+                                <i class="fa-solid fa-pen-to-square nexoracode-sidebar-project-icon" aria-hidden="true"></i>
+                                <span class="nexoracode-sidebar-project-name">模拟练习</span>
+                            </button>
+                            <span class="nexoracode-sidebar-actions">
+                                <button
+                                    class="nexoracode-sidebar-icon-btn nexoracode-sidebar-caret-btn learning-resource-nav-toggle"
+                                    type="button"
+                                    aria-label="展开模拟练习"
+                                    title="展开模拟练习"
+                                    @click="toggleNavGroup('questionBank')"
+                                >
+                                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                </button>
+                            </span>
+                        </div>
+                        <div class="nexoracode-sidebar-project-conversations learning-resource-studio-menu">
+                            <div class="nexoracode-sidebar-project-conversations-inner">
+                                <button class="learning-resource-studio-item" type="button" @click="emitLearningNav('tab', 'questionBankMistakes')">
+                                    <i class="fa-solid fa-book-bookmark" aria-hidden="true"></i>
+                                    <span>错题本</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <button
+                        id="learningProfileBtn"
+                        class="toolbar-item learning-nav-item"
+                        :class="{ 'is-active': isNavActive('profileCenter') }"
+                        type="button"
+                        @click="emitLearningNav('tab', 'profileCenter')"
+                    >
+                        <i class="fa-solid fa-user-pen" aria-hidden="true"></i>
+                        <span>画像中心</span>
+                    </button>
+                    <button
+                        id="learningFeedBtn"
+                        class="toolbar-item learning-nav-item"
+                        :class="{ 'is-active': isNavActive('feed') }"
+                        type="button"
+                        @click="emitLearningNav('tab', 'feed')"
+                    >
+                        <i class="fa-solid fa-rss" aria-hidden="true"></i>
+                        <span>动态中心</span>
+                    </button>
                 </template>
             </div>
         </div>
@@ -188,84 +265,111 @@
         </div>
 
         <!--
-            Learning 侧栏面板(对齐原版 ensureLearningSidebarLayout 双视图):
-            list = 学习会话列表(宿主 learning 作用域会话);conversation = 侧栏内对话,
-            输入坞经 #learning-sidebar-input-slot 停靠(对齐原版 renderSidebarChat)
+            Learning 侧栏面板(结构/样式对齐原版 ensureLearningSidebarLayout + learning_mode.css):
+            list = 学习会话列表(无课程归属的会话按原版渲染为根级平铺);
+            conversation = 侧栏内对话,compose 为原版极简 textarea + 发送/中断方块按钮
         -->
-        <div v-show="isLearningMode" class="sidebar-content learning-sidebar-panel">
-            <section
-                v-show="learningSidebarView === 'list'"
-                class="learning-sidebar-conversation-section"
-                aria-label="Learning 对话列表"
-            >
-                <div class="learning-sidebar-conversation-header">
-                    <span class="learning-sidebar-conversation-title">Learning 对话</span>
-                    <span class="learning-sidebar-conversation-count">{{ learningSessions.length }}</span>
-                </div>
-                <div v-if="!learningSessions.length" class="learning-sidebar-empty">
-                    暂无 Learning 对话
-                </div>
-                <div
-                    v-for="session in learningSessions"
-                    :key="session.id"
-                    class="conversation-item learning-sidebar-conversation-item"
-                    :class="{ active: session.id === store.currentId, 'is-streaming': isStreamingItem(session.id) }"
-                    :data-conversation-id="session.id"
-                    :data-pin="isPinned(session.id) ? '1' : '0'"
-                    :title="session.title"
-                    @click="emit('open-learning-conversation', session.id)"
+        <div
+            v-show="isLearningMode"
+            class="sidebar-content learning-sidebar-panel"
+            :class="learningSidebarView === 'conversation' ? 'is-conversation-mode' : 'is-list-mode'"
+        >
+            <div class="learning-sidebar-layout" :class="learningSidebarView === 'conversation' ? 'is-conversation' : 'is-list'">
+                <section
+                    v-show="learningSidebarView === 'list'"
+                    class="learning-sidebar-conversation-section"
+                    aria-label="Learning 对话列表"
                 >
-                    <span class="title">
-                        <i
-                            v-if="isPinned(session.id)"
-                            class="fa-solid fa-thumbtack conversation-pin-icon"
-                            aria-hidden="true"
-                        ></i>
-                        {{ session.title }}
-                    </span>
-                    <span class="conversation-item-right">
-                        <span
-                            v-if="isStreamingItem(session.id)"
-                            class="conversation-stream-indicator is-loading"
-                            title="模型正在回复"
-                            aria-hidden="true"
-                        >
-                            <i class="fa-solid fa-circle-notch fa-spin"></i>
-                        </span>
-                        <button
-                            class="btn-icon-small delete-chat"
-                            type="button"
-                            aria-label="删除 Learning 对话"
-                            title="删除对话"
-                            @click.stop="handleDelete(session)"
-                        >
-                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>
-                    </span>
-                </div>
-            </section>
-
-            <section
-                v-show="learningSidebarView === 'conversation'"
-                class="learning-sidebar-chat"
-                aria-label="Learning 对话"
-            >
-                <div ref="learningChatLogRef" class="learning-sidebar-chat-log" @scroll="handleChatLogScroll">
-                    <div v-if="!store.messages.length" class="learning-sidebar-chat-empty">
-                        结合当前学习上下文,开始提问…
+                    <div class="learning-sidebar-conversation-header">
+                        <span class="learning-sidebar-conversation-title">Learning 对话</span>
+                        <span class="learning-sidebar-conversation-count">{{ learningSessions.length }}</span>
                     </div>
-                    <MessageItem
-                        v-for="message in store.messages"
-                        :key="message.index"
-                        :message="message"
-                        readonly
-                        @open-image="emit('open-image', $event)"
-                    />
-                </div>
-                <div class="learning-sidebar-chat-compose">
-                    <div id="learning-sidebar-input-slot"></div>
-                </div>
-            </section>
+                    <div class="learning-sidebar-conversation-list">
+                        <div v-if="!learningSessions.length" class="learning-sidebar-conversation-empty">
+                            暂无 Learning 对话
+                        </div>
+                        <div
+                            v-for="session in learningSessions"
+                            :key="session.id"
+                            class="conversation-item learning-sidebar-conversation-item"
+                            :class="{ active: session.id === store.currentId, 'is-streaming': isStreamingItem(session.id) }"
+                            :data-conversation-id="session.id"
+                            :data-pin="isPinned(session.id) ? '1' : '0'"
+                            :title="session.title"
+                            tabindex="0"
+                            @click="emit('open-learning-conversation', session.id)"
+                        >
+                            <span class="title">
+                                <i
+                                    v-if="isPinned(session.id)"
+                                    class="fa-solid fa-thumbtack conversation-pin-icon"
+                                    aria-hidden="true"
+                                ></i>
+                                {{ session.title }}
+                            </span>
+                            <span class="conversation-item-right">
+                                <span
+                                    v-if="isStreamingItem(session.id)"
+                                    class="conversation-stream-indicator is-loading"
+                                    title="模型正在回复"
+                                    aria-hidden="true"
+                                >
+                                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                                </span>
+                                <button
+                                    class="btn-icon-small delete-chat"
+                                    type="button"
+                                    aria-label="删除 Learning 对话"
+                                    title="删除对话"
+                                    @click.stop="handleDelete(session)"
+                                >
+                                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                                </button>
+                            </span>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    v-show="learningSidebarView === 'conversation'"
+                    class="learning-sidebar-chat-host"
+                    aria-label="Learning 对话"
+                >
+                    <div class="learning-sidebar-chat">
+                        <div ref="learningChatLogRef" class="learning-sidebar-chat-log" @scroll="handleChatLogScroll">
+                            <div
+                                v-for="message in store.messages"
+                                :key="message.index"
+                                class="learning-sidebar-chat-msg"
+                                :class="message.role === 'user' ? 'is-user' : 'is-assistant'"
+                            >
+                                <div class="learning-sidebar-chat-text">
+                                    <MarkdownView :content="message.content" />
+                                </div>
+                            </div>
+                        </div>
+                        <div class="learning-sidebar-chat-compose">
+                            <textarea
+                                v-model="learningChatDraft"
+                                class="learning-sidebar-chat-input"
+                                placeholder="结合当前学习上下文继续提问…"
+                                @keydown="handleLearningChatKeydown"
+                            ></textarea>
+                            <button
+                                class="learning-sidebar-chat-send"
+                                :class="{ 'is-stop': store.generating }"
+                                type="button"
+                                :aria-label="store.generating ? '中断' : '发送'"
+                                :title="store.generating ? '中断' : '发送'"
+                                @click="handleLearningChatSubmit()"
+                            >
+                                <svg v-if="store.generating" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
+                                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            </div>
         </div>
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
@@ -339,7 +443,7 @@
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
     import ContextMenu from './ContextMenu.vue'
-    import MessageItem from './MessageItem.vue'
+    import MarkdownView from './MarkdownView.vue'
 
     const emit = defineEmits<{
         'toggle-mobile': []
@@ -353,9 +457,10 @@
         'open-learning': []
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
         'learning-new': []
+        'learning-send': [content: string]
+        'learning-stop': []
         'open-learning-conversation': [conversationId: string]
         'update:learning-sidebar-view': [view: 'list' | 'conversation']
-        'open-image': [url: string]
         'view-branch-source': [parentConversationId: string, messageIndex: number]
     }>()
 
@@ -530,47 +635,22 @@
     const isLearningMode = computed(() => brandMode.value === 'learning')
     const showNexoraTab = computed(() => brandMode.value !== 'workspace')
 
-    // ── Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS + 学习导航分组) ──
-    interface LearningNavChild {
-        key: string
-        label: string
-        icon: string
-        kind: 'tab' | 'studio'
+    // ── Learning 功能区入口(对齐原版 LEARNING_NAV_BUTTON_TABS + learning nav 分组) ──
+
+    /** 分组展开态(key → 是否展开);原版折叠态为 is-collapsed,caret 旋转 -90deg */
+    const openNavGroups = ref(new Set<string>(['push', 'questionBank']))
+
+    function toggleNavGroup(key: string): void {
+        const next = new Set(openNavGroups.value)
+
+        if (next.has(key)) {
+            next.delete(key)
+        } else {
+            next.add(key)
+        }
+
+        openNavGroups.value = next
     }
-
-    interface LearningNavEntry {
-        key: string
-        label: string
-        icon: string
-        children?: LearningNavChild[]
-    }
-
-    const learningNavEntries: LearningNavEntry[] = [
-        { key: 'progress', label: '学习进度', icon: 'fa-chart-line' },
-        { key: 'materials', label: '课程', icon: 'fa-graduation-cap' },
-        {
-            key: 'push',
-            label: '资源工作台',
-            icon: 'fa-book-open',
-            children: [
-                { key: 'resource', label: '资源工作台', icon: 'fa-layer-group', kind: 'studio' },
-                { key: 'video', label: '视频工作台', icon: 'fa-clapperboard', kind: 'studio' },
-            ],
-        },
-        {
-            key: 'questionBank',
-            label: '模拟练习',
-            icon: 'fa-pen-to-square',
-            children: [
-                { key: 'questionBankMistakes', label: '错题本', icon: 'fa-book-bookmark', kind: 'tab' },
-            ],
-        },
-        { key: 'profileCenter', label: '画像中心', icon: 'fa-user-pen' },
-        { key: 'feed', label: '动态中心', icon: 'fa-rss' },
-    ]
-
-    /** 分组展开态(key → 是否展开),原版默认折叠 */
-    const openNavGroups = ref(new Set<string>())
 
     /**
      * 功能区入口高亮判定(对齐原版 handleDashboardStatePayload.matchesNavKey):
@@ -604,20 +684,6 @@
         emit('learning-nav', { kind, key })
     }
 
-    function handleLearningNavGroup(entry: LearningNavEntry): void {
-        // 分组父按钮 = 展开/收起子菜单 + 下发对应 dashboard tab(对齐原版父按钮绑定)
-        const next = new Set(openNavGroups.value)
-
-        if (next.has(entry.key)) {
-            next.delete(entry.key)
-        } else {
-            next.add(entry.key)
-        }
-
-        openNavGroups.value = next
-        emitLearningNav('tab', entry.key)
-    }
-
     /** 学习会话列表(对齐原版 learningSidebarPanel:宿主 learning 作用域会话) */
     const learningSessions = computed<ConversationSummary[]>(() => {
         return store.conversations.filter((item) => item.conversation_mode === 'learning')
@@ -626,6 +692,7 @@
     // ── 侧栏对话视图(对齐原版 renderSidebarChat):消息跟随底部,用户上滚即暂停 ──
     const learningChatLogRef = ref<HTMLElement | null>(null)
     const chatLogPinned = ref(true)
+    const learningChatDraft = ref('')
 
     function handleChatLogScroll(): void {
         const el = learningChatLogRef.value
@@ -669,6 +736,37 @@
         },
         { immediate: true }
     )
+
+    /**
+     * 侧栏 compose 提交(对齐原版 learning-sidebar-chat-send):
+     * 生成中点击=中断,否则发送;Enter 发送 / Escape 中断
+     */
+    function handleLearningChatSubmit(): void {
+        if (store.generating) {
+            emit('learning-stop')
+            return
+        }
+
+        const text = learningChatDraft.value.trim()
+
+        if (!text) return
+
+        emit('learning-send', text)
+        learningChatDraft.value = ''
+    }
+
+    function handleLearningChatKeydown(event: KeyboardEvent): void {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            handleLearningChatSubmit()
+            return
+        }
+
+        if (event.key === 'Escape' && store.generating) {
+            event.preventDefault()
+            emit('learning-stop')
+        }
+    }
 
     /** 主按钮三态(对齐原版 updateLearningSidebarPrimaryAction):New Chat / New Learning / 返回上一级 */
     function handlePrimaryAction(): void {

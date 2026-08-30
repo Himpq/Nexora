@@ -246,108 +246,503 @@ body.learning-workspace-active .sidebar .btn-primary-outline:hover{
   contain: paint;
 }
 
-/* ── Learning 侧栏功能区入口(对齐原版 learning nav)与学习会话面板 ── */
-.sidebar .learning-nav-item .learning-nav-caret{
-  margin-left: auto;
-  font-size: 10px;
-  opacity: 0.65;
-  transition: transform 0.16s ease;
-}
+/* ── Learning 侧栏面板与功能区入口(样式移植自原版 learning_mode.css / style.css,类名一致) ── */
 
-.sidebar .learning-nav-group.is-open .learning-nav-caret{
-  transform: rotate(180deg);
-}
-
-/* 分组容器激活:任一子功能区命中 dashboard 状态时父按钮同态(对齐原版 group is-active) */
-body.learning-workspace-active .sidebar .learning-nav-group.is-active > .learning-nav-item{
-  background: rgba(31, 35, 42, 0.10);
-  color: var(--learning-sidebar-accent);
-  font-weight: 600;
-}
-
-.sidebar .learning-nav-menu{
-  padding: 0 0 4px 20px;
-}
-
-.sidebar .learning-nav-subitem{
-  min-height: 34px;
-  padding: 7px 10px;
-  font-size: 12.5px;
-  gap: 9px;
-}
-
+/* 面板容器与双视图滚动模式 */
 .learning-sidebar-panel{
   display: flex;
   flex-direction: column;
-  gap: 2px;
   padding-top: 10px;
   padding-bottom: 14px;
 }
-
-.learning-sidebar-empty{
-  padding: 18px 12px;
-  font-size: 12.5px;
-  color: var(--learning-sidebar-muted, #6b7280);
-  text-align: center;
+.learning-sidebar-panel.is-list-mode{
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.learning-sidebar-panel.is-conversation-mode{
+  overflow: hidden;
+}
+.learning-sidebar-layout{
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  color: var(--learning-sidebar-text, #253044);
+}
+.learning-sidebar-layout.is-list{
+  height: auto;
+  min-height: 100%;
 }
 
-/* 会话列表视图:标题行 + 计数(对齐原版 learning-sidebar-conversation-header) */
+/* 会话列表视图(header 原版默认隐藏,保留 DOM 供后续启用) */
 .learning-sidebar-conversation-section{
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
 }
-
 .learning-sidebar-conversation-header{
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 2px 8px 8px;
+  display: none;
 }
-
 .learning-sidebar-conversation-title{
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--learning-sidebar-muted, #6b7280);
-}
-
-.learning-sidebar-conversation-count{
+  color: #687386;
   font-size: 11px;
-  color: var(--learning-sidebar-muted, #6b7280);
+  font-weight: 650;
+  letter-spacing: 0.04em;
 }
-
-/* 侧栏对话视图:消息流跟随滚动 + 底部停靠输入坞(对齐原版 learning-sidebar-chat) */
-.learning-sidebar-chat{
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.learning-sidebar-chat-log{
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 4px 2px 10px;
-}
-
-.learning-sidebar-chat-empty{
-  padding: 24px 12px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--learning-sidebar-muted, #6b7280);
+.learning-sidebar-conversation-count{
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #e6e9ed;
+  color: #687386;
+  font-size: 10px;
+  line-height: 18px;
   text-align: center;
 }
-
-.learning-sidebar-chat-compose{
-  flex-shrink: 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--learning-sidebar-border, #e1e5ea);
+.learning-sidebar-conversation-list{
+  flex: 1;
+  min-height: 0;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.learning-sidebar-conversation-empty{
+  padding: 8px 12px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-/* 学习会话列表复用 .conversation-item 结构,body learning 配色已由全局规则接管 */
+/* 会话项(learning-sidebar-panel 作用域,覆盖主列表 conversation-item 基础样式) */
+.learning-sidebar-panel .learning-sidebar-conversation-item{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 6px 10px;
+  margin-bottom: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #1f2937;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item:hover,
+.learning-sidebar-panel .learning-sidebar-conversation-item:focus-visible{
+  border-color: #d1d5db;
+  background: #f9fafb;
+  color: #111827;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item.active{
+  position: relative;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 500;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item.active::before{
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 0 2px 2px 0;
+  background: #2563eb;
+  transform: translateY(-50%);
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item .title{
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item .conversation-item-right{
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 20px;
+  color: inherit;
+  font-size: 11px;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item .conversation-stream-indicator{
+  color: #64748b;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item .conversation-pin-icon{
+  margin-right: 6px;
+  color: #2563eb;
+  font-size: 11px;
+  opacity: 0.9;
+  vertical-align: -1px;
+}
+.learning-sidebar-panel .learning-sidebar-conversation-item .delete-chat{
+  color: #7a8493;
+}
+body.learning-workspace-active #newChatBtn[data-learning-primary-action="back"] i{
+  color: #687386;
+}
+
+/* 工具栏学习导航组(nexoracode-sidebar-project 基础,style.css 同名规则移植) */
+.nexoracode-sidebar-project-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.nexoracode-sidebar-project-main{
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.nexoracode-sidebar-project-icon{
+  font-size: 12px;
+  color: rgba(160, 160, 160, 0.75);
+  flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+.nexoracode-sidebar-project-name{
+  font-size: 13px;
+  font-weight: 500;
+  color: #d8d8d8;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+.nexoracode-sidebar-actions{
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.nexoracode-sidebar-project-row:hover .nexoracode-sidebar-actions{
+  opacity: 1;
+}
+.nexoracode-sidebar-icon-btn{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-sidebar);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.nexoracode-sidebar-caret-btn i{
+  transition: transform 0.22s ease;
+}
+.nexoracode-sidebar-project.is-collapsed .nexoracode-sidebar-project-row .nexoracode-sidebar-caret-btn i{
+  transform: rotate(-90deg);
+}
+.nexoracode-sidebar-project-conversations{
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: 2px 0 4px 14px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  transition: grid-template-rows 0.24s ease, margin 0.24s ease, border-color 0.24s ease;
+}
+.nexoracode-sidebar-project.is-collapsed .nexoracode-sidebar-project-conversations{
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  margin-bottom: 0;
+  border-color: transparent;
+}
+.nexoracode-sidebar-project-conversations-inner{
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* learning 亮色覆盖(learning_mode.css .learning-resource-nav-*) */
+.learning-resource-nav-group{
+  width: 100%;
+}
+.learning-resource-nav-group[hidden]{
+  display: none !important;
+}
+.learning-resource-nav-row.nexoracode-sidebar-project-row{
+  min-height: 40px;
+  box-sizing: border-box;
+  margin-bottom: 0;
+  padding: 6px 6px 6px 12px;
+  background: transparent;
+}
+.learning-resource-nav-main{
+  gap: 11px;
+}
+body.learning-workspace-active .learning-resource-nav-row:hover,
+body.learning-workspace-active .learning-resource-nav-group.is-active .learning-resource-nav-row{
+  background: rgba(31, 35, 42, 0.07);
+}
+body.learning-workspace-active .learning-resource-nav-main .nexoracode-sidebar-project-name{
+  color: var(--learning-sidebar-text);
+}
+body.learning-workspace-active .learning-resource-nav-row:hover .nexoracode-sidebar-project-name,
+body.learning-workspace-active .learning-resource-nav-group.is-active .nexoracode-sidebar-project-name{
+  color: var(--learning-sidebar-accent);
+}
+body.learning-workspace-active .learning-resource-nav-main .nexoracode-sidebar-project-icon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  color: #3b82f6;
+  font-size: 14px;
+}
+body.learning-workspace-active .learning-resource-nav-toggle{
+  color: var(--learning-sidebar-muted);
+}
+body.learning-workspace-active .learning-resource-nav-toggle:hover{
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
+}
+.learning-resource-nav-group .learning-resource-studio-menu{
+  width: calc(100% - 18px);
+  box-sizing: border-box;
+  margin: 3px 0 4px 18px;
+  padding: 3px 0 3px 9px;
+  border-left-color: var(--learning-sidebar-border);
+}
+.learning-resource-nav-group.is-collapsed .learning-resource-studio-menu{
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.learning-resource-studio-item{
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--learning-sidebar-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.learning-resource-studio-item i{
+  width: 14px;
+  min-width: 14px;
+  color: var(--learning-sidebar-accent);
+  font-size: 12px;
+  text-align: center;
+}
+.learning-resource-studio-item:hover{
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
+}
+
+/* 侧栏对话视图(learning_mode.css .learning-sidebar-chat-*) */
+.learning-sidebar-chat-host{
+  flex: 1;
+  min-height: 0;
+}
+.learning-sidebar-conversation-section[hidden],
+.learning-sidebar-chat-host[hidden]{
+  display: none !important;
+}
+.learning-sidebar-chat{
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  color: var(--learning-sidebar-text, #253044);
+}
+.learning-sidebar-chat-log{
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.58) transparent;
+}
+.learning-sidebar-chat-log::-webkit-scrollbar{
+  width: 7px;
+}
+.learning-sidebar-chat-log::-webkit-scrollbar-track{
+  background: transparent;
+}
+.learning-sidebar-chat-log::-webkit-scrollbar-thumb{
+  background: rgba(148, 163, 184, 0.48);
+  border-radius: 999px;
+}
+.learning-sidebar-chat-msg{
+  padding: 14px 4px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(225, 229, 234, 0.86);
+}
+.learning-sidebar-chat-msg.is-user{
+  align-self: flex-end;
+  width: min(76%, 310px);
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  background: #e9ecef;
+  border: 1px solid #d9dde3;
+  border-radius: 4px;
+}
+.learning-sidebar-chat-msg.is-assistant{
+  width: 100%;
+  background: transparent;
+}
+.learning-sidebar-chat-text{
+  color: var(--learning-sidebar-text, #253044);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.learning-sidebar-chat-text .markdown-body{
+  font-size: 13px;
+  line-height: 1.6;
+  color: inherit;
+  background: transparent;
+}
+.learning-sidebar-chat-text .markdown-body p{
+  margin: 0 0 0.7em;
+}
+.learning-sidebar-chat-text .markdown-body p:last-child{
+  margin-bottom: 0;
+}
+.learning-sidebar-chat-text .markdown-body ul,
+.learning-sidebar-chat-text .markdown-body ol{
+  margin: 0.45em 0 0.7em;
+  padding-left: 1em;
+}
+.learning-sidebar-chat-text .markdown-body blockquote{
+  margin: 0.7em 0;
+  padding: 0.1em 0 0.1em 0.8em;
+  border-left: 2px solid #cfd4dc;
+  color: #516070;
+}
+.learning-sidebar-chat-text .markdown-body pre{
+  margin: 0.75em 0;
+  padding: 10px 11px;
+  border-radius: 4px;
+  background: #f6f8fb;
+  border: 1px solid #dce5ee;
+  color: var(--learning-sidebar-text, #253044);
+  overflow: auto;
+}
+.learning-sidebar-chat-text .markdown-body code{
+  font-size: 12px;
+  color: #1e3a5f;
+}
+.learning-sidebar-chat-text .markdown-body pre code{
+  background: transparent;
+  padding: 0;
+}
+.learning-sidebar-chat-text .markdown-body img{
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: auto;
+  margin: 0.6em 0;
+  border-radius: 4px;
+}
+.learning-sidebar-chat-compose{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 10px;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid var(--learning-sidebar-border, #e1e5ea);
+  background: var(--learning-sidebar-bg, #f5f6f8);
+}
+.learning-sidebar-chat-input{
+  width: 100%;
+  height: 72px;
+  min-height: 72px;
+  max-height: 180px;
+  resize: none;
+  border-radius: 4px;
+  border: 1px solid #d6dbe2;
+  background: #ffffff;
+  color: var(--learning-sidebar-text, #253044);
+  padding: 12px;
+  font: inherit;
+  line-height: 1.45;
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+.learning-sidebar-chat-input:focus{
+  border-color: #8a929d;
+  background: #ffffff;
+  box-shadow: none;
+}
+.learning-sidebar-chat-input::placeholder{
+  color: #98a2b3;
+}
+.learning-sidebar-chat-send{
+  height: 40px;
+  width: 40px;
+  padding: 0;
+  border: 1px solid #303541;
+  border-radius: 4px;
+  background: #3f4654;
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.learning-sidebar-chat-send:hover{
+  border-color: #20242c;
+  background: #20242c;
+  color: #fff;
+}
+.learning-sidebar-chat-send.is-stop{
+  border-color: #b91c1c;
+  background: #dc2626;
+  color: #ffffff;
+}
 
 .sidebar-content::-webkit-scrollbar{
   width: 5px;

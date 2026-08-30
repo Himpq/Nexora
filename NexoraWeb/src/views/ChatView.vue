@@ -18,7 +18,8 @@
             :learning-nav-state="learningDashboardState"
             :learning-sidebar-view="learningSidebarView"
             @update:learning-sidebar-view="learningSidebarView = $event"
-            @open-image="handleOpenImage"
+            @learning-send="handleLearningSend"
+            @learning-stop="handleStop"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
             @open-chat="handleOpenLearningChat"
@@ -123,10 +124,6 @@
                     未停靠分支直接原地渲染,两分支共享同一份绑定(chatInputBindings)。
                 -->
                 <Teleport v-if="workspaceComposerDocked" to="#ws-detail-input-slot">
-                    <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
-                </Teleport>
-                <!-- Learning 侧栏对话视图:输入坞停靠进侧栏聊天区(对齐原版 learning-sidebar-chat-compose) -->
-                <Teleport v-else-if="learningComposerDocked" to="#learning-sidebar-input-slot">
                     <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
                 </Teleport>
                 <ChatInput v-else ref="chatInputRef" v-bind="chatInputBindings" />
@@ -666,6 +663,15 @@
         } catch (error) {
             showError(error instanceof Error ? error.message : '创建会话失败')
         }
+    }
+
+    /** 侧栏对话视图发送(对齐原版 bridge.send:默认开关,learning 作用域由 dock 态在 doSend 内标记) */
+    function handleLearningSend(content: string): void {
+        const trimmed = String(content || '').trim()
+
+        if (!trimmed) return
+
+        void handleSend(trimmed, { enableThinking: true, enableWebSearch: true, enableTools: true, toolsMode: 'auto_off' })
     }
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
