@@ -7914,6 +7914,13 @@ class Model(MailMixin):
                         tools_payload,
                         runtime_tool_names
                     )
+                # exclusive 任务仅下发限定工具（通用，无 Provider 分支）
+                exclusive_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
+                if exclusive_names:
+                    tools_payload = [
+                        t for t in tools_payload
+                        if self._extract_function_tool_spec(t) and self._extract_function_tool_spec(t)["name"] in exclusive_names
+                    ]
 
             # Responses API 下允许“仅联网搜索开关”生效（即使 enable_tools=false）
             if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
@@ -7993,6 +8000,13 @@ class Model(MailMixin):
                             tools_payload,
                             runtime_tool_names
                         )
+                    # exclusive 任务仅下发限定工具（通用）
+                    exclusive_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
+                    if exclusive_names:
+                        tools_payload = [
+                            t for t in tools_payload
+                            if self._extract_function_tool_spec(t) and self._extract_function_tool_spec(t)["name"] in exclusive_names
+                        ]
                     params["tools"] = tools_payload
                     # provider 级 native tools（来自 model_adapters）
                     native_tools = list(getattr(self, "native_search_tools", []) or [])
@@ -8016,7 +8030,11 @@ class Model(MailMixin):
             )
 
         if bool(getattr(self, "_require_function_tool_call", False)) and params.get("tools"):
-            params["tool_choice"] = "required"
+            # 通用 Completion API 仅保证 auto/null，required 在部分网关上会导致空转
+            params["tool_choice"] = "auto"
+            # 记忆类任务限制输出，避免 30k 扩写
+            if params.get("max_tokens") is None and params.get("max_completion_tokens") is None:
+                params["max_tokens"] = 800
 
         params = provider_adapter.apply_request_options(
             params,

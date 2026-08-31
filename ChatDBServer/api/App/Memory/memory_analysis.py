@@ -77,7 +77,6 @@ def _format_memory_tool(
         properties[argument_name] = {
             "type": "string",
             "description": argument_description,
-            "maxLength": 200 if argument_name == "reason" else MEMORY_PROFILE_MAX_CHARS
         }
         required.append(argument_name)
 
@@ -85,7 +84,6 @@ def _format_memory_tool(
         "type": "object",
         "properties": properties,
         "required": required,
-        "additionalProperties": False
     }
 
     if model._provider_use_responses_api(model.provider):
