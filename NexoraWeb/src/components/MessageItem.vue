@@ -106,6 +106,32 @@
                     {{ badgeExpanded && hasIoData ? badgeFullText : badgeText }}
                 </div>
 
+                <!-- 知识 diff 伪工具：挂在 assistant 首位，复用 tool-usage execution-flow 形态，避免独立 banner 时有时无 -->
+                <template v-if="message.role === 'assistant' && knowledgeDiffs.length">
+                    <div
+                        v-for="(diff, diffIndex) in knowledgeDiffs"
+                        :key="`knowledge-diff-${diffIndex}-${diff.scope}`"
+                        class="tool-usage execution-flow-item has-output expanded knowledge-diff-tool"
+                        :data-flow-kind="diff.scope === 'workspace' ? 'knowledge' : 'knowledge'"
+                    >
+                        <div class="tool-badge execution-flow-header">
+                            <span class="execution-flow-node" aria-hidden="true">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+                            </span>
+                            <span class="execution-flow-main">
+                                <span class="tool-name execution-flow-title">{{ diff.title }}</span>
+                            </span>
+                            <span class="tool-status execution-flow-summary">{{ diff.summary }}</span>
+                        </div>
+                        <div class="tool-output">
+                            <div v-for="row in diff.rows" :key="`${row.kind}-${row.title}`" class="knowledge-diff-row" :class="row.kind">
+                                <span class="knowledge-diff-sign">{{ row.kind === 'added' ? '+' : '-' }}</span>
+                                <span>{{ row.title }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
                 <!--
                     内容分段顺序渲染(思考/正文/工具链按输出时序交错):
                     思考行与工具行共用执行流程时间线形态;
@@ -339,6 +365,8 @@
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
 
+    import type { ConversationContextEvent } from '@/api/conversations'
+
     const props = withDefaults(defineProps<{
         message: ChatMessage
         streaming?: boolean
@@ -348,8 +376,11 @@
         conversationId?: string
         /** 只读模式(Workspace 共享对话):隐藏编辑/删除/重答/分支/版本切换与作答交互 */
         readonly?: boolean
+        /** 知识 diff 伪工具：按 effective 挂到 assistant 首位，复用 tool-usage 形态（非独立 banner） */
+        knowledgeEvents?: ConversationContextEvent[]
     }>(), {
         readonly: false,
+        knowledgeEvents: () => [],
     })
 
     const emit = defineEmits<{
@@ -369,6 +400,32 @@
 
     /** 用户手动展开过的工具徽标(分段索引 → 是否展开);默认全部收起 */
     const expandedTools = ref<Record<number, boolean>>({})
+
+    /** 知识 diff 伪工具（仅 assistant，首位展示，复用 tool-usage 样式） */
+    const knowledgeDiffs = computed(() => {
+        if (props.message.role !== 'assistant') return []
+        const events = Array.isArray(props.knowledgeEvents) ? props.knowledgeEvents : []
+        return events.map((event) => {
+            const scopeLabel = event.scope === 'workspace' ? 'Workspace' : '全局知识库'
+            const added = Array.isArray(event.added) ? event.added : []
+            const removed = Array.isArray(event.removed) ? event.removed : []
+            const rows: Array<{ kind: 'added' | 'removed'; title: string }> = []
+            for (const item of added) {
+                const title = typeof item === 'string' ? String(item).trim() : String((item as Record<string, unknown>).title || (item as Record<string, unknown>).name || '').trim()
+                if (title) rows.push({ kind: 'added', title })
+            }
+            for (const item of removed) {
+                const title = typeof item === 'string' ? String(item).trim() : String((item as Record<string, unknown>).title || (item as Record<string, unknown>).name || '').trim()
+                if (title) rows.push({ kind: 'removed', title })
+            }
+            return {
+                scope: event.scope,
+                title: `知识库已更新 · ${scopeLabel}`,
+                summary: `+${added.filter((x) => String(typeof x === 'string' ? x : (x as Record<string, unknown>).title || '').trim()).length} -${removed.filter((x) => String(typeof x === 'string' ? x : (x as Record<string, unknown>).title || '').trim()).length}`,
+                rows,
+            }
+        }).filter((d) => d.rows.length > 0)
+    })
 
     /** 文本类渲染项(思考/正文,携带源分段索引用于折叠状态键) */
     interface TextRenderItem {
@@ -1067,21 +1124,34 @@
         emit('edit-save', props.message, content)
     }
 
-    /** 助手消息模型徽标(对齐原版:metadata.model_name 优先,有 tool_calls 的中间轮不显示) */
+    /** 助手消息模型徽标(对齐原版:metadata.model_name 优先,仅流式中间轮隐藏,终态 completed/error 即使含 tool_calls 也展示) */
     const badgeText = computed(() => {
         if (props.message.role !== 'assistant') {
             return ''
         }
 
-        const hasToolCalls = Array.isArray(props.message.tool_calls) && props.message.tool_calls.length > 0
+        const trace = props.message.trace && typeof props.message.trace === 'object'
+            ? props.message.trace as Record<string, unknown>
+            : {}
+        const hasToolCalls = (Array.isArray(trace.tool_calls) && trace.tool_calls.length > 0)
+            || (Array.isArray(trace.events) && trace.events.some((event) => (
+                event && typeof event === 'object' && String((event as Record<string, unknown>).type || '') === 'function_call'
+            )))
 
-        if (hasToolCalls) {
+        const status = String((props.message as Record<string, unknown>).status || '').trim()
+        const isIntermediate = !!props.streaming && hasToolCalls && status !== 'completed' && status !== 'error'
+
+        if (isIntermediate) {
             return ''
         }
 
         const metadataName = readMetadataString('model_name')
+        const model = props.message.model && typeof props.message.model === 'object'
+            ? props.message.model as Record<string, unknown>
+            : {}
+        const v4ModelName = String(model.name || '').trim()
 
-        return metadataName || props.message.model_name || props.modelName || ''
+        return v4ModelName || metadataName || props.message.model_name || props.modelName || ''
     })
 
     /** 展开文本:模型名 - I/O: 输入/输出 + E/C 缓存命中(对齐原版 buildModelBadgeText + NexoraCode) */
@@ -1152,7 +1222,10 @@
 
     /** 本次轮次 I/O token(优先 window 口径,回退 cumulative) */
     const ioTokens = computed(() => {
-        const tokens = readMessageIoTokens(messageMetadata())
+        const tokens = readMessageIoTokens({
+            ...messageMetadata(),
+            usage: props.message.usage,
+        })
 
         return hasAnyIo(tokens.round) ? tokens.round : tokens.cumulative
     })
@@ -1192,10 +1265,10 @@
         __isCurrent: boolean
     }
 
-    /** 历史版本列表(metadata.versions 中的有内容变体,对齐原版 rawVersions 过滤) */
+    /** 历史版本列表(v4 versions 优先，兼容旧 metadata.versions)。 */
     const versionVariants = computed<VersionVariant[]>(() => {
         const metadata = messageMetadata()
-        const raw = metadata.versions
+        const raw = Array.isArray(props.message.versions) ? props.message.versions : metadata.versions
 
         if (!Array.isArray(raw)) {
             return []
@@ -1306,7 +1379,7 @@
     /** 归一化附件列表:url 取 asset_url || url(对齐原版 appendUserAttachments) */
     const attachments = computed<MessageAttachment[]>(() => {
         const metadata = messageMetadata()
-        const raw = metadata.attachments
+        const raw = Array.isArray(props.message.attachments) ? props.message.attachments : metadata.attachments
 
         if (!Array.isArray(raw)) {
             return []
@@ -1528,5 +1601,34 @@
         color: var(--color-danger-text);
         font-size: 12px;
         line-height: 1.5;
+    }
+
+    /* 知识 diff 伪工具（复用 tool-usage，但内容为 + / - 列表） */
+    .knowledge-diff-tool .tool-output {
+        display: grid;
+        gap: 4px;
+        padding: 8px 12px 10px;
+    }
+
+    .knowledge-diff-row {
+        display: flex;
+        gap: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .knowledge-diff-row.added {
+        color: #15803d;
+    }
+
+    .knowledge-diff-row.removed {
+        color: #b91c1c;
+    }
+
+    .knowledge-diff-sign {
+        width: 12px;
+        flex: 0 0 12px;
+        font-weight: 700;
+        text-align: center;
     }
 </style>

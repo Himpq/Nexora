@@ -31,6 +31,17 @@
             </span>
         </div>
 
+        <div v-if="ready" class="knowledge-viewer-actions" aria-label="知识库操作">
+            <button class="knowledge-viewer-action-btn" type="button" title="导出 Word" @click="handleExportWord">
+                <i class="fa-solid fa-file-word" aria-hidden="true"></i>
+                <span>导出 Word</span>
+            </button>
+            <button class="knowledge-viewer-action-btn" type="button" title="更新向量" :disabled="vectorizing" @click="vectorize">
+                <i class="fa-solid fa-bolt" aria-hidden="true"></i>
+                <span>{{ vectorizing ? '向量化中...' : '更新向量' }}</span>
+            </button>
+        </div>
+
         <MarkdownEditor
             v-if="ready"
             ref="editorRef"
@@ -53,11 +64,15 @@
         fetchKnowledgeContent,
         saveKnowledgeContent,
         uploadKnowledgeImage,
-        vectorizeKnowledge,
         buildKnowledgeCollabWsUrl,
         readKnowledgeCollabMeta,
+        exportKnowledgeWord,
         type KnowledgeContent,
     } from '@/api/knowledge'
+    import {
+        createVectorTask,
+        pollVectorTask,
+    } from '@/api/knowledge-vector'
     import { useUserStore } from '@/stores/user'
     import { showError, showToast } from '@/stores/notify'
     import {
@@ -453,17 +468,50 @@
         }
     }
 
-    /** 向量化当前正文 */
+    /** 向量异步：创建任务 + 轮询，避免同步 vectorize 阻塞 */
+    const vectorizing = ref(false)
+
     async function vectorize(): Promise<void> {
-        if (!editorRef.value || !props.title) {
+        if (!editorRef.value || !props.title || vectorizing.value) {
+            return
+        }
+
+        vectorizing.value = true
+
+        try {
+            const taskId = await createVectorTask(props.title)
+
+            showToast('向量化任务已创建，正在处理...', 'info')
+            await pollVectorTask(taskId)
+            showToast('知识库向量化完成', 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '知识库向量化失败')
+        } finally {
+            vectorizing.value = false
+        }
+    }
+
+    /** 导出 Word：按标题导出当前知识 */
+    async function handleExportWord(): Promise<void> {
+        if (!props.title) {
+            showToast('未选择知识库', 'warning')
             return
         }
 
         try {
-            await vectorizeKnowledge(props.title, editorRef.value.getMarkdown())
-            showToast('知识库向量化完成', 'success')
+            const blob = await exportKnowledgeWord(props.title)
+            const url = URL.createObjectURL(blob)
+            const anchor = document.createElement('a')
+
+            anchor.href = url
+            anchor.download = `${props.title}.docx`
+            document.body.appendChild(anchor)
+            anchor.click()
+            anchor.remove()
+            URL.revokeObjectURL(url)
+            showToast('Word 导出已开始', 'success')
         } catch (error) {
-            showError(error instanceof Error ? error.message : '知识库向量化失败')
+            showError(error instanceof Error ? error.message : '导出 Word 失败')
         }
     }
 
@@ -576,5 +624,42 @@
         border-color: var(--color-accent-border);
         background: var(--color-accent-surface);
         color: var(--color-accent-text);
+    }
+
+    /* ---------- 操作栏：导出/向量 ---------- */
+
+    .knowledge-viewer-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-bg-elevated);
+    }
+
+    .knowledge-viewer-action-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+    }
+
+    .knowledge-viewer-action-btn:hover {
+        border-color: var(--color-text-primary);
+        color: var(--color-text-primary);
+        background: var(--color-bg-hover);
+    }
+
+    .knowledge-viewer-action-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
     }
 </style>

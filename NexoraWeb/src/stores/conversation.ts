@@ -19,6 +19,7 @@ import {
     listConversations,
     PREVIOUS_MESSAGE_LIMIT,
     type ChatMessage,
+    type ConversationContextEvent,
     type ConversationBranch,
     type ConversationSummary,
     type ConversationTurn,
@@ -39,6 +40,7 @@ interface ConversationState {
     conversations: ConversationSummary[]
     currentId: string
     messages: ChatMessage[]
+    contextEvents: ConversationContextEvent[]
     generating: boolean
     loaded: boolean
     queue: QueuedMessage[]
@@ -82,6 +84,7 @@ interface ConversationState {
 /** 排队消息(生成中发送的内容进入队列,当前流结束后自动发送) */
 export interface QueuedMessage {
     content: string
+    conversationId?: string
     options: {
         enableThinking: boolean
         enableWebSearch: boolean
@@ -114,6 +117,7 @@ export const useConversationStore = defineStore('conversation', {
         conversations: [],
         currentId: '',
         messages: [],
+        contextEvents: [],
         generating: false,
         loaded: false,
         queue: [],
@@ -273,6 +277,7 @@ export const useConversationStore = defineStore('conversation', {
             this.currentId = conversationId
             this.hasMoreBefore = false
             this.loadingBefore = false
+            this.contextEvents = []
             this.streamingTargetIndex = null
             this.messagesLoading = true
             // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
@@ -337,6 +342,7 @@ export const useConversationStore = defineStore('conversation', {
                 // 加载失败:本次负责时清空,避免残留上一个会话的内容
                 if (seq === this.loadSeq) {
                     this.messages = []
+                    this.contextEvents = []
                     this.turns = []
                 }
 
@@ -353,6 +359,7 @@ export const useConversationStore = defineStore('conversation', {
         async loadMessages(seq?: number): Promise<void> {
             if (!this.currentId) {
                 this.messages = []
+                this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
                 this.streamingTargetIndex = null
@@ -371,6 +378,7 @@ export const useConversationStore = defineStore('conversation', {
             const startIndex = Number(data.start_index || 0)
 
             this.messages = rawMessages.map((message, offset) => toLocalMessage(message, startIndex + offset))
+            this.contextEvents = Array.isArray(data.context_events) ? data.context_events : []
             this.hasMoreBefore = !!data.has_more_before
             this.loadingBefore = false
         },
@@ -384,6 +392,10 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this.turns = await fetchTurns(this.currentId)
+        },
+
+        setContextEvents(events: ConversationContextEvent[]): void {
+            this.contextEvents = events.map((event) => ({ ...event }))
         },
 
         /**
@@ -431,6 +443,9 @@ export const useConversationStore = defineStore('conversation', {
                 }
 
                 this.messages = [...older, ...this.messages]
+                if (Array.isArray(data.context_events)) {
+                    this.contextEvents = data.context_events
+                }
                 this.hasMoreBefore = !!data.has_more_before
 
                 return true
@@ -448,6 +463,7 @@ export const useConversationStore = defineStore('conversation', {
             if (this.currentId === conversationId) {
                 this.currentId = ''
                 this.messages = []
+                this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
                 this.streamingTargetIndex = null
@@ -836,21 +852,55 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             if (!assistant) {
-                assistant = this.messages[this.messages.length - 1]
+                console.error('[conversation] final message target not found', {
+                    conversationId: convId,
+                    currentId: this.currentId,
+                    targetIndex,
+                })
+
+                return
             }
 
             if (!assistant || assistant.role !== 'assistant') {
                 return
             }
 
-            if (typeof message.content === 'string') {
-                assistant.content = message.content
+            if (Object.prototype.hasOwnProperty.call(message, 'content')) {
+                const incoming = typeof message.content === 'string'
+                    ? message.content
+                    : String(message.content || '')
+                // 空字符串的终帧不覆盖本地已累积的流式正文，避免“突然变空再刷新”的闪烁
+                if (String(incoming || '').trim() !== '') {
+                    assistant.content = incoming
+                } else if (String(assistant.content || '').trim() === '') {
+                    // 本地也为空时才允许空覆盖（纯工具流/错误流场景）
+                    assistant.content = incoming
+                }
             }
 
             // 版本切换会改写落盘时间戳;不同步会让版本导航签名匹配失败而错位
             if (typeof message.timestamp === 'string' && message.timestamp) {
                 assistant.timestamp = message.timestamp
             }
+
+            const v4Fields = [
+                'status',
+                'model',
+                'summary',
+                'usage',
+                'trace',
+                'error',
+                'versions',
+                'attachments',
+                'memory_analysis',
+                'memory_io_tokens',
+            ] as const
+
+            v4Fields.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(message, key)) {
+                    ;(assistant as Record<string, unknown>)[key] = message[key]
+                }
+            })
 
             if (message.metadata && typeof message.metadata === 'object') {
                 assistant.metadata = {
@@ -860,13 +910,28 @@ export const useConversationStore = defineStore('conversation', {
                     ...(message.metadata as Record<string, unknown>),
                 }
 
-                // 服务器终帧/版本切换携带完整 process_steps 后,压缩卡片以服务器持久化数据为准,
-                // 清空流式本地步骤,避免本地旧值覆盖新版本内容(历史回放路径接管渲染)。
+                // 服务器终帧携带 v4 trace 后，压缩卡片以服务器持久化数据为准。
                 assistant.compressionStep = null
             }
 
-            // 终帧覆盖后按持久化数据重建分段:优先 process_steps(保留工具链与多轮思考时序)
+            // 终帧覆盖后按 v4 trace.events 重建分段，保留工具链与 diff 展示数据。
+            // 若后端 trace 缺少 content 导致重建后 content 被清空，用本地已累积的正文兜底，避免闪空
+            const preContent = String(assistant.content || '')
+            const preContentTrim = preContent.trim()
+            const preSegments = Array.isArray(assistant.segments) ? [...assistant.segments] : []
             rebuildSegmentsForMessage(assistant)
+            if (String(assistant.content || '').trim() === '' && preContentTrim !== '') {
+                assistant.content = preContent
+                const hasContentSeg = Array.isArray(assistant.segments) && assistant.segments.some(seg => seg.type === 'content' && String(seg.text || '').trim() !== '')
+                if (!hasContentSeg) {
+                    const contentSegs = preSegments.filter(seg => seg.type === 'content' || seg.type === 'reasoning')
+                    assistant.segments = [...(assistant.segments || []), ...contentSegs]
+                }
+                // 保证 content 与 segments 一致
+                if (String(assistant.content || '').trim() === '') {
+                    assistant.content = preContent
+                }
+            }
 
             assistant.pending = false
         },
@@ -1160,6 +1225,17 @@ export const useConversationStore = defineStore('conversation', {
     getters: {
         currentConversation(state): ConversationSummary | undefined {
             return state.conversations.find((item) => item.id === state.currentId)
+        },
+
+        /** 当前浏览会话是否有未完成流，和后台其他会话的生成状态严格分离。 */
+        currentConversationGenerating(state): boolean {
+            if (!state.currentId || !state.generating || state.streamingConversationId !== state.currentId) {
+                return false
+            }
+
+            const pending = state.pendingStreams[state.currentId]
+
+            return !!pending && !pending.finished
         },
 
         /**

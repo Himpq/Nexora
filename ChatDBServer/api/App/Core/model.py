@@ -16,7 +16,8 @@ from email.utils import parsedate_to_datetime
 from basis.Tool import TOOLS, canonicalize_tool_name, get_tools_for_config, ToolResultPresenter
 from App.Executor import ToolExecutor
 from basis.User import User, BASIS
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationManager, ConversationService
+from basis.Conversation.telemetry import build_trace_from_process_steps
 from basis.Model.Context import ChatContextManager
 from App.Utils import (
     sanitize_assistant_visible_content,
@@ -205,6 +206,9 @@ class Model(MailMixin):
         """
         self.username = username
         self.user = User(username)
+        self._last_context_diagnostics = {}
+        self._context_degraded = False
+        self._telemetry = {}
         self.persist_conversation = bool(persist_conversation)
         self._include_profile_context = bool(include_profile_context)
         self._runtime_conversation_mode = "chat"
@@ -262,14 +266,24 @@ class Model(MailMixin):
             else:
                 self.model_name = default_model
             
+        self.conversation_service = ConversationService(username)
         self.conversation_manager = ConversationManager(username)
+        # 让代理与 service 共享同一底层，避免双实例状态不一致
+        try:
+            self.conversation_manager._svc = self.conversation_service
+            self.conversation_manager.username = self.conversation_service.username
+            from basis.Conversation.repository import conversation_base_path, conversation_index_path
+            self.conversation_manager.base_path = conversation_base_path(self.conversation_service.username)
+            self.conversation_manager.index_path = conversation_index_path(self.conversation_service.username)
+        except Exception:
+            pass
         self.chat_context_manager = ChatContextManager(self)
         
         # 对话ID管理
         if conversation_id:
             self.conversation_id = conversation_id
         elif auto_create and self.persist_conversation:
-            self.conversation_id = self.conversation_manager.create_conversation()
+            self.conversation_id = self.conversation_service.create_conversation()
         else:
             self.conversation_id = None
         
@@ -4420,30 +4434,94 @@ class Model(MailMixin):
             # 重新生成逻辑：不添加新消息，而是使用历史消息
             skip_user_message_bool = self._as_bool(skip_user_message, default=False)
             persisted_user_index = None
+            assistant_index_for_stream = None
             if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message_bool:
-                persisted_user_index = self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
+                # 严格事务：失败直接记录并终止本轮持久化，不回退旧路径
+                # 附件需显式传入 attachments，不得通过 metadata 隐式传递
+                _attachments = list(attachment_summary) if 'attachment_summary' in locals() and isinstance(attachment_summary, list) else []
+                current_workspace_context = normalized_conversation_mode_payload.get("workspace_context")
+                knowledge_state = self.conversation_service.get_current_knowledge_state(current_workspace_context)
+                turn = self.conversation_service.begin_user_turn(
+                    self.conversation_id,
+                    msg,
+                    metadata=metadata,
+                    attachments=_attachments,
+                    workspace_documents=knowledge_state["workspace_documents"],
+                    global_titles=knowledge_state["global_titles"],
+                )
+                persisted_user_index = int(turn.get("user_index", -1))
+                assistant_index_for_stream = int(turn.get("assistant_index", -1))
+
+            # 重答也需记录知识增量（effective 指向待覆盖 assistant 的前一条 user），否则“固定在哪”且新 diff 丢失
+            if self.persist_conversation and is_regenerate and self.conversation_id and regenerate_index is not None:
+                try:
+                    current_workspace_context = normalized_conversation_mode_payload.get("workspace_context") if 'normalized_conversation_mode_payload' in locals() else None
+                    knowledge_state = self.conversation_service.get_current_knowledge_state(current_workspace_context)
+                    try:
+                        regen_idx = int(regenerate_index)
+                    except Exception:
+                        regen_idx = None
+                    if regen_idx is not None and regen_idx > 0:
+                        # 需指定 effective = regen_idx -1，否则 record_knowledge_state 会按 len(messages) 计算导致挂到末尾
+                        from basis.Conversation.repository import conversation_update_session
+                        from basis.Conversation import context as context_mod
+                        from basis.Conversation.schema import validate_v4_conversation
+                        from basis.Database import safe_write_json
+                        from basis.Conversation import index as index_mod
+                        with conversation_update_session(self.conversation_service.username, self.conversation_id) as (path, data):
+                            # 去重：同一轮（同一 user）旧 diff 先移除，避免重答时堆成两条固定 diff
+                            ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+                            ev_list = ctx.get("knowledge_events") if isinstance(ctx.get("knowledge_events"), list) else []
+                            target_eff = int(regen_idx - 1)
+                            # 保留 effective != target_eff 的事件，target_eff 的旧事件视为上次重答的暂存，需消失
+                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
+                            ctx["knowledge_events"] = ev_list
+                            data["context"] = ctx
+                            # 再以正确 effective 追加新 diff（若有可见变更才会落库）
+                            context_mod.record_knowledge_state(
+                                data,
+                                workspace_documents=knowledge_state["workspace_documents"],
+                                global_titles=knowledge_state["global_titles"],
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            validate_v4_conversation(data)
+                            safe_write_json(path, data, indent=2)
+                            index_mod.sync_index_from_file(self.conversation_service.username, path, data)
+                except Exception as regen_know_err:
+                    print(f"[KNOWLEDGE] regenerate record failed: {regen_know_err}")
 
             stream_push_chunk = getattr(self, "_stream_direct_push_chunk", None)
-            if self.persist_conversation and not is_regenerate and self.conversation_id and callable(stream_push_chunk):
-                assistant_index_for_stream = None
-
-                if persisted_user_index is not None:
-                    assistant_index_for_stream = int(persisted_user_index) + 1
-
-                elif skip_user_message_bool:
-                    conversation = self.conversation_manager.get_conversation(self.conversation_id)
+            if self.persist_conversation and self.conversation_id and callable(stream_push_chunk):
+                if assistant_index_for_stream is None and skip_user_message_bool:
+                    try:
+                        conversation = self.conversation_service.get_conversation(self.conversation_id)
+                    except Exception:
+                        conversation = self.conversation_manager.get_conversation(self.conversation_id)
                     messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
-
                     if isinstance(messages, list):
                         assistant_index_for_stream = len(messages)
 
+                # 重答时 assistant_index 即 regenerate_index，未走 begin_user_turn 需回填
+                if assistant_index_for_stream is None and is_regenerate and regenerate_index is not None:
+                    try:
+                        assistant_index_for_stream = int(regenerate_index)
+                    except Exception:
+                        assistant_index_for_stream = None
+
                 if assistant_index_for_stream is not None:
+                    # 首帧即带 context_events，避免“结束后突然出现在开头”的延迟抖动
+                    try:
+                        early_events = self.conversation_service.get_context_events(self.conversation_id)
+                    except Exception:
+                        early_events = []
                     stream_push_chunk({
                         "type": "stream_session",
                         "conversation_id": self.conversation_id,
-                        "is_regenerate": False,
+                        "is_regenerate": bool(is_regenerate),
                         "assistant_index": int(assistant_index_for_stream),
-                        "regenerate_index": None,
+                        "regenerate_index": int(regenerate_index) if is_regenerate and regenerate_index is not None else None,
+                        "context_events": early_events,
                         "status": "running"
                     })
 
@@ -4467,25 +4545,12 @@ class Model(MailMixin):
                     print(f"[LONGTERM] 进入模式状态写入失败: {e}")
             elif self.persist_conversation and self.conversation_id and normalized_conversation_mode == "learning":
                 try:
-                    current_conv = self.conversation_manager.get_conversation(self.conversation_id) or {}
-                    existing_tags = current_conv.get("tags", []) if isinstance(current_conv.get("tags", []), list) else []
-                    normalized_tags = []
-                    seen_tags = set()
-                    for item in existing_tags + ["learning"]:
-                        tag = str(item or "").strip().lower()
-                        if not tag or tag in seen_tags:
-                            continue
-                        seen_tags.add(tag)
-                        normalized_tags.append(tag)
-                    current_meta = current_conv.get("metadata", {}) if isinstance(current_conv.get("metadata", {}), dict) else {}
-                    next_meta = dict(current_meta)
-                    next_meta["learning"] = True
-                    if learning_lecture_id:
-                        next_meta["learning_lecture_id"] = learning_lecture_id
-                    self.conversation_manager.update_conversation_fields(self.conversation_id, {
-                        "conversation_mode": "learning",
-                        "tags": normalized_tags,
-                        "metadata": next_meta,
+                    # v4: 直接写入 scope.learning，不再通过旧 tags/metadata/conversation_mode 兼容路径
+                    self.conversation_service.set_learning(self.conversation_id, {
+                        "enabled": True,
+                        "lecture_id": learning_lecture_id,
+                        "course_id": "",
+                        "course_title": "",
                     })
                 except Exception as e:
                     print(f"[LEARNING] 进入模式状态写入失败: {e}")
@@ -7054,13 +7119,70 @@ class Model(MailMixin):
                         metadata["stream_cancel_reason"] = "user_abort"
                     
                     if self.persist_conversation and self.conversation_id:
-                        saved_assistant_message_index = self.conversation_manager.add_message(
-                            self.conversation_id,
-                            "assistant",
-                            saved_assistant_content,
-                            metadata=metadata,
-                            index=regenerate_index if is_regenerate else None
-                        )
+                        try:
+                            # 构造 v4 payload：content + model + usage + trace
+                            v4_payload: Dict[str, Any] = {
+                                "content": str(saved_assistant_content or ""),
+                                "model": {"name": str(self.model_name or "").strip(), "provider": str(self.provider or "").strip()},
+                                "summary": str(metadata.get("exchange_summary") or metadata.get("summary") or "").strip() if isinstance(metadata, dict) else "",
+                                "status": "completed" if not stream_cancelled else "partial",
+                            }
+                            # usage
+                            if isinstance(metadata, dict) and isinstance(metadata.get("io_tokens"), dict):
+                                io = metadata.get("io_tokens", {})
+                                v4_payload["usage"] = {
+                                    "input": int(io.get("input") or 0),
+                                    "output": int(io.get("output") or 0),
+                                    "raw_input": int(io.get("raw_input") or 0),
+                                    "cached_input": int(io.get("cached_input") or 0),
+                                    "effective_input": int(io.get("effective_input") or 0),
+                                }
+                            # trace
+                            if isinstance(metadata, dict) and isinstance(metadata.get("process_steps"), list):
+                                trace = build_trace_from_process_steps(metadata.get("process_steps"))
+                                if trace.get("events"):
+                                    v4_payload["trace"] = trace
+                            if isinstance(metadata, dict) and metadata.get("terminal_error"):
+                                terr = metadata.get("terminal_error")
+                                if isinstance(terr, dict):
+                                    v4_payload["error"] = {"message": str(terr.get("content") or terr.get("message") or ""), "code": str(terr.get("code") or ""), "retryable": bool(terr.get("retryable"))}
+                                else:
+                                    v4_payload["error"] = {"message": str(terr or "")}
+                                v4_payload["status"] = "error"
+                            if is_regenerate and regenerate_index is not None:
+                                self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
+                                saved_assistant_message_index = int(regenerate_index)
+                            else:
+                                # 正常：finish placeholder
+                                target_idx = None
+                                if 'assistant_index_for_stream' in locals() and assistant_index_for_stream is not None:
+                                    target_idx = int(assistant_index_for_stream)
+                                else:
+                                    # 回退：取最后一条 assistant placeholder
+                                    try:
+                                        conv = self.conversation_service.get_conversation(self.conversation_id)
+                                        msgs = conv.get("messages", [])
+                                        # 找到最后一条 streaming 的 assistant
+                                        for _i in range(len(msgs)-1, -1, -1):
+                                            if str((msgs[_i] or {}).get("role") or "") == "assistant" and str((msgs[_i] or {}).get("status") or "") == "streaming":
+                                                target_idx = _i
+                                                break
+                                        if target_idx is None:
+                                            target_idx = len(msgs) - 1
+                                    except Exception:
+                                        target_idx = None
+                                if target_idx is not None:
+                                    self.conversation_service.finish_assistant_turn(self.conversation_id, int(target_idx), v4_payload)
+                                    saved_assistant_message_index = int(target_idx)
+                                else:
+                                    raise RuntimeError("无法定位 assistant placeholder 索引，终止持久化以避免重复")
+                        except Exception as _v4_err:
+                            # 严格模式：直接记录错误，不回退旧路径，避免数据覆盖
+                            try:
+                                print(f"[CONVERSATION] v4 finish failed: {_v4_err}")
+                            except Exception:
+                                pass
+                            raise
                     if (
                         normalized_conversation_mode == "learning"
                         and self.persist_conversation
@@ -7588,6 +7710,15 @@ class Model(MailMixin):
             )
         except Exception as e:
             print(f"[WARNING] 记录 Token 日志失败: {e}")
+
+    def record_context_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
+        """保存本次上下文构建诊断，供请求 trace 和运维读取。"""
+        if not isinstance(diagnostics, dict):
+            raise ValueError("context diagnostics must be a dict")
+        self._last_context_diagnostics = dict(diagnostics)
+        self._context_degraded = bool(diagnostics.get("degraded"))
+        self._telemetry["context"] = dict(diagnostics)
+        self._telemetry["context_degraded"] = self._context_degraded
 
     def _build_initial_messages(
         self,

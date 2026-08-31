@@ -6,8 +6,8 @@
  *     工具调用(function_call)、工具结果(function_result)按真实输出顺序排列
  *   - 流式增量按类型续写末尾同类型分段,类型切换时新开分段(顺序 append 结构)
  *   - 与扁平字段(content / reasoning / metadata.reasoning_content)互转,保证持久化兼容
- *   - 历史回放/终帧优先从 metadata.process_steps 重建完整时序(含工具链),
- *     无 process_steps 的旧数据回退扁平字段
+ *   - 历史回放/终帧优先从 v4 trace.events 重建完整时序(含工具链),
+ *     再读取旧 metadata.process_steps，最后回退扁平字段
  *
  * 背景:
  *   后端持久化的思考内容是整轮累积的单个字符串(metadata.reasoning_content),
@@ -91,8 +91,8 @@ export function appendToolSegment(message: ChatMessage | undefined, segment: Mes
 
 /**
  * 用持久化数据重建分段:
- * 优先 metadata.process_steps(完整时序,含工具链与多轮思考),
- * 无 process_steps 的旧数据回退扁平字段([思考][正文] 规范结构)。
+ * 优先 v4 trace.events(完整时序,含工具链与多轮思考)，兼容旧 trace 数组和
+ * metadata.process_steps；没有任何事件时才回退扁平字段。
  */
 export function rebuildSegmentsForMessage(message: ChatMessage): void {
     if (message.role !== 'assistant') {
@@ -158,18 +158,46 @@ export function flattenSegmentsToFlat(message: ChatMessage): void {
     message.content = content
 }
 
-/** 读取消息 metadata.process_steps(非空对象数组,缺失返回空数组) */
+/** 读取 v4 有序 trace.events，并兼容历史 trace 数组与 metadata.process_steps。 */
 function readProcessSteps(message: ChatMessage): Array<Record<string, unknown>> {
+    const trace = (message.trace && typeof message.trace === 'object')
+        ? message.trace as Record<string, unknown>
+        : {}
+    const events = trace.events
+
+    if (Array.isArray(events) && events.length > 0) {
+        return events
+            .filter((step): step is Record<string, unknown> => !!step && typeof step === 'object')
+            .slice()
+            .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0))
+    }
+
     const metadata = (message.metadata && typeof message.metadata === 'object')
         ? message.metadata as Record<string, unknown>
         : {}
     const raw = metadata.process_steps
 
-    if (!Array.isArray(raw)) {
-        return []
+    if (Array.isArray(raw)) {
+        return raw.filter((step): step is Record<string, unknown> => !!step && typeof step === 'object')
     }
 
-    return raw.filter((step): step is Record<string, unknown> => !!step && typeof step === 'object')
+    const steps: Array<Record<string, unknown>> = []
+    const appendTraceList = (key: string, type?: string): void => {
+        const values = Array.isArray(trace[key]) ? trace[key] : []
+
+        values.forEach((step) => {
+            if (step && typeof step === 'object') {
+                steps.push({ ...(type ? { type } : {}), ...(step as Record<string, unknown>) })
+            }
+        })
+    }
+
+    appendTraceList('content_segments')
+    appendTraceList('tool_calls', 'function_call')
+    appendTraceList('tool_results', 'function_result')
+    appendTraceList('errors', 'error')
+
+    return steps
 }
 
 /** 单条 process_step → 分段(识别文本/工具三类与 question;web_search 等由各自卡片渲染) */

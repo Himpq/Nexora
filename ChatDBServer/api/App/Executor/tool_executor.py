@@ -17,6 +17,7 @@ from App.Storage import UserFileSandbox
 from .document_generation import DocumentGenerationService
 from App.Utils import request_client_js_execution
 from basis.Conversation import persist_conversation_image_bytes
+from basis.Conversation.context_reader import ConversationContextReader
 from basis.TokenUsage import build_image_generation_log_context, record_papi_image_generation
 from basis.Model.Provider import create_provider_adapter
 from basis.Tool import canonicalize_tool_name
@@ -1460,27 +1461,24 @@ class ToolExecutor:
         )
 
     def _get_context_length(self, args: Dict[str, Any]) -> str:
-        length = self.model.conversation_manager.get_context_length(
-            args.get("offset", 0),
-            conversation_id=self.model.conversation_id,
-        )
+        length = ConversationContextReader(self.model.username).get_length(self.model.conversation_id)
         return f"对话长度: {length} 字符"
 
     def _get_context(self, args: Dict[str, Any]) -> str:
-        content = self.model.conversation_manager.get_context(
-            args.get("offset", 0),
+        reader = ConversationContextReader(self.model.username)
+        content = reader.read(
+            self.model.conversation_id,
             args.get("from_pos", 0),
             args.get("to_pos", None),
-            conversation_id=self.model.conversation_id,
         )
         return content if content else "无内容"
 
     def _get_context_find_keyword(self, args: Dict[str, Any]) -> str:
-        return self.model.conversation_manager.get_context_find_keyword(
-            args.get("offset", 0),
+        reader = ConversationContextReader(self.model.username)
+        return reader.search(
+            self.model.conversation_id,
             args.get("keyword", ""),
             args.get("range", 10),
-            conversation_id=self.model.conversation_id,
         )
 
     def _send_email(self, args: Dict[str, Any]) -> str:
@@ -1938,17 +1936,9 @@ class ToolExecutor:
         Exa AI 神经搜索工具
 
         强制使用 Exa 提供方，不受 web_search.active_provider 影响
+        不再受 providers.<name>.enable_search 限制（该开关仅控制原生 web_search），
+        只要配置了 EXA_API_KEY 即可调用；未配置时由 provider.search 返回明确错误。
         """
-
-        # Provider 维度开关：默认 off，未启用时直接阻断，避免未授权调用
-        try:
-            if hasattr(self.model, "_is_provider_search_enabled") and not self.model._is_provider_search_enabled():
-                return json.dumps(
-                    {"success": False, "provider": "exa", "query": str(args.get("query", "")).strip(), "error": "当前供应商未启用外部搜索能力（enable_search=false），请在模型管理中启用"},
-                    ensure_ascii=False,
-                )
-        except Exception:
-            pass
 
         query = str(args.get("query", "")).strip()
 

@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime
 from typing import Any, Dict, List
 
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationManager, ConversationService
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
 from App.Utils import apply_text_patch, build_preview_diff
 
@@ -816,7 +816,7 @@ class WorkspaceStore:
         actor = validate_username(added_by)
         workspace = self._read_workspace(wid)
         self._assert_can_edit(workspace, actor)
-        conversation = ConversationManager(actor).get_conversation(cid)
+        conversation = ConversationService(actor).get_conversation(cid)
         title = normalize_text(conversation.get("title"), 160)
         conversations = workspace.get("conversations", [])
 
@@ -2214,7 +2214,7 @@ class WorkspaceStore:
                 break
 
             added_by = validate_username(str(item.get("added_by") or owner))
-            conversation = ConversationManager(added_by).get_conversation(cid)
+            conversation = ConversationService(added_by).get_conversation(cid)
             messages = conversation.get("messages", [])
             snapshot = dict(item)
             snapshot["title"] = normalize_text(conversation.get("title"), 160)
@@ -2369,7 +2369,7 @@ class WorkspaceStore:
         snapshot = dict(item)
 
         try:
-            conversation = ConversationManager(added_by).get_conversation(conversation_id)
+            conversation = ConversationService(added_by).get_conversation(conversation_id)
         except Exception:
             # 对话已删除/暂不可读:沿用 Workspace 自存的标记数据展示。
             # 单个失效资源的详情增强不应让整个 Workspace 打不开。

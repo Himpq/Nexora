@@ -18,7 +18,7 @@
  */
 
 import type { AttachmentInput } from '@/api/attachments'
-import type { ChatMessage } from '@/api/conversations'
+import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
 
 /** 发送请求参数(对齐后端 /api/chat/stream 载荷) */
 export interface ChatStreamSendOptions {
@@ -72,6 +72,9 @@ export interface ChatStreamEndInfo {
     finalContent?: string
     /** 后端落盘后的最终消息对象(含 metadata.versions),用于轻量收尾更新而非全量重载 */
     finalMessage?: Record<string, unknown>
+    contextEvents?: ConversationContextEvent[]
+    assistantIndex?: number
+    regenerateIndex?: number
 }
 
 /** 回调契约:onChunk 逐块分发,onEnd 终帧/断线统一收尾 */
@@ -585,6 +588,11 @@ export class ChatStreamClient {
                     finalMessage: (chunk.final_message && typeof chunk.final_message === 'object')
                         ? chunk.final_message as Record<string, unknown>
                         : undefined,
+                    contextEvents: Array.isArray(chunk.context_events)
+                        ? chunk.context_events as ConversationContextEvent[]
+                        : undefined,
+                    assistantIndex: Number.isFinite(Number(chunk.assistant_index)) ? Number(chunk.assistant_index) : undefined,
+                    regenerateIndex: Number.isFinite(Number(chunk.regenerate_index)) ? Number(chunk.regenerate_index) : undefined,
                 }
 
                 if (chunk.error) {

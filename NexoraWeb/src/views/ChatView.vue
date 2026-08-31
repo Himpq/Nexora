@@ -96,11 +96,12 @@
                         </div>
 
                         <MessageItem
-                            v-for="(message, index) in conversationStore.messages"
+                            v-for="message in conversationStore.messages"
                             :key="message.index"
                             :message="message"
+                            :knowledge-events="knowledgeByAssistant.get(Number(message.index)) || []"
                             :model-name="modelStore.selectedModel?.name"
-                            :streaming="isStreamingMessage(index)"
+                            :streaming="isStreamingMessage(message)"
                             :is-last-user-message="isLastUserMessage(message)"
                             :conversation-id="conversationStore.currentId"
                             @delete="handleDeleteMessage"
@@ -240,6 +241,7 @@
             :open="knowledgeSettingsOpen"
             :title="knowledgeTitle"
             @close="knowledgeSettingsOpen = false"
+            @saved="handleKnowledgeSettingsSaved"
         />
 
         <TrashModal :open="trashOpen" @close="trashOpen = false" @restored="handleTrashRestored" />
@@ -280,7 +282,7 @@
 <script setup lang="ts">
     import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-    import type { ChatMessage } from '@/api/conversations'
+    import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
     import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
     import { chatStream, type ChatStreamChunk } from '@/network/chatStream'
@@ -354,6 +356,39 @@
 
     /** 正在向前补载更早消息:抑制"消息变化自动滚到底部",避免补载后被强行拉到底 */
     const prepending = ref(false)
+
+    // 知识 diff 按 effective 挂到下一条 assistant（effective == user.index，assistant == effective+1）
+    // 过滤空事件，挂载为 assistant 首个伪工具栏，复用 tool-usage 形态（非独立 banner）
+    const knowledgeByAssistant = computed<Map<number, ConversationContextEvent[]>>(() => {
+        const map = new Map<number, ConversationContextEvent[]>()
+        const events = conversationStore.contextEvents
+            .map((event, index) => ({ event, index, effective: Number(event.effective_from_message) }))
+            .filter((item) => Number.isFinite(item.effective))
+            .filter((item) => {
+                const ev = item.event as unknown as Record<string, unknown>
+                const added = Array.isArray(ev.added) ? ev.added : []
+                const removed = Array.isArray(ev.removed) ? ev.removed : []
+                const hasVisible = [...added, ...removed].some((entry) => {
+                    if (typeof entry === 'string') return String(entry).trim() !== ''
+                    if (entry && typeof entry === 'object') {
+                        const title = String((entry as Record<string, unknown>).title || (entry as Record<string, unknown>).name || '').trim()
+                        return title !== ''
+                    }
+                    return false
+                })
+                return hasVisible
+            })
+            .sort((left, right) => left.effective - right.effective || left.index - right.index)
+
+        for (const item of events) {
+            const assistantIndex = item.effective + 1
+            const list = map.get(assistantIndex) || []
+            list.push(item.event)
+            map.set(assistantIndex, list)
+        }
+
+        return map
+    })
 
     /**
      * 跟随底部滚动策略:
@@ -593,9 +628,9 @@
 
             // 默认打开视图：首次加载或偏好变更后，若偏好要求默认打开 Learning 且当前为空白聊天，则自动进入 Learning
             const defaultView = String(payload.preferences.default_open_view || '').trim().toLowerCase()
-            if (nextEnabled && defaultView === 'learning' && !learningOpen.value && !conversationStore.currentId && !conversationStore.generating) {
+            if (nextEnabled && defaultView === 'learning' && !learningOpen.value && !conversationStore.currentId && !conversationStore.currentConversationGenerating) {
                 void nextTick(() => {
-                    if (!conversationStore.currentId && !learningOpen.value && learningEnabled.value && !conversationStore.generating) {
+                    if (!conversationStore.currentId && !learningOpen.value && learningEnabled.value && !conversationStore.currentConversationGenerating) {
                         openView('learning')
                     }
                 })
@@ -1150,16 +1185,19 @@
     }
 
     /** 助手消息在生成中时标记打字指示(重答时锁定目标索引消息) */
-    function isStreamingMessage(index: number): boolean {
-        if (!conversationStore.generating) {
+    function isStreamingMessage(message: ChatMessage): boolean {
+        if (!conversationStore.currentConversationGenerating) {
             return false
         }
 
-        if (conversationStore.streamingTargetIndex !== null) {
-            return index === Number(conversationStore.streamingTargetIndex)
+        const pending = conversationStore.pendingStreams[conversationStore.currentId]
+        const targetIndex = pending?.targetIndex ?? conversationStore.streamingTargetIndex
+
+        if (targetIndex === null || targetIndex === undefined) {
+            return false
         }
 
-        return index === conversationStore.messages.length - 1
+        return message.role === 'assistant' && Number(message.index) === Number(targetIndex)
     }
 
     /** 发送:唯一入口,经网络层同步锁防重入;生成中消息自动入队 */
@@ -1174,7 +1212,12 @@
 
         // 生成中:消息进入待发送队列,当前流结束后自动发送(消息队列功能)
         if (chatStream.isSending) {
-            conversationStore.enqueueMessage({ content, options, attachments })
+            conversationStore.enqueueMessage({
+                conversationId: conversationStore.currentId,
+                content,
+                options,
+                attachments,
+            })
 
             pendingAttachments.value = []
 
@@ -1188,7 +1231,12 @@
             await conversationStore.ensureConversationId()
 
             if (chatStream.isSending) {
-                conversationStore.enqueueMessage({ content, options, attachments })
+                conversationStore.enqueueMessage({
+                    conversationId: conversationStore.currentId,
+                    content,
+                    options,
+                    attachments,
+                })
 
                 pendingAttachments.value = []
 
@@ -1280,15 +1328,16 @@
 
     /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机) */
     watch(
-        () => conversationStore.generating,
-        (generating) => {
+        () => [conversationStore.generating, conversationStore.currentId] as const,
+        ([generating]) => {
             if (generating) {
                 return
             }
 
             if (conversationStore.queueCount > 0 && !chatStream.isSending) {
-                // 队列只在其所属会话被查看时排空,避免后台流期间把排队消息发进别的会话
-                if (conversationStore.streamingConversationId !== conversationStore.currentId) {
+                // 队列只在其所属会话被查看时排空,避免后台流期间把消息发进别的会话
+                const queued = conversationStore.queue[0]
+                if (queued?.conversationId && queued.conversationId !== conversationStore.currentId) {
                     return
                 }
 
@@ -1351,12 +1400,14 @@
             return
         }
 
-        // stream_session 携带后端会话 ID,首次发送时同步回状态
+        // stream_session 携带后端会话 ID 与早期 context_events（首帧即带，避免结束后突然出现在开头）
         if (chunk.type === 'stream_session' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
                 conversationStore.currentId = String(chunk.conversation_id)
             }
-
+            if (Array.isArray((chunk as Record<string, unknown>).context_events)) {
+                conversationStore.setContextEvents((chunk as Record<string, unknown>).context_events as ConversationContextEvent[])
+            }
             return
         }
 
@@ -1410,7 +1461,18 @@
 
     /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
-        const detail = info as { error?: string; finalContent?: string; finalMessage?: Record<string, unknown> } | undefined
+        const detail = info as {
+            error?: string
+            finalContent?: string
+            finalMessage?: Record<string, unknown>
+            contextEvents?: ConversationContextEvent[]
+            assistantIndex?: number
+            regenerateIndex?: number
+        } | undefined
+
+        if (Array.isArray(detail?.contextEvents)) {
+            conversationStore.setContextEvents(detail.contextEvents)
+        }
 
         // 跨刷新重连发现服务端流已结束/不存在:
         // 快照内容按"已完成部分"保留展示,静默收尾(不弹错误、不写错误文本)
@@ -1423,8 +1485,9 @@
         }
 
         if (reason === 'error') {
-            // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标
-            conversationStore.applyFinalMessage(detail?.finalMessage)
+            // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标，显式传参确保重答定位准确
+            const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
 
             // 重连失败等场景拿不到终帧消息时,把错误文本写入目标消息,避免消息留空
             if (!detail?.finalMessage) {
@@ -1446,7 +1509,8 @@
         // 用户终止:保留本地已流式接收的交错分段(多轮思考/工具链不塌缩);
         // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
         if (reason === 'aborted') {
-            conversationStore.applyFinalMessage(detail?.finalMessage)
+            const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
 
             conversationStore.abortStream()
 
@@ -1456,9 +1520,16 @@
         }
 
         // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
-        conversationStore.applyFinalMessage(detail?.finalMessage)
+        // 重答时必须显式指定 targetIndex，否则 pending 已在流中被 endStream 清理导致定位漂移，版本切换器需刷新才出现
+        const doneTargetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+        conversationStore.applyFinalMessage(detail?.finalMessage, doneTargetIdx as number | null)
 
         conversationStore.endStream({ finalContent: detail?.finalContent })
+
+        // 移除“终帧后全量 loadMessages”导致的闪空刷新：
+        // applyFinalMessage 已用终帧 finalMessage 完成轻量覆盖（含 usage/trace/versions），
+        // 全量窗口重载会瞬间替换 messages 数组，造成“内容变空再重现”的视觉刷新。
+        // usage 若因竞态未落盘，由 endStream 内的 refreshTokenMiniBase 负责徽标数据，
 
         streamErrorToastShown = false
     }
@@ -1701,6 +1772,17 @@
         backToChat()
     }
 
+    /** 知识点设置保存后:重命名则刷新标题并保持正文打开 */
+    function handleKnowledgeSettingsSaved(newTitle: string): void {
+        const oldTitle = knowledgeTitle.value
+
+        if (newTitle && newTitle !== oldTitle) {
+            knowledgeTitle.value = newTitle
+        }
+
+        knowledgeSettingsOpen.value = false
+    }
+
     /** 侧边栏 Knowledge 按钮:打开/关闭知识库管理视图(对齐原版独立管理页,内嵌为视图) */
     function handleOpenKnowledgeMgmt(): void {
         if (knowledgeMgmtOpen.value) {
@@ -1736,7 +1818,7 @@
 
         // 进入项目视图即清空会话选中(对齐原版 clearCurrentConversationSelectionForWorkspaceNavigation),
         // 详情页输入框发送时才会懒创建新会话并归入项目;生成中不重置,避免流写入错误会话
-        if (!conversationStore.generating) {
+        if (!conversationStore.currentConversationGenerating) {
             void conversationStore.newConversation()
         }
     }
@@ -1792,7 +1874,7 @@
             return
         }
 
-        if (conversationStore.generating) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('当前会话仍在生成,完成后才能创建分支', 'warning')
 
             return
@@ -1821,7 +1903,7 @@
             return
         }
 
-        if (conversationStore.generating) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('当前会话仍在生成,请稍后再试', 'warning')
 
             return

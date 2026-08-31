@@ -2,7 +2,7 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationService
 
 
 class TokenUsageDetailPresenter:
@@ -10,7 +10,9 @@ class TokenUsageDetailPresenter:
 
     def __init__(self, username: str):
         self.username = str(username or "").strip()
-        self.conversation_manager = ConversationManager(self.username)
+        self.conversation_service = ConversationService(self.username)
+        # 兼容旧属性
+        self.conversation_manager = self.conversation_service
 
     @staticmethod
     def build_reference(log: Dict[str, Any]) -> str:
@@ -108,7 +110,7 @@ class TokenUsageDetailPresenter:
         if not conversation_id or conversation_id in {"unknown", "transient"}:
             return None
 
-        conversation = self.conversation_manager.get_conversation(conversation_id)
+        conversation = self.conversation_service.get_conversation(conversation_id)
         messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
 
         if not isinstance(messages, list):

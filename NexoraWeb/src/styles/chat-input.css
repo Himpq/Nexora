@@ -216,6 +216,78 @@
     background: var(--color-bg-sunken);
 }
 
+/* ------------------------------------------------------------
+ * GDDP upload-preview-card — 附件待发送卡片 is-file/is-image
+ * 覆盖 legacy/style.css 的硬编码浅色 (#f7f9fc/#e3e8f2/#eef2f7),
+ * 全部改用语义令牌,暗色由 [data-theme='dark'] 令牌自动切换;
+ * is-file 单独给出暗色分支,补齐之前缺失的 gddp 暗色处理。
+ * ------------------------------------------------------------ */
+#nexora-app .upload-preview-card {
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-sunken);
+}
+
+#nexora-app .upload-preview-card.is-file {
+    border-color: var(--color-border);
+    background: var(--color-bg-sunken);
+}
+
+#nexora-app .upload-preview-card.is-image {
+    border-color: var(--color-border);
+    background: var(--color-bg-sunken);
+}
+
+#nexora-app .upload-preview-media {
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-hover);
+}
+
+#nexora-app .upload-preview-media i {
+    color: var(--color-text-secondary);
+}
+
+#nexora-app .upload-preview-title {
+    color: var(--color-text-primary);
+}
+
+#nexora-app .upload-preview-meta {
+    color: var(--color-text-secondary);
+}
+
+#nexora-app .upload-preview-remove {
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--color-text-secondary);
+}
+
+#nexora-app .upload-preview-remove:hover {
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
+}
+
+/* 暗色:令牌已切换,这里仅对 is-file 媒体区做二次加深,避免浅灰媒体在深底上发白 */
+[data-theme='dark'] #nexora-app .upload-preview-card.is-file {
+    border-color: var(--color-border);
+    background: var(--color-bg-sunken);
+}
+
+[data-theme='dark'] #nexora-app .upload-preview-card.is-file .upload-preview-media {
+    border-color: var(--color-border);
+    background: var(--color-bg-hover);
+}
+
+[data-theme='dark'] #nexora-app .upload-preview-card.is-file .upload-preview-media i {
+    color: var(--color-text-secondary);
+}
+
+[data-theme='dark'] #nexora-app .upload-preview-remove {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] #nexora-app .upload-preview-remove:hover {
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
+}
+
 @media (max-width: 980px) {
     #nexora-app #inputWrapper {
         max-width: calc(100% - 32px);

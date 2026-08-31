@@ -356,7 +356,7 @@
     const toolsMenuOpen = computed(() => overlay.popover === 'tools-menu')
 
     /** 生成中:输入框保持可用,发送按钮切换为"停止" */
-    const streaming = computed(() => conversationStore.generating)
+    const streaming = computed(() => conversationStore.currentConversationGenerating)
 
     /** CTX 显示:当前模型上下文窗口(对齐原版 tokenBudgetUsage) */
     const ctxText = computed(() => {

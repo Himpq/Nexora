@@ -44,7 +44,7 @@ from .scope import (
     resolve_papi_request_username,
 )
 from basis.User import User
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationService
 from basis.TokenUsage import get_generation_quota_gate
 from basis.Model.Provider import create_provider_adapter
 from App.Utils import log_event
@@ -518,7 +518,7 @@ def papi_generate_image():
 def papi_list_conversations(username):
     """获取指定用户的对话列表"""
     try:
-        manager = ConversationManager(username)
+        manager = ConversationService(username)
         conversations = manager.list_conversations()
         return jsonify({
             'success': True,
@@ -534,7 +534,7 @@ def papi_list_conversations(username):
 def papi_get_conversation(username, conv_id):
     """获取指定用户的详细对话记录"""
     try:
-        manager = ConversationManager(username)
+        manager = ConversationService(username)
         conversation = manager.get_conversation(conv_id)
         return jsonify({
             'success': True,
@@ -1289,7 +1289,7 @@ def papi_learning_chat():
     if not username:
         return jsonify({'success': False, 'message': 'username is required'}), 400
 
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     conversation_id = str(
         data.get('conversation_id')
         or metadata.get('conversation_id')

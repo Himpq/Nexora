@@ -128,6 +128,27 @@ class ChatContext:
     def chars(self) -> int:
         return sum(message.text_length(self._stringify_content) for message in self._messages)
 
+    def mark_degraded(self, reason: str, error: str = "") -> None:
+        """公开标记上下文降级，供外部构建流程调用。"""
+        self._trace_meta["context_degraded"] = True
+        self._trace_meta["context_degraded_reason"] = str(reason or "")
+        if error:
+            self._trace_meta["context_degraded_error"] = str(error)
+        self._stats["context_degraded"] = 1
+        self._stats["context_degraded_reason"] = str(reason or "")
+
+    def is_degraded(self) -> bool:
+        return bool(self._trace_meta.get("context_degraded"))
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "degraded": self.is_degraded(),
+            "reason": str(self._trace_meta.get("context_degraded_reason") or ""),
+            "error": str(self._trace_meta.get("context_degraded_error") or str(self._trace_meta.get("compression_error") or "")),
+            "trace_meta": dict(self._trace_meta),
+            "stats": dict(self._stats),
+        }
+
     def build(self) -> List[Dict[str, Any]]:
         messages = [message.to_dict() for message in self._messages]
 
@@ -327,6 +348,7 @@ class ChatContextManager:
             history_end_index_exclusive=history_end_index_exclusive,
         )
         context.prepare()
+        self.model.record_context_diagnostics(context.diagnostics())
         return context.build()
 
     def build_current_turn_messages(
@@ -384,15 +406,30 @@ class ChatContextManager:
         compression_marker: Optional[Dict[str, Any]] = None
 
         if include_context and model.conversation_id:
+            # 优先使用 ConversationService
+            svc = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
             try:
-                history_messages = model.conversation_manager.get_messages(model.conversation_id)
-            except Exception:
-                history_messages = []
+                if svc is not None and hasattr(svc, "get_messages"):
+                    history_messages = svc.get_messages(model.conversation_id)
+                else:
+                    history_messages = model.conversation_manager.get_messages(model.conversation_id)
+            except Exception as e:
+                print(f"[CONTEXT] get_messages 失败 conversation_id={model.conversation_id}: {e}")
+                # 会话读取失败不应伪装为空历史，向上抛出以中止上下文构建
+                raise
 
             try:
-                compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
-            except Exception:
+                if svc is not None and hasattr(svc, "get_latest_compression"):
+                    compression_marker = svc.get_latest_compression(model.conversation_id)
+                elif svc is not None and hasattr(svc, "get_latest_context_compression"):
+                    compression_marker = svc.get_latest_context_compression(model.conversation_id)
+                else:
+                    compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
+            except Exception as e:
+                print(f"[CONTEXT] get_latest_compression 失败 conversation_id={model.conversation_id}: {e}")
                 compression_marker = None
+                context.mark_degraded("compression_load_failed", str(e))
+                model.record_context_diagnostics(context.diagnostics())
 
         history_messages = self._cut_history_for_regenerate(
             history_messages,
@@ -466,6 +503,9 @@ class ChatContextManager:
                 final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
                 context.add("user", final_user_content)
 
+            # 始终暴露诊断：degraded 与非 degraded 均可观测
+            model.record_context_diagnostics(context.diagnostics())
+            model._last_context = context
             return context
 
         for item in history_messages:
@@ -498,6 +538,8 @@ class ChatContextManager:
             final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
             context.add("user", final_user_content)
 
+        model.record_context_diagnostics(context.diagnostics())
+        model._last_context = context
         return context
 
     def _normalize_system_injection_texts(self, system_injection_texts: Optional[List[str]]) -> List[str]:
