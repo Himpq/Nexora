@@ -139,6 +139,12 @@
                 </div>
             </section>
 
+            <section v-show="activeTab === 'drafts'" class="ws-detail-panel" data-workspace-detail-panel="drafts">
+                <div class="ws-detail-panel-list ws-detail-drafts">
+                    <WorkspaceDraftsPanel :workspace="workspace" />
+                </div>
+            </section>
+
             <section v-show="activeTab === 'memory'" class="ws-detail-panel" data-workspace-detail-panel="memory">
                 <div class="ws-detail-panel-list ws-detail-memory">
                     <WorkspaceMemoryPanel :workspace="workspace" />
@@ -160,6 +166,7 @@
     import WorkspaceKnowledgePanel from './panels/WorkspaceKnowledgePanel.vue'
     import WorkspaceFilesPanel from './panels/WorkspaceFilesPanel.vue'
     import WorkspaceTasksPanel from './panels/WorkspaceTasksPanel.vue'
+    import WorkspaceDraftsPanel from './panels/WorkspaceDraftsPanel.vue'
     import WorkspaceMemoryPanel from './panels/WorkspaceMemoryPanel.vue'
 
     const props = defineProps<{
@@ -181,6 +188,7 @@
         { value: 'knowledge', label: '知识库' },
         { value: 'files', label: '文件' },
         { value: 'tasks', label: '任务' },
+        { value: 'drafts', label: '草稿' },
         { value: 'memory', label: '记忆' },
     ] as const
 

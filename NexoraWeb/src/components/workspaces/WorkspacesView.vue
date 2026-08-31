@@ -90,13 +90,15 @@
 
     /** 组件 WorkspaceDetail.vue 与 API 类型同名,类型统一走别名 */
     import type { WorkspaceDetail as WorkspaceDetailData } from '@/api/workspaces'
-    import type { WorkspaceFileEntry, WorkspaceSummary, WorkspaceTaskEntry, WorkspaceTaskPayload } from '@/api/workspaces'
+    import type { WorkspaceDraftEntry, WorkspaceFileEntry, WorkspaceSummary, WorkspaceTaskEntry, WorkspaceTaskPayload } from '@/api/workspaces'
     import {
         addWorkspaceFile,
         createBlankWorkspaceKnowledge,
         createWorkspace,
+        createWorkspaceDraft,
         createWorkspaceTask,
         deleteWorkspace as deleteWorkspaceApi,
+        deleteWorkspaceDraft,
         deleteWorkspaceTask,
         fetchWorkspace,
         listWorkspaces,
@@ -196,6 +198,10 @@
             }
 
             void load()
+
+            // 详情开着时一并原位刷新:对话流中模型写入的草稿/记忆等变更,
+            // 返回 Workspace 视图的这一刻必须同步到面板(流式期间的变更信号到达时本视图未打开)
+            void refreshOpenDetail()
         },
         { immediate: true }
     )
@@ -800,6 +806,55 @@
         }
     }
 
+    /** 新建草稿(模型工具与面板手动新建共用;返回是否成功供编辑卡决定是否收起) */
+    async function addDraft(title: string, content: string): Promise<boolean> {
+        if (!detail.value) {
+            return false
+        }
+
+        try {
+            applyDetailUpdate(await createWorkspaceDraft(detail.value.workspace_id, { title, content }))
+            showToast('草稿已保存', 'success')
+
+            return true
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '草稿保存失败')
+
+            return false
+        }
+    }
+
+    async function removeDraft(draft: WorkspaceDraftEntry): Promise<void> {
+        if (!detail.value) {
+            return
+        }
+
+        const draftId = String(draft.draft_id || '')
+
+        if (!draftId) {
+            return
+        }
+
+        const confirmed = await showConfirm({
+            title: '删除草稿',
+            content: `确定删除草稿「${draft.title || '未命名草稿'}」吗?`,
+            confirmText: '删除',
+            cancelText: '取消',
+            danger: true,
+        })
+
+        if (!confirmed) {
+            return
+        }
+
+        try {
+            applyDetailUpdate(await deleteWorkspaceDraft(detail.value.workspace_id, draftId))
+            showToast('草稿已删除', 'success')
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '草稿删除失败')
+        }
+    }
+
     /** 动作集合:一次性组装后提供给子树 */
     const actions: WorkspaceActions = {
         currentUserId: () => userStore.userId,
@@ -816,6 +871,8 @@
         editTask,
         changeTaskStatus,
         removeTask,
+        addDraft,
+        removeDraft,
         openShareModal,
         renameWorkspace,
         deleteWorkspace,

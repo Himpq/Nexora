@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import requests
 from bs4 import BeautifulSoup
@@ -38,39 +38,46 @@ def fetch_article(url: str, max_length: int = 4000) -> str:
 def duckduckgo_search(query: str, max_results: int = 5, backend: str = "html", fetch_content: bool = False) -> str:
     """
     Search DuckDuckGo using duckduckgo_search library.
+
+    兼容保留：内部委托至 DuckDuckGoSearchProvider，避免双份实现
     """
     try:
-        from ddgs import DDGS
+        from .providers.duckduckgo import DuckDuckGoSearchProvider
+
+        provider = DuckDuckGoSearchProvider(
+            provider_name="duckduckgo",
+            provider_config={
+                "backend": backend,
+                "fetch_content": fetch_content,
+            },
+        )
+
+        result = provider.search(
+            query=query,
+            num_results=max_results,
+            backend=backend,
+            fetch_content=fetch_content,
+        )
+
+        if not result.ok:
+            return json.dumps({"error": result.error}, ensure_ascii=False)
 
         results = []
-        with DDGS() as ddgs:
-            # Using html backend is generally more stable in constrained network areas
-            responses = ddgs.text(
-                query=query,
-                region="wt-wt",
-                safesearch="moderate",
-                timelimit="w",
-                max_results=max_results,
-                backend=backend
-            )
-            
-            for index, r in enumerate(responses):
-                if isinstance(r, dict):
-                    item = {
-                        "title": r.get('title', ''),
-                        "url": r.get('href', ''),
-                        "snippet": r.get('body', '')
-                    }
-                    if fetch_content:
-                        logger.info(f"Fetching content for url: {item['url']}...")
-                        item['content'] = fetch_article(item['url'])
-                    results.append(item)
-                    
-        if not results:
-            return json.dumps({"error": "No results found for query."})
-            
+
+        for hit in result.hits:
+            item = {
+                "title": hit.title,
+                "url": hit.url,
+                "snippet": hit.snippet,
+            }
+
+            if fetch_content and isinstance(hit.raw, dict) and hit.raw.get("content"):
+                item["content"] = hit.raw.get("content")
+
+            results.append(item)
+
         return json.dumps({"success": True, "results": results}, ensure_ascii=False)
-        
+
     except Exception as e:
         logger.error(f"DuckDuckGo search error: {e}")
         return json.dumps({"error": str(e)})

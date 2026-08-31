@@ -39,6 +39,8 @@ export interface ChatStreamSendOptions {
     regenerateIndex?: number
     /** 会话模式(chat/learning),后端落库 conversation_mode 并按模式注入学习上下文 */
     conversationMode?: string
+    /** 会话所属 Workspace id:后端据此注入 Workspace 上下文与记忆/草稿工具(须确保会话已登记进该项目) */
+    workspaceId?: string
 }
 
 /** SSE 原始数据块(与后端 yield 的块 1:1,不做名字改写,便于层内调试) */
@@ -388,6 +390,7 @@ export class ChatStreamClient {
                     is_regenerate: !!options.isRegenerate,
                     regenerate_index: options.isRegenerate ? Number(options.regenerateIndex) : undefined,
                     conversation_mode: options.conversationMode || undefined,
+                    workspace_id: options.workspaceId || undefined,
                 }),
                 signal: controller?.signal,
             })

@@ -344,6 +344,18 @@ class ChatContextManager:
         messages.append({"role": "user", "content": current_user_content})
         return messages
 
+    @staticmethod
+    def _is_system_snapshot_item(item: Dict[str, Any]) -> bool:
+        """判断历史条目是否为 DSH 式系统快照。"""
+        if not isinstance(item, dict):
+            return False
+
+        if str(item.get("role") or "").strip() != "system":
+            return False
+
+        meta = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
+        return str(meta.get("kind") or "").strip() == "system_snapshot"
+
     def build_initial_context(
         self,
         user_msg: str,
@@ -367,10 +379,6 @@ class ChatContextManager:
                 "model_name": str(model.model_name or ""),
             },
         )
-        context.add("system", effective_system_prompt)
-
-        for text in self._normalize_system_injection_texts(system_injection_texts):
-            context.add("system", text)
 
         history_messages: List[Dict[str, Any]] = []
         compression_marker: Optional[Dict[str, Any]] = None
@@ -396,6 +404,70 @@ class ChatContextManager:
             compression_marker,
         )
 
+        # DSH 式增量存储：若历史已包含 system_snapshot，则重建完全是列表 join，
+        # 稳定前缀不重复注入；易变块（知识/资源/沙箱）作为尾部增量注入，不破坏前缀缓存。
+        has_stored_system = any(self._is_system_snapshot_item(m) for m in history_messages)
+        volatile_markers = (
+            "## Workspace Knowledge Index",
+            "## Workspace Resource Index",
+            "## Sandbox Files",
+        )
+
+        if not has_stored_system:
+            if effective_system_prompt:
+                context.add("system", effective_system_prompt)
+
+            for text in self._normalize_system_injection_texts(system_injection_texts):
+                context.add("system", text)
+        else:
+            # 稳定部分已落库为 system_snapshot，此处仅透传易变尾部块
+            all_injections = self._normalize_system_injection_texts(system_injection_texts)
+            volatile_injections = [
+                t for t in all_injections if any(vm in t for vm in volatile_markers)
+            ]
+            stable_skipped = len(all_injections) - len(volatile_injections)
+
+            if volatile_injections:
+                print(f"[CTX_SNAPSHOT] has_stored_system=True inject volatile={len(volatile_injections)} skipped_stable={stable_skipped}")
+
+            # 先按历史 join，再追加易变尾部（保证前缀稳定）
+            for item in history_messages:
+                self._add_history_item_to_context(
+                    context,
+                    item,
+                    use_responses_api=use_responses_api,
+                    allow_history_images=allow_history_images,
+                    context_compact_mode=context_compact_mode,
+                )
+
+            for text in volatile_injections:
+                context.add("system", text)
+
+            # 易变块已直接注入，历史已处理，直接进入 user 追加阶段
+            # 需找最后 user（易变 system 可能在末尾），避免 test 发一次变两次
+            final_user_content = current_user_content if current_user_content is not None else user_msg
+            final_user_sig = model._content_signature_for_dedupe(
+                self._normalize_current_turn_dedupe_content(final_user_content)
+            )
+            last_user = None
+            for _idx in range(context.count() - 1, -1, -1):
+                _cand = context.get(_idx)
+                if _cand and _cand.role == "user":
+                    last_user = _cand
+                    break
+            last_is_same_user = bool(
+                last_user
+                and model._content_signature_for_dedupe(
+                    self._normalize_current_turn_dedupe_content(last_user.content)
+                ) == final_user_sig
+            )
+
+            if not last_is_same_user:
+                final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
+                context.add("user", final_user_content)
+
+            return context
+
         for item in history_messages:
             self._add_history_item_to_context(
                 context,
@@ -409,16 +481,21 @@ class ChatContextManager:
         final_user_sig = model._content_signature_for_dedupe(
             self._normalize_current_turn_dedupe_content(final_user_content)
         )
-        last_message = context.last()
+        last_user = None
+        for _idx in range(context.count() - 1, -1, -1):
+            _cand = context.get(_idx)
+            if _cand and _cand.role == "user":
+                last_user = _cand
+                break
         last_is_same_user = bool(
-            last_message
-            and last_message.role == "user"
+            last_user
             and model._content_signature_for_dedupe(
-                self._normalize_current_turn_dedupe_content(last_message.content)
+                self._normalize_current_turn_dedupe_content(last_user.content)
             ) == final_user_sig
         )
 
         if not last_is_same_user:
+            final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
             context.add("user", final_user_content)
 
         return context
@@ -438,6 +515,41 @@ class ChatContextManager:
 
         return normalized
 
+    def _inject_time_prefix_to_user_content(self, content: Any, use_responses_api: bool = False) -> Any:
+        """为当前轮 user 内容单次注入 [TIME] 前缀（不入 system，确保前缀缓存）。"""
+        from datetime import datetime
+
+        time_marker = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prefix = f"[TIME] {time_marker}\n"
+
+        if content is None:
+            return f"{prefix}"
+
+        if isinstance(content, str):
+            # 已带前缀则不重复
+            if content.lstrip().startswith("[TIME]") or content.lstrip().startswith("[历史消息时间:"):
+                return content
+
+            return f"{prefix}{content}"
+
+        if isinstance(content, list):
+            # 多模态：前置文本块
+            text_type = "input_text" if bool(use_responses_api) else "text"
+            # 检查首块是否已含时间
+            if content and isinstance(content[0], dict):
+                first_text = str(content[0].get("text") or content[0].get("content") or "")
+                if first_text.lstrip().startswith("[TIME]") or first_text.lstrip().startswith("[历史消息时间:"):
+                    return content
+
+            return [{ "type": text_type, "text": prefix.rstrip() }] + list(content)
+
+        # 其他类型转字符串
+        text = str(content)
+        if text.lstrip().startswith("[TIME]") or text.lstrip().startswith("[历史消息时间:"):
+            return text
+
+        return f"{prefix}{text}"
+
     def _add_history_item_to_context(
         self,
         context: ChatContext,
@@ -452,6 +564,19 @@ class ChatContextManager:
             return
 
         role = str(item.get("role", "") or "").strip()
+
+        # DSH 式增量存储：history 中已包含 system 快照，直接还原
+        if role == "system":
+            content = item.get("content", "")
+            # 系统快照为纯文本，无需图片/压缩处理
+            normalized = self._normalize_history_content(content)
+
+            if normalized is None:
+                return
+
+            # 保留原始文本，不做 compact，避免哈希漂移
+            context.add("system", normalized)
+            return
 
         if role not in ("user", "assistant"):
             return
@@ -480,7 +605,34 @@ class ChatContextManager:
 
         model = self.model
         normalized = model._compact_context_content(normalized, context_compact_mode)
-        normalized = self._strip_history_time_prefix_from_content(normalized)
+
+        # 时间注入：user 头单次 [TIME]，system 前缀稳定，时间随 user 递增（缓存友好）
+        if role == "user":
+            metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
+            time_marker = str(metadata.get("time_marker") or metadata.get("time") or "").strip()
+
+            if not time_marker:
+                # 兼容老数据：用消息 timestamp 派生
+                ts_raw = str(item.get("timestamp") or "").strip()
+                if ts_raw:
+                    try:
+                        from datetime import datetime
+
+                        # 尝试解析 ISO
+                        dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                        time_marker = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        time_marker = ""
+
+            if time_marker:
+                if isinstance(normalized, str):
+                    normalized = f"[TIME] {time_marker}\n{normalized}"
+                elif isinstance(normalized, list):
+                    time_text = f"[TIME] {time_marker}\n"
+                    # 兼容 chat.completions 与 responses 两种负载
+                    text_type = "input_text" if bool(use_responses_api) else "text"
+                    # 若首项已是文本则前置，否则插入新文本块
+                    normalized = [{ "type": text_type, "text": time_text }] + list(normalized)
 
         if role == "assistant" and isinstance(normalized, str):
             normalized = sanitize_assistant_visible_content(normalized)

@@ -137,6 +137,12 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active{
   border-bottom-color: transparent;
 }
 
+/* 高优先级覆盖：未启用 Learning 时，即便 data-sidebar-brand-mode 指向某 tab 也不显示下划线 */
+body:not(.learning-mode-enabled) #sidebarBrandTabs[data-sidebar-brand-mode="nexora"] #sidebarBrandNexoraTab,
+body:not(.learning-mode-enabled) #sidebarBrandTabs[data-sidebar-brand-mode="learning"] #sidebarBrandLearningTab{
+  border-bottom-color: transparent !important;
+}
+
 .sidebar-brand-tab:not(.active):hover{
   color: rgba(255,255,255,0.9);
 }

@@ -108,6 +108,10 @@
                         <AdminAuthPanel :ref="(el) => setPanelRef('admin-auth', el)" />
                     </template>
 
+                    <template v-else-if="activeTab === 'admin-search'">
+                        <AdminSearchPanel :ref="(el) => setPanelRef('admin-search', el)" />
+                    </template>
+
                     <template v-else-if="activeTab === 'admin-gen-image'">
                         <AdminGenImagePanel :ref="(el) => setPanelRef('admin-gen-image', el)" />
                     </template>
@@ -151,6 +155,7 @@
     import AdminMailPanel from './AdminMailPanel.vue'
     import AdminMapPanel from './AdminMapPanel.vue'
     import AdminModelsPanel from './AdminModelsPanel.vue'
+    import AdminSearchPanel from './AdminSearchPanel.vue'
     import AdminStatsPanel from './AdminStatsPanel.vue'
     import AdminSystemPanel from './AdminSystemPanel.vue'
     import AdminUsersPanel from './AdminUsersPanel.vue'
@@ -270,12 +275,13 @@
         { key: 'user-api-keys', label: '我的 API Key', icon: 'fa-solid fa-key', title: '我的 API Key', description: '管理对外公开的 API 密钥' },
     ]
 
-    /** 管理员菜单 */
+    /** 管理员菜单（搜索 API 置于生图 API 上方，首位 Exa 必填密钥） */
     const adminTabs = [
         { key: 'admin-system', label: '系统设置', icon: 'fa-solid fa-gear', title: '系统设置', description: '平台级系统参数与功能开关' },
         { key: 'admin-users', label: '用户管理', icon: 'fa-solid fa-users', title: '用户管理', description: '查看与管理平台用户' },
         { key: 'admin-mail', label: '邮箱管理', icon: 'fa-solid fa-envelope', title: '邮箱管理', description: '管理 NexoraMail 邮箱用户' },
         { key: 'admin-models', label: '模型管理', icon: 'fa-solid fa-cube', title: '模型管理', description: '供应商与模型配置维护' },
+        { key: 'admin-search', label: '搜索 API', icon: 'fa-solid fa-magnifying-glass', title: '搜索 API', description: '联网搜索接口配置（Exa 优先）' },
         { key: 'admin-gen-image', label: '生图 API', icon: 'fa-solid fa-image', title: '生图 API', description: '图片生成接口配置' },
         { key: 'admin-map', label: '地图 API', icon: 'fa-solid fa-map-location-dot', title: '地图 API', description: '地图服务接口配置' },
         { key: 'admin-auth', label: '认证管理', icon: 'fa-solid fa-shield-halved', title: '认证管理', description: '公开 API 认证与密钥配置' },
@@ -364,6 +370,9 @@
         ],
         'admin-auth': [
             { label: '生成 Public API Key', icon: 'fa-solid fa-key', method: 'openCreate' },
+            { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
+        ],
+        'admin-search': [
             { label: '刷新', icon: 'fa-solid fa-rotate-right', method: 'load' },
         ],
         'admin-gen-image': [

@@ -289,6 +289,8 @@
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
+    import { getConversationWorkspace, notifyWorkspaceChanged, setConversationWorkspace } from '@/stores/workspace'
+    import { DRAFT_TOOL_NAME } from '@/stream/draftCall'
     import { useBottomFollow } from '@/composables/useBottomFollow'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
@@ -394,11 +396,16 @@
     const composedRegisteredPairs = new Set<string>()
 
     /** 发送后把新会话归入 Workspace(对齐原版 registerWorkspaceDetailConversation) */
-    async function registerComposedConversation(workspaceId: string, conversationId: string): Promise<void> {
+    /**
+     * 登记新会话到 Workspace:
+     * 返回 true 表示已确认登记成功(或本会话此前已登记过);false 表示登记失败,
+     * 失败时会话未进入项目,发送不得携带 workspace_id(后端按未登记会话拒绝)。
+     */
+    async function registerComposedConversation(workspaceId: string, conversationId: string): Promise<boolean> {
         const pairKey = `${workspaceId}:${conversationId}`
 
         if (composedRegisteredPairs.has(pairKey)) {
-            return
+            return true
         }
 
         try {
@@ -406,8 +413,12 @@
 
             composedRegisteredPairs.add(pairKey)
             showToast('新对话已归入 Workspace', 'success')
+
+            return true
         } catch (error) {
             showError(error instanceof Error ? error.message : 'Workspace 对话登记失败')
+
+            return false
         }
     }
 
@@ -517,7 +528,13 @@
     // ── Learning 薄挂载状态（P0）──────────────────────
     const learningFrameRef = ref<InstanceType<typeof LearningFrameView> | null>(null)
     const learningFrameTitle = ref('NexoraLearning')
-    const learningEnabled = ref(true)
+    const learningEnabled = ref((() => {
+        try {
+            const cached = localStorage.getItem('nexora_learning_enabled')
+            if (cached !== null) return JSON.parse(cached) as boolean
+        } catch {}
+        return false
+    })())
     const learningFrontendUrl = ref('')
     /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
     const learningDashboardState = ref<{ view: string; side_tab: string }>({ view: '', side_tab: '' })
@@ -559,13 +576,52 @@
             // 管理端全局门控与用户个人开关任一关闭,均隐藏 Learning 入口
             const globalEnabled = payload.learning_runtime?.enabled !== false
             const userEnabled = payload.preferences.learning_runtime?.enabled !== false
-            learningEnabled.value = globalEnabled && userEnabled
+            const nextEnabled = globalEnabled && userEnabled
+            learningEnabled.value = nextEnabled
+            try { localStorage.setItem('nexora_learning_enabled', JSON.stringify(nextEnabled)) } catch {}
 
             const url = String(payload.learning_runtime?.frontend_url || '').trim()
             if (url) learningFrontendUrl.value = url
+
+            // 偏好中关闭 Learning 时，若当前正处 Learning 视图则自动回到聊天（对齐原版 applyLearningMode 的关闭分支）
+            if (!nextEnabled && learningOpen.value) {
+                backToChat()
+                learningCourseState.value.on = false
+                courseLeftByUser.value = true
+                learningSidebarView.value = 'list'
+            }
+
+            // 默认打开视图：首次加载或偏好变更后，若偏好要求默认打开 Learning 且当前为空白聊天，则自动进入 Learning
+            const defaultView = String(payload.preferences.default_open_view || '').trim().toLowerCase()
+            if (nextEnabled && defaultView === 'learning' && !learningOpen.value && !conversationStore.currentId && !conversationStore.generating) {
+                void nextTick(() => {
+                    if (!conversationStore.currentId && !learningOpen.value && learningEnabled.value && !conversationStore.generating) {
+                        openView('learning')
+                    }
+                })
+            }
         } catch {
             // 偏好不可达不阻断主流程
         }
+    }
+
+    // 偏好保存后无需刷新页面的即时联动（PreferencesPanel 派发 nexora:preferences-updated）
+    function handlePreferencesUpdated(event?: Event): void {
+        try {
+            const detail = (event as CustomEvent)?.detail as { learning_runtime?: boolean; learning_mode?: string; default_open_view?: string } | undefined
+            if (detail && typeof detail.learning_runtime === 'boolean') {
+                const enabled = detail.learning_runtime
+                learningEnabled.value = enabled
+                try { localStorage.setItem('nexora_learning_enabled', JSON.stringify(enabled)) } catch {}
+                if (!enabled && learningOpen.value) {
+                    backToChat()
+                    learningCourseState.value.on = false
+                    courseLeftByUser.value = true
+                    learningSidebarView.value = 'list'
+                }
+            }
+        } catch {}
+        void refreshLearningPreference()
     }
 
     const sidebarBrandMode = computed<'nexora' | 'learning' | 'workspace'>(() => {
@@ -597,6 +653,16 @@
         })
     }
     watch([learningOpen, learningEnabled, learningSidebarView, learningCourseState], syncLearningBodyClass, { immediate: true, deep: true })
+
+    // 偏好中关闭 Learning 的即时回退：若当前在 Learning 视图则自动回到聊天
+    watch(learningEnabled, (enabled) => {
+        if (!enabled && learningOpen.value) {
+            backToChat()
+            learningCourseState.value.on = false
+            courseLeftByUser.value = true
+            learningSidebarView.value = 'list'
+        }
+    })
 
     // 侧栏折叠/视图切换改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
     watch([sidebarCollapsed, learningSidebarView], () => {
@@ -916,9 +982,14 @@
     /**
      * Workspace 内打开对话/知识库的入口包装:先记录来源 Workspace id,
      * 再走既有分流逻辑;顶栏返回时据此回退到原 Workspace 详情。
+     * 自己的会话同时记录会话归属,后续发送/重答据此携带 workspace_id。
      */
     function onWorkspaceOpenConversation(conversationId: string, meta?: WorkspaceConversationOpenMeta): void {
         workspaceReturnId.value = workspacesViewRef.value?.currentWorkspaceId() || ''
+
+        if (!meta && workspaceReturnId.value) {
+            setConversationWorkspace(conversationId, workspaceReturnId.value)
+        }
 
         void handleOpenWorkspaceConversation(conversationId, meta)
     }
@@ -1147,11 +1218,18 @@
             conversationStore.setConversationMode(conversationId, 'learning')
         }
 
-        // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)
+        // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)。
+        // 登记必须先于流式请求完成:后端在 /api/chat/stream 入口校验会话已登记,
+        // 未登记(或登记尚未落盘)时按 FileNotFoundError 拒绝整条请求。
         const composeWorkspace = workspaceComposeTarget.value
+        let sendWorkspaceId = getConversationWorkspace(conversationId)
 
         if (composeWorkspace) {
-            void registerComposedConversation(composeWorkspace, conversationId)
+            setConversationWorkspace(conversationId, composeWorkspace)
+
+            sendWorkspaceId = (await registerComposedConversation(composeWorkspace, conversationId))
+                ? composeWorkspace
+                : sendWorkspaceId
         }
 
         // Workspace 详情页发送即切到该对话(对齐原版:详情页输入框发送跳进会话查看回复);
@@ -1184,6 +1262,7 @@
             includeContext: true,
             attachments,
             conversationMode: learningComposerDocked.value ? 'learning' : undefined,
+            workspaceId: sendWorkspaceId || undefined,
         }, {
             onChunk: handleStreamChunk,
             onEnd: handleStreamEnd,
@@ -1308,6 +1387,11 @@
             || chunk.type === 'question'
         ) {
             conversationStore.appendStreamToolStep(chunk as unknown as Record<string, unknown>)
+        }
+
+        // 草稿写入完成:广播 Workspace 变更,打开中的草稿面板立即原位刷新(无需手动切换 tab)
+        if (chunk.type === 'function_result' && String(chunk.name || '') === DRAFT_TOOL_NAME) {
+            notifyWorkspaceChanged()
         }
 
         // 增量落地后节流写快照(跨刷新恢复数据源,由网络层负责持久化)
@@ -1546,6 +1630,7 @@
             includeContext: true,
             isRegenerate: true,
             regenerateIndex: assistantMessage.index,
+            workspaceId: getConversationWorkspace(conversationId) || undefined,
         }, {
             onChunk: handleStreamChunk,
             onEnd: handleStreamEnd,
@@ -1996,6 +2081,7 @@
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
+        window.addEventListener('nexora:preferences-updated', handlePreferencesUpdated)
 
         // 跨刷新恢复:必须先重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
         // 缓冲还不存在,恢复内容既不上屏也不接续;顺序颠倒即"刷新后只有 Stop Generation")。
@@ -2060,6 +2146,7 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
+        window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)
     })
 
     // 刷新/关闭前强制落盘活动流快照(节流窗口内的尾部增量不丢)

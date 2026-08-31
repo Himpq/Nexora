@@ -74,3 +74,6 @@ ChatDBServer/static/new/
 
 # WorkBuddy Files
 .workbuddy/
+
+# ZCode
+.mimosa/

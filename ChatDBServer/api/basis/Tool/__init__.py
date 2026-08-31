@@ -1,4 +1,4 @@
-﻿TOOL_NAME_ALIASES = {
+TOOL_NAME_ALIASES = {
     # Select Tools 已下线，旧别名不再映射到可调用工具。
     # "selectTools": "runtime_tool_select",
     # "select_tools": "runtime_tool_select",
@@ -134,6 +134,7 @@ MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES = {
 # 项目会话聚焦本地编码，裁剪知识库/云盘/记忆/地图/生图/邮件/联网搜索等无关工具，
 # 减少 token 开销与误用；同时移除控制工具（runtime_tool_enable/ask_for_permission，
 # 项目模式强制 force 并自动询问权限，无需模型显式调用）。
+# exa_web_search 同属联网搜索，同步裁剪以保持项目模式纯净
 NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
     "knowledge_list",
     "knowledge_basis_create",
@@ -166,6 +167,7 @@ NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
     "get_email",
     "get_email_list",
     "search",
+    "exa_web_search",
     "server_render_page",
     "arxiv_search",
     "temp_context_read",
@@ -327,6 +329,46 @@ TOOLS = [
                     "limit": {
                         "type": "integer",
                         "description": "每个来源最多返回的条数，默认 8，上限 20"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exa_web_search",
+            "description": (
+                "Exa AI 神经搜索：面向编码与研究场景的高质量联网检索，返回标题、URL、"
+                "高亮片段（highlights）、发布日期与相关度评分。适合文档查阅、API 参考、论文与技术调研。"
+                "当需要精确、可追溯的网页来源时优先使用本工具。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词或自然语言问题，要求具体、可检索"
+                    },
+                    "num_results": {
+                        "type": "integer",
+                        "description": "返回条数，默认 8，上限 20"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"],
+                        "description": "搜索深度：auto 为默认平衡，fast/instant 低延迟，deep 系列适合复杂调研"
+                    },
+                    "include_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "限定来源域名，例如 [\"arxiv.org\", \"github.com\"]"
+                    },
+                    "exclude_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "排除域名，例如 [\"pinterest.com\"]"
                     }
                 },
                 "required": ["query"]

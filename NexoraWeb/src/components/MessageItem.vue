@@ -197,7 +197,25 @@
                     </div>
 
                     <template v-else-if="item.kind === 'tool'" :key="`tool-${item.sourceIndex}`">
+                        <!-- Workspace 草稿:内联小卡片,参数流式期间逐步呈现标题与正文,像正文内容一样直接展示 -->
+                        <div v-if="item.draft" class="draft-call-card" :data-call-id="item.callId || undefined">
+                            <div class="draft-call-head">
+                                <span class="draft-call-icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></span>
+                                <span class="draft-call-kicker">草稿</span>
+                                <span class="draft-call-title">{{ item.draft.title || '正在记录草稿…' }}</span>
+                                <span class="draft-call-state" :class="`is-${item.draft.state}`">
+                                    <i v-if="item.draft.state === 'streaming'" class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>
+                                    <i v-else-if="item.draft.state === 'success'" class="fa-solid fa-check" aria-hidden="true"></i>
+                                    <i v-else-if="item.draft.state === 'failed'" class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                                    <span>{{ draftCallStateText(item.draft) }}</span>
+                                </span>
+                            </div>
+                            <MarkdownView v-if="item.draft.content" class="draft-call-content" :content="item.draft.content" />
+                            <div v-if="item.draft.state === 'failed' && item.draft.message" class="draft-call-error">{{ item.draft.message }}</div>
+                        </div>
+
                         <div
+                            v-else
                             class="tool-usage execution-flow-item"
                             :class="{ expanded: isToolExpanded(item), 'has-output': item.hasOutput, 'is-running': item.running }"
                             :data-flow-kind="item.flowKind"
@@ -303,6 +321,13 @@
         isMapToolName,
         stripMapSceneSection,
     } from '@/stream/toolFlow'
+    import {
+        buildStreamingDraftCall,
+        draftCallStateText,
+        isDraftToolName,
+        resolveDraftCallResult,
+        type DraftCallView,
+    } from '@/stream/draftCall'
     import type { QuestionPayload } from '@/stream/questionCard'
     import { buildQuestionCardId, readQuestionLock, writeQuestionLock } from '@/stream/questionCard'
     import { ensureNexoraMapRendererAssets } from '@/stream/mapRenderer'
@@ -374,6 +399,8 @@
         markdownMode: boolean
         /** 地图工具:独立地图卡片 markdown(```nexora-map* 围栏,渲染器自动扫描) */
         mapMarkdown?: string
+        /** Workspace 草稿工具:内联小卡片视图(参数流式呈现,替代折叠工具行) */
+        draft?: DraftCallView
     }
 
     /** 交互问题渲染项:等待/已回答的 question 卡片 */
@@ -468,6 +495,7 @@
                     args,
                     outputText: prettyToolArgs(segment.text),
                     markdownMode: false,
+                    draft: isDraftToolName(rawName) ? buildStreamingDraftCall(segment.text) : undefined,
                 })
 
                 return
@@ -566,6 +594,12 @@
     function applyToolResult(item: ToolRenderItem, display: string, markdownMode: boolean, rawResult: string): void {
         item.running = false
         item.status = '完成'
+
+        // 草稿卡片:结果只影响状态角标(已存入/失败),内容仍来自调用参数
+        if (item.draft) {
+            item.draft = resolveDraftCallResult(rawResult, item.draft)
+        }
+
         item.title = buildChineseToolAction(item.rawName, item.args, display, rawResult)
         item.markdownMode = markdownMode
 
@@ -729,17 +763,28 @@
 
     /**
      * 正在输出的思考段索引(滚动窗口标题的判定依据):
-     * 仅当本消息处于流式中且最后一个分段是思考时,该思考块处于"思考中"状态。
+     * - 历史：仅最后一个分段是思考时该思考块处于"思考中"状态（严格，保证收尾后自动收起）。
+     * - 兼容：纯 reasoning 轮次（无工具）老对话在云端仍显示"思考过程"，
+     *   经用户反馈定位为 props.streaming 偶发为 false（pending 已 true 但 isStreamingMessage 判定失败），
+     *   故以 message.pending 作为流式兜底，确保纯推理也能滑动。
      */
     const liveReasoningIndex = computed<number>(() => {
-        if (!props.streaming) {
+        const isStreaming = !!props.streaming || !!(props.message as unknown as Record<string, unknown>).pending
+        if (!isStreaming) {
             return -1
         }
 
         const segments = contentSegments.value
-        const last = segments.length > 0 ? segments[segments.length - 1] : undefined
+        if (segments.length === 0) return -1
+        const last = segments[segments.length - 1]
+        if (last && last.type === 'reasoning') return segments.length - 1
 
-        return last && last.type === 'reasoning' ? segments.length - 1 : -1
+        // 兼容分支：流式中但末尾已不是 reasoning（已开始吐正文/工具），
+        // 最后一个 reasoning 仍应保持"思考中"滑动，直到流结束被折叠
+        for (let i = segments.length - 1; i >= 0; i -= 1) {
+            if (segments[i].type === 'reasoning') return i
+        }
+        return -1
     })
 
     /**
@@ -798,9 +843,64 @@
         // 标题 span 自身是内容自适应宽度(随已展示窗口文本伸缩),若以其 clientWidth
         // 推算下一帧窗口会形成「文本→窗口→文本」自反馈回路,测量偏差在流式渲染中
         // 逐帧累积,最终把窗口压缩成单字符。预留 2px 余量抵消亚像素取整误差。
-        const measureBase = titleEl.parentElement as HTMLElement
-        const availableWidth = Math.max(1, measureBase.clientWidth - reasoningTextWidth(titlePrefix, font) - 2)
+        const measureBase = titleEl.parentElement as HTMLElement | null
+        const baseWidth = measureBase ? measureBase.clientWidth : 0
+        const prefixWidth = reasoningTextWidth(titlePrefix, font)
+        let availableWidth = Math.max(1, baseWidth - prefixWidth - 2)
+
+        // 云端/窄视口兜底:若容器尚未布局(首帧 0)或过窄(<80px ≈ 5 个汉字),
+        // 固定字符数窗口避免被压缩成空/单字符(用户感知为“滑动窗口没了”)。
+        // 同时打 debug 便于云端复现时在控制台定位原因。
+        if (!measureBase || baseWidth <= 0 || availableWidth < 80) {
+            if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__NEXORA_DEBUG_REASONING !== false) {
+                console.debug('[ReasoningTitle] fallback: narrow or unmeasured', {
+                    sourceIndex,
+                    baseWidth,
+                    prefixWidth,
+                    availableWidth,
+                    lineLen: line.length,
+                    hasEl: !!titleEl,
+                    hasParent: !!measureBase,
+                })
+            }
+
+            const fallbackCapacity = 26
+            let fallbackTail = line
+            let fallbackEllipsis = anchorStart > 0
+
+            if (line.length > fallbackCapacity) {
+                fallbackTail = line.slice(-fallbackCapacity)
+                fallbackEllipsis = true
+            }
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
         const { tail, truncated } = fitReasoningTail(line, availableWidth, font)
+
+        // 云端老对话/宽窄容器差异兜底：自适应测宽可能仅得 1~6 字符，
+        // 视觉上等同“滑动窗口没了”。保证老对话与新对话一致的最小窗口，
+        // 若自适应结果短于固定窗口则回退到固定窗口，避免新旧表现分叉。
+        const fallbackCapacity = 26
+        if (!tail && line) {
+            let fallbackTail = line
+            let fallbackEllipsis = anchorStart > 0
+
+            if (line.length > fallbackCapacity) {
+                fallbackTail = line.slice(-fallbackCapacity)
+                fallbackEllipsis = true
+            }
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
+        if (tail.length > 0 && tail.length < fallbackCapacity && line.length > fallbackCapacity) {
+            let fallbackTail = line.slice(-fallbackCapacity)
+            let fallbackEllipsis = anchorStart > 0 || line.length > fallbackCapacity
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
         const showEllipsis = anchorStart > 0 || truncated
 
         return `${titlePrefix}${showEllipsis ? '…' : ''}${tail}`
@@ -984,14 +1084,21 @@
         return metadataName || props.message.model_name || props.modelName || ''
     })
 
-    /** 展开文本:模型名 - I/O: 输入/输出(对齐原版 buildModelBadgeText) */
+    /** 展开文本:模型名 - I/O: 输入/输出 + E/C 缓存命中(对齐原版 buildModelBadgeText + NexoraCode) */
     const badgeFullText = computed(() => {
         const model = badgeText.value || '-'
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-
-        return `${model} - I/O: ${input.toLocaleString()}/${output.toLocaleString()}`
+        const raw = tokens.rawInput
+        const cached = tokens.cachedInput
+        const effective = Math.max(0, raw - cached)
+        let ecText = ''
+        if (raw > 0 || cached > 0) {
+            const pct = raw > 0 ? Math.min(100, Math.round((cached / raw) * 100)) : 0
+            ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%)`
+        }
+        return `${model} - I/O: ${input.toLocaleString()}/${output.toLocaleString()}${ecText}`
     })
 
     /** 折叠时 title:多行详情(对齐原版 buildModelBadgeDetailTitle) */
@@ -1000,8 +1107,15 @@
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-
-        return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}`
+        const raw = tokens.rawInput
+        const cached = tokens.cachedInput
+        let ecLine = ''
+        if (raw > 0 || cached > 0) {
+            const effective = Math.max(0, raw - cached)
+            const pct = raw > 0 ? Math.min(100, Math.round((cached / raw) * 100)) : 0
+            ecLine = `\nE/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%) [raw ${raw.toLocaleString()}]`
+        }
+        return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}${ecLine}`
     })
 
     /** 是否有真实 token 数据(无数据时折叠显示,避免 0/0 噪音) */
@@ -1330,5 +1444,89 @@
     .btn-ver:disabled {
         opacity: 0.4;
         cursor: not-allowed;
+    }
+
+    /* ===== Workspace 草稿小卡片(随参数流式呈现,替代折叠工具行) ===== */
+    .draft-call-card {
+        max-width: 640px;
+        /* 在 message-content 内水平居中(左右 auto),与上下内容留 6px 间距 */
+        margin: 6px auto;
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+        background: var(--color-bg-elevated);
+        padding: 12px 14px;
+    }
+
+    .draft-call-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .draft-call-icon {
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--color-border);
+        border-radius: 7px;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .draft-call-kicker {
+        color: var(--color-accent-text);
+        font-size: 12px;
+        font-weight: 700;
+        flex: 0 0 auto;
+    }
+
+    .draft-call-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--color-text-primary);
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .draft-call-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: 0 0 auto;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .draft-call-state.is-success {
+        color: var(--color-success-text);
+    }
+
+    .draft-call-state.is-failed {
+        color: var(--color-danger-text);
+    }
+
+    .draft-call-content {
+        margin-top: 10px;
+        color: var(--color-text-primary);
+        font-size: 14px;
+        line-height: 1.7;
+        overflow-wrap: anywhere;
+    }
+
+    .draft-call-error {
+        margin-top: 8px;
+        color: var(--color-danger-text);
+        font-size: 12px;
+        line-height: 1.5;
     }
 </style>

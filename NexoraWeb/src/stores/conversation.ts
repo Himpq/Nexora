@@ -211,11 +211,9 @@ export const useConversationStore = defineStore('conversation', {
 
         /** 新建会话(对齐原版:本地重置进入空白会话,发送时才真正创建) */
         async newConversation(): Promise<void> {
-            // 生成中禁止新建:避免流式文本写入错误会话
-            if (this.generating) {
-                return
-            }
-
+            // 生成中也允许新建:对齐原版 detachCurrentVisibleStreamForNavigation —
+            // 后台流保留在 pendingStreams，切到空白会话，generating/streamingConversationId 保持指向旧会话
+            // 侧栏仍显示旧会话的 streaming 指示，新会话为空白可立即输入
             this.currentId = ''
             this.messages = []
             this.hasMoreBefore = false

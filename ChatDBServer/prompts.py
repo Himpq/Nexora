@@ -368,6 +368,16 @@ workspace_resource_block_template = """<WORKSPACE_RESOURCE_INDEX>
 {{resource_rows}}
 </WORKSPACE_RESOURCE_INDEX>"""
 
+workspace_draft_injection_header = (
+    "## Workspace Drafts\n"
+    "以下是当前 Workspace 草稿板的已有条目（workspace_draft_add 工具写入或用户手动添加），"
+    "是供用户直接查看的关键资料。回答可直接引用其内容；已有草稿覆盖的信息不要重复写入。"
+)
+
+workspace_draft_block_template = """<WORKSPACE_DRAFTS workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{draft_rows}}
+</WORKSPACE_DRAFTS>"""
+
 memory_write_policy_prompt_template = """## Memory Write Policy
 原则：透明、可解释、可拒绝，不静默写入。
 
@@ -394,6 +404,13 @@ learning_mode_tool_nudge_prompt = (
     "请直接调用一个最相关的 Learning 或知识库读取工具，"
     "再基于工具结果继续回答用户。"
 )
+
+workspace_draft_policy_prompt_template = """## Workspace Draft Policy
+草稿板（workspace_draft_add 工具）用于沉淀用户之后可能重复查看的信息，避免用户翻找历史对话。
+触发：对话中产生规划、方案、执行步骤、结论、决策记录、关键数据与参数、清单或汇总结果时，主动写入草稿。
+写法：一条草稿只放一个主题；title 概括主题，content 用 Markdown 组织正文。
+禁止：过程性输出（工具日志、中间推理、寒暄）不写入；与已有草稿重复的内容不重复写入。
+回执：写入后简要告知用户已存为草稿即可，不要在回复中重复正文。"""
 
 cloud_file_sandbox_paths_prompt_template = """## Sandbox Files
 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
@@ -592,6 +609,18 @@ def _workspace_knowledge_documents(context: Any) -> List[Dict[str, Any]]:
     return [item for item in raw_documents if isinstance(item, dict)]
 
 
+def _workspace_draft_entries(context: Any) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_drafts = context.get("workspace_drafts", [])
+
+    if not isinstance(raw_drafts, list):
+        return []
+
+    return [item for item in raw_drafts if isinstance(item, dict)]
+
+
 def _workspace_knowledge_field(value: Any, limit: int = 160) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) > limit:
@@ -641,6 +670,48 @@ def build_workspace_memory_injection_prompt(workspace_context: Dict[str, Any]) -
     return f"{workspace_memory_injection_header}\n{block}\n"
 
 
+WORKSPACE_DRAFT_INJECTION_MAX_ITEMS = 20
+WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT = 200
+
+
+def build_workspace_draft_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 草稿索引注入，让模型感知已有草稿、避免重复记录。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    drafts = _workspace_draft_entries(workspace_context)
+
+    if not workspace_id or not drafts:
+        return ""
+
+    rows: List[str] = []
+
+    for item in drafts[-WORKSPACE_DRAFT_INJECTION_MAX_ITEMS:]:
+        if not isinstance(item, dict):
+            continue
+
+        draft_id = _workspace_context_text(item, "draft_id")
+        title = _workspace_context_text(item, "title")
+
+        if not draft_id or not title:
+            continue
+
+        content = _workspace_context_text(item, "content")
+
+        if len(content) > WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT:
+            content = content[:WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT].rstrip() + "…"
+
+        rows.append(f"- [{draft_id}] {title}\n  {content}" if content else f"- [{draft_id}] {title}")
+
+    if not rows:
+        return ""
+
+    block = workspace_draft_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{draft_rows}}", "\n".join(rows))
+
+    return f"{workspace_draft_injection_header}\n{block}\n"
+
+
 def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -> str:
     """构建当前轮 Workspace 自定义提示词注入，放在记忆之后强化项目约束。"""
     workspace_id = _workspace_context_text(workspace_context, "workspace_id")
@@ -655,6 +726,14 @@ def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -
     block = block.replace("{{prompt_content}}", prompt_content)
 
     return f"{workspace_prompt_injection_header}\n{block}\n"
+
+
+def build_workspace_draft_policy_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建 Workspace 草稿写入策略提示，让模型主动沉淀用户可能重复查看的规划与记录。"""
+    if not _workspace_context_text(workspace_context, "workspace_id"):
+        return ""
+
+    return workspace_draft_policy_prompt_template.strip() + "\n"
 
 
 def build_workspace_knowledge_injection_prompt(

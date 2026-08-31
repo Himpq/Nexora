@@ -1933,6 +1933,120 @@ def _gen_image_config_public_payload(gen_cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Search API（Web Search）
+# ---------------------------------------------------------------------------
+
+SUPPORTED_SEARCH_PROVIDERS = ('exa', 'duckduckgo')
+DEFAULT_SEARCH_PROVIDER = 'duckduckgo'
+
+
+def _normalize_search_provider_name(raw: Any) -> str:
+    name = str(raw or '').strip().lower()
+
+    if name in ('exa', 'exa.ai', 'exa_web_search'):
+        return 'exa'
+
+    if name in ('duckduckgo', 'ddg', 'duck_duck_go'):
+        return 'duckduckgo'
+
+    if name in ('disabled', 'none', 'off', ''):
+        return 'disabled'
+
+    return name
+
+
+def _normalize_web_search_config(raw: Any) -> Dict[str, Any]:
+    cfg = raw if isinstance(raw, dict) else {}
+    active = _normalize_search_provider_name(cfg.get('active_provider') or DEFAULT_SEARCH_PROVIDER)
+
+    if active not in (*SUPPORTED_SEARCH_PROVIDERS, 'disabled'):
+        active = DEFAULT_SEARCH_PROVIDER
+
+    providers_raw = cfg.get('providers') if isinstance(cfg.get('providers'), dict) else {}
+    providers: Dict[str, Dict[str, Any]] = {}
+
+    # DuckDuckGo
+    ddg_raw = providers_raw.get('duckduckgo', {}) if isinstance(providers_raw.get('duckduckgo'), dict) else {}
+    providers['duckduckgo'] = {
+        'backend': str(ddg_raw.get('backend') or 'html').strip() or 'html',
+        'region': str(ddg_raw.get('region') or 'wt-wt').strip() or 'wt-wt',
+        'safesearch': str(ddg_raw.get('safesearch') or 'moderate').strip() or 'moderate',
+        'timelimit': str(ddg_raw.get('timelimit') or 'w').strip() or 'w',
+        'fetch_content': bool(ddg_raw.get('fetch_content', False)),
+        'timeout': max(1, min(int(ddg_raw.get('timeout') or 15), 120)),
+    }
+
+    # Exa
+    exa_raw = providers_raw.get('exa', {}) if isinstance(providers_raw.get('exa'), dict) else {}
+    exa_type = str(exa_raw.get('type') or 'auto').strip().lower()
+
+    if exa_type not in {'auto', 'fast', 'instant', 'deep-lite', 'deep', 'deep-reasoning'}:
+        exa_type = 'auto'
+
+    providers['exa'] = {
+        'api_key': str(exa_raw.get('api_key') or '').strip(),
+        'base_url': str(exa_raw.get('base_url') or 'https://api.exa.ai').strip().rstrip('/') or 'https://api.exa.ai',
+        'type': exa_type,
+        'num_results': max(1, min(int(exa_raw.get('num_results') or exa_raw.get('numResults') or 10), 20)),
+        'contents': exa_raw.get('contents') if isinstance(exa_raw.get('contents'), dict) else {'highlights': True},
+        'timeout': max(5, min(int(exa_raw.get('timeout') or 20), 60)),
+    }
+
+    # contents 归一
+    if not isinstance(providers['exa']['contents'], dict) or not providers['exa']['contents']:
+        providers['exa']['contents'] = {'highlights': True}
+
+    return {
+        'active_provider': active,
+        'default_num_results': max(1, min(int(cfg.get('default_num_results') or 8), 20)),
+        'providers': providers,
+    }
+
+
+def _get_web_search_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    raw = cfg.get('web_search') if isinstance(cfg.get('web_search'), dict) else {}
+    normalized = _normalize_web_search_config(raw)
+
+    if isinstance(cfg, dict) and cfg.get('web_search') != normalized:
+        cfg['web_search'] = normalized
+
+    return normalized
+
+
+def _web_search_config_public_payload(web_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_web_search_config(web_cfg)
+    providers_pub: Dict[str, Any] = {}
+
+    for name, pcfg in normalized.get('providers', {}).items():
+        row = dict(pcfg)
+
+        if name == 'exa':
+            row['api_key_masked'] = _mask_public_api_key(row.get('api_key'))
+            # 前端不直接展示明文，保留长度提示
+            row['has_api_key'] = bool(str(row.get('api_key') or '').strip())
+
+        providers_pub[name] = row
+
+    return {
+        'active_provider': normalized.get('active_provider', DEFAULT_SEARCH_PROVIDER),
+        'default_num_results': normalized.get('default_num_results', 8),
+        'providers': providers_pub,
+        'supported_providers': list(SUPPORTED_SEARCH_PROVIDERS),
+    }
+
+
+def _assert_web_search_ready(web_cfg: Dict[str, Any]) -> None:
+    active = str(web_cfg.get('active_provider') or '').strip().lower()
+
+    if active == 'exa':
+        api_key = str(web_cfg.get('providers', {}).get('exa', {}).get('api_key') or '').strip()
+
+        if not api_key:
+            raise ValueError('启用 Exa Web Search 前必须填写 API Key')
+
+
+
 def _ensure_server_bootstrap_files():
     """
     Ensure empty deployment can boot without manual pre-created files.
@@ -11922,6 +12036,128 @@ def admin_delete_gen_image_api(api_id=None):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/search/config', methods=['GET'])
+@require_admin
+def admin_get_search_config():
+    """管理员读取搜索 API 配置"""
+    try:
+        cfg = ensure_main_config_defaults()
+        web_cfg = _get_web_search_config(cfg)
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            **_web_search_config_public_payload(web_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/search/config', methods=['POST'])
+@require_admin
+def admin_update_search_config():
+    """管理员保存搜索 API 配置"""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        cfg = ensure_main_config_defaults()
+        web_cfg = _get_web_search_config(cfg)
+
+        # active_provider
+        if 'active_provider' in data:
+            web_cfg['active_provider'] = _normalize_search_provider_name(data.get('active_provider'))
+
+        if 'default_num_results' in data:
+            try:
+                web_cfg['default_num_results'] = max(1, min(int(data.get('default_num_results') or 8), 20))
+            except Exception:
+                pass
+
+        # providers
+        providers_data = data.get('providers') if isinstance(data.get('providers'), dict) else None
+
+        if providers_data is None and any(k in data for k in ('exa', 'duckduckgo', 'exa_api_key', 'api_key')):
+            # 兼容扁平传入
+            providers_data = data
+
+        if isinstance(providers_data, dict):
+            # Exa
+            exa_in = providers_data.get('exa') if isinstance(providers_data.get('exa'), dict) else {}
+
+            # 兼容直接传 exa_api_key / api_key
+            if not exa_in and ('exa_api_key' in providers_data or 'api_key' in providers_data):
+                exa_in = {
+                    'api_key': providers_data.get('exa_api_key', providers_data.get('api_key')),
+                }
+
+            if isinstance(exa_in, dict) and exa_in:
+                cur = web_cfg.setdefault('providers', {}).setdefault('exa', {})
+
+                if 'api_key' in exa_in:
+                    # 空字符串表示清空，前端未改动时传 masked 时不覆盖
+                    new_key = str(exa_in.get('api_key') or '').strip()
+
+                    # 前端若传的是 masked（如 exa-****abcd），则视为未修改
+                    if new_key and '****' in new_key:
+                        pass
+                    else:
+                        cur['api_key'] = new_key
+
+                if 'base_url' in exa_in:
+                    cur['base_url'] = str(exa_in.get('base_url') or 'https://api.exa.ai').strip().rstrip('/') or 'https://api.exa.ai'
+
+                if 'type' in exa_in:
+                    t = str(exa_in.get('type') or 'auto').strip().lower()
+
+                    if t in {'auto', 'fast', 'instant', 'deep-lite', 'deep', 'deep-reasoning'}:
+                        cur['type'] = t
+
+                if 'timeout' in exa_in:
+                    try:
+                        cur['timeout'] = max(5, min(int(exa_in.get('timeout') or 20), 60))
+                    except Exception:
+                        pass
+
+                if 'num_results' in exa_in or 'numResults' in exa_in:
+                    try:
+                        cur['num_results'] = max(1, min(int(exa_in.get('num_results') or exa_in.get('numResults') or 10), 20))
+                    except Exception:
+                        pass
+
+            # DuckDuckGo
+            ddg_in = providers_data.get('duckduckgo') if isinstance(providers_data.get('duckduckgo'), dict) else {}
+
+            if isinstance(ddg_in, dict) and ddg_in:
+                cur = web_cfg.setdefault('providers', {}).setdefault('duckduckgo', {})
+
+                for field in ('backend', 'region', 'safesearch', 'timelimit'):
+                    if field in ddg_in:
+                        cur[field] = str(ddg_in.get(field) or '').strip()
+
+                if 'timeout' in ddg_in:
+                    try:
+                        cur['timeout'] = max(1, min(int(ddg_in.get('timeout') or 15), 120))
+                    except Exception:
+                        pass
+
+        # 校验：若要启用 exa，必须有 key
+        if str(web_cfg.get('active_provider') or '').strip().lower() == 'exa':
+            _assert_web_search_ready(web_cfg)
+
+        web_cfg = _normalize_web_search_config(web_cfg)
+        cfg['web_search'] = web_cfg
+        save_main_config(cfg)
+
+        return jsonify({
+            'success': True,
+            'message': '搜索 API 配置已保存',
+            **_web_search_config_public_payload(web_cfg),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/api/admin/auth/public-api', methods=['GET'])
 @require_admin
 def admin_get_public_api_auth():
@@ -13266,6 +13502,7 @@ def admin_upsert_provider(target_provider=None):
     api_type = _normalize_provider_api_type(data.get('api_type'))
     user_agent = str(data.get('user_agent') or '').strip()
     settings = data.get('settings')
+    enable_search_raw = data.get('enable_search')
 
     if not provider:
         return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
@@ -13306,6 +13543,12 @@ def admin_upsert_provider(target_provider=None):
             provider_record['user_agent'] = user_agent
         else:
             provider_record.pop('user_agent', None)
+
+        # 外部搜索能力：对 provider 生效，默认 off
+        if enable_search_raw is not None:
+            provider_record['enable_search'] = _coerce_bool_flag(enable_search_raw, False)
+        elif 'enable_search' not in provider_record:
+            provider_record['enable_search'] = False
 
         existing_settings = provider_record.get('settings', {}) if isinstance(provider_record.get('settings', {}), dict) else {}
         merged_settings = dict(existing_settings)
@@ -13598,6 +13841,7 @@ def _resolve_workspace_chat_context(username: str, data: Dict[str, Any], convers
         "knowledge_documents": workspace.get("knowledge_documents") if isinstance(workspace.get("knowledge_documents"), list) else [],
         "workspace_files": workspace.get("workspace_files") if isinstance(workspace.get("workspace_files"), list) else [],
         "workspace_tasks": workspace.get("workspace_tasks") if isinstance(workspace.get("workspace_tasks"), list) else [],
+        "workspace_drafts": workspace.get("workspace_drafts") if isinstance(workspace.get("workspace_drafts"), list) else [],
     }
 
 
@@ -13614,12 +13858,14 @@ def _merge_workspace_chat_payload(payload: Dict[str, Any], workspace_context: Di
             "knowledge_documents": workspace_context.get("knowledge_documents") if isinstance(workspace_context.get("knowledge_documents"), list) else [],
             "workspace_files": workspace_context.get("workspace_files") if isinstance(workspace_context.get("workspace_files"), list) else [],
             "workspace_tasks": workspace_context.get("workspace_tasks") if isinstance(workspace_context.get("workspace_tasks"), list) else [],
+            "workspace_drafts": workspace_context.get("workspace_drafts") if isinstance(workspace_context.get("workspace_drafts"), list) else [],
         }
 
     return merged
 
 
-def _format_workspace_memory_tool(model, name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+def _format_workspace_function_tool(model, name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """把 Workspace 工具 schema 适配成当前 Provider 的 API 格式（Responses API 扁平 / Chat Completions 嵌套）。"""
     use_responses_api = (
         hasattr(model, '_provider_use_responses_api')
         and model._provider_use_responses_api(getattr(model, 'provider', ''))
@@ -13711,19 +13957,19 @@ def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
     }
 
     return [
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_edit",
             "使用结构化 edits 精确修改当前 Workspace 的自动记忆。适合修正、合并或删除已有记忆条目。",
             edit_parameters,
         ),
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_apply_diff",
             "使用统一 diff patch 修改当前 Workspace 的自动记忆。仅在已有可靠行上下文时使用。",
             diff_parameters,
         ),
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_add",
             "向当前 Workspace 的自动记忆末尾追加 Markdown 片段。适合记录新的稳定项目事实、约束、偏好或待办。",
@@ -13732,7 +13978,36 @@ def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
     ]
 
 
-def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict[str, Any]):
+def _workspace_draft_tool_definitions(model) -> List[Dict[str, Any]]:
+    """Workspace 草稿工具：模型把用户后续要直接查看的关键数据沉淀为草稿条目。"""
+    add_parameters = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "草稿条目的简短标题（最多 120 字符），概括这条数据是什么，如“API 速率限制确认结果”。",
+            },
+            "content": {
+                "type": "string",
+                "description": "草稿正文（Markdown，最多 4000 字符）。只放用户之后无需翻对话就要直接查看的关键数据、结论、参数或决策，不要写过程性内容。",
+            },
+        },
+        "required": ["title", "content"],
+    }
+
+    return [
+        _format_workspace_function_tool(
+            model,
+            "workspace_draft_add",
+            "向当前 Workspace 的草稿板追加一条草稿条目。当对话产生用户之后要直接查看的重要数据、结论、参数或决策时调用，"
+            "避免用户翻找历史对话。与 workspace_mem_add 的区别：记忆存稳定项目事实供模型参考，草稿是给用户看的资料板。",
+            add_parameters,
+        ),
+    ]
+
+
+def _inject_workspace_tools(model, username: str, workspace_context: Dict[str, Any]):
+    """把 Workspace 专属工具（记忆编辑 + 草稿写入）注册进本轮对话的模型。"""
     if not workspace_context:
         return
 
@@ -13817,12 +14092,40 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
 
         return _handler
 
-    for tool in _workspace_memory_tool_definitions(model):
+    def _make_draft_add_handler():
+        def _handler(args: dict) -> str:
+            try:
+                safe_args = args if isinstance(args, dict) else {}
+                workspace = _workspace_store().add_workspace_draft(
+                    workspace_id,
+                    username,
+                    {
+                        "title": str(safe_args.get("title") or ""),
+                        "content": str(safe_args.get("content") or ""),
+                    },
+                )
+                drafts = workspace.get("workspace_drafts") if isinstance(workspace, dict) else []
+                added = drafts[-1] if isinstance(drafts, list) and drafts else {}
+
+                return _tool_result({
+                    "success": True,
+                    "draft_id": str(added.get("draft_id") or ""),
+                    "title": str(added.get("title") or ""),
+                    "chars": len(str(added.get("content") or "")),
+                    "total": len(drafts) if isinstance(drafts, list) else 0,
+                })
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    for tool in _workspace_memory_tool_definitions(model) + _workspace_draft_tool_definitions(model):
         model.register_external_function_tool(tool)
 
     model.tool_executor.handlers["workspace_mem_apply_diff"] = _make_apply_diff_handler()
     model.tool_executor.handlers["workspace_mem_edit"] = _make_edit_handler()
     model.tool_executor.handlers["workspace_mem_add"] = _make_add_handler()
+    model.tool_executor.handlers["workspace_draft_add"] = _make_draft_add_handler()
 
 
 @app.route('/api/chat/stream', methods=['POST'])
@@ -14558,11 +14861,11 @@ def chat_stream():
                 print(f"[NexoraCode ProjectContext] inject error={project_context_error}")
 
             if workspace_chat_context:
-                _inject_workspace_memory_tools(model, username, workspace_chat_context)
+                _inject_workspace_tools(model, username, workspace_chat_context)
                 _chat_latency_mark(
-                    "workspace_memory_tools_injected",
+                    "workspace_tools_injected",
                     workspace_id=str(workspace_chat_context.get("workspace_id") or ""),
-                    tool_count=3,
+                    tool_count=4,
                 )
 
             model._stream_cancel_checker = is_cancel_requested

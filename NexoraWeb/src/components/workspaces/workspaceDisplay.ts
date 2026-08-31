@@ -123,6 +123,8 @@ export function activityText(item: WorkspaceActivityItem): string {
         task_created: '创建了任务',
         task_deleted: '删除了任务',
         task_updated: '更新了任务',
+        workspace_draft_added: '记录了草稿',
+        workspace_draft_removed: '删除了草稿',
     }
 
     if (texts[action]) {
@@ -170,6 +172,10 @@ export function overviewTypeIcon(type: unknown): string {
 export function activityIcon(item: WorkspaceActivityItem): string {
     const name = String(item.action || '').trim()
     const type = String(item.resource_type || '').trim()
+
+    if (name.includes('draft')) {
+        return 'fa-regular fa-file-lines'
+    }
 
     if (name.includes('shared')) {
         return 'fa-solid fa-share-nodes'

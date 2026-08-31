@@ -29,13 +29,13 @@
                         class="settings-mode-toggle-btn"
                         :class="{ active: form.learning_runtime !== false }"
                         type="button"
-                        @click="form.learning_runtime = true"
+                        @click="handleLearningRuntimeImmediate(true)"
                     >启用</button>
                     <button
                         class="settings-mode-toggle-btn"
                         :class="{ active: form.learning_runtime === false }"
                         type="button"
-                        @click="form.learning_runtime = false"
+                        @click="handleLearningRuntimeImmediate(false)"
                     >禁用</button>
                 </div>
             </SettingRow>
@@ -46,14 +46,14 @@
                         :class="{ active: form.learning_mode !== 'on' }"
                         :disabled="form.learning_runtime === false"
                         type="button"
-                        @click="handleLearningModeChange('off')"
+                        @click="handleLearningModeImmediate('off')"
                     >Nexora</button>
                     <button
                         class="settings-mode-toggle-btn"
                         :class="{ active: form.learning_mode === 'on' }"
                         :disabled="form.learning_runtime === false"
                         type="button"
-                        @click="handleLearningModeChange('on')"
+                        @click="handleLearningModeImmediate('on')"
                     >Learning</button>
                 </div>
             </SettingRow>
@@ -218,10 +218,45 @@
         }
     }
 
-    /** 学习模式切换时同步默认视图,消除原有两处重复控制 */
-    function handleLearningModeChange(value: string): void {
-        form.learning_mode = value
-        form.default_open_view = value === 'on' ? 'learning' : 'nexora'
+    /** 学习服务开关即刻同步（无需点击保存，前端马上更新） */
+    async function handleLearningRuntimeImmediate(enabled: boolean): Promise<void> {
+        if (form.learning_runtime === enabled) return
+        const prev = form.learning_runtime
+        form.learning_runtime = enabled
+        try {
+            await saveUserPreferences({ learning_runtime: { enabled } })
+            showToast(enabled ? 'Learning 已启用' : 'Learning 已禁用', 'success')
+            window.dispatchEvent(new CustomEvent('nexora:preferences-updated', {
+                detail: { learning_runtime: enabled },
+            }))
+            // 同步缓存，供刷新闪现优化
+            try { localStorage.setItem('nexora_learning_enabled', JSON.stringify(enabled)) } catch {}
+        } catch (error) {
+            form.learning_runtime = prev
+            showError(error instanceof Error ? error.message : '保存失败')
+        }
+    }
+
+    /** 学习模式即刻同步（切换 Nexora/Learning 时立即落库并刷新侧栏） */
+    async function handleLearningModeImmediate(value: string): Promise<void> {
+        const normalized = value === 'on' ? 'on' : 'off'
+        if (form.learning_mode === normalized) return
+        const prevMode = form.learning_mode
+        const prevView = form.default_open_view
+        const normalizedDefaultView = normalized === 'on' ? 'learning' : 'nexora'
+        form.learning_mode = normalized
+        form.default_open_view = normalizedDefaultView
+        try {
+            await saveUserPreferences({ learning_mode: normalized, default_open_view: normalizedDefaultView })
+            showToast(normalized === 'on' ? '已切换至 Learning 模式' : '已切换至 Nexora 模式', 'success')
+            window.dispatchEvent(new CustomEvent('nexora:preferences-updated', {
+                detail: { learning_mode: normalized, default_open_view: normalizedDefaultView },
+            }))
+        } catch (error) {
+            form.learning_mode = prevMode
+            form.default_open_view = prevView
+            showError(error instanceof Error ? error.message : '保存失败')
+        }
     }
 
     /** 填充表单(仅覆盖存在的键) */
@@ -277,6 +312,19 @@
             })
 
             showToast('偏好已保存', 'success')
+
+            // 通知宿主(ChatView)刷新 Learning 侧栏显示与切换状态(无需刷新页面)
+            try {
+                window.dispatchEvent(new CustomEvent('nexora:preferences-updated', {
+                    detail: {
+                        learning_runtime: form.learning_runtime,
+                        learning_mode: form.learning_mode,
+                        default_open_view: normalizedDefaultView,
+                    },
+                }))
+            } catch {
+                // 忽略派发失败
+            }
         } catch (error) {
             showError(error instanceof Error ? error.message : '保存失败')
         }

@@ -53,6 +53,7 @@ class ToolExecutor:
             "longterm_plan": self._longterm_plan,
             "longterm_update": self._longterm_update,
             "search": self._unified_search,
+            "exa_web_search": self._exa_web_search,
             "server_render_page": self._server_render_page,
             "generate_image": self._generate_image,
             "knowledge_search_keyword": self._search_keyword,
@@ -1931,6 +1932,97 @@ class ToolExecutor:
                     return items
 
         return items
+
+    def _exa_web_search(self, args: Dict[str, Any]) -> str:
+        """
+        Exa AI 神经搜索工具
+
+        强制使用 Exa 提供方，不受 web_search.active_provider 影响
+        """
+
+        # Provider 维度开关：默认 off，未启用时直接阻断，避免未授权调用
+        try:
+            if hasattr(self.model, "_is_provider_search_enabled") and not self.model._is_provider_search_enabled():
+                return json.dumps(
+                    {"success": False, "provider": "exa", "query": str(args.get("query", "")).strip(), "error": "当前供应商未启用外部搜索能力（enable_search=false），请在模型管理中启用"},
+                    ensure_ascii=False,
+                )
+        except Exception:
+            pass
+
+        query = str(args.get("query", "")).strip()
+
+        if not query:
+            return json.dumps({"success": False, "provider": "exa", "error": "query is required"}, ensure_ascii=False)
+
+        num_results = max(1, min(int(args.get("num_results") or args.get("numResults") or args.get("limit") or 8), 20))
+
+        search_type = str(args.get("type") or args.get("search_type") or "").strip().lower()
+
+        if search_type and search_type not in {"auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"}:
+            search_type = "auto"
+
+        include_domains = args.get("include_domains", args.get("includeDomains"))
+        exclude_domains = args.get("exclude_domains", args.get("excludeDomains"))
+
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+
+        try:
+            from App.Search.config import get_provider_config
+            from App.Search.factory import create_search_provider
+
+            provider_cfg = get_provider_config(cfg, "exa")
+            provider = create_search_provider("exa", provider_cfg)
+
+            kwargs: Dict[str, Any] = {"num_results": num_results}
+
+            if search_type:
+                kwargs["type"] = search_type
+
+            if isinstance(include_domains, list) and include_domains:
+                kwargs["includeDomains"] = [str(x).strip() for x in include_domains if str(x).strip()]
+
+            if isinstance(exclude_domains, list) and exclude_domains:
+                kwargs["excludeDomains"] = [str(x).strip() for x in exclude_domains if str(x).strip()]
+
+            result = provider.search(query=query, **kwargs)
+
+        except Exception as exc:
+            return json.dumps({"success": False, "provider": "exa", "query": query, "error": str(exc)}, ensure_ascii=False)
+
+        if not result.ok:
+            return json.dumps(
+                {"success": False, "provider": "exa", "query": query, "error": result.error},
+                ensure_ascii=False,
+            )
+
+        items = []
+
+        for hit in result.hits[:num_results]:
+            items.append(
+                {
+                    "title": hit.title,
+                    "url": hit.url,
+                    "snippet": hit.snippet,
+                    "highlights": hit.highlights,
+                    "published_date": hit.published_date,
+                    "score": hit.score,
+                }
+            )
+
+        payload: Dict[str, Any] = {
+            "success": True,
+            "provider": "exa",
+            "query": query,
+            "type": search_type or "auto",
+            "results": items,
+        }
+
+        # 结构化输出透传（若提供方返回 output）
+        if isinstance(result.raw, dict) and result.raw.get("output"):
+            payload["output"] = result.raw.get("output")
+
+        return json.dumps(payload, ensure_ascii=False)
 
     def _server_render_page(self, args: Dict[str, Any]) -> str:
         url = str(args.get("url", "")).strip()

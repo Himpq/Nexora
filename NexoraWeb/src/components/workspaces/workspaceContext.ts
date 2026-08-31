@@ -10,10 +10,10 @@
 import type { InjectionKey, Ref } from 'vue'
 import { inject } from 'vue'
 
-import type { WorkspaceFileEntry, WorkspaceTaskEntry } from '@/api/workspaces'
+import type { WorkspaceDraftEntry, WorkspaceFileEntry, WorkspaceTaskEntry } from '@/api/workspaces'
 
 /** 详情 tab 名(根组件持有当前值,保存任务等场景需要切回 tasks) */
-export type WorkspaceDetailTab = 'overview' | 'chat' | 'knowledge' | 'files' | 'tasks' | 'memory'
+export type WorkspaceDetailTab = 'overview' | 'chat' | 'knowledge' | 'files' | 'tasks' | 'drafts' | 'memory'
 
 /** 可操作资源定位(置顶/可见性切换共用) */
 export interface WorkspaceResourceRef {
@@ -68,6 +68,10 @@ export interface WorkspaceActions {
     editTask(task: WorkspaceTaskEntry | null, options?: WorkspaceTaskDraftOptions): void
     changeTaskStatus(task: WorkspaceTaskEntry, status: string): Promise<void>
     removeTask(task: WorkspaceTaskEntry): Promise<void>
+
+    /** 草稿(模型工具与手动新建共用;删除仅手动) */
+    addDraft(title: string, content: string): Promise<boolean>
+    removeDraft(draft: WorkspaceDraftEntry): Promise<void>
 
     /** 分享弹窗 */
     openShareModal(): void

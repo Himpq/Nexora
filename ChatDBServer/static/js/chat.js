@@ -9073,6 +9073,15 @@ function buildModelBadgeDetailTitle(modelName, inputTokens, outputTokens, memory
         lines.push(`记忆 I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`);
     }
 
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const raw = safeTokenInt(t.rawInput);
+    const cached = safeTokenInt(t.cachedInput);
+    if (raw > 0 || cached > 0) {
+        const effective = Math.max(0, raw - cached);
+        const pct = raw > 0 ? Math.min(100, Math.round(cached / raw * 100)) : 0;
+        lines.push(`E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%) [raw ${raw.toLocaleString()}]`);
+    }
+
     const timingTitle = buildModelBadgeTimingTitle(timing);
     if (timingTitle) {
         lines.push(timingTitle);
@@ -9097,7 +9106,18 @@ function buildModelBadgeText(
     const memoryText = memoryReady
         ? ` - mem I/O: ${safeTokenInt(memoryInputTokens).toLocaleString()}/${safeTokenInt(memoryOutputTokens).toLocaleString()}`
         : '';
-    return `${model} - I/O: ${input}/${output}${memoryText}${buildModelBadgeTimingText(timing)}`;
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const raw = safeTokenInt(t.rawInput);
+    const cached = safeTokenInt(t.cachedInput);
+    const effective = Math.max(0, raw - cached);
+    let ecText = '';
+    if (raw > 0 && cached >= 0) {
+        const pct = Math.min(100, Math.round(cached / raw * 100));
+        ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%)`;
+    } else if (cached > 0) {
+        ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()}`;
+    }
+    return `${model} - I/O: ${input}/${output}${memoryText}${ecText}${buildModelBadgeTimingText(timing)}`;
 }
 
 function ensureMessageModelBadge(messageDiv) {

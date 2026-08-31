@@ -649,15 +649,10 @@
         }
     }
 
-    /** 右键菜单:对齐原版 pin-context-menu(置顶/改名/归入工作区/查看分支处) */
+    /** 右键菜单:对齐原版 pin-context-menu(置顶/改名/归入工作区/查看分支处)。
+     *  生成中不再整体拦截(会话切换本就放行);删除等风险动作在各自入口单独设门。 */
     function handleContextMenu(event: MouseEvent, item: ConversationSummary): void {
         event.preventDefault()
-
-        if (store.generating) {
-            showToast('回复生成中,请先停止再操作', 'warning')
-
-            return
-        }
 
         contextMenu.value = {
             conversationId: item.id,

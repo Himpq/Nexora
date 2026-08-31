@@ -816,6 +816,35 @@ class ConversationManager:
         if normalized_role == "assistant":
             content = sanitize_assistant_visible_content(content)
 
+        # 用户消息时间：不污染 content，存入 metadata，经 Context 在 user 头单次注入（缓存友好）
+        if normalized_role == "user" and index is None:
+            raw_content = str(content or "")
+            # 兼容旧数据：若 content 已带 [TIME] 前缀，剥离后存回 metadata
+            stripped_for_storage = raw_content
+            if raw_content.lstrip().startswith("[TIME]") or raw_content.lstrip().startswith("[历史消息时间:"):
+                # 剥离时间前缀，仅保留纯文本
+                stripped = raw_content.lstrip()
+                # 剥离首行时间标记
+                first_nl = stripped.find("\n")
+                if first_nl >= 0:
+                    stripped_for_storage = stripped[first_nl + 1:].lstrip()
+                else:
+                    stripped_for_storage = ""
+                content = stripped_for_storage
+            else:
+                content = raw_content
+
+            # metadata 注入 wall time（用于 Context 前缀）
+            time_marker = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if metadata is None:
+                metadata = {}
+            elif not isinstance(metadata, dict):
+                metadata = dict(metadata) if isinstance(metadata, dict) else {}
+
+            # 仅当调用方未显式提供时写入
+            if "time_marker" not in metadata and "time" not in metadata:
+                metadata["time_marker"] = time_marker
+
         with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
             messages = conversation_data.get("messages", [])
             if not isinstance(messages, list):
@@ -841,47 +870,85 @@ class ConversationManager:
                 old_msg = messages[index]
                 old_role = str((old_msg if isinstance(old_msg, dict) else {}).get("role") or "").strip()
                 new_role = str(role or "").strip()
+                fallback_to_append = False
                 if old_role != new_role:
-                    raise ValueError(
-                        f"消息索引角色不匹配: index={index}, expected={new_role}, actual={old_role}"
-                    )
+                    # 兼容增量 system/knowledge 插入以及并发导致的索引漂移：附近找最近同角色
+                    # 原逻辑仅处理 system->assistant，频繁出现 user->assistant 的漂移（如本轮 index=3 指向 user）
+                    found_idx = None
+                    for off in range(1, 6):
+                        for cand_idx in (index + off, index - off):
+                            if 0 <= cand_idx < len(messages):
+                                cand = messages[cand_idx] if isinstance(messages[cand_idx], dict) else {}
+                                if str(cand.get("role") or "").strip() == new_role:
+                                    found_idx = cand_idx
+                                    break
+                        if found_idx is not None:
+                            break
+                    if found_idx is not None:
+                        # 若找到的同角色距离过远且原位置在尾部附近（并发后旧索引指向刚插入的 user），
+                        # 直接追加更安全，避免污染更早的 assistant（如 421 号会话的富士山内容覆盖到上一条回答）
+                        if new_role == "assistant" and old_role == "user" and found_idx < index and index >= len(messages) - 3:
+                            # 尾部 user->assistant 且最近 assistant 在更早位置，视为并发漂移，追加而非覆盖
+                            print(f"[ADD_MESSAGE] index drift fallback append index={index} ({old_role}->{new_role}) len={len(messages)} found={found_idx}")
+                            fallback_to_append = True
+                            index = None
+                        else:
+                            print(f"[ADD_MESSAGE] index drift fix {index}->{found_idx} ({old_role}->{new_role})")
+                            index = found_idx
+                            old_msg = messages[index]
+                            old_role = str((old_msg if isinstance(old_msg, dict) else {}).get("role") or "").strip()
+                    else:
+                        # 无最近同角色：尾部 user 被 assistant 覆盖时直接追加，避免抛错导致 terminal_error 合并到错误位置
+                        if new_role == "assistant" and old_role in ("user", "system") and index >= len(messages) - 3:
+                            print(f"[ADD_MESSAGE] index drift fallback append index={index} ({old_role}->{new_role}) len={len(messages)} no_candidate")
+                            fallback_to_append = True
+                            index = None
+                        else:
+                            raise ValueError(
+                                f"消息索引角色不匹配: index={index}, expected={new_role}, actual={old_role}"
+                            )
 
-                old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
-                old_versions = self._sanitize_assistant_versions(old_metadata.get("versions", []))
+                if index is not None and not fallback_to_append:
+                    old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
+                    old_versions = self._sanitize_assistant_versions(old_metadata.get("versions", []))
 
-                if "metadata" not in message:
-                    message["metadata"] = {}
-                message["metadata"]["versions"] = list(old_versions)
+                    if "metadata" not in message:
+                        message["metadata"] = {}
+                    message["metadata"]["versions"] = list(old_versions)
 
-                if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
-                    prev_content = sanitize_assistant_visible_content(old_msg.get("content", ""))
-                    prev_ts = old_msg.get("timestamp", "")
-                    prev_meta_without_versions = {
-                        k: v for k, v in old_metadata.items() if k != "versions"
-                    }
-                    prev_variant = {
-                        "content": prev_content,
-                        "timestamp": prev_ts,
-                        "metadata": prev_meta_without_versions
-                    }
-                    if "exchange_summary" in old_msg:
-                        prev_variant["exchange_summary"] = old_msg["exchange_summary"]
+                    if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
+                        prev_content = sanitize_assistant_visible_content(old_msg.get("content", ""))
+                        prev_ts = old_msg.get("timestamp", "")
+                        prev_meta_without_versions = {
+                            k: v for k, v in old_metadata.items() if k != "versions"
+                        }
+                        prev_variant = {
+                            "content": prev_content,
+                            "timestamp": prev_ts,
+                            "metadata": prev_meta_without_versions
+                        }
+                        if "exchange_summary" in old_msg:
+                            prev_variant["exchange_summary"] = old_msg["exchange_summary"]
 
-                    has_meaningful_content = bool(str(prev_content or "").strip())
-                    has_meaningful_steps = self._assistant_process_steps_have_visible_output(prev_meta_without_versions)
-                    if has_meaningful_content or has_meaningful_steps:
-                        existed = False
-                        for v in message["metadata"]["versions"]:
-                            if not isinstance(v, dict):
-                                continue
-                            if (
-                                str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
-                                and str(v.get("content", "")) == str(prev_variant.get("content", ""))
-                            ):
-                                existed = True
-                                break
-                        if not existed:
-                            message["metadata"]["versions"].append(prev_variant)
+                        has_meaningful_content = bool(str(prev_content or "").strip())
+                        has_meaningful_steps = self._assistant_process_steps_have_visible_output(prev_meta_without_versions)
+                        if has_meaningful_content or has_meaningful_steps:
+                            existed = False
+                            for v in message["metadata"]["versions"]:
+                                if not isinstance(v, dict):
+                                    continue
+                                if (
+                                    str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
+                                    and str(v.get("content", "")) == str(prev_variant.get("content", ""))
+                                ):
+                                    existed = True
+                                    break
+                            if not existed:
+                                message["metadata"]["versions"].append(prev_variant)
+                elif fallback_to_append:
+                    # 追加路径：确保 metadata 初始化，不继承旧版本
+                    if "metadata" not in message:
+                        message["metadata"] = {}
 
             if metadata:
                 if "metadata" not in message:
@@ -981,20 +1048,49 @@ class ConversationManager:
                 "message_count": len(messages)
             }
 
+        # 兼容增量 system/knowledge 插入：目标附近找最近 assistant，user 前跳过 system
+        actual_idx = idx
         target = messages[idx] if isinstance(messages[idx], dict) else {}
         target_role = str(target.get("role") or "").strip()
-        if target_role != "assistant":
-            return False, "重答目标必须是 assistant 消息", {
-                "message_count": len(messages),
-                "target_role": target_role,
-                "target_index": idx
-            }
 
-        user_index = idx - 1
+        if target_role != "assistant":
+            # 前后 5 格找最近 assistant
+            found = None
+            for off in range(1, 6):
+                for cand_idx in (idx - off, idx + off):
+                    if 0 <= cand_idx < len(messages):
+                        cand = messages[cand_idx] if isinstance(messages[cand_idx], dict) else {}
+                        if str(cand.get("role") or "").strip() == "assistant":
+                            found = cand_idx
+                            break
+                if found is not None:
+                    break
+            if found is not None:
+                actual_idx = found
+                target = messages[found] if isinstance(messages[found], dict) else {}
+                target_role = str(target.get("role") or "").strip()
+            else:
+                return False, "重答目标必须是 assistant 消息", {
+                    "message_count": len(messages),
+                    "target_role": target_role,
+                    "target_index": idx
+                }
+
+        # 找 user，跳过中间的 system
+        user_index = actual_idx - 1
+        while user_index >= 0:
+            cand = messages[user_index] if isinstance(messages[user_index], dict) else {}
+            if str(cand.get("role") or "").strip() == "user":
+                break
+            if str(cand.get("role") or "").strip() == "system":
+                user_index -= 1
+                continue
+            break
+
         if user_index < 0:
             return False, "重答目标前缺少 user 消息", {
                 "message_count": len(messages),
-                "target_index": idx
+                "target_index": actual_idx
             }
 
         source = messages[user_index] if isinstance(messages[user_index], dict) else {}
@@ -1002,13 +1098,13 @@ class ConversationManager:
         if source_role != "user":
             return False, "重答目标前一条不是 user 消息", {
                 "message_count": len(messages),
-                "target_index": idx,
+                "target_index": actual_idx,
                 "source_role": source_role
             }
 
         return True, "ok", {
             "message_count": len(messages),
-            "target_index": idx,
+            "target_index": actual_idx,
             "user_index": user_index,
             "user_content": str(source.get("content") or ""),
             "assistant_model_name": str(
@@ -1446,6 +1542,445 @@ class ConversationManager:
                 return True
         except Exception:
             return False
+
+    # ------------------------------------------------------------------
+    # System Snapshot 增量存储（DSH 式前缀缓存优化）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _system_snapshot_hash(text: str) -> str:
+        """计算系统提示词稳定哈希（16位 hex，足够区分变更且便于日志）。"""
+        import hashlib
+
+        return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _is_system_snapshot_message(msg: dict) -> bool:
+        """判断是否为系统快照消息。"""
+        if not isinstance(msg, dict):
+            return False
+
+        if str(msg.get("role") or "").strip() != "system":
+            return False
+
+        meta = msg.get("metadata", {}) if isinstance(msg.get("metadata", {}), dict) else {}
+        return str(meta.get("kind") or "").strip() == "system_snapshot"
+
+    def get_last_system_snapshot(self, conversation_id: str):
+        """返回最后一条系统快照消息，不存在则 None。"""
+        try:
+            conversation = self.get_conversation(conversation_id)
+        except Exception:
+            return None
+
+        messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
+
+        if not isinstance(messages, list):
+            return None
+
+        for msg in reversed(messages):
+            if self._is_system_snapshot_message(msg):
+                return msg
+
+        return None
+
+    def has_system_snapshot(self, conversation_id: str) -> bool:
+        """会话是否已采用增量系统快照存储。"""
+        return self.get_last_system_snapshot(conversation_id) is not None
+
+    def ensure_system_snapshot(self, conversation_id: str, system_text: str, reason: str = "", regenerate_index=None, insert_message: bool = True):
+        """
+        确保会话的系统快照与当前 `system_text` 一致。
+
+        - 首次调用：插入到 messages[0]
+        - 哈希不同：追加新快照（带 [System Prompt Changed] 标记 + 新内容）
+        - 哈希相同：无操作
+        - 重答时：插入到 regenerate_index 前（保证重答上下文包含新 system）
+
+        返回 (changed:bool, hash:str, epoch:int)
+        """
+        import hashlib
+
+        text = str(system_text or "").strip()
+
+        if not text:
+            return False, "", 0
+
+        new_hash = self._system_snapshot_hash(text)
+
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            messages = conversation_data.get("messages", [])
+
+            if not isinstance(messages, list):
+                messages = []
+                conversation_data["messages"] = messages
+
+            # 收集已有快照 epoch
+            existing_epochs = [
+                int((m.get("metadata", {}) or {}).get("epoch", 0) or 0)
+                for m in messages
+                if self._is_system_snapshot_message(m)
+            ]
+            next_epoch = (max(existing_epochs) + 1) if existing_epochs else 1
+
+            last_snapshot = None
+
+            for msg in reversed(messages):
+                if self._is_system_snapshot_message(msg):
+                    last_snapshot = msg
+                    break
+
+            if last_snapshot is not None:
+                last_hash = str((last_snapshot.get("metadata", {}) or {}).get("hash", "") or "").strip()
+
+                if last_hash == new_hash:
+                    return False, new_hash, int((last_snapshot.get("metadata", {}) or {}).get("epoch", next_epoch - 1) or 0)
+
+                # 哈希不同：追加新 epoch（若刚写入了当前轮 user，则插在其前，保证 system 在 user 之前）
+                epoch = next_epoch
+                snapshot_msg = {
+                    "role": "system",
+                    "content": text,
+                    "timestamp": datetime.now().isoformat(),
+                    "metadata": {
+                        "kind": "system_snapshot",
+                        "hash": new_hash,
+                        "epoch": int(epoch),
+                        "prev_hash": last_hash,
+                        "reason": str(reason or "system_changed").strip() or "system_changed",
+                    },
+                }
+                # 重答时插入到重答点前，保证重答上下文包含新 system
+                try:
+                    ri = int(regenerate_index) if regenerate_index is not None else None
+                except Exception:
+                    ri = None
+
+                if ri is not None and 0 <= ri <= len(messages):
+                    # regenerate_index 指向待覆盖的 assistant，system 应在其前的 user 之前
+                    insert_pos = max(0, ri - 1) if ri > 0 and isinstance(messages[ri - 1], dict) and str(messages[ri - 1].get("role") or "").strip() == "user" else ri
+                    messages.insert(insert_pos, snapshot_msg)
+                elif messages and isinstance(messages[-1], dict) and str(messages[-1].get("role") or "").strip() == "user":
+                    # 刚落库的当前轮 user 在末尾时，system 应在其前，否则前缀顺序错乱
+                    messages.insert(len(messages) - 1, snapshot_msg)
+                else:
+                    messages.append(snapshot_msg)
+                conversation_data["messages"] = messages
+                conversation_data["updated_at"] = datetime.now().isoformat()
+                self._save_json_atomic(conversation_path, conversation_data)
+                print(f"[SYSTEM_SNAPSHOT] append epoch={epoch} hash={new_hash} prev={last_hash} reason={reason}")
+                return True, new_hash, int(epoch)
+
+            # 首次：插入到最前
+            epoch = 1
+            snapshot_msg = {
+                "role": "system",
+                "content": text,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {
+                    "kind": "system_snapshot",
+                    "hash": new_hash,
+                    "epoch": int(epoch),
+                    "prev_hash": "",
+                    "reason": str(reason or "initial").strip() or "initial",
+                },
+            }
+            messages.insert(0, snapshot_msg)
+            conversation_data["messages"] = messages
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
+            print(f"[SYSTEM_SNAPSHOT] initial epoch=1 hash={new_hash}")
+            return True, new_hash, 1
+
+    # ------------------------------------------------------------------
+    # Knowledge Index 增量 diff 注入（避免知识库微变导致 system 全量重写）
+    # ------------------------------------------------------------------
+    def get_last_knowledge_snapshot(self, conversation_id: str):
+        """返回上次持久化的知识索引快照列表，不存在则 []。"""
+        try:
+            conversation = self.get_conversation(conversation_id)
+        except Exception:
+            return []
+
+        snap = conversation.get("knowledge_snapshot", None)
+
+        if isinstance(snap, dict) and isinstance(snap.get("documents"), list):
+            return snap.get("documents", [])
+
+        if isinstance(snap, list):
+            return snap
+
+        return []
+
+    def _knowledge_docs_hash(self, docs) -> str:
+        """对 knowledge_documents 列表计算稳定哈希（按标题排序）。"""
+        import hashlib, json
+
+        if not isinstance(docs, list):
+            return ""
+
+        normalized = []
+
+        for item in docs:
+            if not isinstance(item, dict):
+                continue
+
+            title = str(item.get("title") or item.get("name") or "").strip()
+            if not title:
+                continue
+
+            normalized.append({
+                "title": title,
+                "knowledge_type": str(item.get("knowledge_type") or item.get("type") or "basis").strip(),
+                "basis_id": str(item.get("basis_id") or "").strip(),
+                "pin": bool(item.get("pin", False)),
+            })
+
+        normalized.sort(key=lambda x: (x["title"].lower(), x["basis_id"]))
+
+        try:
+            raw = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            raw = str(normalized)
+
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def ensure_knowledge_diff_snapshot(self, conversation_id: str, new_docs, max_diff_items: int = 20, regenerate_index=None, insert_message: bool = True):
+        """
+        对比上次知识快照与新列表，若有变更则：
+        1. 更新 conversation.knowledge_snapshot
+        2. 追加一条 role=system, kind=knowledge_diff 的增量提示词（列表 join 的后续段）
+
+        返回 (changed, added, removed, diff_text)
+        """
+        new_list = [d for d in (new_docs or []) if isinstance(d, dict)]
+        old_list = self.get_last_knowledge_snapshot(conversation_id)
+        old_hash = self._knowledge_docs_hash(old_list)
+        new_hash = self._knowledge_docs_hash(new_list)
+
+        if old_hash == new_hash:
+            return False, [], [], ""
+
+        # 首次初始化：静默落库，不发 tool 卡，避免旧会话一次性 +全部
+        is_initial = not old_list and old_hash == self._knowledge_docs_hash([])
+
+        if is_initial:
+            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+                conversation_data["knowledge_snapshot"] = {
+                    "hash": new_hash,
+                    "updated_at": datetime.now().isoformat(),
+                    "documents": [dict(d) for d in new_list],
+                }
+                conversation_data["updated_at"] = datetime.now().isoformat()
+                self._save_json_atomic(conversation_path, conversation_data)
+            print(f"[KNOWLEDGE_DIFF] initial snapshot hash={new_hash} docs={len(new_list)} (silent)")
+            return False, [], [], ""
+
+        # 计算 diff（按标题）
+        old_titles = {str(d.get("title") or "").strip(): d for d in old_list if str(d.get("title") or "").strip()}
+        new_titles = {str(d.get("title") or "").strip(): d for d in new_list if str(d.get("title") or "").strip()}
+
+        added = [new_titles[t] for t in new_titles if t not in old_titles]
+        removed = [old_titles[t] for t in old_titles if t not in new_titles]
+
+        # 构建 diff 文本（控制长度，适配缓存：增量而非全量）
+        lines = []
+
+        if added:
+            lines.append(f"新增知识 {len(added)} 项：")
+
+            for item in added[:max_diff_items]:
+                title = str(item.get("title") or "").strip()
+                ktype = str(item.get("knowledge_type") or item.get("type") or "basis").strip()
+                lines.append(f"- + {title} ({ktype})")
+
+            if len(added) > max_diff_items:
+                lines.append(f"- ... 还有 {len(added) - max_diff_items} 项新增未列出")
+
+        if removed:
+            lines.append(f"移除知识 {len(removed)} 项：")
+
+            for item in removed[:max_diff_items]:
+                title = str(item.get("title") or "").strip()
+                lines.append(f"- - {title}")
+
+            if len(removed) > max_diff_items:
+                lines.append(f"- ... 还有 {len(removed) - max_diff_items} 项移除未列出")
+
+        if not lines:
+            # 仅属性变更（如 pin），视为更新
+            lines.append(f"知识索引属性更新：{len(new_list)} 项")
+
+        diff_text = "## Workspace Knowledge Index 更新\n" + "\n".join(lines)
+
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            # 更新快照
+            conversation_data["knowledge_snapshot"] = {
+                "hash": new_hash,
+                "updated_at": datetime.now().isoformat(),
+                "documents": [dict(d) for d in new_list],
+            }
+
+            if insert_message:
+                # 追加增量系统消息（列表 join 的尾部，保证前缀缓存）
+                diff_msg = {
+                    "role": "system",
+                    "content": diff_text,
+                    "timestamp": datetime.now().isoformat(),
+                    "metadata": {
+                        "kind": "knowledge_diff",
+                        "hash": new_hash,
+                        "prev_hash": old_hash,
+                        "added_count": len(added),
+                        "removed_count": len(removed),
+                    },
+                }
+                messages = conversation_data.get("messages", [])
+
+                if not isinstance(messages, list):
+                    messages = []
+
+                # 重答时插到重答点前，否则若末条是刚写入的 user 插其前
+                try:
+                    ri = int(regenerate_index) if regenerate_index is not None else None
+                except Exception:
+                    ri = None
+
+                if ri is not None and 0 <= ri <= len(messages):
+                    insert_pos = max(0, ri - 1) if ri > 0 and isinstance(messages[ri - 1], dict) and str(messages[ri - 1].get("role") or "").strip() == "user" else ri
+                    messages.insert(insert_pos, diff_msg)
+                elif messages and isinstance(messages[-1], dict) and str(messages[-1].get("role") or "").strip() == "user":
+                    messages.insert(len(messages) - 1, diff_msg)
+                else:
+                    messages.append(diff_msg)
+
+                conversation_data["messages"] = messages
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
+
+        print(f"[KNOWLEDGE_DIFF] hash {old_hash}->{new_hash} +{len(added)} -{len(removed)} insert={insert_message}")
+        return True, added, removed, diff_text
+
+    def get_last_global_knowledge_snapshot(self, conversation_id: str):
+        """全局 USER_KNOWLEDGE_INDEX 快照。"""
+        try:
+            conversation = self.get_conversation(conversation_id)
+        except Exception:
+            return []
+
+        snap = conversation.get("global_knowledge_snapshot", None)
+
+        if isinstance(snap, dict) and isinstance(snap.get("documents"), list):
+            return snap.get("documents", [])
+
+        if isinstance(snap, list):
+            return snap
+
+        return []
+
+    def ensure_global_knowledge_diff_snapshot(self, conversation_id: str, new_titles, max_diff_items: int = 20, regenerate_index=None):
+        """
+        全局知识索引 diff（USER_KNOWLEDGE_INDEX），new_titles 为标题列表或文档列表。
+        首次静默落库，后续变更追加 knowledge_diff（kind=global_knowledge_diff）。
+        """
+        # 归一化为文档列表
+        new_list = []
+
+        for item in (new_titles or []):
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("name") or "").strip()
+                if title:
+                    new_list.append({"title": title})
+            elif isinstance(item, str):
+                title = str(item or "").strip()
+                if title:
+                    new_list.append({"title": title})
+
+        old_list = self.get_last_global_knowledge_snapshot(conversation_id)
+        old_hash = self._knowledge_docs_hash(old_list)
+        new_hash = self._knowledge_docs_hash(new_list)
+
+        if old_hash == new_hash:
+            return False, [], [], ""
+
+        is_initial = not old_list and old_hash == self._knowledge_docs_hash([])
+
+        if is_initial:
+            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+                conversation_data["global_knowledge_snapshot"] = {
+                    "hash": new_hash,
+                    "updated_at": datetime.now().isoformat(),
+                    "documents": [dict(d) for d in new_list],
+                }
+                conversation_data["updated_at"] = datetime.now().isoformat()
+                self._save_json_atomic(conversation_path, conversation_data)
+            print(f"[GLOBAL_KNOWLEDGE_DIFF] initial snapshot hash={new_hash} docs={len(new_list)} (silent)")
+            return False, [], [], ""
+
+        old_titles = {str(d.get("title") or "").strip(): d for d in old_list if str(d.get("title") or "").strip()}
+        new_titles_map = {str(d.get("title") or "").strip(): d for d in new_list if str(d.get("title") or "").strip()}
+        added = [new_titles_map[t] for t in new_titles_map if t not in old_titles]
+        removed = [old_titles[t] for t in old_titles if t not in new_titles_map]
+
+        lines = []
+
+        if added:
+            lines.append(f"新增知识 {len(added)} 项：")
+            for item in added[:max_diff_items]:
+                lines.append(f"- + {str(item.get('title') or '').strip()}")
+            if len(added) > max_diff_items:
+                lines.append(f"- ... 还有 {len(added) - max_diff_items} 项新增未列出")
+
+        if removed:
+            lines.append(f"移除知识 {len(removed)} 项：")
+            for item in removed[:max_diff_items]:
+                lines.append(f"- - {str(item.get('title') or '').strip()}")
+            if len(removed) > max_diff_items:
+                lines.append(f"- ... 还有 {len(removed) - max_diff_items} 项移除未列出")
+
+        if not lines:
+            lines.append(f"知识索引属性更新：{len(new_list)} 项")
+
+        diff_text = "## User Knowledge Index 更新\n" + "\n".join(lines)
+
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            conversation_data["global_knowledge_snapshot"] = {
+                "hash": new_hash,
+                "updated_at": datetime.now().isoformat(),
+                "documents": [dict(d) for d in new_list],
+            }
+            diff_msg = {
+                "role": "system",
+                "content": diff_text,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {
+                    "kind": "knowledge_diff",
+                    "scope": "global",
+                    "hash": new_hash,
+                    "prev_hash": old_hash,
+                    "added_count": len(added),
+                    "removed_count": len(removed),
+                },
+            }
+            messages = conversation_data.get("messages", [])
+            if not isinstance(messages, list):
+                messages = []
+            try:
+                ri = int(regenerate_index) if regenerate_index is not None else None
+            except Exception:
+                ri = None
+            if ri is not None and 0 <= ri <= len(messages):
+                insert_pos = max(0, ri - 1) if ri > 0 and isinstance(messages[ri - 1], dict) and str(messages[ri - 1].get("role") or "").strip() == "user" else ri
+                messages.insert(insert_pos, diff_msg)
+            elif messages and isinstance(messages[-1], dict) and str(messages[-1].get("role") or "").strip() == "user":
+                messages.insert(len(messages) - 1, diff_msg)
+            else:
+                messages.append(diff_msg)
+            conversation_data["messages"] = messages
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
+
+        print(f"[GLOBAL_KNOWLEDGE_DIFF] hash {old_hash}->{new_hash} +{len(added)} -{len(removed)}")
+        return True, added, removed, diff_text
     
     def set_main_title(self, conversation_id, main_title):
         """

@@ -256,6 +256,25 @@
     box-sizing: border-box;
     white-space: normal;
     font-family: inherit;
+    /* 滑动窗口：展开后定高可滚动，避免老对话长思考把页面撑满 */
+    max-height: min(40vh, 360px);
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 3px;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-content::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 .message-content .thinking-block.execution-flow-item:not(.collapsed) .thinking-content {
