@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Set, Tuple
 
 import sys as _sys
 try:
@@ -344,8 +344,14 @@ class ChatContextManager:
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
         history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """构建模型首轮请求消息列表。"""
+        """构建模型首轮请求消息列表。
+
+        current_user_index：当前轮 user 消息的绝对下标（begin_user_turn 的 user_index）。
+        历史 diff 重建只覆盖严格早于它的变更，当前轮变更由 tail 注入，避免双重注入。
+        """
+
         context = self.build_initial_context(
             user_msg=user_msg,
             current_user_content=current_user_content,
@@ -355,6 +361,7 @@ class ChatContextManager:
             system_prompt_text=system_prompt_text,
             system_injection_texts=system_injection_texts,
             history_end_index_exclusive=history_end_index_exclusive,
+            current_user_index=current_user_index,
         )
         context.prepare()
         self.model.record_context_diagnostics(context.diagnostics())
@@ -366,13 +373,16 @@ class ChatContextManager:
         current_user_content: Any,
         system_injection_texts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """构建续接缓存命中时只发送的增量：仅尾部易变块 + 新用户，头稳定块已在缓存中。"""
+        """构建续接缓存命中时只发送的增量：仅尾部易变块 + 新用户，头稳定块已在缓存中。
 
-        # 架构重构：画像/知识库已稳定化进 head 前缀，tail 仅保留真正易变的沙箱/资源索引
-        # 未来画像 diff 也将以独立小块进 tail，当前全量不在 tail
+        消息顺序固定为「易变块（diff/沙箱/资源）→ 新用户」，配合 provider 的续接 ID，
+        实际语义为 SystemPrompt_001 + 历史 + Diff Inject + 新用户，head 不重建。
+        """
+
         volatile_markers = (
             "## Workspace Resource Index",
             "## Sandbox Files",
+            "## Knowledge changed",
         )
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         volatile_injections = [
@@ -386,17 +396,115 @@ class ChatContextManager:
         messages.append({"role": "user", "content": current_user_content})
         return messages
 
-    @staticmethod
-    def _is_system_snapshot_item(item: Dict[str, Any]) -> bool:
-        """判断历史条目是否为 DSH 式系统快照。"""
-        if not isinstance(item, dict):
-            return False
+    def build_knowledge_diff_injection(self, knowledge_delta: Optional[Dict[str, Any]]) -> str:
+        """把当前轮知识库变更格式化为 tail 注入块（head 保持基线不动）。
 
-        if str(item.get("role") or "").strip() != "system":
-            return False
+        delta 由 Conversation Manager（service.begin_user_turn）在同一事务内于轮次
+        开头采样得出，与 context.knowledge_events 同源，是本轮变更的唯一权威来源。
+        本方法只负责格式化，不做任何基线读写 —— 在流式结束后回写基线的做法会把
+        「流式期间发生的变更」静默吞掉，导致下一轮 diff 恒为空。
+        """
 
-        meta = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
-        return str(meta.get("kind") or "").strip() == "system_snapshot"
+        if not isinstance(knowledge_delta, dict):
+            return ""
+
+        return self._build_knowledge_changed_text(
+            list(knowledge_delta.get("ws_removed") or [])
+            + list(knowledge_delta.get("global_removed") or []),
+            list(knowledge_delta.get("ws_added") or [])
+            + list(knowledge_delta.get("global_added") or []),
+        )
+
+    def _build_knowledge_event_block(self, event: Dict[str, Any]) -> str:
+        """从已落库的 knowledge_event 重建 diff 注入块（历史回放用）。
+
+        event 结构与轮次 delta 不同：added/removed 已是最终条目列表
+        （global 为 [{"title": t}]，workspace 为文档 dict），直接格式化即可。
+        """
+
+        if not isinstance(event, dict):
+            return ""
+
+        return self._build_knowledge_changed_text(event.get("removed"), event.get("added"))
+
+    def _build_knowledge_changed_text(self, removed_entries: Any, added_entries: Any) -> str:
+        """统一把知识库变更条目格式化为注入块，保持 head 前缀稳定。"""
+
+        removed = self._collect_knowledge_titles(removed_entries)
+        added = self._collect_knowledge_titles(added_entries)
+
+        if not added and not removed:
+            return ""
+
+        lines: List[str] = ["## Knowledge changed"]
+
+        for title in removed:
+            lines.append(f"- {title}")
+
+        for title in added:
+            lines.append(f"+ {title}")
+
+        return "\n".join(lines).strip()
+
+    def _collect_knowledge_titles(self, entries: Any) -> List[str]:
+        """把 workspace 文档 dict 与 global 裸标题统一成去重后的标题列表。"""
+
+        titles: List[str] = []
+        seen: Set[str] = set()
+
+        for entry in entries or []:
+            title = self._knowledge_document_title(entry)
+
+            if title and title not in seen:
+                seen.add(title)
+                titles.append(title)
+
+        return titles
+
+    def _knowledge_document_title(self, document: Any) -> str:
+        """取知识库条目标题：workspace 文档是 dict，global 列表是裸标题字符串。"""
+
+        if isinstance(document, dict):
+            return str(document.get("title") or document.get("name") or "").strip()
+
+        return str(document or "").strip()
+
+    def _save_head_snapshot(self, model: Any, username: str, merged_head: str, history_count: int) -> None:
+        """把本次构建的 head 快照写入会话 context.system_snapshots（主对话专用）。
+
+        与 Conversation Manager 的 record_system_snapshot 语义一致（按 hash 去重），
+        快照用于后续轮次复用 head，保证前缀缓存命中。
+        """
+
+        from basis.Conversation.repository import conversation_update_session as _cus_snap
+        from basis.Database import safe_write_json as _swj_snap
+        from basis.Conversation.schema import validate_v4_conversation as _v4c_snap
+        from basis.Conversation import index as _idx_snap
+        import hashlib as _hl_snap
+        import time as _time_snap
+
+        snap_hash = _hl_snap.sha256(merged_head.encode("utf-8")).hexdigest()[:16]
+        with _cus_snap(username, model.conversation_id) as (_p_snap, _d_snap):
+            _c_snap = _d_snap.get("context", {}) if isinstance(_d_snap.get("context"), dict) else {}
+            _snaps = _c_snap.get("system_snapshots", []) if isinstance(_c_snap.get("system_snapshots"), list) else []
+            if not _snaps or str(_snaps[-1].get("hash") or "") != snap_hash:
+                _snaps.append({
+                    "epoch": int(_time_snap.time()),
+                    "hash": snap_hash,
+                    "content": merged_head,
+                    "effective_from_message": history_count,
+                    "reason": "chat_turn",
+                })
+                _c_snap["system_snapshots"] = _snaps
+                _d_snap["context"] = _c_snap
+                from basis.Conversation.schema import normalize_context as _norm_ctx
+                _d_snap["context"] = _norm_ctx(_c_snap)
+                _v4c_snap(_d_snap)
+                _swj_snap(_p_snap, _d_snap, indent=2)
+                try:
+                    _idx_snap.sync_index_from_file(username, _p_snap, _d_snap)
+                except Exception:
+                    pass
 
     def build_initial_context(
         self,
@@ -408,10 +516,12 @@ class ChatContextManager:
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
         history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None,
     ) -> ChatContext:
-        """构建并返回可继续 add/prepare/build 的上下文对象。"""
+        """构建并返回可继续 add/prepare/build 的上下文对象。纯排序器，不做内容变换。"""
         model = self.model
-        context_compact_mode = model._resolve_context_compact_mode()
+        # 纯排序器：compact 模式固定 off，内容已在外部归一化
+        context_compact_mode = "off"
         effective_system_prompt = str(system_prompt_text or model.system_prompt or "").strip()
         context = self.create_context(
             policy=ChatContextPolicy.NONE,
@@ -461,11 +571,14 @@ class ChatContextManager:
             compression_marker,
         )
 
-        # 头尾契约（重构后）：头稳定可缓存（system主prompt + Skill + 画像/知识库基线），尾仅沙箱/资源等真正易变块
+        # 头尾契约（重构后）：头稳定可缓存（system主prompt + Skill + 画像/知识库基线），尾仅 diff/沙箱/资源
         # 顺序固定 头 + 历史 + 尾 + 新用户，保证 head+history 前缀可被 prefix cache 命中
+        # LRU 快照：head 首次构建后存快照，后续复用快照保证前缀命中，diff 仅 tail 追加
+        # 快照仅对主对话生效（persist_conversation）：记忆分析等子请求不得读写主对话快照
         volatile_markers = (
             "## Workspace Resource Index",
             "## Sandbox Files",
+            "## Knowledge changed",
         )
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         stable_injections = [
@@ -475,35 +588,99 @@ class ChatContextManager:
             t for t in all_injections if any(vm in t for vm in volatile_markers)
         ]
 
-        # 兜底：若 head 意外包含易变标记（旧调用未分离 profile），剥离并移到尾部
-        sanitized_head = str(effective_system_prompt or "").strip()
-        head_volatile_tail: List[str] = []
-        if sanitized_head:
-            for vm in volatile_markers:
-                if vm in sanitized_head:
-                    # 简单剥离：若 head 含 KB，则头只留非 KB 前缀
-                    # 此处不做精细切分，仅告警并将整块移到尾部，保证 #0 稳定
-                    print(f"[CTX] 警告: effective_system_prompt 含易变标记 {vm}，已剥离到尾部")
-                    head_volatile_tail.append(sanitized_head)
-                    sanitized_head = ""
-                    break
+        # 尝试加载已存快照（LRU 命中关键）；仅主对话参与，避免子请求复用/污染 head
+        # 顺带读取 knowledge_events，供历史回放时重建 diff（保证前缀稳定）
+        snapshot_content: Optional[str] = None
+        knowledge_events_raw: List[Dict[str, Any]] = []
+        try:
+            if model.persist_conversation and model.conversation_id:
+                svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
+                if svc_snap and hasattr(svc_snap, "_load_v4"):
+                    snap_data = svc_snap._load_v4(model.conversation_id)
+                    snaps = snap_data.get("context", {}).get("system_snapshots", [])
+                    if isinstance(snaps, list) and snaps:
+                        latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
+                        snapshot_content = str(latest.get("content") or "").strip() or None
+                    raw_events = snap_data.get("context", {}).get("knowledge_events", [])
+                    if isinstance(raw_events, list):
+                        knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
+        except Exception:
+            snapshot_content = None
 
-        if volatile_injections and head_volatile_tail:
-            volatile_injections = head_volatile_tail + volatile_injections
-        elif head_volatile_tail:
-            volatile_injections = head_volatile_tail
+        # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前
+        history_event_blocks: List[Tuple[int, str]] = []
+        for event in knowledge_events_raw:
+            try:
+                efm = int(event.get("effective_from_message") or -1)
+            except Exception:
+                efm = -1
+            if efm < 0:
+                continue
+            block = self._build_knowledge_event_block(event)
+            if block:
+                history_event_blocks.append((efm, block))
+        history_event_blocks.sort(key=lambda item: item[0])
 
-        # 头：合并为单一 system#0，保证前缀缓存哈希稳定（Skill + 画像/知识库基线均进 head）
-        head_parts: List[str] = []
-        if sanitized_head:
-            head_parts.append(sanitized_head)
-        head_parts.extend(stable_injections)
-        merged_head = "\n\n".join([p for p in head_parts if str(p or "").strip()]).strip()
-        if merged_head:
-            context.add("system", merged_head)
+        if snapshot_content and history_messages:
+            # 非首轮：复用快照保证 LRU 命中，head 不重建
+            merged_head = snapshot_content
+            if merged_head:
+                context.add("system", merged_head)
+        else:
+            # 首轮或无快照：构建新 head 并存快照
+            sanitized_head = str(effective_system_prompt or "").strip()
+            head_parts: List[str] = []
+            if sanitized_head:
+                head_parts.append(sanitized_head)
+            head_parts.extend(stable_injections)
+            merged_head = "\n\n".join([p for p in head_parts if str(p or "").strip()]).strip()
+            if merged_head:
+                context.add("system", merged_head)
+                # 存快照（仅主对话；子请求不参与，避免污染主对话 LRU 前缀）
+                try:
+                    if model.persist_conversation and model.conversation_id:
+                        snap_username = str(getattr(model, "username", "") or "").strip()
+                        if not snap_username:
+                            snap_username = str(
+                                getattr(getattr(model, "conversation_service", None), "username", "") or ""
+                            ).strip()
+                        if not snap_username:
+                            print(f"[SNAPSHOT] skip save: missing username conversation_id={model.conversation_id}")
+                        else:
+                            self._save_head_snapshot(model, snap_username, merged_head, len(history_messages))
+                except Exception as _e_snap:
+                    print(f"[SNAPSHOT] save failed: {_e_snap}".replace("\xa0", " "))
 
         # 历史（V4 无 system 消息，仅 user/assistant）—— 紧跟 head，保证 head+history 前缀可缓存
+        # 知识库 diff 按生效点回放：在 effective_from_message 指向的 user 消息之前插入，
+        # 使任意轮次重建出的上下文与首次发送时一致，前缀缓存不因 diff 位置漂移而失效
+        compression_cut_index = -1
+        if compression_marker:
+            try:
+                compression_cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
+            except Exception:
+                compression_cut_index = -1
+        history_msg_cursor = compression_cut_index + 1 if compression_cut_index >= 0 else 0
+        # 历史 diff 重建边界：只回放严格早于当前轮的变更（efm < 当前轮 user 下标），
+        # 当前轮的变更由 tail 注入，避免「历史重建 + tail」双重注入
+        history_event_boundary = current_user_index if current_user_index is not None else len(history_messages)
+        history_event_idx = 0
         for item in history_messages:
+            if (
+                current_user_index is not None
+                and history_msg_cursor >= current_user_index
+            ):
+                # 当前轮的 user 与占位 assistant 已由「尾部易变块 + 新 user」处理，
+                # 跳过历史回放，保证 diff 固定在生效 user 之前、且只注入一次
+                history_msg_cursor += 1
+                continue
+            if (
+                history_event_idx < len(history_event_blocks)
+                and history_event_blocks[history_event_idx][0] == history_msg_cursor
+                and history_event_blocks[history_event_idx][0] < history_event_boundary
+            ):
+                context.add("system", history_event_blocks[history_event_idx][1])
+                history_event_idx += 1
             self._add_history_item_to_context(
                 context,
                 item,
@@ -511,6 +688,7 @@ class ChatContextManager:
                 allow_history_images=allow_history_images,
                 context_compact_mode=context_compact_mode,
             )
+            history_msg_cursor += 1
 
         # 尾部易变块：仅沙箱/资源索引等，紧跟历史之后、新用户之前
         for text in volatile_injections:
@@ -648,22 +826,17 @@ class ChatContextManager:
         if normalized is None:
             return
 
-        model = self.model
-        normalized = model._compact_context_content(normalized, context_compact_mode)
-
-        # 时间注入：user 头单次 [TIME]，system 前缀稳定，时间随 user 递增（缓存友好）
+        # 纯排序器：不做 compact/sanitize，时间标记为唯一例外（保证时序可追溯）
         if role == "user":
             metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
             time_marker = str(metadata.get("time_marker") or metadata.get("time") or "").strip()
 
             if not time_marker:
-                # 兼容老数据：用消息 timestamp 派生
                 ts_raw = str(item.get("timestamp") or "").strip()
                 if ts_raw:
                     try:
                         from datetime import datetime
 
-                        # 尝试解析 ISO
                         dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                         time_marker = dt.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception:
@@ -674,16 +847,8 @@ class ChatContextManager:
                     normalized = f"[TIME] {time_marker}\n{normalized}"
                 elif isinstance(normalized, list):
                     time_text = f"[TIME] {time_marker}\n"
-                    # 兼容 chat.completions 与 responses 两种负载
                     text_type = "input_text" if bool(use_responses_api) else "text"
-                    # 若首项已是文本则前置，否则插入新文本块
-                    normalized = [{ "type": text_type, "text": time_text }] + list(normalized)
-
-        if role == "assistant" and isinstance(normalized, str):
-            normalized = sanitize_assistant_visible_content(normalized)
-
-            if not str(normalized or "").strip():
-                return
+                    normalized = [{"type": text_type, "text": time_text}] + list(normalized)
 
         context.add(role, normalized)
 
@@ -902,38 +1067,19 @@ class ChatContextManager:
                 print("[CTX_HISTORY_TOOL_TRACE] skip incomplete assistant tool group")
                 continue
 
-            compacted_intro = model._compact_context_content(
-                group.get("content", ""),
-                context_compact_mode,
-            )
-
-            if isinstance(compacted_intro, str):
-                compacted_intro = sanitize_assistant_visible_content(compacted_intro)
-
+            # 纯回放：intro 保持原样，不做 compact/sanitize
             protocol_messages = self._build_tool_protocol_messages(
                 calls=calls,
                 results=results,
-                intro_content=compacted_intro,
+                intro_content=group.get("content", ""),
                 use_responses_api=use_responses_api,
                 context_compact_mode=context_compact_mode,
             )
             messages.extend(protocol_messages)
 
-        stripped_final = self._strip_system_injection_from_content(final_content)
-        normalized_final = self._normalize_history_content(stripped_final)
-
-        if normalized_final is not None:
-            normalized_final = model._compact_context_content(normalized_final, context_compact_mode)
-            normalized_final = self._strip_history_time_prefix_from_content(normalized_final)
-
-            if isinstance(normalized_final, str):
-                normalized_final = sanitize_assistant_visible_content(normalized_final)
-
-                if not str(normalized_final or "").strip():
-                    normalized_final = None
-
-        if normalized_final is not None:
-            messages.append({"role": "assistant", "content": normalized_final})
+        # 最终 assistant 文本：保持落库原样，不做二次清洗
+        if final_content and str(final_content).strip():
+            messages.append({"role": "assistant", "content": final_content})
 
         return messages
 
@@ -1124,14 +1270,12 @@ class ChatContextManager:
 
         for call in calls:
             call_id = str(call.get("call_id", "") or "").strip()
-            compacted_result = model._compact_context_content(
-                result_by_call_id.get(call_id, ""),
-                context_compact_mode,
-            )
+            # 工具结果保持落库原样，不做 compact，保证三轮一致
+            raw_result = result_by_call_id.get(call_id, "")
             messages.append(
                 model.provider_adapter.build_function_output_message(
                     call_id=call_id,
-                    result=str(compacted_result or ""),
+                    result=str(raw_result or ""),
                     use_responses_api=False,
                 )
             )
@@ -1161,14 +1305,11 @@ class ChatContextManager:
                 "name": str(call.get("name", "") or "").strip(),
                 "arguments": str(call.get("arguments", "{}") or "{}"),
             })
-            compacted_result = model._compact_context_content(
-                result_by_call_id.get(call_id, ""),
-                context_compact_mode,
-            )
+            raw_result = result_by_call_id.get(call_id, "")
             messages.append(
                 model.provider_adapter.build_function_output_message(
                     call_id=call_id,
-                    result=str(compacted_result or ""),
+                    result=str(raw_result or ""),
                     use_responses_api=True,
                 )
             )

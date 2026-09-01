@@ -521,7 +521,7 @@ class Model(MailMixin):
         rendered = self._render_prompt_template(combined_template)
 
         # 架构重构：画像/知识库基线稳定化进 head 前缀，实现 prefix cache 命中
-        # 基线全量进 head，未来 diff 增量另走 tail（见 build_profile_diff_injection）
+        # 知识库变更以 diff 走 tail，基线由 begin_user_turn 在轮次开头事务性采样
         should_include_profile = self._include_profile_context if include_profile_context is None else bool(include_profile_context)
         if should_include_profile:
             profile_block = self._build_user_profile_memory_prompt_block()
@@ -534,16 +534,6 @@ class Model(MailMixin):
         if project_context_block:
             rendered = f"{rendered}\n\n{project_context_block}"
         return rendered
-
-    def build_volatile_profile_injection(self) -> str:
-        """已废弃：全量画像已进 head，tail 仅保留未来 diff。"""
-
-        return ""
-
-    def build_profile_diff_injection(self) -> str:
-        """未来画像 diff 增量注入（tail），当前阶段返回空，待 diff 架构就绪后实现。"""
-
-        return ""
 
     def _get_user_profile_memory_text(self) -> str:
         permission_hint = self._get_user_permission_hint()
@@ -4479,6 +4469,9 @@ class Model(MailMixin):
             skip_user_message_bool = self._as_bool(skip_user_message, default=False)
             persisted_user_index = None
             assistant_index_for_stream = None
+            # 知识库变更由 begin_user_turn 在轮次开头事务性采样得出
+            # 首轮（user_index=0）的 delta 是相对空基线的全量，不应注入
+            knowledge_delta = None
             if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message_bool:
                 # 严格事务：失败直接记录并终止本轮持久化，不回退旧路径
                 # 附件需显式传入 attachments，不得通过 metadata 隐式传递
@@ -4495,6 +4488,7 @@ class Model(MailMixin):
                 )
                 persisted_user_index = int(turn.get("user_index", -1))
                 assistant_index_for_stream = int(turn.get("assistant_index", -1))
+                knowledge_delta = turn.get("knowledge_delta") if persisted_user_index > 0 else None
 
             # 重答也需记录知识增量（effective 指向待覆盖 assistant 的前一条 user），否则“固定在哪”且新 diff 丢失
             if self.persist_conversation and is_regenerate and self.conversation_id and regenerate_index is not None:
@@ -4522,6 +4516,8 @@ class Model(MailMixin):
                             ctx["knowledge_events"] = ev_list
                             data["context"] = ctx
                             # 再以正确 effective 追加新 diff（若有可见变更才会落库）
+                            # regenerate 不注入 tail：事件落库后由历史 diff 重建回放，
+                            # 若此处再捕获 delta 注入会与回放重复
                             context_mod.record_knowledge_state(
                                 data,
                                 workspace_documents=knowledge_state["workspace_documents"],
@@ -4633,10 +4629,18 @@ class Model(MailMixin):
             if workspace_memory_hint:
                 current_turn_system_injections.append(workspace_memory_hint)
 
-            # 架构重构：知识库索引稳定化进 head 前缀，每轮必带以保障缓存一致
+            # 知识库全量索引是稳定块，进 head 参与前缀缓存（非首轮时 head 直接复用快照，此处会被丢弃）
             workspace_knowledge_hint = prompts.build_workspace_knowledge_injection_prompt(workspace_context)
+
             if workspace_knowledge_hint:
                 current_turn_system_injections.append(workspace_knowledge_hint)
+
+            # 知识库变更走 tail：Context Manager 负责 diff 格式化与注入定位
+            # （基线由 begin_user_turn 在轮次开头事务性采样，model 层不做任何基线读写）
+            knowledge_changed_block = self.chat_context_manager.build_knowledge_diff_injection(knowledge_delta)
+
+            if knowledge_changed_block:
+                current_turn_system_injections.append(knowledge_changed_block)
 
             workspace_resource_hint = prompts.build_workspace_resource_index_prompt(workspace_context)
 
@@ -4696,7 +4700,8 @@ class Model(MailMixin):
             previous_response_id = None
             messages = []
 
-            # 架构重构：画像/知识库基线进 head 前缀，保障 prefix cache 命中
+            # 画像/知识库基线进 head 前缀保障缓存命中；知识库变更由 begin_user_turn
+            # 在轮次开头采样并在此前已注入 tail（见 workspace_knowledge_hint 上方 diff 块）
             request_system_prompt = self._build_effective_system_prompt(
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
@@ -4706,10 +4711,6 @@ class Model(MailMixin):
                 include_profile_context=True,
             )
 
-            # tail 仅保留真正易变的增量，当前阶段画像 diff 为空
-            profile_diff_block = self.build_profile_diff_injection()
-            if profile_diff_block:
-                current_turn_system_injections.append(profile_diff_block)
             if force_full_history:
                 effective_include_context = True
             else:
@@ -4745,7 +4746,8 @@ class Model(MailMixin):
                 include_context=effective_include_context,
                 system_prompt_text=request_system_prompt,
                 system_injection_texts=current_turn_system_injections,
-                history_end_index_exclusive=history_end_index_exclusive
+                history_end_index_exclusive=history_end_index_exclusive,
+                current_user_index=persisted_user_index
             )
 
             if last_response_id:
@@ -5525,6 +5527,7 @@ class Model(MailMixin):
                                         include_context=effective_include_context,
                                         system_prompt_text=request_system_prompt,
                                         system_injection_texts=current_turn_system_injections,
+                                        current_user_index=persisted_user_index,
                                     )
                                     previous_response_id = None
                                     messages = list(full_context_messages)
@@ -7297,6 +7300,7 @@ class Model(MailMixin):
                             except Exception:
                                 pass
                             raise
+
                     if (
                         normalized_conversation_mode == "learning"
                         and self.persist_conversation
@@ -7843,7 +7847,8 @@ class Model(MailMixin):
         include_context: bool = True,
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
-        history_end_index_exclusive: Optional[int] = None
+        history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
         return self.chat_context_manager.build_initial_messages(
@@ -7854,7 +7859,8 @@ class Model(MailMixin):
             include_context=include_context,
             system_prompt_text=system_prompt_text,
             system_injection_texts=system_injection_texts,
-            history_end_index_exclusive=history_end_index_exclusive
+            history_end_index_exclusive=history_end_index_exclusive,
+            current_user_index=current_user_index
         )
 
     def _resolve_context_compact_mode(self) -> str:

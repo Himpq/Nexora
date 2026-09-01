@@ -41,6 +41,15 @@ ALLOWED_ASSISTANT_FIELDS = {
 
 ASSISTANT_STATUS_VALUES = {"completed", "partial", "error", "streaming"}
 
+# context 中由本模块托管结构的字段；其余字段属于调用方扩展，归一化时必须原样透传
+CONTEXT_MANAGED_KEYS = frozenset({
+    "system_snapshots",
+    "knowledge",
+    "knowledge_events",
+    "compressions",
+    "legacy_events",
+})
+
 
 def now_iso() -> str:
     return datetime.now().isoformat()
@@ -357,13 +366,22 @@ def normalize_context(raw: Any) -> Dict[str, Any]:
             "reason": _coerce_str(item.get("reason") or "chat_turn"),
         })
 
-    return {
+    normalized: Dict[str, Any] = {
         "system_snapshots": normalized_snapshots,
         "knowledge": normalized_knowledge,
         "knowledge_events": [dict(e) for e in knowledge_events if isinstance(e, dict)],
         "compressions": [dict(c) for c in compressions if isinstance(c, dict)],
         "legacy_events": [dict(e) for e in legacy_events if isinstance(e, dict)],
     }
+
+    # 扩展字段透传：context 允许调用方存放自定义状态，其结构由写入方自行保证。
+    # 归一化只收敛托管字段，不得丢弃扩展字段（存量的 base_knowledge_titles 等旧字段
+    # 一并保留），否则「写入保留、读取丢弃」会让依赖它的增量逻辑永远读不到基线。
+    for key, value in raw.items():
+        if key not in CONTEXT_MANAGED_KEYS:
+            normalized[key] = copy.deepcopy(value)
+
+    return normalized
 
 
 def build_v4_skeleton(

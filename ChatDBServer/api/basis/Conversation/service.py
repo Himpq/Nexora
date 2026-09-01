@@ -197,9 +197,10 @@ class ConversationService:
 
     def get_current_knowledge_state(self, workspace_context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """读取本轮发送实际可见的知识状态，供 begin_user_turn 原子记录快照。"""
-        from basis.User import User
+        from basis.User import User, BASIS
 
-        knowledge_map = User(self.username).getKnowledgeList(1)
+        # 知识库基线取 data_basis（BASIS 类型），与 knowledge 全局标题口径一致
+        knowledge_map = User(self.username).getKnowledgeList(BASIS)
         if isinstance(knowledge_map, dict):
             global_titles = [str(title).strip() for title in knowledge_map if str(title).strip()]
         elif isinstance(knowledge_map, list):
@@ -267,8 +268,10 @@ class ConversationService:
         一个事务内完成：
         - 更新 system snapshot / knowledge snapshot（若提供）
         - 追加 user 消息
-        返回 {user_index, assistant_index, visible_count}
+        返回 {user_index, assistant_index, visible_count, knowledge_delta}
         assistant_index 为预留位（下一条 assistant 将写入的位置），调用方据此流式写入。
+        knowledge_delta 为本轮开头的知识库变更采样，无变更时为 None；
+        user_index 为 0 表示本轮是首轮，此时 delta 是相对空基线算出的全量，调用方不应注入。
         """
         with conversation_update_session(self.username, conversation_id) as (path, data):
             # 若为旧版，先迁移
@@ -288,8 +291,12 @@ class ConversationService:
                     effective_from_message=messages_before,
                 )
 
+            knowledge_delta = None
+
             if workspace_documents is not context_mod._UNSET or global_titles is not context_mod._UNSET:
-                context_mod.record_knowledge_state(
+                # delta 由本事务在轮次开头采样得出，是本轮知识库变更的唯一权威来源；
+                # 调用方据此生成提示词注入，不得再自行维护基线（尾部回写会吞掉流式期间的变更）。
+                knowledge_delta = context_mod.record_knowledge_state(
                     data,
                     workspace_documents=workspace_documents,
                     global_titles=global_titles,
@@ -326,6 +333,7 @@ class ConversationService:
                 "user_index": int(user_index),
                 "assistant_index": int(assistant_index),
                 "visible_count": len(data.get("messages", [])),
+                "knowledge_delta": knowledge_delta,
             }
 
     def finish_assistant_turn(

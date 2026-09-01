@@ -379,73 +379,41 @@ class ProviderInterface(ABC):
 
     def _coalesce_system_messages_to_front(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        头尾分离：首条 system 为稳定头（可缓存），其余 system 为易变尾部，置于历史后、新用户前。
-        保证：
-        - head 始终在最前且唯一
-        - tail 不回绕到 head 前
-        - skill 等稳定块若意外进尾，不会被合并进头
+        协议合规归位：OpenAI 兼容接口要求 system 不得落在 user 之后。
+        只归位「最后一条 user 之后」的 system（协议违规，如压缩摘要/运行时提示漂移）；
+        已在 user 之前的 system（head、历史 diff 重建、tail volatile diff）保持原位不动。
+        理由：历史 diff 必须固定在生效 user 之前以维持前缀逐字节稳定（prefix cache），
+        若每轮都把它们移动到当前轮末尾，前缀必然漂移、缓存永久失配。
         """
+
         if not messages:
             return []
 
-        head: Optional[Dict[str, Any]] = None
-        head_idx: Optional[int] = None
-        tail_systems: List[Dict[str, Any]] = []
-        non_systems: List[Dict[str, Any]] = []
-
-        for idx, msg in enumerate(list(messages or [])):
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role", "") or "").strip().lower()
-            if role == "system" and head is None:
-                head = dict(msg)
-                head_idx = idx
-                continue
-            if role == "system" and head is not None:
-                tail_systems.append(dict(msg))
-                continue
-            non_systems.append(msg)
-
-        if head is None:
+        first = messages[0]
+        if not isinstance(first, dict) or str(first.get("role") or "").strip().lower() != "system":
+            # 无 system 头：维持原顺序（既有行为）
             return list(messages or [])
 
-        # 已合规：仅一条 system 且在首位
-        if head_idx == 0 and not tail_systems and len(non_systems) + 1 == len([m for m in messages if isinstance(m, dict)]):
+        last_user_index = -1
+        for idx, msg in enumerate(messages):
+            if isinstance(msg, dict) and str(msg.get("role") or "").strip().lower() == "user":
+                last_user_index = idx
+
+        if last_user_index < 0:
             return list(messages or [])
 
-        # 尾部置于历史后、新用户前，保留 head 前缀稳定
-        if non_systems and str(non_systems[-1].get("role") or "").strip().lower() == "user":
-            history = non_systems[:-1]
-            new_user = [non_systems[-1]]
-            return [head] + history + tail_systems + new_user
-        return [head] + non_systems + tail_systems
+        before_last_user = list(messages[: last_user_index + 1])
+        after_last_user = list(messages[last_user_index + 1:])
 
-    def _merge_system_content(self, base: Any, extra: Any) -> Any:
-        if extra is None or extra == "":
-            return base
-        if base is None or base == "":
-            return extra
+        def _is_system(msg: Any) -> bool:
+            return isinstance(msg, dict) and str(msg.get("role") or "").strip().lower() == "system"
 
-        if isinstance(base, list):
-            merged = list(base)
-            if isinstance(extra, list):
-                merged.extend(extra)
-            else:
-                merged.append(extra)
-            return merged
+        trailing_systems = [m for m in after_last_user if _is_system(m)]
+        if not trailing_systems:
+            return list(messages or [])
 
-        if isinstance(extra, list):
-            merged = [base]
-            merged.extend(extra)
-            return merged
-
-        base_text = str(base)
-        extra_text = str(extra)
-        if not base_text:
-            return extra_text
-        if not extra_text:
-            return base_text
-        return f"{base_text}\n\n{extra_text}"
+        trailing_others = [m for m in after_last_user if not _is_system(m)]
+        return before_last_user[:-1] + trailing_systems + [before_last_user[-1]] + trailing_others
 
     def iter_stream_events(
         self,
