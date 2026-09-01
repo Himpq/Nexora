@@ -26,7 +26,8 @@ from App.Executor import ToolExecutor
 from basis.User import User, BASIS
 from basis.Conversation import ConversationManager, ConversationService
 from basis.Conversation.telemetry import build_trace_from_process_steps
-from basis.Model.Context import ChatContextManager
+from basis.Model.Context import ChatContextManager, _safe_parse_index
+from basis.Model.compression_turn import build_append_compression_messages, run_append_compression_round
 from basis.Model.turn_injection import build_profile_update_block, build_skill_update_block
 from App.Utils import (
     sanitize_assistant_visible_content,
@@ -155,12 +156,9 @@ if 'HTTPS_PROXY' in os.environ:
 # 全局客户端缓存，实现连接池复用 (Keep-Alive)
 _CLIENT_CACHE = {}
 _TOOL_USAGE_LOG_LOCK = threading.Lock()
-CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
-CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
-CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+_CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
+_CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
+_CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
 STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
     "cloud_file_create": "write",
     "cloud_file_write": "write",
@@ -304,32 +302,17 @@ class Model(MailMixin):
         self.provider_display_name = provider_info.get('name', self.provider)
         self._context_window_limit_source = "unknown"
         self._context_window_limit_from_fallback_default = False
-        cfg_compress_chars = self.config.get("context_compression_max_chars", CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+        cfg_compress_chars = self.config.get("context_compression_max_chars", _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
         env_compress_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_MAX_CHARS", "").strip()
         if env_compress_chars:
             cfg_compress_chars = env_compress_chars
         try:
-            cfg_compress_chars = int(cfg_compress_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+            cfg_compress_chars = int(cfg_compress_chars or _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
         except Exception:
-            cfg_compress_chars = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
+            cfg_compress_chars = _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
         self._context_compression_max_chars = int(max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, cfg_compress_chars)
-        ))
-        cfg_compress_history_chars = self.config.get(
-            "context_compression_history_max_chars",
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
-        )
-        env_compress_history_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_HISTORY_MAX_CHARS", "").strip()
-        if env_compress_history_chars:
-            cfg_compress_history_chars = env_compress_history_chars
-        try:
-            cfg_compress_history_chars = int(cfg_compress_history_chars or CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)
-        except Exception:
-            cfg_compress_history_chars = CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
-        self._context_compression_history_max_chars = int(max(
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX, cfg_compress_history_chars)
+            _CONTEXT_COMPRESSION_MAX_CHARS_MIN,
+            min(_CONTEXT_COMPRESSION_MAX_CHARS_MAX, cfg_compress_chars)
         ))
 
         self._provider_adapter_cache = {}
@@ -1761,19 +1744,6 @@ class Model(MailMixin):
 
     def _build_context_compression_memory_block(self, summary_text: str) -> str:
         return self.chat_context_manager.build_context_compression_memory_block(summary_text)
-
-    def _format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
-        return self.chat_context_manager.format_messages_for_context_compression(messages)
-
-    def _run_context_compression_round(
-        self,
-        history_messages: List[Dict[str, Any]],
-        max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
-    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        return (yield from self.chat_context_manager.run_context_compression_round(
-            history_messages,
-            max_chars=max_chars
-        ))
 
     def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
         """计算 previous 后缀与 current 前缀的最大重叠长度，用于跨轮去重。"""
@@ -4558,13 +4528,14 @@ class Model(MailMixin):
                             ev_list = ctx.get("knowledge_events") if isinstance(ctx.get("knowledge_events"), list) else []
                             target_eff = int(regen_idx - 1)
                             # 保留 effective != target_eff 的事件，target_eff 的旧事件视为上次重答的暂存，需消失
-                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
+                            # 注意 efm=0 合法（重答首轮助手回复时 target_eff=0），必须用安全解析
+                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
                             ctx["knowledge_events"] = ev_list
                             # 画像/技能事件同样去重：重答以当前采样为准，同一 efm 只保留最新一份
                             profile_ev_list = ctx.get("profile_events") if isinstance(ctx.get("profile_events"), list) else []
-                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
+                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
                             skill_ev_list = ctx.get("skill_events") if isinstance(ctx.get("skill_events"), list) else []
-                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
+                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
                             data["context"] = ctx
                             # 再以正确 effective 追加新 diff（若有可见变更才会落库）
                             # regenerate 不注入 tail：事件落库后由历史 diff 重建回放，
@@ -5460,14 +5431,29 @@ class Model(MailMixin):
                                     cut_index = len(conv_msgs) - 1
                                 compression_error = ""
                                 if cut_index >= 1:
-                                    compress_source = conv_msgs[:cut_index + 1]
+                                    # Append 式压缩：复用当轮主请求的完整上下文消息（head+历史+tail 注入块），
+                                    # 截掉最后一条 user（当前轮提问）后在末尾追加压缩指令。
+                                    # 前缀与此前各轮请求逐字节一致 → 命中 provider prefix cache；
+                                    # 注入块（知识/画像/技能 diff）天然进入总结视野，不再丢数据。
+                                    # request_params 的载荷与主请求同源同构，直接取用保证格式一致。
+                                    runtime_msgs = request_params.get("input") if use_responses_api else request_params.get("messages")
+                                    append_instruction = prompts.build_context_compression_append_prompt(
+                                        self._context_compression_max_chars
+                                    )
+                                    compress_messages, _request_last_user_pos = build_append_compression_messages(
+                                        runtime_msgs if isinstance(runtime_msgs, list) else [],
+                                        append_instruction,
+                                    )
                                     if debug_mode:
                                         yield _build_debug_trace(
                                             "server->model",
                                             "context_compression_source",
                                             {
-                                                "history_count": int(len(compress_source)),
+                                                "message_count": int(len(compress_messages)),
                                                 "cut_index": int(cut_index),
+                                                "append_mode": True,
+                                                "use_responses_api": bool(use_responses_api),
+                                                "instruction_chars": int(len(append_instruction)),
                                                 "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
                                                 "context_window": int(max(0, context_window_limit)),
                                                 "context_window_source": context_window_source,
@@ -5478,9 +5464,11 @@ class Model(MailMixin):
                                             round_index=round_num
                                         )
                                     compression_run = {}
-                                    compression_run_iter = self._run_context_compression_round(
-                                        compress_source,
-                                        max_chars=self._context_compression_max_chars
+                                    compression_run_iter = run_append_compression_round(
+                                        self,
+                                        compress_messages,
+                                        max_chars=self._context_compression_max_chars,
+                                        use_responses_api=use_responses_api,
                                     )
                                     try:
                                         while True:
@@ -5529,14 +5517,10 @@ class Model(MailMixin):
                                             "server->model",
                                             "context_compression_prompt",
                                             {
-                                                "system_prompt": str(compression_run.get("system_prompt", "") or ""),
-                                                "prompt_template": str(compression_run.get("prompt_template", "") or ""),
-                                                "prompt_text": str(compression_run.get("prompt_text", "") or ""),
-                                                "history_text": str(compression_run.get("history_text", "") or ""),
-                                                "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
-                                                "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0))),
-                                                "history_truncated": bool(compression_run.get("history_truncated", False)),
-                                                "history_limit_chars": int(max(0, int(compression_run.get("history_limit_chars", 0) or 0))),
+                                                "append_mode": True,
+                                                "use_responses_api": bool(compression_run.get("use_responses_api", use_responses_api)),
+                                                "message_count": int(max(0, int(compression_run.get("message_count", 0) or 0))),
+                                                "reply_chars": int(max(0, int(compression_run.get("chars", 0) or 0))),
                                                 "max_chars": int(self._context_compression_max_chars),
                                                 "trigger_mode": context_compression_trigger_mode
                                             },
@@ -5574,12 +5558,23 @@ class Model(MailMixin):
                                                     "forced": bool(force_compression_trigger),
                                                     "trigger_mode": context_compression_trigger_mode,
                                                     "masked_image_data_urls": int(max(0, context_compression_masked_image_count)),
-                                                    "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
-                                                    "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0)))
+                                                    "message_count": int(max(0, int(compression_run.get("message_count", 0) or 0))),
+                                                    "reply_chars": int(max(0, int(compression_run.get("chars", 0) or 0)))
                                                 }
                                             )
                                         except Exception as e:
                                             print(f"[CTX_COMPRESS] save marker failed: {e}")
+                                        # 换代：efm <= cut 的事件内容已进摘要，裁掉防无限堆积；
+                                        # 基线本身即为当前值无需重置，efm > cut 的事件（当前轮）保留
+                                        try:
+                                            pruned_count = self.conversation_service.prune_turn_events_before(
+                                                self.conversation_id,
+                                                int(cut_index),
+                                            )
+                                            if pruned_count:
+                                                print(f"[CTX_COMPRESS] pruned {pruned_count} turn events before cut {cut_index}")
+                                        except Exception as e:
+                                            print(f"[CTX_COMPRESS] prune turn events failed: {e}")
                                     # 压缩后重建上下文；续接ID必须清空，避免“轻载荷 + 压缩摘要”错配。
                                     full_context_messages = self._build_initial_messages(
                                         user_msg=msg,
@@ -7925,174 +7920,6 @@ class Model(MailMixin):
             current_user_index=current_user_index
         )
 
-    def _resolve_context_compact_mode(self) -> str:
-        """
-        解析上下文轻量化模式：
-        - off: 不处理
-        - markdown_plain: 去掉 Markdown 外壳，保留可读纯文本
-        - markdown_latex_plain: 同上 + LaTeX 转符号/文本
-        """
-        model_cfg = (CONFIG.get("models", {}) or {}).get(self.model_name, {}) if isinstance(CONFIG, dict) else {}
-        raw_mode = (
-            model_cfg.get("context_compact_mode")
-            if isinstance(model_cfg, dict) and model_cfg.get("context_compact_mode") is not None
-            else self.config.get("context_compact_mode", CONFIG.get("context_compact_mode", "markdown_latex_plain"))
-        )
-        token = str(raw_mode or "").strip().lower()
-        alias = {
-            "0": "off",
-            "false": "off",
-            "none": "off",
-            "raw": "off",
-            "1": "markdown_plain",
-            "true": "markdown_plain",
-            "on": "markdown_plain",
-            "plain": "markdown_plain",
-            "markdown": "markdown_plain",
-            "markdown_plain": "markdown_plain",
-            "markdown_latex_plain": "markdown_latex_plain",
-            "latex_plain": "markdown_latex_plain",
-            "plain_latex": "markdown_latex_plain",
-            "full": "markdown_latex_plain"
-        }
-        mode = alias.get(token, "markdown_latex_plain")
-        if mode not in {"off", "markdown_plain", "markdown_latex_plain"}:
-            return "markdown_latex_plain"
-        return mode
-
-    def _compact_context_content(self, content: Any, mode: str) -> Any:
-        if str(mode or "off") == "off":
-            return content
-        if isinstance(content, str):
-            return self._compact_context_text(content, mode)
-        if isinstance(content, dict):
-            cloned = dict(content)
-            text_val = cloned.get("text")
-            if isinstance(text_val, str):
-                cloned["text"] = self._compact_context_text(text_val, mode)
-            return cloned
-        if isinstance(content, list):
-            out: List[Any] = []
-            for item in content:
-                if isinstance(item, dict):
-                    cloned = dict(item)
-                    item_type = str(cloned.get("type", "") or "").strip().lower()
-                    if item_type in {"text", "input_text", "output_text"}:
-                        text_val = cloned.get("text")
-                        if isinstance(text_val, str):
-                            cloned["text"] = self._compact_context_text(text_val, mode)
-                    out.append(cloned)
-                else:
-                    out.append(item)
-            return out
-        return content
-
-    def _compact_context_text(self, text: Any, mode: str) -> str:
-        src = str(text or "")
-        if not src.strip():
-            return src
-        out = src
-        if mode in {"markdown_plain", "markdown_latex_plain"}:
-            out = self._flatten_markdown_for_context(out)
-        if mode in {"markdown_latex_plain"}:
-            out = self._latex_to_plain_text_for_context(out)
-        if not out.strip():
-            return src
-        return out
-
-    def _flatten_markdown_for_context(self, text: str) -> str:
-        s = str(text or "")
-        if not s:
-            return s
-        s = s.replace("\r\n", "\n").replace("\r", "\n")
-        s = re.sub(r"```[^\n]*\n([\s\S]*?)```", lambda m: str(m.group(1) or ""), s)
-        s = re.sub(r"`([^`]+)`", r"\1", s)
-        s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda m: f"[image {str(m.group(1) or '').strip()}]".strip(), s)
-        s = re.sub(
-            r"\[([^\]]+)\]\(([^)]+)\)",
-            lambda m: f"{str(m.group(1) or '').strip()} ({str(m.group(2) or '').strip()})",
-            s
-        )
-        s = re.sub(r"^\s{0,3}#{1,6}\s*", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s{0,3}>\s?", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*[-*+]\s+", "- ", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*\d+\.\s+", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*([-*_]\s*){3,}$", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*\|?[\s:-]+\|[\s|:-]*$", "", s, flags=re.MULTILINE)
-
-        def _normalize_table_row(match: re.Match) -> str:
-            line = str(match.group(0) or "")
-            if line.count("|") < 2:
-                return line
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            cells = [c for c in cells if c]
-            if not cells:
-                return ""
-            return " | ".join(cells)
-
-        s = re.sub(r"^.*\|.*\|.*$", _normalize_table_row, s, flags=re.MULTILINE)
-        s = s.replace("**", "").replace("__", "").replace("~~", "")
-        s = re.sub(r"(?<!\*)\*(?!\*)([^*\n]+)(?<!\*)\*(?!\*)", r"\1", s)
-        s = re.sub(r"(?<!_)_([^_\n]+)_", r"\1", s)
-        s = re.sub(r"[ \t]+", " ", s)
-        s = re.sub(r"\n{3,}", "\n\n", s)
-        return s.strip()
-
-    def _latex_to_plain_text_for_context(self, text: str) -> str:
-        s = str(text or "")
-        if not s:
-            return s
-
-        command_map = {
-            "times": "×",
-            "cdot": "·",
-            "neq": "≠",
-            "ne": "≠",
-            "leq": "≤",
-            "geq": "≥",
-            "pm": "±",
-            "to": "→",
-            "rightarrow": "→",
-            "leftarrow": "←",
-            "infty": "∞",
-            "approx": "≈",
-            "alpha": "α",
-            "beta": "β",
-            "gamma": "γ",
-            "delta": "δ",
-            "theta": "θ",
-            "lambda": "λ",
-            "mu": "μ",
-            "pi": "π",
-            "sigma": "σ",
-            "phi": "φ",
-            "omega": "ω"
-        }
-        for cmd, sym in command_map.items():
-            s = re.sub(rf"\\{cmd}\b", sym, s)
-
-        for _ in range(6):
-            prev = s
-            s = re.sub(r"\\(?:d|t)?frac\s*\{([^{}]{1,180})\}\s*\{([^{}]{1,180})\}", r"(\1)/(\2)", s)
-            if s == prev:
-                break
-        for _ in range(6):
-            prev = s
-            s = re.sub(r"\\sqrt\s*\{([^{}]{1,240})\}", r"sqrt(\1)", s)
-            if s == prev:
-                break
-
-        s = re.sub(r"\\(?:text|mathrm|mathbf|boldsymbol)\s*\{([^{}]{0,320})\}", r"\1", s)
-        s = s.replace("\\left", "").replace("\\right", "")
-        s = s.replace("\\,", " ").replace("\\;", " ").replace("\\!", "")
-        s = s.replace("\\[", "").replace("\\]", "").replace("\\(", "").replace("\\)", "")
-        s = s.replace("$$", " ").replace("$", " ")
-        s = s.replace("{", "").replace("}", "")
-        s = re.sub(r"\\([A-Za-z]+)", r"\1", s)
-        s = re.sub(r"[ \t]+", " ", s)
-        s = re.sub(r"\n{3,}", "\n\n", s)
-        return s.strip()
-    
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""
         cleaned = []

@@ -38,12 +38,24 @@ from .turn_injection import (
 )
 
 
-CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
-CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
-CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+def _safe_parse_index(raw_value: Any) -> int:
+    """
+    安全解析消息下标类字段（effective_from_message / history_cut_index）。
+    0 是合法值（首轮），不能用 `or -1` 兜底，否则 0 被吞成 -1。
+    非法时返回 -1 表示无效。
+    """
+
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _safe_snapshot_efm(snapshot: Dict[str, Any]) -> Optional[int]:
+    """读取快照的 effective_from_message，非法时返回 None。"""
+
+    value = _safe_parse_index(snapshot.get("effective_from_message"))
+    return value if value >= 0 else None
 
 
 class ChatContextPolicy(Enum):
@@ -536,8 +548,7 @@ class ChatContextManager:
             history_messages,
             history_end_index_exclusive,
         )
-        history_messages = self._apply_latest_compression_marker(
-            context,
+        history_messages, summary_memory_block = self._apply_latest_compression_marker(
             history_messages,
             compression_marker,
         )
@@ -558,6 +569,7 @@ class ChatContextManager:
         # 尝试加载已存快照（LRU 命中关键）；仅主对话参与，避免子请求复用/污染 head
         # 顺带读取 knowledge/profile/skill 事件，供历史回放时重建 tail 块（保证前缀稳定）
         snapshot_content: Optional[str] = None
+        snapshot_efm: Optional[int] = None
         knowledge_events_raw: List[Dict[str, Any]] = []
         profile_events_raw: List[Dict[str, Any]] = []
         skill_events_raw: List[Dict[str, Any]] = []
@@ -569,6 +581,7 @@ class ChatContextManager:
                     if isinstance(snaps, list) and snaps:
                         latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
                         snapshot_content = str(latest.get("content") or "").strip() or None
+                        snapshot_efm = _safe_snapshot_efm(latest)
                     raw_events = context_bundle.get("knowledge_events", [])
                     if isinstance(raw_events, list):
                         knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
@@ -586,6 +599,7 @@ class ChatContextManager:
                         if isinstance(snaps, list) and snaps:
                             latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
                             snapshot_content = str(latest.get("content") or "").strip() or None
+                            snapshot_efm = _safe_snapshot_efm(latest)
                         raw_events = snap_data.get("context", {}).get("knowledge_events", [])
                         if isinstance(raw_events, list):
                             knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
@@ -603,30 +617,21 @@ class ChatContextManager:
         # 排序后按位插入，使任意轮次重建出的上下文与首次发送时一致。
         history_event_blocks: List[Tuple[int, str]] = []
         for event in knowledge_events_raw:
-            try:
-                efm = int(event.get("effective_from_message") or -1)
-            except Exception:
-                efm = -1
+            efm = _safe_parse_index(event.get("effective_from_message"))
             if efm < 0:
                 continue
             block = self._build_knowledge_event_block(event)
             if block:
                 history_event_blocks.append((efm, block))
         for event in profile_events_raw:
-            try:
-                efm = int(event.get("effective_from_message") or -1)
-            except Exception:
-                efm = -1
+            efm = _safe_parse_index(event.get("effective_from_message"))
             if efm < 0:
                 continue
             block = build_profile_update_block(event)
             if block:
                 history_event_blocks.append((efm, block))
         for event in skill_events_raw:
-            try:
-                efm = int(event.get("effective_from_message") or -1)
-            except Exception:
-                efm = -1
+            efm = _safe_parse_index(event.get("effective_from_message"))
             if efm < 0:
                 continue
             block = build_skill_update_block(event)
@@ -634,7 +639,21 @@ class ChatContextManager:
                 history_event_blocks.append((efm, block))
         history_event_blocks.sort(key=lambda item: item[0])
 
-        if snapshot_content and history_messages:
+        # 压缩 cut 解析（供快照新鲜度判断与历史回放游标共用）
+        compression_cut_index = -1
+        if compression_marker:
+            compression_cut_index = _safe_parse_index(compression_marker.get("history_cut_index"))
+        # 快照过期判定（压缩换代）：快照生效点 <= 压缩 cut 说明 head 是压缩前构建的
+        # 旧画像/旧技能，必须全量重建；压缩后重建保存的新快照 efm = cut+1 > cut，
+        # 后续轮次判定不成立，继续复用快照命中缓存
+        snapshot_stale = bool(
+            snapshot_content
+            and compression_cut_index >= 0
+            and snapshot_efm is not None
+            and snapshot_efm <= compression_cut_index
+        )
+
+        if snapshot_content and history_messages and not snapshot_stale:
             # 非首轮：复用快照保证 LRU 命中，head 不重建
             merged_head = snapshot_content
             if merged_head:
@@ -664,15 +683,14 @@ class ChatContextManager:
                 except Exception as _e_snap:
                     print(f"[SNAPSHOT] save failed: {_e_snap}".replace("\xa0", " "))
 
+        # 摘要块固定坑位：head 之后、历史之前。压缩换代后该结构冻结为
+        # [head(最新画像/技能), 摘要, 新历史...]，从重建下一轮起前缀重新稳定命中
+        if summary_memory_block:
+            context.add("system", summary_memory_block)
+
         # 历史（V4 无 system 消息，仅 user/assistant）—— 紧跟 head，保证 head+history 前缀可缓存
         # 知识库 diff 按生效点回放：在 effective_from_message 指向的 user 消息之前插入，
         # 使任意轮次重建出的上下文与首次发送时一致，前缀缓存不因 diff 位置漂移而失效
-        compression_cut_index = -1
-        if compression_marker:
-            try:
-                compression_cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
-            except Exception:
-                compression_cut_index = -1
         history_msg_cursor = compression_cut_index + 1 if compression_cut_index >= 0 else 0
         # 历史 diff 重建边界：只回放严格早于当前轮的变更（efm < 当前轮 user 下标），
         # 当前轮的变更由 tail 注入，避免「历史重建 + tail」双重注入
@@ -1350,35 +1368,35 @@ class ChatContextManager:
 
     def _apply_latest_compression_marker(
         self,
-        context: ChatContext,
         history_messages: List[Dict[str, Any]],
         compression_marker: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """把最近一次压缩摘要作为旧历史替代上下文注入。"""
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        应用最近一次压缩标记：截掉已被摘要覆盖的历史，返回 (截断后历史, 摘要块文本)。
+        摘要块由调用方在 head 之后固定坑位插入，保证压缩换代后结构为
+        [head, 摘要, 新历史...]，前缀可稳定命中。
+        """
         if not compression_marker or not isinstance(compression_marker, dict):
-            return history_messages
+            return history_messages, ""
 
         try:
             summary_text = self._strip_history_time_prefix_text(
                 str(compression_marker.get("summary", "") or "").strip()
             )
-            cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
+            cut_index = _safe_parse_index(compression_marker.get("history_cut_index"))
         except Exception:
             summary_text = ""
             cut_index = -1
 
         if not summary_text or cut_index < 0 or not history_messages:
-            return history_messages
+            return history_messages, ""
 
         if cut_index >= len(history_messages):
-            return history_messages
+            return history_messages, ""
 
         memory_block = self.build_context_compression_memory_block(summary_text)
 
-        if memory_block:
-            context.add("system", memory_block)
-
-        return history_messages[cut_index + 1:]
+        return history_messages[cut_index + 1:], (memory_block or "")
 
     def _normalize_history_content(self, content: Any) -> Any:
         """把历史内容规整成可放入模型消息的内容。"""
@@ -1491,192 +1509,3 @@ class ChatContextManager:
             "以下为已压缩历史的稳定记忆，请将其视为更早对话的替代上下文：\n"
             f"{summary}"
         )
-
-    def format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
-        """格式化待压缩历史消息。"""
-        model = self.model
-        compact_mode = model._resolve_context_compact_mode()
-        lines: List[str] = []
-
-        for item in messages or []:
-            if not isinstance(item, dict):
-                continue
-
-            role = str(item.get("role", "") or "").strip().upper()
-
-            if role not in {"USER", "ASSISTANT"}:
-                continue
-
-            compacted = model._compact_context_content(item.get("content", ""), compact_mode)
-            compacted = self._strip_history_time_prefix_from_content(compacted)
-
-            if role == "ASSISTANT" and isinstance(compacted, str):
-                compacted = sanitize_assistant_visible_content(compacted)
-
-            text = self.content_to_text_for_context_compression(compacted).strip()
-
-            if not text:
-                continue
-
-            lines.append(f"[{role}] {text}")
-
-        text = "\n".join(lines).strip()
-        history_limit = int(max(
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
-            min(
-                CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX,
-                int(getattr(model, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
-            ),
-        ))
-
-        if len(text) <= history_limit:
-            return text
-
-        head_len = int(max(20000, min(history_limit - 5000, int(history_limit * 0.35))))
-        tail_len = int(max(30000, history_limit - head_len - 80))
-
-        if head_len + tail_len > history_limit:
-            tail_len = max(12000, history_limit - head_len - 80)
-
-        head = text[:head_len]
-        tail = text[-tail_len:]
-        return f"{head}\n...[历史过长，已截断中段]...\n{tail}"
-
-    def run_context_compression_round(
-        self,
-        history_messages: List[Dict[str, Any]],
-        max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT,
-    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """执行专用上下文压缩轮次。"""
-        model = self.model
-        system_prompt = str(prompts.context_compression_system_prompt or "")
-        safe_max_chars = max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)),
-        )
-        history_text = self.format_messages_for_context_compression(history_messages)
-        profile_text = model._get_user_profile_memory_text()
-        recent_dialogue_text = model._get_recent_dialogue_memory_text()
-        print(
-            "[CTX_COMPRESS] source "
-            f"messages={len(history_messages or [])} "
-            f"history_chars={len(str(history_text or ''))} "
-            f"profile_chars={len(str(profile_text or ''))} "
-            f"recent_chars={len(str(recent_dialogue_text or ''))}"
-        )
-        prompt_text = prompts.build_context_compression_prompt(
-            history_text,
-            profile_text=profile_text,
-            recent_dialogue=recent_dialogue_text,
-            max_chars=safe_max_chars,
-        )
-        history_truncated = ("...[历史过长，已截断中段]..." in history_text)
-        out: Dict[str, Any] = {
-            "summary": "",
-            "prompt_text": str(prompt_text or ""),
-            "system_prompt": system_prompt,
-            "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
-            "profile_text": str(profile_text or ""),
-            "recent_dialogue": str(recent_dialogue_text or ""),
-            "history_text": str(history_text or ""),
-            "model_reply": "",
-            "error": "",
-            "history_message_count": int(len(history_messages or [])),
-            "history_chars": int(len(str(history_text or ""))),
-            "history_truncated": bool(history_truncated),
-            "history_limit_chars": int(getattr(model, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
-            "summary_max_chars": int(safe_max_chars),
-        }
-
-        if not history_text:
-            out["error"] = "empty_history"
-            return out
-
-        req_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_text},
-        ]
-        stream_text = ""
-        stream_error = ""
-        stream_emitted = False
-
-        try:
-            stream_response = model.provider_adapter.create_chat_completion(
-                client=model.client,
-                model=model.model_name,
-                messages=req_messages,
-                stream=True,
-            )
-            stream_events = model.provider_adapter.iter_stream_events(
-                stream_response,
-                use_responses_api=False,
-                native_web_search_enabled=False,
-            )
-
-            for event in stream_events:
-                if not isinstance(event, dict):
-                    continue
-
-                ev_type = str(event.get("type", "") or "").strip()
-
-                if ev_type != "content_delta":
-                    continue
-
-                delta = str(event.get("delta", "") or "")
-
-                if not delta:
-                    continue
-
-                stream_emitted = True
-                stream_text += delta
-                yield {
-                    "type": "model_reply_delta",
-                    "delta": delta,
-                    "model_reply": stream_text,
-                    "chars": int(len(stream_text)),
-                    "from_stream": True,
-                }
-        except Exception as exc:
-            stream_error = str(exc or "")
-            out["error"] = stream_error
-            print(f"[CTX_COMPRESS] stream compression round failed: {exc}")
-            yield {"type": "error", "error": stream_error, "from_stream": True}
-
-        final_stream_text = str(stream_text or "").strip()
-
-        if final_stream_text:
-            out["model_reply"] = final_stream_text
-            out["summary"] = final_stream_text[:safe_max_chars]
-            return out
-
-        try:
-            response = model.provider_adapter.create_chat_completion(
-                client=model.client,
-                model=model.model_name,
-                messages=req_messages,
-                stream=False,
-            )
-            text = str(model._extract_completion_text(response) or "").strip()
-            out["model_reply"] = text
-
-            if text:
-                if not stream_emitted:
-                    yield {
-                        "type": "model_reply_delta",
-                        "delta": text,
-                        "model_reply": text,
-                        "chars": int(len(text)),
-                        "from_stream": False,
-                    }
-
-                out["summary"] = text[:safe_max_chars]
-                return out
-        except Exception as exc:
-            print(f"[CTX_COMPRESS] model compression round failed: {exc}")
-            out["error"] = str(exc or "") or stream_error
-            yield {"type": "error", "error": out["error"], "from_stream": False}
-
-        if not out["error"] and stream_error:
-            out["error"] = stream_error
-
-        return out

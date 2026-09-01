@@ -663,6 +663,56 @@ class ConversationService:
         data = self._load_v4(conversation_id)
         return context_mod.get_latest_compression(data)
 
+    def prune_turn_events_before(self, conversation_id: str, cut_index: int) -> int:
+        """
+        压缩换代：裁掉已被摘要覆盖的轮次事件（efm <= cut_index）。
+        knowledge / profile / skill 三类事件同规则裁剪，返回裁掉的数量。
+        efm > cut 的事件（含当前轮）保留；基线本身即为当前值，无需重置。
+        """
+        removed_total = 0
+
+        with conversation_update_session(self.username, conversation_id) as (path, data):
+            context = data.get("context") if isinstance(data.get("context"), dict) else {}
+
+            for key in ("knowledge_events", "profile_events", "skill_events"):
+                events = context.get(key)
+
+                if not isinstance(events, list):
+                    continue
+
+                kept = []
+                removed = 0
+
+                for event in events:
+                    if not isinstance(event, dict):
+                        removed += 1
+                        continue
+
+                    # 注意：efm=0 是合法值（首轮），不能用 `or -1` 兜底，否则 0 被吞成 -1
+                    try:
+                        efm = int(event.get("effective_from_message"))
+                    except (TypeError, ValueError):
+                        efm = -1
+
+                    if 0 <= efm <= int(cut_index):
+                        removed += 1
+                        continue
+
+                    kept.append(event)
+
+                if removed:
+                    context[key] = kept
+                    removed_total += removed
+
+            if removed_total:
+                data["context"] = context
+                data["updated_at"] = datetime.now().isoformat()
+                validate_v4_conversation(data)
+                safe_write_json(path, data, indent=2)
+                index_mod.sync_index_from_file(self.username, path, data)
+
+            return removed_total
+
     # ------------------------------------------------------------------
     # Scope / Workspace / Learning
     # ------------------------------------------------------------------

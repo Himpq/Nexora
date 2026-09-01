@@ -10,6 +10,8 @@ import copy
 from datetime import datetime
 from typing import Any, Dict
 
+from .context import _safe_parse_index
+
 
 def now_iso() -> str:
     return datetime.now().isoformat()
@@ -67,7 +69,7 @@ def fork_branch_data(
     filtered_profile_events = [e for e in (raw_context.get("profile_events", []) if isinstance(raw_context.get("profile_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
     filtered_skill_events = [e for e in (raw_context.get("skill_events", []) if isinstance(raw_context.get("skill_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
     # compressions 过滤（history_cut_index <= target_index）
-    filtered_compressions = [c for c in (raw_context.get("compressions", []) if isinstance(raw_context.get("compressions"), list) else []) if isinstance(c, dict) and int(c.get("history_cut_index", -1) or -1) <= int(target_index)]
+    filtered_compressions = [c for c in (raw_context.get("compressions", []) if isinstance(raw_context.get("compressions"), list) else []) if isinstance(c, dict) and _safe_parse_index(c.get("history_cut_index")) <= int(target_index)]
     filtered_legacy = [e for e in (raw_context.get("legacy_events", []) if isinstance(raw_context.get("legacy_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
     # 重新计算 effective knowledge
     from .context import get_effective_knowledge_state

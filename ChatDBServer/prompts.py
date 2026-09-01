@@ -453,23 +453,15 @@ conversation_title_prompt_template = """根据以下对话内容，生成一个�
 
 你只用快速输出标题："""
 
-context_compression_prompt_template = """## Context Compression Task
-你需要把给定历史对话压缩为后续回复仍可直接复用的稳定上下文记忆。
+# Append 式压缩指令：不再把历史拍平进独立请求，而是复用当轮完整上下文，
+# 在末尾追加本指令，让前缀与主请求逐字节一致以命中 provider prefix cache。
+context_compression_append_prompt_template = """## 上下文压缩任务
+你现在的唯一任务是：把本条指令之前的全部对话上下文（包括系统提示与各系统注入块）压缩为一份后续对话可直接复用的稳定上下文摘要，并只输出这份摘要。
 
-注意：最终输出只能是压缩后的上下文摘要，不要输出解释过程。
-<CONVERSATION_HISTORY> 是上下文摘要的主体；用户画像和近期摘要只能作为辅助参考，不能替代 <CONVERSATION_HISTORY>。
-
-输入信息：
-{{auxiliary_context_blocks}}
-
-<CONVERSATION_HISTORY>
-{{history_text}}
-</CONVERSATION_HISTORY>
-
-上下文压缩输出要求：
-1. 只输出压缩结果，不要解释过程。
+输出要求：
+1. 只输出压缩结果，不要解释过程，不要输出其他内容。
 2. 使用中文，保持信息密度。
-3. 保留：用户目标、偏好、关键事实、已确认约束、未完成事项、近期事项、关键术语映射、情感交流细节、用户个人细节、对话风格与倾向。
+3. 保留：用户目标、偏好、关键事实、已确认约束、未完成事项、近期事项、关键术语映射、情感交流细节、用户个人细节、对话风格与倾向，以及各系统注入块中的有效信息（如知识库变更、用户画像、技能说明）。
 4. 删除：寒暄、重复表达、无关细节、冗长推理过程、工具中间日志。
 5. 按以下结构组织：
 近期决策
@@ -482,11 +474,10 @@ context_compression_prompt_template = """## Context Compression Task
 注意力集中
 近期细节
 回答方式
-6. 最大长度约 {{max_chars}} 字；如果 <CONVERSATION_HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
+6. 最大长度约 {{max_chars}} 字；如果上文信息量足够，不要为了简短而丢弃可复用细节。
 7. 对于关键信息直接照搬，有必要保留的上下文直接执行输出进行保留。
+8. 本条压缩指令本身不要纳入摘要。
 """
-
-context_compression_system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
 
 knowledge_graph_analysis_prompt_template = """分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
 1. 分类方案：将知识点归纳到3-5个主要领域。
@@ -970,23 +961,10 @@ def build_user_profile_memory_prompt(
     return out.strip()
 
 
-def build_context_compression_prompt(
-    history_text: str,
-    *,
-    profile_text: str = "",
-    recent_dialogue: str = "",
-    max_chars: int = 6000
-) -> str:
+def build_context_compression_append_prompt(max_chars: int = 6000) -> str:
+    """构建 append 式压缩指令文本（作为末尾 user 消息发送）。"""
     limit = max(600, min(120000, int(max_chars or 6000)))
-    auxiliary_blocks = [
-        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
-        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
-    ]
-    auxiliary_context = "\n\n".join([block for block in auxiliary_blocks if block]).strip()
-
-    out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
-    out = out.replace("{{auxiliary_context_blocks}}", auxiliary_context)
-    out = out.replace("{{max_chars}}", str(limit))
+    out = context_compression_append_prompt_template.replace("{{max_chars}}", str(limit))
     return out
 
 
