@@ -1989,14 +1989,21 @@ class ToolExecutor:
         items = []
 
         for hit in result.hits[:num_results]:
+            # Markdown 精简：片段与高亮截短，减少 token，同时保留 image/favicon/author 供展示
+            snippet_short = str(hit.snippet or "").strip()[:320]
+            highlights_short = [str(h).strip()[:280] for h in (hit.highlights or [])[:2] if str(h).strip()]
+
             items.append(
                 {
                     "title": hit.title,
                     "url": hit.url,
-                    "snippet": hit.snippet,
-                    "highlights": hit.highlights,
+                    "snippet": snippet_short,
+                    "highlights": highlights_short,
                     "published_date": hit.published_date,
                     "score": hit.score,
+                    "image": hit.image,
+                    "favicon": hit.favicon,
+                    "author": hit.author,
                 }
             )
 
@@ -2007,6 +2014,28 @@ class ToolExecutor:
             "type": search_type or "auto",
             "results": items,
         }
+
+        # 顶层 images：仅保留可展示的真实配图，过滤 logo/favicon/svg/gif，去重
+        def _is_displayable(url: str) -> bool:
+            u = str(url or "").strip()
+            if not u.startswith("https://"):
+                return False
+            low = u.lower()
+            if low.endswith(".svg") or low.endswith(".ico") or low.endswith(".gif"):
+                return False
+            if any(tok in low for tok in ("logo", "favicon", "disambig", "sprite", "/40px-")):
+                return False
+            return True
+
+        seen = set()
+        filtered_images = []
+        for it in items:
+            u = str(it.get("image") or "").strip()
+            if _is_displayable(u) and u not in seen:
+                seen.add(u)
+                filtered_images.append(u)
+
+        payload["images"] = filtered_images
 
         # 结构化输出透传（若提供方返回 output）
         if isinstance(result.raw, dict) and result.raw.get("output"):

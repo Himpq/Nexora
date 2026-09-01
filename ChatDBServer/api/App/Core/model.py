@@ -13,6 +13,14 @@ from typing import List, Dict, Any, Optional, Generator, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import parsedate_to_datetime
+import sys as _sys
+try:
+    if hasattr(_sys.stdout, "reconfigure"):
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(_sys.stderr, "reconfigure"):
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 from basis.Tool import TOOLS, canonicalize_tool_name, get_tools_for_config, ToolResultPresenter
 from App.Executor import ToolExecutor
 from basis.User import User, BASIS
@@ -410,6 +418,8 @@ class Model(MailMixin):
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
+        # 双轨显示：缓存生效时保留完整展示用 markdown，供前端优先渲染
+        self._pending_display_results: Dict[str, str] = {}
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -450,7 +460,8 @@ class Model(MailMixin):
         enable_tools: bool = False,
         tool_mode: str = "force",
         conversation_mode: str = "chat",
-        conversation_mode_payload: Optional[Dict[str, Any]] = None
+        conversation_mode_payload: Optional[Dict[str, Any]] = None,
+        include_profile_context: Optional[bool] = None,
     ) -> str:
         base_template = str(getattr(self, "system_prompt_template", "") or "").strip()
         if not base_template:
@@ -508,15 +519,31 @@ class Model(MailMixin):
                 self._runtime_learning_prompt_block = prompts.build_learning_mode_default_prompt()
                 combined_template = f"{combined_template}\n\n{self._runtime_learning_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
-        profile_block = self._build_user_profile_memory_prompt_block() if self._include_profile_context else ""
-        if profile_block:
-            rendered = f"{rendered}\n\n{profile_block}"
+
+        # 架构重构：画像/知识库基线稳定化进 head 前缀，实现 prefix cache 命中
+        # 基线全量进 head，未来 diff 增量另走 tail（见 build_profile_diff_injection）
+        should_include_profile = self._include_profile_context if include_profile_context is None else bool(include_profile_context)
+        if should_include_profile:
+            profile_block = self._build_user_profile_memory_prompt_block()
+            if profile_block:
+                rendered = f"{rendered}\n\n{profile_block}"
+
         # NexoraCode 项目上下文经 runtime block 注入：chat_stream 每次请求都会重建
         # system prompt，外部直接改 self.system_prompt 会被覆盖，必须在这里拼接
         project_context_block = str(getattr(self, "_runtime_project_context_block", "") or "").strip()
         if project_context_block:
             rendered = f"{rendered}\n\n{project_context_block}"
         return rendered
+
+    def build_volatile_profile_injection(self) -> str:
+        """已废弃：全量画像已进 head，tail 仅保留未来 diff。"""
+
+        return ""
+
+    def build_profile_diff_injection(self) -> str:
+        """未来画像 diff 增量注入（tail），当前阶段返回空，待 diff 架构就绪后实现。"""
+
+        return ""
 
     def _get_user_profile_memory_text(self) -> str:
         permission_hint = self._get_user_permission_hint()
@@ -2203,16 +2230,17 @@ class Model(MailMixin):
             "enabled_count": len(enabled_names),
         }
     
-    def _execute_function(self, function_name: str, arguments: str) -> str:
+    def _execute_function(self, function_name: str, arguments: str, call_id: str = "") -> str:
         """
         执行函数调用
-        
+
         Args:
             function_name: 函数名
             arguments: 参数JSON字符串或字典
-            
+            call_id: 本次调用的稳定 call_id，用于双轨展示缓存
+
         Returns:
-            函数执行结果字符串
+            函数执行结果字符串（已脱水/缓存，面向模型）
         """
         start_ts = time.time()
         original_function_name = str(function_name or "").strip()
@@ -2259,8 +2287,24 @@ class Model(MailMixin):
             
             # 执行函数
             raw_result = self._execute_function_impl(function_name, args)
-            
-            # [TOKEN 优化] 智能脱水处理
+
+            # 双轨：先基于原始结果生成完整展示用 markdown（不受缓存/截断影响），供前端优先渲染
+            try:
+                pending_key = str(call_id or "").strip() or f"{function_name}:{int(time.time()*1000)}:{uuid.uuid4().hex[:6]}"
+                # 仅对需要展示的工具生成完整渲染，避免无谓开销
+                if function_name in {"exa_web_search", "search"}:
+                    full_args = args if isinstance(args, dict) else {}
+                    display_md = self._model_visible_function_result(function_name, raw_result, full_args)
+                    # 若渲染结果与原始不同且非空，则缓存为展示用
+                    if isinstance(display_md, str) and display_md.strip() and display_md.strip() != str(raw_result or "").strip():
+                        self._pending_display_results[pending_key] = display_md
+                        # 同时以 call_id 为键再存一份，兼容调用方以 call_id 取
+                        if call_id:
+                            self._pending_display_results[str(call_id).strip()] = display_md
+            except Exception:
+                pass
+
+            # [TOKEN 优化] 智能脱水处理（面向模型）
             result = self._sanitize_function_result(raw_result, function_name)
             success = self._infer_tool_success(result)
             self._log_tool_usage(function_name or original_function_name, args, result, success, start_ts)
@@ -4589,8 +4633,8 @@ class Model(MailMixin):
             if workspace_memory_hint:
                 current_turn_system_injections.append(workspace_memory_hint)
 
+            # 架构重构：知识库索引稳定化进 head 前缀，每轮必带以保障缓存一致
             workspace_knowledge_hint = prompts.build_workspace_knowledge_injection_prompt(workspace_context)
-
             if workspace_knowledge_hint:
                 current_turn_system_injections.append(workspace_knowledge_hint)
 
@@ -4651,13 +4695,21 @@ class Model(MailMixin):
 
             previous_response_id = None
             messages = []
+
+            # 架构重构：画像/知识库基线进 head 前缀，保障 prefix cache 命中
             request_system_prompt = self._build_effective_system_prompt(
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
                 tool_mode=getattr(self, "_runtime_tool_mode", "force"),
                 conversation_mode=normalized_conversation_mode,
-                conversation_mode_payload=normalized_conversation_mode_payload
+                conversation_mode_payload=normalized_conversation_mode_payload,
+                include_profile_context=True,
             )
+
+            # tail 仅保留真正易变的增量，当前阶段画像 diff 为空
+            profile_diff_block = self.build_profile_diff_injection()
+            if profile_diff_block:
+                current_turn_system_injections.append(profile_diff_block)
             if force_full_history:
                 effective_include_context = True
             else:
@@ -5022,8 +5074,12 @@ class Model(MailMixin):
                     "stream_trace": trace_payload,
                 }
             
+            # 网络半包重试预算（架构层统一处理，避免散落 patch）
+            network_retry_budget = 1
+            round_num = 0
+
             try:
-                for round_num in range(max_rounds):
+                while round_num < max_rounds:
                     # Keep follow-up rounds immediate to avoid perceptible stream stalls.
                     round_enable_thinking = bool(
                         enable_thinking
@@ -6235,13 +6291,29 @@ class Model(MailMixin):
                         # 额外调试：尝试找出哪个变量包含不可序列化的对象
                         import traceback
                         traceback.print_exc()
-                        # 如果是上游流提前断开，但我们已经拿到部分输出，则把它当作流式提前结束处理。
+                        # 架构层统一网络半包处理：有内容按正常结束，无内容按可重试网络错误
                         error_text = str(e).lower()
                         eof_like_error = (
                             "peer closed connection" in error_text
                             or "incomplete chunked read" in error_text
                             or type(e).__name__ in {"RemoteProtocolError", "ReadError"}
                         )
+
+                        # 无内容半包且重试预算充足时，回退全量上下文重试一次
+                        if eof_like_error and not (round_content or accumulated_content or round_reasoning or function_calls):
+                            if network_retry_budget > 0:
+                                network_retry_budget -= 1
+                                print(f"[RETRY] 检测到流式半包（无内容），回退全量重试，剩余预算 {network_retry_budget}")
+
+                                # 强制全量，避免 previous_response_id 坏链影响重试
+                                previous_response_id = None
+                                messages = list(full_context_messages)
+                                messages_has_full_context = True
+                                request_promoted_to_full_context = True
+
+                                # 本轮不递增，重试同一轮
+                                continue
+
                         if eof_like_error and (round_content or accumulated_content or round_reasoning or function_calls):
                             print("[WARN] 上游流提前断开，已收到部分内容，按正常结束处理以便继续 longterm 续跑。")
                         else:
@@ -6506,8 +6578,14 @@ class Model(MailMixin):
                             func_args = func_call["arguments"]
                             call_id = func_call["call_id"]
                             
-                            print(f"\n[FUNCTION] 调用: {func_name}")
-                            print(f"[FUNCTION] 参数: {func_args}")
+                            try:
+                                print(f"\n[FUNCTION] 调用: {func_name}".replace("\xa0", " "))
+                            except Exception:
+                                pass
+                            try:
+                                print(f"[FUNCTION] 参数: {func_args}".replace("\xa0", " ") if isinstance(func_args, str) else f"[FUNCTION] 参数: {func_args}")
+                            except Exception:
+                                pass
                             
                             # 记录调用步骤
                             step_call = {
@@ -6554,7 +6632,7 @@ class Model(MailMixin):
                             )
 
                             try:
-                                result = self._execute_function(func_name, func_args)
+                                result = self._execute_function(func_name, func_args, call_id=call_id)
                             finally:
                                 self._stop_function_running_heartbeat(heartbeat_stop_event)
 
@@ -6581,11 +6659,31 @@ class Model(MailMixin):
                                 model_visible_args
                             )
                             
-                            print(f"[FUNCTION] 结果: {result[:100]}..." if len(result) > 100 else f"[FUNCTION] 结果: {result}")
+                            try:
+                                _safe_res = str(result or "").replace("\xa0", " ")
+                                print(f"[FUNCTION] 结果: {_safe_res[:100]}..." if len(_safe_res) > 100 else f"[FUNCTION] 结果: {_safe_res}")
+                            except Exception:
+                                pass
                             if model_visible_result != result:
-                                print(f"[FUNCTION] 模型可见结果: {model_visible_result}")
+                                try:
+                                    print(f"[FUNCTION] 模型可见结果: {str(model_visible_result).replace(chr(160), ' ')}")
+                                except Exception:
+                                    pass
                             
-                            # 记录结果步骤
+                            # 记录结果步骤（双轨：前端优先 display_model_visible_result，上下文仍用 model_visible_result）
+                            display_key = str(call_id or "").strip()
+                            display_result = self._pending_display_results.pop(display_key, None) if display_key else None
+                            # 兼容兜底：若未按 call_id 缓存，尝试按任意 pending 键取一次（单轮单工具场景）
+                            if not display_result and self._pending_display_results:
+                                # 取最早一条与当前 func_name 相关的展示
+                                for k in list(self._pending_display_results.keys()):
+                                    if display_result:
+                                        break
+                                    cand = self._pending_display_results.get(k)
+                                    if isinstance(cand, str) and cand.strip():
+                                        display_result = self._pending_display_results.pop(k, None)
+                                        break
+
                             step_result = {
                                 "type": "function_result",
                                 "name": func_name,
@@ -6594,6 +6692,9 @@ class Model(MailMixin):
                                 "call_id": call_id,
                                 "round": int(round_num) + 1
                             }
+                            if display_result and isinstance(display_result, str) and display_result.strip() and display_result.strip() != model_visible_result.strip():
+                                step_result["display_result"] = display_result
+                                step_result["display_model_visible_result"] = display_result
                             if "index" in func_call:
                                 step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)
@@ -6871,6 +6972,9 @@ class Model(MailMixin):
                     yield {"type": "done", "content": accumulated_content}
                     return
 
+                    # 正常轮次完成，递增轮次计数
+                    round_num += 1
+
                 # 达到最大轮次
                 print(f"[WARNING] 达到最大轮次 {max_rounds}")
                 yield {"type": "done", "content": accumulated_content}
@@ -7138,10 +7242,20 @@ class Model(MailMixin):
                                     "effective_input": int(io.get("effective_input") or 0),
                                 }
                             # trace
+                            trace = None
                             if isinstance(metadata, dict) and isinstance(metadata.get("process_steps"), list):
-                                trace = build_trace_from_process_steps(metadata.get("process_steps"))
-                                if trace.get("events"):
-                                    v4_payload["trace"] = trace
+                                built = build_trace_from_process_steps(metadata.get("process_steps"))
+                                if isinstance(built, dict) and built.get("events"):
+                                    trace = built
+                            # 确保 token_response_trace_id 落盘到 v4，以便 Token 详情可精确关联
+                            if not isinstance(trace, dict):
+                                trace = {"events": [], "tool_calls": [], "tool_results": [], "content_segments": [], "errors": []}
+                            extensions = trace.get("extensions", {}) if isinstance(trace.get("extensions"), dict) else {}
+                            if str(response_trace_id or "").strip():
+                                extensions["token_response_trace_id"] = str(response_trace_id or "").strip()
+                            if extensions:
+                                trace["extensions"] = extensions
+                            v4_payload["trace"] = trace
                             if isinstance(metadata, dict) and metadata.get("terminal_error"):
                                 terr = metadata.get("terminal_error")
                                 if isinstance(terr, dict):

@@ -560,10 +560,9 @@
 
             if (segment.type === 'function_result') {
                 const rawName = segment.name || 'tool'
-                const markdownMode = String(segment.modelVisibleResult || '').trim() !== ''
-                const display = markdownMode
-                    ? String(segment.modelVisibleResult)
-                    : String(segment.text || '')
+                const displaySource = String((segment as any).displayResult || segment.modelVisibleResult || '').trim()
+                const markdownMode = displaySource !== ''
+                const display = markdownMode ? displaySource : String(segment.text || '')
 
                 for (let i = items.length - 1; i >= 0; i -= 1) {
                     const candidate = items[i]

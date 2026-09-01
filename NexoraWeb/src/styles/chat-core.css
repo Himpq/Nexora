@@ -1017,15 +1017,26 @@ body.learning-workspace-active .sidebar-footer{
  * - 图片：block + contain + 8px 圆角，覆盖 markdown 默认 width 需 !important
  * - 表格：fixed 布局 + 语义边框 + 首列最小宽保证可读
  */
-.content-body img,
-.tool-output-markdown img {
+.content-body img {
     display: block;
-    width: 100% !important;
+    width: auto !important;
     max-width: 100% !important;
+    max-height: 420px;
     height: auto !important;
     object-fit: contain;
     border-radius: 8px;
-    margin: 12px 0;
+    margin: 12px auto;
+}
+
+.tool-output-markdown img {
+    display: block;
+    width: auto !important;
+    max-width: min(100%, 420px) !important;
+    max-height: 260px;
+    height: auto !important;
+    object-fit: contain;
+    border-radius: 8px;
+    margin: 12px auto;
 }
 
 .content-body.generated-image-result {

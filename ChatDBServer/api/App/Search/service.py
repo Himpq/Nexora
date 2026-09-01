@@ -82,6 +82,9 @@ def search_to_tool_payload(result: SearchResult, limit: int = 8) -> str:
                 "highlights": hit.highlights,
                 "published_date": hit.published_date,
                 "score": hit.score,
+                "image": hit.image,
+                "favicon": hit.favicon,
+                "author": hit.author,
             }
         )
 

@@ -664,6 +664,9 @@ export const useConversationStore = defineStore('conversation', {
                 modelVisibleResult: typeof step.model_visible_result === 'string'
                     ? step.model_visible_result
                     : undefined,
+                displayResult: typeof (step as any).display_model_visible_result === 'string' && (step as any).display_model_visible_result.trim()
+                    ? String((step as any).display_model_visible_result)
+                    : typeof (step as any).display_result === 'string' ? String((step as any).display_result) : undefined,
                 round: Number(step.round) || undefined,
             }
 
@@ -903,12 +906,56 @@ export const useConversationStore = defineStore('conversation', {
             })
 
             if (message.metadata && typeof message.metadata === 'object') {
-                assistant.metadata = {
-                    ...(assistant.metadata && typeof assistant.metadata === 'object'
-                        ? (assistant.metadata as Record<string, unknown>)
-                        : {}),
-                    ...(message.metadata as Record<string, unknown>),
+                const incomingMeta = message.metadata as Record<string, unknown>
+                const existingMeta = (assistant.metadata && typeof assistant.metadata === 'object'
+                    ? assistant.metadata as Record<string, unknown>
+                    : {}) as Record<string, unknown>
+
+                // 流式期间已通过 patchStreamingIoTokens 补了 io_tokens_window，
+                // 终帧若无有效 io 数据（provider 未返回 usage）则保留流式补丁，避免 badge 被 0 覆盖
+                const hasValidIncomingIo = (() => {
+                    const keys = ['io_tokens_window', 'io_tokens', 'io_tokens_cumulative'] as const
+                    for (const key of keys) {
+                        const value = incomingMeta[key]
+                        if (value && typeof value === 'object') {
+                            const record = value as Record<string, unknown>
+                            const hasAny = ['input', 'output', 'raw_input', 'cached_input'].some(
+                                (field) => safeTokenInt(record[field]) > 0
+                            )
+                            if (hasAny) return true
+                        }
+                    }
+                    return false
+                })()
+
+                const mergedMeta: Record<string, unknown> = {
+                    ...existingMeta,
+                    ...incomingMeta,
                 }
+
+                // 无有效 io 时保留流式已写入的窗口口径（ incoming 为 0 值亦视为无效）
+                if (!hasValidIncomingIo) {
+                    for (const key of ['io_tokens_window', 'io_tokens', 'io_tokens_cumulative'] as const) {
+                        const existingVal = existingMeta[key]
+                        if (existingVal && typeof existingVal === 'object') {
+                            const hasExistingValid = ['input', 'output', 'raw_input', 'cached_input'].some(
+                                (field) => safeTokenInt((existingVal as Record<string, unknown>)[field]) > 0
+                            )
+                            if (!hasExistingValid) continue
+                            const incomingVal = incomingMeta[key]
+                            const hasIncomingValid = incomingVal
+                                && typeof incomingVal === 'object'
+                                && ['input', 'output', 'raw_input', 'cached_input'].some(
+                                    (field) => safeTokenInt((incomingVal as Record<string, unknown>)[field]) > 0
+                                )
+                            if (!hasIncomingValid) {
+                                mergedMeta[key] = existingVal
+                            }
+                        }
+                    }
+                }
+
+                assistant.metadata = mergedMeta
 
                 // 服务器终帧携带 v4 trace 后，压缩卡片以服务器持久化数据为准。
                 assistant.compressionStep = null
@@ -1036,6 +1083,65 @@ export const useConversationStore = defineStore('conversation', {
         /** 记录本次请求的 token 画像(prompt_token_profile chunk,CTX/Token 展示数据源) */
         setStreamingTokenProfile(profile: Record<string, unknown>): void {
             this.streamTokenProfile = { ...profile }
+        },
+
+        /**
+         * 流式 token_usage 同步到当前助手消息的 model badge（I/O 与 E/C）：
+         * - token_usage 块在流式期间逐轮推送（累计输入/输出/缓存命中），比 final_message
+         *   落盘更早到达；直接写入 pending 助理消息的 metadata.io_tokens_window，
+         *   让 MessageItem 的 badge 立即显示，无需等 done 后重载（旧方案重载导致闪空）。
+         * - 同时保留向后兼容：done 终帧会 via applyFinalMessage 用后端落盘的
+         *   io_tokens_window / cumulative 覆盖，若终帧无 io 数据则保留流式补丁。
+         */
+        patchStreamingIoTokens(chunk: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant()
+
+            if (!assistant) {
+                return
+            }
+
+            const input = safeTokenInt(chunk.input_tokens)
+            const output = safeTokenInt(chunk.output_tokens)
+            const raw = safeTokenInt((chunk as Record<string, unknown>).raw_input_tokens)
+            const cached = safeTokenInt((chunk as Record<string, unknown>).cached_input_tokens)
+
+            if (!input && !output && !raw && !cached) {
+                return
+            }
+
+            const meta = (assistant.metadata && typeof assistant.metadata === 'object')
+                ? assistant.metadata as Record<string, unknown>
+                : {}
+
+            const prevWindow = (meta.io_tokens_window && typeof meta.io_tokens_window === 'object')
+                ? meta.io_tokens_window as Record<string, unknown>
+                : {}
+
+            // 取最新非零值，流式期间多轮 token_usage 叠加时取最后一次的全量快照
+            const nextWindow: Record<string, number> = {
+                input: input || safeTokenInt(prevWindow.input),
+                output: output || safeTokenInt(prevWindow.output),
+                raw_input: raw || safeTokenInt(prevWindow.raw_input),
+                cached_input: cached || safeTokenInt(prevWindow.cached_input),
+            }
+
+            // 至少一项非零才写入，避免空块污染 metadata
+            if (!nextWindow.input && !nextWindow.output && !nextWindow.raw_input && !nextWindow.cached_input) {
+                return
+            }
+
+            const nextMeta: Record<string, unknown> = {
+                ...meta,
+                io_tokens_window: nextWindow,
+                io_tokens: { ...nextWindow },
+            }
+
+            // 累计口径若尚未建立，用窗口值兜底（使 badge 的 fallback 累计亦有数）
+            if (!meta.io_tokens_cumulative || typeof meta.io_tokens_cumulative !== 'object') {
+                nextMeta.io_tokens_cumulative = { ...nextWindow }
+            }
+
+            assistant.metadata = nextMeta
         },
 
         /**
@@ -1262,9 +1368,15 @@ export const useConversationStore = defineStore('conversation', {
         /**
          * 侧边栏会话分支树行(对齐原版 arrangeConversationBranchRows):
          * 分支会话紧跟在父会话之后按深度缩进,孤儿分支排在末尾。
+         * Nexora 对话列表严禁混入 Learning 会话( conversation_mode === 'learning' ),
+         * 否则 Learning 侧栏与 Nexora 侧栏数据污染。
          */
         branchRows(state): ConversationBranchRow[] {
-            return arrangeConversationBranchRows(state.conversations)
+            const nexoraConversations = state.conversations.filter(
+                (item) => String(item.conversation_mode || '').trim().toLowerCase() !== 'learning'
+            )
+
+            return arrangeConversationBranchRows(nexoraConversations)
         },
     },
 })

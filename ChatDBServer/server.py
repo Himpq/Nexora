@@ -26,6 +26,15 @@ from datetime import timedelta, datetime
 import time
 import httpx
 
+# Windows 控制台默认 GBK，\xa0 等字符直接 print 会抛 UnicodeEncodeError，转为 utf-8 容错
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
 from App.Core import Model
@@ -47,7 +56,7 @@ from basis.Database import safe_read_json, safe_write_json, get_path_lock
 from basis.TokenUsage import is_usage_log_path, read_usage_log_records, replace_usage_log_records
 from App.Files import KnowledgeWordExporter
 from App.Collaboration import KnowledgeCollabHub
-from App.Utils import append_log_text, init_run_logger
+from App.Utils import append_log_text, init_run_logger, log_event
 from basis.Conversation import asset_store
 import prompts
 from basis.Permission import (
@@ -14805,12 +14814,32 @@ def chat_stream():
             elif raw_conversation_mode == 'learning':
                 effective_enable_tools = True
                 effective_tool_mode = 'force'
+            requested_cid = str(conversation_id or "").strip()
+            will_auto_create = not bool(requested_cid)
             model = Model(
                 username,
                 model_name=model_name,
                 conversation_id=conversation_id,
-                auto_create=(not bool(str(conversation_id or '').strip()))
+                auto_create=will_auto_create
             )
+            # 服务端常驻：记录会话归属，避免“盗梦空间”式侧边栏错位只能靠浏览器控制台
+            try:
+                log_event(
+                    "chat_conversation_resolve",
+                    "conversation resolved",
+                    payload={
+                        "username": str(username or ""),
+                        "requested_conversation_id": requested_cid,
+                        "resolved_conversation_id": str(model.conversation_id or ""),
+                        "auto_created": bool(will_auto_create),
+                        "conversation_id_from_request": bool(conversation_id_from_request),
+                        "model_name": str(model_name or ""),
+                        "raw_conversation_mode": str(raw_conversation_mode or ""),
+                    },
+                    source="chat",
+                )
+            except Exception:
+                pass
 
             if raw_conversation_mode == 'learning' and learning_course_id and model.conversation_id:
                 ConversationService(username).update_conversation_fields(
@@ -15010,6 +15039,31 @@ def chat_stream():
                 and str(model.conversation_id or "").strip()
             )
 
+            # 服务端常驻诊断：无论是否入队都落盘，便于偶发排查（不依赖浏览器控制台）
+            try:
+                log_event(
+                    "memory_eligibility",
+                    "memory eligibility check",
+                    payload={
+                        "username": str(username or ""),
+                        "conversation_id": str(model.conversation_id or conversation_id or ""),
+                        "conversation_id_from_request": bool(conversation_id_from_request),
+                        "stream_assistant_index": stream_assistant_index,
+                        "done_seen": bool(memory_analysis_done_seen),
+                        "error_seen": bool(memory_analysis_error_seen),
+                        "is_regenerate": bool(is_regenerate),
+                        "is_cancel_requested": bool(is_cancel_requested()),
+                        "raw_conversation_mode": str(raw_conversation_mode or ""),
+                        "workspace_bound": bool(workspace_chat_context),
+                        "project_bound": bool(project_bound_for_memory),
+                        "eligible": bool(memory_analysis_eligible),
+                        "model_name": str(model.model_name or model_name or ""),
+                    },
+                    source="memory",
+                )
+            except Exception:
+                pass
+
             if memory_analysis_eligible:
                 try:
                     memory_enqueue_result = get_memory_analysis_queue().enqueue(
@@ -15035,6 +15089,21 @@ def chat_stream():
                         f"assistant_index={stream_assistant_index} "
                         f"job_id={memory_enqueue_result.get('job_id')}"
                     )
+                    try:
+                        log_event(
+                            "memory_queued",
+                            "memory enqueued",
+                            payload={
+                                "username": str(username or ""),
+                                "conversation_id": str(model.conversation_id or ""),
+                                "assistant_index": int(stream_assistant_index) if stream_assistant_index is not None else None,
+                                "job_id": str(memory_enqueue_result.get("job_id") or ""),
+                                "model": str(model.model_name or model_name or ""),
+                            },
+                            source="memory",
+                        )
+                    except Exception:
+                        pass
                 except Exception as memory_enqueue_error:
                     print(
                         "[MEMORY_ANALYSIS] enqueue failed "
@@ -15042,6 +15111,37 @@ def chat_stream():
                         f"assistant_index={stream_assistant_index} "
                         f"error={memory_enqueue_error}"
                     )
+                    try:
+                        log_event(
+                            "memory_enqueue_failed",
+                            "memory enqueue failed",
+                            payload={
+                                "username": str(username or ""),
+                                "conversation_id": str(model.conversation_id or ""),
+                                "assistant_index": int(stream_assistant_index) if stream_assistant_index is not None else None,
+                                "error": str(memory_enqueue_error)[:500],
+                            },
+                            source="memory",
+                        )
+                    except Exception:
+                        pass
+            else:
+                try:
+                    log_event(
+                        "memory_skipped",
+                        "memory skipped (not eligible)",
+                        payload={
+                            "username": str(username or ""),
+                            "conversation_id": str(model.conversation_id or conversation_id or ""),
+                            "reason": "eligibility_false",
+                            "done_seen": bool(memory_analysis_done_seen),
+                            "error_seen": bool(memory_analysis_error_seen),
+                            "stream_assistant_index": stream_assistant_index,
+                        },
+                        source="memory",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             if is_stream_cancelled_error(e):
                 set_stage("worker_cancelled", "user_abort")

@@ -271,7 +271,7 @@
                 </span>
             </div>
 
-            <div v-if="!store.conversations.length" class="sidebar-empty">
+            <div v-if="!store.branchRows.length" class="sidebar-empty">
                 暂无会话
             </div>
         </div>
@@ -744,7 +744,9 @@
 
     /** 学习会话列表(对齐原版 learningSidebarPanel:宿主 learning 作用域会话) */
     const learningSessions = computed<ConversationSummary[]>(() => {
-        return store.conversations.filter((item) => item.conversation_mode === 'learning')
+        return store.conversations.filter(
+            (item) => String(item.conversation_mode || '').trim().toLowerCase() === 'learning'
+        )
     })
 
     // ── 侧栏对话视图(对齐原版 renderSidebarChat):消息跟随底部,用户上滚即暂停 ──

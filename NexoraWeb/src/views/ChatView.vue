@@ -744,6 +744,12 @@
      */
     async function handleOpenLearningChat(): Promise<void> {
         if (!learningOpen.value) {
+            // 非 Learning 视图下的 New Chat / 会话点击:必须回到聊天主视图,
+            // 否则 overlay.view 仍停留在 Files/Workspaces,聊天视图被 v-show 隐藏,
+            // 表现为"点了 New Chat 没回到欢迎页"。
+            workspaceReturnId.value = ''
+            backToChat()
+
             return
         }
 
@@ -1377,9 +1383,10 @@
             return
         }
 
-        // 流式 usage:驱动输入区 TK mini 增量展示(对齐原版 onTokenStreamUsageChunk)
+        // 流式 usage:驱动输入区 TK mini 增量展示 + 同步到消息 model badge（I/O / E/C 立即显示，无需刷新）
         if (chunk.type === 'token_usage') {
             conversationStore.accumulateStreamUsage(chunk as unknown as Record<string, unknown>)
+            conversationStore.patchStreamingIoTokens(chunk as unknown as Record<string, unknown>)
 
             return
         }

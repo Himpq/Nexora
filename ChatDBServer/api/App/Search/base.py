@@ -35,6 +35,11 @@ class SearchHit:
     score: Optional[float] = None
     source: str = ""
 
+    # 图片与站点信息（Exa image/favicon/author）
+    image: str = ""
+    favicon: str = ""
+    author: str = ""
+
     # 原始厂商 payload
     raw: Optional[Dict[str, Any]] = None
 

@@ -30,8 +30,10 @@ export interface MessageSegment {
     name?: string
     /** 工具分段专用:调用 ID(配对 call/result) */
     callId?: string
-    /** 工具分段专用:模型不可见时的展示结果(对齐原版 model_visible_result) */
+    /** 工具分段专用:模型可见结果(对齐原版 model_visible_result) */
     modelVisibleResult?: string
+    /** 工具分段专用:前端优先展示结果(双轨：缓存截胡时展示真实列表) */
+    displayResult?: string
     /** 工具分段专用:所属工具轮次(对齐 process_steps.round) */
     round?: number
     /** question 分段专用:问题载荷(question_title/content/choices/allow_other/permission_request 等) */
@@ -223,12 +225,17 @@ function stepToSegment(step: Record<string, unknown>): MessageSegment | null {
     }
 
     if (type === 'function_result') {
+        const displayCand = (typeof step.display_model_visible_result === 'string' && step.display_model_visible_result.trim())
+            ? String(step.display_model_visible_result)
+            : (typeof step.display_result === 'string' && step.display_result.trim() ? String(step.display_result) : undefined)
+        const modelVis = typeof step.model_visible_result === 'string' ? step.model_visible_result : undefined
         return {
             type: 'function_result',
             text: String(step.result ?? ''),
             name: String(step.name || '').trim() || 'tool',
             callId: String(step.call_id || ''),
-            modelVisibleResult: typeof step.model_visible_result === 'string' ? step.model_visible_result : undefined,
+            modelVisibleResult: modelVis,
+            displayResult: displayCand,
             round: Number(step.round) || undefined,
         }
     }

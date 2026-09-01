@@ -202,6 +202,22 @@ class ExaSearchProvider(SearchProvider):
             if not url:
                 continue
 
+            # 图片与站点信息（Exa 顶层 image/favicon/author）
+            image = str(item.get("image") or "").strip()
+            favicon = str(item.get("favicon") or "").strip()
+            author = str(item.get("author") or "").strip()
+
+            # 仅保留 https 外链，避免内联风险
+            if image and not image.startswith("https://"):
+                if image.startswith("http://"):
+                    # 允许 http 但后续 Presenter 仅渲染 https
+                    pass
+                else:
+                    image = ""
+
+            if favicon and not favicon.startswith(("https://", "http://")):
+                favicon = ""
+
             hits.append(
                 SearchHit(
                     title=title or url,
@@ -211,6 +227,9 @@ class ExaSearchProvider(SearchProvider):
                     published_date=str(item.get("publishedDate") or "").strip(),
                     score=item.get("score") if isinstance(item.get("score"), (int, float)) else None,
                     source="exa",
+                    image=image,
+                    favicon=favicon,
+                    author=author,
                     raw=item,
                 )
             )

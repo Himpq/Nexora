@@ -43,7 +43,7 @@
                     variant="quiet"
                     size="compact"
                     icon="fa-solid fa-arrow-left"
-                    @click="detail = null"
+                    @click="handleBackToList"
                 >返回列表</Button>
 
                 <div class="token-detail-drill-meta">
@@ -250,6 +250,40 @@
         },
     )
 
+    // 关闭弹窗时由 handleClose 主动清理,不应触发返回列表的重建逻辑
+    let suppressDetailWatcher = false
+
+    /*
+     * 下钻返回列表时 chart 容器由 v-else 分支重建,原 ECharts 实例仍挂在已移除的旧 DOM 上。
+     * loadStats 仅在打开/刷新时调用,此处需在 detail 置空后重新挂载图表。
+     */
+    watch(
+        () => detail.value,
+        async (current) => {
+            if (suppressDetailWatcher) {
+                suppressDetailWatcher = false
+
+                return
+            }
+
+            if (current !== null) {
+                return
+            }
+
+            if (!props.open || loading.value || loadError.value || !stats.value.history.length) {
+                return
+            }
+
+            await nextTick()
+
+            renderChart()
+        },
+    )
+
+    function handleBackToList(): void {
+        detail.value = null
+    }
+
     onBeforeUnmount(() => {
         disposeChart()
     })
@@ -400,6 +434,11 @@
 
     function handleClose(): void {
         disposeChart()
+        // 避免 detail watcher 在关闭流程中误重建图表
+        if (detail.value !== null) {
+            suppressDetailWatcher = true
+        }
+
         detail.value = null
         emit('close')
     }

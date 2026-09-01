@@ -167,6 +167,66 @@ class MemoryAnalysisQueue:
             )
             self._worker_thread.start()
 
+    def _write_failure_status(self, job: Dict[str, Any], error: Exception) -> None:
+        """失败时回写 memory_analysis=failed，避免前端永远 processing。"""
+        try:
+            username = str(job.get("username") or "").strip()
+            conversation_id = str(job.get("conversation_id") or "").strip()
+            assistant_index = int(job.get("assistant_index", -1) or -1)
+
+            if not username or not conversation_id or assistant_index < 0:
+                return
+
+            svc = ConversationService(username)
+            failed_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            analysis_model = str(job.get("analysis_model") or job.get("model_name") or "")
+            model_source = str(job.get("analysis_model_source") or "conversation")
+
+            svc.update_assistant_analysis(
+                conversation_id,
+                int(assistant_index),
+                {
+                    "job_id": str(job.get("job_id") or ""),
+                    "status": "failed",
+                    "action": "failed",
+                    "reason": "",
+                    "update_content": "",
+                    "model": analysis_model,
+                    "model_source": model_source,
+                    "requested_model": str(job.get("requested_analysis_model") or analysis_model),
+                    "fallback_used": bool(job.get("analysis_model_fallback", False)),
+                    "fallback_error": str(job.get("analysis_model_fallback_error") or "")[:500],
+                    "failed_at": failed_at,
+                    "error": str(error or "")[:500],
+                },
+                None,
+            )
+
+            # 通知前端刷新内存分析状态
+            completion_callback = job.get("_completion_callback")
+
+            if callable(completion_callback):
+                try:
+                    completion_callback({
+                        "conversation_id": str(conversation_id),
+                        "assistant_index": int(assistant_index),
+                        "memory_action": "failed",
+                        "memory_reason": "",
+                        "memory_model": analysis_model,
+                        "failed_at": failed_at,
+                        "error": str(error or "")[:500],
+                    })
+                except Exception as callback_error:
+                    print(
+                        f"[MEMORY_ANALYSIS] failure callback failed job_id={job.get('job_id')} "
+                        f"error={callback_error}"
+                    )
+        except Exception as write_error:
+            print(
+                f"[MEMORY_ANALYSIS] write failure status failed job_id={job.get('job_id')} "
+                f"error={write_error}"
+            )
+
     def _worker_loop(self) -> None:
         while True:
             job = self._queue.get()
@@ -179,6 +239,7 @@ class MemoryAnalysisQueue:
                     f"[MEMORY_ANALYSIS] failed job_id={job.get('job_id')} "
                     f"conversation_id={job.get('conversation_id')} error={error}"
                 )
+                self._write_failure_status(job, error)
             finally:
                 self._queue.task_done()
 

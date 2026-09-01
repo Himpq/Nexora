@@ -1,4 +1,4 @@
-﻿
+
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
@@ -751,7 +751,13 @@ def build_workspace_knowledge_injection_prompt(
     limit = max(1, min(200, int(max_items or 80)))
     rows: List[str] = []
 
-    for item in documents[:limit]:
+    # 稳定排序：保证同集合在不同轮次渲染一致，避免缓存哈希抖动
+    sorted_docs = sorted(
+        [d for d in documents if isinstance(d, dict)],
+        key=lambda d: (str(d.get("title") or d.get("name") or "").lower(), str(d.get("basis_id") or ""))
+    )
+
+    for item in sorted_docs[:limit]:
         title = _workspace_knowledge_field(item.get("title") or item.get("name"), 160)
 
         if not title:
@@ -760,9 +766,6 @@ def build_workspace_knowledge_injection_prompt(
         meta_parts: List[str] = []
         knowledge_type = _workspace_knowledge_field(item.get("knowledge_type") or item.get("type") or "basis", 32)
         basis_id = _workspace_knowledge_field(item.get("basis_id"), 80)
-        added_by = _workspace_knowledge_field(item.get("added_by"), 80)
-        visibility = _workspace_knowledge_field(item.get("visibility"), 32)
-        updated_at = _workspace_knowledge_field(item.get("updated_at"), 64)
 
         if basis_id:
             meta_parts.append(f"basis_id={basis_id}")
@@ -770,22 +773,13 @@ def build_workspace_knowledge_injection_prompt(
         if knowledge_type:
             meta_parts.append(f"type={knowledge_type}")
 
-        if added_by:
-            meta_parts.append(f"added_by={added_by}")
-
-        if visibility:
-            meta_parts.append(f"visibility={visibility}")
-
         if item.get("pin") is True:
             meta_parts.append("pinned=true")
-
-        if updated_at:
-            meta_parts.append(f"updated_at={updated_at}")
 
         meta_text = f" ({'; '.join(meta_parts)})" if meta_parts else ""
         rows.append(f"- {title}{meta_text}")
 
-    remaining = max(0, len(documents) - limit)
+    remaining = max(0, len(sorted_docs) - limit)
 
     if remaining > 0:
         rows.append(f"- ... 还有 {remaining} 条 Workspace 知识索引未列出。")
@@ -1003,6 +997,7 @@ web_search_default = """
 2. 优先返回来源链接 + 摘要；若无可靠来源，明确写“无法获取相关信息”及原因。
 3. 若结果存在时间敏感性，尽量包含发布日期/时间范围。
 4. 不做冗长分析，不输出与查询无关内容。
+5. 若 exa_web_search 结果中包含 image（https 外链），请在回答中用 ![描述](image_url) 内联 1-3 张最相关图，并用 > 来源: [标题](url) 标注；无图则仅引文字。
 建议输出：
 [完整URL] 关键信息摘要（可含日期）
 """

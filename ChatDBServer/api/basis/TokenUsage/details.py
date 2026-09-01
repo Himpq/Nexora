@@ -110,7 +110,11 @@ class TokenUsageDetailPresenter:
         if not conversation_id or conversation_id in {"unknown", "transient"}:
             return None
 
-        conversation = self.conversation_service.get_conversation(conversation_id)
+        try:
+            conversation = self.conversation_service.get_conversation(conversation_id)
+        except Exception:
+            return None
+
         messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
 
         if not isinstance(messages, list):
@@ -145,7 +149,7 @@ class TokenUsageDetailPresenter:
 
         if memory_job_id:
             for index, message in enumerate(messages):
-                analysis = self._message_metadata(message).get("memory_analysis", {})
+                analysis = self._extract_memory_analysis(message)
 
                 if isinstance(analysis, dict) and str(analysis.get("job_id") or "").strip() == memory_job_id:
                     return index if self._is_assistant_at(messages, index) else -1
@@ -154,15 +158,15 @@ class TokenUsageDetailPresenter:
 
         if response_trace_id:
             for index, message in enumerate(messages):
-                metadata = self._message_metadata(message)
+                trace_id = self._extract_token_response_trace_id(message)
 
-                if str(metadata.get("token_response_trace_id") or "").strip() == response_trace_id:
+                if str(trace_id or "").strip() == response_trace_id:
                     return index if self._is_assistant_at(messages, index) else -1
 
         return -1
 
     def _build_memory_response(self, log: Dict[str, Any], assistant_message: Dict[str, Any]) -> str:
-        analysis = self._message_metadata(assistant_message).get("memory_analysis", {})
+        analysis = self._extract_memory_analysis(assistant_message)
 
         if not isinstance(analysis, dict):
             analysis = {}
@@ -175,13 +179,22 @@ class TokenUsageDetailPresenter:
         requested_model = str(analysis.get("requested_model") or "").strip()
         model_source = str(analysis.get("model_source") or "").strip()
         fallback_used = bool(analysis.get("fallback_used", False))
-        completed_at = str(analysis.get("completed_at") or "").strip()
+        completed_at = str(analysis.get("completed_at") or analysis.get("failed_at") or "").strip()
+        error_text = str(analysis.get("error") or "").strip()
+        fallback_error = str(analysis.get("fallback_error") or "").strip()
         lines = [
             "### MEMORY 决策",
             "",
             f"- 状态：`{self._inline_code(status)}`",
             f"- 操作：`{self._inline_code(action)}`",
         ]
+
+        # 失败时明确展示错误，避免用户误以为一直 processing
+        if status == "failed" and error_text:
+            lines.extend(["", "#### 失败原因", "", self._fenced_text(error_text)])
+
+        if fallback_error:
+            lines.extend(["", "#### 回退错误", "", self._fenced_text(fallback_error)])
 
         if reason:
             lines.extend(["", "#### reason", "", reason])
@@ -205,7 +218,8 @@ class TokenUsageDetailPresenter:
         lines.append(f"- 发生回退：`{'是' if fallback_used else '否'}`")
 
         if completed_at:
-            lines.append(f"- 完成时间：`{self._inline_code(completed_at)}`")
+            label = "完成时间" if status != "failed" else "失败时间"
+            lines.append(f"- {label}：`{self._inline_code(completed_at)}`")
 
         return "\n".join(lines).strip()
 
@@ -229,6 +243,59 @@ class TokenUsageDetailPresenter:
         metadata = message.get("metadata", {})
 
         return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _extract_memory_analysis(message: Dict[str, Any]) -> Dict[str, Any]:
+        """兼容 v4 顶层、trace.extensions 与旧 metadata 三处存储。"""
+        if not isinstance(message, dict):
+            return {}
+
+        # v4 明确字段
+        direct = message.get("memory_analysis")
+        if isinstance(direct, dict) and direct:
+            return direct
+
+        # trace.extensions 兼容
+        trace = message.get("trace") if isinstance(message.get("trace"), dict) else {}
+        if isinstance(trace, dict):
+            extensions = trace.get("extensions") if isinstance(trace.get("extensions"), dict) else {}
+            if isinstance(extensions, dict):
+                ext_mem = extensions.get("memory_analysis")
+                if isinstance(ext_mem, dict) and ext_mem:
+                    return ext_mem
+
+        # 旧 metadata
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if isinstance(metadata, dict):
+            meta_mem = metadata.get("memory_analysis")
+            if isinstance(meta_mem, dict) and meta_mem:
+                return meta_mem
+
+        return {}
+
+    @staticmethod
+    def _extract_token_response_trace_id(message: Dict[str, Any]) -> str:
+        """兼容 v4 trace.extensions 与旧 metadata。"""
+        if not isinstance(message, dict):
+            return ""
+
+        # v4 trace.extensions
+        trace = message.get("trace") if isinstance(message.get("trace"), dict) else {}
+        if isinstance(trace, dict):
+            extensions = trace.get("extensions") if isinstance(trace.get("extensions"), dict) else {}
+            if isinstance(extensions, dict):
+                tid = str(extensions.get("token_response_trace_id") or "").strip()
+                if tid:
+                    return tid
+
+        # 旧 metadata
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if isinstance(metadata, dict):
+            tid = str(metadata.get("token_response_trace_id") or "").strip()
+            if tid:
+                return tid
+
+        return ""
 
     @staticmethod
     def _message_content(message: Dict[str, Any]) -> str:

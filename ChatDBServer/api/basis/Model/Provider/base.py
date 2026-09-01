@@ -379,39 +379,46 @@ class ProviderInterface(ABC):
 
     def _coalesce_system_messages_to_front(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Move system messages to the front and merge them into one message, preserving
-        the relative order of non-system messages.
+        头尾分离：首条 system 为稳定头（可缓存），其余 system 为易变尾部，置于历史后、新用户前。
+        保证：
+        - head 始终在最前且唯一
+        - tail 不回绕到 head 前
+        - skill 等稳定块若意外进尾，不会被合并进头
         """
-        first_system: Optional[Dict[str, Any]] = None
-        first_system_index: Optional[int] = None
-        merged_content: Any = None
-        non_system_messages: List[Dict[str, Any]] = []
+        if not messages:
+            return []
+
+        head: Optional[Dict[str, Any]] = None
+        head_idx: Optional[int] = None
+        tail_systems: List[Dict[str, Any]] = []
+        non_systems: List[Dict[str, Any]] = []
 
         for idx, msg in enumerate(list(messages or [])):
             if not isinstance(msg, dict):
                 continue
             role = str(msg.get("role", "") or "").strip().lower()
-            if role != "system":
-                non_system_messages.append(msg)
+            if role == "system" and head is None:
+                head = dict(msg)
+                head_idx = idx
                 continue
+            if role == "system" and head is not None:
+                tail_systems.append(dict(msg))
+                continue
+            non_systems.append(msg)
 
-            if first_system is None:
-                first_system = dict(msg)
-                first_system_index = idx
-                merged_content = msg.get("content")
-            else:
-                merged_content = self._merge_system_content(merged_content, msg.get("content"))
-
-        if first_system is None:
+        if head is None:
             return list(messages or [])
 
-        first_system["content"] = merged_content if merged_content is not None else ""
-
-        # Already compliant: first message is system and no extra system messages.
-        if first_system_index == 0 and len(non_system_messages) + 1 == len([m for m in messages if isinstance(m, dict)]):
+        # 已合规：仅一条 system 且在首位
+        if head_idx == 0 and not tail_systems and len(non_systems) + 1 == len([m for m in messages if isinstance(m, dict)]):
             return list(messages or [])
 
-        return [first_system] + non_system_messages
+        # 尾部置于历史后、新用户前，保留 head 前缀稳定
+        if non_systems and str(non_systems[-1].get("role") or "").strip().lower() == "user":
+            history = non_systems[:-1]
+            new_user = [non_systems[-1]]
+            return [head] + history + tail_systems + new_user
+        return [head] + non_systems + tail_systems
 
     def _merge_system_content(self, base: Any, extra: Any) -> Any:
         if extra is None or extra == "":

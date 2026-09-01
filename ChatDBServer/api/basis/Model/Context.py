@@ -15,6 +15,15 @@ import json
 from enum import Enum
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
 
+import sys as _sys
+try:
+    if hasattr(_sys.stdout, "reconfigure"):
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(_sys.stderr, "reconfigure"):
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 from App.Utils import (
     sanitize_assistant_visible_content,
     strip_history_time_prefix_from_content,
@@ -357,10 +366,21 @@ class ChatContextManager:
         current_user_content: Any,
         system_injection_texts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """构建续接缓存命中时只发送的当前轮消息。"""
+        """构建续接缓存命中时只发送的增量：仅尾部易变块 + 新用户，头稳定块已在缓存中。"""
+
+        # 架构重构：画像/知识库已稳定化进 head 前缀，tail 仅保留真正易变的沙箱/资源索引
+        # 未来画像 diff 也将以独立小块进 tail，当前全量不在 tail
+        volatile_markers = (
+            "## Workspace Resource Index",
+            "## Sandbox Files",
+        )
+        all_injections = self._normalize_system_injection_texts(system_injection_texts)
+        volatile_injections = [
+            t for t in all_injections if any(vm in t for vm in volatile_markers)
+        ]
         messages: List[Dict[str, Any]] = []
 
-        for text in self._normalize_system_injection_texts(system_injection_texts):
+        for text in volatile_injections:
             messages.append({"role": "system", "content": text})
 
         messages.append({"role": "user", "content": current_user_content})
@@ -441,73 +461,48 @@ class ChatContextManager:
             compression_marker,
         )
 
-        # DSH 式增量存储：若历史已包含 system_snapshot，则重建完全是列表 join，
-        # 稳定前缀不重复注入；易变块（知识/资源/沙箱）作为尾部增量注入，不破坏前缀缓存。
-        has_stored_system = any(self._is_system_snapshot_item(m) for m in history_messages)
+        # 头尾契约（重构后）：头稳定可缓存（system主prompt + Skill + 画像/知识库基线），尾仅沙箱/资源等真正易变块
+        # 顺序固定 头 + 历史 + 尾 + 新用户，保证 head+history 前缀可被 prefix cache 命中
         volatile_markers = (
-            "## Workspace Knowledge Index",
             "## Workspace Resource Index",
             "## Sandbox Files",
         )
+        all_injections = self._normalize_system_injection_texts(system_injection_texts)
+        stable_injections = [
+            t for t in all_injections if not any(vm in t for vm in volatile_markers)
+        ]
+        volatile_injections = [
+            t for t in all_injections if any(vm in t for vm in volatile_markers)
+        ]
 
-        if not has_stored_system:
-            if effective_system_prompt:
-                context.add("system", effective_system_prompt)
-
-            for text in self._normalize_system_injection_texts(system_injection_texts):
-                context.add("system", text)
-        else:
-            # 稳定部分已落库为 system_snapshot，此处仅透传易变尾部块
-            all_injections = self._normalize_system_injection_texts(system_injection_texts)
-            volatile_injections = [
-                t for t in all_injections if any(vm in t for vm in volatile_markers)
-            ]
-            stable_skipped = len(all_injections) - len(volatile_injections)
-
-            if volatile_injections:
-                print(f"[CTX_SNAPSHOT] has_stored_system=True inject volatile={len(volatile_injections)} skipped_stable={stable_skipped}")
-
-            # 先按历史 join，再追加易变尾部（保证前缀稳定）
-            for item in history_messages:
-                self._add_history_item_to_context(
-                    context,
-                    item,
-                    use_responses_api=use_responses_api,
-                    allow_history_images=allow_history_images,
-                    context_compact_mode=context_compact_mode,
-                )
-
-            for text in volatile_injections:
-                context.add("system", text)
-
-            # 易变块已直接注入，历史已处理，直接进入 user 追加阶段
-            # 需找最后 user（易变 system 可能在末尾），避免 test 发一次变两次
-            final_user_content = current_user_content if current_user_content is not None else user_msg
-            final_user_sig = model._content_signature_for_dedupe(
-                self._normalize_current_turn_dedupe_content(final_user_content)
-            )
-            last_user = None
-            for _idx in range(context.count() - 1, -1, -1):
-                _cand = context.get(_idx)
-                if _cand and _cand.role == "user":
-                    last_user = _cand
+        # 兜底：若 head 意外包含易变标记（旧调用未分离 profile），剥离并移到尾部
+        sanitized_head = str(effective_system_prompt or "").strip()
+        head_volatile_tail: List[str] = []
+        if sanitized_head:
+            for vm in volatile_markers:
+                if vm in sanitized_head:
+                    # 简单剥离：若 head 含 KB，则头只留非 KB 前缀
+                    # 此处不做精细切分，仅告警并将整块移到尾部，保证 #0 稳定
+                    print(f"[CTX] 警告: effective_system_prompt 含易变标记 {vm}，已剥离到尾部")
+                    head_volatile_tail.append(sanitized_head)
+                    sanitized_head = ""
                     break
-            last_is_same_user = bool(
-                last_user
-                and model._content_signature_for_dedupe(
-                    self._normalize_current_turn_dedupe_content(last_user.content)
-                ) == final_user_sig
-            )
 
-            if not last_is_same_user:
-                final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
-                context.add("user", final_user_content)
+        if volatile_injections and head_volatile_tail:
+            volatile_injections = head_volatile_tail + volatile_injections
+        elif head_volatile_tail:
+            volatile_injections = head_volatile_tail
 
-            # 始终暴露诊断：degraded 与非 degraded 均可观测
-            model.record_context_diagnostics(context.diagnostics())
-            model._last_context = context
-            return context
+        # 头：合并为单一 system#0，保证前缀缓存哈希稳定（Skill + 画像/知识库基线均进 head）
+        head_parts: List[str] = []
+        if sanitized_head:
+            head_parts.append(sanitized_head)
+        head_parts.extend(stable_injections)
+        merged_head = "\n\n".join([p for p in head_parts if str(p or "").strip()]).strip()
+        if merged_head:
+            context.add("system", merged_head)
 
+        # 历史（V4 无 system 消息，仅 user/assistant）—— 紧跟 head，保证 head+history 前缀可缓存
         for item in history_messages:
             self._add_history_item_to_context(
                 context,
@@ -516,6 +511,10 @@ class ChatContextManager:
                 allow_history_images=allow_history_images,
                 context_compact_mode=context_compact_mode,
             )
+
+        # 尾部易变块：仅沙箱/资源索引等，紧跟历史之后、新用户之前
+        for text in volatile_injections:
+            context.add("system", text)
 
         final_user_content = current_user_content if current_user_content is not None else user_msg
         final_user_sig = model._content_signature_for_dedupe(
@@ -538,6 +537,10 @@ class ChatContextManager:
             final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
             context.add("user", final_user_content)
 
+        try:
+            print(f"[CTX_FINAL] roles={[m.role for m in context._messages]} hist={len(history_messages)} vol={len(volatile_injections)}".replace("\xa0"," "))
+        except Exception:
+            pass
         model.record_context_diagnostics(context.diagnostics())
         model._last_context = context
         return context
@@ -864,7 +867,21 @@ class ChatContextManager:
         context_compact_mode: str,
     ) -> List[Dict[str, Any]]:
         metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
-        process_steps = metadata.get("process_steps", [])
+        process_steps = metadata.get("process_steps", []) if isinstance(metadata.get("process_steps"), list) else []
+
+        # 架构兼容：v4 存储为 trace，历史回放需投影为 process_steps
+        if not process_steps:
+            trace = item.get("trace", {}) if isinstance(item.get("trace"), dict) else {}
+
+            if isinstance(trace, dict) and trace.get("events"):
+                try:
+                    from basis.Conversation.telemetry import extract_process_steps_from_trace
+
+                    projected = extract_process_steps_from_trace(trace)
+                    if isinstance(projected, list) and projected:
+                        process_steps = projected
+                except Exception:
+                    process_steps = []
 
         if not isinstance(process_steps, list) or not process_steps:
             return []

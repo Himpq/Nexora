@@ -239,6 +239,27 @@ class ToolResultPresenter:
         except Exception:
             return ""
 
+    def _is_displayable_exa_image(self, url: Any) -> bool:
+        """
+        判断 Exa image 是否值得在工具展开区以 Markdown 图片展示。
+
+        过滤 favicon/logo/小图标等无效缩略图，避免把 32x32 的 favicon 拉伸成全宽卡片。
+        规则：
+        - 仅 https 外链
+        - 排除 svg/ico/gif
+        - 排除含 logo/favicon/disambig/sprite/40px- 等标识的缩略图
+        """
+        text = str(url or "").strip()
+        if not text.startswith("https://"):
+            return False
+        low = text.lower()
+        if low.endswith(".svg") or low.endswith(".ico") or low.endswith(".gif"):
+            return False
+        # Exa 常把站点 logo 当作 image，需过滤
+        if any(token in low for token in ("logo", "favicon", "disambig", "sprite", "/40px-")):
+            return False
+        return True
+
     def _looks_successful_text(self, result: Any) -> bool:
         text = str(result or "").strip().lower()
         if not text:
@@ -3058,6 +3079,7 @@ class ToolResultPresenter:
 
             return "\n".join(lines).strip()
 
+        seen_images: set = set()
         for index, item in enumerate(results[:20], start=1):
             if not isinstance(item, dict):
                 continue
@@ -3068,45 +3090,59 @@ class ToolResultPresenter:
             published = str(item.get("published_date") or "").strip()
             score = item.get("score")
             highlights = item.get("highlights") if isinstance(item.get("highlights"), list) else []
+            image = str(item.get("image") or "").strip()
+            favicon = str(item.get("favicon") or "").strip()
+            author = str(item.get("author") or "").strip()
 
-            # 标题行：带编号的可点击链接（Markdown），移动端自动换行
+            # 标题行：带编号的可点击链接（Markdown），移动端自动换行；favicon 作为小图标可选
             if url:
                 lines.extend(["", f"### {index}. [{self._escape_table_cell(title)}]({url})"])
-                lines.append(f"- URL: `{url}`")
+                # URL 仅保留一行，避免与标题重复过长；favicon/author 作为轻量元信息
             else:
                 lines.extend(["", f"### {index}. {self._escape_table_cell(title)}"])
 
             meta_bits = []
 
             if published:
-                meta_bits.append(f"Published: {published}")
+                meta_bits.append(f"{published}")
+
+            if author:
+                meta_bits.append(f"{self._escape_table_cell(author)}")
 
             if isinstance(score, (int, float)):
-                meta_bits.append(f"Score: {self._format_score(score)}")
+                meta_bits.append(f"score {self._format_score(score)}")
 
             if meta_bits:
                 lines.append(f"- {' | '.join(meta_bits)}")
 
-            # Snippet 用引用块，视觉上与正文区分
+            if url:
+                lines.append(f"- {url}")
+
+            # Snippet 精简为 320 字，减少 token
             if snippet:
-                clipped_snippet = snippet[:600].replace("\n", " ").strip()
+                clipped_snippet = snippet[:320].replace("\n", " ").strip()
 
                 if clipped_snippet:
                     lines.extend(["", f"> {clipped_snippet}"])
 
-            # Highlights 逐条引用块，保留原始高亮语义
+            # Highlights 精简为 2 条 *280 字，token 友好
             if highlights:
-                lines.extend(["", f"- Highlights ({len(highlights)}):"])
-
-                for hl in highlights[:3]:
+                for hl in highlights[:2]:
                     text = str(hl or "").strip().replace("\n", " ")
 
                     if not text:
                         continue
 
-                    clipped = text[:500]
+                    clipped = text[:280]
+                    lines.append(f"> {clipped}")
 
-                    lines.append(f"  > {clipped}")
+            # 纯 Markdown 图片：仅渲染可信的真实配图，过滤 favicon/logo 小图标并去重；favicon 不返回给模型
+            if self._is_displayable_exa_image(image):
+                if image not in seen_images:
+                    seen_images.add(image)
+                    if len(seen_images) <= 3:
+                        alt = self._escape_table_cell(title)[:40]
+                        lines.extend(["", f"![{alt}]({image})"])
 
         # 结构化输出（outputSchema）透传提示
         if isinstance(payload.get("output"), dict) and payload.get("output"):

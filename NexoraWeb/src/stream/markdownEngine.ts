@@ -169,9 +169,9 @@ function normalizeLineRow(line: string): string {
         .replace(/(["“”'‘’])(\*\*)(?=[^\s\p{P}\p{S}])/gu, `$1\u200B$2`)
 }
 
-/** 是否为表格数据/表头行(至少 2 个未转义管道符) */
+/** 是否为表格数据/表头行(至少 1 个未转义管道符,即 2 列;修复两列表格 xx | xx 不渲染) */
 function isPipeRow(line: string): boolean {
-    return countUnescapedPipes(line) >= 2
+    return countUnescapedPipes(line) >= 1
 }
 
 /** 是否为 GFM 表格分隔行(如 `--- | --- | ---`、`:---:|--- | :--:` ) */
@@ -232,8 +232,6 @@ function normalizeMarkdownForRendering(source: string): string {
     const out: string[] = []
     let fenceChar = ''
     let fenceLength = 0
-    // 上一个非空行是否为表格分隔行(处于表格体内部时不再补分隔,避免二次分隔破坏数据行)
-    let previousSeparatedTable = false
 
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i]
@@ -253,7 +251,6 @@ function normalizeMarkdownForRendering(source: string): string {
             }
 
             out.push(line)
-            previousSeparatedTable = false
 
             continue
         }
@@ -267,34 +264,32 @@ function normalizeMarkdownForRendering(source: string): string {
 
         if (!line.trim()) {
             out.push(line)
-            previousSeparatedTable = false
 
             continue
         }
 
         const normalized = normalizeLineRow(line)
 
-        if (previousSeparatedTable) {
-            out.push(normalized)
-            previousSeparatedTable = false
-
-            continue
-        }
-
+        // 孤立的分隔行(水平分割线)原样透传,不参与表格逻辑
         if (isTableSeparatorRow(normalized)) {
             out.push(normalized)
-            previousSeparatedTable = true
 
             continue
         }
 
-        const nextRaw = lines[i + 1]
+        // 查找下一个非空行（跳过空行），兼容 AI 在表头与首行数据间插入空行的情况
+        // 实际案例：`景点名称 | ...` 与 `伏见... | ...` 间有一空行，需仍识别为同一张表
+        let nextIdx = i + 1
+        while (nextIdx < lines.length && !lines[nextIdx].trim()) {
+            nextIdx += 1
+        }
 
-        if (nextRaw !== undefined) {
-            const nextNorm = normalizeLineRow(nextRaw)
+        if (nextIdx < lines.length) {
+            const nextNorm = normalizeLineRow(lines[nextIdx])
 
             if (isPipeRow(normalized) && isTableSeparatorRow(nextNorm)) {
                 // 表头 + 分隔行:列数一致原样保留;不一致按表头重写分隔行
+                // 随后一次性吞并整段连续 body 行,避免逐行处理时误判 body 为新表头导致中途再补分隔
                 out.push(normalized)
                 out.push(
                     countTableRowColumns(nextNorm) === countTableRowColumns(normalized)
@@ -302,39 +297,94 @@ function normalizeMarkdownForRendering(source: string): string {
                         : buildTableSeparatorRow(normalized)
                 )
 
-                i += 1
-                previousSeparatedTable = true
+                // 收集 body：跳过分隔行后可能存在的空行，连续 pipe 行即为 body
+                let j = nextIdx + 1
+                while (j < lines.length && !lines[j].trim()) {
+                    j += 1
+                }
+                const bodyStart = j
+                while (
+                    j < lines.length
+                    && (lines[j].trim() === '' || (isPipeRow(normalizeLineRow(lines[j])) && !isTableSeparatorRow(normalizeLineRow(lines[j]))))
+                ) {
+                    if (lines[j].trim()) {
+                        j += 1
+                    } else {
+                        // 空行：如果其后仍是 pipe 行则视为表内空行跳过，否则视为表结束
+                        let look = j + 1
+                        while (look < lines.length && !lines[look].trim()) {
+                            look += 1
+                        }
+                        if (look < lines.length && isPipeRow(normalizeLineRow(lines[look])) && !isTableSeparatorRow(normalizeLineRow(lines[look]))) {
+                            j = look
+                        } else {
+                            break
+                        }
+                    }
+                }
+
+                for (let k = bodyStart; k < j; k += 1) {
+                    if (lines[k].trim()) {
+                        out.push(normalizeLineRow(lines[k]))
+                    }
+                }
+
+                const afterLine = String(lines[j] ?? '').trim()
+
+                if (afterLine) {
+                    out.push('')
+                }
+
+                i = j - 1
 
                 continue
             }
 
             if (isPipeRow(normalized) && isPipeRow(nextNorm) && !isTableSeparatorRow(nextNorm)) {
-                // 缺分隔行的表:定位整段连续管道行,补一张分隔行,段尾遇正文补空行防 GFM 吞并
-                let runEnd = i
-
-                while (
-                    runEnd + 1 < lines.length
-                    && lines[runEnd + 1].trim()
-                    && isPipeRow(normalizeLineRow(lines[runEnd + 1]))
-                ) {
-                    runEnd += 1
+                // 缺分隔行的表:定位整段连续管道行(不含分隔行),补一张分隔行,段尾遇正文补空行防 GFM 吞并
+                // 需跳过 header 与首行数据间的空行
+                const bodyStart = nextIdx
+                let j = bodyStart
+                // 向后扩展至连续 pipe 段结束（跳过段内空行）
+                let runEnd = bodyStart
+                // 先将 bodyStart 纳入，再向后扫描
+                j = bodyStart + 1
+                while (j < lines.length) {
+                    if (!lines[j].trim()) {
+                        let look = j + 1
+                        while (look < lines.length && !lines[look].trim()) {
+                            look += 1
+                        }
+                        if (look < lines.length && isPipeRow(normalizeLineRow(lines[look])) && !isTableSeparatorRow(normalizeLineRow(lines[look]))) {
+                            runEnd = look
+                            j = look + 1
+                        } else {
+                            break
+                        }
+                    } else if (isPipeRow(normalizeLineRow(lines[j])) && !isTableSeparatorRow(normalizeLineRow(lines[j]))) {
+                        runEnd = j
+                        j += 1
+                    } else {
+                        break
+                    }
                 }
 
                 out.push(normalized)
                 out.push(buildTableSeparatorRow(normalized))
 
-                for (let k = i + 1; k <= runEnd; k += 1) {
-                    out.push(normalizeLineRow(lines[k]))
+                for (let k = bodyStart; k <= runEnd; k += 1) {
+                    if (lines[k].trim()) {
+                        out.push(normalizeLineRow(lines[k]))
+                    }
                 }
 
-                const afterLine = String(lines[runEnd + 1] ?? '').trim()
+                const afterLine = String(lines[j] ?? '').trim()
 
                 if (afterLine) {
                     out.push('')
                 }
 
                 i = runEnd
-                previousSeparatedTable = false
 
                 continue
             }
