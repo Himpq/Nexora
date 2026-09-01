@@ -31,6 +31,12 @@ from App.Utils import (
 )
 import prompts
 
+from .turn_injection import (
+    build_profile_update_block,
+    build_skill_update_block,
+    is_volatile_injection,
+)
+
 
 CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
 CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
@@ -379,14 +385,9 @@ class ChatContextManager:
         实际语义为 SystemPrompt_001 + 历史 + Diff Inject + 新用户，head 不重建。
         """
 
-        volatile_markers = (
-            "## Workspace Resource Index",
-            "## Sandbox Files",
-            "## Knowledge changed",
-        )
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         volatile_injections = [
-            t for t in all_injections if any(vm in t for vm in volatile_markers)
+            t for t in all_injections if is_volatile_injection(t)
         ]
         messages: List[Dict[str, Any]] = []
 
@@ -469,43 +470,6 @@ class ChatContextManager:
 
         return str(document or "").strip()
 
-    def _save_head_snapshot(self, model: Any, username: str, merged_head: str, history_count: int) -> None:
-        """把本次构建的 head 快照写入会话 context.system_snapshots（主对话专用）。
-
-        与 Conversation Manager 的 record_system_snapshot 语义一致（按 hash 去重），
-        快照用于后续轮次复用 head，保证前缀缓存命中。
-        """
-
-        from basis.Conversation.repository import conversation_update_session as _cus_snap
-        from basis.Database import safe_write_json as _swj_snap
-        from basis.Conversation.schema import validate_v4_conversation as _v4c_snap
-        from basis.Conversation import index as _idx_snap
-        import hashlib as _hl_snap
-        import time as _time_snap
-
-        snap_hash = _hl_snap.sha256(merged_head.encode("utf-8")).hexdigest()[:16]
-        with _cus_snap(username, model.conversation_id) as (_p_snap, _d_snap):
-            _c_snap = _d_snap.get("context", {}) if isinstance(_d_snap.get("context"), dict) else {}
-            _snaps = _c_snap.get("system_snapshots", []) if isinstance(_c_snap.get("system_snapshots"), list) else []
-            if not _snaps or str(_snaps[-1].get("hash") or "") != snap_hash:
-                _snaps.append({
-                    "epoch": int(_time_snap.time()),
-                    "hash": snap_hash,
-                    "content": merged_head,
-                    "effective_from_message": history_count,
-                    "reason": "chat_turn",
-                })
-                _c_snap["system_snapshots"] = _snaps
-                _d_snap["context"] = _c_snap
-                from basis.Conversation.schema import normalize_context as _norm_ctx
-                _d_snap["context"] = _norm_ctx(_c_snap)
-                _v4c_snap(_d_snap)
-                _swj_snap(_p_snap, _d_snap, indent=2)
-                try:
-                    _idx_snap.sync_index_from_file(username, _p_snap, _d_snap)
-                except Exception:
-                    pass
-
     def build_initial_context(
         self,
         user_msg: str,
@@ -534,32 +498,39 @@ class ChatContextManager:
 
         history_messages: List[Dict[str, Any]] = []
         compression_marker: Optional[Dict[str, Any]] = None
+        # 一次读盘 bundle（ConversationService 提供）：消息 + 压缩 + 快照 + 事件共用同一份数据
+        context_bundle: Optional[Dict[str, Any]] = None
 
         if include_context and model.conversation_id:
             # 优先使用 ConversationService
             svc = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
             try:
-                if svc is not None and hasattr(svc, "get_messages"):
-                    history_messages = svc.get_messages(model.conversation_id)
+                if svc is not None and hasattr(svc, "get_context_bundle"):
+                    # 单次 _load_v4：消息/压缩/快照/事件一次取出，避免多次整文件解析
+                    context_bundle = svc.get_context_bundle(model.conversation_id)
+                    history_messages = context_bundle.get("messages", [])
+                    compression_marker = context_bundle.get("compression")
                 else:
-                    history_messages = model.conversation_manager.get_messages(model.conversation_id)
+                    if svc is not None and hasattr(svc, "get_messages"):
+                        history_messages = svc.get_messages(model.conversation_id)
+                    else:
+                        history_messages = model.conversation_manager.get_messages(model.conversation_id)
+                    try:
+                        if svc is not None and hasattr(svc, "get_latest_compression"):
+                            compression_marker = svc.get_latest_compression(model.conversation_id)
+                        elif svc is not None and hasattr(svc, "get_latest_context_compression"):
+                            compression_marker = svc.get_latest_context_compression(model.conversation_id)
+                        else:
+                            compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
+                    except Exception as e:
+                        print(f"[CONTEXT] get_latest_compression 失败 conversation_id={model.conversation_id}: {e}")
+                        compression_marker = None
+                        context.mark_degraded("compression_load_failed", str(e))
+                        model.record_context_diagnostics(context.diagnostics())
             except Exception as e:
                 print(f"[CONTEXT] get_messages 失败 conversation_id={model.conversation_id}: {e}")
                 # 会话读取失败不应伪装为空历史，向上抛出以中止上下文构建
                 raise
-
-            try:
-                if svc is not None and hasattr(svc, "get_latest_compression"):
-                    compression_marker = svc.get_latest_compression(model.conversation_id)
-                elif svc is not None and hasattr(svc, "get_latest_context_compression"):
-                    compression_marker = svc.get_latest_context_compression(model.conversation_id)
-                else:
-                    compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
-            except Exception as e:
-                print(f"[CONTEXT] get_latest_compression 失败 conversation_id={model.conversation_id}: {e}")
-                compression_marker = None
-                context.mark_degraded("compression_load_failed", str(e))
-                model.record_context_diagnostics(context.diagnostics())
 
         history_messages = self._cut_history_for_regenerate(
             history_messages,
@@ -575,39 +546,61 @@ class ChatContextManager:
         # 顺序固定 头 + 历史 + 尾 + 新用户，保证 head+history 前缀可被 prefix cache 命中
         # LRU 快照：head 首次构建后存快照，后续复用快照保证前缀命中，diff 仅 tail 追加
         # 快照仅对主对话生效（persist_conversation）：记忆分析等子请求不得读写主对话快照
-        volatile_markers = (
-            "## Workspace Resource Index",
-            "## Sandbox Files",
-            "## Knowledge changed",
-        )
+        # volatile 标记常量收口于 basis.Model.turn_injection，新增 volatile 通道只改那里
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         stable_injections = [
-            t for t in all_injections if not any(vm in t for vm in volatile_markers)
+            t for t in all_injections if not is_volatile_injection(t)
         ]
         volatile_injections = [
-            t for t in all_injections if any(vm in t for vm in volatile_markers)
+            t for t in all_injections if is_volatile_injection(t)
         ]
 
         # 尝试加载已存快照（LRU 命中关键）；仅主对话参与，避免子请求复用/污染 head
-        # 顺带读取 knowledge_events，供历史回放时重建 diff（保证前缀稳定）
+        # 顺带读取 knowledge/profile/skill 事件，供历史回放时重建 tail 块（保证前缀稳定）
         snapshot_content: Optional[str] = None
         knowledge_events_raw: List[Dict[str, Any]] = []
+        profile_events_raw: List[Dict[str, Any]] = []
+        skill_events_raw: List[Dict[str, Any]] = []
         try:
             if model.persist_conversation and model.conversation_id:
-                svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
-                if svc_snap and hasattr(svc_snap, "_load_v4"):
-                    snap_data = svc_snap._load_v4(model.conversation_id)
-                    snaps = snap_data.get("context", {}).get("system_snapshots", [])
+                if context_bundle is not None:
+                    # 与消息/压缩同源，复用 bundle 免去再次读盘
+                    snaps = context_bundle.get("system_snapshots", [])
                     if isinstance(snaps, list) and snaps:
                         latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
                         snapshot_content = str(latest.get("content") or "").strip() or None
-                    raw_events = snap_data.get("context", {}).get("knowledge_events", [])
+                    raw_events = context_bundle.get("knowledge_events", [])
                     if isinstance(raw_events, list):
                         knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
+                    raw_profile_events = context_bundle.get("profile_events", [])
+                    if isinstance(raw_profile_events, list):
+                        profile_events_raw = [e for e in raw_profile_events if isinstance(e, dict)]
+                    raw_skill_events = context_bundle.get("skill_events", [])
+                    if isinstance(raw_skill_events, list):
+                        skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
+                else:
+                    svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
+                    if svc_snap and hasattr(svc_snap, "_load_v4"):
+                        snap_data = svc_snap._load_v4(model.conversation_id)
+                        snaps = snap_data.get("context", {}).get("system_snapshots", [])
+                        if isinstance(snaps, list) and snaps:
+                            latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
+                            snapshot_content = str(latest.get("content") or "").strip() or None
+                        raw_events = snap_data.get("context", {}).get("knowledge_events", [])
+                        if isinstance(raw_events, list):
+                            knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
+                        raw_profile_events = snap_data.get("context", {}).get("profile_events", [])
+                        if isinstance(raw_profile_events, list):
+                            profile_events_raw = [e for e in raw_profile_events if isinstance(e, dict)]
+                        raw_skill_events = snap_data.get("context", {}).get("skill_events", [])
+                        if isinstance(raw_skill_events, list):
+                            skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
         except Exception:
             snapshot_content = None
 
-        # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前
+        # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前。
+        # knowledge / profile / skill 三类事件共用同一 (efm, block) 回放列表，
+        # 排序后按位插入，使任意轮次重建出的上下文与首次发送时一致。
         history_event_blocks: List[Tuple[int, str]] = []
         for event in knowledge_events_raw:
             try:
@@ -617,6 +610,26 @@ class ChatContextManager:
             if efm < 0:
                 continue
             block = self._build_knowledge_event_block(event)
+            if block:
+                history_event_blocks.append((efm, block))
+        for event in profile_events_raw:
+            try:
+                efm = int(event.get("effective_from_message") or -1)
+            except Exception:
+                efm = -1
+            if efm < 0:
+                continue
+            block = build_profile_update_block(event)
+            if block:
+                history_event_blocks.append((efm, block))
+        for event in skill_events_raw:
+            try:
+                efm = int(event.get("effective_from_message") or -1)
+            except Exception:
+                efm = -1
+            if efm < 0:
+                continue
+            block = build_skill_update_block(event)
             if block:
                 history_event_blocks.append((efm, block))
         history_event_blocks.sort(key=lambda item: item[0])
@@ -637,17 +650,17 @@ class ChatContextManager:
             if merged_head:
                 context.add("system", merged_head)
                 # 存快照（仅主对话；子请求不参与，避免污染主对话 LRU 前缀）
+                # 统一走 Conversation Manager 的 record_system_snapshot（带锁 + validate + 索引 + epoch 自增），
+                # effective_from_message 取当前轮 user 下标：首轮为 0，确保按 efm 回放时语义正确
                 try:
                     if model.persist_conversation and model.conversation_id:
-                        snap_username = str(getattr(model, "username", "") or "").strip()
-                        if not snap_username:
-                            snap_username = str(
-                                getattr(getattr(model, "conversation_service", None), "username", "") or ""
-                            ).strip()
-                        if not snap_username:
-                            print(f"[SNAPSHOT] skip save: missing username conversation_id={model.conversation_id}")
-                        else:
-                            self._save_head_snapshot(model, snap_username, merged_head, len(history_messages))
+                        svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
+                        if svc_snap is not None and hasattr(svc_snap, "record_system_snapshot"):
+                            svc_snap.record_system_snapshot(
+                                model.conversation_id,
+                                {"content": merged_head, "reason": "chat_turn"},
+                                effective_from_message=current_user_index if current_user_index is not None else 0,
+                            )
                 except Exception as _e_snap:
                     print(f"[SNAPSHOT] save failed: {_e_snap}".replace("\xa0", " "))
 

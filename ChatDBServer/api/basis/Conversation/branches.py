@@ -63,6 +63,9 @@ def fork_branch_data(
     filtered_snapshots = [s for s in (raw_context.get("system_snapshots", []) if isinstance(raw_context.get("system_snapshots"), list) else []) if isinstance(s, dict) and int(s.get("effective_from_message") or 0) <= int(target_index)]
     # knowledge_events 过滤
     filtered_events = [e for e in (raw_context.get("knowledge_events", []) if isinstance(raw_context.get("knowledge_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
+    # 画像/技能事件过滤（与 knowledge_events 同一回放协议）
+    filtered_profile_events = [e for e in (raw_context.get("profile_events", []) if isinstance(raw_context.get("profile_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
+    filtered_skill_events = [e for e in (raw_context.get("skill_events", []) if isinstance(raw_context.get("skill_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
     # compressions 过滤（history_cut_index <= target_index）
     filtered_compressions = [c for c in (raw_context.get("compressions", []) if isinstance(raw_context.get("compressions"), list) else []) if isinstance(c, dict) and int(c.get("history_cut_index", -1) or -1) <= int(target_index)]
     filtered_legacy = [e for e in (raw_context.get("legacy_events", []) if isinstance(raw_context.get("legacy_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
@@ -73,6 +76,8 @@ def fork_branch_data(
         "system_snapshots": filtered_snapshots,
         "knowledge": copy.deepcopy(effective_knowledge),
         "knowledge_events": filtered_events,
+        "profile_events": filtered_profile_events,
+        "skill_events": filtered_skill_events,
         "compressions": filtered_compressions,
         "legacy_events": filtered_legacy,
     }

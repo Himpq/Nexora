@@ -22,6 +22,7 @@ from . import context as context_mod
 from . import index as index_mod
 from . import messages as messages_mod
 from . import telemetry as telemetry_mod
+from . import turn_state as turn_state_mod
 from .errors import ConversationIndexError, ConversationNotFoundError, ConversationValidationError
 from .migration import migrate_all, migrate_conversation_file, migrate_single_conversation_data
 from .repository import (
@@ -195,6 +196,27 @@ class ConversationService:
                 pass
         return copied
 
+    def get_context_bundle(self, conversation_id: str) -> Dict[str, Any]:
+        """一次读盘返回上下文构建所需的全部数据（消息/压缩/快照/事件）。
+
+        供 Context 层 build_initial_context 合并读取，避免 messages、compression、
+        snapshots 三处各自整文件解析（读盘 + json.loads + 全量 normalize 的重复开销）。
+        """
+        data = self._load_v4(conversation_id)
+        context = data.get("context", {}) if isinstance(data.get("context"), dict) else {}
+        snaps = context.get("system_snapshots", [])
+        events = context.get("knowledge_events", [])
+        profile_events = context.get("profile_events", [])
+        skill_events = context.get("skill_events", [])
+        return {
+            "messages": copy.deepcopy(data.get("messages", []) if isinstance(data.get("messages"), list) else []),
+            "compression": copy.deepcopy(context_mod.get_latest_compression(data)),
+            "system_snapshots": copy.deepcopy(snaps if isinstance(snaps, list) else []),
+            "knowledge_events": copy.deepcopy(events if isinstance(events, list) else []),
+            "profile_events": copy.deepcopy(profile_events if isinstance(profile_events, list) else []),
+            "skill_events": copy.deepcopy(skill_events if isinstance(skill_events, list) else []),
+        }
+
     def get_current_knowledge_state(self, workspace_context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """读取本轮发送实际可见的知识状态，供 begin_user_turn 原子记录快照。"""
         from basis.User import User, BASIS
@@ -263,14 +285,17 @@ class ConversationService:
         system_reason: str = "chat_turn",
         workspace_documents: Any = context_mod._UNSET,
         global_titles: Any = context_mod._UNSET,
+        profile_text: str | None = None,
+        skill_samples: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """
         一个事务内完成：
         - 更新 system snapshot / knowledge snapshot（若提供）
+        - 采样画像 / 技能基线并与上一基线 diff（若提供）
         - 追加 user 消息
-        返回 {user_index, assistant_index, visible_count, knowledge_delta}
+        返回 {user_index, assistant_index, visible_count, knowledge_delta, profile_delta, skill_delta}
         assistant_index 为预留位（下一条 assistant 将写入的位置），调用方据此流式写入。
-        knowledge_delta 为本轮开头的知识库变更采样，无变更时为 None；
+        knowledge_delta / profile_delta / skill_delta 为本轮开头的变更采样，无变更时为 None；
         user_index 为 0 表示本轮是首轮，此时 delta 是相对空基线算出的全量，调用方不应注入。
         """
         with conversation_update_session(self.username, conversation_id) as (path, data):
@@ -300,6 +325,28 @@ class ConversationService:
                     data,
                     workspace_documents=workspace_documents,
                     global_titles=global_titles,
+                    effective_from_message=messages_before,
+                    emit_event=messages_before > 0,
+                )
+
+            # 画像/技能基线与知识库同一事务采样：变更 delta 是本轮 tail 注入的唯一权威来源，
+            # 基线推进与事件落库都发生在这里，model 层不做任何基线读写
+            profile_delta = None
+
+            if profile_text is not None:
+                profile_delta = turn_state_mod.record_profile_state(
+                    data,
+                    str(profile_text),
+                    effective_from_message=messages_before,
+                    emit_event=messages_before > 0,
+                )
+
+            skill_delta = None
+
+            if skill_samples is not None:
+                skill_delta = turn_state_mod.record_skill_state(
+                    data,
+                    skill_samples,
                     effective_from_message=messages_before,
                     emit_event=messages_before > 0,
                 )
@@ -334,6 +381,8 @@ class ConversationService:
                 "assistant_index": int(assistant_index),
                 "visible_count": len(data.get("messages", [])),
                 "knowledge_delta": knowledge_delta,
+                "profile_delta": profile_delta,
+                "skill_delta": skill_delta,
             }
 
     def finish_assistant_turn(
@@ -519,14 +568,25 @@ class ConversationService:
     # ------------------------------------------------------------------
     # 系统快照 / 知识 / 压缩
     # ------------------------------------------------------------------
-    def record_system_snapshot(self, conversation_id: str, snapshot: str | Dict[str, Any]) -> Dict[str, Any] | None:
+    def record_system_snapshot(
+        self,
+        conversation_id: str,
+        snapshot: str | Dict[str, Any],
+        *,
+        effective_from_message: int | None = None,
+    ) -> Dict[str, Any] | None:
         content = str(snapshot.get("content") if isinstance(snapshot, dict) else snapshot or "").strip()
         reason = str(snapshot.get("reason") if isinstance(snapshot, dict) else "chat_turn").strip() or "chat_turn"
         with conversation_update_session(self.username, conversation_id) as (path, data):
             if int(data.get("schema_version") or 0) != SCHEMA_VERSION:
                 data = migrate_single_conversation_data(data)
                 data = normalize_v4_conversation(data)
-            result = context_mod.record_system_snapshot(data, content, reason=reason)
+            result = context_mod.record_system_snapshot(
+                data,
+                content,
+                reason=reason,
+                effective_from_message=effective_from_message,
+            )
             if result is None:
                 return None
             validate_v4_conversation(data)

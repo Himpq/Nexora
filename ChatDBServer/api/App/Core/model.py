@@ -27,6 +27,7 @@ from basis.User import User, BASIS
 from basis.Conversation import ConversationManager, ConversationService
 from basis.Conversation.telemetry import build_trace_from_process_steps
 from basis.Model.Context import ChatContextManager
+from basis.Model.turn_injection import build_profile_update_block, build_skill_update_block
 from App.Utils import (
     sanitize_assistant_visible_content,
     strip_streamed_history_time_marker_echo,
@@ -4469,9 +4470,49 @@ class Model(MailMixin):
             skip_user_message_bool = self._as_bool(skip_user_message, default=False)
             persisted_user_index = None
             assistant_index_for_stream = None
-            # 知识库变更由 begin_user_turn 在轮次开头事务性采样得出
+            # 知识库/画像/技能变更均由 begin_user_turn 在轮次开头事务性采样得出
             # 首轮（user_index=0）的 delta 是相对空基线的全量，不应注入
             knowledge_delta = None
+            profile_delta = None
+            skill_delta = None
+
+            # skill 选择前移到 begin_user_turn 之前：技能基线必须与知识库一样
+            # 在轮次开头的事务内采样，否则基线时间点漂移会让 diff 滞后一轮。
+            # 此处只做选择与块构建，注入组装仍在后面 current_turn_system_injections 处。
+            selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
+                normalized_skill_mode,
+                normalized_active_tool_skills
+            )
+            tool_skill_prompt_block = ""
+            if selected_tool_skills:
+                tool_skill_prompt_block = str(
+                    prompts.build_skill_instructions_prompt(selected_tool_skills) or ""
+                ).strip()
+            longdoc_skill_prompt_block = ""
+            if effective_enable_tools and normalized_longdoc_skills:
+                longdoc_skill_prompt_block = str(
+                    prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
+                ).strip()
+
+            # 技能采样：逐技能块文本为基线单元，title 为身份键；
+            # 长文档目录作为单一单元参与 diff（目录级变更整块重发）
+            skill_samples: List[Dict[str, Any]] = []
+            for skill_item in selected_tool_skills:
+                skill_prompt = str(prompts.build_skill_instructions_prompt([skill_item]) or "").strip()
+                if skill_prompt:
+                    skill_samples.append({
+                        "title": str(skill_item.get("title") or "").strip(),
+                        "prompt": skill_prompt,
+                    })
+            if longdoc_skill_prompt_block:
+                skill_samples.append({
+                    "title": "长文档技能目录",
+                    "prompt": longdoc_skill_prompt_block,
+                })
+
+            # 画像采样：begin_user_turn 事务内与基线 diff，是 Profile Modified Injection 的权威来源
+            profile_text_for_turn = self._get_user_profile_memory_text()
+
             if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message_bool:
                 # 严格事务：失败直接记录并终止本轮持久化，不回退旧路径
                 # 附件需显式传入 attachments，不得通过 metadata 隐式传递
@@ -4485,10 +4526,14 @@ class Model(MailMixin):
                     attachments=_attachments,
                     workspace_documents=knowledge_state["workspace_documents"],
                     global_titles=knowledge_state["global_titles"],
+                    profile_text=profile_text_for_turn,
+                    skill_samples=skill_samples,
                 )
                 persisted_user_index = int(turn.get("user_index", -1))
                 assistant_index_for_stream = int(turn.get("assistant_index", -1))
                 knowledge_delta = turn.get("knowledge_delta") if persisted_user_index > 0 else None
+                profile_delta = turn.get("profile_delta") if persisted_user_index > 0 else None
+                skill_delta = turn.get("skill_delta") if persisted_user_index > 0 else None
 
             # 重答也需记录知识增量（effective 指向待覆盖 assistant 的前一条 user），否则“固定在哪”且新 diff 丢失
             if self.persist_conversation and is_regenerate and self.conversation_id and regenerate_index is not None:
@@ -4503,6 +4548,7 @@ class Model(MailMixin):
                         # 需指定 effective = regen_idx -1，否则 record_knowledge_state 会按 len(messages) 计算导致挂到末尾
                         from basis.Conversation.repository import conversation_update_session
                         from basis.Conversation import context as context_mod
+                        from basis.Conversation import turn_state as turn_state_mod
                         from basis.Conversation.schema import validate_v4_conversation
                         from basis.Database import safe_write_json
                         from basis.Conversation import index as index_mod
@@ -4514,6 +4560,11 @@ class Model(MailMixin):
                             # 保留 effective != target_eff 的事件，target_eff 的旧事件视为上次重答的暂存，需消失
                             ev_list = [e for e in ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
                             ctx["knowledge_events"] = ev_list
+                            # 画像/技能事件同样去重：重答以当前采样为准，同一 efm 只保留最新一份
+                            profile_ev_list = ctx.get("profile_events") if isinstance(ctx.get("profile_events"), list) else []
+                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
+                            skill_ev_list = ctx.get("skill_events") if isinstance(ctx.get("skill_events"), list) else []
+                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and int(e.get("effective_from_message") or -1) == target_eff)]
                             data["context"] = ctx
                             # 再以正确 effective 追加新 diff（若有可见变更才会落库）
                             # regenerate 不注入 tail：事件落库后由历史 diff 重建回放，
@@ -4522,6 +4573,19 @@ class Model(MailMixin):
                                 data,
                                 workspace_documents=knowledge_state["workspace_documents"],
                                 global_titles=knowledge_state["global_titles"],
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            # 画像/技能基线与事件同步推进：regenerate 同样以轮次开头为采样点
+                            turn_state_mod.record_profile_state(
+                                data,
+                                profile_text_for_turn,
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            turn_state_mod.record_skill_state(
+                                data,
+                                skill_samples,
                                 effective_from_message=target_eff,
                                 emit_event=True,
                             )
@@ -4642,6 +4706,18 @@ class Model(MailMixin):
             if knowledge_changed_block:
                 current_turn_system_injections.append(knowledge_changed_block)
 
+            # 画像/技能变更走 tail volatile：与知识 diff 同一通道，head 保持冻结。
+            # 块内容每轮重发，模型以最新块为准，直到下次 head 重建才烘回 system prompt。
+            profile_update_block = build_profile_update_block(profile_delta)
+
+            if profile_update_block:
+                current_turn_system_injections.append(profile_update_block)
+
+            skill_update_block = build_skill_update_block(skill_delta)
+
+            if skill_update_block:
+                current_turn_system_injections.append(skill_update_block)
+
             workspace_resource_hint = prompts.build_workspace_resource_index_prompt(workspace_context)
 
             if workspace_resource_hint:
@@ -4715,24 +4791,10 @@ class Model(MailMixin):
                 effective_include_context = True
             else:
                 effective_include_context = bool(include_context) and (not longterm_no_history)
-            tool_skill_prompt_block = ""
-            selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
-                normalized_skill_mode,
-                normalized_active_tool_skills
-            )
-            skill_system_blocks: List[str] = []
-            if selected_tool_skills:
-                tool_skill_prompt_block = str(
-                    prompts.build_skill_instructions_prompt(selected_tool_skills) or ""
-                ).strip()
-                if tool_skill_prompt_block:
-                    skill_system_blocks.append(tool_skill_prompt_block)
-            if effective_enable_tools and normalized_longdoc_skills:
-                longdoc_skill_prompt_block = str(
-                    prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
-                ).strip()
-                if longdoc_skill_prompt_block:
-                    skill_system_blocks.append(longdoc_skill_prompt_block)
+            # skill 选择与块构建已前移到 begin_user_turn 之前（基线采样需要），此处仅组装
+            skill_system_blocks = [
+                block for block in (tool_skill_prompt_block, longdoc_skill_prompt_block) if block
+            ]
             if skill_system_blocks:
                 current_turn_system_injections = [
                     "\n\n".join(skill_system_blocks).strip()
