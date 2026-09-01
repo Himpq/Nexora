@@ -1153,14 +1153,40 @@
         return v4ModelName || metadataName || props.message.model_name || props.modelName || ''
     })
 
+    /**
+     * 归一化 badge 的 raw / cached 口径(对齐云端/原版: raw 为完整 prompt 含缓存命中,
+     * cached 为命中部分,命中率 = cached / raw):
+     * - raw 缺失时用计费 input + cached 回补(对齐 chat.js normalizedRawInput),
+     * - cached 不得超过 raw,避免脏数据导致命中率 >100% 或 effective 为负。
+     */
+    function normalizeBadgeRawCached(rawInput: number, cachedInput: number, billedInput: number): { raw: number; cached: number } {
+        const rawN = Math.max(0, Math.floor(Number(rawInput) || 0))
+        const cachedN = Math.max(0, Math.floor(Number(cachedInput) || 0))
+        const billedN = Math.max(0, Math.floor(Number(billedInput) || 0))
+
+        // raw 为完整 prompt 口径:缺失时用 billed + cached 回补(旧数据仅有 billed/cached 时仍可计算命中率)
+        let raw = rawN > 0 ? rawN : 0
+
+        if (raw <= 0 && (billedN > 0 || cachedN > 0)) {
+            raw = billedN + cachedN
+        }
+
+        let cached = cachedN
+
+        if (raw > 0 && cached > raw) {
+            cached = raw
+        }
+
+        return { raw, cached }
+    }
+
     /** 展开文本:模型名 - I/O: 输入/输出 + E/C 缓存命中(对齐原版 buildModelBadgeText + NexoraCode) */
     const badgeFullText = computed(() => {
         const model = badgeText.value || '-'
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-        const raw = tokens.rawInput
-        const cached = tokens.cachedInput
+        const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
         const effective = Math.max(0, raw - cached)
         let ecText = ''
         if (raw > 0 || cached > 0) {
@@ -1176,8 +1202,7 @@
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-        const raw = tokens.rawInput
-        const cached = tokens.cachedInput
+        const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
         let ecLine = ''
         if (raw > 0 || cached > 0) {
             const effective = Math.max(0, raw - cached)
