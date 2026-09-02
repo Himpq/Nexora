@@ -1216,8 +1216,9 @@
         // 附件随消息快照,进入队列/发送后清空输入区附件条(对齐原版发送后 reset files)
         const attachments = pendingAttachments.value.slice()
 
-        // 生成中:消息进入待发送队列,当前流结束后自动发送(消息队列功能)
-        if (chatStream.isSending) {
+        // 会话级排队:仅当当前查看的会话本身在流式时才入队;
+        // 跨会话发送(已切到其他对话)直接发起新流,并发进行
+        if (conversationStore.currentConversationGenerating) {
             conversationStore.enqueueMessage({
                 conversationId: conversationStore.currentId,
                 content,
@@ -1236,7 +1237,7 @@
         if (!conversationStore.currentId) {
             await conversationStore.ensureConversationId()
 
-            if (chatStream.isSending) {
+            if (conversationStore.currentConversationGenerating) {
                 conversationStore.enqueueMessage({
                     conversationId: conversationStore.currentId,
                     content,
@@ -1263,6 +1264,11 @@
         enableTools: boolean
         toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
+        // 新消息轮次:失败回滚语义定位为 send;任何业务帧到达前视为 connecting
+        streamSendKind = 'send'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
@@ -1332,7 +1338,7 @@
         }
     }
 
-    /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机) */
+    /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机,会话级) */
     watch(
         () => [conversationStore.generating, conversationStore.currentId] as const,
         ([generating]) => {
@@ -1340,7 +1346,9 @@
                 return
             }
 
-            if (conversationStore.queueCount > 0 && !chatStream.isSending) {
+            // 会话级判定:仅当当前会话无流式时才排空其队列;
+            // 跨会话后台流不阻塞当前会话的队列
+            if (conversationStore.queueCount > 0 && !conversationStore.currentConversationGenerating) {
                 // 队列只在其所属会话被查看时排空,避免后台流期间把消息发进别的会话
                 const queued = conversationStore.queue[0]
                 if (queued?.conversationId && queued.conversationId !== conversationStore.currentId) {
@@ -1356,8 +1364,51 @@
         }
     )
 
+    /** 当前流类型:发送新消息(send)或重答(regenerate)。决定失败时回滚语义。 */
+    let streamSendKind: 'send' | 'regenerate' = 'send'
+
+    /** 当前流阶段:connecting = 尚未收到任何业务帧(后端可能未落盘 user);streaming = 已建流 */
+    let streamPhase: 'connecting' | 'streaming' = 'connecting'
+
+    /** 本轮流是否收到服务端 conversation_index_stale(本地序号过期,收尾时按刷新会话处理) */
+    let staleIndexPending = false
+
+    /**
+     * 索引过期统一处理:以后端数据为准重载当前会话。
+     * 本地乐观消息与服务端脱锚后,唯一安全出路是回到权威数据源,而非继续局部修补。
+     */
+    async function handleIndexStale(): Promise<void> {
+        streamSendKind = 'send'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
+        conversationStore.abortStream()
+
+        if (!conversationStore.currentId) {
+            return
+        }
+
+        showToast('对话数据已更新,已为你重新加载', 'info')
+
+        try {
+            await conversationStore.loadMessages()
+        } catch {
+            // 加载失败不阻断;下次交互自然恢复
+        }
+
+        try {
+            await conversationStore.loadTurns()
+        } catch {
+            // 轮次线加载失败可忽略
+        }
+    }
+
     /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误 */
     function handleStreamChunk(chunk: ChatStreamChunk): void {
+        // 任何业务帧到达即视为流已建立(后端已过 begin_user_turn 落盘点)
+        if (chunk && chunk.type && chunk.type !== 'error') {
+            streamPhase = 'streaming'
+        }
         // 会话 ID 同步(后端懒创建会话时通过 conversation_id chunk 返回)
         if (chunk.type === 'conversation_id' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
@@ -1400,6 +1451,20 @@
 
         // 错误块:显式上报;不在块内中断流,由 done 终帧统一收尾并恢复目标消息(避免丢失流式目标索引)
         if (chunk.type === 'error') {
+            const chunkCode = String(
+                (chunk as { error_code?: string }).error_code
+                || (chunk as { code?: string }).code
+                || ''
+            )
+
+            // 索引过期:本地序号与服务端脱锚(通常由先前发送失败/服务端裁剪引起)。
+            // 不弹错误——错误展示无意义,收尾阶段将自动重载会话回到权威数据。
+            if (chunkCode === 'conversation_index_stale') {
+                staleIndexPending = true
+
+                return
+            }
+
             streamErrorToastShown = true
 
             showError(String(chunk.content || chunk.message || '回复生成失败'))
@@ -1470,6 +1535,7 @@
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
         const detail = info as {
             error?: string
+            errorCode?: string
             finalContent?: string
             finalMessage?: Record<string, unknown>
             contextEvents?: ConversationContextEvent[]
@@ -1492,6 +1558,34 @@
         }
 
         if (reason === 'error') {
+            const errorCode = String(detail?.errorCode || '')
+
+            // 索引过期:本地序号与服务端脱锚,重载会话回到权威数据(幽灵消息随之消失)
+            if (staleIndexPending || errorCode === 'conversation_index_stale') {
+                staleIndexPending = false
+
+                void handleIndexStale()
+
+                return
+            }
+
+            // 发送新消息在流建立前失败(HTTP 非 2xx / 网络错误 / 空响应):
+            // 后端从未落盘 user,本地 user+assistant 是幽灵占位。必须回滚,
+            // 否则本地序号比服务端真实数据多 1,后续重答/删除全部错位。
+            if (streamSendKind === 'send' && streamPhase === 'connecting' && !detail?.finalMessage) {
+                const rolledBack = conversationStore.rollbackFailedTurn()
+
+                if (rolledBack) {
+                    streamSendKind = 'send'
+                    streamPhase = 'connecting'
+                    streamErrorToastShown = false
+
+                    showToast('发送失败,已撤销未发送的消息', 'warning')
+
+                    return
+                }
+            }
+
             // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标，显式传参确保重答定位准确
             const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
             conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
@@ -1541,12 +1635,15 @@
         streamErrorToastShown = false
     }
 
-    /** 停止生成:中断当前流并清空待发送队列 */
+    /** 停止生成:中断当前会话流并清空待发送队列 */
     function handleStop(): void {
         // 仅发起取消;生成状态与流式目标索引由 onEnd('aborted') 收尾复位,
         // 保证取消终帧的 applyFinalMessage 仍能定位到正确的目标消息(重答场景)
-        if (chatStream.isSending) {
-            chatStream.cancel()
+        // 会话级取消:仅停当前查看会话,后台其他会话的流不受影响
+        if (conversationStore.currentConversationGenerating) {
+            chatStream.cancel(conversationStore.currentId)
+        } else if (chatStream.isSending) {
+            chatStream.cancel(conversationStore.currentId)
         } else {
             conversationStore.abortStream()
         }
@@ -1651,7 +1748,7 @@
             return
         }
 
-        if (chatStream.isSending) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('已有回复生成中,请稍候', 'warning')
 
             return
@@ -1667,6 +1764,11 @@
 
     /** 重答:通过后端 is_regenerate 机制覆盖目标回答并自动保存旧版本(对齐原版 startRegenerate) */
     async function handleRegenerate(assistantMessage: ChatMessage): Promise<void> {
+        // 重答轮次:失败不撤销已有消息;任何业务帧到达前视为 connecting
+        streamSendKind = 'regenerate'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
         const userMessage = conversationStore.messages.find(
             (item) => item.role === 'user' && item.index === assistantMessage.index - 1
         )
@@ -1677,7 +1779,7 @@
             return
         }
 
-        if (chatStream.isSending) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('已有回复生成中,请稍候', 'warning')
 
             return

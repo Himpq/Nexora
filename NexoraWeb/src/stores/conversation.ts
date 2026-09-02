@@ -902,8 +902,23 @@ export const useConversationStore = defineStore('conversation', {
             v4Fields.forEach((key) => {
                 if (Object.prototype.hasOwnProperty.call(message, key)) {
                     ;(assistant as Record<string, unknown>)[key] = message[key]
+                } else if (key === 'error') {
+                    // 重答成功时后端不再返回 error，需显式清除旧错误残留
+                    delete (assistant as Record<string, unknown>)[key]
                 }
             })
+
+            // 非 error 字段的残留同样清理：新落盘消息未携带的 error 必须彻底移除
+            if (!Object.prototype.hasOwnProperty.call(message, 'error')) {
+                delete (assistant as Record<string, unknown>).error
+
+                if (assistant.metadata && typeof assistant.metadata === 'object') {
+                    const meta = assistant.metadata as Record<string, unknown>
+
+                    delete meta.error
+                    delete meta.terminal_error
+                }
+            }
 
             if (message.metadata && typeof message.metadata === 'object') {
                 const incomingMeta = message.metadata as Record<string, unknown>
@@ -1289,6 +1304,77 @@ export const useConversationStore = defineStore('conversation', {
 
                 return true
             })
+        },
+
+        /**
+         * 回滚"未被服务端确认"的乐观轮次(发送新消息在连接阶段失败的幽灵占位)。
+         *
+         * 触发条件:beginStream 已把 user+assistant 推入本地列表,但后端从未落盘
+         * (HTTP 非 2xx / 网络错误 / 空响应),此时本地序号已比服务端真实数据多 1,
+         * 若不回滚,后续所有依赖 index 的操作(重答/删除/编辑)都会永久错位。
+         *
+         * 仅当 pending 携带 userMessage(即新消息轮次,重答无此字段)且消息仍在
+         * 可见列表中才移除;幂等,找不到目标时安全跳过。返回是否真正发生了回滚。
+         */
+        rollbackFailedTurn(): boolean {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
+
+            if (!convId || !pending) {
+                return false
+            }
+
+            const userMessage = pending.userMessage
+
+            // 重答轮次没有新增 user 消息,不适用回滚
+            if (!userMessage) {
+                return false
+            }
+
+            const userIdx = Number(userMessage.index)
+
+            if (!Number.isFinite(userIdx)) {
+                return false
+            }
+
+            let removed = false
+
+            if (this.currentId === convId) {
+                const assistantIdx = userIdx + 1
+
+                this.messages = this.messages.filter((message) => {
+                    const index = Number(message.index)
+
+                    if (message.role === 'user' && index === userIdx) {
+                        removed = true
+
+                        return false
+                    }
+
+                    if (message.role === 'assistant' && index === assistantIdx) {
+                        removed = true
+
+                        return false
+                    }
+
+                    return true
+                })
+
+                // 同步移除乐观轮次线,避免指示器残留幽灵条目
+                if (removed) {
+                    this.turns = this.turns.filter((turn) => Number(turn.index) !== userIdx)
+                }
+            }
+
+            // 释放分离缓冲并复位生成状态
+            delete this.pendingStreams[convId]
+            this.generating = false
+            this.streamingConversationId = ''
+            this.streamingTargetIndex = null
+
+            void this.refreshTokenMiniBase(convId)
+
+            return removed
         },
 
         /** 本地更新会话置顶状态并重排(置顶在前,对齐后端排序) */
