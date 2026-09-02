@@ -4490,6 +4490,8 @@ class Model(MailMixin):
                 _attachments = list(attachment_summary) if 'attachment_summary' in locals() and isinstance(attachment_summary, list) else []
                 current_workspace_context = normalized_conversation_mode_payload.get("workspace_context")
                 knowledge_state = self.conversation_service.get_current_knowledge_state(current_workspace_context)
+                # 超窗限流：传入模型窗口，服务层按全量历史判定并自动滑动裁剪（客户端截断不影响）
+                _ctx_window_for_limit = int(max(0, self._resolve_model_context_window_limit()))
                 turn = self.conversation_service.begin_user_turn(
                     self.conversation_id,
                     msg,
@@ -4499,6 +4501,7 @@ class Model(MailMixin):
                     global_titles=knowledge_state["global_titles"],
                     profile_text=profile_text_for_turn,
                     skill_samples=skill_samples,
+                    context_window_tokens=_ctx_window_for_limit,
                 )
                 persisted_user_index = int(turn.get("user_index", -1))
                 assistant_index_for_stream = int(turn.get("assistant_index", -1))
@@ -4798,6 +4801,36 @@ class Model(MailMixin):
                 print(f"[CACHE] Miss. Building full context.")
                 messages = list(full_context_messages)
                 messages_has_full_context = True
+            # ---- 硬限流兜底：全量历史视角，若已超窗则滑动裁剪（客户端未传长会话也不影响）----
+            try:
+                _hard_limit = int(max(0, self._resolve_model_context_window_limit()))
+                if _hard_limit < 1024:
+                    _hard_limit = 5000
+                if _hard_limit > 0 and messages_has_full_context and messages:
+                    _tmp_raw = __import__("json").dumps(messages, ensure_ascii=False, default=str)
+                    _tmp_est = self._estimate_token_count(_tmp_raw)
+                    if len(_tmp_raw) <= 120000:
+                        _exact = self._count_text_tokens_exact(_tmp_raw, provider_name=self.provider, model_name=self.model_name, timeout=5.0)
+                        if _exact is not None and _exact > 0:
+                            _tmp_est = int(_exact)
+                    if _tmp_est > _hard_limit:
+                        print(f"[CTX_HARD_LIMIT] preflight {_tmp_est} > window {_hard_limit}, sliding window truncate")
+                        _system_part = [m for m in messages if str(m.get("role") or "").strip() == "system"]
+                        _other_part = [m for m in messages if str(m.get("role") or "").strip() != "system"]
+                        while _other_part and _tmp_est > _hard_limit and len(_other_part) > 2:
+                            _other_part = _other_part[2:]
+                            _tmp_msgs = _system_part + _other_part
+                            _tmp_raw2 = __import__("json").dumps(_tmp_msgs, ensure_ascii=False, default=str)
+                            _tmp_est = self._estimate_token_count(_tmp_raw2)
+                            if len(_tmp_raw2) <= 120000:
+                                _exact2 = self._count_text_tokens_exact(_tmp_raw2, provider_name=self.provider, model_name=self.model_name, timeout=5.0)
+                                if _exact2 is not None and _exact2 > 0:
+                                    _tmp_est = int(_exact2)
+                        messages = _system_part + _other_part
+                        full_context_messages = list(messages)
+                        print(f"[CTX_HARD_LIMIT] truncated to {len(messages)} msgs, est {_tmp_est}")
+            except Exception as _e:
+                print(f"[CTX_HARD_LIMIT] check failed: {_e}")
             request_resume_id_seed = str(previous_response_id or "")
             request_started_with_resume_id = bool(previous_response_id)
             request_promoted_to_full_context = False
@@ -5048,6 +5081,14 @@ class Model(MailMixin):
                         return "native_web_search_timeout", True, f"原生联网搜索阶段超时: {err_text}"
 
                     return "network_error", True, f"网络异常，流式连接中断: {err_text}"
+
+                # Conversation 冲突域：消息索引过期/重答目标失效，属客户端状态过期而非服务故障
+                if error_type_name in {
+                    "ConversationConflictError",
+                    "ConversationIndexError",
+                    "ConversationTargetRoleError",
+                }:
+                    return "conversation_index_stale", False, err_text
 
                 return "", False, err_text
 
@@ -5464,12 +5505,18 @@ class Model(MailMixin):
                                             title="Compression Source",
                                             round_index=round_num
                                         )
+                                    # 补 previous_response_id + 透传 tools：复用当轮已解析的续接 ID 与工具集，LLMFaker compression 才能命中 prefix cache
+                                    compression_previous_response_id = previous_response_id if isinstance(previous_response_id, str) and previous_response_id.strip() else None
+
                                     compression_run = {}
                                     compression_run_iter = run_append_compression_round(
                                         self,
                                         compress_messages,
                                         max_chars=self._context_compression_max_chars,
                                         use_responses_api=use_responses_api,
+                                        previous_response_id=compression_previous_response_id,
+                                        enable_tools=bool(effective_enable_tools),
+                                        runtime_function_tool_names=self._runtime_function_tool_names_for_request(),
                                     )
                                     try:
                                         while True:
@@ -7631,6 +7678,25 @@ class Model(MailMixin):
                     "content": error_msg
                 }
                 return
+            # Conversation 冲突域（消息索引越界/目标角色不符）属"客户端序号过期"，
+            # 不能当作 server_error 吞掉：带机器码返回，前端据此刷新会话而非误报未知错误。
+            try:
+                from basis.Conversation.errors import ConversationConflictError as _ConvConflictCls
+            except Exception:
+                _ConvConflictCls = None
+
+            if _ConvConflictCls is not None and isinstance(e, _ConvConflictCls):
+                conflict_msg = str(e or "").strip() or "会话状态冲突，消息索引已过期"
+                print(f"[ERROR] {conflict_msg}")
+                _persist_terminal_error_on_current_assistant(conflict_msg, "conversation_index_stale", False)
+                yield {
+                    "type": "error",
+                    "error_code": "conversation_index_stale",
+                    "retryable": False,
+                    "content": conflict_msg,
+                }
+                return
+
             error_msg = f"错误: {err_text}"
             print(f"[ERROR] {error_msg}")
             _persist_terminal_error_on_current_assistant(error_msg, "server_error", False)
@@ -7921,6 +7987,67 @@ class Model(MailMixin):
             current_user_index=current_user_index
         )
 
+    def _sanitize_tool_calls_in_messages(self, messages: List[Dict]) -> List[Dict]:
+        """清洗历史中的 tool_calls 非法 JSON，避免 provider 400 Format Error。
+
+        模型偶发会生成 `arguments` 非 JSON（如 ` [action": ...` 缺少 `{`），
+        若直接透传给 volcengine/dashscope 等 provider，會触发 Format Error 400
+        并污染整段对话历史（后续所有请求均 400）。此处将非法 arguments 替换为 "{}"，
+        保留 tool_call 结构与 tool_result 配对，避免历史丢失导致上下文断裂。
+        """
+        import json as _json
+
+        sanitized: List[Dict] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                sanitized.append(msg)
+                continue
+            m = dict(msg)
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                new_tcs = []
+                for tc in tcs:
+                    if not isinstance(tc, dict):
+                        continue
+                    func = tc.get("function")
+                    if not isinstance(func, dict):
+                        new_tcs.append(tc)
+                        continue
+                    args = func.get("arguments")
+                    # arguments 必须是 JSON 字符串；非字符串或非法 JSON 统一修复为 "{}"
+                    if args is None:
+                        new_func = dict(func)
+                        new_func["arguments"] = "{}"
+                        new_tc = dict(tc)
+                        new_tc["function"] = new_func
+                        new_tcs.append(new_tc)
+                        continue
+                    if not isinstance(args, str):
+                        try:
+                            args = _json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    args_str = str(args).strip()
+                    if not args_str:
+                        args_str = "{}"
+                    try:
+                        _json.loads(args_str)
+                        new_tcs.append(tc)
+                    except Exception:
+                        # 修复为 "{}"，并在日志中提示
+                        try:
+                            print(f"[SANITIZE] invalid tool_call arguments fixed: name={func.get('name')} raw={args_str[:120]}")
+                        except Exception:
+                            pass
+                        new_func = dict(func)
+                        new_func["arguments"] = "{}"
+                        new_tc = dict(tc)
+                        new_tc["function"] = new_func
+                        new_tcs.append(new_tc)
+                m["tool_calls"] = new_tcs
+            sanitized.append(m)
+        return sanitized
+
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""
         cleaned = []
@@ -8039,6 +8166,8 @@ class Model(MailMixin):
         # 已弃用“运行时能力 system 注入”，避免每轮附加协议文本导致输入 token 异常抬升。
         should_inject_runtime_hints = False
         runtime_messages = self._strip_reasoning_content(runtime_messages)
+        # 修复历史中非法 tool_calls 的 arguments（模型偶发非 JSON 如 `[action":...`），避免 provider 400 Format Error 污染对话
+        runtime_messages = self._sanitize_tool_calls_in_messages(runtime_messages)
         learning_mode_active = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
         has_function_output_context = bool(current_function_outputs)
 

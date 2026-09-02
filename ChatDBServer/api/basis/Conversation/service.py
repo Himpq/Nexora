@@ -38,6 +38,12 @@ from .repository import (
 from .schema import SCHEMA_VERSION, build_v4_skeleton, normalize_scope, normalize_v4_conversation, validate_v4_conversation
 from . import puzzle as puzzle_mod
 
+# ------------------------------------------------------------------
+# 会话上下文长度限流（对应用户反馈：cid=446 在 LLMFaker 5000 窗口下已超限仍可继续写入）
+# ------------------------------------------------------------------
+DEFAULT_MAX_CONVERSATION_CHARS = 5000
+CHARS_PER_TOKEN_ESTIMATE = 4
+
 
 class ConversationService:
     """Conversation v4 唯一对外服务。"""
@@ -69,6 +75,126 @@ class ConversationService:
         path = conversation_file_path(self.username, conversation_id)
         safe_write_json(path, payload, indent=2)
         index_mod.sync_index_from_file(self.username, path, payload)
+
+    # ------------------------------------------------------------------
+    # 上下文长度限流辅助
+    # ------------------------------------------------------------------
+    def get_serialized_length(self, conversation_id: str) -> int:
+        """返回 role: content 序列化长度（与 ConversationContextReader 同口径）。"""
+
+        try:
+            from .context_reader import ConversationContextReader
+
+            return int(ConversationContextReader(self.username).get_length(str(conversation_id)))
+        except Exception:
+            # 回退：直接用 _serialize_context_messages 口径
+            return len(self._serialize_context_messages(str(conversation_id)))
+
+    def _chars_limit_for_window(self, context_window_tokens: int | None) -> int:
+        """将模型的 context_window(tokens) 换算为字符上限；无窗口时回退 5000。"""
+
+        try:
+            win = int(context_window_tokens or 0)
+        except Exception:
+            win = 0
+
+        if win >= 1024:
+            # 估算：1 token ≈ 4 chars（与 estimate_token_count 互为逆运算）
+            return int(win * CHARS_PER_TOKEN_ESTIMATE)
+
+        return int(DEFAULT_MAX_CONVERSATION_CHARS)
+
+    def ensure_within_limit(
+        self,
+        conversation_id: str,
+        *,
+        context_window_tokens: int | None = None,
+        incoming_chars: int = 0,
+        auto_prune: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        检查会话是否已超限；若超限且 auto_prune=True，则按滑动窗口裁掉最旧轮次直到满足 limit-incoming。
+        返回 {length_before, length_after, pruned_pairs, limit, exceeded_before}
+        """
+
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            raise ConversationValidationError("conversation_id 不能为空")
+
+        limit = self._chars_limit_for_window(context_window_tokens)
+        cur_len = self.get_serialized_length(cid)
+        exceeded_before = cur_len > limit
+        pruned_pairs = 0
+
+        if auto_prune and cur_len + int(incoming_chars or 0) > limit:
+            # 在同一文件锁事务内裁剪，避免并发写入丢失
+            from .repository import conversation_update_session
+            from .schema import validate_v4_conversation as _validate
+            from basis.Database import safe_write_json as _safe_write
+
+            with conversation_update_session(self.username, cid) as (path, data):
+                if int(data.get("schema_version") or 0) != SCHEMA_VERSION:
+                    data = migrate_single_conversation_data(data)
+                    data = normalize_v4_conversation(data)
+
+                messages = data.get("messages", []) if isinstance(data.get("messages"), list) else []
+
+                # 至少保留最后 1 轮（2 条）以保证对话可用；其余按轮次裁掉
+                while messages and (self._estimate_serialized_len(messages) + int(incoming_chars or 0) > limit) and len(messages) > 2:
+                    # 按轮次裁：一次删 2 条（user+assistant），若首条为 system 则单独删
+                    if str((messages[0] or {}).get("role") or "").strip() == "system":
+                        messages.pop(0)
+                    elif len(messages) >= 2:
+                        messages = messages[2:]
+                        pruned_pairs += 1
+                    else:
+                        messages.pop(0)
+
+                data["messages"] = messages
+                from datetime import datetime as _dt
+
+                data["updated_at"] = _dt.now().isoformat()
+                _validate(data)
+                _safe_write(path, data, indent=2)
+                index_mod.sync_index_from_file(self.username, path, data)
+                cur_len = self._estimate_serialized_len(messages)
+
+        return {
+            "length_before": int(cur_len if pruned_pairs == 0 else -1),  # pruned 时 before 已在事务内重算，简化返回
+            "length_after": int(cur_len),
+            "pruned_pairs": int(pruned_pairs),
+            "limit": int(limit),
+            "exceeded_before": bool(exceeded_before),
+        }
+
+    def _estimate_serialized_len(self, messages: List[Dict[str, Any]]) -> int:
+        parts: List[str] = []
+
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+
+            role = str(m.get("role") or "").strip() or "unknown"
+            content = m.get("content")
+            if isinstance(content, list):
+                texts: List[str] = []
+
+                for seg in content:
+                    if isinstance(seg, dict) and str(seg.get("type") or "").strip() == "text":
+                        texts.append(str(seg.get("text") or ""))
+
+                    elif isinstance(seg, str):
+                        texts.append(seg)
+
+                content_str = "\n".join(texts)
+            elif content is None:
+                content_str = ""
+            else:
+                content_str = str(content or "")
+
+            parts.append(f"{role}: {content_str}")
+
+        return len("\n\n".join(parts))
 
     # ------------------------------------------------------------------
     # 创建 / 获取
@@ -287,6 +413,7 @@ class ConversationService:
         global_titles: Any = context_mod._UNSET,
         profile_text: str | None = None,
         skill_samples: List[Dict[str, Any]] | None = None,
+        context_window_tokens: int | None = None,
     ) -> Dict[str, Any]:
         """
         一个事务内完成：
@@ -305,6 +432,60 @@ class ConversationService:
                 # 归一化
                 data = normalize_v4_conversation(data)
 
+            # ---- 超上下文限流：全量历史视角，客户端截断不影响判定 ----
+            _incoming_chars = 0
+            try:
+                if isinstance(content, list):
+                    _incoming_chars = sum(len(str(seg.get("text") or "")) if isinstance(seg, dict) else len(str(seg)) for seg in content)
+                elif content is not None:
+                    _incoming_chars = len(str(content))
+            except Exception:
+                _incoming_chars = len(str(content or ""))
+
+            _limit_chars = self._chars_limit_for_window(context_window_tokens)
+
+            _msgs_for_len = data.get("messages", []) if isinstance(data.get("messages"), list) else []
+            _cur_len = self._estimate_serialized_len(_msgs_for_len)
+            try:
+                _fsize = int(path and __import__("os").path.getsize(path) or 0)
+            except Exception:
+                _fsize = 0
+            print(f"[CTX_CHECK] cid={conversation_id} user={self.username} cur_len={_cur_len} incoming={_incoming_chars} limit={_limit_chars} fsize={_fsize} window={context_window_tokens}")
+            if _cur_len + _incoming_chars > _limit_chars and len(_msgs_for_len) > 2:
+                _orig_len = _cur_len
+                _pruned = 0
+                while _msgs_for_len and (self._estimate_serialized_len(_msgs_for_len) + _incoming_chars > _limit_chars) and len(_msgs_for_len) > 2:
+                    if str((_msgs_for_len[0] or {}).get("role") or "").strip() == "system":
+                        _msgs_for_len.pop(0)
+                    elif len(_msgs_for_len) >= 2:
+                        _msgs_for_len = _msgs_for_len[2:]
+                        _pruned += 1
+                    else:
+                        _msgs_for_len.pop(0)
+                if _pruned:
+                    data["messages"] = _msgs_for_len
+                    print(f"[CTX_LIMIT] cid={conversation_id} user={self.username} pruned {_pruned} pairs: {_orig_len}+{_incoming_chars} > {_limit_chars} (window={context_window_tokens})")
+                    try:
+                        _cut = _pruned * 2 - 1
+                        _ctx = data.get("context", {}) if isinstance(data.get("context"), dict) else {}
+                        for _key in ("knowledge_events", "profile_events", "skill_events"):
+                            _evs = _ctx.get(_key)
+                            if isinstance(_evs, list) and _evs:
+                                _kept = []
+                                for _ev in _evs:
+                                    if not isinstance(_ev, dict):
+                                        continue
+                                    try:
+                                        _efm = int(_ev.get("effective_from_message"))
+                                    except Exception:
+                                        _efm = -1
+                                    if 0 <= _efm <= _cut:
+                                        continue
+                                    _kept.append(_ev)
+                                _ctx[_key] = _kept
+                        data["context"] = _ctx
+                    except Exception as _e:
+                        print(f"[CTX_LIMIT] prune events failed: {_e}")
             messages_before = len(data.get("messages", []) if isinstance(data.get("messages"), list) else [])
 
             # 预先记录 context（在追加 user 之前，effective_from_message 将为当前长度）
