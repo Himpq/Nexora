@@ -3373,6 +3373,29 @@ def notify_models_config_changed(
     global _MODELS_CONFIG_SYNC_LAST_ERROR
 
     try:
+        # provider / model 变更后必须清理已缓存的 OpenAI 客户端，
+        # 否则更新后的 api_key / base_url 仍走旧连接，导致重答复现旧错误。
+        try:
+            _CLIENT_CACHE.clear()
+        except Exception:
+            pass
+
+        try:
+            import App.Core.model as _model_module
+
+            cache = getattr(_model_module, '_CLIENT_CACHE', None)
+
+            if isinstance(cache, dict):
+                cache.clear()
+
+            # 同步刷新运行时 CONFIG，避免新请求仍读旧内存配置
+            try:
+                _model_module.CONFIG = _model_module.load_config()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         sync_state = build_models_config_sync_state(models_cfg)
         ollama_providers = sync_state.get('ollama_providers', [])
 
