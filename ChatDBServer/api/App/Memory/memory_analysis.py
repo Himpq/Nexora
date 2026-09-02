@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Any, Dict, List
 
+from basis.index_codec import parse_message_index
 from basis.Conversation import ConversationManager, ConversationService
 from basis.User import User
 from App.Core import Model
@@ -172,7 +173,7 @@ class MemoryAnalysisQueue:
         try:
             username = str(job.get("username") or "").strip()
             conversation_id = str(job.get("conversation_id") or "").strip()
-            assistant_index = int(job.get("assistant_index", -1) or -1)
+            assistant_index = parse_message_index(job.get("assistant_index"), default=-1)
 
             if not username or not conversation_id or assistant_index < 0:
                 return
@@ -652,7 +653,7 @@ class MemoryAnalysisQueue:
             "reason": _normalize_memory_reason(reason),
             "error": str(error or "")[:500],
             "conversation_id": str(job.get("conversation_id") or ""),
-            "assistant_index": int(job.get("assistant_index", -1) or -1),
+            "assistant_index": parse_message_index(job.get("assistant_index"), default=-1),
             "model": str(job.get("analysis_model") or job.get("model_name") or ""),
             "requested_model": str(
                 job.get("requested_analysis_model")

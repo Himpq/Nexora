@@ -71,6 +71,7 @@ import re
 import hashlib
 import uuid
 from basis.Timeline import record_knowledge_change
+from basis.index_codec import parse_message_index
 from basis.Database import (
     get_user_lock,
     global_file_lock as _global_file_lock,
@@ -1360,7 +1361,7 @@ class User:
             "memory_analysis": bool(metadata.get("memory_analysis", False)),
             "memory_job_id": str(metadata.get("memory_job_id") or ""),
             "memory_action": str(metadata.get("memory_action") or ""),
-            "source_assistant_index": int(metadata.get("source_assistant_index", -1) or -1),
+            "source_assistant_index": parse_message_index(metadata.get("source_assistant_index"), default=-1),
             "response_trace_id": str(metadata.get("response_trace_id") or "")
         }
 

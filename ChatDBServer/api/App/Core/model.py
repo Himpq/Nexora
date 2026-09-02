@@ -26,7 +26,8 @@ from App.Executor import ToolExecutor
 from basis.User import User, BASIS
 from basis.Conversation import ConversationManager, ConversationService
 from basis.Conversation.telemetry import build_trace_from_process_steps
-from basis.Model.Context import ChatContextManager, _safe_parse_index
+from basis.Model.Context import ChatContextManager
+from basis.index_codec import parse_message_index
 from basis.Model.compression_turn import build_append_compression_messages, run_append_compression_round
 from basis.Model.turn_injection import build_profile_update_block, build_skill_update_block
 from App.Utils import (
@@ -467,7 +468,7 @@ class Model(MailMixin):
             plan_items = [str(item or "").strip() for item in (mode_payload.get("plan") or []) if str(item or "").strip()]
             plan_text = "\n".join([f"{index + 1}. {item}" for index, item in enumerate(plan_items)]) if plan_items else ""
             context_text = str(mode_payload.get("context") or "").strip()
-            current_index = int(mode_payload.get("current_index", -1) or -1)
+            current_index = parse_message_index(mode_payload.get("current_index"), default=-1)
             done_indices = [int(item) for item in (mode_payload.get("done_indices") or []) if str(item).strip().isdigit()]
             if current_index < 0 and plan_items and done_indices:
                 done_set = set(done_indices)
@@ -4529,13 +4530,13 @@ class Model(MailMixin):
                             target_eff = int(regen_idx - 1)
                             # 保留 effective != target_eff 的事件，target_eff 的旧事件视为上次重答的暂存，需消失
                             # 注意 efm=0 合法（重答首轮助手回复时 target_eff=0），必须用安全解析
-                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
+                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
                             ctx["knowledge_events"] = ev_list
                             # 画像/技能事件同样去重：重答以当前采样为准，同一 efm 只保留最新一份
                             profile_ev_list = ctx.get("profile_events") if isinstance(ctx.get("profile_events"), list) else []
-                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
+                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
                             skill_ev_list = ctx.get("skill_events") if isinstance(ctx.get("skill_events"), list) else []
-                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and _safe_parse_index(e.get("effective_from_message")) == target_eff)]
+                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
                             data["context"] = ctx
                             # 再以正确 effective 追加新 diff（若有可见变更才会落库）
                             # regenerate 不注入 tail：事件落库后由历史 diff 重建回放，
@@ -4610,7 +4611,7 @@ class Model(MailMixin):
                                 "plan": normalized_conversation_mode_payload.get("plan", []),
                                 "context": str(normalized_conversation_mode_payload.get("context") or "").strip(),
                                 "step": str(normalized_conversation_mode_payload.get("step") or "").strip(),
-                                "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                 "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                             },
                             active=True,
@@ -7399,7 +7400,7 @@ class Model(MailMixin):
                                         "plan": normalized_conversation_mode_payload.get("plan", []),
                                         "context": self._runtime_longterm_context_text,
                                         "step": self._runtime_longterm_current_plan_text,
-                                        "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                        "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                         "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                                     },
                                     active=False,
@@ -7419,7 +7420,7 @@ class Model(MailMixin):
                                     "plan": normalized_conversation_mode_payload.get("plan", []),
                                     "context": self._runtime_longterm_context_text,
                                     "step": self._runtime_longterm_current_plan_text,
-                                    "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                    "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                     "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                                 },
                                 active=False

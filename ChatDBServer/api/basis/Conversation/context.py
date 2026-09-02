@@ -13,24 +13,12 @@ import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from basis.index_codec import parse_message_index
 from .schema import now_iso, sha16
 
 
 def _system_hash(text: str) -> str:
     return sha16(text)
-
-
-def _safe_parse_index(value: Any) -> int:
-    """
-    安全解析下标字段（history_cut_index / effective_from_message）。
-    0 是合法值（cut=0 表示全部历史被压缩），不能用 `or -1` 兜底，
-    否则 0 会被 falsy 吞成 -1 导致压缩摘要/首轮事件被判无效。
-    """
-
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return -1
 
 
 def record_system_snapshot(
@@ -250,7 +238,7 @@ def record_context_compression(
     item = {
         "summary": str(marker.get("summary", "") or "").strip(),
         # cut=0 合法（全部历史被压缩），不能用 `or -1` 兜底
-        "history_cut_index": _safe_parse_index(marker.get("history_cut_index")),
+        "history_cut_index": parse_message_index(marker.get("history_cut_index")),
         "created_at": str(marker.get("created_at", now_iso()) or now_iso()),
         "model": str(marker.get("model", "") or "").strip(),
         "provider": str(marker.get("provider", "") or "").strip(),
