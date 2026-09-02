@@ -31,31 +31,17 @@ from App.Utils import (
 )
 import prompts
 
+from basis.index_codec import (
+    parse_effective_from,
+    parse_message_index,
+    snapshot_effective_from,
+)
+
 from .turn_injection import (
     build_profile_update_block,
     build_skill_update_block,
     is_volatile_injection,
 )
-
-
-def _safe_parse_index(raw_value: Any) -> int:
-    """
-    安全解析消息下标类字段（effective_from_message / history_cut_index）。
-    0 是合法值（首轮），不能用 `or -1` 兜底，否则 0 被吞成 -1。
-    非法时返回 -1 表示无效。
-    """
-
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
-        return -1
-
-
-def _safe_snapshot_efm(snapshot: Dict[str, Any]) -> Optional[int]:
-    """读取快照的 effective_from_message，非法时返回 None。"""
-
-    value = _safe_parse_index(snapshot.get("effective_from_message"))
-    return value if value >= 0 else None
 
 
 class ChatContextPolicy(Enum):
@@ -581,7 +567,7 @@ class ChatContextManager:
                     if isinstance(snaps, list) and snaps:
                         latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
                         snapshot_content = str(latest.get("content") or "").strip() or None
-                        snapshot_efm = _safe_snapshot_efm(latest)
+                        snapshot_efm = snapshot_effective_from(latest)
                     raw_events = context_bundle.get("knowledge_events", [])
                     if isinstance(raw_events, list):
                         knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
@@ -599,7 +585,7 @@ class ChatContextManager:
                         if isinstance(snaps, list) and snaps:
                             latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
                             snapshot_content = str(latest.get("content") or "").strip() or None
-                            snapshot_efm = _safe_snapshot_efm(latest)
+                            snapshot_efm = snapshot_effective_from(latest)
                         raw_events = snap_data.get("context", {}).get("knowledge_events", [])
                         if isinstance(raw_events, list):
                             knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
@@ -612,37 +598,26 @@ class ChatContextManager:
         except Exception:
             snapshot_content = None
 
+        # 压缩 cut 解析（供快照新鲜度判断、事件回放过滤与历史游标共用）
+        compression_cut_index = -1
+        if compression_marker:
+            compression_cut_index = parse_message_index(compression_marker.get("history_cut_index"))
+
         # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前。
         # knowledge / profile / skill 三类事件共用同一 (efm, block) 回放列表，
         # 排序后按位插入，使任意轮次重建出的上下文与首次发送时一致。
         history_event_blocks: List[Tuple[int, str]] = []
-        for event in knowledge_events_raw:
-            efm = _safe_parse_index(event.get("effective_from_message"))
-            if efm < 0:
-                continue
-            block = self._build_knowledge_event_block(event)
-            if block:
-                history_event_blocks.append((efm, block))
-        for event in profile_events_raw:
-            efm = _safe_parse_index(event.get("effective_from_message"))
-            if efm < 0:
-                continue
-            block = build_profile_update_block(event)
-            if block:
-                history_event_blocks.append((efm, block))
-        for event in skill_events_raw:
-            efm = _safe_parse_index(event.get("effective_from_message"))
-            if efm < 0:
-                continue
-            block = build_skill_update_block(event)
-            if block:
-                history_event_blocks.append((efm, block))
+        history_event_blocks.extend(
+            self._collect_replay_blocks(knowledge_events_raw, self._build_knowledge_event_block, compression_cut_index)
+        )
+        history_event_blocks.extend(
+            self._collect_replay_blocks(profile_events_raw, build_profile_update_block, compression_cut_index)
+        )
+        history_event_blocks.extend(
+            self._collect_replay_blocks(skill_events_raw, build_skill_update_block, compression_cut_index)
+        )
         history_event_blocks.sort(key=lambda item: item[0])
 
-        # 压缩 cut 解析（供快照新鲜度判断与历史回放游标共用）
-        compression_cut_index = -1
-        if compression_marker:
-            compression_cut_index = _safe_parse_index(compression_marker.get("history_cut_index"))
         # 快照过期判定（压缩换代）：快照生效点 <= 压缩 cut 说明 head 是压缩前构建的
         # 旧画像/旧技能，必须全量重建；压缩后重建保存的新快照 efm = cut+1 > cut，
         # 后续轮次判定不成立，继续复用快照命中缓存
@@ -753,6 +728,36 @@ class ChatContextManager:
         model.record_context_diagnostics(context.diagnostics())
         model._last_context = context
         return context
+
+    def _collect_replay_blocks(
+        self,
+        events: List[Dict[str, Any]],
+        build_block: Callable[[Dict[str, Any]], str],
+        compression_cut_index: int,
+    ) -> List[Tuple[int, str]]:
+        """
+        把一类变更事件（知识/画像/技能）转换为 (efm, block) 回放列表。
+
+        efm <= compression_cut_index 的事件已被压缩摘要覆盖，内容已不在历史消息中，
+        回放它们既无对应落点，也会让按位匹配的回放游标停在死点上（后续事件全部丢失），
+        故在此直接过滤。过滤放在回放层而非落库裁剪（prune）——prune 失败或未执行时
+        上下文依然自洽，prune 只负责磁盘空间回收。
+        """
+
+        blocks: List[Tuple[int, str]] = []
+
+        for event in events:
+            efm = parse_effective_from(event.get("effective_from_message"))
+
+            if efm is None or efm <= compression_cut_index:
+                continue
+
+            block = build_block(event)
+
+            if block:
+                blocks.append((efm, block))
+
+        return blocks
 
     def _normalize_system_injection_texts(self, system_injection_texts: Optional[List[str]]) -> List[str]:
         """规整当前轮运行时 system 注入块。"""
@@ -1383,7 +1388,7 @@ class ChatContextManager:
             summary_text = self._strip_history_time_prefix_text(
                 str(compression_marker.get("summary", "") or "").strip()
             )
-            cut_index = _safe_parse_index(compression_marker.get("history_cut_index"))
+            cut_index = parse_message_index(compression_marker.get("history_cut_index"))
         except Exception:
             summary_text = ""
             cut_index = -1

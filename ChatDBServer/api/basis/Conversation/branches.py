@@ -8,13 +8,38 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
-from typing import Any, Dict
-
-from .context import _safe_parse_index
+from typing import Any, Dict, List
 
 
 def now_iso() -> str:
     return datetime.now().isoformat()
+
+
+def _filter_indexed_entries(
+    entries: Any,
+    target_index: int,
+    *,
+    key: str = "effective_from_message",
+) -> List[Dict[str, Any]]:
+    """
+    裁剪带生效下标的 context 条目（快照 / 事件），只保留在分支节点之前（含）生效的部分。
+
+    缺失下标的条目按 0（首轮）处理：它们属于分支起点之前已生效的状态，随分支带走。
+    """
+
+    if not isinstance(entries, list):
+        return []
+
+    kept: List[Dict[str, Any]] = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        if int(entry.get(key) or 0) <= int(target_index):
+            kept.append(entry)
+
+    return kept
 
 
 def fork_branch_data(
@@ -61,16 +86,18 @@ def fork_branch_data(
         "compressions": [],
         "legacy_events": [],
     }
-    # system_snapshots 过滤
-    filtered_snapshots = [s for s in (raw_context.get("system_snapshots", []) if isinstance(raw_context.get("system_snapshots"), list) else []) if isinstance(s, dict) and int(s.get("effective_from_message") or 0) <= int(target_index)]
-    # knowledge_events 过滤
-    filtered_events = [e for e in (raw_context.get("knowledge_events", []) if isinstance(raw_context.get("knowledge_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
-    # 画像/技能事件过滤（与 knowledge_events 同一回放协议）
-    filtered_profile_events = [e for e in (raw_context.get("profile_events", []) if isinstance(raw_context.get("profile_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
-    filtered_skill_events = [e for e in (raw_context.get("skill_events", []) if isinstance(raw_context.get("skill_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
-    # compressions 过滤（history_cut_index <= target_index）
-    filtered_compressions = [c for c in (raw_context.get("compressions", []) if isinstance(raw_context.get("compressions"), list) else []) if isinstance(c, dict) and _safe_parse_index(c.get("history_cut_index")) <= int(target_index)]
-    filtered_legacy = [e for e in (raw_context.get("legacy_events", []) if isinstance(raw_context.get("legacy_events"), list) else []) if isinstance(e, dict) and int(e.get("effective_from_message") or 0) <= int(target_index)]
+    # 快照 / 事件 / 压缩标记统一按各自生效下标裁剪到分支节点（含）
+    filtered_snapshots = _filter_indexed_entries(raw_context.get("system_snapshots"), target_index)
+    filtered_events = _filter_indexed_entries(raw_context.get("knowledge_events"), target_index)
+    # 画像/技能事件与 knowledge_events 同一回放协议
+    filtered_profile_events = _filter_indexed_entries(raw_context.get("profile_events"), target_index)
+    filtered_skill_events = _filter_indexed_entries(raw_context.get("skill_events"), target_index)
+    filtered_compressions = _filter_indexed_entries(
+        raw_context.get("compressions"),
+        target_index,
+        key="history_cut_index",
+    )
+    filtered_legacy = _filter_indexed_entries(raw_context.get("legacy_events"), target_index)
     # 重新计算 effective knowledge
     from .context import get_effective_knowledge_state
     effective_knowledge = get_effective_knowledge_state(source_data, int(target_index))

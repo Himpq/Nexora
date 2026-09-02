@@ -411,6 +411,30 @@ class TestBranch(BaseServiceTest):
         self.assertEqual(data["branch"]["parent_message_index"], 1)
         self.assertEqual(data["branch"]["parent_conversation_id"], cid)
 
+    def test_fork_trims_turn_events_and_compressions(self):
+        """分支只带走节点前生效的画像/技能事件与压缩标记。"""
+        cid = self.service.create_conversation(title="orig-events")
+        turn1 = self.service.begin_user_turn(cid, "q1", profile_text="画像v1", skill_samples=[{"title": "A", "prompt": "pa"}])
+        self.service.finish_assistant_turn(cid, turn1["assistant_index"], {"content": "a1", "model": {"name": "m", "provider": "p"}})
+        turn2 = self.service.begin_user_turn(cid, "q2", profile_text="画像v2", skill_samples=[{"title": "B", "prompt": "pb"}])
+        self.service.finish_assistant_turn(cid, turn2["assistant_index"], {"content": "a2", "model": {"name": "m", "provider": "p"}})
+        # 第三轮变更落在消息下标 4，分支到 3 时应被裁掉
+        turn3 = self.service.begin_user_turn(cid, "q3", profile_text="画像v3", skill_samples=[{"title": "B", "prompt": "pb"}])
+        self.service.finish_assistant_turn(cid, turn3["assistant_index"], {"content": "a3", "model": {"name": "m", "provider": "p"}})
+
+        self.service.record_context_compression(cid, {
+            "summary": "摘要",
+            "history_cut_index": 1,
+            "created_at": "2026-01-01T00:00:00",
+        })
+
+        new_id = self.service.fork_conversation(cid, 3, title="branch-events")["conversation_id"]
+        context = self.service.get_conversation(new_id)["context"]
+
+        self.assertEqual([e["effective_from_message"] for e in context["profile_events"]], [2])
+        self.assertEqual([e["effective_from_message"] for e in context["skill_events"]], [2])
+        self.assertEqual([c["history_cut_index"] for c in context["compressions"]], [1])
+
 
 class TestContextBuild(BaseServiceTest):
     def test_build_context_selects_effective_snapshot(self):
