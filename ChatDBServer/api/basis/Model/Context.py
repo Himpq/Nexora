@@ -680,7 +680,10 @@ class ChatContextManager:
                 # 跳过历史回放，保证 diff 固定在生效 user 之前、且只注入一次
                 history_msg_cursor += 1
                 continue
-            if (
+            # 同一生效点可能有多条事件（一轮内 workspace 与 global 知识变更各落一条，
+            # 且 knowledge / profile / skill 可同轮变更）：必须注入该 cursor 下的全部
+            # block，只注入第一个会让其余 diff 静默丢失（回放游标已前移无法回头匹配）
+            while (
                 history_event_idx < len(history_event_blocks)
                 and history_event_blocks[history_event_idx][0] == history_msg_cursor
                 and history_event_blocks[history_event_idx][0] < history_event_boundary

@@ -79,19 +79,8 @@ class ConversationService:
     # ------------------------------------------------------------------
     # 上下文长度限流辅助
     # ------------------------------------------------------------------
-    def get_serialized_length(self, conversation_id: str) -> int:
-        """返回 role: content 序列化长度（与 ConversationContextReader 同口径）。"""
-
-        try:
-            from .context_reader import ConversationContextReader
-
-            return int(ConversationContextReader(self.username).get_length(str(conversation_id)))
-        except Exception:
-            # 回退：直接用 _serialize_context_messages 口径
-            return len(self._serialize_context_messages(str(conversation_id)))
-
     def _chars_limit_for_window(self, context_window_tokens: int | None) -> int:
-        """将模型的 context_window(tokens) 换算为字符上限；无窗口时回退 5000。"""
+        """将模型的 context_window(tokens) 换算为字符上限；无窗口时回退 5000 chars。"""
 
         try:
             win = int(context_window_tokens or 0)
@@ -99,73 +88,117 @@ class ConversationService:
             win = 0
 
         if win >= 1024:
-            # 估算：1 token ≈ 4 chars（与 estimate_token_count 互为逆运算）
+            # chars 估算：1 token ≈ 4 chars 是 ASCII 保守值，中文实测约 2.8 chars/token，
+            # 故 win*4 chars 约对应 1.4x window tokens。本闸只保证「写前有界」（不再无限
+            # 膨胀），不承诺精确不超窗；精确到 token 的窗控由 model 层请求前按真实
+            # tokenizer 兜底（tokens 口径与本处 chars 口径不同，勿混用同一回退数字）。
             return int(win * CHARS_PER_TOKEN_ESTIMATE)
 
         return int(DEFAULT_MAX_CONVERSATION_CHARS)
 
-    def ensure_within_limit(
-        self,
-        conversation_id: str,
-        *,
-        context_window_tokens: int | None = None,
-        incoming_chars: int = 0,
-        auto_prune: bool = True,
-    ) -> Dict[str, Any]:
+    def _shift_indexed_context(self, data: Dict[str, Any], dropped: int) -> Dict[str, Any]:
         """
-        检查会话是否已超限；若超限且 auto_prune=True，则按滑动窗口裁掉最旧轮次直到满足 limit-incoming。
-        返回 {length_before, length_after, pruned_pairs, limit, exceeded_before}
+        消息数组头部被物理删除 dropped 条后，把所有按消息绝对下标定位的 context
+        数据平移 / 清理，使 effective_from_message / history_cut_index 与幸存消息的
+        新下标一致（回放契约：efm == 消息游标 精确匹配，见 Context.build_initial_context）。
+
+        - knowledge_events / profile_events / skill_events：efm < dropped 的事件其
+          生效消息已被删除、无回放落点，丢弃；efm >= dropped 的减 dropped。
+        - system_snapshots：同规则（head 快照缓存，被删只触发一次重建，不影响正确性）。
+        - compressions：history_cut_index < dropped 说明摘要覆盖点已随消息删除，
+          marker 失去对齐意义，整条移除；>= dropped 的减 dropped。
+        本方法只改内存 data，写盘由调用方统一完成（与 begin_user_turn 同一事务）。
         """
 
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            raise ConversationValidationError("conversation_id 不能为空")
+        if dropped <= 0:
+            return data
 
-        limit = self._chars_limit_for_window(context_window_tokens)
-        cur_len = self.get_serialized_length(cid)
-        exceeded_before = cur_len > limit
-        pruned_pairs = 0
+        context = data.get("context")
+        if not isinstance(context, dict):
+            return data
 
-        if auto_prune and cur_len + int(incoming_chars or 0) > limit:
-            # 在同一文件锁事务内裁剪，避免并发写入丢失
-            from .repository import conversation_update_session
-            from .schema import validate_v4_conversation as _validate
-            from basis.Database import safe_write_json as _safe_write
+        for key in ("knowledge_events", "profile_events", "skill_events"):
+            events = context.get(key)
 
-            with conversation_update_session(self.username, cid) as (path, data):
-                if int(data.get("schema_version") or 0) != SCHEMA_VERSION:
-                    data = migrate_single_conversation_data(data)
-                    data = normalize_v4_conversation(data)
+            if not isinstance(events, list):
+                continue
 
-                messages = data.get("messages", []) if isinstance(data.get("messages"), list) else []
+            kept: List[Dict[str, Any]] = []
 
-                # 至少保留最后 1 轮（2 条）以保证对话可用；其余按轮次裁掉
-                while messages and (self._estimate_serialized_len(messages) + int(incoming_chars or 0) > limit) and len(messages) > 2:
-                    # 按轮次裁：一次删 2 条（user+assistant），若首条为 system 则单独删
-                    if str((messages[0] or {}).get("role") or "").strip() == "system":
-                        messages.pop(0)
-                    elif len(messages) >= 2:
-                        messages = messages[2:]
-                        pruned_pairs += 1
-                    else:
-                        messages.pop(0)
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
 
-                data["messages"] = messages
-                from datetime import datetime as _dt
+                try:
+                    efm = int(event.get("effective_from_message"))
+                except (TypeError, ValueError):
+                    # 非法下标无法对齐，原样保留（与 prune_turn_events_before 同口径）
+                    kept.append(event)
+                    continue
 
-                data["updated_at"] = _dt.now().isoformat()
-                _validate(data)
-                _safe_write(path, data, indent=2)
-                index_mod.sync_index_from_file(self.username, path, data)
-                cur_len = self._estimate_serialized_len(messages)
+                if efm < dropped:
+                    # 生效消息已被删除，事件无回放落点，丢弃
+                    continue
 
-        return {
-            "length_before": int(cur_len if pruned_pairs == 0 else -1),  # pruned 时 before 已在事务内重算，简化返回
-            "length_after": int(cur_len),
-            "pruned_pairs": int(pruned_pairs),
-            "limit": int(limit),
-            "exceeded_before": bool(exceeded_before),
-        }
+                if efm >= 0:
+                    event["effective_from_message"] = efm - dropped
+
+                kept.append(event)
+
+            context[key] = kept
+
+        snapshots = context.get("system_snapshots")
+        if isinstance(snapshots, list):
+            kept_snapshots: List[Dict[str, Any]] = []
+
+            for snapshot in snapshots:
+                if not isinstance(snapshot, dict):
+                    continue
+
+                try:
+                    efm = int(snapshot.get("effective_from_message"))
+                except (TypeError, ValueError):
+                    kept_snapshots.append(snapshot)
+                    continue
+
+                if efm < dropped:
+                    continue
+
+                if efm >= 0:
+                    snapshot["effective_from_message"] = efm - dropped
+
+                kept_snapshots.append(snapshot)
+
+            context["system_snapshots"] = kept_snapshots
+
+        compressions = context.get("compressions")
+        if isinstance(compressions, list):
+            kept_compressions: List[Dict[str, Any]] = []
+
+            for marker in compressions:
+                if not isinstance(marker, dict):
+                    continue
+
+                try:
+                    cut = int(marker.get("history_cut_index"))
+                except (TypeError, ValueError):
+                    kept_compressions.append(marker)
+                    continue
+
+                if 0 <= cut < dropped:
+                    # 摘要覆盖点已随消息删除，marker 失去对齐意义
+                    continue
+
+                if cut >= 0:
+                    marker["history_cut_index"] = cut - dropped
+
+                kept_compressions.append(marker)
+
+            context["compressions"] = kept_compressions
+
+        data["context"] = context
+
+        return data
 
     def _estimate_serialized_len(self, messages: List[Dict[str, Any]]) -> int:
         parts: List[str] = []
@@ -433,6 +466,8 @@ class ConversationService:
                 data = normalize_v4_conversation(data)
 
             # ---- 超上下文限流：全量历史视角，客户端截断不影响判定 ----
+            # 写前滑动裁剪：只保证「全量历史序列化 + 本次输入 <= limit」的有界性
+            #（不再无限膨胀），不承诺与 provider 真实窗口严格一致（口径见 _chars_limit_for_window）。
             _incoming_chars = 0
             try:
                 if isinstance(content, list):
@@ -447,45 +482,33 @@ class ConversationService:
             _msgs_for_len = data.get("messages", []) if isinstance(data.get("messages"), list) else []
             _cur_len = self._estimate_serialized_len(_msgs_for_len)
             try:
-                _fsize = int(path and __import__("os").path.getsize(path) or 0)
+                _fsize = int(path and os.path.getsize(path) or 0)
             except Exception:
                 _fsize = 0
             print(f"[CTX_CHECK] cid={conversation_id} user={self.username} cur_len={_cur_len} incoming={_incoming_chars} limit={_limit_chars} fsize={_fsize} window={context_window_tokens}")
             if _cur_len + _incoming_chars > _limit_chars and len(_msgs_for_len) > 2:
                 _orig_len = _cur_len
-                _pruned = 0
+                _dropped = 0
+
                 while _msgs_for_len and (self._estimate_serialized_len(_msgs_for_len) + _incoming_chars > _limit_chars) and len(_msgs_for_len) > 2:
+                    # 从最旧按轮次删：V4 消息仅 user/assistant 交替成对；首条异常 system 单独删以维持配对
+                    # _dropped 必须累计真实删除条数（成对删 +2），它是消息下标平移的单位
                     if str((_msgs_for_len[0] or {}).get("role") or "").strip() == "system":
                         _msgs_for_len.pop(0)
+                        _dropped += 1
                     elif len(_msgs_for_len) >= 2:
                         _msgs_for_len = _msgs_for_len[2:]
-                        _pruned += 1
+                        _dropped += 2
                     else:
                         _msgs_for_len.pop(0)
-                if _pruned:
-                    data["messages"] = _msgs_for_len
-                    print(f"[CTX_LIMIT] cid={conversation_id} user={self.username} pruned {_pruned} pairs: {_orig_len}+{_incoming_chars} > {_limit_chars} (window={context_window_tokens})")
-                    try:
-                        _cut = _pruned * 2 - 1
-                        _ctx = data.get("context", {}) if isinstance(data.get("context"), dict) else {}
-                        for _key in ("knowledge_events", "profile_events", "skill_events"):
-                            _evs = _ctx.get(_key)
-                            if isinstance(_evs, list) and _evs:
-                                _kept = []
-                                for _ev in _evs:
-                                    if not isinstance(_ev, dict):
-                                        continue
-                                    try:
-                                        _efm = int(_ev.get("effective_from_message"))
-                                    except Exception:
-                                        _efm = -1
-                                    if 0 <= _efm <= _cut:
-                                        continue
-                                    _kept.append(_ev)
-                                _ctx[_key] = _kept
-                        data["context"] = _ctx
-                    except Exception as _e:
-                        print(f"[CTX_LIMIT] prune events failed: {_e}")
+                        _dropped += 1
+
+                data["messages"] = _msgs_for_len
+                # 关键：消息下标坐标整体前移 dropped 位后，事件/快照/压缩 marker 的
+                # effective_from_message / history_cut_index 必须同事务 remap，否则回放
+                #（efm == 消息游标 精确匹配）会全部错位静默失效（历史 diff 丢失）
+                self._shift_indexed_context(data, _dropped)
+                print(f"[CTX_LIMIT] cid={conversation_id} user={self.username} dropped {_dropped} msgs: {_orig_len}+{_incoming_chars} > {_limit_chars} (window={context_window_tokens})")
             messages_before = len(data.get("messages", []) if isinstance(data.get("messages"), list) else [])
 
             # 预先记录 context（在追加 user 之前，effective_from_message 将为当前长度）

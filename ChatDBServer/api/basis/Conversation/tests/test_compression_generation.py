@@ -194,6 +194,26 @@ class TestCompressionGenerationRebuild(unittest.TestCase):
         self.assertGreater(min(tail_positions), max(history_positions))
         self.assertLess(max(tail_positions), len(messages) - 1)
 
+    def test_multiple_events_on_same_efm_all_replayed(self):
+        """同轮多类变更（workspace+global 知识、画像、技能共 efm）必须全部回放，不得只注入第一个。"""
+        self._seed({
+            "knowledge_events": [
+                {"scope": "workspace", "added": [{"title": "WS文档"}], "removed": [], "effective_from_message": 3},
+                {"scope": "global", "added": [{"title": "GLOBAL标题"}], "removed": [], "effective_from_message": 3},
+            ],
+            "profile_events": [{"mode": "append", "content": "画像增量", "effective_from_message": 3}],
+            "skill_events": [{"added": [{"title": "SK", "prompt": "技能全文"}], "removed": [], "effective_from_message": 3}],
+        }, cut=2)
+
+        context = self._build()
+
+        joined = "\n".join(self._system_texts(context))
+        # 四类事件同 efm=3 且 < current_user_index=4，均在历史区间，全部应注入
+        self.assertIn("WS文档", joined)
+        self.assertIn("GLOBAL标题", joined)
+        self.assertIn("画像增量", joined)
+        self.assertIn("技能全文", joined)
+
 
 class TestSnapshotGeneration(unittest.TestCase):
     """压缩换代与 head 快照：过期全量重建，重建后继续复用命中缓存。"""

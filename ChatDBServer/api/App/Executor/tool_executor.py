@@ -754,11 +754,48 @@ class ToolExecutor:
         )
         return "已删除基础知识"
 
+    # 旧批量 _update_basis 已试点下线（保留注释便于回滚）：
+    # 原实现支持 from_pos/to_pos/replacement + replacements[] + patch + edits[] 批量四选一，
+    # 长累计文本下批量 edits 易在 Flash 0731 上产生 JSON 语法错误，现改为仅允许单次原子 edit。
+
     def _update_basis(self, args: Dict[str, Any]) -> str:
         title = str(args.get("title", "") or "").strip()
         meta = self.model.user.getBasisMetadata(title) or {}
         if isinstance(meta, dict) and meta and bool(meta.get("model_readonly", False)):
             return "更新失败: 该知识已启用模型只读，模型只能查阅和引用，不能修改内容、标题或共享设置。"
+
+        # 试点：拦截旧批量参数，引导模型走单次 edit（兼容 edits 为字符串的错误序列化）
+        if "edits" in args:
+            raw_edits = args.get("edits")
+            # 旧批量无论是 list 还是误序列化为字符串都拦截
+            if isinstance(raw_edits, list) and len(raw_edits) > 0:
+                return "更新失败: 试点已下线批量 edits，单次仅允许1个单 edit。请改用单次参数 action+target+content/replacement，多次修改请多次调用。示例：{\"title\":\"...\",\"action\":\"insert_after\",\"target\":\"### 1. 标题\",\"content\":\"...\"}"
+            if isinstance(raw_edits, str) and str(raw_edits).strip():
+                # 典型错误：edits 传成了字符串 "[{...}]"
+                preview = str(raw_edits).strip()[:120]
+                return f"更新失败: edits 不应为字符串（收到 {preview}...），试点已下线批量 edits。请改用单次参数 action+target+content/replacement。示例：{{\"title\":\"...\",\"action\":\"insert_after\",\"target\":\"### 1. 标题\",\"content\":\"...\"}}"
+
+        if isinstance(args.get("replacements"), list) and len(args.get("replacements") or []) > 0:
+            return "更新失败: 试点已下线批量 replacements，请改用单次 action+target 方式，多次修改请多次调用。"
+
+        if str(args.get("patch") or "").strip():
+            return "更新失败: 试点已下线 patch 统一 diff，请改用单次 action+target 或 context 整段覆盖。"
+
+        if args.get("from_pos") is not None or args.get("to_pos") is not None:
+            return "更新失败: 试点已下线 from_pos/to_pos 区间替换，请改用单次 action+target 方式。"
+
+        # 试点：若既无 context 也无单 edit，且无标题/URL/公开等元数据变更，直接判定为无效调用
+        has_action = bool(str(args.get("action") or "").strip())
+        has_target = bool(str(args.get("target") or "").strip())
+        has_context = args.get("context") is not None
+        has_meta = any([
+            args.get("new_title"),
+            args.get("url") is not None,
+            args.get("public") is not None,
+            args.get("collaborative") is not None,
+        ])
+        if not has_context and not (has_action and has_target) and not has_meta:
+            return "更新失败: 未提供任何有效更新内容。单次仅支持 context 整段覆盖 或 action+target 单 edit 二选一。请检查是否误将 edits 传为字符串。"
 
         success, message = self.model.user.updateBasis(
             title=title,
@@ -767,12 +804,11 @@ class ToolExecutor:
             url=args.get("url"),
             is_public=args.get("public"),
             is_collaborative=args.get("collaborative"),
-            from_pos=args.get("from_pos"),
-            to_pos=args.get("to_pos"),
+            action=args.get("action"),
+            target=args.get("target"),
             replacement=args.get("replacement"),
-            replacements=args.get("replacements"),
-            patch=args.get("patch"),
-            edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
+            content=args.get("content"),
+            occurrence=args.get("occurrence"),
             dry_run=self._safe_bool(args.get("dry_run"), False),
             expected_sha256=args.get("expected_sha256"),
             timeline_actor={
@@ -796,10 +832,8 @@ class ToolExecutor:
                 updates.append(f"标题已更新为'{args.get('new_title')}'")
             if args.get("context"):
                 updates.append("内容已更新")
-            if args.get("replacement") is not None or args.get("replacements"):
-                updates.append("区间替换已应用")
-            if args.get("patch") or args.get("edits"):
-                updates.append("patch 已预览" if self._safe_bool(args.get("dry_run"), False) else "patch 已应用")
+            if args.get("action") and args.get("target"):
+                updates.append("单次编辑已应用" if not self._safe_bool(args.get("dry_run"), False) else "单次编辑已预览")
             if args.get("url"):
                 updates.append("来源链接已更新")
             if args.get("public") is not None:

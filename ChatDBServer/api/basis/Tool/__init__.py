@@ -1073,12 +1073,23 @@ TOOLS = [
         }
     },
     
+    # 旧批量 knowledge_basis_update 已试点下线（保留注释便于回滚）：
+    # 原 Tool 支持 context / 区间替换 / patch / edits 批量四选一，导致长累计文本下批量 edits 易产生 JSON 语法错误（如 Flash 0731 批量 5 edits 出现 {"action": "target":...}）。
+    # 试点改为仅允许单次原子修改：单次调用仅允许一种内容修改方式，需多次修改请多次调用。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "knowledge_basis_update",
+    #         "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置、按字符索引区间替换，以及统一 diff/结构化 edits patch。结构化 edits 支持精确 target、Markdown 标题/HTML 注释锚点 target、换行归一化 target、忽略首尾空白/连续空白/换行/全半角差异的 Markdown 噪声归一化 target。内容更新方式 context、区间替换、patch/edits 三选一。",
+    #         ...（旧批量定义，含 from_pos/to_pos/replacement/replacements/patch/edits[]）已注释
+    #     }
+    # },
+
     {
         "type": "function",
         "function": {
             "name": "knowledge_basis_update",
-            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置、按字符索引区间替换，以及统一 diff/结构化 edits patch。结构化 edits 支持精确 target、Markdown 标题/HTML 注释锚点 target、换行归一化 target、忽略首尾空白/连续空白/换行/全半角差异的 Markdown 噪声归一化 target。内容更新方式 context、区间替换、patch/edits 三选一。",
-
+            "description": "更新基础知识（单次原子修改）。支持重命名、整段覆盖、URL/公开/协作设置，或单次结构化编辑。单次调用仅允许一种内容修改方式：context 整段覆盖 与 单 edit（action+target）二选一；需多次修改请多次调用。单 edit 优先使用短而稳定的 Markdown 标题或 HTML 注释锚点作为 target；target 多次出现时传 occurrence。长累计文本禁止批量 edits。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1092,7 +1103,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "新的知识内容（Markdown格式，如果需要更新内容，否则不填）。参数必须直接传入最终文本；需要外部内容时先调用对应读取工具取得正文。"
+                        "description": "新的知识内容（Markdown格式，整段覆盖。提供 context 时不能同时提供单 edit 参数）。参数必须直接传入最终文本；需要外部内容时先调用对应读取工具取得正文。"
                     },
                     "url": {
                         "type": "string",
@@ -1106,75 +1117,30 @@ TOOLS = [
                         "type": "boolean",
                         "description": "是否允许协作编辑（true=可编辑，false=只读）。"
                     },
-                    "from_pos": {
-                        "type": "integer",
-                        "description": "单次区间替换的起始索引（包含）。与 to_pos + replacement 配合使用。"
+                    "action": {
+                        "type": "string",
+                        "enum": ["replace", "insert_before", "insert_after", "delete"],
+                        "description": "单次结构化编辑动作。提供 action 时必须同时提供 target，且不能同时提供 context。"
                     },
-                    "to_pos": {
-                        "type": "integer",
-                        "description": "单次区间替换的结束索引（不包含）。"
+                    "target": {
+                        "type": "string",
+                        "description": "单次编辑的目标文本。支持精确匹配、Markdown 标题/HTML 注释锚点匹配、换行归一化匹配和 Markdown 噪声归一化匹配。"
                     },
                     "replacement": {
                         "type": "string",
-                        "description": "单次区间替换的新文本，必须直接传入最终文本。"
+                        "description": "replace 动作的新文本，必须直接传入最终文本。仅 action=replace 时使用。"
                     },
-                    "replacements": {
-                        "type": "array",
-                        "description": "批量区间替换列表。每项包含 from_pos、to_pos、replacement。",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "from_pos": {
-                                    "type": "integer"
-                                },
-                                "to_pos": {
-                                    "type": "integer"
-                                },
-                                "replacement": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": ["from_pos", "to_pos", "replacement"]
-                        }
-                    },
-                    "patch": {
+                    "content": {
                         "type": "string",
-                        "description": "统一 diff 内容。提供 patch 时不能同时提供 context、区间替换或 edits，必须直接传入最终 patch 文本。"
+                        "description": "insert_before/insert_after 动作插入的新文本，必须直接传入最终文本。仅 action=insert_before/insert_after 时使用。"
                     },
-                    "edits": {
-                        "type": "array",
-                        "description": "结构化编辑列表。提供 edits 时不能同时提供 context、区间替换或 patch。优先使用短而稳定的 Markdown 标题或 HTML 注释锚点作为 target；target 多次出现时必须传 occurrence。",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["replace", "insert_before", "insert_after", "delete"],
-                                    "description": "编辑动作。"
-                                },
-                                "target": {
-                                    "type": "string",
-                                    "description": "目标文本。支持精确匹配、Markdown 标题/HTML 注释锚点匹配、换行归一化匹配和 Markdown 噪声归一化匹配。"
-                                },
-                                "replacement": {
-                                    "type": "string",
-                                    "description": "replace 动作的新文本，必须直接传入最终文本。"
-                                },
-                                "content": {
-                                    "type": "string",
-                                    "description": "insert_before/insert_after 动作插入的新文本，必须直接传入最终文本。"
-                                },
-                                "occurrence": {
-                                    "type": "integer",
-                                    "description": "target 多次出现时指定第几处，从 1 开始。"
-                                }
-                            },
-                            "required": ["action", "target"]
-                        }
+                    "occurrence": {
+                        "type": "integer",
+                        "description": "target 多次出现时指定第几处，从 1 开始。"
                     },
                     "dry_run": {
                         "type": "boolean",
-                        "description": "是否只预览不写入，默认 false。仅用于 patch/edits 或区间替换。"
+                        "description": "是否只预览不写入，默认 false。仅单 edit 时可用。"
                     },
                     "expected_sha256": {
                         "type": "string",
