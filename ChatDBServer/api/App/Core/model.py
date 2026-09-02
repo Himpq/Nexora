@@ -2743,6 +2743,7 @@ class Model(MailMixin):
             "memory_profile_read",
             "memory_short_update",
             "memory_short_add",
+            "exa_web_search",
             "knowledge_basis_create",
             "knowledge_basis_delete",
             "knowledge_basis_update",
@@ -2872,6 +2873,7 @@ class Model(MailMixin):
             return cached_payload
 
         no_truncate_tools = {
+            "exa_web_search",
             "knowledge_basis_read",
             "knowledge_list",
             "search",
@@ -4801,10 +4803,15 @@ class Model(MailMixin):
                 print(f"[CACHE] Miss. Building full context.")
                 messages = list(full_context_messages)
                 messages_has_full_context = True
-            # ---- 硬限流兜底：全量历史视角，若已超窗则滑动裁剪（客户端未传长会话也不影响）----
+            # ---- 硬限流兜底（最后一道闸）：全量历史视角，若已超窗则滑动裁剪 ----
+            # 口径说明：此处按 json 序列化 + provider tokenizer 估算 tokens，与 service 层
+            # 写前的 chars 滑动裁剪（window*4 chars）是两套不同单位、相互独立的有界闸；
+            # 且本估算不含 system prompt/tools/本轮其余载荷，故只保证请求体有界、
+            # 不承诺精确不超 provider 真实窗口。客户端是否截断历史不影响本判定。
             try:
                 _hard_limit = int(max(0, self._resolve_model_context_window_limit()))
                 if _hard_limit < 1024:
+                    # 无窗口信息时回退 5000 tokens（service 层回退的是 5000 chars，勿混用）
                     _hard_limit = 5000
                 if _hard_limit > 0 and messages_has_full_context and messages:
                     _tmp_raw = __import__("json").dumps(messages, ensure_ascii=False, default=str)
@@ -4828,7 +4835,7 @@ class Model(MailMixin):
                                     _tmp_est = int(_exact2)
                         messages = _system_part + _other_part
                         full_context_messages = list(messages)
-                        print(f"[CTX_HARD_LIMIT] truncated to {len(messages)} msgs, est {_tmp_est}")
+                        print(f"[CTX_HARD_LIMIT] truncated to {len(messages)} msgs, est {_tmp_est}" + (" (still over window: untruncatable system-only/oversized user)" if _tmp_est > _hard_limit else ""))
             except Exception as _e:
                 print(f"[CTX_HARD_LIMIT] check failed: {_e}")
             request_resume_id_seed = str(previous_response_id or "")
