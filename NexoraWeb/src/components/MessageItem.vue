@@ -1190,7 +1190,7 @@
         const effective = Math.max(0, raw - cached)
         let ecText = ''
         if (raw > 0 || cached > 0) {
-            const pct = raw > 0 ? Math.min(100, Math.round((cached / raw) * 100)) : 0
+            const pct = raw > 0 ? (Math.min(100, Math.round((cached / raw) * 10000) / 100)).toFixed(2) : '0.00'
             ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%)`
         }
         return `${model} - I/O: ${input.toLocaleString()}/${output.toLocaleString()}${ecText}`
@@ -1206,7 +1206,7 @@
         let ecLine = ''
         if (raw > 0 || cached > 0) {
             const effective = Math.max(0, raw - cached)
-            const pct = raw > 0 ? Math.min(100, Math.round((cached / raw) * 100)) : 0
+            const pct = raw > 0 ? (Math.min(100, Math.round((cached / raw) * 10000) / 100)).toFixed(2) : '0.00'
             ecLine = `\nE/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%) [raw ${raw.toLocaleString()}]`
         }
         return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}${ecLine}`

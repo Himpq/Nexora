@@ -9029,7 +9029,7 @@ function buildModelBadgeTimingText(timing) {
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = formatBadgeTokensPerSec(outputTokens, totalMs);
     const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
         : '';
 
     const parts = [`总耗时 ${formatBadgeDuration(totalMs)}`];
@@ -9053,7 +9053,7 @@ function buildModelBadgeTimingTitle(timing) {
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = formatBadgeTokensPerSec(outputTokens, totalMs);
     const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
         : '';
 
     const parts = [`总耗时: ${formatBadgeDuration(totalMs)}`];
@@ -9078,7 +9078,7 @@ function buildModelBadgeDetailTitle(modelName, inputTokens, outputTokens, memory
     const cached = safeTokenInt(t.cachedInput);
     if (raw > 0 || cached > 0) {
         const effective = Math.max(0, raw - cached);
-        const pct = raw > 0 ? Math.min(100, Math.round(cached / raw * 100)) : 0;
+        const pct = raw > 0 ? (Math.min(100, Math.round(cached / raw * 10000) / 100)).toFixed(2) : '0.00';
         lines.push(`E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%) [raw ${raw.toLocaleString()}]`);
     }
 
@@ -9112,7 +9112,7 @@ function buildModelBadgeText(
     const effective = Math.max(0, raw - cached);
     let ecText = '';
     if (raw > 0 && cached >= 0) {
-        const pct = Math.min(100, Math.round(cached / raw * 100));
+        const pct = (Math.min(100, Math.round(cached / raw * 10000) / 100)).toFixed(2);
         ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%)`;
     } else if (cached > 0) {
         ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()}`;
