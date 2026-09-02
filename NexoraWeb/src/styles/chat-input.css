@@ -1,12 +1,17 @@
 /**
- * chat-input.css - NexoraWeb input container geometry and collapse states.
+ * chat-input.css — NexoraWeb 输入区:紧凑单行(72px)几何 + 折叠状态机。
  *
- * The legacy stylesheet is shared with the old chat entry (含 chat.css 的
- * .input-wrapper { display: flex } 等规则).这里用 #nexora-app 作用域覆盖,
- * 使收起动画独立于旧页面。
+ * 布局(2026-09-03 改版):.input-container.composer-compact 为一根 flex 行,
+ * 左工具簇(上传/Thinking/Search/Tools)与 textarea、右状态簇同排,
+ * 空态高约 72px;textarea 多行时容器增高(is-multiline 底对齐)。
+ * 折叠按钮已移入 .input-footer(旧版在 .input-options 行内),收起态全部由
+ * 本文件驱动:内容 max-height 归零滑出,最终仅剩 44px 圆钮,动画口径不变。
+ *
+ * 注意:legacy/style.css 的对应规则仅作用于旧入口页;NexoraWeb 内该类名
+ * 只被 ChatInput.vue 使用,可直接在此收敛几何。
  */
 
-/* Input card base： legacy 手写优化迁移，圆角卡片 + 悬浮阴影 */
+/* ---------------- 容器基座:圆角卡片 + 焦点/拖拽态 ---------------- */
 .input-container {
     width: 100%;
     max-width: var(--input-container-max-width, 800px);
@@ -37,36 +42,79 @@
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), 0 5px 20px rgba(0, 0, 0, 0.08);
 }
 
-/* Input options： legacy 手写优化迁移，gap 15→12 统一，令牌化 */
-.input-options {
+/* ---------------- 紧凑单行几何(composer-compact) ---------------- */
+/* 空态整卡约 72px:min-height 72 + 8px 上下内边距;单行垂直居中,
+   输入多行(>1 行)由组件切换 is-multiline 改为底对齐,贴近主流输入框 */
+.input-container.composer-compact {
     display: flex;
-    gap: 12px;
-    margin-bottom: 10px;
-    border-bottom: 1px solid var(--color-border);
-    padding-bottom: 8px;
-    user-select: none;
-    transition: margin 0.26s ease, padding 0.26s ease, border-color 0.26s ease;
-}
-
-.input-options-tools {
-    flex: 1;
-    min-width: 0;
-    max-height: 48px;
-    opacity: 1;
-    transform: translateY(0);
-    overflow: hidden;
-    transition: max-height 0.32s ease-in-out, opacity 0.2s ease, transform 0.32s ease-in-out;
-}
-
-.input-options-tools-inner {
-    display: flex;
-    gap: 12px;
     align-items: center;
-    overflow: hidden;
-    min-width: 0;
-    min-height: 0;
+    gap: 6px;
+    min-height: 72px;
+    padding: 8px 10px;
 }
 
+.input-container.composer-compact.is-multiline {
+    align-items: flex-end;
+}
+
+/* 左工具簇:不再独占整行(去 border-bottom/margin-bottom),与正文同排 */
+.input-container.composer-compact .input-options {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border-bottom: none;
+    user-select: none;
+}
+
+.input-container.composer-compact .input-options-tools {
+    flex: none;
+    min-width: 0;
+    max-height: none;
+    overflow: visible;
+}
+
+.input-container.composer-compact .input-options-tools-inner {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* 正文输入:吃满剩余宽度;收起/展开的隐藏动画状态见下方 collapse 段 */
+.input-container.composer-compact #messageInput {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 48px;
+    min-height: 30px;
+    padding: 4px 0;
+    overflow-y: hidden;
+}
+
+/* 右状态簇:token 行 + 折叠按钮 + 发送按钮,右缘对齐,不再换行堆叠 */
+.input-container.composer-compact .input-footer {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+    margin: 0;
+    justify-content: flex-end;
+}
+
+.input-container.composer-compact .token-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
+    min-width: 0;
+    overflow: visible;
+}
+
+/* ---------------- 收起/展开:内容滑出归零,仅余 44px 圆钮 ---------------- */
 #nexora-app .input-dock {
     width: 100%;
 }
@@ -82,11 +130,12 @@
     margin-top: -30px;
 }
 
-/* 消息区底部 margin 参与收起过渡:20px(原版)→ -30px,消息区内容盒平滑延伸到视口底部,
+/* 消息区底部 margin 参与收起过渡:12px(展开)→ -30px,消息区内容盒平滑延伸到视口底部,
    与 dock 收缩同步推进,dock 底边悬浮于消息区之上,消除白色条带且全程无跳变
-   (dock 顶部 = 900 - dock高度,与消息区 margin 无关,故按钮滑动不受此过渡影响) */
+   (dock 顶部 = 舞台高度 - dock 高度,与消息区 margin 无关,故按钮滑动不受此过渡影响) */
 #nexora-app #messagesContainer {
     transition: margin-bottom 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-bottom: 12px;
 }
 
 #nexora-app .gddp-chat-view:has(.input-dock.input-dock-collapsed) #messagesContainer {
@@ -106,7 +155,7 @@
     width: auto;
     max-width: calc(100% - 80px);
     box-sizing: border-box;
-    margin: 0 40px 40px auto;
+    margin: 0 40px 24px auto;
     overflow: visible;
     transition:
         max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1),
@@ -134,68 +183,86 @@
     overflow: hidden;
 }
 
-/* 收起态容器:保持居中(仅由收缩的 wrapper 带动右移),并彻底清除原版输入卡片的
-   边框/背景/投影,避免残留白色圆环(对齐原版透明化) */
+/* 收起态容器:保持居中(仅由收缩的 wrapper 带动右移),并彻底清除输入卡片的
+   边框/背景/投影,避免残留白色圆环;紧凑行内仅剩 footer 里的 44px 圆钮 */
 #nexora-app #inputWrapper .input-container.input-collapsed {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     min-height: 44px;
     max-width: 44px;
     max-height: 44px;
     padding: 0;
+    gap: 0;
     border: none;
     box-shadow: none;
     background: transparent;
     box-sizing: border-box;
 }
 
-/* 收起态容器在收缩中的 wrapper 内始终保持水平居中(margin 不切换),
-   与 wrapper 同步收缩时按钮随右缘连续右移,不出现"先居中再左跳" */
 #nexora-app #inputWrapper.input-wrapper-collapsed .input-container {
     margin: 0 auto;
 }
 
-/* 收起态工具行:保留按钮右侧对齐(不去除 margin-left:auto 右缘锚定),
-   随卡片收缩平滑滑入右下角而非居中后再整体移动 */
-#nexora-app #inputWrapper .input-container.input-collapsed .input-options {
-    height: 44px;
-    min-height: 44px;
-    margin: 0;
-    padding: 0;
-    gap: 0;
-    box-sizing: border-box;
-    align-items: center;
+/* 收起过程中:工具簇 / 正文 / 状态行 整组滑出(动画隐藏),footer 只保留折叠按钮 */
+#nexora-app #inputWrapper .input-container.composer-compact .input-options,
+#nexora-app #inputWrapper .input-container.composer-compact #messageInput,
+#nexora-app #inputWrapper .input-container.composer-compact .token-footer-left,
+#nexora-app #inputWrapper .input-container.composer-compact .btn-send {
+    max-height: 220px;
+    min-height: 30px;
     overflow: hidden;
+    opacity: 1;
+    transform: translateY(0);
+    transition:
+        max-height 0.32s ease-in-out,
+        min-height 0.32s ease-in-out,
+        margin 0.32s ease-in-out,
+        padding 0.32s ease-in-out,
+        opacity 0.18s ease,
+        transform 0.32s ease-in-out;
 }
 
-/* 收起态隐藏工具行与正文/底部,仅保留折叠按钮(对齐原版收起时序与样式) */
-#nexora-app #inputWrapper .input-container.input-collapsed .input-options-tools {
-    max-height: 0;
-    opacity: 0;
-    flex: 0 0 0;
-    width: 0;
-    min-width: 0;
-    margin: 0;
-    padding: 0;
-    transform: translateY(14px);
-    pointer-events: none;
-}
-
-#nexora-app #inputWrapper .input-container.input-collapsed #messageInput,
-#nexora-app #inputWrapper .input-container.input-collapsed .input-footer {
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed .input-options,
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed #messageInput,
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed .token-footer-left,
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed .btn-send {
     max-height: 0 !important;
     min-height: 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    flex: 0 0 0 !important;
     margin: 0 !important;
     padding: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
     opacity: 0;
     transform: translateY(14px);
     pointer-events: none;
 }
 
-#nexora-app #inputWrapper .input-container.input-collapsed .input-collapse-btn {
-    flex: 0 0 44px;
+/* 收起态 footer:缩成 44px 圆钮的承载壳,按钮居中;
+   legacy 对 .input-collapsed .input-footer 有 max-height:0!important,必须同级 !important 覆盖 */
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed .input-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 0 !important;
+    padding: 0 !important;
+    max-height: 44px !important;
+    min-height: 44px !important;
+    height: 44px !important;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+
+#nexora-app #inputWrapper .input-container.composer-compact.input-collapsed .input-collapse-btn {
     width: 44px;
-    min-width: 44px;
     height: 44px;
-    margin-left: auto;
+    flex: 0 0 44px;
+    margin: 0;
     box-sizing: border-box;
 }
 
@@ -204,7 +271,7 @@
     pointer-events: auto;
     width: 44px;
     height: 44px;
-    margin-left: auto;
+    margin-left: 0;
     border-radius: 12px;
     border: 1px solid rgba(0, 0, 0, 0.06);
     background: var(--color-bg-elevated);
@@ -288,6 +355,8 @@
     color: var(--color-danger-text);
 }
 
+/* 窄屏 wrapper 收边 + 恢复容器圆角裁切(legacy 移动媒体对 input 有
+   overflow:visible!important,紧凑卡片需保持内容不外泄) */
 @media (max-width: 980px) {
     #nexora-app #inputWrapper {
         max-width: calc(100% - 32px);
@@ -296,5 +365,56 @@
 
     #nexora-app #inputWrapper.input-wrapper-collapsed {
         margin: 0 16px max(16px, env(safe-area-inset-bottom)) auto;
+    }
+
+    #nexora-app .input-container.composer-compact,
+    #nexora-app .input-container.composer-compact.input-collapsed {
+        overflow: hidden !important;
+    }
+}
+
+/* 手机窄屏(≤560px):单行三簇把正文挤到 ~95px(实测 364px 容器),
+   切换为 Grid 两行两列 ——
+   行1=工具行: 左工具簇(上传/思考/搜索/Tools) + 右 CTX 状态簇(环/用量)作锚点,整行平衡;
+   行2=输入行: textarea 吃满整宽 + 右缘折叠/发送按钮。
+   工具行收窄(26px chip)明显矮于输入行(~38px),主次层次分明;
+   收起态由更高优先级的 .input-collapsed flex 规则接管(圆钮仍 44px 居中)。 */
+@media (max-width: 560px) {
+    #nexora-app .input-container.composer-compact {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: auto auto;
+        grid-template-areas:
+            'opts token'
+            'input foot';
+        column-gap: 8px;
+        row-gap: 4px;
+    }
+
+    /* 行1左:工具簇 */
+    #nexora-app .input-container.composer-compact .input-options {
+        grid-area: opts;
+        align-self: center;
+    }
+
+    /* 行1右:CTX 状态簇右置(环 + 用量文字),作整行右侧锚点 */
+    #nexora-app .input-container.composer-compact .token-footer-left {
+        grid-area: token;
+        justify-content: flex-end;
+        align-self: center;
+    }
+
+    /* 行2:正文 —— 提高最小行高/垂直留白,placeholder 不再贴边显扁 */
+    #nexora-app .input-container.composer-compact #messageInput {
+        grid-area: input;
+        min-height: 38px;
+        padding: 7px 0 5px;
+        line-height: 1.5;
+    }
+
+    /* 行2右:折叠/发送,底边与输入行底对齐(多行输入时发送贴末行) */
+    #nexora-app .input-container.composer-compact .input-footer {
+        grid-area: foot;
+        align-self: end;
     }
 }

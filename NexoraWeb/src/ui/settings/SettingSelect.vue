@@ -24,6 +24,7 @@
             :aria-expanded="open"
             @click.stop="toggle"
         >
+            <i v-if="prefixIcon" :class="prefixIcon" class="setting-select-prefix" aria-hidden="true"></i>
             <span class="setting-select-label">{{ selectedLabel }}</span>
             <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
         </button>
@@ -101,10 +102,13 @@
         placement?: 'auto' | 'top' | 'bottom'
         /** 尺寸：跟随 gddp-button 的 default/compact，保持页头按钮与下拉同高 */
         size?: 'default' | 'compact'
+        /** 触发器前缀图标(fontawesome class,如输入行 Tools 模式的 wrench) */
+        prefixIcon?: string
     }>(), {
         popoverKey: undefined,
         placement: 'auto',
         size: 'default',
+        prefixIcon: undefined,
     })
 
     /** 未显式传入 popoverKey 时按实例自增,避免同一面板内多下拉共用同一 key 导致联动弹出 */

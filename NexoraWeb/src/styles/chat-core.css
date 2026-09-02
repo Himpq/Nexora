@@ -1016,7 +1016,20 @@ body.learning-workspace-active .sidebar-footer{
 /* Message markdown 渲染区：legacy 手写优化迁移
  * - 图片：block + contain + 8px 圆角，覆盖 markdown 默认 width 需 !important
  * - 表格：fixed 布局 + 语义边框 + 首列最小宽保证可读
+ * - 桌面端正文字号：MarkdownView 默认 14px 在宽屏偏小，#messagesContainer
+ *   前缀特异性高于组件 scoped 的 .markdown-body，仅在此容器内提升到 15px，
+ *   知识查看器/草稿/工具卡等其它 MarkdownView 场景不受影响
  */
+@media (min-width: 981px) {
+    #messagesContainer .markdown-body {
+        font-size: 15px;
+    }
+
+    #messagesContainer .markdown-body code {
+        font-size: 14px;
+    }
+}
+
 .content-body img {
     display: block;
     width: auto !important;

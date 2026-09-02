@@ -1888,14 +1888,22 @@
     border-color: var(--color-text-primary);
 }
 
-.setting-select-trigger i {
+.setting-select-trigger > i:last-child {
     font-size: 11px;
     color: var(--color-text-secondary);
     transition: transform 0.15s ease;
 }
 
-.setting-select-trigger.open i {
+.setting-select-trigger.open > i:last-child {
     transform: rotate(180deg);
+}
+
+/* 触发器前缀图标(prefix-icon 场景:如输入行 Tools 模式的 wrench) */
+.setting-select-prefix {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    color: inherit;
 }
 
 /* Teleport 到 body 后 position 由 absolute → fixed,绕过祖先 transform/filter
