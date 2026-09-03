@@ -14328,7 +14328,8 @@ def chat_stream():
         except Exception:
             regenerate_index = None
     
-    if not message and not is_regenerate and len(file_ids) == 0 and not data.get('puzzle_submission'):
+    # 空文本允许携带附件发送(单图/单文件轮次):user_attachments/sandbox_paths 任一非空即放行
+    if not message and not is_regenerate and len(file_ids) == 0 and len(sanitized_user_attachments) == 0 and len(sanitized_sandbox_paths) == 0 and not data.get('puzzle_submission'):
         return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']

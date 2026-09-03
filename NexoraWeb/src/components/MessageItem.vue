@@ -1400,15 +1400,23 @@
         sandbox_path?: string
     }
 
-    /** 归一化附件列表:url 取 asset_url || url(对齐原版 appendUserAttachments) */
+    /**
+     * 归一化附件列表:url 取 asset_url || url(对齐原版 appendUserAttachments)。
+     * 顶层 attachments 与 metadata.attachments 双源合并:
+     * 旧后端把图片只写 metadata(顶层为空数组),新后端只写顶层;
+     * 二选一会吞掉另一源——空数组也是数组,直接命中导致单图/单文件轮次在历史里渲染空白。
+     */
     const attachments = computed<MessageAttachment[]>(() => {
         const metadata = messageMetadata()
-        const raw = Array.isArray(props.message.attachments) ? props.message.attachments : metadata.attachments
+        const primary = Array.isArray(props.message.attachments) ? props.message.attachments : []
+        const legacy = Array.isArray(metadata.attachments) ? metadata.attachments as unknown[] : []
+        const raw = [...primary, ...legacy]
 
-        if (!Array.isArray(raw)) {
+        if (raw.length === 0) {
             return []
         }
 
+        const seen = new Set<string>()
         const list: MessageAttachment[] = []
 
         raw.forEach((entry) => {
@@ -1417,6 +1425,24 @@
             }
 
             const record = entry as Record<string, unknown>
+
+            // 双源同时落库时会重复,按身份键去重(名称/路径/资产缺一即视为不同附件)
+            const signature = [
+                String(record.asset_id || ''),
+                String(record.asset_url || ''),
+                String(record.url || ''),
+                String(record.sandbox_path || ''),
+                String(record.stored_path || ''),
+                String(record.name || ''),
+                String(record.size || ''),
+            ].join('|')
+
+            if (seen.has(signature)) {
+                return
+            }
+
+            seen.add(signature)
+
             // 兼容旧会话：仅有 sandbox_path / stored_path 时即时合成下载链接（对齐原版旧数据）
             const sandbox = String(record.sandbox_path || record.stored_path || '').trim()
             const url = String(
