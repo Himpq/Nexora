@@ -3,7 +3,7 @@
 // 数据直接消费 AppState 单例（@Observed），会话增删改后列表自动刷新，宿主只负责显隐与业务回调
 // 注意：本组件是组件级，@ObjectLink 由宿主页面的 @State 单例注入，符合工程约定
 
-import { ConversationItem, sanitizeDisplayName } from '../../common/AppConfig';
+import { ConversationItem, KnowledgeItem, sanitizeDisplayName } from '../../common/AppConfig';
 import { AppState } from '../../common/AppState';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { UserAvatar } from '../common/UserAvatar';
@@ -29,6 +29,11 @@ export struct SidebarPanel {
     // 手动刷新：由宿主执行（刷新 + bump 代次），因为列表数据源是宿主 @Prop 推送，
     // 组件内部直接刷 AppState 不会驱动 @Prop 更新
     onRequestRefresh: () => void = () => {};
+    // 知识库相关：列表数据直接消费 app.knowledgeList（@ObjectLink 驱动），刷新由组件直接调 app
+    onOpenKnowledge: (title: string) => void = () => {};
+    onToggleKnowledgePin: (item: KnowledgeItem) => void = () => {};
+    onDeleteKnowledge: (item: KnowledgeItem) => void = () => {};
+    onCreateKnowledge: () => void = () => {};
 
     private listScroller: Scroller = new Scroller();
     // 侧栏实例创建时刻：仅挂载后短暂窗口内随代次滚动（打开侧栏定位当前会话），
@@ -50,31 +55,77 @@ export struct SidebarPanel {
 
             this.NewChatButton();
 
+            // 分隔线：区分顶部功能区与列表区
+            Divider()
+                .strokeWidth(0.5)
+                .color($r('app.color.divider'))
+                .margin({ left: Space.lg, right: Space.lg });
+
             this.SectionHeader();
 
-            // 会话列表区：错误提示 / 空态 / 列表三态
-            if (this.app.conversationsError.length > 0) {
-                this.ErrorHint();
-            } else if (this.convList.length === 0 && !this.app.conversationsLoading) {
-                this.EmptyHint();
-            } else {
-                // space=2 固定行距，行高固定 60：每项布局高恒为 62，消除任何"估算高/实测高"两阶段跳变
-                List({ scroller: this.listScroller, space: 2 }) {
-                    ForEach(this.convList, (item: ConversationItem) => {
-                        ListItem() {
-                            this.ConversationRow(item);
+            // 列表区：根据侧栏视图切换，淡入淡出过渡
+            if (this.app.sidebarView === 'chat') {
+                Column() {
+                    if (this.app.conversationsError.length > 0) {
+                        this.ErrorHint();
+                    } else if (this.convList.length === 0 && !this.app.conversationsLoading) {
+                        this.EmptyHint();
+                    } else {
+                        // space=1 固定行距，行高固定 50：每项布局高恒为 51，消除任何"估算高/实测高"两阶段跳变
+                        List({ scroller: this.listScroller, space: 1 }) {
+                            ForEach(this.convList, (item: ConversationItem) => {
+                                ListItem() {
+                                    this.ConversationRow(item);
+                                }
+                            }, (item: ConversationItem) => item.id);
                         }
-                    }, (item: ConversationItem) => item.id);
+                        .layoutWeight(1)
+                        .width('100%')
+                        .scrollBar(BarState.Auto)
+                        .scrollBarWidth(3)
+                        .scrollBarColor('#3A000000')
+                        .padding({ left: Space.md, right: Space.md });
+                    }
                 }
                 .layoutWeight(1)
                 .width('100%')
-                .scrollBar(BarState.Auto)
-                .scrollBarWidth(3)
-                .scrollBarColor('#3A000000')
-                .padding({ left: Space.md, right: Space.md });
+                .transition(TransitionEffect.OPACITY.animation({ duration: Motion.durationBase, curve: Motion.easeOut }));
+            } else {
+                Column() {
+                    if (this.app.knowledgeError.length > 0) {
+                        this.KnowledgeErrorHint();
+                    } else if (this.app.knowledgeList.length === 0 && !this.app.knowledgeLoading) {
+                        this.KnowledgeEmptyHint();
+                    } else {
+                        List({ space: 1 }) {
+                            ForEach(this.app.knowledgeList, (item: KnowledgeItem) => {
+                                ListItem() {
+                                    this.KnowledgeRow(item);
+                                }
+                            }, (item: KnowledgeItem) => item.title);
+                        }
+                        .layoutWeight(1)
+                        .width('100%')
+                        .scrollBar(BarState.Auto)
+                        .scrollBarWidth(3)
+                        .scrollBarColor('#3A000000')
+                        .padding({ left: Space.md, right: Space.md });
+                    }
+                }
+                .layoutWeight(1)
+                .width('100%')
+                .transition(TransitionEffect.OPACITY.animation({ duration: Motion.durationBase, curve: Motion.easeOut }));
             }
 
             Blank();
+
+            // 分隔线：区分列表区与底部功能区
+            Divider()
+                .strokeWidth(0.5)
+                .color($r('app.color.divider'))
+                .margin({ left: Space.lg, right: Space.lg });
+
+            this.ViewSwitcher();
 
             this.Footer();
         }
@@ -126,7 +177,7 @@ export struct SidebarPanel {
                 .height(Size.icon)
                 .fillColor($r('app.color.text_inverse'));
 
-            Text('新对话')
+            Text(this.app.sidebarView === 'chat' ? '新对话' : '新建知识库')
                 .fontSize(FontSize.body)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_inverse'));
@@ -150,23 +201,29 @@ export struct SidebarPanel {
             offsetY: 4
         })
         .onClick(() => {
-            this.onNewChat();
+            if (this.app.sidebarView === 'chat') {
+                this.onNewChat();
+            } else {
+                this.onCreateKnowledge();
+            }
         });
     }
 
     // 会话区块标题 + 刷新
+    // LoadingProgress 与 IconButton 容器尺寸统一为 32x32，避免加载态切换时 Row 高度从 32 缩为 16
+    // 触发 Column 重排（List layoutWeight 区域突变 → 全部 item 位置跳变）
     @Builder
     SectionHeader() {
         Row() {
-            Text('最近对话')
+            Text(this.app.sidebarView === 'chat' ? '最近对话' : '知识库')
                 .fontSize(FontSize.small)
                 .fontColor($r('app.color.text_secondary'))
                 .layoutWeight(1);
 
-            if (this.app.conversationsLoading) {
+            if (this.app.sidebarView === 'chat' ? this.app.conversationsLoading : this.app.knowledgeLoading) {
                 LoadingProgress()
-                    .width(Size.iconSmall)
-                    .height(Size.iconSmall)
+                    .width(32)
+                    .height(32)
                     .color($r('app.color.brand_primary'));
             } else {
                 IconButton({
@@ -174,12 +231,17 @@ export struct SidebarPanel {
                     iconSize: Size.iconSmall,
                     buttonSize: 32,
                     onTap: () => {
-                        this.onRequestRefresh();
+                        if (this.app.sidebarView === 'chat') {
+                            this.onRequestRefresh();
+                        } else {
+                            this.app.refreshKnowledgeList();
+                        }
                     }
                 });
             }
         }
         .width('100%')
+        .height(32)
         .padding({ left: Space.lg, right: Space.md, bottom: Space.xs });
     }
 
@@ -222,7 +284,7 @@ export struct SidebarPanel {
                 .bindMenu(this.menuFor(item));
         }
         .width('100%')
-        .height(60)
+        .height(50)
         .padding({ left: Space.lg, right: Space.md })
         .borderRadius(Radius.md)
         .backgroundColor(this.isActive(item.id) ? $r('app.color.brand_soft') : Color.Transparent)
@@ -231,6 +293,52 @@ export struct SidebarPanel {
             if (!this.isActive(item.id)) {
                 this.onOpenConversation(item.id, item.title);
             }
+        });
+    }
+
+    // 知识库行：点击打开编辑弹层；右侧 ⋯ 弹出置顶/删除菜单
+    @Builder
+    KnowledgeRow(item: KnowledgeItem) {
+        Row({ space: Space.sm }) {
+            Column({ space: Space.xxs }) {
+                Row({ space: Space.xs }) {
+                    if (item.pin) {
+                        Image($r('app.media.ic_spark'))
+                            .width(12)
+                            .height(12)
+                            .fillColor($r('app.color.brand_primary'))
+                            .margin({ right: Space.xxs });
+                    }
+
+                    Text(item.title)
+                        .fontSize(FontSize.body)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis });
+                }
+                .width('100%');
+
+                Text(item.time)
+                    .fontSize(FontSize.caption)
+                    .lineHeight(LineHeight.caption)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .maxLines(1);
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start);
+
+            Image($r('app.media.ic_more_horiz'))
+                .width(Size.icon)
+                .height(Size.icon)
+                .fillColor($r('app.color.icon_secondary'))
+                .bindMenu(this.knowledgeMenuFor(item));
+        }
+        .width('100%')
+        .height(50)
+        .padding({ left: Space.lg, right: Space.md })
+        .borderRadius(Radius.md)
+        .onClick(() => {
+            this.onOpenKnowledge(item.title);
         });
     }
 
@@ -270,7 +378,43 @@ export struct SidebarPanel {
         .padding({ left: Space.lg, right: Space.lg, top: Space.sm });
     }
 
-    // 底部：设置 + 退出登录
+    @Builder
+    KnowledgeEmptyHint() {
+        Column({ space: Space.sm }) {
+            Image($r('app.media.ic_book'))
+                .width(Size.iconLarge)
+                .height(Size.iconLarge)
+                .fillColor($r('app.color.icon_secondary'));
+
+            Text('还没有知识库，点上方「新建知识库」开始')
+                .fontSize(FontSize.small)
+                .fontColor($r('app.color.text_tertiary'));
+        }
+        .width('100%')
+        .padding({ top: Space.xxl })
+        .justifyContent(FlexAlign.Center);
+    }
+
+    @Builder
+    KnowledgeErrorHint() {
+        Row({ space: Space.xs }) {
+            Image($r('app.media.ic_error'))
+                .width(Size.iconSmall)
+                .height(Size.iconSmall)
+                .fillColor($r('app.color.text_danger'));
+
+            Text(this.app.knowledgeError)
+                .fontSize(FontSize.small)
+                .fontColor($r('app.color.text_danger'))
+                .maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1);
+        }
+        .width('100%')
+        .padding({ left: Space.lg, right: Space.lg, top: Space.sm });
+    }
+
+    // 底部：设置
     @Builder
     Footer() {
         Column({ space: Space.xs }) {
@@ -298,25 +442,6 @@ export struct SidebarPanel {
                 this.onOpenSettings();
             });
 
-            Row({ space: Space.md }) {
-                Image($r('app.media.ic_logout'))
-                    .width(Size.icon)
-                    .height(Size.icon)
-                    .fillColor($r('app.color.text_danger'));
-
-                Text('退出登录')
-                    .fontSize(FontSize.body)
-                    .fontColor($r('app.color.text_danger'))
-                    .layoutWeight(1);
-            }
-            .width('100%')
-            .height(50)
-            .padding({ left: Space.lg, right: Space.lg })
-            .borderRadius(Radius.md)
-            .onClick(() => {
-                this.onSignOut();
-            });
-
             Text('Nexora Harmony · v0.11.0')
                 .fontSize(FontSize.caption)
                 .fontColor($r('app.color.text_tertiary'))
@@ -326,6 +451,52 @@ export struct SidebarPanel {
         }
         .width('100%')
         .padding({ left: Space.md, right: Space.md, top: Space.xs });
+    }
+
+    // 视图切换器：对话 / 知识库 segmented，下划线指示器随选中态滑动
+    // animateTo 包裹状态翻转，驱动列表区 if 分支的 transition 进退动画同步播放
+    @Builder
+    ViewSwitcher() {
+        Column() {
+            Row() {
+                Text('对话')
+                    .fontSize(FontSize.body)
+                    .fontWeight(this.app.sidebarView === 'chat' ? FontWeight.Medium : FontWeight.Regular)
+                    .fontColor(this.app.sidebarView === 'chat' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                    .layoutWeight(1)
+                    .textAlign(TextAlign.Center)
+                    .onClick(() => {
+                        animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
+                            this.app.setSidebarView('chat');
+                        });
+                    });
+
+                Text('知识库')
+                    .fontSize(FontSize.body)
+                    .fontWeight(this.app.sidebarView === 'knowledge' ? FontWeight.Medium : FontWeight.Regular)
+                    .fontColor(this.app.sidebarView === 'knowledge' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                    .layoutWeight(1)
+                    .textAlign(TextAlign.Center)
+                    .onClick(() => {
+                        animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
+                            this.app.setSidebarView('knowledge');
+                        });
+                    });
+            }
+            .width('100%')
+            .height(40);
+
+            // 下划线指示器：宽度 50%，通过 translate x 滑动到选中 tab 下方
+            Divider()
+                .strokeWidth(2)
+                .color($r('app.color.brand_primary'))
+                .width('50%')
+                .translate({ x: this.app.sidebarView === 'chat' ? '0%' : '100%' })
+                .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
+        }
+        .width('100%')
+        .padding({ left: Space.lg, right: Space.lg, top: Space.xs, bottom: Space.xs })
+        .alignItems(HorizontalAlign.Start);
     }
 
     // ---------- 行为 ----------
@@ -391,6 +562,25 @@ export struct SidebarPanel {
                 value: '删除',
                 action: () => {
                     this.onDeleteRequest(item);
+                }
+            }
+        ];
+        return entries;
+    }
+
+    // 知识库 ⋯ 菜单：置顶 / 删除
+    private knowledgeMenuFor(item: KnowledgeItem): MenuElement[] {
+        const entries: MenuElement[] = [
+            {
+                value: item.pin ? '取消置顶' : '置顶',
+                action: () => {
+                    this.onToggleKnowledgePin(item);
+                }
+            },
+            {
+                value: '删除',
+                action: () => {
+                    this.onDeleteKnowledge(item);
                 }
             }
         ];
