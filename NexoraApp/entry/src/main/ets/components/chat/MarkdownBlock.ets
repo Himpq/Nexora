@@ -5,12 +5,15 @@
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
 import { FontSize, LineHeight, Radius, Space } from '../../common/DesignToken';
-import { InlinePiece, ListItem, MarkdownBlock as MdBlock, MarkdownParser } from '../../common/MarkdownParser';
+import { InlinePiece, ListItem, MarkdownBlock as MdBlock, MarkdownParser, TableData } from '../../common/MarkdownParser';
 
 const MONO_FONT: string = 'monospace';
 
 // 标题字号梯度：等级越大越弱
 const HEADING_SIZES: number[] = [FontSize.display, FontSize.titleLarge, FontSize.title, FontSize.bodyLarge, FontSize.body, FontSize.body];
+
+// 单条消息渲染 block 上限：死循环已修复，153 block 解析仅 3ms，这里留硬上限防极端超长内容
+const MAX_RENDER_BLOCKS: number = 300;
 
 // 行内文本的块级差异样式：@Builder 调用返回 void，不允许链式挂属性，
 // 因此标题 / 引用 / 列表的差异一律作为参数传入渲染内核，字段缺省时走正文默认值
@@ -30,13 +33,25 @@ export struct MarkdownView {
     @Prop codeBackgroundColor: ResourceColor = $r('app.color.code_bg');
     @Prop codeTextColor: ResourceColor = $r('app.color.code_text');
     @State private blocks: MdBlock[] = [];
+    @State private truncatedCount: number = 0;
 
     aboutToAppear(): void {
-        this.blocks = MarkdownParser.parse(this.source);
+        this.applyBlocks(MarkdownParser.parse(this.source));
     }
 
     onSourceChange(): void {
-        this.blocks = MarkdownParser.parse(this.source);
+        this.applyBlocks(MarkdownParser.parse(this.source));
+    }
+
+    // 解析后截断：超过上限的 block 丢弃并记录数量，渲染层用提示行告知用户内容被省略
+    private applyBlocks(all: MdBlock[]): void {
+        if (all.length > MAX_RENDER_BLOCKS) {
+            this.blocks = all.slice(0, MAX_RENDER_BLOCKS);
+            this.truncatedCount = all.length - MAX_RENDER_BLOCKS;
+        } else {
+            this.blocks = all;
+            this.truncatedCount = 0;
+        }
     }
 
     build() {
@@ -44,6 +59,15 @@ export struct MarkdownView {
             ForEach(this.blocks, (block: MdBlock, index: number) => {
                 this.renderBlock(block);
             }, (block: MdBlock, index: number) => index + '_' + block.type + '_' + block.inline.length);
+
+            if (this.truncatedCount > 0) {
+                Text(`内容过长，已省略 ${this.truncatedCount} 个段落`)
+                    .fontSize(FontSize.caption)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .width('100%')
+                    .textAlign(TextAlign.Center)
+                    .padding({ top: Space.sm, bottom: Space.sm });
+            }
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -65,6 +89,8 @@ export struct MarkdownView {
                 .color($r('app.color.divider'))
                 .width('100%')
                 .margin({ top: Space.xs, bottom: Space.xs });
+        } else if (block.type === 'table') {
+            this.TableBlock(block);
         } else {
             this.InlineText(block.inline, FontSize.body, LineHeight.body, {});
         }
@@ -164,6 +190,57 @@ export struct MarkdownView {
         .width('100%')
     }
 
+    // 表格：表头加粗 + 底线，数据行等宽列，靠 layoutWeight(1) 对齐
+    @Builder
+    TableBlock(block: MdBlock) {
+        if (block.table !== null) {
+            this.TableContent(block.table);
+        }
+    }
+
+    @Builder
+    TableContent(table: TableData) {
+        Column() {
+            Row() {
+                ForEach(table.headers, (cell: string, index: number) => {
+                    Text(cell)
+                        .fontSize(FontSize.body)
+                        .fontWeight(FontWeight.Bold)
+                        .fontColor($r('app.color.text_primary'))
+                        .layoutWeight(1)
+                        .textAlign(this.tableAlign(table.aligns, index))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs });
+                }, (cell: string, index: number) => index + '_' + cell);
+            }
+            .width('100%')
+            .borderWidth({ bottom: 1 })
+            .borderColor({ bottom: $r('app.color.divider') });
+
+            ForEach(table.rows, (row: string[], rowIndex: number) => {
+                Row() {
+                    ForEach(row, (cell: string, colIndex: number) => {
+                        Text(cell)
+                            .fontSize(FontSize.body)
+                            .fontColor($r('app.color.text_primary'))
+                            .layoutWeight(1)
+                            .textAlign(this.tableAlign(table.aligns, colIndex))
+                            .maxLines(2)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs });
+                    }, (cell: string, colIndex: number) => colIndex + '_' + cell);
+                }
+                .width('100%')
+                .borderWidth({ bottom: 0.5 })
+                .borderColor({ bottom: $r('app.color.divider') });
+            }, (row: string[], rowIndex: number) => rowIndex + '_' + row.join('|'));
+        }
+        .width('100%')
+        .borderRadius(Radius.sm)
+        .backgroundColor($r('app.color.bg_card'));
+    }
+
     // 行内文本：整段一个 Text，Span 只改变颜色 / 字重 / 字体，绝不改字号
     // 块级差异样式以 style 参数传入：加粗、换色、占满剩余宽度、上下留白
     @Builder
@@ -211,6 +288,25 @@ export struct MarkdownView {
 
     private spanColor(piece: InlinePiece): ResourceColor {
         return piece.href.length > 0 ? this.accentColor : $r('app.color.text_primary');
+    }
+
+    // 表格列对齐：按分隔行解析的 aligns 取值，越界默认左对齐
+    private tableAlign(aligns: string[], index: number): TextAlign {
+        if (index >= aligns.length) {
+            return TextAlign.Start;
+        }
+
+        const align: string = aligns[index];
+
+        if (align === 'center') {
+            return TextAlign.Center;
+        }
+
+        if (align === 'right') {
+            return TextAlign.End;
+        }
+
+        return TextAlign.Start;
     }
 
     private copyToClipboard(text: string): void {

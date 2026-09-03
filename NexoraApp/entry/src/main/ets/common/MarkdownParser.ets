@@ -1,6 +1,11 @@
 // MarkdownParser.ets - Markdown 结构化解析（纯逻辑，不含任何 UI）
 // 输出「块 + 行内片段」两级结构，渲染层只负责把结构翻译成组件，不再在 UI 里做字符串判断
 
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN: number = 0x0001;
+const TAG: string = 'NexoraMd';
+
 // 行内片段：用布尔位表达样式叠加，渲染层据此选择字体与颜色
 export interface InlinePiece {
     text: string;
@@ -10,11 +15,18 @@ export interface InlinePiece {
     href: string;
 }
 
-export type BlockType = 'heading' | 'paragraph' | 'code' | 'quote' | 'list' | 'divider';
+export type BlockType = 'heading' | 'paragraph' | 'code' | 'quote' | 'list' | 'divider' | 'table';
 
 export interface ListItem {
     marker: string;
     inline: InlinePiece[];
+}
+
+// 表格数据：表头 + 数据行 + 每列对齐方式（'left'|'center'|'right'|''）
+export interface TableData {
+    headers: string[];
+    rows: string[][];
+    aligns: string[];
 }
 
 export interface MarkdownBlock {
@@ -25,6 +37,7 @@ export interface MarkdownBlock {
     ordered: boolean;
     inline: InlinePiece[];
     items: ListItem[];
+    table: TableData | null;
 }
 
 // 行内扫描器：顺序扫描源串，命中标记就切出一个片段
@@ -186,6 +199,8 @@ class BlockScanner {
     }
 
     scan(): MarkdownBlock[] {
+        hilog.info(DOMAIN, TAG, '[scan] lineCount=%{public}d', this.lines.length);
+
         while (this.index < this.lines.length) {
             const line: string = this.lines[this.index];
 
@@ -215,7 +230,8 @@ class BlockScanner {
                     codeText: '',
                     ordered: false,
                     inline: InlineScanner.parse(line.substring(headingLevel + 1).trim()),
-                    items: []
+                    items: [],
+                    table: null
                 });
                 this.index += 1;
                 continue;
@@ -228,6 +244,17 @@ class BlockScanner {
 
             if (BlockScanner.listMarker(line).length > 0) {
                 this.readList();
+                continue;
+            }
+
+            if (BlockScanner.isTableStart(this.lines, this.index)) {
+                this.readTable();
+                continue;
+            }
+
+            // 宽松表格：连续多行含 | 且列数一致但无分隔行（AI 常省略分隔行）
+            if (BlockScanner.isLooseTableStart(this.lines, this.index)) {
+                this.readLooseTable();
                 continue;
             }
 
@@ -261,7 +288,8 @@ class BlockScanner {
             codeText: body.join('\n'),
             ordered: false,
             inline: [],
-            items: []
+            items: [],
+            table: null
         });
     }
 
@@ -287,7 +315,8 @@ class BlockScanner {
             codeText: '',
             ordered: false,
             inline: InlineScanner.parse(body.join('\n')),
-            items: []
+            items: [],
+            table: null
         });
     }
 
@@ -328,7 +357,78 @@ class BlockScanner {
             codeText: '',
             ordered: ordered,
             inline: [],
-            items: items
+            items: items,
+            table: null
+        });
+    }
+
+    // 表格块：表头行 + 分隔行 + 连续的数据行
+    private readTable(): void {
+        const headers: string[] = BlockScanner.splitRow(this.lines[this.index]);
+        const aligns: string[] = BlockScanner.parseAlign(this.lines[this.index + 1]);
+        this.index += 2;
+
+        const rows: string[][] = [];
+
+        while (this.index < this.lines.length) {
+            const line: string = this.lines[this.index];
+
+            if (!BlockScanner.isTableRow(line)) {
+                break;
+            }
+
+            rows.push(BlockScanner.splitRow(line));
+            this.index += 1;
+        }
+
+        hilog.info(DOMAIN, TAG, '[readTable] cols=%{public}d rows=%{public}d', headers.length, rows.length);
+
+        this.blocks.push({
+            type: 'table',
+            level: 0,
+            language: '',
+            codeText: '',
+            ordered: false,
+            inline: [],
+            items: [],
+            table: { headers: headers, rows: rows, aligns: aligns }
+        });
+    }
+
+    // 宽松表格块：无分隔行，首行为表头，后续连续同列数行为数据行，对齐全默认
+    private readLooseTable(): void {
+        const headers: string[] = BlockScanner.splitRow(this.lines[this.index]);
+        const colCount: number = headers.length;
+        const rows: string[][] = [];
+        this.index += 1;
+
+        while (this.index < this.lines.length) {
+            const line: string = this.lines[this.index];
+
+            if (!BlockScanner.isTableRow(line) || BlockScanner.splitRow(line).length !== colCount) {
+                break;
+            }
+
+            rows.push(BlockScanner.splitRow(line));
+            this.index += 1;
+        }
+
+        const aligns: string[] = [];
+        for (let i: number = 0; i < colCount; i++) {
+            aligns.push('');
+        }
+
+        hilog.info(DOMAIN, TAG, '[readLooseTable] cols=%{public}d rows=%{public}d', colCount, rows.length);
+
+        this.blocks.push({
+            type: 'table',
+            level: 0,
+            language: '',
+            codeText: '',
+            ordered: false,
+            inline: [],
+            items: [],
+            table: { headers: headers, rows: rows, aligns: aligns }
         });
     }
 
@@ -339,7 +439,7 @@ class BlockScanner {
         while (this.index < this.lines.length) {
             const line: string = this.lines[this.index];
 
-            if (BlockScanner.isBlank(line) || BlockScanner.startsNewBlock(line)) {
+            if (BlockScanner.isBlank(line) || BlockScanner.startsNewBlock(this.lines, this.index)) {
                 break;
             }
 
@@ -354,12 +454,13 @@ class BlockScanner {
             codeText: '',
             ordered: false,
             inline: InlineScanner.parse(body.join('')),
-            items: []
+            items: [],
+            table: null
         });
     }
 
     private static emptyBlock(type: BlockType): MarkdownBlock {
-        return { type: type, level: 0, language: '', codeText: '', ordered: false, inline: [], items: [] };
+        return { type: type, level: 0, language: '', codeText: '', ordered: false, inline: [], items: [], table: null };
     }
 
     // 有序列表标记形如 "1."，无序为 "-" / "*" / "+"
@@ -391,12 +492,139 @@ class BlockScanner {
         return text.length > 0;
     }
 
-    private static startsNewBlock(line: string): boolean {
+    private static startsNewBlock(lines: string[], index: number): boolean {
+        const line: string = lines[index];
         return BlockScanner.isFence(line)
             || BlockScanner.isDivider(line)
             || BlockScanner.headingLevel(line) > 0
             || line.startsWith('>')
-            || BlockScanner.listMarker(line).length > 0;
+            || BlockScanner.listMarker(line).length > 0
+            || BlockScanner.isTableStart(lines, index)
+            || BlockScanner.isLooseTableStart(lines, index);
+    }
+
+    // 表格起始：当前行是表格行，且下一行是分隔行，且两者列数一致
+    private static isTableStart(lines: string[], index: number): boolean {
+        if (index + 1 >= lines.length) {
+            return false;
+        }
+
+        const header: string = lines[index];
+        const separator: string = lines[index + 1];
+
+        if (!BlockScanner.isTableRow(header) || !BlockScanner.isTableSeparator(separator)) {
+            return false;
+        }
+
+        return BlockScanner.splitRow(header).length === BlockScanner.splitRow(separator).length;
+    }
+
+    // 宽松表格起始：连续 >= 2 行含 | 且列数 >= 2 且一致，无分隔行
+    private static isLooseTableStart(lines: string[], index: number): boolean {
+        if (index + 1 >= lines.length) {
+            return false;
+        }
+
+        const first: string = lines[index];
+
+        if (!BlockScanner.isTableRow(first)) {
+            return false;
+        }
+
+        const colCount: number = BlockScanner.splitRow(first).length;
+
+        if (colCount < 2) {
+            return false;
+        }
+
+        let i: number = index + 1;
+        while (i < lines.length) {
+            if (!BlockScanner.isTableRow(lines[i]) || BlockScanner.splitRow(lines[i]).length !== colCount) {
+                break;
+            }
+
+            i += 1;
+        }
+
+        return i - index >= 2;
+    }
+
+    // 表格行：非空且含 |
+    private static isTableRow(line: string): boolean {
+        return line.trim().length > 0 && line.indexOf('|') >= 0;
+    }
+
+    // 表格分隔行：每个单元格只含 - 和 :，且至少一个 -
+    private static isTableSeparator(line: string): boolean {
+        const cells: string[] = BlockScanner.splitRow(line);
+
+        if (cells.length === 0) {
+            return false;
+        }
+
+        for (let i: number = 0; i < cells.length; i++) {
+            const cell: string = cells[i].trim();
+
+            if (cell.length < 1) {
+                return false;
+            }
+
+            for (let j: number = 0; j < cell.length; j++) {
+                const ch: string = cell[j];
+
+                if (ch !== '-' && ch !== ':') {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // 拆分表格行：去首尾 | 后按 | 切分，每个单元格 trim
+    private static splitRow(line: string): string[] {
+        let trimmed: string = line.trim();
+
+        if (trimmed.startsWith('|')) {
+            trimmed = trimmed.substring(1);
+        }
+
+        if (trimmed.endsWith('|')) {
+            trimmed = trimmed.substring(0, trimmed.length - 1);
+        }
+
+        const raw: string[] = trimmed.split('|');
+        const result: string[] = [];
+
+        for (let i: number = 0; i < raw.length; i++) {
+            result.push(raw[i].trim());
+        }
+
+        return result;
+    }
+
+    // 解析分隔行的对齐：:--: center / :-- left / --: right / -- 默认
+    private static parseAlign(separatorLine: string): string[] {
+        const cells: string[] = BlockScanner.splitRow(separatorLine);
+        const aligns: string[] = [];
+
+        for (let i: number = 0; i < cells.length; i++) {
+            const cell: string = cells[i].trim();
+            const left: boolean = cell.startsWith(':');
+            const right: boolean = cell.endsWith(':');
+
+            if (left && right) {
+                aligns.push('center');
+            } else if (right) {
+                aligns.push('right');
+            } else if (left) {
+                aligns.push('left');
+            } else {
+                aligns.push('');
+            }
+        }
+
+        return aligns;
     }
 
     private static isFence(line: string): boolean {
@@ -447,10 +675,14 @@ class BlockScanner {
 export class MarkdownParser {
     // 把 Markdown 原文解析为块列表；空文本返回空列表，由调用方决定是否展示占位
     static parse(source: string): MarkdownBlock[] {
+        hilog.info(DOMAIN, TAG, '[parse] sourceLen=%{public}d', source.length);
+
         if (source.trim().length === 0) {
             return [];
         }
 
-        return new BlockScanner(source).scan();
+        const blocks: MarkdownBlock[] = new BlockScanner(source).scan();
+        hilog.info(DOMAIN, TAG, '[parse] done blockCount=%{public}d', blocks.length);
+        return blocks;
     }
 }
