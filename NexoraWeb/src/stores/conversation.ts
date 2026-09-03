@@ -19,6 +19,7 @@ import {
     listConversations,
     PREVIOUS_MESSAGE_LIMIT,
     type ChatMessage,
+    type ConversationContextEvent,
     type ConversationBranch,
     type ConversationSummary,
     type ConversationTurn,
@@ -39,6 +40,7 @@ interface ConversationState {
     conversations: ConversationSummary[]
     currentId: string
     messages: ChatMessage[]
+    contextEvents: ConversationContextEvent[]
     generating: boolean
     loaded: boolean
     queue: QueuedMessage[]
@@ -82,6 +84,7 @@ interface ConversationState {
 /** 排队消息(生成中发送的内容进入队列,当前流结束后自动发送) */
 export interface QueuedMessage {
     content: string
+    conversationId?: string
     options: {
         enableThinking: boolean
         enableWebSearch: boolean
@@ -114,6 +117,7 @@ export const useConversationStore = defineStore('conversation', {
         conversations: [],
         currentId: '',
         messages: [],
+        contextEvents: [],
         generating: false,
         loaded: false,
         queue: [],
@@ -211,11 +215,9 @@ export const useConversationStore = defineStore('conversation', {
 
         /** 新建会话(对齐原版:本地重置进入空白会话,发送时才真正创建) */
         async newConversation(): Promise<void> {
-            // 生成中禁止新建:避免流式文本写入错误会话
-            if (this.generating) {
-                return
-            }
-
+            // 生成中也允许新建:对齐原版 detachCurrentVisibleStreamForNavigation —
+            // 后台流保留在 pendingStreams，切到空白会话，generating/streamingConversationId 保持指向旧会话
+            // 侧栏仍显示旧会话的 streaming 指示，新会话为空白可立即输入
             this.currentId = ''
             this.messages = []
             this.hasMoreBefore = false
@@ -246,6 +248,19 @@ export const useConversationStore = defineStore('conversation', {
             return this.currentId
         },
 
+        /**
+         * 标记本地会话模式(learning 等):新建会话走懒创建,列表项未经后端回填
+         * conversation_mode,发送路径在 dock 侧栏发首条消息时补标,保证
+         * Learning 侧栏会话列表能即时过滤到该会话
+         */
+        setConversationMode(conversationId: string, mode: string): void {
+            const item = this.conversations.find((entry) => entry.id === conversationId)
+
+            if (item) {
+                item.conversation_mode = mode
+            }
+        },
+
         /** 切换当前会话并加载消息(不立即清空旧消息,避免欢迎页闪烁) */
         async openConversation(conversationId: string): Promise<void> {
             if (!conversationId || conversationId === this.currentId) {
@@ -262,6 +277,7 @@ export const useConversationStore = defineStore('conversation', {
             this.currentId = conversationId
             this.hasMoreBefore = false
             this.loadingBefore = false
+            this.contextEvents = []
             this.streamingTargetIndex = null
             this.messagesLoading = true
             // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
@@ -326,6 +342,7 @@ export const useConversationStore = defineStore('conversation', {
                 // 加载失败:本次负责时清空,避免残留上一个会话的内容
                 if (seq === this.loadSeq) {
                     this.messages = []
+                    this.contextEvents = []
                     this.turns = []
                 }
 
@@ -342,6 +359,7 @@ export const useConversationStore = defineStore('conversation', {
         async loadMessages(seq?: number): Promise<void> {
             if (!this.currentId) {
                 this.messages = []
+                this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
                 this.streamingTargetIndex = null
@@ -360,6 +378,7 @@ export const useConversationStore = defineStore('conversation', {
             const startIndex = Number(data.start_index || 0)
 
             this.messages = rawMessages.map((message, offset) => toLocalMessage(message, startIndex + offset))
+            this.contextEvents = Array.isArray(data.context_events) ? data.context_events : []
             this.hasMoreBefore = !!data.has_more_before
             this.loadingBefore = false
         },
@@ -373,6 +392,10 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this.turns = await fetchTurns(this.currentId)
+        },
+
+        setContextEvents(events: ConversationContextEvent[]): void {
+            this.contextEvents = events.map((event) => ({ ...event }))
         },
 
         /**
@@ -420,6 +443,9 @@ export const useConversationStore = defineStore('conversation', {
                 }
 
                 this.messages = [...older, ...this.messages]
+                if (Array.isArray(data.context_events)) {
+                    this.contextEvents = data.context_events
+                }
                 this.hasMoreBefore = !!data.has_more_before
 
                 return true
@@ -437,6 +463,7 @@ export const useConversationStore = defineStore('conversation', {
             if (this.currentId === conversationId) {
                 this.currentId = ''
                 this.messages = []
+                this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
                 this.streamingTargetIndex = null
@@ -445,8 +472,8 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
-        /** 发送前占位:追加用户消息并创建空的助手消息 */
-        beginStream(userContent: string): void {
+        /** 发送前占位:追加用户消息并创建空的助手消息(对齐原版 appendUserMessageWithAttachments) */
+        beginStream(userContent: string, attachments: AttachmentInput[] = []): void {
             // 新消息索引基于最后一条已有消息的后端索引递增,避免与分页加载的索引错位
             const lastIndex = this.messages.length > 0
                 ? Number(this.messages[this.messages.length - 1].index)
@@ -457,6 +484,21 @@ export const useConversationStore = defineStore('conversation', {
                 index: nextIndex,
                 role: 'user',
                 content: userContent,
+                // 附件乐观展示：ChatView 已按沙箱路径快照，MessageItem 通过 metadata.attachments 渲染
+                ...(attachments.length > 0 ? {
+                    metadata: {
+                        attachments: attachments.map((att) => ({
+                            type: att.type || 'sandbox_file',
+                            name: att.name || att.original_name || 'attachment',
+                            mime: '',
+                            url: att.sandbox_path ? `/api/files/download?file_ref=${encodeURIComponent(att.sandbox_path)}&inline=1` : '',
+                            asset_url: att.sandbox_path ? `/api/files/download?file_ref=${encodeURIComponent(att.sandbox_path)}&inline=1` : '',
+                            sandbox_path: att.sandbox_path || '',
+                            stored_path: att.stored_path || '',
+                            size: att.size,
+                        })),
+                    },
+                } : {}),
             }
 
             // pending 驱动回复气泡尾部闪烁 ●(思考/等待首 token 动画,见 legacy style.css
@@ -471,6 +513,15 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this.messages.push(userMessage, assistantMessage)
+
+            // 同步追加用户轮次(乐观更新):TurnIndicatorPanel 渲染轮次线依赖 turns,
+            // 发消息时若不同步增长,对话进行中指示器不会刷新
+            this.turns.push({
+                index: nextIndex,
+                role: 'user',
+                content: userContent,
+            })
+
             this.generating = true
             this.streamingConversationId = this.currentId
             this.streamingTargetIndex = assistantMessage.index
@@ -613,6 +664,9 @@ export const useConversationStore = defineStore('conversation', {
                 modelVisibleResult: typeof step.model_visible_result === 'string'
                     ? step.model_visible_result
                     : undefined,
+                displayResult: typeof (step as any).display_model_visible_result === 'string' && (step as any).display_model_visible_result.trim()
+                    ? String((step as any).display_model_visible_result)
+                    : typeof (step as any).display_result === 'string' ? String((step as any).display_result) : undefined,
                 round: Number(step.round) || undefined,
             }
 
@@ -801,15 +855,30 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             if (!assistant) {
-                assistant = this.messages[this.messages.length - 1]
+                console.error('[conversation] final message target not found', {
+                    conversationId: convId,
+                    currentId: this.currentId,
+                    targetIndex,
+                })
+
+                return
             }
 
             if (!assistant || assistant.role !== 'assistant') {
                 return
             }
 
-            if (typeof message.content === 'string') {
-                assistant.content = message.content
+            if (Object.prototype.hasOwnProperty.call(message, 'content')) {
+                const incoming = typeof message.content === 'string'
+                    ? message.content
+                    : String(message.content || '')
+                // 空字符串的终帧不覆盖本地已累积的流式正文，避免“突然变空再刷新”的闪烁
+                if (String(incoming || '').trim() !== '') {
+                    assistant.content = incoming
+                } else if (String(assistant.content || '').trim() === '') {
+                    // 本地也为空时才允许空覆盖（纯工具流/错误流场景）
+                    assistant.content = incoming
+                }
             }
 
             // 版本切换会改写落盘时间戳;不同步会让版本导航签名匹配失败而错位
@@ -817,21 +886,114 @@ export const useConversationStore = defineStore('conversation', {
                 assistant.timestamp = message.timestamp
             }
 
+            const v4Fields = [
+                'status',
+                'model',
+                'summary',
+                'usage',
+                'trace',
+                'error',
+                'versions',
+                'attachments',
+                'memory_analysis',
+                'memory_io_tokens',
+            ] as const
+
+            v4Fields.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(message, key)) {
+                    ;(assistant as Record<string, unknown>)[key] = message[key]
+                } else if (key === 'error') {
+                    // 重答成功时后端不再返回 error，需显式清除旧错误残留
+                    delete (assistant as Record<string, unknown>)[key]
+                }
+            })
+
+            // 非 error 字段的残留同样清理：新落盘消息未携带的 error 必须彻底移除
+            if (!Object.prototype.hasOwnProperty.call(message, 'error')) {
+                delete (assistant as Record<string, unknown>).error
+
+                if (assistant.metadata && typeof assistant.metadata === 'object') {
+                    const meta = assistant.metadata as Record<string, unknown>
+
+                    delete meta.error
+                    delete meta.terminal_error
+                }
+            }
+
             if (message.metadata && typeof message.metadata === 'object') {
-                assistant.metadata = {
-                    ...(assistant.metadata && typeof assistant.metadata === 'object'
-                        ? (assistant.metadata as Record<string, unknown>)
-                        : {}),
-                    ...(message.metadata as Record<string, unknown>),
+                const incomingMeta = message.metadata as Record<string, unknown>
+                const existingMeta = (assistant.metadata && typeof assistant.metadata === 'object'
+                    ? assistant.metadata as Record<string, unknown>
+                    : {}) as Record<string, unknown>
+
+                // 流式期间已通过 patchStreamingIoTokens 补了 io_tokens_window，
+                // 终帧若无有效 io 数据（provider 未返回 usage）则保留流式补丁，避免 badge 被 0 覆盖
+                const hasValidIncomingIo = (() => {
+                    const keys = ['io_tokens_window', 'io_tokens', 'io_tokens_cumulative'] as const
+                    for (const key of keys) {
+                        const value = incomingMeta[key]
+                        if (value && typeof value === 'object') {
+                            const record = value as Record<string, unknown>
+                            const hasAny = ['input', 'output', 'raw_input', 'cached_input'].some(
+                                (field) => safeTokenInt(record[field]) > 0
+                            )
+                            if (hasAny) return true
+                        }
+                    }
+                    return false
+                })()
+
+                const mergedMeta: Record<string, unknown> = {
+                    ...existingMeta,
+                    ...incomingMeta,
                 }
 
-                // 服务器终帧/版本切换携带完整 process_steps 后,压缩卡片以服务器持久化数据为准,
-                // 清空流式本地步骤,避免本地旧值覆盖新版本内容(历史回放路径接管渲染)。
+                // 无有效 io 时保留流式已写入的窗口口径（ incoming 为 0 值亦视为无效）
+                if (!hasValidIncomingIo) {
+                    for (const key of ['io_tokens_window', 'io_tokens', 'io_tokens_cumulative'] as const) {
+                        const existingVal = existingMeta[key]
+                        if (existingVal && typeof existingVal === 'object') {
+                            const hasExistingValid = ['input', 'output', 'raw_input', 'cached_input'].some(
+                                (field) => safeTokenInt((existingVal as Record<string, unknown>)[field]) > 0
+                            )
+                            if (!hasExistingValid) continue
+                            const incomingVal = incomingMeta[key]
+                            const hasIncomingValid = incomingVal
+                                && typeof incomingVal === 'object'
+                                && ['input', 'output', 'raw_input', 'cached_input'].some(
+                                    (field) => safeTokenInt((incomingVal as Record<string, unknown>)[field]) > 0
+                                )
+                            if (!hasIncomingValid) {
+                                mergedMeta[key] = existingVal
+                            }
+                        }
+                    }
+                }
+
+                assistant.metadata = mergedMeta
+
+                // 服务器终帧携带 v4 trace 后，压缩卡片以服务器持久化数据为准。
                 assistant.compressionStep = null
             }
 
-            // 终帧覆盖后按持久化数据重建分段:优先 process_steps(保留工具链与多轮思考时序)
+            // 终帧覆盖后按 v4 trace.events 重建分段，保留工具链与 diff 展示数据。
+            // 若后端 trace 缺少 content 导致重建后 content 被清空，用本地已累积的正文兜底，避免闪空
+            const preContent = String(assistant.content || '')
+            const preContentTrim = preContent.trim()
+            const preSegments = Array.isArray(assistant.segments) ? [...assistant.segments] : []
             rebuildSegmentsForMessage(assistant)
+            if (String(assistant.content || '').trim() === '' && preContentTrim !== '') {
+                assistant.content = preContent
+                const hasContentSeg = Array.isArray(assistant.segments) && assistant.segments.some(seg => seg.type === 'content' && String(seg.text || '').trim() !== '')
+                if (!hasContentSeg) {
+                    const contentSegs = preSegments.filter(seg => seg.type === 'content' || seg.type === 'reasoning')
+                    assistant.segments = [...(assistant.segments || []), ...contentSegs]
+                }
+                // 保证 content 与 segments 一致
+                if (String(assistant.content || '').trim() === '') {
+                    assistant.content = preContent
+                }
+            }
 
             assistant.pending = false
         },
@@ -936,6 +1098,65 @@ export const useConversationStore = defineStore('conversation', {
         /** 记录本次请求的 token 画像(prompt_token_profile chunk,CTX/Token 展示数据源) */
         setStreamingTokenProfile(profile: Record<string, unknown>): void {
             this.streamTokenProfile = { ...profile }
+        },
+
+        /**
+         * 流式 token_usage 同步到当前助手消息的 model badge（I/O 与 E/C）：
+         * - token_usage 块在流式期间逐轮推送（累计输入/输出/缓存命中），比 final_message
+         *   落盘更早到达；直接写入 pending 助理消息的 metadata.io_tokens_window，
+         *   让 MessageItem 的 badge 立即显示，无需等 done 后重载（旧方案重载导致闪空）。
+         * - 同时保留向后兼容：done 终帧会 via applyFinalMessage 用后端落盘的
+         *   io_tokens_window / cumulative 覆盖，若终帧无 io 数据则保留流式补丁。
+         */
+        patchStreamingIoTokens(chunk: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant()
+
+            if (!assistant) {
+                return
+            }
+
+            const input = safeTokenInt(chunk.input_tokens)
+            const output = safeTokenInt(chunk.output_tokens)
+            const raw = safeTokenInt((chunk as Record<string, unknown>).raw_input_tokens)
+            const cached = safeTokenInt((chunk as Record<string, unknown>).cached_input_tokens)
+
+            if (!input && !output && !raw && !cached) {
+                return
+            }
+
+            const meta = (assistant.metadata && typeof assistant.metadata === 'object')
+                ? assistant.metadata as Record<string, unknown>
+                : {}
+
+            const prevWindow = (meta.io_tokens_window && typeof meta.io_tokens_window === 'object')
+                ? meta.io_tokens_window as Record<string, unknown>
+                : {}
+
+            // 取最新非零值，流式期间多轮 token_usage 叠加时取最后一次的全量快照
+            const nextWindow: Record<string, number> = {
+                input: input || safeTokenInt(prevWindow.input),
+                output: output || safeTokenInt(prevWindow.output),
+                raw_input: raw || safeTokenInt(prevWindow.raw_input),
+                cached_input: cached || safeTokenInt(prevWindow.cached_input),
+            }
+
+            // 至少一项非零才写入，避免空块污染 metadata
+            if (!nextWindow.input && !nextWindow.output && !nextWindow.raw_input && !nextWindow.cached_input) {
+                return
+            }
+
+            const nextMeta: Record<string, unknown> = {
+                ...meta,
+                io_tokens_window: nextWindow,
+                io_tokens: { ...nextWindow },
+            }
+
+            // 累计口径若尚未建立，用窗口值兜底（使 badge 的 fallback 累计亦有数）
+            if (!meta.io_tokens_cumulative || typeof meta.io_tokens_cumulative !== 'object') {
+                nextMeta.io_tokens_cumulative = { ...nextWindow }
+            }
+
+            assistant.metadata = nextMeta
         },
 
         /**
@@ -1085,6 +1306,77 @@ export const useConversationStore = defineStore('conversation', {
             })
         },
 
+        /**
+         * 回滚"未被服务端确认"的乐观轮次(发送新消息在连接阶段失败的幽灵占位)。
+         *
+         * 触发条件:beginStream 已把 user+assistant 推入本地列表,但后端从未落盘
+         * (HTTP 非 2xx / 网络错误 / 空响应),此时本地序号已比服务端真实数据多 1,
+         * 若不回滚,后续所有依赖 index 的操作(重答/删除/编辑)都会永久错位。
+         *
+         * 仅当 pending 携带 userMessage(即新消息轮次,重答无此字段)且消息仍在
+         * 可见列表中才移除;幂等,找不到目标时安全跳过。返回是否真正发生了回滚。
+         */
+        rollbackFailedTurn(): boolean {
+            const convId = this.streamingConversationId
+            const pending = convId ? this.pendingStreams[convId] : undefined
+
+            if (!convId || !pending) {
+                return false
+            }
+
+            const userMessage = pending.userMessage
+
+            // 重答轮次没有新增 user 消息,不适用回滚
+            if (!userMessage) {
+                return false
+            }
+
+            const userIdx = Number(userMessage.index)
+
+            if (!Number.isFinite(userIdx)) {
+                return false
+            }
+
+            let removed = false
+
+            if (this.currentId === convId) {
+                const assistantIdx = userIdx + 1
+
+                this.messages = this.messages.filter((message) => {
+                    const index = Number(message.index)
+
+                    if (message.role === 'user' && index === userIdx) {
+                        removed = true
+
+                        return false
+                    }
+
+                    if (message.role === 'assistant' && index === assistantIdx) {
+                        removed = true
+
+                        return false
+                    }
+
+                    return true
+                })
+
+                // 同步移除乐观轮次线,避免指示器残留幽灵条目
+                if (removed) {
+                    this.turns = this.turns.filter((turn) => Number(turn.index) !== userIdx)
+                }
+            }
+
+            // 释放分离缓冲并复位生成状态
+            delete this.pendingStreams[convId]
+            this.generating = false
+            this.streamingConversationId = ''
+            this.streamingTargetIndex = null
+
+            void this.refreshTokenMiniBase(convId)
+
+            return removed
+        },
+
         /** 本地更新会话置顶状态并重排(置顶在前,对齐后端排序) */
         setConversationPinLocal(conversationId: string, pin: boolean): void {
             const item = this.conversations.find((entry) => entry.id === conversationId)
@@ -1127,6 +1419,17 @@ export const useConversationStore = defineStore('conversation', {
             return state.conversations.find((item) => item.id === state.currentId)
         },
 
+        /** 当前浏览会话是否有未完成流，和后台其他会话的生成状态严格分离。 */
+        currentConversationGenerating(state): boolean {
+            if (!state.currentId || !state.generating || state.streamingConversationId !== state.currentId) {
+                return false
+            }
+
+            const pending = state.pendingStreams[state.currentId]
+
+            return !!pending && !pending.finished
+        },
+
         /**
          * 输入区 「TK 输入/输出」mini 展示(对齐原版 renderTokenMiniFromState):
          * 输入 = 今日基数 + usage 增量;输出 = 今日基数 + max(usage 输出, 估算输出)。
@@ -1151,9 +1454,15 @@ export const useConversationStore = defineStore('conversation', {
         /**
          * 侧边栏会话分支树行(对齐原版 arrangeConversationBranchRows):
          * 分支会话紧跟在父会话之后按深度缩进,孤儿分支排在末尾。
+         * Nexora 对话列表严禁混入 Learning 会话( conversation_mode === 'learning' ),
+         * 否则 Learning 侧栏与 Nexora 侧栏数据污染。
          */
         branchRows(state): ConversationBranchRow[] {
-            return arrangeConversationBranchRows(state.conversations)
+            const nexoraConversations = state.conversations.filter(
+                (item) => String(item.conversation_mode || '').trim().toLowerCase() !== 'learning'
+            )
+
+            return arrangeConversationBranchRows(nexoraConversations)
         },
     },
 })

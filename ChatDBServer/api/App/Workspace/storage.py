@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime
 from typing import Any, Dict, List
 
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationManager, ConversationService
 from basis.Database import get_path_lock, safe_read_json, safe_write_json
 from App.Utils import apply_text_patch, build_preview_diff
 
@@ -23,6 +23,9 @@ WORKSPACE_TEXT_LIMIT = 5000
 WORKSPACE_FILE_REF_LIMIT = 260
 WORKSPACE_TASK_NOTES_LIMIT = 1000
 WORKSPACE_ACTIVITY_LIMIT = 200
+WORKSPACE_DRAFT_TITLE_LIMIT = 120
+WORKSPACE_DRAFT_CONTENT_LIMIT = 4000
+WORKSPACE_DRAFT_MAX_COUNT = 200
 
 
 def utc_now_iso() -> str:
@@ -259,6 +262,10 @@ def new_workspace_task_id() -> str:
     return "task_" + secrets.token_urlsafe(10).replace("-", "_")
 
 
+def new_workspace_draft_id() -> str:
+    return "draft_" + secrets.token_urlsafe(10).replace("-", "_")
+
+
 def new_workspace_activity_id() -> str:
     return "act_" + secrets.token_urlsafe(10).replace("-", "_")
 
@@ -343,6 +350,7 @@ def default_workspace_payload(
         "knowledge_documents": [],
         "workspace_files": [],
         "workspace_tasks": [],
+        "workspace_drafts": [],
         "workspace_activity": [{
             "activity_id": new_workspace_activity_id(),
             "action": "workspace_created",
@@ -413,6 +421,7 @@ class WorkspaceStore:
         conversations = self._normalize_conversations(workspace.get("conversations", []), owner)
         knowledge_documents = self._normalize_knowledge_documents(workspace.get("knowledge_documents", []), owner)
         workspace_tasks = self._normalize_workspace_tasks(workspace.get("workspace_tasks", []), owner)
+        workspace_drafts = self._normalize_workspace_drafts(workspace.get("workspace_drafts", []), owner)
         workspace_activity = self._normalize_workspace_activity(workspace.get("workspace_activity", []), owner)
         raw_workspace_files = workspace.get("workspace_files")
 
@@ -442,6 +451,7 @@ class WorkspaceStore:
             "knowledge_documents": knowledge_documents,
             "workspace_files": workspace_files,
             "workspace_tasks": workspace_tasks,
+            "workspace_drafts": workspace_drafts,
             "workspace_activity": workspace_activity,
             "temp_netdisk": {"files": []},
         }
@@ -615,6 +625,37 @@ class WorkspaceStore:
 
         return result
 
+    def _normalize_workspace_drafts(self, value: Any, owner_username: str) -> List[Dict[str, Any]]:
+        if value is None:
+            return []
+
+        if not isinstance(value, list):
+            raise ValueError("workspace_drafts must be a list")
+
+        result: List[Dict[str, Any]] = []
+        seen = set()
+
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+
+            draft_id = normalize_text(item.get("draft_id"), 80)
+            title = normalize_text(item.get("title"), WORKSPACE_DRAFT_TITLE_LIMIT)
+
+            if not draft_id or not title or draft_id in seen:
+                continue
+
+            seen.add(draft_id)
+            result.append({
+                "draft_id": draft_id,
+                "title": title,
+                "content": normalize_workspace_markdown(item.get("content"), WORKSPACE_DRAFT_CONTENT_LIMIT),
+                "added_by": validate_username(str(item.get("added_by") or owner_username)),
+                "added_at": normalize_text(item.get("added_at"), 64),
+            })
+
+        return result
+
     def _normalize_workspace_activity(self, value: Any, owner_username: str) -> List[Dict[str, Any]]:
         if value is None:
             return []
@@ -775,7 +816,7 @@ class WorkspaceStore:
         actor = validate_username(added_by)
         workspace = self._read_workspace(wid)
         self._assert_can_edit(workspace, actor)
-        conversation = ConversationManager(actor).get_conversation(cid)
+        conversation = ConversationService(actor).get_conversation(cid)
         title = normalize_text(conversation.get("title"), 160)
         conversations = workspace.get("conversations", [])
 
@@ -1340,6 +1381,107 @@ class WorkspaceStore:
             time=now,
             subtitle="删除了任务",
             ref=tid,
+        )
+        workspace["updated_at"] = now
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, actor)
+
+    def add_workspace_draft(
+        self,
+        workspace_id: str,
+        actor_username: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Append a draft entry; both the model tool and manual UI share this entry point."""
+        wid = validate_workspace_id(workspace_id)
+        actor = validate_username(actor_username)
+        data = payload if isinstance(payload, dict) else {}
+        title = normalize_text(data.get("title"), WORKSPACE_DRAFT_TITLE_LIMIT)
+        content = normalize_workspace_markdown(data.get("content"), WORKSPACE_DRAFT_CONTENT_LIMIT)
+
+        if not title:
+            raise ValueError("draft title is required")
+
+        if not content:
+            raise ValueError("draft content is required")
+
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        drafts = self._normalize_workspace_drafts(workspace.get("workspace_drafts", []), owner)
+
+        if len(drafts) >= WORKSPACE_DRAFT_MAX_COUNT:
+            raise ValueError(f"workspace drafts reached the limit of {WORKSPACE_DRAFT_MAX_COUNT}")
+
+        now = utc_now_iso()
+        draft = {
+            "draft_id": new_workspace_draft_id(),
+            "title": title,
+            "content": content,
+            "added_by": actor,
+            "added_at": now,
+        }
+        drafts.append(draft)
+        self._append_workspace_activity(
+            workspace,
+            action="workspace_draft_added",
+            resource_type="workspace_draft",
+            title=title,
+            actor=actor,
+            time=now,
+            subtitle="记录了草稿",
+            ref=draft["draft_id"],
+        )
+        workspace["workspace_drafts"] = drafts
+        workspace["updated_at"] = now
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, actor)
+
+    def delete_workspace_draft(
+        self,
+        workspace_id: str,
+        draft_id: str,
+        actor_username: str,
+    ) -> Dict[str, Any]:
+        """Delete a draft entry by id."""
+        wid = validate_workspace_id(workspace_id)
+        did = normalize_text(draft_id, 80)
+        actor = validate_username(actor_username)
+
+        if not did:
+            raise ValueError("draft_id is required")
+
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        drafts = self._normalize_workspace_drafts(workspace.get("workspace_drafts", []), owner)
+        deleted_draft = None
+        next_drafts = []
+
+        for item in drafts:
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("draft_id") == did:
+                deleted_draft = item
+                continue
+
+            next_drafts.append(item)
+
+        if len(next_drafts) == len(drafts):
+            raise FileNotFoundError(f"workspace draft not found: {did}")
+
+        workspace["workspace_drafts"] = next_drafts
+        now = utc_now_iso()
+        self._append_workspace_activity(
+            workspace,
+            action="workspace_draft_removed",
+            resource_type="workspace_draft",
+            title=str((deleted_draft or {}).get("title") or "未命名草稿"),
+            actor=actor,
+            time=now,
+            subtitle="删除了草稿",
+            ref=did,
         )
         workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
@@ -2072,7 +2214,7 @@ class WorkspaceStore:
                 break
 
             added_by = validate_username(str(item.get("added_by") or owner))
-            conversation = ConversationManager(added_by).get_conversation(cid)
+            conversation = ConversationService(added_by).get_conversation(cid)
             messages = conversation.get("messages", [])
             snapshot = dict(item)
             snapshot["title"] = normalize_text(conversation.get("title"), 160)
@@ -2227,7 +2369,7 @@ class WorkspaceStore:
         snapshot = dict(item)
 
         try:
-            conversation = ConversationManager(added_by).get_conversation(conversation_id)
+            conversation = ConversationService(added_by).get_conversation(conversation_id)
         except Exception:
             # 对话已删除/暂不可读:沿用 Workspace 自存的标记数据展示。
             # 单个失效资源的详情增强不应让整个 Workspace 打不开。
@@ -2353,7 +2495,7 @@ class WorkspaceStore:
             file_refs.add(normalize_text(item.get("file_ref"), WORKSPACE_FILE_REF_LIMIT))
             file_refs.add(normalize_text(item.get("alias"), 260))
 
-        allowed_global_types = {"workspace", "workspace_memory", "workspace_prompt", "task"}
+        allowed_global_types = {"workspace", "workspace_memory", "workspace_prompt", "task", "workspace_draft"}
         result: List[Dict[str, Any]] = []
 
         for item in activity_items:
@@ -2508,6 +2650,7 @@ class WorkspaceStore:
                 "knowledge_documents": len(knowledge_documents),
                 "workspace_files": len(workspace_files),
                 "workspace_tasks": len(workspace_tasks),
+                "workspace_drafts": len(workspace.get("workspace_drafts", [])),
             },
             "task_status_counts": task_status_counts,
             "open_task_count": len(open_tasks),
@@ -2550,6 +2693,10 @@ class WorkspaceStore:
             item for item in workspace_tasks
             if isinstance(item, dict)
         ]
+        workspace_drafts = [
+            item for item in workspace.get("workspace_drafts", [])
+            if isinstance(item, dict)
+        ]
         workspace_activity = self._filter_workspace_activity_for_visible_resources(
             self._normalize_workspace_activity(workspace.get("workspace_activity", []), owner),
             conversations,
@@ -2573,12 +2720,14 @@ class WorkspaceStore:
             result["workspace_files"] = workspace_files
 
         result["workspace_tasks"] = workspace_tasks
+        result["workspace_drafts"] = workspace_drafts
         result["workspace_activity"] = workspace_activity
         result["conversation_count"] = len(conversations)
         result["knowledge_document_count"] = len(knowledge_documents)
         result["workspace_file_count"] = len(workspace_files)
         result["file_count"] = len(workspace_files)
         result["workspace_task_count"] = len(workspace_tasks)
+        result["workspace_draft_count"] = len(workspace_drafts)
         result["open_task_count"] = len([
             item for item in workspace_tasks
             if normalize_workspace_task_status(item.get("status")) not in {"done", "cancelled"}

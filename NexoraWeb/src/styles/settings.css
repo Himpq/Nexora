@@ -9,6 +9,8 @@
  *   - 头像一律 background-cover 圆形,杜绝 img 溢出
  */
 
+@import './settings/account.css';
+
 /* ==================== 外层(填满弹窗正文) ==================== */
 
 .settings-modal > .g-modal-body {
@@ -250,6 +252,7 @@
 .settings-page-body > .admin-system-panel,
 .settings-page-body > .admin-mail-panel,
 .settings-page-body > .admin-chroma-panel,
+.settings-page-body > .admin-search-panel,
 .settings-page-body > .admin-gen-image-panel,
 .settings-page-body > .admin-map-panel,
 .settings-page-body > .admin-users-panel {
@@ -1210,86 +1213,6 @@
     line-height: 1.4;
 }
 
-/* ==================== 个人资料 ==================== */
-
-.settings-profile-head {
-    display: flex;
-    align-items: flex-start;
-    gap: 28px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid var(--color-border);
-}
-
-.settings-avatar-panel {
-    flex: 0 0 132px;
-    width: 132px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-}
-
-.settings-avatar {
-    width: 104px;
-    height: 104px;
-    border-radius: 50%;
-    background-size: cover;
-    background-position: center;
-    background-color: var(--color-bg-hover);
-    border: 1px solid var(--color-border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-}
-
-.settings-avatar.settings-avatar-placeholder {
-    font-size: 30px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-}
-
-.settings-avatar-actions {
-    display: flex;
-    gap: 6px;
-}
-
-.settings-profile-meta {
-    flex: 1;
-    min-width: 0;
-}
-
-.settings-profile-meta .setting-row {
-    border-bottom: none;
-    min-height: 44px;
-}
-
-.settings-profile-name-input {
-    width: min(240px, 100%);
-}
-
-.settings-userid-inline {
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    margin-bottom: 14px;
-}
-
-.settings-field {
-    padding: 8px 12px;
-    background: var(--color-bg-sunken);
-    border: 1px solid var(--color-border);
-    border-radius: 7px;
-    font-size: 13px;
-    color: var(--color-text-secondary);
-}
-
-.settings-profile-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 14px;
-    justify-content: flex-end;
-}
-
 /* ==================== 偏好设置 ==================== */
 
 .settings-preferences-grid {
@@ -1307,6 +1230,8 @@
 .settings-pref-inline {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
 }
 
@@ -1941,7 +1866,7 @@
     justify-content: space-between;
     gap: 10px;
     width: 100%;
-    height: 34px;
+    height: var(--gddp-control-height);
     padding: 0 12px;
     border: 1px solid var(--color-border);
     border-radius: 7px;
@@ -1952,19 +1877,33 @@
     transition: border-color 0.15s ease;
 }
 
+.setting-select-trigger.is-compact {
+    height: var(--gddp-control-height-compact);
+    font-size: 12.5px;
+    padding: 0 10px;
+}
+
 .setting-select-trigger:hover,
 .setting-select-trigger.open {
     border-color: var(--color-text-primary);
 }
 
-.setting-select-trigger i {
+.setting-select-trigger > i:last-child {
     font-size: 11px;
     color: var(--color-text-secondary);
     transition: transform 0.15s ease;
 }
 
-.setting-select-trigger.open i {
+.setting-select-trigger.open > i:last-child {
     transform: rotate(180deg);
+}
+
+/* 触发器前缀图标(prefix-icon 场景:如输入行 Tools 模式的 wrench) */
+.setting-select-prefix {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    color: inherit;
 }
 
 /* Teleport 到 body 后 position 由 absolute → fixed,绕过祖先 transform/filter
@@ -2425,4 +2364,168 @@
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 16px;
+}
+
+.settings-help-text{
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* Settings profile */
+.settings-profile-head{
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+}
+.settings-avatar-panel{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px dashed var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-sunken);
+}
+.settings-avatar{
+    width: 108px;
+    height: 108px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--color-accent-border);
+    background-color: var(--color-bg-elevated);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+.settings-profile-meta{
+    display: flex;
+    flex-direction: column;
+}
+.settings-avatar-actions{
+    display: flex;
+    gap: 8px;
+}
+@media (max-width: 980px){.settings-profile-head{
+        grid-template-columns: 1fr;
+    }}
+.settings-skill-list{
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding-right: 6px;
+}
+.settings-skill-card{
+    height: 140px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    padding: 14px 14px 12px;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
+    display: flex;
+    flex-direction: column;
+}
+.settings-skill-top{
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 92px;
+    gap: 10px;
+    align-items: start;
+}
+.settings-skill-icon{
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: var(--color-bg-sunken);
+    border: 1px solid #e8eef7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    line-height: 1;
+}
+.settings-skill-controls{
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+}
+.settings-skill-title{
+    font-size: 16px;
+    color: var(--color-text-primary);
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 4px;
+    word-break: break-word;
+}
+.settings-skill-mode-label{
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.settings-skill-preview{
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 100%;
+}
+.settings-skill-main{
+    min-width: 0;
+    min-height: 56px;
+    cursor: pointer;
+    outline: none;
+}
+.settings-skill-main:focus-visible{
+    box-shadow: 0 0 0 2px #93c5fd;
+    border-radius: 10px;
+}
+.settings-skill-divider{
+    height: 1px;
+    background: #e5e7eb;
+    margin: auto 0 10px;
+}
+.settings-skill-footer{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.settings-skill-badge{
+    display: inline-flex;
+    align-items: center;
+    max-width: 78%;
+    border-radius: 999px;
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 8px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.settings-skill-empty{
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    padding: 10px 4px;
+    grid-column: 1 / -1;
+}
+@media (max-width: 1200px){.settings-skill-list{
+        grid-template-columns: 1fr;
+    }}
+@media (max-width: 1200px){.settings-skill-card{
+        height: 140px;
+    }}
+body:not(.settings-companion-mode).settings-modal-open{
+    overflow: hidden !important;
 }

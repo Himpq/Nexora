@@ -96,13 +96,19 @@ export function parseContextCompressionStep(raw: unknown): ContextCompressionSte
     }
 }
 
-/** 从消息 metadata.process_steps 中提取全部上下文压缩步骤(历史回放数据源) */
+/** 从 v4 trace.events 中提取全部上下文压缩步骤，兼容旧 metadata.process_steps。 */
 export function contextCompressionStepsFromMetadata(metadata: unknown): ContextCompressionStep[] {
     if (!metadata || typeof metadata !== 'object') {
         return []
     }
 
-    const steps = (metadata as Record<string, unknown>).process_steps
+    const record = metadata as Record<string, unknown>
+    const trace = record.trace && typeof record.trace === 'object'
+        ? record.trace as Record<string, unknown>
+        : {}
+    const steps = Array.isArray(trace.events)
+        ? trace.events
+        : record.process_steps
 
     if (!Array.isArray(steps)) {
         return []
@@ -135,7 +141,7 @@ export function resolveActiveContextCompressionStep(
         return live
     }
 
-    const history = contextCompressionStepsFromMetadata(message.metadata)
+    const history = contextCompressionStepsFromMetadata(message)
 
     return history.length > 0 ? history[history.length - 1] : null
 }

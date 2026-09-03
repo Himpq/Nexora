@@ -26,11 +26,21 @@ from datetime import timedelta, datetime
 import time
 import httpx
 
+# Windows 控制台默认 GBK，\xa0 等字符直接 print 会抛 UnicodeEncodeError，转为 utf-8 容错
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
 from App.Core import Model
 from basis.User import User
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationService
+from basis.Conversation.errors import ConversationConflictError, ConversationNotFoundError, ConversationValidationError
 from longterm.longterm_api import normalize_longterm_request
 from App.Storage import ChromaStore
 from App.Storage import UserFileSandbox
@@ -46,7 +56,7 @@ from basis.Database import safe_read_json, safe_write_json, get_path_lock
 from basis.TokenUsage import is_usage_log_path, read_usage_log_records, replace_usage_log_records
 from App.Files import KnowledgeWordExporter
 from App.Collaboration import KnowledgeCollabHub
-from App.Utils import append_log_text, init_run_logger
+from App.Utils import append_log_text, init_run_logger, log_event
 from basis.Conversation import asset_store
 import prompts
 from basis.Permission import (
@@ -241,7 +251,7 @@ _BROWSER_OLLAMA_STATUS_POLL_SEC = 10.0
 _BROWSER_OLLAMA_STATUS_IDLE_SLEEP_SEC = 5.0
 _MODELS_CONFIG_SYNC_LAST_ERROR = ''
 _CLIENT_CACHE: Dict[str, Any] = {}
-_SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer()
+_SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer(model_module_name="App.Core.model")
 
 
 def _move_resource_file_if_needed(old_path: str, new_path: str):
@@ -1933,6 +1943,120 @@ def _gen_image_config_public_payload(gen_cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Search API（Web Search）
+# ---------------------------------------------------------------------------
+
+SUPPORTED_SEARCH_PROVIDERS = ('exa', 'duckduckgo')
+DEFAULT_SEARCH_PROVIDER = 'duckduckgo'
+
+
+def _normalize_search_provider_name(raw: Any) -> str:
+    name = str(raw or '').strip().lower()
+
+    if name in ('exa', 'exa.ai', 'exa_web_search'):
+        return 'exa'
+
+    if name in ('duckduckgo', 'ddg', 'duck_duck_go'):
+        return 'duckduckgo'
+
+    if name in ('disabled', 'none', 'off', ''):
+        return 'disabled'
+
+    return name
+
+
+def _normalize_web_search_config(raw: Any) -> Dict[str, Any]:
+    cfg = raw if isinstance(raw, dict) else {}
+    active = _normalize_search_provider_name(cfg.get('active_provider') or DEFAULT_SEARCH_PROVIDER)
+
+    if active not in (*SUPPORTED_SEARCH_PROVIDERS, 'disabled'):
+        active = DEFAULT_SEARCH_PROVIDER
+
+    providers_raw = cfg.get('providers') if isinstance(cfg.get('providers'), dict) else {}
+    providers: Dict[str, Dict[str, Any]] = {}
+
+    # DuckDuckGo
+    ddg_raw = providers_raw.get('duckduckgo', {}) if isinstance(providers_raw.get('duckduckgo'), dict) else {}
+    providers['duckduckgo'] = {
+        'backend': str(ddg_raw.get('backend') or 'html').strip() or 'html',
+        'region': str(ddg_raw.get('region') or 'wt-wt').strip() or 'wt-wt',
+        'safesearch': str(ddg_raw.get('safesearch') or 'moderate').strip() or 'moderate',
+        'timelimit': str(ddg_raw.get('timelimit') or 'w').strip() or 'w',
+        'fetch_content': bool(ddg_raw.get('fetch_content', False)),
+        'timeout': max(1, min(int(ddg_raw.get('timeout') or 15), 120)),
+    }
+
+    # Exa
+    exa_raw = providers_raw.get('exa', {}) if isinstance(providers_raw.get('exa'), dict) else {}
+    exa_type = str(exa_raw.get('type') or 'auto').strip().lower()
+
+    if exa_type not in {'auto', 'fast', 'instant', 'deep-lite', 'deep', 'deep-reasoning'}:
+        exa_type = 'auto'
+
+    providers['exa'] = {
+        'api_key': str(exa_raw.get('api_key') or '').strip(),
+        'base_url': str(exa_raw.get('base_url') or 'https://api.exa.ai').strip().rstrip('/') or 'https://api.exa.ai',
+        'type': exa_type,
+        'num_results': max(1, min(int(exa_raw.get('num_results') or exa_raw.get('numResults') or 10), 20)),
+        'contents': exa_raw.get('contents') if isinstance(exa_raw.get('contents'), dict) else {'highlights': True},
+        'timeout': max(5, min(int(exa_raw.get('timeout') or 20), 60)),
+    }
+
+    # contents 归一
+    if not isinstance(providers['exa']['contents'], dict) or not providers['exa']['contents']:
+        providers['exa']['contents'] = {'highlights': True}
+
+    return {
+        'active_provider': active,
+        'default_num_results': max(1, min(int(cfg.get('default_num_results') or 8), 20)),
+        'providers': providers,
+    }
+
+
+def _get_web_search_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    raw = cfg.get('web_search') if isinstance(cfg.get('web_search'), dict) else {}
+    normalized = _normalize_web_search_config(raw)
+
+    if isinstance(cfg, dict) and cfg.get('web_search') != normalized:
+        cfg['web_search'] = normalized
+
+    return normalized
+
+
+def _web_search_config_public_payload(web_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_web_search_config(web_cfg)
+    providers_pub: Dict[str, Any] = {}
+
+    for name, pcfg in normalized.get('providers', {}).items():
+        row = dict(pcfg)
+
+        if name == 'exa':
+            row['api_key_masked'] = _mask_public_api_key(row.get('api_key'))
+            # 前端不直接展示明文，保留长度提示
+            row['has_api_key'] = bool(str(row.get('api_key') or '').strip())
+
+        providers_pub[name] = row
+
+    return {
+        'active_provider': normalized.get('active_provider', DEFAULT_SEARCH_PROVIDER),
+        'default_num_results': normalized.get('default_num_results', 8),
+        'providers': providers_pub,
+        'supported_providers': list(SUPPORTED_SEARCH_PROVIDERS),
+    }
+
+
+def _assert_web_search_ready(web_cfg: Dict[str, Any]) -> None:
+    active = str(web_cfg.get('active_provider') or '').strip().lower()
+
+    if active == 'exa':
+        api_key = str(web_cfg.get('providers', {}).get('exa', {}).get('api_key') or '').strip()
+
+        if not api_key:
+            raise ValueError('启用 Exa Web Search 前必须填写 API Key')
+
+
+
 def _ensure_server_bootstrap_files():
     """
     Ensure empty deployment can boot without manual pre-created files.
@@ -2760,6 +2884,10 @@ def start_service_status_monitor() -> None:
 
 @app.before_request
 def ensure_service_status_monitor_started():
+    # ServiceStatusMonitor.start() 现为非阻塞（仅做线程存活检查与本地历史恢复），
+    # 后台探测在独立线程中立即执行，因此 before_request 不会堵塞首个请求。
+    # 保留此钩子作为兜底，确保任何入口（包括仅健康检查的部署）都能懒启动监控，
+    # 真正的进程级启动在 __main__ 中已提前执行，避免首个请求承担线程创建成本。
     start_service_status_monitor()
 
 
@@ -3245,6 +3373,29 @@ def notify_models_config_changed(
     global _MODELS_CONFIG_SYNC_LAST_ERROR
 
     try:
+        # provider / model 变更后必须清理已缓存的 OpenAI 客户端，
+        # 否则更新后的 api_key / base_url 仍走旧连接，导致重答复现旧错误。
+        try:
+            _CLIENT_CACHE.clear()
+        except Exception:
+            pass
+
+        try:
+            import App.Core.model as _model_module
+
+            cache = getattr(_model_module, '_CLIENT_CACHE', None)
+
+            if isinstance(cache, dict):
+                cache.clear()
+
+            # 同步刷新运行时 CONFIG，避免新请求仍读旧内存配置
+            try:
+                _model_module.CONFIG = _model_module.load_config()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         sync_state = build_models_config_sync_state(models_cfg)
         ollama_providers = sync_state.get('ollama_providers', [])
 
@@ -3910,7 +4061,7 @@ def _restore_conversation_from_trash(username: str, payload: Dict[str, Any], tit
     if not original_conversation_id:
         return False, '回收站对话缺少原 conversation_id，无法恢复关系', {}
 
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
 
     try:
         restored_conversation_id = manager.restore_conversation(
@@ -8973,6 +9124,15 @@ def get_user_preferences():
                 if memory_update_model in _get_user_model_blacklist(username):
                     return jsonify({'success': False, 'message': '当前用户不可使用该记忆更新模型'}), 403
 
+            # learning_runtime 为用户级 Learning 入口开关({enabled: bool});管理端运行时配置经顶层 learning_runtime 下发,不落用户偏好
+            learning_runtime_payload = payload.get('learning_runtime')
+
+            if learning_runtime_payload is not None:
+                if not isinstance(learning_runtime_payload, dict) or not isinstance(learning_runtime_payload.get('enabled'), bool):
+                    return jsonify({'success': False, 'message': 'learning_runtime 配置格式不正确'}), 400
+
+                updates['learning_runtime'] = {'enabled': learning_runtime_payload['enabled']}
+
             quota_payload = payload.get('quota')
             if isinstance(quota_payload, dict):
                 updates['quota'] = quota_payload
@@ -10409,7 +10569,7 @@ def get_conversation_map_scene(conv_id, map_id):
         return jsonify({'success': False, 'message': 'map_id 不能为空'}), 400
 
     try:
-        ConversationManager(session['username']).get_conversation(cid)
+        ConversationService(session['username']).get_conversation(cid)
     except Exception:
         return jsonify({'success': False, 'message': '对话不存在'}), 404
 
@@ -10748,7 +10908,7 @@ def _as_bool(value, default=False):
 def list_conversations():
     """获取对话列表"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     conversations = manager.list_conversations()
     return jsonify({'success': True, 'conversations': conversations})
 
@@ -10758,7 +10918,7 @@ def list_conversations():
 def create_conversation_api():
     """创建一个空对话，供前端预创建使用"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     data = request.get_json(silent=True) or {}
     title = str(data.get('title') or '新对话').strip() or '新对话'
     conversation_mode = str(data.get('conversation_mode') or 'chat').strip() or 'chat'
@@ -10806,7 +10966,7 @@ def fork_conversation_api(conv_id):
     if running_sessions:
         return jsonify({'success': False, 'message': '当前会话仍在生成，完成后才能创建分支'}), 409
 
-    manager = ConversationManager(username)
+    service = ConversationService(username)
     branch_result = None
     target_conversation_id = ''
 
@@ -10818,16 +10978,16 @@ def fork_conversation_api(conv_id):
 
         _remove_conversation_assets_dir(username, target_conversation_id)
         remove_map_records(username, target_conversation_id)
-        manager.delete_conversation(target_conversation_id)
+        service.delete_conversation(target_conversation_id)
 
     try:
-        branch_result = manager.fork_conversation(
+        branch_result = service.fork_conversation(
             source_conversation_id,
             data.get('message_index'),
             title=str(data.get('title') or '').strip(),
         )
         target_conversation_id = str(branch_result.get('conversation_id') or '').strip()
-        branch_conversation = manager.get_conversation(target_conversation_id)
+        branch_conversation = service.get_conversation(target_conversation_id)
         branch_conversation = asset_store.clone_referenced_assets(
             username,
             source_conversation_id,
@@ -10845,9 +11005,7 @@ def fork_conversation_api(conv_id):
             source_conversation_id,
             target_conversation_id,
         )
-        manager.update_conversation_fields(target_conversation_id, {
-            'messages': branch_conversation.get('messages', []),
-        })
+        service.replace_conversation_messages(target_conversation_id, branch_conversation.get('messages', []))
         clone_map_records(username, source_conversation_id, target_conversation_id)
 
         workspace_id = str(data.get('workspace_id') or '').strip()
@@ -10866,15 +11024,12 @@ def fork_conversation_api(conv_id):
             'branch': branch_result.get('branch', {}),
             'workspace_id': workspace_id,
         })
-    except (ValueError, FileNotFoundError, PermissionError) as error:
-        status_code = 403 if isinstance(error, PermissionError) else 400
+    except PermissionError as error:
         rollback_branch()
-
-        return jsonify({'success': False, 'message': str(error)}), status_code
+        return jsonify({'success': False, 'message': str(error)}), 403
     except Exception as error:
         rollback_branch()
-
-        return jsonify({'success': False, 'message': str(error)}), 500
+        return jsonify({'success': False, 'message': str(error)}), 400
 
 
 @app.route('/api/conversations/<conv_id>/pin', methods=['PUT'])
@@ -10883,11 +11038,11 @@ def fork_conversation_api(conv_id):
 def set_conversation_pin(conv_id):
     """设置对话置顶状态"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     data = request.get_json(silent=True) or {}
     pin = bool(data.get('pin', True))
     try:
-        manager.set_conversation_pin(conv_id, pin=pin)
+        manager.set_pin(conv_id, pin=pin)
         return jsonify({'success': True, 'conversation_id': conv_id, 'pin': pin})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 400
@@ -10898,7 +11053,7 @@ def set_conversation_pin(conv_id):
 def update_conversation_title(conv_id):
     """更新对话标题"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     data = request.get_json(silent=True) or {}
     title = str(data.get('title') or '').strip()
     if not title:
@@ -10906,7 +11061,7 @@ def update_conversation_title(conv_id):
     if len(title) > 120:
         return jsonify({'success': False, 'message': 'title too long'}), 400
     try:
-        manager.update_conversation_title(conv_id, title)
+        manager.update_title(conv_id, title)
         return jsonify({'success': True, 'conversation_id': conv_id, 'title': title})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 400
@@ -10917,7 +11072,7 @@ def update_conversation_title(conv_id):
 def get_conversation(conv_id):
     """获取对话详情"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     try:
         conversation = manager.ensure_conversation_compatibility(conv_id)
         message_limit_raw = request.args.get('message_limit')
@@ -10973,7 +11128,7 @@ def get_conversation(conv_id):
 def get_conversation_messages(conv_id):
     """按真实消息索引分页读取对话消息。"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
 
     try:
         limit = int(str(request.args.get('limit') or '10').strip())
@@ -11008,6 +11163,7 @@ def get_conversation_messages(conv_id):
         return jsonify({
             'success': True,
             'messages': messages[start_index:before_index],
+            'context_events': manager.get_context_events(conv_id),
             'start_index': start_index,
             'end_index': end_index,
             'total': total_messages,
@@ -11047,7 +11203,7 @@ def _build_conversation_user_turns(messages):
 def get_conversation_turns(conv_id):
     """读取完整用户轮次列表，供窗口化消息渲染时保持轮次指示器完整。"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
 
     try:
         conversation = manager.ensure_conversation_compatibility(conv_id)
@@ -11073,13 +11229,16 @@ def get_conversation_turns(conv_id):
 def get_puzzle_states(conv_id):
     """获取对话中所有 puzzle 的画布状态"""
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     try:
-        conversation = manager.get_conversation(conv_id)
-        puzzle_states = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
+        puzzle_states = manager.get_puzzle_states(conv_id)
         return jsonify({'success': True, 'puzzle_states': puzzle_states if isinstance(puzzle_states, dict) else {}})
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}})
+        if isinstance(e, ConversationNotFoundError):
+            return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}}), 404
+        if isinstance(e, ConversationValidationError):
+            return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}}), 400
+        return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}}), 500
 
 
 @app.route('/api/conversations/<conv_id>/puzzle-states', methods=['POST'])
@@ -11094,50 +11253,38 @@ def save_puzzle_state(conv_id):
         return jsonify({'success': False, 'message': 'puzzle_id is required'}), 400
     if not isinstance(state, dict):
         return jsonify({'success': False, 'message': 'state must be a dict'}), 400
-    # 容量上限
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
+    # 严格校验委托至 Service/puzzle.py，未知字段直接报错
     try:
-        conversation = manager.get_conversation(conv_id)
-        existing = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
-        if isinstance(existing, dict) and len(existing) >= 50 and puzzle_id not in existing:
-            return jsonify({'success': False, 'message': 'puzzle_states limit reached (50)'}), 400
-    except Exception:
-        pass
-    # 只保留允许的字段
-    allowed_keys = {'nodes', 'edges', 'zoom', 'viewportX', 'viewportY', 'locked', 'submission', 'submitted_at'}
-    clean_state = {k: v for k, v in state.items() if k in allowed_keys}
-    clean_state['updated_at'] = datetime.now().isoformat()
-    try:
-        manager.update_conversation_fields(conv_id, {
-            'puzzle_states': {puzzle_id: clean_state}
-        })
+        manager.update_puzzle_state(conv_id, puzzle_id, state)
         return jsonify({'success': True, 'puzzle_id': puzzle_id})
     except Exception as e:
+        if isinstance(e, ConversationValidationError):
+            return jsonify({'success': False, 'message': str(e)}), 400
+        if isinstance(e, ConversationNotFoundError):
+            return jsonify({'success': False, 'message': str(e)}), 404
+        if isinstance(e, ConversationConflictError):
+            return jsonify({'success': False, 'message': str(e)}), 409
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/conversations/<conv_id>', methods=['DELETE'])
 @require_login
 def delete_conversation(conv_id):
-    """删除对话"""
+    """删除对话（完整资源包原子归档）"""
     username = session['username']
-    manager = ConversationManager(username)
-    conversation = None
     try:
-        conversation = manager.get_conversation(conv_id)
-    except Exception:
-        conversation = None
-
-    if isinstance(conversation, dict):
-        moved, move_err = _archive_conversation_to_trash(username, conv_id, conversation)
-        if not moved:
-            return jsonify({'success': False, 'message': f'写入回收站失败: {move_err}'}), 500
-
-    success = manager.delete_conversation(conv_id)
-    if success:
-        _remove_conversation_assets_dir(username, conv_id)
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'message': '删除失败或对话不存在'}), 404
+        from basis.Conversation.trash import ConversationTrashService
+        trash_id = ConversationTrashService(username).archive_and_delete(username, conv_id)
+        return jsonify({'success': True, 'trash_id': trash_id})
+    except ConversationNotFoundError as e:
+        return jsonify({'success': False, 'message': str(e)}), 404
+    except ConversationConflictError as e:
+        return jsonify({'success': False, 'message': str(e)}), 409
+    except ConversationValidationError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/trash/list', methods=['GET'])
@@ -11150,7 +11297,9 @@ def list_trash_items():
             limit = int(limit_raw or 120)
         except Exception:
             limit = 120
-        items = _trash_list_entries(username, limit=limit)
+        from basis.Conversation.trash import ConversationTrashService
+        trash_svc = ConversationTrashService(username)
+        items = trash_svc.list_entries(username, limit=limit)
         return jsonify({'success': True, 'items': items, 'count': len(items)})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -11167,34 +11316,66 @@ def restore_trash_item(trash_id=None):
     if not trash_id:
         return jsonify({'success': False, 'message': '缺少回收站条目ID'}), 400
 
-    entry = _trash_read_entry(username, trash_id)
+    from basis.Conversation.trash import ConversationTrashService
+    trash_svc = ConversationTrashService(username)
+    try:
+        entry = trash_svc.read_entry(username, trash_id)
+    except ConversationNotFoundError as e:
+        return jsonify({'success': False, 'message': str(e)}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
     if not isinstance(entry, dict):
         return jsonify({'success': False, 'message': '回收站条目不存在'}), 404
 
     entry_type = str(entry.get('type') or '').strip()
-    payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else {}
-    title = str(entry.get('title') or '').strip()
     ok = False
     err = ''
     restored: Dict[str, Any] = {}
 
     if entry_type == 'conversation':
-        ok, err, restored = _restore_conversation_from_trash(username, payload, title_hint=title)
+        try:
+            restored_id = trash_svc.restore_to_active(username, trash_id)
+            ok = True
+            restored = {"conversation_id": restored_id, "title": str(entry.get('title') or '')}
+        except ConversationNotFoundError as e:
+            return jsonify({'success': False, 'message': str(e)}), 404
+        except ConversationConflictError as e:
+            return jsonify({'success': False, 'message': str(e)}), 409
+        except ConversationValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+        except Exception as e:
+            return jsonify({'success': False, 'message': str(e)}), 500
     elif entry_type == 'knowledge_basis':
+        payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else entry.get('conversation') if isinstance(entry.get('conversation'), dict) else {}
+        title = str(entry.get('title') or '').strip()
         ok, err, restored = _restore_basis_from_trash(username, payload, title_hint=title)
+        if not ok:
+            return jsonify({'success': False, 'message': err or '恢复失败'}), 500
     else:
         return jsonify({'success': False, 'message': f'不支持的回收站类型: {entry_type}'}), 400
 
-    if not ok:
-        return jsonify({'success': False, 'message': err or '恢复失败'}), 500
-    _trash_remove_entry(username, trash_id)
-    return jsonify({
+    if ok:
+        cleanup_warning = None
+        try:
+            trash_svc.remove_entry(username, trash_id)
+        except Exception as cleanup_e:
+            cleanup_warning = str(cleanup_e)
+            # 可观测：记录日志并在响应中暴露
+            try:
+                app.logger.warning(f"trash cleanup failed after restore trash_id={trash_id} err={cleanup_e}")
+            except Exception:
+                pass
+    resp = {
         'success': True,
         'id': trash_id,
         'type': entry_type,
         'restored': restored
-    })
+    }
+    if cleanup_warning:
+        resp['warning'] = f"trash cleanup failed: {cleanup_warning}"
+        resp['trash_cleanup_failed'] = True
+    return jsonify(resp)
 
 
 @app.route('/api/trash', methods=['DELETE'])
@@ -11203,7 +11384,9 @@ def restore_trash_item(trash_id=None):
 def clear_trash_items():
     username = session['username']
     try:
-        removed = _trash_clear_entries(username)
+        from basis.Conversation.trash import ConversationTrashService
+        trash_svc = ConversationTrashService(username)
+        removed = trash_svc.clear_entries(username)
         return jsonify({'success': True, 'removed': int(max(0, removed))})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -11223,10 +11406,10 @@ def _delete_conversation_message_response(conv_id, index):
     except Exception:
         return jsonify({"success": False, "message": "Invalid index"}), 400
 
-    manager = ConversationManager(username)
+    service = ConversationService(username)
 
     try:
-        conversation = manager.get_conversation(conv_id)
+        conversation = service.get_conversation(conv_id)
     except Exception:
         conversation = None
 
@@ -11242,15 +11425,17 @@ def _delete_conversation_message_response(conv_id, index):
             "server_message_count": len(messages)
         }), 409
 
-    if manager.delete_message(conv_id, index):
+    try:
+        service.delete_turn(conv_id, int(index))
         try:
-            conversation = manager.get_conversation(conv_id)
+            conversation = service.get_conversation(conv_id)
             keep_ids = _collect_referenced_asset_ids(conversation)
             _cleanup_conversation_assets(username, conv_id, keep_asset_ids=keep_ids)
         except Exception as e:
             print(f"[ASSET] cleanup after delete_message failed: {e}")
         return jsonify({"success": True})
-    return jsonify({"success": False, "message": "删除失败，请稍后重试"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route('/api/delete_message', methods=['POST'])
@@ -11281,16 +11466,9 @@ def update_user_message_content(conv_id, msg_index):
         return jsonify({'success': False, 'message': '消息长度不能超过 12000'}), 400
 
     username = session['username']
-    manager = ConversationManager(username)
+    service = ConversationService(username)
     try:
-        ok, message = manager.update_user_message_content(
-            conv_id,
-            msg_index,
-            content,
-            only_last=True
-        )
-        if not ok:
-            return jsonify({'success': False, 'message': str(message or '修改失败')}), 400
+        service.edit_user_message(conv_id, int(msg_index), content)
         return jsonify({
             'success': True,
             'conversation_id': conv_id,
@@ -11298,7 +11476,12 @@ def update_user_message_content(conv_id, msg_index):
             'content': content
         })
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        msg = str(e)
+        if "仅支持修改最后一条" in msg or "仅支持修改用户消息" in msg:
+            return jsonify({'success': False, 'message': msg}), 400
+        if "消息索引" in msg or "越界" in msg:
+            return jsonify({'success': False, 'message': msg}), 400
+        return jsonify({'success': False, 'message': msg}), 500
 
 
 @app.route('/api/conversations/<conv_id>/user_partial', methods=['POST'])
@@ -11310,7 +11493,7 @@ def save_user_partial(conv_id):
         return jsonify({'success': False, 'message': 'content 不能为空'}), 400
 
     username = session['username']
-    manager = ConversationManager(username)
+    manager = ConversationService(username)
     try:
         conversation = manager.get_conversation(conv_id)
     except Exception:
@@ -11335,7 +11518,7 @@ def save_user_partial(conv_id):
         return jsonify({
             'success': True,
             'conversation_id': conv_id,
-            'index': max(0, int(manager.get_message_count(conv_id) or 1) - 1),
+            'index': max(0, len(manager.get_messages(conv_id)) - 1),
             'saved_chars': len(content)
         })
     except Exception as e:
@@ -11351,22 +11534,13 @@ def save_assistant_partial(conv_id):
         return jsonify({'success': False, 'message': 'content 不能为空'}), 400
 
     username = session['username']
-    manager = ConversationManager(username)
+    service = ConversationService(username)
     try:
-        conversation = manager.get_conversation(conv_id)
+        conversation = service.get_conversation(conv_id)
     except Exception:
         conversation = None
     if not isinstance(conversation, dict):
         return jsonify({'success': False, 'message': '对话不存在'}), 404
-
-    metadata_raw = data.get('metadata')
-    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
-    metadata = dict(metadata)
-    metadata['aborted'] = True
-    metadata['partial'] = True
-    model_name = str(data.get('model_name') or '').strip()
-    if model_name and not str(metadata.get('model_name') or '').strip():
-        metadata['model_name'] = model_name
 
     raw_index = data.get('index', None)
     index = None
@@ -11385,7 +11559,6 @@ def save_assistant_partial(conv_id):
                 'message': '消息索引已过期，请同步后重试',
                 'server_message_count': len(messages)
             }), 409
-
         target = messages[parsed] if isinstance(messages[parsed], dict) else {}
         target_role = str(target.get('role') or '').strip()
         if target_role != 'assistant':
@@ -11398,18 +11571,15 @@ def save_assistant_partial(conv_id):
         index = parsed
 
     try:
-        manager.add_message(
-            conv_id,
-            'assistant',
-            content,
-            metadata=metadata,
-            index=index
-        )
-        # 手动写入中断内容后，清理续接ID，确保后续上下文与本地对话一致
-        try:
-            manager.update_last_response_id(conv_id, None, model_name=None)
-        except Exception:
-            pass
+        if index is not None:
+            # 严格部分更新
+            service.update_assistant_partial(conv_id, int(index), {"content": content, "status": "partial"})
+        else:
+            # 无索引时追加为 partial
+            # 通过 begin_user_turn 的 placeholder 机制追加
+            turn = service.begin_user_turn(conv_id, "[partial]", metadata={})
+            service.update_assistant_partial(conv_id, int(turn.get("assistant_index")), {"content": content, "status": "partial"})
+            index = int(turn.get("assistant_index"))
         return jsonify({
             'success': True,
             'conversation_id': conv_id,
@@ -11448,20 +11618,20 @@ def switch_version():
     if conv_id is None or msg_index is None or ver_index is None:
         return jsonify({"success": False, "message": "Missing data"}), 400
         
-    manager = ConversationManager(username)
-    if manager.switch_message_version(conv_id, int(msg_index), int(ver_index)):
+    service = ConversationService(username)
+    try:
+        service.switch_message_version(conv_id, int(msg_index), int(ver_index))
         try:
-            conversation = manager.get_conversation(conv_id)
+            conversation = service.get_conversation(conv_id)
             messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
             switched_message = None
-
             if isinstance(messages, list) and 0 <= int(msg_index) < len(messages):
                 switched_message = deepcopy(messages[int(msg_index)])
-
             return jsonify({"success": True, "message": switched_message})
         except Exception:
             return jsonify({"success": True})
-    return jsonify({"success": False, "message": "Failed to switch version"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route('/api/config', methods=['GET'])
@@ -11905,6 +12075,128 @@ def admin_delete_gen_image_api(api_id=None):
             'message': f'生图接口 {api_id} 已删除',
             **_gen_image_config_public_payload(gen_cfg),
         })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/search/config', methods=['GET'])
+@require_admin
+def admin_get_search_config():
+    """管理员读取搜索 API 配置"""
+    try:
+        cfg = ensure_main_config_defaults()
+        web_cfg = _get_web_search_config(cfg)
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            **_web_search_config_public_payload(web_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/search/config', methods=['POST'])
+@require_admin
+def admin_update_search_config():
+    """管理员保存搜索 API 配置"""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        cfg = ensure_main_config_defaults()
+        web_cfg = _get_web_search_config(cfg)
+
+        # active_provider
+        if 'active_provider' in data:
+            web_cfg['active_provider'] = _normalize_search_provider_name(data.get('active_provider'))
+
+        if 'default_num_results' in data:
+            try:
+                web_cfg['default_num_results'] = max(1, min(int(data.get('default_num_results') or 8), 20))
+            except Exception:
+                pass
+
+        # providers
+        providers_data = data.get('providers') if isinstance(data.get('providers'), dict) else None
+
+        if providers_data is None and any(k in data for k in ('exa', 'duckduckgo', 'exa_api_key', 'api_key')):
+            # 兼容扁平传入
+            providers_data = data
+
+        if isinstance(providers_data, dict):
+            # Exa
+            exa_in = providers_data.get('exa') if isinstance(providers_data.get('exa'), dict) else {}
+
+            # 兼容直接传 exa_api_key / api_key
+            if not exa_in and ('exa_api_key' in providers_data or 'api_key' in providers_data):
+                exa_in = {
+                    'api_key': providers_data.get('exa_api_key', providers_data.get('api_key')),
+                }
+
+            if isinstance(exa_in, dict) and exa_in:
+                cur = web_cfg.setdefault('providers', {}).setdefault('exa', {})
+
+                if 'api_key' in exa_in:
+                    # 空字符串表示清空，前端未改动时传 masked 时不覆盖
+                    new_key = str(exa_in.get('api_key') or '').strip()
+
+                    # 前端若传的是 masked（如 exa-****abcd），则视为未修改
+                    if new_key and '****' in new_key:
+                        pass
+                    else:
+                        cur['api_key'] = new_key
+
+                if 'base_url' in exa_in:
+                    cur['base_url'] = str(exa_in.get('base_url') or 'https://api.exa.ai').strip().rstrip('/') or 'https://api.exa.ai'
+
+                if 'type' in exa_in:
+                    t = str(exa_in.get('type') or 'auto').strip().lower()
+
+                    if t in {'auto', 'fast', 'instant', 'deep-lite', 'deep', 'deep-reasoning'}:
+                        cur['type'] = t
+
+                if 'timeout' in exa_in:
+                    try:
+                        cur['timeout'] = max(5, min(int(exa_in.get('timeout') or 20), 60))
+                    except Exception:
+                        pass
+
+                if 'num_results' in exa_in or 'numResults' in exa_in:
+                    try:
+                        cur['num_results'] = max(1, min(int(exa_in.get('num_results') or exa_in.get('numResults') or 10), 20))
+                    except Exception:
+                        pass
+
+            # DuckDuckGo
+            ddg_in = providers_data.get('duckduckgo') if isinstance(providers_data.get('duckduckgo'), dict) else {}
+
+            if isinstance(ddg_in, dict) and ddg_in:
+                cur = web_cfg.setdefault('providers', {}).setdefault('duckduckgo', {})
+
+                for field in ('backend', 'region', 'safesearch', 'timelimit'):
+                    if field in ddg_in:
+                        cur[field] = str(ddg_in.get(field) or '').strip()
+
+                if 'timeout' in ddg_in:
+                    try:
+                        cur['timeout'] = max(1, min(int(ddg_in.get('timeout') or 15), 120))
+                    except Exception:
+                        pass
+
+        # 校验：若要启用 exa，必须有 key
+        if str(web_cfg.get('active_provider') or '').strip().lower() == 'exa':
+            _assert_web_search_ready(web_cfg)
+
+        web_cfg = _normalize_web_search_config(web_cfg)
+        cfg['web_search'] = web_cfg
+        save_main_config(cfg)
+
+        return jsonify({
+            'success': True,
+            'message': '搜索 API 配置已保存',
+            **_web_search_config_public_payload(web_cfg),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -13253,6 +13545,7 @@ def admin_upsert_provider(target_provider=None):
     api_type = _normalize_provider_api_type(data.get('api_type'))
     user_agent = str(data.get('user_agent') or '').strip()
     settings = data.get('settings')
+    enable_search_raw = data.get('enable_search')
 
     if not provider:
         return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
@@ -13293,6 +13586,12 @@ def admin_upsert_provider(target_provider=None):
             provider_record['user_agent'] = user_agent
         else:
             provider_record.pop('user_agent', None)
+
+        # 外部搜索能力：对 provider 生效，默认 off
+        if enable_search_raw is not None:
+            provider_record['enable_search'] = _coerce_bool_flag(enable_search_raw, False)
+        elif 'enable_search' not in provider_record:
+            provider_record['enable_search'] = False
 
         existing_settings = provider_record.get('settings', {}) if isinstance(provider_record.get('settings', {}), dict) else {}
         merged_settings = dict(existing_settings)
@@ -13492,14 +13791,16 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
 
     final_meta = get_stream_session_meta(stream_id, username=username) or {}
     final_message = None
+    final_context_events = []
     final_conversation_id = str(
         final_meta.get("conversation_id") or meta.get("conversation_id") or ""
     ).strip()
 
     if final_conversation_id:
         try:
-            manager = ConversationManager(username)
+            manager = ConversationService(username)
             conversation = manager.get_conversation(final_conversation_id)
+            final_context_events = manager.get_context_events(final_conversation_id)
             messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
 
             if isinstance(messages, list) and messages:
@@ -13536,6 +13837,7 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         "head_seq": int(final_meta.get("head_seq") or meta.get("head_seq") or 1),
         "last_seq": int(final_meta.get("last_seq") or meta.get("last_seq") or 0),
         "final_message": final_message,
+        "context_events": final_context_events,
     }
     yield f"data: {json.dumps(final_session_info, ensure_ascii=False, default=str)}\n\n"
     yield "data: [DONE]\n\n"
@@ -13585,6 +13887,7 @@ def _resolve_workspace_chat_context(username: str, data: Dict[str, Any], convers
         "knowledge_documents": workspace.get("knowledge_documents") if isinstance(workspace.get("knowledge_documents"), list) else [],
         "workspace_files": workspace.get("workspace_files") if isinstance(workspace.get("workspace_files"), list) else [],
         "workspace_tasks": workspace.get("workspace_tasks") if isinstance(workspace.get("workspace_tasks"), list) else [],
+        "workspace_drafts": workspace.get("workspace_drafts") if isinstance(workspace.get("workspace_drafts"), list) else [],
     }
 
 
@@ -13601,12 +13904,14 @@ def _merge_workspace_chat_payload(payload: Dict[str, Any], workspace_context: Di
             "knowledge_documents": workspace_context.get("knowledge_documents") if isinstance(workspace_context.get("knowledge_documents"), list) else [],
             "workspace_files": workspace_context.get("workspace_files") if isinstance(workspace_context.get("workspace_files"), list) else [],
             "workspace_tasks": workspace_context.get("workspace_tasks") if isinstance(workspace_context.get("workspace_tasks"), list) else [],
+            "workspace_drafts": workspace_context.get("workspace_drafts") if isinstance(workspace_context.get("workspace_drafts"), list) else [],
         }
 
     return merged
 
 
-def _format_workspace_memory_tool(model, name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+def _format_workspace_function_tool(model, name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """把 Workspace 工具 schema 适配成当前 Provider 的 API 格式（Responses API 扁平 / Chat Completions 嵌套）。"""
     use_responses_api = (
         hasattr(model, '_provider_use_responses_api')
         and model._provider_use_responses_api(getattr(model, 'provider', ''))
@@ -13698,19 +14003,19 @@ def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
     }
 
     return [
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_edit",
             "使用结构化 edits 精确修改当前 Workspace 的自动记忆。适合修正、合并或删除已有记忆条目。",
             edit_parameters,
         ),
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_apply_diff",
             "使用统一 diff patch 修改当前 Workspace 的自动记忆。仅在已有可靠行上下文时使用。",
             diff_parameters,
         ),
-        _format_workspace_memory_tool(
+        _format_workspace_function_tool(
             model,
             "workspace_mem_add",
             "向当前 Workspace 的自动记忆末尾追加 Markdown 片段。适合记录新的稳定项目事实、约束、偏好或待办。",
@@ -13719,7 +14024,36 @@ def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
     ]
 
 
-def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict[str, Any]):
+def _workspace_draft_tool_definitions(model) -> List[Dict[str, Any]]:
+    """Workspace 草稿工具：模型把用户后续要直接查看的关键数据沉淀为草稿条目。"""
+    add_parameters = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "草稿条目的简短标题（最多 120 字符），概括这条数据是什么，如“API 速率限制确认结果”。",
+            },
+            "content": {
+                "type": "string",
+                "description": "草稿正文（Markdown，最多 4000 字符）。只放用户之后无需翻对话就要直接查看的关键数据、结论、参数或决策，不要写过程性内容。",
+            },
+        },
+        "required": ["title", "content"],
+    }
+
+    return [
+        _format_workspace_function_tool(
+            model,
+            "workspace_draft_add",
+            "向当前 Workspace 的草稿板追加一条草稿条目。当对话产生用户之后要直接查看的重要数据、结论、参数或决策时调用，"
+            "避免用户翻找历史对话。与 workspace_mem_add 的区别：记忆存稳定项目事实供模型参考，草稿是给用户看的资料板。",
+            add_parameters,
+        ),
+    ]
+
+
+def _inject_workspace_tools(model, username: str, workspace_context: Dict[str, Any]):
+    """把 Workspace 专属工具（记忆编辑 + 草稿写入）注册进本轮对话的模型。"""
     if not workspace_context:
         return
 
@@ -13804,12 +14138,40 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
 
         return _handler
 
-    for tool in _workspace_memory_tool_definitions(model):
+    def _make_draft_add_handler():
+        def _handler(args: dict) -> str:
+            try:
+                safe_args = args if isinstance(args, dict) else {}
+                workspace = _workspace_store().add_workspace_draft(
+                    workspace_id,
+                    username,
+                    {
+                        "title": str(safe_args.get("title") or ""),
+                        "content": str(safe_args.get("content") or ""),
+                    },
+                )
+                drafts = workspace.get("workspace_drafts") if isinstance(workspace, dict) else []
+                added = drafts[-1] if isinstance(drafts, list) and drafts else {}
+
+                return _tool_result({
+                    "success": True,
+                    "draft_id": str(added.get("draft_id") or ""),
+                    "title": str(added.get("title") or ""),
+                    "chars": len(str(added.get("content") or "")),
+                    "total": len(drafts) if isinstance(drafts, list) else 0,
+                })
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    for tool in _workspace_memory_tool_definitions(model) + _workspace_draft_tool_definitions(model):
         model.register_external_function_tool(tool)
 
     model.tool_executor.handlers["workspace_mem_apply_diff"] = _make_apply_diff_handler()
     model.tool_executor.handlers["workspace_mem_edit"] = _make_edit_handler()
     model.tool_executor.handlers["workspace_mem_add"] = _make_add_handler()
+    model.tool_executor.handlers["workspace_draft_add"] = _make_draft_add_handler()
 
 
 @app.route('/api/chat/stream', methods=['POST'])
@@ -14019,7 +14381,7 @@ def chat_stream():
                 'message': '重答必须指定 regenerate_index'
             }), 400
 
-        manager = ConversationManager(username)
+        manager = ConversationService(username)
         ok, validate_message, target_meta = manager.validate_regenerate_target(
             conversation_id,
             regenerate_index
@@ -14178,7 +14540,7 @@ def chat_stream():
         quota_status = quota_gate.get('quota', {}) if isinstance(quota_gate.get('quota'), dict) else {}
         persisted_conversation_id = str(conversation_id or '').strip()
         try:
-            manager = ConversationManager(username)
+            manager = ConversationService(username)
             if persisted_conversation_id:
                 existing = manager.get_conversation(persisted_conversation_id)
                 if not isinstance(existing, dict):
@@ -14246,7 +14608,7 @@ def chat_stream():
 
     if (not is_regenerate) and conversation_id:
         try:
-            manager = ConversationManager(username)
+            manager = ConversationService(username)
             convo = manager.get_conversation(conversation_id)
             if isinstance(convo, dict):
                 stored_mode = str(convo.get('conversation_mode') or '').strip().lower()
@@ -14270,7 +14632,7 @@ def chat_stream():
         message_count = 0
 
         if target_conversation_id:
-            manager = ConversationManager(username)
+            manager = ConversationService(username)
             conversation = manager.get_conversation(target_conversation_id)
             messages = conversation.get('messages', []) if isinstance(conversation, dict) else []
 
@@ -14440,7 +14802,7 @@ def chat_stream():
                         puzzle_id = str(puzzle_submission.get('puzzle_id') or '').strip()
                         if puzzle_id:
                             try:
-                                _mgr = ConversationManager(username)
+                                _mgr = ConversationService(username)
                                 _conv = _mgr.get_conversation(conversation_id) if conversation_id else None
                                 _puzzle_states = _conv.get('puzzle_states') if isinstance(_conv, dict) else {}
                                 _puzzle_state = (_puzzle_states or {}).get(puzzle_id)
@@ -14475,15 +14837,35 @@ def chat_stream():
             elif raw_conversation_mode == 'learning':
                 effective_enable_tools = True
                 effective_tool_mode = 'force'
+            requested_cid = str(conversation_id or "").strip()
+            will_auto_create = not bool(requested_cid)
             model = Model(
                 username,
                 model_name=model_name,
                 conversation_id=conversation_id,
-                auto_create=(not bool(str(conversation_id or '').strip()))
+                auto_create=will_auto_create
             )
+            # 服务端常驻：记录会话归属，避免“盗梦空间”式侧边栏错位只能靠浏览器控制台
+            try:
+                log_event(
+                    "chat_conversation_resolve",
+                    "conversation resolved",
+                    payload={
+                        "username": str(username or ""),
+                        "requested_conversation_id": requested_cid,
+                        "resolved_conversation_id": str(model.conversation_id or ""),
+                        "auto_created": bool(will_auto_create),
+                        "conversation_id_from_request": bool(conversation_id_from_request),
+                        "model_name": str(model_name or ""),
+                        "raw_conversation_mode": str(raw_conversation_mode or ""),
+                    },
+                    source="chat",
+                )
+            except Exception:
+                pass
 
             if raw_conversation_mode == 'learning' and learning_course_id and model.conversation_id:
-                ConversationManager(username).update_conversation_fields(
+                ConversationService(username).update_conversation_fields(
                     model.conversation_id,
                     {
                         'metadata': {
@@ -14545,11 +14927,11 @@ def chat_stream():
                 print(f"[NexoraCode ProjectContext] inject error={project_context_error}")
 
             if workspace_chat_context:
-                _inject_workspace_memory_tools(model, username, workspace_chat_context)
+                _inject_workspace_tools(model, username, workspace_chat_context)
                 _chat_latency_mark(
-                    "workspace_memory_tools_injected",
+                    "workspace_tools_injected",
                     workspace_id=str(workspace_chat_context.get("workspace_id") or ""),
-                    tool_count=3,
+                    tool_count=4,
                 )
 
             model._stream_cancel_checker = is_cancel_requested
@@ -14680,6 +15062,31 @@ def chat_stream():
                 and str(model.conversation_id or "").strip()
             )
 
+            # 服务端常驻诊断：无论是否入队都落盘，便于偶发排查（不依赖浏览器控制台）
+            try:
+                log_event(
+                    "memory_eligibility",
+                    "memory eligibility check",
+                    payload={
+                        "username": str(username or ""),
+                        "conversation_id": str(model.conversation_id or conversation_id or ""),
+                        "conversation_id_from_request": bool(conversation_id_from_request),
+                        "stream_assistant_index": stream_assistant_index,
+                        "done_seen": bool(memory_analysis_done_seen),
+                        "error_seen": bool(memory_analysis_error_seen),
+                        "is_regenerate": bool(is_regenerate),
+                        "is_cancel_requested": bool(is_cancel_requested()),
+                        "raw_conversation_mode": str(raw_conversation_mode or ""),
+                        "workspace_bound": bool(workspace_chat_context),
+                        "project_bound": bool(project_bound_for_memory),
+                        "eligible": bool(memory_analysis_eligible),
+                        "model_name": str(model.model_name or model_name or ""),
+                    },
+                    source="memory",
+                )
+            except Exception:
+                pass
+
             if memory_analysis_eligible:
                 try:
                     memory_enqueue_result = get_memory_analysis_queue().enqueue(
@@ -14705,6 +15112,21 @@ def chat_stream():
                         f"assistant_index={stream_assistant_index} "
                         f"job_id={memory_enqueue_result.get('job_id')}"
                     )
+                    try:
+                        log_event(
+                            "memory_queued",
+                            "memory enqueued",
+                            payload={
+                                "username": str(username or ""),
+                                "conversation_id": str(model.conversation_id or ""),
+                                "assistant_index": int(stream_assistant_index) if stream_assistant_index is not None else None,
+                                "job_id": str(memory_enqueue_result.get("job_id") or ""),
+                                "model": str(model.model_name or model_name or ""),
+                            },
+                            source="memory",
+                        )
+                    except Exception:
+                        pass
                 except Exception as memory_enqueue_error:
                     print(
                         "[MEMORY_ANALYSIS] enqueue failed "
@@ -14712,6 +15134,37 @@ def chat_stream():
                         f"assistant_index={stream_assistant_index} "
                         f"error={memory_enqueue_error}"
                     )
+                    try:
+                        log_event(
+                            "memory_enqueue_failed",
+                            "memory enqueue failed",
+                            payload={
+                                "username": str(username or ""),
+                                "conversation_id": str(model.conversation_id or ""),
+                                "assistant_index": int(stream_assistant_index) if stream_assistant_index is not None else None,
+                                "error": str(memory_enqueue_error)[:500],
+                            },
+                            source="memory",
+                        )
+                    except Exception:
+                        pass
+            else:
+                try:
+                    log_event(
+                        "memory_skipped",
+                        "memory skipped (not eligible)",
+                        payload={
+                            "username": str(username or ""),
+                            "conversation_id": str(model.conversation_id or conversation_id or ""),
+                            "reason": "eligibility_false",
+                            "done_seen": bool(memory_analysis_done_seen),
+                            "error_seen": bool(memory_analysis_error_seen),
+                            "stream_assistant_index": stream_assistant_index,
+                        },
+                        source="memory",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             if is_stream_cancelled_error(e):
                 set_stage("worker_cancelled", "user_abort")
@@ -14958,7 +15411,7 @@ def _read_conversation_nexoracode_project(username: str, conversation_id: str) -
         return {}
 
     try:
-        manager = ConversationManager(username)
+        manager = ConversationService(username)
         convo = manager.get_conversation(cid)
         metadata = convo.get('metadata') if isinstance(convo, dict) else None
         project = metadata.get('nexoracode_project') if isinstance(metadata, dict) else None
@@ -15630,63 +16083,27 @@ def get_token_stats():
                 'history': TokenUsageDetailPresenter(username).decorate_history(logs, limit=20)
             }
 
-        # conversation_id 模式直接从对话消息 metadata.io_tokens 聚合，避免每次流结束后扫描全量 token_usage.json。
+        # conversation_id 模式由 ConversationService 统一聚合（v4 usage 为主，兼容旧 metadata.io_tokens）
         if conversation_id:
             try:
-                manager = ConversationManager(username)
-                convo = manager.get_conversation(conversation_id)
-                messages = convo.get('messages', []) if isinstance(convo, dict) else []
-                io_input_total = 0
-                io_output_total = 0
-                io_today_input = 0
-                io_today_output = 0
-                io_today_total = 0
-                io_found = False
-                today_str = time.strftime("%Y-%m-%d", time.localtime())
-
-                for msg in messages:
-                    if not isinstance(msg, dict):
-                        continue
-                    if str(msg.get('role', '') or '').strip() != 'assistant':
-                        continue
-                    md = msg.get('metadata', {})
-                    if not isinstance(md, dict):
-                        continue
-                    io_tokens = md.get('io_tokens', {})
-                    if not isinstance(io_tokens, dict):
-                        continue
-                    in_tok = _safe_int(io_tokens.get('input', 0))
-                    out_tok = _safe_int(io_tokens.get('output', 0))
-                    if in_tok <= 0 and out_tok <= 0:
-                        continue
-                    io_found = True
-                    io_input_total += in_tok
-                    io_output_total += out_tok
-
-                    ts = str(msg.get('timestamp', '') or '')
-                    if ts.startswith(today_str):
-                        io_today_input += in_tok
-                        io_today_output += out_tok
-                        io_today_total += (in_tok + out_tok)
-
-                if io_found:
-                    # 当前对话的 Token 详情需返回过滤后的历史明细（设置页已展示全局统计，弹窗聚焦当前对话）
+                svc = ConversationService(username)
+                agg = svc.get_conversation_usage(conversation_id)
+                if agg.get("found"):
                     try:
                         raw_logs = user.get_token_logs()
                         filtered = [log for log in raw_logs if str(log.get('conversation_id', '')) == conversation_id]
                         history = TokenUsageDetailPresenter(username).decorate_history(filtered, limit=20)
                     except Exception:
                         history = []
-
                     return jsonify({
                         'success': True,
                         'conversation_id': conversation_id,
-                        'input_total': io_input_total,
-                        'output_total': io_output_total,
-                        'total': io_input_total + io_output_total,
-                        'today_input': io_today_input,
-                        'today_output': io_today_output,
-                        'today': io_today_total,
+                        'input_total': int(agg.get("input_total", 0)),
+                        'output_total': int(agg.get("output_total", 0)),
+                        'total': int(agg.get("total", 0)),
+                        'today_input': int(agg.get("today_input", 0)),
+                        'today_output': int(agg.get("today_output", 0)),
+                        'today': int(agg.get("today_total", 0)),
                         'history': history
                     })
             except Exception as stats_error:
@@ -18115,5 +18532,10 @@ if __name__ == '__main__':
 
     if (not debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         start_nexora_mail_event_stream()
+        # 进程启动时即预热服务状态监控，避免首个 HTTP 请求触发同步探测而被堵塞
+        try:
+            start_service_status_monitor()
+        except Exception as exc:
+            print(f"[ServiceStatusMonitor] pre-start failed: {exc}")
     
     app.run(debug=debug, host='0.0.0.0', port=port, threaded=True)

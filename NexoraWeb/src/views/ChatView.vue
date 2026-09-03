@@ -13,19 +13,35 @@
 
         <Sidebar
             :collapsed="sidebarCollapsed"
+            :learning-enabled="learningEnabled"
+            :brand-mode="sidebarBrandMode"
+            :learning-nav-state="learningDashboardState"
+            :learning-sidebar-view="learningSidebarView"
+            :course-workspace="learningCourseState"
+            @update:learning-sidebar-view="handleLearningSidebarViewChange"
+            @course-switch-tab="handleCourseSwitchTab"
+            @open-course-workspace="handleOpenCourseWorkspace"
+            @learning-send="handleLearningSend"
+            @learning-stop="handleStop"
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
-            @open-chat="backToChat"
+            @open-chat="handleOpenLearningChat"
             @open-workspaces="handleOpenWorkspaces"
             @open-files="handleOpenFileCenter"
             @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
+            @open-learning="handleOpenLearning"
+            @learning-nav="handleLearningNav"
+            @learning-new="handleLearningNew"
+            @open-learning-conversation="handleOpenLearningConversation"
             @open-trash="trashOpen = true"
             @open-timeline="timelineOpen = true"
             @view-branch-source="handleViewBranchSource"
         />
 
         <main class="main-content">
+            <!-- Learning 视图由 iframe 占满内容区,宿主顶栏无承载信息,整体隐藏(返回走品牌栏) -->
             <ChatHeader
+                v-show="!learningOpen"
                 :models="modelStore.models"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
@@ -80,11 +96,12 @@
                         </div>
 
                         <MessageItem
-                            v-for="(message, index) in conversationStore.messages"
+                            v-for="message in conversationStore.messages"
                             :key="message.index"
                             :message="message"
+                            :knowledge-events="knowledgeByAssistant.get(Number(message.index)) || []"
                             :model-name="modelStore.selectedModel?.name"
-                            :streaming="isStreamingMessage(index)"
+                            :streaming="isStreamingMessage(message)"
                             :is-last-user-message="isLastUserMessage(message)"
                             :conversation-id="conversationStore.currentId"
                             @delete="handleDeleteMessage"
@@ -195,6 +212,17 @@
                         @close="backToChat"
                     />
                 </div>
+
+                <LearningFrameView
+                    v-show="learningOpen"
+                    ref="learningFrameRef"
+                    :open="learningOpen"
+                    :frame-url="learningFrameUrl"
+                    :title="learningFrameTitle"
+                    :learning-sidebar-view="learningSidebarView"
+                    @request-open-settings="settingsOpen = true"
+                    @host-message="handleLearningHostMessage"
+                />
             </div>
         </main>
 
@@ -213,6 +241,7 @@
             :open="knowledgeSettingsOpen"
             :title="knowledgeTitle"
             @close="knowledgeSettingsOpen = false"
+            @saved="handleKnowledgeSettingsSaved"
         />
 
         <TrashModal :open="trashOpen" @close="trashOpen = false" @restored="handleTrashRestored" />
@@ -253,7 +282,7 @@
 <script setup lang="ts">
     import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-    import type { ChatMessage } from '@/api/conversations'
+    import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
     import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
     import { chatStream, type ChatStreamChunk } from '@/network/chatStream'
@@ -262,9 +291,12 @@
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
+    import { getConversationWorkspace, notifyWorkspaceChanged, setConversationWorkspace } from '@/stores/workspace'
+    import { DRAFT_TOOL_NAME } from '@/stream/draftCall'
     import { useBottomFollow } from '@/composables/useBottomFollow'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
+    import { useLearningViewSync } from '@/composables/useLearningViewSync'
     import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
 
     import ChatHeader from '@/components/ChatHeader.vue'
@@ -283,6 +315,7 @@
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
+    import LearningFrameView from '@/components/LearningFrameView.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
     import TimelinePanel from '@/components/TimelinePanel.vue'
@@ -297,6 +330,8 @@
     import type { WorkspaceConversationOpenMeta } from '@/components/workspaces/workspaceContext'
 
     import { addWorkspaceConversation, fetchSharedWorkspaceConversation } from '@/api/workspaces'
+    import { fetchUserPreferencesPayload } from '@/api/preferences'
+    import type { LearningHostEnvelope } from '@/bridge/learningBridge'
 
     const conversationStore = useConversationStore()
     const modelStore = useModelStore()
@@ -322,6 +357,39 @@
     /** 正在向前补载更早消息:抑制"消息变化自动滚到底部",避免补载后被强行拉到底 */
     const prepending = ref(false)
 
+    // 知识 diff 按 effective 挂到下一条 assistant（effective == user.index，assistant == effective+1）
+    // 过滤空事件，挂载为 assistant 首个伪工具栏，复用 tool-usage 形态（非独立 banner）
+    const knowledgeByAssistant = computed<Map<number, ConversationContextEvent[]>>(() => {
+        const map = new Map<number, ConversationContextEvent[]>()
+        const events = conversationStore.contextEvents
+            .map((event, index) => ({ event, index, effective: Number(event.effective_from_message) }))
+            .filter((item) => Number.isFinite(item.effective))
+            .filter((item) => {
+                const ev = item.event as unknown as Record<string, unknown>
+                const added = Array.isArray(ev.added) ? ev.added : []
+                const removed = Array.isArray(ev.removed) ? ev.removed : []
+                const hasVisible = [...added, ...removed].some((entry) => {
+                    if (typeof entry === 'string') return String(entry).trim() !== ''
+                    if (entry && typeof entry === 'object') {
+                        const title = String((entry as Record<string, unknown>).title || (entry as Record<string, unknown>).name || '').trim()
+                        return title !== ''
+                    }
+                    return false
+                })
+                return hasVisible
+            })
+            .sort((left, right) => left.effective - right.effective || left.index - right.index)
+
+        for (const item of events) {
+            const assistantIndex = item.effective + 1
+            const list = map.get(assistantIndex) || []
+            list.push(item.event)
+            map.set(assistantIndex, list)
+        }
+
+        return map
+    })
+
     /**
      * 跟随底部滚动策略:
      * 流式增量仅在用户位于底部附近时自动滚底;用户上滑回看即暂停,回到底部恢复。
@@ -336,6 +404,8 @@
 
     // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
     useConversationUrlSync()
+    // Learning 视图 ↔ URL ?view=learning 同步（与 cid 互不干扰）
+    useLearningViewSync()
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
@@ -361,11 +431,16 @@
     const composedRegisteredPairs = new Set<string>()
 
     /** 发送后把新会话归入 Workspace(对齐原版 registerWorkspaceDetailConversation) */
-    async function registerComposedConversation(workspaceId: string, conversationId: string): Promise<void> {
+    /**
+     * 登记新会话到 Workspace:
+     * 返回 true 表示已确认登记成功(或本会话此前已登记过);false 表示登记失败,
+     * 失败时会话未进入项目,发送不得携带 workspace_id(后端按未登记会话拒绝)。
+     */
+    async function registerComposedConversation(workspaceId: string, conversationId: string): Promise<boolean> {
         const pairKey = `${workspaceId}:${conversationId}`
 
         if (composedRegisteredPairs.has(pairKey)) {
-            return
+            return true
         }
 
         try {
@@ -373,8 +448,12 @@
 
             composedRegisteredPairs.add(pairKey)
             showToast('新对话已归入 Workspace', 'success')
+
+            return true
         } catch (error) {
             showError(error instanceof Error ? error.message : 'Workspace 对话登记失败')
+
+            return false
         }
     }
 
@@ -478,10 +557,370 @@
     const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
     const knowledgeOpen = computed(() => overlay.view === 'knowledge')
     const mailCenterOpen = computed(() => overlay.view === 'mail')
+    const learningOpen = computed(() => overlay.view === 'learning')
     const knowledgeTitle = ref('')
 
+    // ── Learning 薄挂载状态（P0）──────────────────────
+    const learningFrameRef = ref<InstanceType<typeof LearningFrameView> | null>(null)
+    const learningFrameTitle = ref('NexoraLearning')
+    const learningEnabled = ref((() => {
+        try {
+            const cached = localStorage.getItem('nexora_learning_enabled')
+            if (cached !== null) return JSON.parse(cached) as boolean
+        } catch {}
+        return false
+    })())
+    const learningFrontendUrl = ref('')
+    /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
+    const learningDashboardState = ref<{ view: string; side_tab: string }>({ view: '', side_tab: '' })
+    /**
+     * Learning 侧栏视图(list=会话列表 / conversation=侧栏内对话):
+     * 对齐原版 getLearningSidebarView;conversation 态驱动侧栏放宽(body class)
+     * 与输入坞停靠,发送经 doSend 附 conversation_mode='learning'
+     */
+    const learningSidebarView = ref<'list' | 'conversation'>('list')
+    const learningComposerDocked = computed(() => learningOpen.value && learningSidebarView.value === 'conversation')
+    /**
+     * 双作用域会话记忆(对齐原版 learningNavigationState):两套 sidebar 不共享当前 cid。
+     * 进 Learning 记住 nexora 当前会话、切回时恢复;learning 侧同理反向记忆
+     */
+    const rememberedNexoraConversationId = ref('')
+    const rememberedLearningConversationId = ref('')
+    /**
+     * 课程 Workspace 状态(对齐原版 learning_course_workspace.js syncFromPayload):
+     * 数据 = iframe state-snapshot 的 active/lecture_id/title/tabs/active_tab。
+     * available=课程活着(品牌栏 Workspace tab 可见);on=侧栏被课程导航接管
+     */
+    const learningCourseState = ref({
+        available: false,
+        on: false,
+        lectureId: '',
+        tabs: [] as Array<{ key: string; label: string }>,
+        activeTab: '',
+    })
+    const lastCourseLectureId = ref('')
+    /** 用户主动退出课程接管后,同课程的 active 抖动不得重新拉回(对齐原版 userLeftWorkspace) */
+    const courseLeftByUser = ref(false)
+
+    const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
+
+    async function refreshLearningPreference(): Promise<void> {
+        try {
+            const payload = await fetchUserPreferencesPayload()
+
+            // 管理端全局门控与用户个人开关任一关闭,均隐藏 Learning 入口
+            const globalEnabled = payload.learning_runtime?.enabled !== false
+            const userEnabled = payload.preferences.learning_runtime?.enabled !== false
+            const nextEnabled = globalEnabled && userEnabled
+            learningEnabled.value = nextEnabled
+            try { localStorage.setItem('nexora_learning_enabled', JSON.stringify(nextEnabled)) } catch {}
+
+            const url = String(payload.learning_runtime?.frontend_url || '').trim()
+            if (url) learningFrontendUrl.value = url
+
+            // 偏好中关闭 Learning 时，若当前正处 Learning 视图则自动回到聊天（对齐原版 applyLearningMode 的关闭分支）
+            if (!nextEnabled && learningOpen.value) {
+                backToChat()
+                learningCourseState.value.on = false
+                courseLeftByUser.value = true
+                learningSidebarView.value = 'list'
+            }
+
+            // 默认打开视图：首次加载或偏好变更后，若偏好要求默认打开 Learning 且当前为空白聊天，则自动进入 Learning
+            const defaultView = String(payload.preferences.default_open_view || '').trim().toLowerCase()
+            if (nextEnabled && defaultView === 'learning' && !learningOpen.value && !conversationStore.currentId && !conversationStore.currentConversationGenerating) {
+                void nextTick(() => {
+                    if (!conversationStore.currentId && !learningOpen.value && learningEnabled.value && !conversationStore.currentConversationGenerating) {
+                        openView('learning')
+                    }
+                })
+            }
+        } catch {
+            // 偏好不可达不阻断主流程
+        }
+    }
+
+    // 偏好保存后无需刷新页面的即时联动（PreferencesPanel 派发 nexora:preferences-updated）
+    function handlePreferencesUpdated(event?: Event): void {
+        try {
+            const detail = (event as CustomEvent)?.detail as { learning_runtime?: boolean; learning_mode?: string; default_open_view?: string } | undefined
+            if (detail && typeof detail.learning_runtime === 'boolean') {
+                const enabled = detail.learning_runtime
+                learningEnabled.value = enabled
+                try { localStorage.setItem('nexora_learning_enabled', JSON.stringify(enabled)) } catch {}
+                if (!enabled && learningOpen.value) {
+                    backToChat()
+                    learningCourseState.value.on = false
+                    courseLeftByUser.value = true
+                    learningSidebarView.value = 'list'
+                }
+            }
+        } catch {}
+        void refreshLearningPreference()
+    }
+
+    const sidebarBrandMode = computed<'nexora' | 'learning' | 'workspace'>(() => {
+        // 课程 Workspace 接管时品牌栏切 Workspace 形态(对齐原版 sidebar_brand_navigation.render)
+        if (learningOpen.value && learningCourseState.value.on) return 'workspace'
+        if (learningOpen.value) return 'learning'
+        return 'nexora'
+    })
+
+    // 合并 body class 写入到同一帧，避免两次样式重算；并在动画期间禁用 iframe 指针事件
+    function syncLearningBodyClass(): void {
+        const active = learningOpen.value
+        const enabled = learningEnabled.value
+        // conversation 子模式放宽侧栏(对齐原版 learning-sidebar-conversation-active 宽度规则)
+        const conversationActive = active && learningSidebarView.value === 'conversation'
+        // 课程 Workspace 接管:紧凑宽侧栏(对齐原版 learning-course-workspace-active)
+        const courseActive = active && learningCourseState.value.on
+        // 动画期间（220ms）让 iframe 不接收指针，减少合成层抖动
+        const frameEl = document.querySelector<HTMLIFrameElement>('.learning-frame')
+        if (frameEl && active) {
+            frameEl.style.pointerEvents = 'none'
+            window.setTimeout(() => { frameEl.style.pointerEvents = '' }, 260)
+        }
+        requestAnimationFrame(() => {
+            document.body.classList.toggle('learning-workspace-active', active)
+            document.body.classList.toggle('learning-mode-enabled', enabled)
+            document.body.classList.toggle('learning-sidebar-conversation-active', conversationActive)
+            document.body.classList.toggle('learning-course-workspace-active', courseActive)
+        })
+    }
+    watch([learningOpen, learningEnabled, learningSidebarView, learningCourseState], syncLearningBodyClass, { immediate: true, deep: true })
+
+    // 偏好中关闭 Learning 的即时回退：若当前在 Learning 视图则自动回到聊天
+    watch(learningEnabled, (enabled) => {
+        if (!enabled && learningOpen.value) {
+            backToChat()
+            learningCourseState.value.on = false
+            courseLeftByUser.value = true
+            learningSidebarView.value = 'list'
+        }
+    })
+
+    // 侧栏折叠/视图切换改变功能区入口可见性,iframe 需同步隐藏/恢复自身顶部 kicker tab 行
+    watch([sidebarCollapsed, learningSidebarView], () => {
+        learningFrameRef.value?.postLayoutState()
+    })
+
+    function handleOpenLearning(): void {
+        if (!learningEnabled.value) {
+            showToast('Learning 未启用，请在设置中开启', 'warning')
+            return
+        }
+        if (learningOpen.value) {
+            // Workspace 态点 Learning:原子退出课程接管回 Learning 列表(对齐原版 switchToLearningSidebar)
+            if (learningCourseState.value.on) {
+                courseLeftByUser.value = true
+                learningCourseState.value.on = false
+                learningSidebarView.value = 'list'
+                return
+            }
+            backToChat()
+            return
+        }
+
+        // 进入 Learning:记住 nexora 当前会话;对话视图下恢复 learning 记忆会话(无记忆=草稿)
+        rememberedNexoraConversationId.value = conversationStore.currentId
+        openView('learning')
+
+        if (learningSidebarView.value === 'conversation') {
+            const restore = rememberedLearningConversationId.value
+
+            if (restore) {
+                void conversationStore.openConversation(restore).catch((error: unknown) => {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                })
+            } else {
+                void conversationStore.newConversation()
+            }
+        }
+    }
+
+    /**
+     * 品牌栏切回 Nexora(对齐原版 leaveLearningConversation):
+     * 对话视图中的会话记入 learning 作用域,解除占用(草稿)后恢复 nexora 记忆会话
+     */
+    async function handleOpenLearningChat(): Promise<void> {
+        if (!learningOpen.value) {
+            // 非 Learning 视图下的 New Chat / 会话点击:必须回到聊天主视图,
+            // 否则 overlay.view 仍停留在 Files/Workspaces,聊天视图被 v-show 隐藏,
+            // 表现为"点了 New Chat 没回到欢迎页"。
+            workspaceReturnId.value = ''
+            backToChat()
+
+            return
+        }
+
+        if (learningSidebarView.value === 'conversation') {
+            rememberedLearningConversationId.value = conversationStore.currentId
+        }
+
+        // 点 Nexora 退出课程接管但课程保持可用(Workspace tab 仍可见,对齐原版 handleDocumentClick)
+        learningCourseState.value.on = false
+        courseLeftByUser.value = true
+
+        backToChat()
+        await conversationStore.newConversation()
+
+        const restore = rememberedNexoraConversationId.value
+
+        if (restore) {
+            try {
+                await conversationStore.openConversation(restore)
+            } catch (error: unknown) {
+                showError(error instanceof Error ? error.message : '打开会话失败')
+            }
+        }
+    }
+
+    function handleLearningHostMessage(message: LearningHostEnvelope): void {
+        if (message.type === 'state-snapshot') {
+            const title = String(message.title || '').trim()
+            if (title) learningFrameTitle.value = title
+
+            // 课程 Workspace 状态机(对齐原版 syncFromPayload):
+            // active=false → 关闭接管;active=true 时仅 activation==='user' 或
+            // lectureId 变化解除用户离开抑制,同课程 DOM 重建的抖动不拉回接管
+            const active = !!message.active
+            const lectureId = String(message.lecture_id || '').trim()
+
+            if (!active) {
+                learningCourseState.value = { available: false, on: false, lectureId: '', tabs: [], activeTab: '' }
+                lastCourseLectureId.value = ''
+                return
+            }
+
+            if (message.activation === 'user' || (lectureId && lectureId !== lastCourseLectureId.value)) {
+                courseLeftByUser.value = false
+            }
+            lastCourseLectureId.value = lectureId
+
+            learningCourseState.value = {
+                available: true,
+                on: learningCourseState.value.on && !courseLeftByUser.value,
+                lectureId,
+                tabs: (message.tabs || []).map((tab) => ({ key: String(tab.key || ''), label: String(tab.label || '') })).filter((tab) => tab.key && tab.label),
+                activeTab: String(message.active_tab || ''),
+            }
+
+            if (!courseLeftByUser.value) {
+                learningCourseState.value.on = true
+            }
+            return
+        }
+        if (message.type === 'open-chat-conversation') {
+            // iframe 语义:学习流落在主聊天会话,请宿主切过去(与侧栏列表点击的侧栏内打开不同)
+            const cid = String(message.conversation_id || '').trim()
+            if (cid) {
+                backToChat()
+                void conversationStore.openConversation(cid).catch((error: unknown) => {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                })
+            }
+            return
+        }
+        if (message.type === 'dashboard-state') {
+            learningDashboardState.value = {
+                view: String(message.view || ''),
+                side_tab: String(message.side_tab || ''),
+            }
+            return
+        }
+        if (message.type === 'pointer-down') {
+            // iframe 内的点击不会冒泡到宿主 document,移动端抽屉需按协定显式收起
+            if (window.matchMedia('(max-width: 980px)').matches && document.body.classList.contains('mobile-sidebar-open')) {
+                document.body.classList.remove('mobile-sidebar-open')
+            }
+            return
+        }
+    }
+
+    /**
+     * 侧栏学习会话点击:切到侧栏对话视图并加载会话(对齐原版 bridge.setSidebarView('conversation')
+     * + loadConversation),不离开 Learning 视图
+     */
+    function handleOpenLearningConversation(conversationId: string): void {
+        const cid = String(conversationId || '').trim()
+        if (!cid) return
+
+        learningSidebarView.value = 'conversation'
+        void conversationStore.openConversation(cid).catch((error: unknown) => {
+            showError(error instanceof Error ? error.message : '打开会话失败')
+        })
+    }
+
+    /** 品牌栏 Workspace tab:重新接管课程侧栏(对齐原版 handleWorkspaceTabClick → activateWorkspace) */
+    function handleOpenCourseWorkspace(): void {
+        if (!learningCourseState.value.available || !learningOpen.value) return
+
+        courseLeftByUser.value = false
+        learningCourseState.value.on = true
+    }
+
+    /** 课程面板 tab → iframe switch-tab(乐观高亮,由 iframe 下一次 state 回报纠正) */
+    function handleCourseSwitchTab(tab: string): void {
+        const key = String(tab || '').trim()
+        if (!key) return
+
+        learningCourseState.value.activeTab = key
+        learningFrameRef.value?.postCommand({ type: 'switch-tab', tab: key })
+    }
+
+    /**
+     * 侧栏功能区入口 → iframe dashboard 指令(对齐原版 openLearningDashboardSurface):
+     * 对话视图中先记住会话并返回列表主页(主面板让位给 iframe),再切换功能区
+     */
+    function handleLearningNav(command: { kind: 'tab' | 'studio'; key: string }): void {
+        if (learningSidebarView.value === 'conversation') {
+            rememberedLearningConversationId.value = conversationStore.currentId
+            learningSidebarView.value = 'list'
+            void conversationStore.newConversation()
+        }
+
+        const frame = learningFrameRef.value
+        if (!frame) return
+
+        if (command.kind === 'studio') {
+            frame.postCommand({ type: 'open-studio', studio: command.key })
+            return
+        }
+
+        frame.postCommand({ type: 'open-dashboard-tab', tab: command.key })
+    }
+
+    /** 侧栏视图切换:回列表=一次明确导航,清除 learning 会话记忆(对齐原版 returnToLearningConversationList) */
+    function handleLearningSidebarViewChange(view: 'list' | 'conversation'): void {
+        if (view === 'list') {
+            rememberedLearningConversationId.value = ''
+        }
+        learningSidebarView.value = view
+    }
+
+    /** New Learning:清 learning 记忆,建立草稿会话并进入侧栏对话视图(对齐原版 startNewLearningConversation) */
+    async function handleLearningNew(): Promise<void> {
+        rememberedLearningConversationId.value = ''
+        learningSidebarView.value = 'conversation'
+
+        try {
+            await conversationStore.newConversation()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '创建会话失败')
+        }
+    }
+
+    /** 侧栏对话视图发送(对齐原版 bridge.send:默认开关,learning 作用域由 dock 态在 doSend 内标记) */
+    function handleLearningSend(content: string): void {
+        const trimmed = String(content || '').trim()
+
+        if (!trimmed) return
+
+        void handleSend(trimmed, { enableThinking: true, enableWebSearch: true, enableTools: true, toolsMode: 'auto_off' })
+    }
+
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'>(() => {
         return overlay.view || 'chat'
     })
 
@@ -521,6 +960,12 @@
     /** 原版 Files 返回行为:详情返回文件列表,列表才返回聊天。
      *  Workspace 内容多级返回:共享只读对话 → 项目详情/首页 → 聊天 */
     function handleHeaderBack(): void {
+        // Learning 覆盖层：顶栏返回即回到聊天（与 Files/Workspaces 一致）
+        if (learningOpen.value) {
+            backToChat()
+            return
+        }
+
         // 文件详情:先从内容返回其来源视图(文件中心首页 / Workspaces 首页)
         if (filesCenterOpen.value && fileDetail.value !== null) {
             handleFileDetailBack()
@@ -578,9 +1023,14 @@
     /**
      * Workspace 内打开对话/知识库的入口包装:先记录来源 Workspace id,
      * 再走既有分流逻辑;顶栏返回时据此回退到原 Workspace 详情。
+     * 自己的会话同时记录会话归属,后续发送/重答据此携带 workspace_id。
      */
     function onWorkspaceOpenConversation(conversationId: string, meta?: WorkspaceConversationOpenMeta): void {
         workspaceReturnId.value = workspacesViewRef.value?.currentWorkspaceId() || ''
+
+        if (!meta && workspaceReturnId.value) {
+            setConversationWorkspace(conversationId, workspaceReturnId.value)
+        }
 
         void handleOpenWorkspaceConversation(conversationId, meta)
     }
@@ -741,16 +1191,19 @@
     }
 
     /** 助手消息在生成中时标记打字指示(重答时锁定目标索引消息) */
-    function isStreamingMessage(index: number): boolean {
-        if (!conversationStore.generating) {
+    function isStreamingMessage(message: ChatMessage): boolean {
+        if (!conversationStore.currentConversationGenerating) {
             return false
         }
 
-        if (conversationStore.streamingTargetIndex !== null) {
-            return index === Number(conversationStore.streamingTargetIndex)
+        const pending = conversationStore.pendingStreams[conversationStore.currentId]
+        const targetIndex = pending?.targetIndex ?? conversationStore.streamingTargetIndex
+
+        if (targetIndex === null || targetIndex === undefined) {
+            return false
         }
 
-        return index === conversationStore.messages.length - 1
+        return message.role === 'assistant' && Number(message.index) === Number(targetIndex)
     }
 
     /** 发送:唯一入口,经网络层同步锁防重入;生成中消息自动入队 */
@@ -763,9 +1216,15 @@
         // 附件随消息快照,进入队列/发送后清空输入区附件条(对齐原版发送后 reset files)
         const attachments = pendingAttachments.value.slice()
 
-        // 生成中:消息进入待发送队列,当前流结束后自动发送(消息队列功能)
-        if (chatStream.isSending) {
-            conversationStore.enqueueMessage({ content, options, attachments })
+        // 会话级排队:仅当当前查看的会话本身在流式时才入队;
+        // 跨会话发送(已切到其他对话)直接发起新流,并发进行
+        if (conversationStore.currentConversationGenerating) {
+            conversationStore.enqueueMessage({
+                conversationId: conversationStore.currentId,
+                content,
+                options,
+                attachments,
+            })
 
             pendingAttachments.value = []
 
@@ -778,14 +1237,22 @@
         if (!conversationStore.currentId) {
             await conversationStore.ensureConversationId()
 
-            if (chatStream.isSending) {
-                conversationStore.enqueueMessage({ content, options, attachments })
+            if (conversationStore.currentConversationGenerating) {
+                conversationStore.enqueueMessage({
+                    conversationId: conversationStore.currentId,
+                    content,
+                    options,
+                    attachments,
+                })
 
                 pendingAttachments.value = []
 
                 return
             }
         }
+
+        // 发送即清空附件条（乐观更新，对齐原版 uploadedFileIds = [] 即时清理）
+        pendingAttachments.value = []
 
         await doSend(content, options, attachments)
     }
@@ -797,14 +1264,32 @@
         enableTools: boolean
         toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
+        // 新消息轮次:失败回滚语义定位为 send;任何业务帧到达前视为 connecting
+        streamSendKind = 'send'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
-        // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)
+        // Learning 侧栏对话视图内的发送:会话标记 learning 作用域(本地即时标记 +
+        // 请求携带 conversation_mode 由后端落库),保证侧栏学习会话列表能过滤到
+        if (learningComposerDocked.value) {
+            conversationStore.setConversationMode(conversationId, 'learning')
+        }
+
+        // Workspace 详情页内发送:新会话自动归入该项目(对齐原版 registerWorkspaceDetailConversation)。
+        // 登记必须先于流式请求完成:后端在 /api/chat/stream 入口校验会话已登记,
+        // 未登记(或登记尚未落盘)时按 FileNotFoundError 拒绝整条请求。
         const composeWorkspace = workspaceComposeTarget.value
+        let sendWorkspaceId = getConversationWorkspace(conversationId)
 
         if (composeWorkspace) {
-            void registerComposedConversation(composeWorkspace, conversationId)
+            setConversationWorkspace(conversationId, composeWorkspace)
+
+            sendWorkspaceId = (await registerComposedConversation(composeWorkspace, conversationId))
+                ? composeWorkspace
+                : sendWorkspaceId
         }
 
         // Workspace 详情页发送即切到该对话(对齐原版:详情页输入框发送跳进会话查看回复);
@@ -824,7 +1309,7 @@
         // 发送即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
         resumeBottomFollow()
 
-        conversationStore.beginStream(content)
+        conversationStore.beginStream(content, attachments)
 
         const accepted = await chatStream.send({
             message: content,
@@ -836,6 +1321,8 @@
             toolMode: options.toolsMode,
             includeContext: true,
             attachments,
+            conversationMode: learningComposerDocked.value ? 'learning' : undefined,
+            workspaceId: sendWorkspaceId || undefined,
         }, {
             onChunk: handleStreamChunk,
             onEnd: handleStreamEnd,
@@ -851,17 +1338,20 @@
         }
     }
 
-    /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机) */
+    /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机,会话级) */
     watch(
-        () => conversationStore.generating,
-        (generating) => {
+        () => [conversationStore.generating, conversationStore.currentId] as const,
+        ([generating]) => {
             if (generating) {
                 return
             }
 
-            if (conversationStore.queueCount > 0 && !chatStream.isSending) {
-                // 队列只在其所属会话被查看时排空,避免后台流期间把排队消息发进别的会话
-                if (conversationStore.streamingConversationId !== conversationStore.currentId) {
+            // 会话级判定:仅当当前会话无流式时才排空其队列;
+            // 跨会话后台流不阻塞当前会话的队列
+            if (conversationStore.queueCount > 0 && !conversationStore.currentConversationGenerating) {
+                // 队列只在其所属会话被查看时排空,避免后台流期间把消息发进别的会话
+                const queued = conversationStore.queue[0]
+                if (queued?.conversationId && queued.conversationId !== conversationStore.currentId) {
                     return
                 }
 
@@ -874,8 +1364,51 @@
         }
     )
 
+    /** 当前流类型:发送新消息(send)或重答(regenerate)。决定失败时回滚语义。 */
+    let streamSendKind: 'send' | 'regenerate' = 'send'
+
+    /** 当前流阶段:connecting = 尚未收到任何业务帧(后端可能未落盘 user);streaming = 已建流 */
+    let streamPhase: 'connecting' | 'streaming' = 'connecting'
+
+    /** 本轮流是否收到服务端 conversation_index_stale(本地序号过期,收尾时按刷新会话处理) */
+    let staleIndexPending = false
+
+    /**
+     * 索引过期统一处理:以后端数据为准重载当前会话。
+     * 本地乐观消息与服务端脱锚后,唯一安全出路是回到权威数据源,而非继续局部修补。
+     */
+    async function handleIndexStale(): Promise<void> {
+        streamSendKind = 'send'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
+        conversationStore.abortStream()
+
+        if (!conversationStore.currentId) {
+            return
+        }
+
+        showToast('对话数据已更新,已为你重新加载', 'info')
+
+        try {
+            await conversationStore.loadMessages()
+        } catch {
+            // 加载失败不阻断;下次交互自然恢复
+        }
+
+        try {
+            await conversationStore.loadTurns()
+        } catch {
+            // 轮次线加载失败可忽略
+        }
+    }
+
     /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误 */
     function handleStreamChunk(chunk: ChatStreamChunk): void {
+        // 任何业务帧到达即视为流已建立(后端已过 begin_user_turn 落盘点)
+        if (chunk && chunk.type && chunk.type !== 'error') {
+            streamPhase = 'streaming'
+        }
         // 会话 ID 同步(后端懒创建会话时通过 conversation_id chunk 返回)
         if (chunk.type === 'conversation_id' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
@@ -901,9 +1434,10 @@
             return
         }
 
-        // 流式 usage:驱动输入区 TK mini 增量展示(对齐原版 onTokenStreamUsageChunk)
+        // 流式 usage:驱动输入区 TK mini 增量展示 + 同步到消息 model badge（I/O / E/C 立即显示，无需刷新）
         if (chunk.type === 'token_usage') {
             conversationStore.accumulateStreamUsage(chunk as unknown as Record<string, unknown>)
+            conversationStore.patchStreamingIoTokens(chunk as unknown as Record<string, unknown>)
 
             return
         }
@@ -917,6 +1451,20 @@
 
         // 错误块:显式上报;不在块内中断流,由 done 终帧统一收尾并恢复目标消息(避免丢失流式目标索引)
         if (chunk.type === 'error') {
+            const chunkCode = String(
+                (chunk as { error_code?: string }).error_code
+                || (chunk as { code?: string }).code
+                || ''
+            )
+
+            // 索引过期:本地序号与服务端脱锚(通常由先前发送失败/服务端裁剪引起)。
+            // 不弹错误——错误展示无意义,收尾阶段将自动重载会话回到权威数据。
+            if (chunkCode === 'conversation_index_stale') {
+                staleIndexPending = true
+
+                return
+            }
+
             streamErrorToastShown = true
 
             showError(String(chunk.content || chunk.message || '回复生成失败'))
@@ -924,12 +1472,14 @@
             return
         }
 
-        // stream_session 携带后端会话 ID,首次发送时同步回状态
+        // stream_session 携带后端会话 ID 与早期 context_events（首帧即带，避免结束后突然出现在开头）
         if (chunk.type === 'stream_session' && chunk.conversation_id) {
             if (!conversationStore.currentId) {
                 conversationStore.currentId = String(chunk.conversation_id)
             }
-
+            if (Array.isArray((chunk as Record<string, unknown>).context_events)) {
+                conversationStore.setContextEvents((chunk as Record<string, unknown>).context_events as ConversationContextEvent[])
+            }
             return
         }
 
@@ -962,6 +1512,11 @@
             conversationStore.appendStreamToolStep(chunk as unknown as Record<string, unknown>)
         }
 
+        // 草稿写入完成:广播 Workspace 变更,打开中的草稿面板立即原位刷新(无需手动切换 tab)
+        if (chunk.type === 'function_result' && String(chunk.name || '') === DRAFT_TOOL_NAME) {
+            notifyWorkspaceChanged()
+        }
+
         // 增量落地后节流写快照(跨刷新恢复数据源,由网络层负责持久化)
         if (
             chunk.type === 'content_delta'
@@ -978,7 +1533,19 @@
 
     /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
     function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
-        const detail = info as { error?: string; finalContent?: string; finalMessage?: Record<string, unknown> } | undefined
+        const detail = info as {
+            error?: string
+            errorCode?: string
+            finalContent?: string
+            finalMessage?: Record<string, unknown>
+            contextEvents?: ConversationContextEvent[]
+            assistantIndex?: number
+            regenerateIndex?: number
+        } | undefined
+
+        if (Array.isArray(detail?.contextEvents)) {
+            conversationStore.setContextEvents(detail.contextEvents)
+        }
 
         // 跨刷新重连发现服务端流已结束/不存在:
         // 快照内容按"已完成部分"保留展示,静默收尾(不弹错误、不写错误文本)
@@ -991,8 +1558,37 @@
         }
 
         if (reason === 'error') {
-            // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标
-            conversationStore.applyFinalMessage(detail?.finalMessage)
+            const errorCode = String(detail?.errorCode || '')
+
+            // 索引过期:本地序号与服务端脱锚,重载会话回到权威数据(幽灵消息随之消失)
+            if (staleIndexPending || errorCode === 'conversation_index_stale') {
+                staleIndexPending = false
+
+                void handleIndexStale()
+
+                return
+            }
+
+            // 发送新消息在流建立前失败(HTTP 非 2xx / 网络错误 / 空响应):
+            // 后端从未落盘 user,本地 user+assistant 是幽灵占位。必须回滚,
+            // 否则本地序号比服务端真实数据多 1,后续重答/删除全部错位。
+            if (streamSendKind === 'send' && streamPhase === 'connecting' && !detail?.finalMessage) {
+                const rolledBack = conversationStore.rollbackFailedTurn()
+
+                if (rolledBack) {
+                    streamSendKind = 'send'
+                    streamPhase = 'connecting'
+                    streamErrorToastShown = false
+
+                    showToast('发送失败,已撤销未发送的消息', 'warning')
+
+                    return
+                }
+            }
+
+            // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标，显式传参确保重答定位准确
+            const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
 
             // 重连失败等场景拿不到终帧消息时,把错误文本写入目标消息,避免消息留空
             if (!detail?.finalMessage) {
@@ -1014,7 +1610,8 @@
         // 用户终止:保留本地已流式接收的交错分段(多轮思考/工具链不塌缩);
         // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
         if (reason === 'aborted') {
-            conversationStore.applyFinalMessage(detail?.finalMessage)
+            const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
 
             conversationStore.abortStream()
 
@@ -1024,19 +1621,29 @@
         }
 
         // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
-        conversationStore.applyFinalMessage(detail?.finalMessage)
+        // 重答时必须显式指定 targetIndex，否则 pending 已在流中被 endStream 清理导致定位漂移，版本切换器需刷新才出现
+        const doneTargetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
+        conversationStore.applyFinalMessage(detail?.finalMessage, doneTargetIdx as number | null)
 
         conversationStore.endStream({ finalContent: detail?.finalContent })
+
+        // 移除“终帧后全量 loadMessages”导致的闪空刷新：
+        // applyFinalMessage 已用终帧 finalMessage 完成轻量覆盖（含 usage/trace/versions），
+        // 全量窗口重载会瞬间替换 messages 数组，造成“内容变空再重现”的视觉刷新。
+        // usage 若因竞态未落盘，由 endStream 内的 refreshTokenMiniBase 负责徽标数据，
 
         streamErrorToastShown = false
     }
 
-    /** 停止生成:中断当前流并清空待发送队列 */
+    /** 停止生成:中断当前会话流并清空待发送队列 */
     function handleStop(): void {
         // 仅发起取消;生成状态与流式目标索引由 onEnd('aborted') 收尾复位,
         // 保证取消终帧的 applyFinalMessage 仍能定位到正确的目标消息(重答场景)
-        if (chatStream.isSending) {
-            chatStream.cancel()
+        // 会话级取消:仅停当前查看会话,后台其他会话的流不受影响
+        if (conversationStore.currentConversationGenerating) {
+            chatStream.cancel(conversationStore.currentId)
+        } else if (chatStream.isSending) {
+            chatStream.cancel(conversationStore.currentId)
         } else {
             conversationStore.abortStream()
         }
@@ -1141,7 +1748,7 @@
             return
         }
 
-        if (chatStream.isSending) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('已有回复生成中,请稍候', 'warning')
 
             return
@@ -1157,6 +1764,11 @@
 
     /** 重答:通过后端 is_regenerate 机制覆盖目标回答并自动保存旧版本(对齐原版 startRegenerate) */
     async function handleRegenerate(assistantMessage: ChatMessage): Promise<void> {
+        // 重答轮次:失败不撤销已有消息;任何业务帧到达前视为 connecting
+        streamSendKind = 'regenerate'
+        streamPhase = 'connecting'
+        staleIndexPending = false
+
         const userMessage = conversationStore.messages.find(
             (item) => item.role === 'user' && item.index === assistantMessage.index - 1
         )
@@ -1167,7 +1779,7 @@
             return
         }
 
-        if (chatStream.isSending) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('已有回复生成中,请稍候', 'warning')
 
             return
@@ -1198,6 +1810,7 @@
             includeContext: true,
             isRegenerate: true,
             regenerateIndex: assistantMessage.index,
+            workspaceId: getConversationWorkspace(conversationId) || undefined,
         }, {
             onChunk: handleStreamChunk,
             onEnd: handleStreamEnd,
@@ -1268,6 +1881,17 @@
         backToChat()
     }
 
+    /** 知识点设置保存后:重命名则刷新标题并保持正文打开 */
+    function handleKnowledgeSettingsSaved(newTitle: string): void {
+        const oldTitle = knowledgeTitle.value
+
+        if (newTitle && newTitle !== oldTitle) {
+            knowledgeTitle.value = newTitle
+        }
+
+        knowledgeSettingsOpen.value = false
+    }
+
     /** 侧边栏 Knowledge 按钮:打开/关闭知识库管理视图(对齐原版独立管理页,内嵌为视图) */
     function handleOpenKnowledgeMgmt(): void {
         if (knowledgeMgmtOpen.value) {
@@ -1303,7 +1927,7 @@
 
         // 进入项目视图即清空会话选中(对齐原版 clearCurrentConversationSelectionForWorkspaceNavigation),
         // 详情页输入框发送时才会懒创建新会话并归入项目;生成中不重置,避免流写入错误会话
-        if (!conversationStore.generating) {
+        if (!conversationStore.currentConversationGenerating) {
             void conversationStore.newConversation()
         }
     }
@@ -1359,7 +1983,7 @@
             return
         }
 
-        if (conversationStore.generating) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('当前会话仍在生成,完成后才能创建分支', 'warning')
 
             return
@@ -1388,7 +2012,7 @@
             return
         }
 
-        if (conversationStore.generating) {
+        if (conversationStore.currentConversationGenerating) {
             showToast('当前会话仍在生成,请稍后再试', 'warning')
 
             return
@@ -1619,6 +2243,9 @@
     )
 
     onMounted(async () => {
+        // Learning 偏好预取（不阻塞主流程，决定侧栏品牌栏是否显示 Learning）
+        void refreshLearningPreference()
+
         // 会话列表与模型目录各自独立加载,单个失败不影响另一个
         try {
             await conversationStore.loadConversations()
@@ -1645,6 +2272,7 @@
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
+        window.addEventListener('nexora:preferences-updated', handlePreferencesUpdated)
 
         // 跨刷新恢复:必须先重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
         // 缓冲还不存在,恢复内容既不上屏也不接续;顺序颠倒即"刷新后只有 Stop Generation")。
@@ -1709,6 +2337,7 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
+        window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)
     })
 
     // 刷新/关闭前强制落盘活动流快照(节流窗口内的尾部增量不丢)

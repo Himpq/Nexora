@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import prompts
 
+from basis.index_codec import parse_message_index
+
 LONGTERM_MODE_TOKENS = {"longterm", "long_term", "long-term", "lt", "plan"}
 LEARNING_MODE_TOKENS = {"learning", "learn", "study", "study_mode", "learning_mode"}
 
@@ -107,7 +109,7 @@ def conversation_longterm_root_state(
         "plan": list(normalized["plan"] or []),
         "context": str(normalized.get("context", "") or ""),
         "step": str(normalized.get("step", "") or ""),
-        "current_index": int(normalized.get("current_index", -1) or -1),
+        "current_index": parse_message_index(normalized.get("current_index"), default=-1),
         "done_indices": list(normalized.get("done_indices", []) or []),
         "hook": hook if isinstance(hook, dict) else {},
     }

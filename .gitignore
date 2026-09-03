@@ -67,3 +67,15 @@ ChatDBServer/static/new/
 
 # pnpm content-addressable store (workspace root, never version this)
 .pnpm-store/
+
+# WorkBuddy Files
+.workbuddy/
+
+# ZCode
+.mimosa/
+
+NexoraHarmony2
+
+# Ad-hoc probe / diagnostic leftovers (repo root, never commit)
+/_tmp_*.py
+/tmp*.txt

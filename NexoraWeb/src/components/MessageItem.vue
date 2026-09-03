@@ -106,6 +106,32 @@
                     {{ badgeExpanded && hasIoData ? badgeFullText : badgeText }}
                 </div>
 
+                <!-- 知识 diff 伪工具：挂在 assistant 首位，复用 tool-usage execution-flow 形态，避免独立 banner 时有时无 -->
+                <template v-if="message.role === 'assistant' && knowledgeDiffs.length">
+                    <div
+                        v-for="(diff, diffIndex) in knowledgeDiffs"
+                        :key="`knowledge-diff-${diffIndex}-${diff.scope}`"
+                        class="tool-usage execution-flow-item has-output expanded knowledge-diff-tool"
+                        :data-flow-kind="diff.scope === 'workspace' ? 'knowledge' : 'knowledge'"
+                    >
+                        <div class="tool-badge execution-flow-header">
+                            <span class="execution-flow-node" aria-hidden="true">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+                            </span>
+                            <span class="execution-flow-main">
+                                <span class="tool-name execution-flow-title">{{ diff.title }}</span>
+                            </span>
+                            <span class="tool-status execution-flow-summary">{{ diff.summary }}</span>
+                        </div>
+                        <div class="tool-output">
+                            <div v-for="row in diff.rows" :key="`${row.kind}-${row.title}`" class="knowledge-diff-row" :class="row.kind">
+                                <span class="knowledge-diff-sign">{{ row.kind === 'added' ? '+' : '-' }}</span>
+                                <span>{{ row.title }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
                 <!--
                     内容分段顺序渲染(思考/正文/工具链按输出时序交错):
                     思考行与工具行共用执行流程时间线形态;
@@ -197,7 +223,25 @@
                     </div>
 
                     <template v-else-if="item.kind === 'tool'" :key="`tool-${item.sourceIndex}`">
+                        <!-- Workspace 草稿:内联小卡片,参数流式期间逐步呈现标题与正文,像正文内容一样直接展示 -->
+                        <div v-if="item.draft" class="draft-call-card" :data-call-id="item.callId || undefined">
+                            <div class="draft-call-head">
+                                <span class="draft-call-icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></span>
+                                <span class="draft-call-kicker">草稿</span>
+                                <span class="draft-call-title">{{ item.draft.title || '正在记录草稿…' }}</span>
+                                <span class="draft-call-state" :class="`is-${item.draft.state}`">
+                                    <i v-if="item.draft.state === 'streaming'" class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>
+                                    <i v-else-if="item.draft.state === 'success'" class="fa-solid fa-check" aria-hidden="true"></i>
+                                    <i v-else-if="item.draft.state === 'failed'" class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                                    <span>{{ draftCallStateText(item.draft) }}</span>
+                                </span>
+                            </div>
+                            <MarkdownView v-if="item.draft.content" class="draft-call-content" :content="item.draft.content" />
+                            <div v-if="item.draft.state === 'failed' && item.draft.message" class="draft-call-error">{{ item.draft.message }}</div>
+                        </div>
+
                         <div
+                            v-else
                             class="tool-usage execution-flow-item"
                             :class="{ expanded: isToolExpanded(item), 'has-output': item.hasOutput, 'is-running': item.running }"
                             :data-flow-kind="item.flowKind"
@@ -303,6 +347,13 @@
         isMapToolName,
         stripMapSceneSection,
     } from '@/stream/toolFlow'
+    import {
+        buildStreamingDraftCall,
+        draftCallStateText,
+        isDraftToolName,
+        resolveDraftCallResult,
+        type DraftCallView,
+    } from '@/stream/draftCall'
     import type { QuestionPayload } from '@/stream/questionCard'
     import { buildQuestionCardId, readQuestionLock, writeQuestionLock } from '@/stream/questionCard'
     import { ensureNexoraMapRendererAssets } from '@/stream/mapRenderer'
@@ -314,6 +365,8 @@
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
 
+    import type { ConversationContextEvent } from '@/api/conversations'
+
     const props = withDefaults(defineProps<{
         message: ChatMessage
         streaming?: boolean
@@ -323,8 +376,11 @@
         conversationId?: string
         /** 只读模式(Workspace 共享对话):隐藏编辑/删除/重答/分支/版本切换与作答交互 */
         readonly?: boolean
+        /** 知识 diff 伪工具：按 effective 挂到 assistant 首位，复用 tool-usage 形态（非独立 banner） */
+        knowledgeEvents?: ConversationContextEvent[]
     }>(), {
         readonly: false,
+        knowledgeEvents: () => [],
     })
 
     const emit = defineEmits<{
@@ -344,6 +400,32 @@
 
     /** 用户手动展开过的工具徽标(分段索引 → 是否展开);默认全部收起 */
     const expandedTools = ref<Record<number, boolean>>({})
+
+    /** 知识 diff 伪工具（仅 assistant，首位展示，复用 tool-usage 样式） */
+    const knowledgeDiffs = computed(() => {
+        if (props.message.role !== 'assistant') return []
+        const events = Array.isArray(props.knowledgeEvents) ? props.knowledgeEvents : []
+        return events.map((event) => {
+            const scopeLabel = event.scope === 'workspace' ? 'Workspace' : '全局知识库'
+            const added = Array.isArray(event.added) ? event.added : []
+            const removed = Array.isArray(event.removed) ? event.removed : []
+            const rows: Array<{ kind: 'added' | 'removed'; title: string }> = []
+            for (const item of added) {
+                const title = typeof item === 'string' ? String(item).trim() : String((item as Record<string, unknown>).title || (item as Record<string, unknown>).name || '').trim()
+                if (title) rows.push({ kind: 'added', title })
+            }
+            for (const item of removed) {
+                const title = typeof item === 'string' ? String(item).trim() : String((item as Record<string, unknown>).title || (item as Record<string, unknown>).name || '').trim()
+                if (title) rows.push({ kind: 'removed', title })
+            }
+            return {
+                scope: event.scope,
+                title: `知识库已更新 · ${scopeLabel}`,
+                summary: `+${added.filter((x) => String(typeof x === 'string' ? x : (x as Record<string, unknown>).title || '').trim()).length} -${removed.filter((x) => String(typeof x === 'string' ? x : (x as Record<string, unknown>).title || '').trim()).length}`,
+                rows,
+            }
+        }).filter((d) => d.rows.length > 0)
+    })
 
     /** 文本类渲染项(思考/正文,携带源分段索引用于折叠状态键) */
     interface TextRenderItem {
@@ -374,6 +456,8 @@
         markdownMode: boolean
         /** 地图工具:独立地图卡片 markdown(```nexora-map* 围栏,渲染器自动扫描) */
         mapMarkdown?: string
+        /** Workspace 草稿工具:内联小卡片视图(参数流式呈现,替代折叠工具行) */
+        draft?: DraftCallView
     }
 
     /** 交互问题渲染项:等待/已回答的 question 卡片 */
@@ -468,6 +552,7 @@
                     args,
                     outputText: prettyToolArgs(segment.text),
                     markdownMode: false,
+                    draft: isDraftToolName(rawName) ? buildStreamingDraftCall(segment.text) : undefined,
                 })
 
                 return
@@ -475,10 +560,9 @@
 
             if (segment.type === 'function_result') {
                 const rawName = segment.name || 'tool'
-                const markdownMode = String(segment.modelVisibleResult || '').trim() !== ''
-                const display = markdownMode
-                    ? String(segment.modelVisibleResult)
-                    : String(segment.text || '')
+                const displaySource = String((segment as any).displayResult || segment.modelVisibleResult || '').trim()
+                const markdownMode = displaySource !== ''
+                const display = markdownMode ? displaySource : String(segment.text || '')
 
                 for (let i = items.length - 1; i >= 0; i -= 1) {
                     const candidate = items[i]
@@ -566,6 +650,12 @@
     function applyToolResult(item: ToolRenderItem, display: string, markdownMode: boolean, rawResult: string): void {
         item.running = false
         item.status = '完成'
+
+        // 草稿卡片:结果只影响状态角标(已存入/失败),内容仍来自调用参数
+        if (item.draft) {
+            item.draft = resolveDraftCallResult(rawResult, item.draft)
+        }
+
         item.title = buildChineseToolAction(item.rawName, item.args, display, rawResult)
         item.markdownMode = markdownMode
 
@@ -729,17 +819,28 @@
 
     /**
      * 正在输出的思考段索引(滚动窗口标题的判定依据):
-     * 仅当本消息处于流式中且最后一个分段是思考时,该思考块处于"思考中"状态。
+     * - 历史：仅最后一个分段是思考时该思考块处于"思考中"状态（严格，保证收尾后自动收起）。
+     * - 兼容：纯 reasoning 轮次（无工具）老对话在云端仍显示"思考过程"，
+     *   经用户反馈定位为 props.streaming 偶发为 false（pending 已 true 但 isStreamingMessage 判定失败），
+     *   故以 message.pending 作为流式兜底，确保纯推理也能滑动。
      */
     const liveReasoningIndex = computed<number>(() => {
-        if (!props.streaming) {
+        const isStreaming = !!props.streaming || !!(props.message as unknown as Record<string, unknown>).pending
+        if (!isStreaming) {
             return -1
         }
 
         const segments = contentSegments.value
-        const last = segments.length > 0 ? segments[segments.length - 1] : undefined
+        if (segments.length === 0) return -1
+        const last = segments[segments.length - 1]
+        if (last && last.type === 'reasoning') return segments.length - 1
 
-        return last && last.type === 'reasoning' ? segments.length - 1 : -1
+        // 兼容分支：流式中但末尾已不是 reasoning（已开始吐正文/工具），
+        // 最后一个 reasoning 仍应保持"思考中"滑动，直到流结束被折叠
+        for (let i = segments.length - 1; i >= 0; i -= 1) {
+            if (segments[i].type === 'reasoning') return i
+        }
+        return -1
     })
 
     /**
@@ -798,9 +899,64 @@
         // 标题 span 自身是内容自适应宽度(随已展示窗口文本伸缩),若以其 clientWidth
         // 推算下一帧窗口会形成「文本→窗口→文本」自反馈回路,测量偏差在流式渲染中
         // 逐帧累积,最终把窗口压缩成单字符。预留 2px 余量抵消亚像素取整误差。
-        const measureBase = titleEl.parentElement as HTMLElement
-        const availableWidth = Math.max(1, measureBase.clientWidth - reasoningTextWidth(titlePrefix, font) - 2)
+        const measureBase = titleEl.parentElement as HTMLElement | null
+        const baseWidth = measureBase ? measureBase.clientWidth : 0
+        const prefixWidth = reasoningTextWidth(titlePrefix, font)
+        let availableWidth = Math.max(1, baseWidth - prefixWidth - 2)
+
+        // 云端/窄视口兜底:若容器尚未布局(首帧 0)或过窄(<80px ≈ 5 个汉字),
+        // 固定字符数窗口避免被压缩成空/单字符(用户感知为“滑动窗口没了”)。
+        // 同时打 debug 便于云端复现时在控制台定位原因。
+        if (!measureBase || baseWidth <= 0 || availableWidth < 80) {
+            if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__NEXORA_DEBUG_REASONING !== false) {
+                console.debug('[ReasoningTitle] fallback: narrow or unmeasured', {
+                    sourceIndex,
+                    baseWidth,
+                    prefixWidth,
+                    availableWidth,
+                    lineLen: line.length,
+                    hasEl: !!titleEl,
+                    hasParent: !!measureBase,
+                })
+            }
+
+            const fallbackCapacity = 26
+            let fallbackTail = line
+            let fallbackEllipsis = anchorStart > 0
+
+            if (line.length > fallbackCapacity) {
+                fallbackTail = line.slice(-fallbackCapacity)
+                fallbackEllipsis = true
+            }
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
         const { tail, truncated } = fitReasoningTail(line, availableWidth, font)
+
+        // 云端老对话/宽窄容器差异兜底：自适应测宽可能仅得 1~6 字符，
+        // 视觉上等同“滑动窗口没了”。保证老对话与新对话一致的最小窗口，
+        // 若自适应结果短于固定窗口则回退到固定窗口，避免新旧表现分叉。
+        const fallbackCapacity = 26
+        if (!tail && line) {
+            let fallbackTail = line
+            let fallbackEllipsis = anchorStart > 0
+
+            if (line.length > fallbackCapacity) {
+                fallbackTail = line.slice(-fallbackCapacity)
+                fallbackEllipsis = true
+            }
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
+        if (tail.length > 0 && tail.length < fallbackCapacity && line.length > fallbackCapacity) {
+            let fallbackTail = line.slice(-fallbackCapacity)
+            let fallbackEllipsis = anchorStart > 0 || line.length > fallbackCapacity
+
+            return `${titlePrefix}${fallbackEllipsis ? '…' : ''}${fallbackTail}`
+        }
+
         const showEllipsis = anchorStart > 0 || truncated
 
         return `${titlePrefix}${showEllipsis ? '…' : ''}${tail}`
@@ -967,31 +1123,77 @@
         emit('edit-save', props.message, content)
     }
 
-    /** 助手消息模型徽标(对齐原版:metadata.model_name 优先,有 tool_calls 的中间轮不显示) */
+    /** 助手消息模型徽标(对齐原版:metadata.model_name 优先,仅流式中间轮隐藏,终态 completed/error 即使含 tool_calls 也展示) */
     const badgeText = computed(() => {
         if (props.message.role !== 'assistant') {
             return ''
         }
 
-        const hasToolCalls = Array.isArray(props.message.tool_calls) && props.message.tool_calls.length > 0
+        const trace = props.message.trace && typeof props.message.trace === 'object'
+            ? props.message.trace as Record<string, unknown>
+            : {}
+        const hasToolCalls = (Array.isArray(trace.tool_calls) && trace.tool_calls.length > 0)
+            || (Array.isArray(trace.events) && trace.events.some((event) => (
+                event && typeof event === 'object' && String((event as Record<string, unknown>).type || '') === 'function_call'
+            )))
 
-        if (hasToolCalls) {
+        const status = String((props.message as Record<string, unknown>).status || '').trim()
+        const isIntermediate = !!props.streaming && hasToolCalls && status !== 'completed' && status !== 'error'
+
+        if (isIntermediate) {
             return ''
         }
 
         const metadataName = readMetadataString('model_name')
+        const model = props.message.model && typeof props.message.model === 'object'
+            ? props.message.model as Record<string, unknown>
+            : {}
+        const v4ModelName = String(model.name || '').trim()
 
-        return metadataName || props.message.model_name || props.modelName || ''
+        return v4ModelName || metadataName || props.message.model_name || props.modelName || ''
     })
 
-    /** 展开文本:模型名 - I/O: 输入/输出(对齐原版 buildModelBadgeText) */
+    /**
+     * 归一化 badge 的 raw / cached 口径(对齐云端/原版: raw 为完整 prompt 含缓存命中,
+     * cached 为命中部分,命中率 = cached / raw):
+     * - raw 缺失时用计费 input + cached 回补(对齐 chat.js normalizedRawInput),
+     * - cached 不得超过 raw,避免脏数据导致命中率 >100% 或 effective 为负。
+     */
+    function normalizeBadgeRawCached(rawInput: number, cachedInput: number, billedInput: number): { raw: number; cached: number } {
+        const rawN = Math.max(0, Math.floor(Number(rawInput) || 0))
+        const cachedN = Math.max(0, Math.floor(Number(cachedInput) || 0))
+        const billedN = Math.max(0, Math.floor(Number(billedInput) || 0))
+
+        // raw 为完整 prompt 口径:缺失时用 billed + cached 回补(旧数据仅有 billed/cached 时仍可计算命中率)
+        let raw = rawN > 0 ? rawN : 0
+
+        if (raw <= 0 && (billedN > 0 || cachedN > 0)) {
+            raw = billedN + cachedN
+        }
+
+        let cached = cachedN
+
+        if (raw > 0 && cached > raw) {
+            cached = raw
+        }
+
+        return { raw, cached }
+    }
+
+    /** 展开文本:模型名 - I/O: 输入/输出 + E/C 缓存命中(对齐原版 buildModelBadgeText + NexoraCode) */
     const badgeFullText = computed(() => {
         const model = badgeText.value || '-'
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-
-        return `${model} - I/O: ${input.toLocaleString()}/${output.toLocaleString()}`
+        const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
+        const effective = Math.max(0, raw - cached)
+        let ecText = ''
+        if (raw > 0 || cached > 0) {
+            const pct = raw > 0 ? (Math.min(100, Math.round((cached / raw) * 10000) / 100)).toFixed(2) : '0.00'
+            ecText = ` - E/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%)`
+        }
+        return `${model} - I/O: ${input.toLocaleString()}/${output.toLocaleString()}${ecText}`
     })
 
     /** 折叠时 title:多行详情(对齐原版 buildModelBadgeDetailTitle) */
@@ -1000,8 +1202,14 @@
         const tokens = ioTokens.value
         const input = tokens.input
         const output = tokens.output
-
-        return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}`
+        const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
+        let ecLine = ''
+        if (raw > 0 || cached > 0) {
+            const effective = Math.max(0, raw - cached)
+            const pct = raw > 0 ? (Math.min(100, Math.round((cached / raw) * 10000) / 100)).toFixed(2) : '0.00'
+            ecLine = `\nE/C: ${effective.toLocaleString()}/${cached.toLocaleString()} (${pct}%) [raw ${raw.toLocaleString()}]`
+        }
+        return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}${ecLine}`
     })
 
     /** 是否有真实 token 数据(无数据时折叠显示,避免 0/0 噪音) */
@@ -1038,7 +1246,10 @@
 
     /** 本次轮次 I/O token(优先 window 口径,回退 cumulative) */
     const ioTokens = computed(() => {
-        const tokens = readMessageIoTokens(messageMetadata())
+        const tokens = readMessageIoTokens({
+            ...messageMetadata(),
+            usage: props.message.usage,
+        })
 
         return hasAnyIo(tokens.round) ? tokens.round : tokens.cumulative
     })
@@ -1078,10 +1289,10 @@
         __isCurrent: boolean
     }
 
-    /** 历史版本列表(metadata.versions 中的有内容变体,对齐原版 rawVersions 过滤) */
+    /** 历史版本列表(v4 versions 优先，兼容旧 metadata.versions)。 */
     const versionVariants = computed<VersionVariant[]>(() => {
         const metadata = messageMetadata()
-        const raw = metadata.versions
+        const raw = Array.isArray(props.message.versions) ? props.message.versions : metadata.versions
 
         if (!Array.isArray(raw)) {
             return []
@@ -1192,7 +1403,7 @@
     /** 归一化附件列表:url 取 asset_url || url(对齐原版 appendUserAttachments) */
     const attachments = computed<MessageAttachment[]>(() => {
         const metadata = messageMetadata()
-        const raw = metadata.attachments
+        const raw = Array.isArray(props.message.attachments) ? props.message.attachments : metadata.attachments
 
         if (!Array.isArray(raw)) {
             return []
@@ -1206,7 +1417,11 @@
             }
 
             const record = entry as Record<string, unknown>
-            const url = String(record.asset_url || record.url || '').trim()
+            // 兼容旧会话：仅有 sandbox_path / stored_path 时即时合成下载链接（对齐原版旧数据）
+            const sandbox = String(record.sandbox_path || record.stored_path || '').trim()
+            const url = String(
+                record.asset_url || record.url || (sandbox ? `/api/files/download?file_ref=${encodeURIComponent(sandbox)}&inline=1` : '')
+            ).trim()
 
             if (!url) {
                 return
@@ -1225,14 +1440,20 @@
         return list
     })
 
-    /** 图片附件:type 为 image/image_url 或 mime 以 image/ 开头(对齐原版过滤) */
+    /** 图片附件:type 为 image/image_url 或 mime 以 image/ 开头，兼容旧 sandbox_file 按扩展名判断(对齐原版缩略图) */
     const imageAttachments = computed(() => {
         return attachments.value.filter((att) => {
             if (att.type === 'image' || att.type === 'image_url') {
                 return true
             }
 
-            return (att.mime || '').startsWith('image/')
+            if ((att.mime || '').startsWith('image/')) {
+                return true
+            }
+
+            const name = String(att.name || att.sandbox_path || '').toLowerCase()
+
+            return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)
         })
     })
 
@@ -1320,5 +1541,118 @@
     .btn-ver:disabled {
         opacity: 0.4;
         cursor: not-allowed;
+    }
+
+    /* ===== Workspace 草稿小卡片(随参数流式呈现,替代折叠工具行) ===== */
+    .draft-call-card {
+        max-width: 640px;
+        /* 在 message-content 内水平居中(左右 auto),与上下内容留 6px 间距 */
+        margin: 6px auto;
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+        background: var(--color-bg-elevated);
+        padding: 12px 14px;
+    }
+
+    .draft-call-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .draft-call-icon {
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--color-border);
+        border-radius: 7px;
+        background: var(--color-bg-sunken);
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .draft-call-kicker {
+        color: var(--color-accent-text);
+        font-size: 12px;
+        font-weight: 700;
+        flex: 0 0 auto;
+    }
+
+    .draft-call-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--color-text-primary);
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .draft-call-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: 0 0 auto;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .draft-call-state.is-success {
+        color: var(--color-success-text);
+    }
+
+    .draft-call-state.is-failed {
+        color: var(--color-danger-text);
+    }
+
+    .draft-call-content {
+        margin-top: 10px;
+        color: var(--color-text-primary);
+        font-size: 14px;
+        line-height: 1.7;
+        overflow-wrap: anywhere;
+    }
+
+    .draft-call-error {
+        margin-top: 8px;
+        color: var(--color-danger-text);
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    /* 知识 diff 伪工具（复用 tool-usage，但内容为 + / - 列表） */
+    .knowledge-diff-tool .tool-output {
+        display: grid;
+        gap: 4px;
+        padding: 8px 12px 10px;
+    }
+
+    .knowledge-diff-row {
+        display: flex;
+        gap: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .knowledge-diff-row.added {
+        color: #15803d;
+    }
+
+    .knowledge-diff-row.removed {
+        color: #b91c1c;
+    }
+
+    .knowledge-diff-sign {
+        width: 12px;
+        flex: 0 0 12px;
+        font-weight: 700;
+        text-align: center;
     }
 </style>

@@ -58,6 +58,7 @@ class ToolResultPresenter:
             "map_poi_search": self._render_map_result,
             "arxiv_search": self._render_arxiv_search,
             "search": self._render_unified_search,
+            "exa_web_search": self._render_exa_web_search,
             "js_execute": self._render_js_execute,
             "client_js_exec": self._render_js_execute,
             "cloud_file_search_semantic": self._render_file_semantic_search,
@@ -73,6 +74,7 @@ class ToolResultPresenter:
             "workspace_mem_apply_diff": self._render_workspace_memory_update,
             "workspace_mem_edit": self._render_workspace_memory_update,
             "workspace_mem_add": self._render_workspace_memory_update,
+            "workspace_draft_add": self._render_workspace_draft_update,
             "knowledge_basis_create": self._render_knowledge_mutation,
             "knowledge_basis_delete": self._render_knowledge_mutation,
             "knowledge_basis_update": self._render_knowledge_mutation,
@@ -236,6 +238,27 @@ class ToolResultPresenter:
             return f"{float(value):.4f}"
         except Exception:
             return ""
+
+    def _is_displayable_exa_image(self, url: Any) -> bool:
+        """
+        判断 Exa image 是否值得在工具展开区以 Markdown 图片展示。
+
+        过滤 favicon/logo/小图标等无效缩略图，避免把 32x32 的 favicon 拉伸成全宽卡片。
+        规则：
+        - 仅 https 外链
+        - 排除 svg/ico/gif
+        - 排除含 logo/favicon/disambig/sprite/40px- 等标识的缩略图
+        """
+        text = str(url or "").strip()
+        if not text.startswith("https://"):
+            return False
+        low = text.lower()
+        if low.endswith(".svg") or low.endswith(".ico") or low.endswith(".gif"):
+            return False
+        # Exa 常把站点 logo 当作 image，需过滤
+        if any(token in low for token in ("logo", "favicon", "disambig", "sprite", "/40px-")):
+            return False
+        return True
 
     def _looks_successful_text(self, result: Any) -> bool:
         text = str(result or "").strip().lower()
@@ -2491,6 +2514,36 @@ class ToolResultPresenter:
         ])
         return "\n".join(lines).strip()
 
+    def _render_workspace_draft_update(self, args: Dict[str, Any], result: Any) -> str:
+        """Render Workspace draft tool results into Markdown for model-visible tool output."""
+        payload = self._load_payload(result)
+
+        if not isinstance(payload, dict):
+            return "\n".join([
+                "## Workspace Draft Result Parse Failed",
+                "",
+                f"- Tool: `{str(args.get('_tool_name') or 'workspace_draft_add')}`",
+                "",
+                "### Raw Result",
+                "",
+                self._fenced_text(result, language="text", limit=4000),
+            ]).strip()
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        lines = [self._status_title(success, "## Workspace Draft Appended", "## Workspace Draft Append Failed"), ""]
+
+        if success:
+            lines.extend([
+                f"- Draft ID: `{payload.get('draft_id') or ''}`",
+                f"- Title: {payload.get('title') or ''}",
+                f"- Chars: {payload.get('chars', 0)}",
+                f"- Total Drafts: {payload.get('total', 0)}",
+            ])
+        else:
+            lines.append(f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}")
+
+        return "\n".join(lines).strip()
+
     def _render_workspace_memory_update(self, args: Dict[str, Any], result: Any) -> str:
         """Render Workspace memory mutation results into Markdown for model-visible tool output."""
         payload = self._load_payload(result)
@@ -2963,6 +3016,137 @@ class ToolResultPresenter:
             lines.extend(["", "### Notes"])
             for note in notes:
                 lines.append(f"- {note}")
+
+        return "\n".join(lines).strip()
+
+    def _render_exa_web_search(self, args: Dict[str, Any], result: Any) -> str:
+        """
+        Exa Web Search 渲染：突出神经搜索的高亮片段与来源可追溯性
+
+        前端效果：
+        - 标题带 Exa 标识与查询词，折叠面板内标题由 toolFlow 统一显示为「Exa 搜索 xxx」
+        - 展开区为 Markdown：编号标题+链接、发布日期/评分、Snippet 引用块、Highlights 引用块
+        - 移动端友好：无宽表格，仅用标题、列表与引用块，避免横向滚动
+        """
+
+        payload = self._load_payload(result)
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload("exa_web_search", payload)
+
+        if not isinstance(payload, dict):
+            text = str(result or "").strip()
+            success = self._looks_successful_text(text)
+            title = self._status_title(success, "## Exa Web Search", "## Exa Web Search Failed")
+
+            return "\n".join([
+                title,
+                "",
+                f"- Query: `{args.get('query', '')}`",
+                "",
+                self._markdown_body(text or "(empty)", limit=6000),
+            ]).strip()
+
+        success = payload.get("success", True) is not False
+
+        query = str(payload.get("query") or args.get("query") or "").strip()
+        search_type = str(payload.get("type") or args.get("type") or "auto").strip() or "auto"
+
+        lines = [
+            self._status_title(success, "## Exa Web Search", "## Exa Web Search Failed"),
+            "",
+            f"- Query: `{self._escape_table_cell(query) or '(empty)'}`",
+            f"- Type: `{search_type}`",
+        ]
+
+        if not success:
+            reason = str(payload.get("error") or payload.get("message") or "unknown error").strip()
+            lines.extend(["", f"- Reason: {reason}"])
+
+            return "\n".join(lines).strip()
+
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+
+        if not results and isinstance(payload.get("error"), str) and payload.get("error"):
+            lines.extend(["", f"- Reason: {payload.get('error')}"])
+
+            return "\n".join(lines).strip()
+
+        lines.append(f"- Results: {len(results)}")
+
+        if not results:
+            lines.extend(["", "- No results found."])
+
+            return "\n".join(lines).strip()
+
+        seen_images: set = set()
+        for index, item in enumerate(results[:20], start=1):
+            if not isinstance(item, dict):
+                continue
+
+            title = str(item.get("title") or "").strip() or "(untitled)"
+            url = str(item.get("url") or "").strip()
+            snippet = str(item.get("snippet") or "").strip()
+            published = str(item.get("published_date") or "").strip()
+            score = item.get("score")
+            highlights = item.get("highlights") if isinstance(item.get("highlights"), list) else []
+            image = str(item.get("image") or "").strip()
+            favicon = str(item.get("favicon") or "").strip()
+            author = str(item.get("author") or "").strip()
+
+            # 标题行：带编号的可点击链接（Markdown），移动端自动换行；favicon 作为小图标可选
+            if url:
+                lines.extend(["", f"### {index}. [{self._escape_table_cell(title)}]({url})"])
+                # URL 仅保留一行，避免与标题重复过长；favicon/author 作为轻量元信息
+            else:
+                lines.extend(["", f"### {index}. {self._escape_table_cell(title)}"])
+
+            meta_bits = []
+
+            if published:
+                meta_bits.append(f"{published}")
+
+            if author:
+                meta_bits.append(f"{self._escape_table_cell(author)}")
+
+            if isinstance(score, (int, float)):
+                meta_bits.append(f"score {self._format_score(score)}")
+
+            if meta_bits:
+                lines.append(f"- {' | '.join(meta_bits)}")
+
+            if url:
+                lines.append(f"- {url}")
+
+            # Snippet 精简为 320 字，减少 token
+            if snippet:
+                clipped_snippet = snippet[:320].replace("\n", " ").strip()
+
+                if clipped_snippet:
+                    lines.extend(["", f"> {clipped_snippet}"])
+
+            # Highlights 精简为 2 条 *280 字，token 友好
+            if highlights:
+                for hl in highlights[:2]:
+                    text = str(hl or "").strip().replace("\n", " ")
+
+                    if not text:
+                        continue
+
+                    clipped = text[:280]
+                    lines.append(f"> {clipped}")
+
+            # 纯 Markdown 图片：仅渲染可信的真实配图，过滤 favicon/logo 小图标并去重；favicon 不返回给模型
+            if self._is_displayable_exa_image(image):
+                if image not in seen_images:
+                    seen_images.add(image)
+                    if len(seen_images) <= 3:
+                        alt = self._escape_table_cell(title)[:40]
+                        lines.extend(["", f"![{alt}]({image})"])
+
+        # 结构化输出（outputSchema）透传提示
+        if isinstance(payload.get("output"), dict) and payload.get("output"):
+            lines.extend(["", "### Structured Output", "", self._fenced_text(json.dumps(payload.get("output"), ensure_ascii=False, indent=2), language="json", limit=3000)])
 
         return "\n".join(lines).strip()
 

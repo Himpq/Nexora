@@ -379,66 +379,41 @@ class ProviderInterface(ABC):
 
     def _coalesce_system_messages_to_front(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Move system messages to the front and merge them into one message, preserving
-        the relative order of non-system messages.
+        协议合规归位：OpenAI 兼容接口要求 system 不得落在 user 之后。
+        只归位「最后一条 user 之后」的 system（协议违规，如压缩摘要/运行时提示漂移）；
+        已在 user 之前的 system（head、历史 diff 重建、tail volatile diff）保持原位不动。
+        理由：历史 diff 必须固定在生效 user 之前以维持前缀逐字节稳定（prefix cache），
+        若每轮都把它们移动到当前轮末尾，前缀必然漂移、缓存永久失配。
         """
-        first_system: Optional[Dict[str, Any]] = None
-        first_system_index: Optional[int] = None
-        merged_content: Any = None
-        non_system_messages: List[Dict[str, Any]] = []
 
-        for idx, msg in enumerate(list(messages or [])):
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role", "") or "").strip().lower()
-            if role != "system":
-                non_system_messages.append(msg)
-                continue
+        if not messages:
+            return []
 
-            if first_system is None:
-                first_system = dict(msg)
-                first_system_index = idx
-                merged_content = msg.get("content")
-            else:
-                merged_content = self._merge_system_content(merged_content, msg.get("content"))
-
-        if first_system is None:
+        first = messages[0]
+        if not isinstance(first, dict) or str(first.get("role") or "").strip().lower() != "system":
+            # 无 system 头：维持原顺序（既有行为）
             return list(messages or [])
 
-        first_system["content"] = merged_content if merged_content is not None else ""
+        last_user_index = -1
+        for idx, msg in enumerate(messages):
+            if isinstance(msg, dict) and str(msg.get("role") or "").strip().lower() == "user":
+                last_user_index = idx
 
-        # Already compliant: first message is system and no extra system messages.
-        if first_system_index == 0 and len(non_system_messages) + 1 == len([m for m in messages if isinstance(m, dict)]):
+        if last_user_index < 0:
             return list(messages or [])
 
-        return [first_system] + non_system_messages
+        before_last_user = list(messages[: last_user_index + 1])
+        after_last_user = list(messages[last_user_index + 1:])
 
-    def _merge_system_content(self, base: Any, extra: Any) -> Any:
-        if extra is None or extra == "":
-            return base
-        if base is None or base == "":
-            return extra
+        def _is_system(msg: Any) -> bool:
+            return isinstance(msg, dict) and str(msg.get("role") or "").strip().lower() == "system"
 
-        if isinstance(base, list):
-            merged = list(base)
-            if isinstance(extra, list):
-                merged.extend(extra)
-            else:
-                merged.append(extra)
-            return merged
+        trailing_systems = [m for m in after_last_user if _is_system(m)]
+        if not trailing_systems:
+            return list(messages or [])
 
-        if isinstance(extra, list):
-            merged = [base]
-            merged.extend(extra)
-            return merged
-
-        base_text = str(base)
-        extra_text = str(extra)
-        if not base_text:
-            return extra_text
-        if not extra_text:
-            return base_text
-        return f"{base_text}\n\n{extra_text}"
+        trailing_others = [m for m in after_last_user if not _is_system(m)]
+        return before_last_user[:-1] + trailing_systems + [before_last_user[-1]] + trailing_others
 
     def iter_stream_events(
         self,

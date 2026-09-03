@@ -5,7 +5,8 @@ import threading
 import time
 from typing import Any, Dict, List
 
-from basis.Conversation import ConversationManager
+from basis.index_codec import parse_message_index
+from basis.Conversation import ConversationManager, ConversationService
 from basis.User import User
 from App.Core import Model
 from basis.TokenUsage import append_usage_log_record
@@ -77,7 +78,6 @@ def _format_memory_tool(
         properties[argument_name] = {
             "type": "string",
             "description": argument_description,
-            "maxLength": 200 if argument_name == "reason" else MEMORY_PROFILE_MAX_CHARS
         }
         required.append(argument_name)
 
@@ -85,7 +85,6 @@ def _format_memory_tool(
         "type": "object",
         "properties": properties,
         "required": required,
-        "additionalProperties": False
     }
 
     if model._provider_use_responses_api(model.provider):
@@ -169,6 +168,66 @@ class MemoryAnalysisQueue:
             )
             self._worker_thread.start()
 
+    def _write_failure_status(self, job: Dict[str, Any], error: Exception) -> None:
+        """失败时回写 memory_analysis=failed，避免前端永远 processing。"""
+        try:
+            username = str(job.get("username") or "").strip()
+            conversation_id = str(job.get("conversation_id") or "").strip()
+            assistant_index = parse_message_index(job.get("assistant_index"), default=-1)
+
+            if not username or not conversation_id or assistant_index < 0:
+                return
+
+            svc = ConversationService(username)
+            failed_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            analysis_model = str(job.get("analysis_model") or job.get("model_name") or "")
+            model_source = str(job.get("analysis_model_source") or "conversation")
+
+            svc.update_assistant_analysis(
+                conversation_id,
+                int(assistant_index),
+                {
+                    "job_id": str(job.get("job_id") or ""),
+                    "status": "failed",
+                    "action": "failed",
+                    "reason": "",
+                    "update_content": "",
+                    "model": analysis_model,
+                    "model_source": model_source,
+                    "requested_model": str(job.get("requested_analysis_model") or analysis_model),
+                    "fallback_used": bool(job.get("analysis_model_fallback", False)),
+                    "fallback_error": str(job.get("analysis_model_fallback_error") or "")[:500],
+                    "failed_at": failed_at,
+                    "error": str(error or "")[:500],
+                },
+                None,
+            )
+
+            # 通知前端刷新内存分析状态
+            completion_callback = job.get("_completion_callback")
+
+            if callable(completion_callback):
+                try:
+                    completion_callback({
+                        "conversation_id": str(conversation_id),
+                        "assistant_index": int(assistant_index),
+                        "memory_action": "failed",
+                        "memory_reason": "",
+                        "memory_model": analysis_model,
+                        "failed_at": failed_at,
+                        "error": str(error or "")[:500],
+                    })
+                except Exception as callback_error:
+                    print(
+                        f"[MEMORY_ANALYSIS] failure callback failed job_id={job.get('job_id')} "
+                        f"error={callback_error}"
+                    )
+        except Exception as write_error:
+            print(
+                f"[MEMORY_ANALYSIS] write failure status failed job_id={job.get('job_id')} "
+                f"error={write_error}"
+            )
+
     def _worker_loop(self) -> None:
         while True:
             job = self._queue.get()
@@ -181,6 +240,7 @@ class MemoryAnalysisQueue:
                     f"[MEMORY_ANALYSIS] failed job_id={job.get('job_id')} "
                     f"conversation_id={job.get('conversation_id')} error={error}"
                 )
+                self._write_failure_status(job, error)
             finally:
                 self._queue.task_done()
 
@@ -217,26 +277,25 @@ class MemoryAnalysisQueue:
             "estimated": bool(usage_state["estimated"])
         }
         completed_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        manager = ConversationManager(job["username"])
-        manager.update_message_metadata(
+        svc = ConversationService(job["username"])
+        # 使用明确的 analysis API，避免 update_message_metadata 的丢弃
+        svc.update_assistant_analysis(
             job["conversation_id"],
             int(job["assistant_index"]),
             {
-                "memory_io_tokens": memory_io_tokens,
-                "memory_analysis": {
-                    "job_id": str(job["job_id"]),
-                    "status": "completed",
-                    "action": str(result["action"]),
-                    "reason": str(result.get("reason") or ""),
-                    "update_content": str(result.get("update_content") or ""),
-                    "model": analysis_model,
-                    "model_source": model_source,
-                    "requested_model": str(job.get("requested_analysis_model") or analysis_model),
-                    "fallback_used": bool(job.get("analysis_model_fallback", False)),
-                    "fallback_error": str(job.get("analysis_model_fallback_error") or "")[:500],
-                    "completed_at": completed_at
-                }
-            }
+                "job_id": str(job["job_id"]),
+                "status": "completed",
+                "action": str(result["action"]),
+                "reason": str(result.get("reason") or ""),
+                "update_content": str(result.get("update_content") or ""),
+                "model": analysis_model,
+                "model_source": model_source,
+                "requested_model": str(job.get("requested_analysis_model") or analysis_model),
+                "fallback_used": bool(job.get("analysis_model_fallback", False)),
+                "fallback_error": str(job.get("analysis_model_fallback_error") or "")[:500],
+                "completed_at": completed_at
+            },
+            memory_io_tokens,
         )
         self._log_event(
             job,
@@ -413,8 +472,8 @@ class MemoryAnalysisQueue:
         return analysis_model, model_source
 
     def _load_context(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        manager = ConversationManager(job["username"])
-        conversation = manager.get_conversation(job["conversation_id"])
+        svc = ConversationService(job["username"])
+        conversation = svc.get_conversation(job["conversation_id"])
         messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
 
         if not isinstance(messages, list):
@@ -594,7 +653,7 @@ class MemoryAnalysisQueue:
             "reason": _normalize_memory_reason(reason),
             "error": str(error or "")[:500],
             "conversation_id": str(job.get("conversation_id") or ""),
-            "assistant_index": int(job.get("assistant_index", -1) or -1),
+            "assistant_index": parse_message_index(job.get("assistant_index"), default=-1),
             "model": str(job.get("analysis_model") or job.get("model_name") or ""),
             "requested_model": str(
                 job.get("requested_analysis_model")

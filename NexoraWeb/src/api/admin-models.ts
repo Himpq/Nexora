@@ -72,6 +72,7 @@ export async function upsertProvider(options: {
     base_url?: string
     api_type?: string
     user_agent?: string
+    enable_search?: boolean
     settings?: Record<string, unknown>
 }): Promise<void> {
     const data = await apiFetch<MutationResponse>('/api/admin/models/provider/upsert', {

@@ -395,6 +395,12 @@
     justify-content: center;
 }
 
+.gddp-files-view.file-drop-active {
+    outline: 2px dashed #2563eb;
+    outline-offset: -6px;
+    background: rgba(37, 99, 235, 0.03);
+}
+
 /* ---------- 响应式(合并 legacy @720 与 gddp-layout @760 的有效值) ---------- */
 
 @media (max-width: 1180px) {

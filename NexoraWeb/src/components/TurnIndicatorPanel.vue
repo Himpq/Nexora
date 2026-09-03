@@ -113,7 +113,10 @@
 
     /**
      * 面板可见性(对齐原版 _shouldShowTurnIndicator + _syncTurnIndicatorVisibility):
-     * 需有当前会话、知识库右侧栏未打开且至少一轮
+     * 需有当前会话、知识库右侧栏未打开且至少一轮;
+     * 还要求宿主(.gddp-chat-view)实际可见(overlay.view 为空)——隐藏期间若放行
+     * 重建链,offsetTop 全为 0 的假缓存会被 layoutDirty=false 标记为有效,
+     * 回到聊天后激活线将永久钉在最后一轮(底部),直到切换会话才恢复。
      */
     const panelVisible = computed(() => {
         if (!conversationStore.currentId) {
@@ -121,6 +124,10 @@
         }
 
         if (overlay.panel === 'knowledge') {
+            return false
+        }
+
+        if (overlay.view !== null) {
             return false
         }
 

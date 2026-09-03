@@ -16,7 +16,8 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, jsonify, request, session
 
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationService
+from basis.Conversation.repository import conversation_base_path
 from basis.User import User
 from App.Storage import UserFileSandbox
 
@@ -215,8 +216,8 @@ def global_search():
         return jsonify({"success": False, "message": "搜索词不能为空"}), 400
 
     keyword_lower = keyword.lower()
-    manager = ConversationManager(username)
-    index_items = manager.list_conversations()
+    service = ConversationService(username)
+    index_items = service.list_conversations()
 
     if not isinstance(index_items, list):
         index_items = []
@@ -248,7 +249,7 @@ def global_search():
             continue
 
         scanned += 1
-        file_path = os.path.join(manager.base_path, f"{conversation_id}.json")
+        file_path = os.path.join(conversation_base_path(username), f"{conversation_id}.json")
 
         if not os.path.exists(file_path):
             continue

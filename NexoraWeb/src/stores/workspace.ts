@@ -22,3 +22,27 @@ export const workspaceChanges = reactive({
 export function notifyWorkspaceChanged(): void {
     workspaceChanges.count += 1
 }
+
+/**
+ * 会话 → 所属 Workspace 的会话级缓存:
+ *   - 记录时机仅限前端确知归属的两处:Workspace 详情内新建发送、从 Workspace
+ *     面板打开自己的会话(他人共享只读会话不记录,后端本就拒绝其继续生成)
+ *   - 消费时机为发送/重答携带 workspace_id,让后端注入 Workspace 上下文与
+ *     记忆/草稿工具;刷新页面后缓存清空,从侧栏直接打开的会话不携带 workspace_id
+ */
+const conversationWorkspaces: Record<string, string> = {}
+
+/** 记录会话与 Workspace 的归属(后者覆盖前者) */
+export function setConversationWorkspace(conversationId: string, workspaceId: string): void {
+    const cid = String(conversationId || '').trim()
+    const wid = String(workspaceId || '').trim()
+
+    if (cid && wid) {
+        conversationWorkspaces[cid] = wid
+    }
+}
+
+/** 读取会话所属 Workspace id(未记录返回空串) */
+export function getConversationWorkspace(conversationId: string): string {
+    return conversationWorkspaces[String(conversationId || '').trim()] || ''
+}

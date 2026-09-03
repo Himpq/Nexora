@@ -1,4 +1,4 @@
-﻿
+
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
@@ -368,6 +368,16 @@ workspace_resource_block_template = """<WORKSPACE_RESOURCE_INDEX>
 {{resource_rows}}
 </WORKSPACE_RESOURCE_INDEX>"""
 
+workspace_draft_injection_header = (
+    "## Workspace Drafts\n"
+    "以下是当前 Workspace 草稿板的已有条目（workspace_draft_add 工具写入或用户手动添加），"
+    "是供用户直接查看的关键资料。回答可直接引用其内容；已有草稿覆盖的信息不要重复写入。"
+)
+
+workspace_draft_block_template = """<WORKSPACE_DRAFTS workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{draft_rows}}
+</WORKSPACE_DRAFTS>"""
+
 memory_write_policy_prompt_template = """## Memory Write Policy
 原则：透明、可解释、可拒绝，不静默写入。
 
@@ -394,6 +404,13 @@ learning_mode_tool_nudge_prompt = (
     "请直接调用一个最相关的 Learning 或知识库读取工具，"
     "再基于工具结果继续回答用户。"
 )
+
+workspace_draft_policy_prompt_template = """## Workspace Draft Policy
+草稿板（workspace_draft_add 工具）用于沉淀用户之后可能重复查看的信息，避免用户翻找历史对话。
+触发：对话中产生规划、方案、执行步骤、结论、决策记录、关键数据与参数、清单或汇总结果时，主动写入草稿。
+写法：一条草稿只放一个主题；title 概括主题，content 用 Markdown 组织正文。
+禁止：过程性输出（工具日志、中间推理、寒暄）不写入；与已有草稿重复的内容不重复写入。
+回执：写入后简要告知用户已存为草稿即可，不要在回复中重复正文。"""
 
 cloud_file_sandbox_paths_prompt_template = """## Sandbox Files
 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
@@ -436,23 +453,15 @@ conversation_title_prompt_template = """根据以下对话内容，生成一个�
 
 你只用快速输出标题："""
 
-context_compression_prompt_template = """## Context Compression Task
-你需要把给定历史对话压缩为后续回复仍可直接复用的稳定上下文记忆。
+# Append 式压缩指令：不再把历史拍平进独立请求，而是复用当轮完整上下文，
+# 在末尾追加本指令，让前缀与主请求逐字节一致以命中 provider prefix cache。
+context_compression_append_prompt_template = """## 上下文压缩任务
+你现在的唯一任务是：把本条指令之前的全部对话上下文（包括系统提示与各系统注入块）压缩为一份后续对话可直接复用的稳定上下文摘要，并只输出这份摘要。
 
-注意：最终输出只能是压缩后的上下文摘要，不要输出解释过程。
-<CONVERSATION_HISTORY> 是上下文摘要的主体；用户画像和近期摘要只能作为辅助参考，不能替代 <CONVERSATION_HISTORY>。
-
-输入信息：
-{{auxiliary_context_blocks}}
-
-<CONVERSATION_HISTORY>
-{{history_text}}
-</CONVERSATION_HISTORY>
-
-上下文压缩输出要求：
-1. 只输出压缩结果，不要解释过程。
+输出要求：
+1. 只输出压缩结果，不要解释过程，不要输出其他内容。
 2. 使用中文，保持信息密度。
-3. 保留：用户目标、偏好、关键事实、已确认约束、未完成事项、近期事项、关键术语映射、情感交流细节、用户个人细节、对话风格与倾向。
+3. 保留：用户目标、偏好、关键事实、已确认约束、未完成事项、近期事项、关键术语映射、情感交流细节、用户个人细节、对话风格与倾向，以及各系统注入块中的有效信息（如知识库变更、用户画像、技能说明）。
 4. 删除：寒暄、重复表达、无关细节、冗长推理过程、工具中间日志。
 5. 按以下结构组织：
 近期决策
@@ -465,11 +474,10 @@ context_compression_prompt_template = """## Context Compression Task
 注意力集中
 近期细节
 回答方式
-6. 最大长度约 {{max_chars}} 字；如果 <CONVERSATION_HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
+6. 最大长度约 {{max_chars}} 字；如果上文信息量足够，不要为了简短而丢弃可复用细节。
 7. 对于关键信息直接照搬，有必要保留的上下文直接执行输出进行保留。
+8. 本条压缩指令本身不要纳入摘要。
 """
-
-context_compression_system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
 
 knowledge_graph_analysis_prompt_template = """分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
 1. 分类方案：将知识点归纳到3-5个主要领域。
@@ -592,6 +600,18 @@ def _workspace_knowledge_documents(context: Any) -> List[Dict[str, Any]]:
     return [item for item in raw_documents if isinstance(item, dict)]
 
 
+def _workspace_draft_entries(context: Any) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_drafts = context.get("workspace_drafts", [])
+
+    if not isinstance(raw_drafts, list):
+        return []
+
+    return [item for item in raw_drafts if isinstance(item, dict)]
+
+
 def _workspace_knowledge_field(value: Any, limit: int = 160) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) > limit:
@@ -641,6 +661,48 @@ def build_workspace_memory_injection_prompt(workspace_context: Dict[str, Any]) -
     return f"{workspace_memory_injection_header}\n{block}\n"
 
 
+WORKSPACE_DRAFT_INJECTION_MAX_ITEMS = 20
+WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT = 200
+
+
+def build_workspace_draft_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 草稿索引注入，让模型感知已有草稿、避免重复记录。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    drafts = _workspace_draft_entries(workspace_context)
+
+    if not workspace_id or not drafts:
+        return ""
+
+    rows: List[str] = []
+
+    for item in drafts[-WORKSPACE_DRAFT_INJECTION_MAX_ITEMS:]:
+        if not isinstance(item, dict):
+            continue
+
+        draft_id = _workspace_context_text(item, "draft_id")
+        title = _workspace_context_text(item, "title")
+
+        if not draft_id or not title:
+            continue
+
+        content = _workspace_context_text(item, "content")
+
+        if len(content) > WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT:
+            content = content[:WORKSPACE_DRAFT_INJECTION_CONTENT_LIMIT].rstrip() + "…"
+
+        rows.append(f"- [{draft_id}] {title}\n  {content}" if content else f"- [{draft_id}] {title}")
+
+    if not rows:
+        return ""
+
+    block = workspace_draft_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{draft_rows}}", "\n".join(rows))
+
+    return f"{workspace_draft_injection_header}\n{block}\n"
+
+
 def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -> str:
     """构建当前轮 Workspace 自定义提示词注入，放在记忆之后强化项目约束。"""
     workspace_id = _workspace_context_text(workspace_context, "workspace_id")
@@ -655,6 +717,14 @@ def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -
     block = block.replace("{{prompt_content}}", prompt_content)
 
     return f"{workspace_prompt_injection_header}\n{block}\n"
+
+
+def build_workspace_draft_policy_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建 Workspace 草稿写入策略提示，让模型主动沉淀用户可能重复查看的规划与记录。"""
+    if not _workspace_context_text(workspace_context, "workspace_id"):
+        return ""
+
+    return workspace_draft_policy_prompt_template.strip() + "\n"
 
 
 def build_workspace_knowledge_injection_prompt(
@@ -672,7 +742,13 @@ def build_workspace_knowledge_injection_prompt(
     limit = max(1, min(200, int(max_items or 80)))
     rows: List[str] = []
 
-    for item in documents[:limit]:
+    # 稳定排序：保证同集合在不同轮次渲染一致，避免缓存哈希抖动
+    sorted_docs = sorted(
+        [d for d in documents if isinstance(d, dict)],
+        key=lambda d: (str(d.get("title") or d.get("name") or "").lower(), str(d.get("basis_id") or ""))
+    )
+
+    for item in sorted_docs[:limit]:
         title = _workspace_knowledge_field(item.get("title") or item.get("name"), 160)
 
         if not title:
@@ -681,9 +757,6 @@ def build_workspace_knowledge_injection_prompt(
         meta_parts: List[str] = []
         knowledge_type = _workspace_knowledge_field(item.get("knowledge_type") or item.get("type") or "basis", 32)
         basis_id = _workspace_knowledge_field(item.get("basis_id"), 80)
-        added_by = _workspace_knowledge_field(item.get("added_by"), 80)
-        visibility = _workspace_knowledge_field(item.get("visibility"), 32)
-        updated_at = _workspace_knowledge_field(item.get("updated_at"), 64)
 
         if basis_id:
             meta_parts.append(f"basis_id={basis_id}")
@@ -691,22 +764,13 @@ def build_workspace_knowledge_injection_prompt(
         if knowledge_type:
             meta_parts.append(f"type={knowledge_type}")
 
-        if added_by:
-            meta_parts.append(f"added_by={added_by}")
-
-        if visibility:
-            meta_parts.append(f"visibility={visibility}")
-
         if item.get("pin") is True:
             meta_parts.append("pinned=true")
-
-        if updated_at:
-            meta_parts.append(f"updated_at={updated_at}")
 
         meta_text = f" ({'; '.join(meta_parts)})" if meta_parts else ""
         rows.append(f"- {title}{meta_text}")
 
-    remaining = max(0, len(documents) - limit)
+    remaining = max(0, len(sorted_docs) - limit)
 
     if remaining > 0:
         rows.append(f"- ... 还有 {remaining} 条 Workspace 知识索引未列出。")
@@ -897,23 +961,10 @@ def build_user_profile_memory_prompt(
     return out.strip()
 
 
-def build_context_compression_prompt(
-    history_text: str,
-    *,
-    profile_text: str = "",
-    recent_dialogue: str = "",
-    max_chars: int = 6000
-) -> str:
+def build_context_compression_append_prompt(max_chars: int = 6000) -> str:
+    """构建 append 式压缩指令文本（作为末尾 user 消息发送）。"""
     limit = max(600, min(120000, int(max_chars or 6000)))
-    auxiliary_blocks = [
-        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
-        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
-    ]
-    auxiliary_context = "\n\n".join([block for block in auxiliary_blocks if block]).strip()
-
-    out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
-    out = out.replace("{{auxiliary_context_blocks}}", auxiliary_context)
-    out = out.replace("{{max_chars}}", str(limit))
+    out = context_compression_append_prompt_template.replace("{{max_chars}}", str(limit))
     return out
 
 
@@ -924,6 +975,7 @@ web_search_default = """
 2. 优先返回来源链接 + 摘要；若无可靠来源，明确写“无法获取相关信息”及原因。
 3. 若结果存在时间敏感性，尽量包含发布日期/时间范围。
 4. 不做冗长分析，不输出与查询无关内容。
+5. 若 exa_web_search 结果中包含 image（https 外链），请在回答中用 ![描述](image_url) 内联 1-3 张最相关图，并用 > 来源: [标题](url) 标注；无图则仅引文字。
 建议输出：
 [完整URL] 关键信息摘要（可含日期）
 """

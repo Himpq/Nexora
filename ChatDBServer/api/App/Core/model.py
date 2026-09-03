@@ -13,11 +13,23 @@ from typing import List, Dict, Any, Optional, Generator, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import parsedate_to_datetime
+import sys as _sys
+try:
+    if hasattr(_sys.stdout, "reconfigure"):
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(_sys.stderr, "reconfigure"):
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 from basis.Tool import TOOLS, canonicalize_tool_name, get_tools_for_config, ToolResultPresenter
 from App.Executor import ToolExecutor
 from basis.User import User, BASIS
-from basis.Conversation import ConversationManager
+from basis.Conversation import ConversationManager, ConversationService
+from basis.Conversation.telemetry import build_trace_from_process_steps
 from basis.Model.Context import ChatContextManager
+from basis.index_codec import parse_message_index
+from basis.Model.compression_turn import build_append_compression_messages, run_append_compression_round
+from basis.Model.turn_injection import build_profile_update_block, build_skill_update_block
 from App.Utils import (
     sanitize_assistant_visible_content,
     strip_streamed_history_time_marker_echo,
@@ -145,12 +157,9 @@ if 'HTTPS_PROXY' in os.environ:
 # 全局客户端缓存，实现连接池复用 (Keep-Alive)
 _CLIENT_CACHE = {}
 _TOOL_USAGE_LOG_LOCK = threading.Lock()
-CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
-CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
-CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+_CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
+_CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
+_CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
 STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
     "cloud_file_create": "write",
     "cloud_file_write": "write",
@@ -205,6 +214,9 @@ class Model(MailMixin):
         """
         self.username = username
         self.user = User(username)
+        self._last_context_diagnostics = {}
+        self._context_degraded = False
+        self._telemetry = {}
         self.persist_conversation = bool(persist_conversation)
         self._include_profile_context = bool(include_profile_context)
         self._runtime_conversation_mode = "chat"
@@ -262,14 +274,24 @@ class Model(MailMixin):
             else:
                 self.model_name = default_model
             
+        self.conversation_service = ConversationService(username)
         self.conversation_manager = ConversationManager(username)
+        # 让代理与 service 共享同一底层，避免双实例状态不一致
+        try:
+            self.conversation_manager._svc = self.conversation_service
+            self.conversation_manager.username = self.conversation_service.username
+            from basis.Conversation.repository import conversation_base_path, conversation_index_path
+            self.conversation_manager.base_path = conversation_base_path(self.conversation_service.username)
+            self.conversation_manager.index_path = conversation_index_path(self.conversation_service.username)
+        except Exception:
+            pass
         self.chat_context_manager = ChatContextManager(self)
         
         # 对话ID管理
         if conversation_id:
             self.conversation_id = conversation_id
         elif auto_create and self.persist_conversation:
-            self.conversation_id = self.conversation_manager.create_conversation()
+            self.conversation_id = self.conversation_service.create_conversation()
         else:
             self.conversation_id = None
         
@@ -281,32 +303,17 @@ class Model(MailMixin):
         self.provider_display_name = provider_info.get('name', self.provider)
         self._context_window_limit_source = "unknown"
         self._context_window_limit_from_fallback_default = False
-        cfg_compress_chars = self.config.get("context_compression_max_chars", CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+        cfg_compress_chars = self.config.get("context_compression_max_chars", _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
         env_compress_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_MAX_CHARS", "").strip()
         if env_compress_chars:
             cfg_compress_chars = env_compress_chars
         try:
-            cfg_compress_chars = int(cfg_compress_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+            cfg_compress_chars = int(cfg_compress_chars or _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
         except Exception:
-            cfg_compress_chars = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
+            cfg_compress_chars = _CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
         self._context_compression_max_chars = int(max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, cfg_compress_chars)
-        ))
-        cfg_compress_history_chars = self.config.get(
-            "context_compression_history_max_chars",
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
-        )
-        env_compress_history_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_HISTORY_MAX_CHARS", "").strip()
-        if env_compress_history_chars:
-            cfg_compress_history_chars = env_compress_history_chars
-        try:
-            cfg_compress_history_chars = int(cfg_compress_history_chars or CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)
-        except Exception:
-            cfg_compress_history_chars = CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
-        self._context_compression_history_max_chars = int(max(
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX, cfg_compress_history_chars)
+            _CONTEXT_COMPRESSION_MAX_CHARS_MIN,
+            min(_CONTEXT_COMPRESSION_MAX_CHARS_MAX, cfg_compress_chars)
         ))
 
         self._provider_adapter_cache = {}
@@ -396,6 +403,8 @@ class Model(MailMixin):
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
+        # 双轨显示：缓存生效时保留完整展示用 markdown，供前端优先渲染
+        self._pending_display_results: Dict[str, str] = {}
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -436,7 +445,8 @@ class Model(MailMixin):
         enable_tools: bool = False,
         tool_mode: str = "force",
         conversation_mode: str = "chat",
-        conversation_mode_payload: Optional[Dict[str, Any]] = None
+        conversation_mode_payload: Optional[Dict[str, Any]] = None,
+        include_profile_context: Optional[bool] = None,
     ) -> str:
         base_template = str(getattr(self, "system_prompt_template", "") or "").strip()
         if not base_template:
@@ -458,7 +468,7 @@ class Model(MailMixin):
             plan_items = [str(item or "").strip() for item in (mode_payload.get("plan") or []) if str(item or "").strip()]
             plan_text = "\n".join([f"{index + 1}. {item}" for index, item in enumerate(plan_items)]) if plan_items else ""
             context_text = str(mode_payload.get("context") or "").strip()
-            current_index = int(mode_payload.get("current_index", -1) or -1)
+            current_index = parse_message_index(mode_payload.get("current_index"), default=-1)
             done_indices = [int(item) for item in (mode_payload.get("done_indices") or []) if str(item).strip().isdigit()]
             if current_index < 0 and plan_items and done_indices:
                 done_set = set(done_indices)
@@ -494,9 +504,15 @@ class Model(MailMixin):
                 self._runtime_learning_prompt_block = prompts.build_learning_mode_default_prompt()
                 combined_template = f"{combined_template}\n\n{self._runtime_learning_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
-        profile_block = self._build_user_profile_memory_prompt_block() if self._include_profile_context else ""
-        if profile_block:
-            rendered = f"{rendered}\n\n{profile_block}"
+
+        # 架构重构：画像/知识库基线稳定化进 head 前缀，实现 prefix cache 命中
+        # 知识库变更以 diff 走 tail，基线由 begin_user_turn 在轮次开头事务性采样
+        should_include_profile = self._include_profile_context if include_profile_context is None else bool(include_profile_context)
+        if should_include_profile:
+            profile_block = self._build_user_profile_memory_prompt_block()
+            if profile_block:
+                rendered = f"{rendered}\n\n{profile_block}"
+
         # NexoraCode 项目上下文经 runtime block 注入：chat_stream 每次请求都会重建
         # system prompt，外部直接改 self.system_prompt 会被覆盖，必须在这里拼接
         project_context_block = str(getattr(self, "_runtime_project_context_block", "") or "").strip()
@@ -1730,19 +1746,6 @@ class Model(MailMixin):
     def _build_context_compression_memory_block(self, summary_text: str) -> str:
         return self.chat_context_manager.build_context_compression_memory_block(summary_text)
 
-    def _format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
-        return self.chat_context_manager.format_messages_for_context_compression(messages)
-
-    def _run_context_compression_round(
-        self,
-        history_messages: List[Dict[str, Any]],
-        max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
-    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        return (yield from self.chat_context_manager.run_context_compression_round(
-            history_messages,
-            max_chars=max_chars
-        ))
-
     def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
         """计算 previous 后缀与 current 前缀的最大重叠长度，用于跨轮去重。"""
         prev = str(previous or "")
@@ -2189,16 +2192,17 @@ class Model(MailMixin):
             "enabled_count": len(enabled_names),
         }
     
-    def _execute_function(self, function_name: str, arguments: str) -> str:
+    def _execute_function(self, function_name: str, arguments: str, call_id: str = "") -> str:
         """
         执行函数调用
-        
+
         Args:
             function_name: 函数名
             arguments: 参数JSON字符串或字典
-            
+            call_id: 本次调用的稳定 call_id，用于双轨展示缓存
+
         Returns:
-            函数执行结果字符串
+            函数执行结果字符串（已脱水/缓存，面向模型）
         """
         start_ts = time.time()
         original_function_name = str(function_name or "").strip()
@@ -2245,8 +2249,24 @@ class Model(MailMixin):
             
             # 执行函数
             raw_result = self._execute_function_impl(function_name, args)
-            
-            # [TOKEN 优化] 智能脱水处理
+
+            # 双轨：先基于原始结果生成完整展示用 markdown（不受缓存/截断影响），供前端优先渲染
+            try:
+                pending_key = str(call_id or "").strip() or f"{function_name}:{int(time.time()*1000)}:{uuid.uuid4().hex[:6]}"
+                # 仅对需要展示的工具生成完整渲染，避免无谓开销
+                if function_name in {"exa_web_search", "search"}:
+                    full_args = args if isinstance(args, dict) else {}
+                    display_md = self._model_visible_function_result(function_name, raw_result, full_args)
+                    # 若渲染结果与原始不同且非空，则缓存为展示用
+                    if isinstance(display_md, str) and display_md.strip() and display_md.strip() != str(raw_result or "").strip():
+                        self._pending_display_results[pending_key] = display_md
+                        # 同时以 call_id 为键再存一份，兼容调用方以 call_id 取
+                        if call_id:
+                            self._pending_display_results[str(call_id).strip()] = display_md
+            except Exception:
+                pass
+
+            # [TOKEN 优化] 智能脱水处理（面向模型）
             result = self._sanitize_function_result(raw_result, function_name)
             success = self._infer_tool_success(result)
             self._log_tool_usage(function_name or original_function_name, args, result, success, start_ts)
@@ -2723,6 +2743,7 @@ class Model(MailMixin):
             "memory_profile_read",
             "memory_short_update",
             "memory_short_add",
+            "exa_web_search",
             "knowledge_basis_create",
             "knowledge_basis_delete",
             "knowledge_basis_update",
@@ -2852,6 +2873,7 @@ class Model(MailMixin):
             return cached_payload
 
         no_truncate_tools = {
+            "exa_web_search",
             "knowledge_basis_read",
             "knowledge_list",
             "search",
@@ -4420,30 +4442,167 @@ class Model(MailMixin):
             # 重新生成逻辑：不添加新消息，而是使用历史消息
             skip_user_message_bool = self._as_bool(skip_user_message, default=False)
             persisted_user_index = None
+            assistant_index_for_stream = None
+            # 知识库/画像/技能变更均由 begin_user_turn 在轮次开头事务性采样得出
+            # 首轮（user_index=0）的 delta 是相对空基线的全量，不应注入
+            knowledge_delta = None
+            profile_delta = None
+            skill_delta = None
+
+            # skill 选择前移到 begin_user_turn 之前：技能基线必须与知识库一样
+            # 在轮次开头的事务内采样，否则基线时间点漂移会让 diff 滞后一轮。
+            # 此处只做选择与块构建，注入组装仍在后面 current_turn_system_injections 处。
+            selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
+                normalized_skill_mode,
+                normalized_active_tool_skills
+            )
+            tool_skill_prompt_block = ""
+            if selected_tool_skills:
+                tool_skill_prompt_block = str(
+                    prompts.build_skill_instructions_prompt(selected_tool_skills) or ""
+                ).strip()
+            longdoc_skill_prompt_block = ""
+            if effective_enable_tools and normalized_longdoc_skills:
+                longdoc_skill_prompt_block = str(
+                    prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
+                ).strip()
+
+            # 技能采样：逐技能块文本为基线单元，title 为身份键；
+            # 长文档目录作为单一单元参与 diff（目录级变更整块重发）
+            skill_samples: List[Dict[str, Any]] = []
+            for skill_item in selected_tool_skills:
+                skill_prompt = str(prompts.build_skill_instructions_prompt([skill_item]) or "").strip()
+                if skill_prompt:
+                    skill_samples.append({
+                        "title": str(skill_item.get("title") or "").strip(),
+                        "prompt": skill_prompt,
+                    })
+            if longdoc_skill_prompt_block:
+                skill_samples.append({
+                    "title": "长文档技能目录",
+                    "prompt": longdoc_skill_prompt_block,
+                })
+
+            # 画像采样：begin_user_turn 事务内与基线 diff，是 Profile Modified Injection 的权威来源
+            profile_text_for_turn = self._get_user_profile_memory_text()
+
             if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message_bool:
-                persisted_user_index = self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
+                # 严格事务：失败直接记录并终止本轮持久化，不回退旧路径
+                # 附件需显式传入 attachments，不得通过 metadata 隐式传递
+                _attachments = list(attachment_summary) if 'attachment_summary' in locals() and isinstance(attachment_summary, list) else []
+                current_workspace_context = normalized_conversation_mode_payload.get("workspace_context")
+                knowledge_state = self.conversation_service.get_current_knowledge_state(current_workspace_context)
+                # 超窗限流：传入模型窗口，服务层按全量历史判定并自动滑动裁剪（客户端截断不影响）
+                _ctx_window_for_limit = int(max(0, self._resolve_model_context_window_limit()))
+                turn = self.conversation_service.begin_user_turn(
+                    self.conversation_id,
+                    msg,
+                    metadata=metadata,
+                    attachments=_attachments,
+                    workspace_documents=knowledge_state["workspace_documents"],
+                    global_titles=knowledge_state["global_titles"],
+                    profile_text=profile_text_for_turn,
+                    skill_samples=skill_samples,
+                    context_window_tokens=_ctx_window_for_limit,
+                )
+                persisted_user_index = int(turn.get("user_index", -1))
+                assistant_index_for_stream = int(turn.get("assistant_index", -1))
+                knowledge_delta = turn.get("knowledge_delta") if persisted_user_index > 0 else None
+                profile_delta = turn.get("profile_delta") if persisted_user_index > 0 else None
+                skill_delta = turn.get("skill_delta") if persisted_user_index > 0 else None
+
+            # 重答也需记录知识增量（effective 指向待覆盖 assistant 的前一条 user），否则“固定在哪”且新 diff 丢失
+            if self.persist_conversation and is_regenerate and self.conversation_id and regenerate_index is not None:
+                try:
+                    current_workspace_context = normalized_conversation_mode_payload.get("workspace_context") if 'normalized_conversation_mode_payload' in locals() else None
+                    knowledge_state = self.conversation_service.get_current_knowledge_state(current_workspace_context)
+                    try:
+                        regen_idx = int(regenerate_index)
+                    except Exception:
+                        regen_idx = None
+                    if regen_idx is not None and regen_idx > 0:
+                        # 需指定 effective = regen_idx -1，否则 record_knowledge_state 会按 len(messages) 计算导致挂到末尾
+                        from basis.Conversation.repository import conversation_update_session
+                        from basis.Conversation import context as context_mod
+                        from basis.Conversation import turn_state as turn_state_mod
+                        from basis.Conversation.schema import validate_v4_conversation
+                        from basis.Database import safe_write_json
+                        from basis.Conversation import index as index_mod
+                        with conversation_update_session(self.conversation_service.username, self.conversation_id) as (path, data):
+                            # 去重：同一轮（同一 user）旧 diff 先移除，避免重答时堆成两条固定 diff
+                            ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+                            ev_list = ctx.get("knowledge_events") if isinstance(ctx.get("knowledge_events"), list) else []
+                            target_eff = int(regen_idx - 1)
+                            # 保留 effective != target_eff 的事件，target_eff 的旧事件视为上次重答的暂存，需消失
+                            # 注意 efm=0 合法（重答首轮助手回复时 target_eff=0），必须用安全解析
+                            ev_list = [e for e in ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
+                            ctx["knowledge_events"] = ev_list
+                            # 画像/技能事件同样去重：重答以当前采样为准，同一 efm 只保留最新一份
+                            profile_ev_list = ctx.get("profile_events") if isinstance(ctx.get("profile_events"), list) else []
+                            ctx["profile_events"] = [e for e in profile_ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
+                            skill_ev_list = ctx.get("skill_events") if isinstance(ctx.get("skill_events"), list) else []
+                            ctx["skill_events"] = [e for e in skill_ev_list if not (isinstance(e, dict) and parse_message_index(e.get("effective_from_message")) == target_eff)]
+                            data["context"] = ctx
+                            # 再以正确 effective 追加新 diff（若有可见变更才会落库）
+                            # regenerate 不注入 tail：事件落库后由历史 diff 重建回放，
+                            # 若此处再捕获 delta 注入会与回放重复
+                            context_mod.record_knowledge_state(
+                                data,
+                                workspace_documents=knowledge_state["workspace_documents"],
+                                global_titles=knowledge_state["global_titles"],
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            # 画像/技能基线与事件同步推进：regenerate 同样以轮次开头为采样点
+                            turn_state_mod.record_profile_state(
+                                data,
+                                profile_text_for_turn,
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            turn_state_mod.record_skill_state(
+                                data,
+                                skill_samples,
+                                effective_from_message=target_eff,
+                                emit_event=True,
+                            )
+                            validate_v4_conversation(data)
+                            safe_write_json(path, data, indent=2)
+                            index_mod.sync_index_from_file(self.conversation_service.username, path, data)
+                except Exception as regen_know_err:
+                    print(f"[KNOWLEDGE] regenerate record failed: {regen_know_err}")
 
             stream_push_chunk = getattr(self, "_stream_direct_push_chunk", None)
-            if self.persist_conversation and not is_regenerate and self.conversation_id and callable(stream_push_chunk):
-                assistant_index_for_stream = None
-
-                if persisted_user_index is not None:
-                    assistant_index_for_stream = int(persisted_user_index) + 1
-
-                elif skip_user_message_bool:
-                    conversation = self.conversation_manager.get_conversation(self.conversation_id)
+            if self.persist_conversation and self.conversation_id and callable(stream_push_chunk):
+                if assistant_index_for_stream is None and skip_user_message_bool:
+                    try:
+                        conversation = self.conversation_service.get_conversation(self.conversation_id)
+                    except Exception:
+                        conversation = self.conversation_manager.get_conversation(self.conversation_id)
                     messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
-
                     if isinstance(messages, list):
                         assistant_index_for_stream = len(messages)
 
+                # 重答时 assistant_index 即 regenerate_index，未走 begin_user_turn 需回填
+                if assistant_index_for_stream is None and is_regenerate and regenerate_index is not None:
+                    try:
+                        assistant_index_for_stream = int(regenerate_index)
+                    except Exception:
+                        assistant_index_for_stream = None
+
                 if assistant_index_for_stream is not None:
+                    # 首帧即带 context_events，避免“结束后突然出现在开头”的延迟抖动
+                    try:
+                        early_events = self.conversation_service.get_context_events(self.conversation_id)
+                    except Exception:
+                        early_events = []
                     stream_push_chunk({
                         "type": "stream_session",
                         "conversation_id": self.conversation_id,
-                        "is_regenerate": False,
+                        "is_regenerate": bool(is_regenerate),
                         "assistant_index": int(assistant_index_for_stream),
-                        "regenerate_index": None,
+                        "regenerate_index": int(regenerate_index) if is_regenerate and regenerate_index is not None else None,
+                        "context_events": early_events,
                         "status": "running"
                     })
 
@@ -4457,7 +4616,7 @@ class Model(MailMixin):
                                 "plan": normalized_conversation_mode_payload.get("plan", []),
                                 "context": str(normalized_conversation_mode_payload.get("context") or "").strip(),
                                 "step": str(normalized_conversation_mode_payload.get("step") or "").strip(),
-                                "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                 "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                             },
                             active=True,
@@ -4467,25 +4626,12 @@ class Model(MailMixin):
                     print(f"[LONGTERM] 进入模式状态写入失败: {e}")
             elif self.persist_conversation and self.conversation_id and normalized_conversation_mode == "learning":
                 try:
-                    current_conv = self.conversation_manager.get_conversation(self.conversation_id) or {}
-                    existing_tags = current_conv.get("tags", []) if isinstance(current_conv.get("tags", []), list) else []
-                    normalized_tags = []
-                    seen_tags = set()
-                    for item in existing_tags + ["learning"]:
-                        tag = str(item or "").strip().lower()
-                        if not tag or tag in seen_tags:
-                            continue
-                        seen_tags.add(tag)
-                        normalized_tags.append(tag)
-                    current_meta = current_conv.get("metadata", {}) if isinstance(current_conv.get("metadata", {}), dict) else {}
-                    next_meta = dict(current_meta)
-                    next_meta["learning"] = True
-                    if learning_lecture_id:
-                        next_meta["learning_lecture_id"] = learning_lecture_id
-                    self.conversation_manager.update_conversation_fields(self.conversation_id, {
-                        "conversation_mode": "learning",
-                        "tags": normalized_tags,
-                        "metadata": next_meta,
+                    # v4: 直接写入 scope.learning，不再通过旧 tags/metadata/conversation_mode 兼容路径
+                    self.conversation_service.set_learning(self.conversation_id, {
+                        "enabled": True,
+                        "lecture_id": learning_lecture_id,
+                        "course_id": "",
+                        "course_title": "",
                     })
                 except Exception as e:
                     print(f"[LEARNING] 进入模式状态写入失败: {e}")
@@ -4524,10 +4670,30 @@ class Model(MailMixin):
             if workspace_memory_hint:
                 current_turn_system_injections.append(workspace_memory_hint)
 
+            # 知识库全量索引是稳定块，进 head 参与前缀缓存（非首轮时 head 直接复用快照，此处会被丢弃）
             workspace_knowledge_hint = prompts.build_workspace_knowledge_injection_prompt(workspace_context)
 
             if workspace_knowledge_hint:
                 current_turn_system_injections.append(workspace_knowledge_hint)
+
+            # 知识库变更走 tail：Context Manager 负责 diff 格式化与注入定位
+            # （基线由 begin_user_turn 在轮次开头事务性采样，model 层不做任何基线读写）
+            knowledge_changed_block = self.chat_context_manager.build_knowledge_diff_injection(knowledge_delta)
+
+            if knowledge_changed_block:
+                current_turn_system_injections.append(knowledge_changed_block)
+
+            # 画像/技能变更走 tail volatile：与知识 diff 同一通道，head 保持冻结。
+            # 块内容每轮重发，模型以最新块为准，直到下次 head 重建才烘回 system prompt。
+            profile_update_block = build_profile_update_block(profile_delta)
+
+            if profile_update_block:
+                current_turn_system_injections.append(profile_update_block)
+
+            skill_update_block = build_skill_update_block(skill_delta)
+
+            if skill_update_block:
+                current_turn_system_injections.append(skill_update_block)
 
             workspace_resource_hint = prompts.build_workspace_resource_index_prompt(workspace_context)
 
@@ -4586,35 +4752,26 @@ class Model(MailMixin):
 
             previous_response_id = None
             messages = []
+
+            # 画像/知识库基线进 head 前缀保障缓存命中；知识库变更由 begin_user_turn
+            # 在轮次开头采样并在此前已注入 tail（见 workspace_knowledge_hint 上方 diff 块）
             request_system_prompt = self._build_effective_system_prompt(
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
                 tool_mode=getattr(self, "_runtime_tool_mode", "force"),
                 conversation_mode=normalized_conversation_mode,
-                conversation_mode_payload=normalized_conversation_mode_payload
+                conversation_mode_payload=normalized_conversation_mode_payload,
+                include_profile_context=True,
             )
+
             if force_full_history:
                 effective_include_context = True
             else:
                 effective_include_context = bool(include_context) and (not longterm_no_history)
-            tool_skill_prompt_block = ""
-            selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
-                normalized_skill_mode,
-                normalized_active_tool_skills
-            )
-            skill_system_blocks: List[str] = []
-            if selected_tool_skills:
-                tool_skill_prompt_block = str(
-                    prompts.build_skill_instructions_prompt(selected_tool_skills) or ""
-                ).strip()
-                if tool_skill_prompt_block:
-                    skill_system_blocks.append(tool_skill_prompt_block)
-            if effective_enable_tools and normalized_longdoc_skills:
-                longdoc_skill_prompt_block = str(
-                    prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
-                ).strip()
-                if longdoc_skill_prompt_block:
-                    skill_system_blocks.append(longdoc_skill_prompt_block)
+            # skill 选择与块构建已前移到 begin_user_turn 之前（基线采样需要），此处仅组装
+            skill_system_blocks = [
+                block for block in (tool_skill_prompt_block, longdoc_skill_prompt_block) if block
+            ]
             if skill_system_blocks:
                 current_turn_system_injections = [
                     "\n\n".join(skill_system_blocks).strip()
@@ -4628,7 +4785,8 @@ class Model(MailMixin):
                 include_context=effective_include_context,
                 system_prompt_text=request_system_prompt,
                 system_injection_texts=current_turn_system_injections,
-                history_end_index_exclusive=history_end_index_exclusive
+                history_end_index_exclusive=history_end_index_exclusive,
+                current_user_index=persisted_user_index
             )
 
             if last_response_id:
@@ -4645,6 +4803,41 @@ class Model(MailMixin):
                 print(f"[CACHE] Miss. Building full context.")
                 messages = list(full_context_messages)
                 messages_has_full_context = True
+            # ---- 硬限流兜底（最后一道闸）：全量历史视角，若已超窗则滑动裁剪 ----
+            # 口径说明：此处按 json 序列化 + provider tokenizer 估算 tokens，与 service 层
+            # 写前的 chars 滑动裁剪（window*4 chars）是两套不同单位、相互独立的有界闸；
+            # 且本估算不含 system prompt/tools/本轮其余载荷，故只保证请求体有界、
+            # 不承诺精确不超 provider 真实窗口。客户端是否截断历史不影响本判定。
+            try:
+                _hard_limit = int(max(0, self._resolve_model_context_window_limit()))
+                if _hard_limit < 1024:
+                    # 无窗口信息时回退 5000 tokens（service 层回退的是 5000 chars，勿混用）
+                    _hard_limit = 5000
+                if _hard_limit > 0 and messages_has_full_context and messages:
+                    _tmp_raw = __import__("json").dumps(messages, ensure_ascii=False, default=str)
+                    _tmp_est = self._estimate_token_count(_tmp_raw)
+                    if len(_tmp_raw) <= 120000:
+                        _exact = self._count_text_tokens_exact(_tmp_raw, provider_name=self.provider, model_name=self.model_name, timeout=5.0)
+                        if _exact is not None and _exact > 0:
+                            _tmp_est = int(_exact)
+                    if _tmp_est > _hard_limit:
+                        print(f"[CTX_HARD_LIMIT] preflight {_tmp_est} > window {_hard_limit}, sliding window truncate")
+                        _system_part = [m for m in messages if str(m.get("role") or "").strip() == "system"]
+                        _other_part = [m for m in messages if str(m.get("role") or "").strip() != "system"]
+                        while _other_part and _tmp_est > _hard_limit and len(_other_part) > 2:
+                            _other_part = _other_part[2:]
+                            _tmp_msgs = _system_part + _other_part
+                            _tmp_raw2 = __import__("json").dumps(_tmp_msgs, ensure_ascii=False, default=str)
+                            _tmp_est = self._estimate_token_count(_tmp_raw2)
+                            if len(_tmp_raw2) <= 120000:
+                                _exact2 = self._count_text_tokens_exact(_tmp_raw2, provider_name=self.provider, model_name=self.model_name, timeout=5.0)
+                                if _exact2 is not None and _exact2 > 0:
+                                    _tmp_est = int(_exact2)
+                        messages = _system_part + _other_part
+                        full_context_messages = list(messages)
+                        print(f"[CTX_HARD_LIMIT] truncated to {len(messages)} msgs, est {_tmp_est}" + (" (still over window: untruncatable system-only/oversized user)" if _tmp_est > _hard_limit else ""))
+            except Exception as _e:
+                print(f"[CTX_HARD_LIMIT] check failed: {_e}")
             request_resume_id_seed = str(previous_response_id or "")
             request_started_with_resume_id = bool(previous_response_id)
             request_promoted_to_full_context = False
@@ -4896,6 +5089,14 @@ class Model(MailMixin):
 
                     return "network_error", True, f"网络异常，流式连接中断: {err_text}"
 
+                # Conversation 冲突域：消息索引过期/重答目标失效，属客户端状态过期而非服务故障
+                if error_type_name in {
+                    "ConversationConflictError",
+                    "ConversationIndexError",
+                    "ConversationTargetRoleError",
+                }:
+                    return "conversation_index_stale", False, err_text
+
                 return "", False, err_text
 
             def _build_terminal_stream_error_payload(
@@ -4957,8 +5158,12 @@ class Model(MailMixin):
                     "stream_trace": trace_payload,
                 }
             
+            # 网络半包重试预算（架构层统一处理，避免散落 patch）
+            network_retry_budget = 1
+            round_num = 0
+
             try:
-                for round_num in range(max_rounds):
+                while round_num < max_rounds:
                     # Keep follow-up rounds immediate to avoid perceptible stream stalls.
                     round_enable_thinking = bool(
                         enable_thinking
@@ -5275,14 +5480,29 @@ class Model(MailMixin):
                                     cut_index = len(conv_msgs) - 1
                                 compression_error = ""
                                 if cut_index >= 1:
-                                    compress_source = conv_msgs[:cut_index + 1]
+                                    # Append 式压缩：复用当轮主请求的完整上下文消息（head+历史+tail 注入块），
+                                    # 截掉最后一条 user（当前轮提问）后在末尾追加压缩指令。
+                                    # 前缀与此前各轮请求逐字节一致 → 命中 provider prefix cache；
+                                    # 注入块（知识/画像/技能 diff）天然进入总结视野，不再丢数据。
+                                    # request_params 的载荷与主请求同源同构，直接取用保证格式一致。
+                                    runtime_msgs = request_params.get("input") if use_responses_api else request_params.get("messages")
+                                    append_instruction = prompts.build_context_compression_append_prompt(
+                                        self._context_compression_max_chars
+                                    )
+                                    compress_messages, _request_last_user_pos = build_append_compression_messages(
+                                        runtime_msgs if isinstance(runtime_msgs, list) else [],
+                                        append_instruction,
+                                    )
                                     if debug_mode:
                                         yield _build_debug_trace(
                                             "server->model",
                                             "context_compression_source",
                                             {
-                                                "history_count": int(len(compress_source)),
+                                                "message_count": int(len(compress_messages)),
                                                 "cut_index": int(cut_index),
+                                                "append_mode": True,
+                                                "use_responses_api": bool(use_responses_api),
+                                                "instruction_chars": int(len(append_instruction)),
                                                 "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
                                                 "context_window": int(max(0, context_window_limit)),
                                                 "context_window_source": context_window_source,
@@ -5292,10 +5512,18 @@ class Model(MailMixin):
                                             title="Compression Source",
                                             round_index=round_num
                                         )
+                                    # 补 previous_response_id + 透传 tools：复用当轮已解析的续接 ID 与工具集，LLMFaker compression 才能命中 prefix cache
+                                    compression_previous_response_id = previous_response_id if isinstance(previous_response_id, str) and previous_response_id.strip() else None
+
                                     compression_run = {}
-                                    compression_run_iter = self._run_context_compression_round(
-                                        compress_source,
-                                        max_chars=self._context_compression_max_chars
+                                    compression_run_iter = run_append_compression_round(
+                                        self,
+                                        compress_messages,
+                                        max_chars=self._context_compression_max_chars,
+                                        use_responses_api=use_responses_api,
+                                        previous_response_id=compression_previous_response_id,
+                                        enable_tools=bool(effective_enable_tools),
+                                        runtime_function_tool_names=self._runtime_function_tool_names_for_request(),
                                     )
                                     try:
                                         while True:
@@ -5344,14 +5572,10 @@ class Model(MailMixin):
                                             "server->model",
                                             "context_compression_prompt",
                                             {
-                                                "system_prompt": str(compression_run.get("system_prompt", "") or ""),
-                                                "prompt_template": str(compression_run.get("prompt_template", "") or ""),
-                                                "prompt_text": str(compression_run.get("prompt_text", "") or ""),
-                                                "history_text": str(compression_run.get("history_text", "") or ""),
-                                                "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
-                                                "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0))),
-                                                "history_truncated": bool(compression_run.get("history_truncated", False)),
-                                                "history_limit_chars": int(max(0, int(compression_run.get("history_limit_chars", 0) or 0))),
+                                                "append_mode": True,
+                                                "use_responses_api": bool(compression_run.get("use_responses_api", use_responses_api)),
+                                                "message_count": int(max(0, int(compression_run.get("message_count", 0) or 0))),
+                                                "reply_chars": int(max(0, int(compression_run.get("chars", 0) or 0))),
                                                 "max_chars": int(self._context_compression_max_chars),
                                                 "trigger_mode": context_compression_trigger_mode
                                             },
@@ -5389,12 +5613,23 @@ class Model(MailMixin):
                                                     "forced": bool(force_compression_trigger),
                                                     "trigger_mode": context_compression_trigger_mode,
                                                     "masked_image_data_urls": int(max(0, context_compression_masked_image_count)),
-                                                    "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
-                                                    "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0)))
+                                                    "message_count": int(max(0, int(compression_run.get("message_count", 0) or 0))),
+                                                    "reply_chars": int(max(0, int(compression_run.get("chars", 0) or 0)))
                                                 }
                                             )
                                         except Exception as e:
                                             print(f"[CTX_COMPRESS] save marker failed: {e}")
+                                        # 换代：efm <= cut 的事件内容已进摘要，裁掉防无限堆积；
+                                        # 基线本身即为当前值无需重置，efm > cut 的事件（当前轮）保留
+                                        try:
+                                            pruned_count = self.conversation_service.prune_turn_events_before(
+                                                self.conversation_id,
+                                                int(cut_index),
+                                            )
+                                            if pruned_count:
+                                                print(f"[CTX_COMPRESS] pruned {pruned_count} turn events before cut {cut_index}")
+                                        except Exception as e:
+                                            print(f"[CTX_COMPRESS] prune turn events failed: {e}")
                                     # 压缩后重建上下文；续接ID必须清空，避免“轻载荷 + 压缩摘要”错配。
                                     full_context_messages = self._build_initial_messages(
                                         user_msg=msg,
@@ -5404,6 +5639,7 @@ class Model(MailMixin):
                                         include_context=effective_include_context,
                                         system_prompt_text=request_system_prompt,
                                         system_injection_texts=current_turn_system_injections,
+                                        current_user_index=persisted_user_index,
                                     )
                                     previous_response_id = None
                                     messages = list(full_context_messages)
@@ -6170,13 +6406,29 @@ class Model(MailMixin):
                         # 额外调试：尝试找出哪个变量包含不可序列化的对象
                         import traceback
                         traceback.print_exc()
-                        # 如果是上游流提前断开，但我们已经拿到部分输出，则把它当作流式提前结束处理。
+                        # 架构层统一网络半包处理：有内容按正常结束，无内容按可重试网络错误
                         error_text = str(e).lower()
                         eof_like_error = (
                             "peer closed connection" in error_text
                             or "incomplete chunked read" in error_text
                             or type(e).__name__ in {"RemoteProtocolError", "ReadError"}
                         )
+
+                        # 无内容半包且重试预算充足时，回退全量上下文重试一次
+                        if eof_like_error and not (round_content or accumulated_content or round_reasoning or function_calls):
+                            if network_retry_budget > 0:
+                                network_retry_budget -= 1
+                                print(f"[RETRY] 检测到流式半包（无内容），回退全量重试，剩余预算 {network_retry_budget}")
+
+                                # 强制全量，避免 previous_response_id 坏链影响重试
+                                previous_response_id = None
+                                messages = list(full_context_messages)
+                                messages_has_full_context = True
+                                request_promoted_to_full_context = True
+
+                                # 本轮不递增，重试同一轮
+                                continue
+
                         if eof_like_error and (round_content or accumulated_content or round_reasoning or function_calls):
                             print("[WARN] 上游流提前断开，已收到部分内容，按正常结束处理以便继续 longterm 续跑。")
                         else:
@@ -6441,8 +6693,14 @@ class Model(MailMixin):
                             func_args = func_call["arguments"]
                             call_id = func_call["call_id"]
                             
-                            print(f"\n[FUNCTION] 调用: {func_name}")
-                            print(f"[FUNCTION] 参数: {func_args}")
+                            try:
+                                print(f"\n[FUNCTION] 调用: {func_name}".replace("\xa0", " "))
+                            except Exception:
+                                pass
+                            try:
+                                print(f"[FUNCTION] 参数: {func_args}".replace("\xa0", " ") if isinstance(func_args, str) else f"[FUNCTION] 参数: {func_args}")
+                            except Exception:
+                                pass
                             
                             # 记录调用步骤
                             step_call = {
@@ -6489,7 +6747,7 @@ class Model(MailMixin):
                             )
 
                             try:
-                                result = self._execute_function(func_name, func_args)
+                                result = self._execute_function(func_name, func_args, call_id=call_id)
                             finally:
                                 self._stop_function_running_heartbeat(heartbeat_stop_event)
 
@@ -6516,11 +6774,31 @@ class Model(MailMixin):
                                 model_visible_args
                             )
                             
-                            print(f"[FUNCTION] 结果: {result[:100]}..." if len(result) > 100 else f"[FUNCTION] 结果: {result}")
+                            try:
+                                _safe_res = str(result or "").replace("\xa0", " ")
+                                print(f"[FUNCTION] 结果: {_safe_res[:100]}..." if len(_safe_res) > 100 else f"[FUNCTION] 结果: {_safe_res}")
+                            except Exception:
+                                pass
                             if model_visible_result != result:
-                                print(f"[FUNCTION] 模型可见结果: {model_visible_result}")
+                                try:
+                                    print(f"[FUNCTION] 模型可见结果: {str(model_visible_result).replace(chr(160), ' ')}")
+                                except Exception:
+                                    pass
                             
-                            # 记录结果步骤
+                            # 记录结果步骤（双轨：前端优先 display_model_visible_result，上下文仍用 model_visible_result）
+                            display_key = str(call_id or "").strip()
+                            display_result = self._pending_display_results.pop(display_key, None) if display_key else None
+                            # 兼容兜底：若未按 call_id 缓存，尝试按任意 pending 键取一次（单轮单工具场景）
+                            if not display_result and self._pending_display_results:
+                                # 取最早一条与当前 func_name 相关的展示
+                                for k in list(self._pending_display_results.keys()):
+                                    if display_result:
+                                        break
+                                    cand = self._pending_display_results.get(k)
+                                    if isinstance(cand, str) and cand.strip():
+                                        display_result = self._pending_display_results.pop(k, None)
+                                        break
+
                             step_result = {
                                 "type": "function_result",
                                 "name": func_name,
@@ -6529,6 +6807,9 @@ class Model(MailMixin):
                                 "call_id": call_id,
                                 "round": int(round_num) + 1
                             }
+                            if display_result and isinstance(display_result, str) and display_result.strip() and display_result.strip() != model_visible_result.strip():
+                                step_result["display_result"] = display_result
+                                step_result["display_model_visible_result"] = display_result
                             if "index" in func_call:
                                 step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)
@@ -6806,6 +7087,9 @@ class Model(MailMixin):
                     yield {"type": "done", "content": accumulated_content}
                     return
 
+                    # 正常轮次完成，递增轮次计数
+                    round_num += 1
+
                 # 达到最大轮次
                 print(f"[WARNING] 达到最大轮次 {max_rounds}")
                 yield {"type": "done", "content": accumulated_content}
@@ -7054,13 +7338,81 @@ class Model(MailMixin):
                         metadata["stream_cancel_reason"] = "user_abort"
                     
                     if self.persist_conversation and self.conversation_id:
-                        saved_assistant_message_index = self.conversation_manager.add_message(
-                            self.conversation_id,
-                            "assistant",
-                            saved_assistant_content,
-                            metadata=metadata,
-                            index=regenerate_index if is_regenerate else None
-                        )
+                        try:
+                            # 构造 v4 payload：content + model + usage + trace
+                            v4_payload: Dict[str, Any] = {
+                                "content": str(saved_assistant_content or ""),
+                                "model": {"name": str(self.model_name or "").strip(), "provider": str(self.provider or "").strip()},
+                                "summary": str(metadata.get("exchange_summary") or metadata.get("summary") or "").strip() if isinstance(metadata, dict) else "",
+                                "status": "completed" if not stream_cancelled else "partial",
+                            }
+                            # usage
+                            if isinstance(metadata, dict) and isinstance(metadata.get("io_tokens"), dict):
+                                io = metadata.get("io_tokens", {})
+                                v4_payload["usage"] = {
+                                    "input": int(io.get("input") or 0),
+                                    "output": int(io.get("output") or 0),
+                                    "raw_input": int(io.get("raw_input") or 0),
+                                    "cached_input": int(io.get("cached_input") or 0),
+                                    "effective_input": int(io.get("effective_input") or 0),
+                                }
+                            # trace
+                            trace = None
+                            if isinstance(metadata, dict) and isinstance(metadata.get("process_steps"), list):
+                                built = build_trace_from_process_steps(metadata.get("process_steps"))
+                                if isinstance(built, dict) and built.get("events"):
+                                    trace = built
+                            # 确保 token_response_trace_id 落盘到 v4，以便 Token 详情可精确关联
+                            if not isinstance(trace, dict):
+                                trace = {"events": [], "tool_calls": [], "tool_results": [], "content_segments": [], "errors": []}
+                            extensions = trace.get("extensions", {}) if isinstance(trace.get("extensions"), dict) else {}
+                            if str(response_trace_id or "").strip():
+                                extensions["token_response_trace_id"] = str(response_trace_id or "").strip()
+                            if extensions:
+                                trace["extensions"] = extensions
+                            v4_payload["trace"] = trace
+                            if isinstance(metadata, dict) and metadata.get("terminal_error"):
+                                terr = metadata.get("terminal_error")
+                                if isinstance(terr, dict):
+                                    v4_payload["error"] = {"message": str(terr.get("content") or terr.get("message") or ""), "code": str(terr.get("code") or ""), "retryable": bool(terr.get("retryable"))}
+                                else:
+                                    v4_payload["error"] = {"message": str(terr or "")}
+                                v4_payload["status"] = "error"
+                            if is_regenerate and regenerate_index is not None:
+                                self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
+                                saved_assistant_message_index = int(regenerate_index)
+                            else:
+                                # 正常：finish placeholder
+                                target_idx = None
+                                if 'assistant_index_for_stream' in locals() and assistant_index_for_stream is not None:
+                                    target_idx = int(assistant_index_for_stream)
+                                else:
+                                    # 回退：取最后一条 assistant placeholder
+                                    try:
+                                        conv = self.conversation_service.get_conversation(self.conversation_id)
+                                        msgs = conv.get("messages", [])
+                                        # 找到最后一条 streaming 的 assistant
+                                        for _i in range(len(msgs)-1, -1, -1):
+                                            if str((msgs[_i] or {}).get("role") or "") == "assistant" and str((msgs[_i] or {}).get("status") or "") == "streaming":
+                                                target_idx = _i
+                                                break
+                                        if target_idx is None:
+                                            target_idx = len(msgs) - 1
+                                    except Exception:
+                                        target_idx = None
+                                if target_idx is not None:
+                                    self.conversation_service.finish_assistant_turn(self.conversation_id, int(target_idx), v4_payload)
+                                    saved_assistant_message_index = int(target_idx)
+                                else:
+                                    raise RuntimeError("无法定位 assistant placeholder 索引，终止持久化以避免重复")
+                        except Exception as _v4_err:
+                            # 严格模式：直接记录错误，不回退旧路径，避免数据覆盖
+                            try:
+                                print(f"[CONVERSATION] v4 finish failed: {_v4_err}")
+                            except Exception:
+                                pass
+                            raise
+
                     if (
                         normalized_conversation_mode == "learning"
                         and self.persist_conversation
@@ -7102,7 +7454,7 @@ class Model(MailMixin):
                                         "plan": normalized_conversation_mode_payload.get("plan", []),
                                         "context": self._runtime_longterm_context_text,
                                         "step": self._runtime_longterm_current_plan_text,
-                                        "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                        "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                         "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                                     },
                                     active=False,
@@ -7122,7 +7474,7 @@ class Model(MailMixin):
                                     "plan": normalized_conversation_mode_payload.get("plan", []),
                                     "context": self._runtime_longterm_context_text,
                                     "step": self._runtime_longterm_current_plan_text,
-                                    "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                    "current_index": parse_message_index(normalized_conversation_mode_payload.get("current_index"), default=-1),
                                     "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
                                 },
                                 active=False
@@ -7333,6 +7685,25 @@ class Model(MailMixin):
                     "content": error_msg
                 }
                 return
+            # Conversation 冲突域（消息索引越界/目标角色不符）属"客户端序号过期"，
+            # 不能当作 server_error 吞掉：带机器码返回，前端据此刷新会话而非误报未知错误。
+            try:
+                from basis.Conversation.errors import ConversationConflictError as _ConvConflictCls
+            except Exception:
+                _ConvConflictCls = None
+
+            if _ConvConflictCls is not None and isinstance(e, _ConvConflictCls):
+                conflict_msg = str(e or "").strip() or "会话状态冲突，消息索引已过期"
+                print(f"[ERROR] {conflict_msg}")
+                _persist_terminal_error_on_current_assistant(conflict_msg, "conversation_index_stale", False)
+                yield {
+                    "type": "error",
+                    "error_code": "conversation_index_stale",
+                    "retryable": False,
+                    "content": conflict_msg,
+                }
+                return
+
             error_msg = f"错误: {err_text}"
             print(f"[ERROR] {error_msg}")
             _persist_terminal_error_on_current_assistant(error_msg, "server_error", False)
@@ -7589,6 +7960,15 @@ class Model(MailMixin):
         except Exception as e:
             print(f"[WARNING] 记录 Token 日志失败: {e}")
 
+    def record_context_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
+        """保存本次上下文构建诊断，供请求 trace 和运维读取。"""
+        if not isinstance(diagnostics, dict):
+            raise ValueError("context diagnostics must be a dict")
+        self._last_context_diagnostics = dict(diagnostics)
+        self._context_degraded = bool(diagnostics.get("degraded"))
+        self._telemetry["context"] = dict(diagnostics)
+        self._telemetry["context_degraded"] = self._context_degraded
+
     def _build_initial_messages(
         self,
         user_msg: str,
@@ -7598,7 +7978,8 @@ class Model(MailMixin):
         include_context: bool = True,
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
-        history_end_index_exclusive: Optional[int] = None
+        history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
         return self.chat_context_manager.build_initial_messages(
@@ -7609,177 +7990,71 @@ class Model(MailMixin):
             include_context=include_context,
             system_prompt_text=system_prompt_text,
             system_injection_texts=system_injection_texts,
-            history_end_index_exclusive=history_end_index_exclusive
+            history_end_index_exclusive=history_end_index_exclusive,
+            current_user_index=current_user_index
         )
 
-    def _resolve_context_compact_mode(self) -> str:
+    def _sanitize_tool_calls_in_messages(self, messages: List[Dict]) -> List[Dict]:
+        """清洗历史中的 tool_calls 非法 JSON，避免 provider 400 Format Error。
+
+        模型偶发会生成 `arguments` 非 JSON（如 ` [action": ...` 缺少 `{`），
+        若直接透传给 volcengine/dashscope 等 provider，會触发 Format Error 400
+        并污染整段对话历史（后续所有请求均 400）。此处将非法 arguments 替换为 "{}"，
+        保留 tool_call 结构与 tool_result 配对，避免历史丢失导致上下文断裂。
         """
-        解析上下文轻量化模式：
-        - off: 不处理
-        - markdown_plain: 去掉 Markdown 外壳，保留可读纯文本
-        - markdown_latex_plain: 同上 + LaTeX 转符号/文本
-        """
-        model_cfg = (CONFIG.get("models", {}) or {}).get(self.model_name, {}) if isinstance(CONFIG, dict) else {}
-        raw_mode = (
-            model_cfg.get("context_compact_mode")
-            if isinstance(model_cfg, dict) and model_cfg.get("context_compact_mode") is not None
-            else self.config.get("context_compact_mode", CONFIG.get("context_compact_mode", "markdown_latex_plain"))
-        )
-        token = str(raw_mode or "").strip().lower()
-        alias = {
-            "0": "off",
-            "false": "off",
-            "none": "off",
-            "raw": "off",
-            "1": "markdown_plain",
-            "true": "markdown_plain",
-            "on": "markdown_plain",
-            "plain": "markdown_plain",
-            "markdown": "markdown_plain",
-            "markdown_plain": "markdown_plain",
-            "markdown_latex_plain": "markdown_latex_plain",
-            "latex_plain": "markdown_latex_plain",
-            "plain_latex": "markdown_latex_plain",
-            "full": "markdown_latex_plain"
-        }
-        mode = alias.get(token, "markdown_latex_plain")
-        if mode not in {"off", "markdown_plain", "markdown_latex_plain"}:
-            return "markdown_latex_plain"
-        return mode
+        import json as _json
 
-    def _compact_context_content(self, content: Any, mode: str) -> Any:
-        if str(mode or "off") == "off":
-            return content
-        if isinstance(content, str):
-            return self._compact_context_text(content, mode)
-        if isinstance(content, dict):
-            cloned = dict(content)
-            text_val = cloned.get("text")
-            if isinstance(text_val, str):
-                cloned["text"] = self._compact_context_text(text_val, mode)
-            return cloned
-        if isinstance(content, list):
-            out: List[Any] = []
-            for item in content:
-                if isinstance(item, dict):
-                    cloned = dict(item)
-                    item_type = str(cloned.get("type", "") or "").strip().lower()
-                    if item_type in {"text", "input_text", "output_text"}:
-                        text_val = cloned.get("text")
-                        if isinstance(text_val, str):
-                            cloned["text"] = self._compact_context_text(text_val, mode)
-                    out.append(cloned)
-                else:
-                    out.append(item)
-            return out
-        return content
+        sanitized: List[Dict] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                sanitized.append(msg)
+                continue
+            m = dict(msg)
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                new_tcs = []
+                for tc in tcs:
+                    if not isinstance(tc, dict):
+                        continue
+                    func = tc.get("function")
+                    if not isinstance(func, dict):
+                        new_tcs.append(tc)
+                        continue
+                    args = func.get("arguments")
+                    # arguments 必须是 JSON 字符串；非字符串或非法 JSON 统一修复为 "{}"
+                    if args is None:
+                        new_func = dict(func)
+                        new_func["arguments"] = "{}"
+                        new_tc = dict(tc)
+                        new_tc["function"] = new_func
+                        new_tcs.append(new_tc)
+                        continue
+                    if not isinstance(args, str):
+                        try:
+                            args = _json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    args_str = str(args).strip()
+                    if not args_str:
+                        args_str = "{}"
+                    try:
+                        _json.loads(args_str)
+                        new_tcs.append(tc)
+                    except Exception:
+                        # 修复为 "{}"，并在日志中提示
+                        try:
+                            print(f"[SANITIZE] invalid tool_call arguments fixed: name={func.get('name')} raw={args_str[:120]}")
+                        except Exception:
+                            pass
+                        new_func = dict(func)
+                        new_func["arguments"] = "{}"
+                        new_tc = dict(tc)
+                        new_tc["function"] = new_func
+                        new_tcs.append(new_tc)
+                m["tool_calls"] = new_tcs
+            sanitized.append(m)
+        return sanitized
 
-    def _compact_context_text(self, text: Any, mode: str) -> str:
-        src = str(text or "")
-        if not src.strip():
-            return src
-        out = src
-        if mode in {"markdown_plain", "markdown_latex_plain"}:
-            out = self._flatten_markdown_for_context(out)
-        if mode in {"markdown_latex_plain"}:
-            out = self._latex_to_plain_text_for_context(out)
-        if not out.strip():
-            return src
-        return out
-
-    def _flatten_markdown_for_context(self, text: str) -> str:
-        s = str(text or "")
-        if not s:
-            return s
-        s = s.replace("\r\n", "\n").replace("\r", "\n")
-        s = re.sub(r"```[^\n]*\n([\s\S]*?)```", lambda m: str(m.group(1) or ""), s)
-        s = re.sub(r"`([^`]+)`", r"\1", s)
-        s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda m: f"[image {str(m.group(1) or '').strip()}]".strip(), s)
-        s = re.sub(
-            r"\[([^\]]+)\]\(([^)]+)\)",
-            lambda m: f"{str(m.group(1) or '').strip()} ({str(m.group(2) or '').strip()})",
-            s
-        )
-        s = re.sub(r"^\s{0,3}#{1,6}\s*", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s{0,3}>\s?", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*[-*+]\s+", "- ", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*\d+\.\s+", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*([-*_]\s*){3,}$", "", s, flags=re.MULTILINE)
-        s = re.sub(r"^\s*\|?[\s:-]+\|[\s|:-]*$", "", s, flags=re.MULTILINE)
-
-        def _normalize_table_row(match: re.Match) -> str:
-            line = str(match.group(0) or "")
-            if line.count("|") < 2:
-                return line
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            cells = [c for c in cells if c]
-            if not cells:
-                return ""
-            return " | ".join(cells)
-
-        s = re.sub(r"^.*\|.*\|.*$", _normalize_table_row, s, flags=re.MULTILINE)
-        s = s.replace("**", "").replace("__", "").replace("~~", "")
-        s = re.sub(r"(?<!\*)\*(?!\*)([^*\n]+)(?<!\*)\*(?!\*)", r"\1", s)
-        s = re.sub(r"(?<!_)_([^_\n]+)_", r"\1", s)
-        s = re.sub(r"[ \t]+", " ", s)
-        s = re.sub(r"\n{3,}", "\n\n", s)
-        return s.strip()
-
-    def _latex_to_plain_text_for_context(self, text: str) -> str:
-        s = str(text or "")
-        if not s:
-            return s
-
-        command_map = {
-            "times": "×",
-            "cdot": "·",
-            "neq": "≠",
-            "ne": "≠",
-            "leq": "≤",
-            "geq": "≥",
-            "pm": "±",
-            "to": "→",
-            "rightarrow": "→",
-            "leftarrow": "←",
-            "infty": "∞",
-            "approx": "≈",
-            "alpha": "α",
-            "beta": "β",
-            "gamma": "γ",
-            "delta": "δ",
-            "theta": "θ",
-            "lambda": "λ",
-            "mu": "μ",
-            "pi": "π",
-            "sigma": "σ",
-            "phi": "φ",
-            "omega": "ω"
-        }
-        for cmd, sym in command_map.items():
-            s = re.sub(rf"\\{cmd}\b", sym, s)
-
-        for _ in range(6):
-            prev = s
-            s = re.sub(r"\\(?:d|t)?frac\s*\{([^{}]{1,180})\}\s*\{([^{}]{1,180})\}", r"(\1)/(\2)", s)
-            if s == prev:
-                break
-        for _ in range(6):
-            prev = s
-            s = re.sub(r"\\sqrt\s*\{([^{}]{1,240})\}", r"sqrt(\1)", s)
-            if s == prev:
-                break
-
-        s = re.sub(r"\\(?:text|mathrm|mathbf|boldsymbol)\s*\{([^{}]{0,320})\}", r"\1", s)
-        s = s.replace("\\left", "").replace("\\right", "")
-        s = s.replace("\\,", " ").replace("\\;", " ").replace("\\!", "")
-        s = s.replace("\\[", "").replace("\\]", "").replace("\\(", "").replace("\\)", "")
-        s = s.replace("$$", " ").replace("$", " ")
-        s = s.replace("{", "").replace("}", "")
-        s = re.sub(r"\\([A-Za-z]+)", r"\1", s)
-        s = re.sub(r"[ \t]+", " ", s)
-        s = re.sub(r"\n{3,}", "\n\n", s)
-        return s.strip()
-    
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""
         cleaned = []
@@ -7898,6 +8173,8 @@ class Model(MailMixin):
         # 已弃用“运行时能力 system 注入”，避免每轮附加协议文本导致输入 token 异常抬升。
         should_inject_runtime_hints = False
         runtime_messages = self._strip_reasoning_content(runtime_messages)
+        # 修复历史中非法 tool_calls 的 arguments（模型偶发非 JSON 如 `[action":...`），避免 provider 400 Format Error 污染对话
+        runtime_messages = self._sanitize_tool_calls_in_messages(runtime_messages)
         learning_mode_active = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
         has_function_output_context = bool(current_function_outputs)
 
@@ -7914,6 +8191,13 @@ class Model(MailMixin):
                         tools_payload,
                         runtime_tool_names
                     )
+                # exclusive 任务仅下发限定工具（通用，无 Provider 分支）
+                exclusive_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
+                if exclusive_names:
+                    tools_payload = [
+                        t for t in tools_payload
+                        if self._extract_function_tool_spec(t) and self._extract_function_tool_spec(t)["name"] in exclusive_names
+                    ]
 
             # Responses API 下允许“仅联网搜索开关”生效（即使 enable_tools=false）
             if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
@@ -7993,6 +8277,13 @@ class Model(MailMixin):
                             tools_payload,
                             runtime_tool_names
                         )
+                    # exclusive 任务仅下发限定工具（通用）
+                    exclusive_names = set(getattr(self, "_exclusive_external_tool_names", set()) or set())
+                    if exclusive_names:
+                        tools_payload = [
+                            t for t in tools_payload
+                            if self._extract_function_tool_spec(t) and self._extract_function_tool_spec(t)["name"] in exclusive_names
+                        ]
                     params["tools"] = tools_payload
                     # provider 级 native tools（来自 model_adapters）
                     native_tools = list(getattr(self, "native_search_tools", []) or [])
@@ -8016,7 +8307,11 @@ class Model(MailMixin):
             )
 
         if bool(getattr(self, "_require_function_tool_call", False)) and params.get("tools"):
-            params["tool_choice"] = "required"
+            # 通用 Completion API 仅保证 auto/null，required 在部分网关上会导致空转
+            params["tool_choice"] = "auto"
+            # 记忆类任务限制输出，避免 30k 扩写
+            if params.get("max_tokens") is None and params.get("max_completion_tokens") is None:
+                params["max_tokens"] = 800
 
         params = provider_adapter.apply_request_options(
             params,

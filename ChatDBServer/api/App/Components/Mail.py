@@ -21,8 +21,8 @@ from email.header import Header
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
-from urllib.parse import urlsplit
 
 
 class MailMixin:

@@ -71,6 +71,7 @@ import re
 import hashlib
 import uuid
 from basis.Timeline import record_knowledge_change
+from basis.index_codec import parse_message_index
 from basis.Database import (
     get_user_lock,
     global_file_lock as _global_file_lock,
@@ -1057,6 +1058,12 @@ class User:
             **saved_version,
         }
     
+    # 旧批量 updateBasis 已试点下线（保留注释便于回滚）：
+    # 原实现支持 from_pos/to_pos/replacement + replacements[] + patch + edits[] 批量四选一，
+    # 长累计文本下批量 edits 易在 Flash 0731 上产生 JSON 语法错误，现改为仅允许单次原子修改。
+    # def updateBasis(self, title, new_title, context, url, is_public, is_collaborative,
+    #                 from_pos, to_pos, replacement, replacements, patch, edits, dry_run, expected_sha256, timeline_actor): ...
+
     def updateBasis(
         self,
         title,
@@ -1065,24 +1072,24 @@ class User:
         url=None,
         is_public=None,
         is_collaborative=None,
-        from_pos=None,
-        to_pos=None,
+        action=None,
+        target=None,
         replacement=None,
-        replacements=None,
-        patch=None,
-        edits=None,
+        content=None,
+        occurrence=None,
         dry_run=False,
         expected_sha256=None,
         timeline_actor=None
     ):
-        """更新基础知识，支持修改标题、整段内容、URL、区间替换和 patch。"""
+        """更新基础知识（单次原子修改）。支持整段覆盖或单次结构化编辑二选一；需多次修改请多次调用。"""
+
         lock = get_user_lock(self.user)
         with lock:
             db = safe_read_json(self.path + "database.json", default={})
-            
+
             if title not in db.get("data_basis", {}):
                 return False, "Title not found"
-            
+
             # 获取旧的记录
             old_record = db["data_basis"][title]
             src = old_record["src"]
@@ -1092,26 +1099,29 @@ class User:
             except UnicodeDecodeError as e:
                 return False, f"知识内容无法按 utf-8 解码: {e}"
 
-        has_range_replace = (
-            from_pos is not None
-            or to_pos is not None
-            or replacement is not None
-            or (isinstance(replacements, list) and len(replacements) > 0)
-        )
-        has_patch_update = bool(str(patch or "").strip()) or (isinstance(edits, list) and len(edits) > 0)
-        content_mode_count = sum([
-            1 if context is not None else 0,
-            1 if has_range_replace else 0,
-            1 if has_patch_update else 0,
-        ])
+        # 试点：仅允许单次原子修改，context 与单 edit 二选一
+        has_single_edit = bool(str(action or "").strip() and str(target or "").strip())
+        has_context = context is not None
 
-        if content_mode_count > 1:
-            return False, "context, range replacement, patch/edits are mutually exclusive"
+        # 兼容旧批量参数的显式拦截（防止旧模型仍发批量字段）
+        has_legacy_batch = False
+
+        if has_context and has_single_edit:
+            return False, "context 与单 edit（action+target）互斥，单次仅允许一种内容修改方式"
+
+        if str(action or "").strip() and not str(target or "").strip():
+            return False, "提供 action 时必须同时提供 target"
+
+        if str(target or "").strip() and not str(action or "").strip():
+            return False, "提供 target 时必须同时提供 action"
+
+        if action is not None and str(action).strip() not in {"replace", "insert_before", "insert_after", "delete"}:
+            return False, "action 仅支持 replace / insert_before / insert_after / delete"
 
         is_dry_run = bool(dry_run)
 
-        if is_dry_run and not (has_patch_update or has_range_replace):
-            return False, "dry_run requires patch/edits or range replacement"
+        if is_dry_run and not has_single_edit:
+            return False, "dry_run 仅单 edit 可用，提供 action+target 后再预览"
 
         if is_dry_run and (
             new_title
@@ -1119,7 +1129,7 @@ class User:
             or is_public is not None
             or is_collaborative is not None
         ):
-            return False, "dry_run cannot update title, url, public or collaborative settings"
+            return False, "dry_run 不能同时更新标题、url、公开/协作设置"
 
         expected = str(expected_sha256 or "").strip().lower()
         old_sha256 = hashlib.sha256(original_raw_content).hexdigest()
@@ -1137,7 +1147,7 @@ class User:
         content_payload = {}
 
         # 更新内容（整段覆盖）
-        if context is not None:
+        if has_context:
             try:
                 original = original_content
                 new_content = str(context)
@@ -1149,14 +1159,32 @@ class User:
                     content_updated = True
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
-        # 更新内容（统一 diff 或结构化 edits）
-        elif has_patch_update:
+        # 更新内容（单次结构化 edit）
+        elif has_single_edit:
             try:
                 original = original_content
+
+                # 将单次参数包装为单元素 edits 供复用底层 patch 引擎（但仅允许1个）
+                single_edit = {
+                    "action": str(action).strip(),
+                    "target": str(target).strip(),
+                }
+
+                if str(action).strip() == "replace":
+                    single_edit["replacement"] = str(replacement or "")
+                elif str(action).strip() in {"insert_before", "insert_after"}:
+                    single_edit["content"] = str(content or "")
+
+                if occurrence is not None:
+                    try:
+                        single_edit["occurrence"] = int(str(occurrence).strip())
+                    except Exception:
+                        return False, "occurrence 必须是整数"
+
                 current, stats, patch_error = apply_text_patch(
                     original,
-                    patch_text=str(patch or ""),
-                    edits=edits,
+                    patch_text="",
+                    edits=[single_edit],
                 )
 
                 if patch_error:
@@ -1185,46 +1213,7 @@ class User:
                 if is_dry_run:
                     return True, content_payload
             except Exception as e:
-                return False, f"Failed to apply patch: {str(e)}"
-        # 更新内容（区间替换）
-        elif has_range_replace:
-            try:
-                original = original_content
-                current, stats, range_error = apply_range_replacements(
-                    original,
-                    from_pos=from_pos,
-                    to_pos=to_pos,
-                    replacement=replacement,
-                    replacements=replacements,
-                )
-
-                if range_error:
-                    return False, range_error
-
-                diff_text = build_preview_diff(title, original, current)
-                new_sha256 = hashlib.sha256(str(current or "").encode(original_encoding)).hexdigest()
-                content_updated = current != original
-
-                if content_updated and not is_dry_run:
-                    _write_text_with_encoding(src, current, original_encoding)
-
-                content_payload = {
-                    "success": True,
-                    "message": "Range preview generated" if is_dry_run else "Success",
-                    "title": title,
-                    "changed": content_updated,
-                    "dry_run": is_dry_run,
-                    "old_sha256": old_sha256,
-                    "new_sha256": new_sha256,
-                    "diff": diff_text,
-                    "line_separator": line_separator_name(current),
-                    **stats,
-                }
-
-                if is_dry_run:
-                    return True, content_payload
-            except Exception as e:
-                return False, f"Failed to apply range replacement: {str(e)}"
+                return False, f"Failed to apply single edit: {str(e)}"
         
         # 更新URL（如果提供）
         if url is not None:
@@ -1285,12 +1274,26 @@ class User:
                 extra=extra,
             )
 
+        # 试点：若无任何实际变更（content 未变且无元数据变更），不应返回成功，防止模型幻觉“插入成功”
+        has_any_meta_change = bool(
+            (new_title and new_title != title)
+            or (url is not None)
+            or (is_public is not None)
+            or (is_collaborative is not None)
+        )
+
+        if not content_updated and not has_any_meta_change and not isinstance(content_payload, dict):
+            return False, "未提供任何有效更新：既无 context 整段覆盖，也无单 edit（action+target）命中。请检查 target 是否为文档中真实存在的短标题锚点，且单次仅传一个 edit。"
+
         if isinstance(content_payload, dict) and content_payload:
             content_payload["title"] = new_title or title
             content_payload["message"] = "Success"
             return True, content_payload
-        
-        return True, "Success"
+
+        if content_updated or has_any_meta_change:
+            return True, "Success"
+
+        return False, "未提供任何有效更新：既无 context 整段覆盖，也无单 edit（action+target）命中。请检查 target 是否为文档中真实存在的短标题锚点，且单次仅传一个 edit。"
     
     def _update_knowledge_graph_title(self, old_title, new_title):
         """更新知识图谱中的知识标题引用"""
@@ -1360,7 +1363,7 @@ class User:
             "memory_analysis": bool(metadata.get("memory_analysis", False)),
             "memory_job_id": str(metadata.get("memory_job_id") or ""),
             "memory_action": str(metadata.get("memory_action") or ""),
-            "source_assistant_index": int(metadata.get("source_assistant_index", -1) or -1),
+            "source_assistant_index": parse_message_index(metadata.get("source_assistant_index"), default=-1),
             "response_trace_id": str(metadata.get("response_trace_id") or "")
         }
 
@@ -1533,6 +1536,9 @@ class User:
                 prefs["default_open_view"] = view if view in ("nexora", "learning") else "learning"
             if "memory_update_model" in updates:
                 prefs["memory_update_model"] = str(updates.get("memory_update_model") or "").strip()
+
+            if "learning_runtime" in updates and isinstance(updates.get("learning_runtime"), dict):
+                prefs["learning_runtime"] = {"enabled": bool(updates["learning_runtime"].get("enabled", True))}
 
             quota_updates = updates.get("quota") if isinstance(updates.get("quota"), dict) else {}
             if quota_updates:

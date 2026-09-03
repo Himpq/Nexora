@@ -34,13 +34,61 @@ class ServiceStatusMonitor:
         self._snapshot: Dict[str, Any] = self._empty_snapshot()
 
     def start(self) -> None:
-        """Start one daemon poller and make an initial snapshot available immediately."""
+        """Start one daemon poller without blocking the caller.
+
+        旧实现在持有 self._lock 的情况下同步执行 self.refresh()（含
+        多次 ServiceHealthTester 网络探测，最长可达数十秒），并由
+        @app.before_request 触发，导致首个 HTTP 请求被长时间堵塞。
+        新实现仅在锁内做轻量的线程存活检查与持久化快照恢复，随后
+        立即启动后台线程，由 _poll_forever 在后台完成首次探测。
+        """
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
 
             self._stop_event.clear()
-            self.refresh()
+
+            # 快速从持久化历史恢复快照，避免首个 /api/status/overview 返回空
+            # 且无需等待网络探测；此过程仅做本地文件读取，不发起任何网络请求
+            try:
+                history = self._read_history()
+                history_services = history.get("services") if isinstance(history, dict) else None
+
+                if isinstance(history_services, dict) and history_services:
+                    try:
+                        checked_at_raw = history.get("updatedAt") if isinstance(history, dict) else None
+                        checked_at_f = float(checked_at_raw) if checked_at_raw is not None else time.time()
+                    except (TypeError, ValueError):
+                        checked_at_f = time.time()
+
+                    try:
+                        services_defs = self._collect_services(self._config_loader())
+                    except Exception:
+                        services_defs = []
+
+                    if services_defs:
+                        pseudo_rows = []
+
+                        for svc in services_defs:
+                            svc_id = str(svc.get("id") or "")
+                            svc_history = self._mapping(history_services.get(svc_id))
+                            samples = self._trim_samples(svc_history.get("samples", []), checked_at_f)
+                            status = self._latest_status(samples) or "unknown"
+
+                            pseudo_rows.append({
+                                "id": svc_id,
+                                "name": str(svc.get("name") or svc_id),
+                                "description": str(svc.get("description") or ""),
+                                "status": status,
+                                "checkedAt": self._format_timestamp(checked_at_f),
+                                "latencyMs": None,
+                            })
+
+                        self._snapshot = self._build_snapshot(pseudo_rows, history_services, checked_at_f)
+            except Exception:
+                # 历史恢复失败不影响后台探测
+                pass
+
             self._thread = threading.Thread(
                 target=self._poll_forever,
                 name="ServiceStatusMonitor",
@@ -105,6 +153,12 @@ class ServiceStatusMonitor:
             return self.overview()
 
     def _poll_forever(self) -> None:
+        # 首轮探测立即执行，避免依赖 @app.before_request 同步调用 refresh()
+        try:
+            self.refresh()
+        except Exception as exc:
+            print(f"[ServiceStatusMonitor] refresh failed: {exc}")
+
         while not self._stop_event.wait(self._interval_seconds):
             try:
                 self.refresh()

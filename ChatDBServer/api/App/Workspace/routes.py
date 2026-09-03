@@ -613,6 +613,40 @@ def delete_workspace_task(workspace_id, task_id):
         return handle_workspace_error(error)
 
 
+@workspace_bp.route("/api/workspace/<workspace_id>/drafts", methods=["POST"])
+def create_workspace_draft(workspace_id):
+    try:
+        username = current_username()
+        data = parse_json_body()
+        wid = validate_workspace_id(workspace_id)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.add_workspace_draft(wid, username, data)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
+@workspace_bp.route("/api/workspace/<workspace_id>/drafts/<draft_id>", methods=["DELETE"])
+def delete_workspace_draft(workspace_id, draft_id):
+    try:
+        username = current_username()
+        wid = validate_workspace_id(workspace_id)
+        safe_draft_id = normalize_text(draft_id, 80)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.delete_workspace_draft(wid, safe_draft_id, username)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
 @workspace_bp.route("/api/workspace/<workspace_id>/settings", methods=["POST"])
 def update_workspace_settings(workspace_id):
     try:

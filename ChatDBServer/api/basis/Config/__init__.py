@@ -82,6 +82,30 @@ DEFAULT_MAIN_CONFIG: Dict[str, Any] = {
     "gen_image": {},
     "temp_context_cache": {},
     "nexora_search": {},
+    "web_search": {
+        "active_provider": "duckduckgo",
+        "default_num_results": 8,
+        "providers": {
+            "duckduckgo": {
+                "backend": "html",
+                "region": "wt-wt",
+                "safesearch": "moderate",
+                "timelimit": "w",
+                "fetch_content": False,
+                "timeout": 15,
+            },
+            "exa": {
+                "api_key": "",
+                "base_url": "https://api.exa.ai",
+                "type": "auto",
+                "num_results": 10,
+                "contents": {
+                    "highlights": True
+                },
+                "timeout": 20,
+            },
+        },
+    },
 }
 
 

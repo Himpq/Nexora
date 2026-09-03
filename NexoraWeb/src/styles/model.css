@@ -1,0 +1,111 @@
+/*
+ * model.css — 模型管理域 (阶段 P1 自 legacy/style.css 收编)
+ */
+
+/* Usually don't show user avatar in chat bubbles if bubbles are clear enough */
+
+.model-badge{
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    margin-top: 8px;
+    opacity: 0.8;
+    user-select: none;
+    font-weight: 500;
+    display: inline-block;
+    order: 999; /* Ensure it stays at the bottom of the flex container */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    cursor: pointer;
+    transition: color 0.15s ease, opacity 0.15s ease;
+}
+.model-badge:hover{
+    color: var(--color-text-secondary);
+}
+.model-badge.collapsed{
+    opacity: 0.78;
+}
+.message .model-badge{
+    user-select: none;
+}
+.message .model-badge{
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+.perm-item .model-name{
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--color-text-primary);
+}
+.model-admin-item-name-row{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.model-admin-item-name-row .model-status-btn{
+    flex: 0 0 auto;
+}
+.model-admin-item-name-row .model-admin-item-name{
+    min-width: 0;
+}
+.model-provider-item:hover .model-admin-item-actions{
+    opacity: 1;
+    pointer-events: auto;
+}
+.model-icon-btn{
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    cursor: pointer;
+}
+.model-icon-btn:hover{
+    background: var(--color-bg-hover);
+}
+.model-status-btn{
+    color: var(--color-text-secondary);
+}
+.model-status-btn.model-status-btn-loading{
+    color: var(--color-text-secondary);
+    background: var(--color-bg-sunken);
+    border-color: var(--color-border);
+}
+.model-status-btn.model-status-btn-warn{
+    color: #ca8a04;
+    background: #fffbeb;
+    border-color: #fde68a;
+}
+.model-status-btn.model-status-btn-success{
+    color: var(--color-success-text);
+    background: var(--color-success-surface);
+    border-color: var(--color-success-border);
+}
+.model-status-btn.model-status-btn-danger{
+    color: var(--color-danger-text);
+    background: #fef2f2;
+    border-color: var(--color-danger-border);
+}
+.model-status-btn.model-status-btn-success:hover{
+    background: var(--color-success-surface);
+}
+.model-status-btn.model-status-btn-warn:hover{
+    background: #fef3c7;
+}
+.model-status-btn.model-status-btn-danger:hover{
+    background: var(--color-danger-surface);
+}
+.model-icon-btn-danger{
+    color: var(--color-danger-text);
+    border-color: var(--color-danger-border);
+    background: var(--color-bg-elevated);
+}
+.model-icon-btn-danger:hover{
+    background: #fef2f2;
+}

@@ -1,11 +1,12 @@
 <!--
-    ChatInput.vue — 消息输入区(逐像素复刻原版 input-wrapper 结构)
+    ChatInput.vue — 消息输入区(72px 紧凑单行:工具簇 / 正文 / 状态+发送 同排)
 
-    结构(与原版 chat.html 一致):
-      input-wrapper > input-container
-        > input-options(上传/Thinking/Search/Tools + 折叠按钮)
-        > textarea#messageInput
-        > input-footer(token 显示/CTX + sendBtn)
+    结构:
+      input-wrapper > input-container.composer-compact(单行 flex)
+        > input-options(左侧工具簇:上传/Thinking/Search/Tools)
+        > textarea#messageInput(flex:1 自适应)
+        > input-footer(右侧:token 簇 + 折叠按钮 + sendBtn)
+    多行输入时容器增高(is-multiline 改为底对齐),收起态(44px 圆钮)见 chat-input.css。
 -->
 
 <template>
@@ -44,15 +45,21 @@
             class="input-wrapper"
             :class="{ 'input-wrapper-collapsed': inputWrapperCollapsed }"
         >
-            <div class="input-container" :class="{ 'input-collapsed': inputContainerCollapsed, 'tools-mode-menu-open': toolsMenuOpen }">
+            <div
+                class="input-container composer-compact"
+                :class="{ 'input-collapsed': inputContainerCollapsed, 'is-multiline': isMultiline, 'tools-mode-menu-open': toolsMenuOpen, 'file-drop-active': isDragOver }"
+                @dragover.prevent="handleDragOver"
+                @dragleave="handleDragLeave"
+                @drop.prevent="handleDrop"
+            >
+                <!-- 行内工具簇(左侧):上传 / Thinking / Search / Tools —— 与正文同排,不占独立行 -->
                 <div class="input-options">
                     <div class="input-options-tools">
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
                             <label
-                                class="btn-icon-small"
+                                class="composer-chip composer-chip-upload"
                                 :title="uploadingFiles ? '上传中...' : 'Upload File / Image'"
                                 :class="{ 'is-uploading': uploadingFiles }"
-                                style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);"
                             >
                                 <input type="file" id="fileInput" style="display:none" multiple @change="handleFileSelection">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -60,33 +67,100 @@
                                 </svg>
                             </label>
 
-                            <label class="check-box" title="Deep Thinking">
-                                <input type="checkbox" id="enableThinking" :checked="enableThinking" @change="enableThinking = ($event.target as HTMLInputElement).checked">
-                                <span class="check-label-wrap">
-                                    <i class="fa-solid fa-brain check-label-icon" aria-hidden="true"></i>
-                                    <span class="check-label check-label-text">Thinking</span>
-                                </span>
-                            </label>
+                            <button
+                                type="button"
+                                class="composer-chip composer-chip-thinking"
+                                :class="{ 'is-active': enableThinking }"
+                                :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
+                                :aria-pressed="enableThinking"
+                                @click="enableThinking = !enableThinking"
+                            >
+                                <i class="fa-solid fa-brain" aria-hidden="true"></i>
+                            </button>
 
-                            <label class="check-box" title="Web Search">
-                                <input type="checkbox" id="enableWebSearch" :checked="enableWebSearch" @change="enableWebSearch = ($event.target as HTMLInputElement).checked">
-                                <span class="check-label-wrap">
-                                    <i class="fa-solid fa-magnifying-glass check-label-icon" aria-hidden="true"></i>
-                                    <span class="check-label check-label-text">Search</span>
-                                </span>
-                            </label>
+                            <button
+                                type="button"
+                                class="composer-chip composer-chip-search"
+                                :class="{ 'is-active': enableWebSearch }"
+                                :title="enableWebSearch ? 'Web Search: On' : 'Web Search: Off'"
+                                :aria-pressed="enableWebSearch"
+                                @click="enableWebSearch = !enableWebSearch"
+                            >
+                                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                            </button>
 
-                            <!-- Tools 模式下拉(复用通用 GDDP SettingSelect) -->
-                            <label class="check-box tool-mode-box" title="Tool Use Mode">
-                                <span class="check-label-wrap">
-                                    <i class="fa-solid fa-screwdriver-wrench check-label-icon" aria-hidden="true"></i>
-                                    <span class="check-label check-label-text">Tools</span>
-                                </span>
-                                <input type="hidden" id="toolsMode" :value="toolsMode">
-                                <SettingSelect v-model="toolsMode" :options="toolsModes" width="120px" popover-key="tools-menu" placement="top" class="chat-tools-select" />
-                            </label>
+                            <!-- Tools 模式下拉(复用通用 GDDP SettingSelect,icon + 当前模式) -->
+                            <SettingSelect
+                                v-model="toolsMode"
+                                :options="toolsModes"
+                                popover-key="tools-menu"
+                                placement="top"
+                                class="chat-tools-select"
+                                prefix-icon="fa-solid fa-screwdriver-wrench"
+                            />
                         </div>
                     </div>
+                </div>
+
+                <textarea
+                    id="messageInput"
+                    ref="inputRef"
+                    placeholder="Type a message..."
+                    rows="1"
+                    :value="draft"
+                    @input="handleInput"
+                    @keydown="handleKeydown"
+                >                </textarea>
+
+                <!-- 上下文/队列状态簇:作为容器独立子级(桌面与 footer 同排视觉不变;
+                    手机 Grid 布局放工具行右端作锚点,平衡整行) -->
+                <div class="token-footer-left">
+                    <span
+                        v-if="conversationStore.queueCount > 0"
+                        class="queue-badge"
+                        title="待发送消息数"
+                    >
+                        <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+                        {{ conversationStore.queueCount }}
+                    </span>
+
+                    <button
+                        type="button"
+                        class="token-budget-mini"
+                        id="tokenBudgetMini"
+                        title="查看上下文窗口"
+                        aria-label="查看上下文窗口"
+                        @click.stop="toggleTokenBudgetCard($event)"
+                    >
+                        <span
+                            class="token-budget-ring"
+                            id="tokenBudgetRing"
+                            :style="{ '--tb-color': tokenRing.color, '--tb-angle': `${tokenRing.angle}deg` }"
+                        ></span>
+                    </button>
+                    <button
+                        type="button"
+                        class="token-budget-usage"
+                        id="tokenBudgetUsage"
+                        :title="hoverText"
+                        :style="{ color: tokenRing.color }"
+                        @click.stop="toggleTokenBudgetCard($event)"
+                    >
+                        {{ ctxText }}
+                    </button>
+                    <button
+                        type="button"
+                        class="token-mini"
+                        id="tokenDisplay"
+                        title="查看 Token 使用详情"
+                        aria-label="查看 Token 使用详情"
+                        @click="emit('open-token-detail')"
+                    >
+                        TK <span id="totalInputTokens">{{ tokenMiniInput }}</span> / <span id="totalOutputTokens">{{ tokenMiniOutput }}</span>
+                    </button>
+                </div>
+
+                <div class="input-footer">
                     <button
                         type="button"
                         class="btn-icon-small input-collapse-btn"
@@ -100,64 +174,6 @@
                             <polyline :points="collapsed ? '18 15 12 9 6 15' : '6 9 12 15 18 9'"></polyline>
                         </svg>
                     </button>
-                </div>
-
-                <textarea
-                    id="messageInput"
-                    ref="inputRef"
-                    placeholder="Type a message..."
-                    rows="1"
-                    :value="draft"
-                    @input="handleInput"
-                    @keydown="handleKeydown"
-                ></textarea>
-
-                <div class="input-footer">
-                    <div class="token-footer-left">
-                        <span
-                            v-if="conversationStore.queueCount > 0"
-                            class="queue-badge"
-                            title="待发送消息数"
-                        >
-                            <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
-                            {{ conversationStore.queueCount }}
-                        </span>
-
-                        <button
-                            type="button"
-                            class="token-budget-mini"
-                            id="tokenBudgetMini"
-                            title="查看上下文窗口"
-                            aria-label="查看上下文窗口"
-                            @click.stop="toggleTokenBudgetCard($event)"
-                        >
-                            <span
-                                class="token-budget-ring"
-                                id="tokenBudgetRing"
-                                :style="{ '--tb-color': tokenRing.color, '--tb-angle': `${tokenRing.angle}deg` }"
-                            ></span>
-                        </button>
-                        <button
-                            type="button"
-                            class="token-budget-usage"
-                            id="tokenBudgetUsage"
-                            :title="hoverText"
-                            :style="{ color: tokenRing.color }"
-                            @click.stop="toggleTokenBudgetCard($event)"
-                        >
-                            {{ ctxText }}
-                        </button>
-                        <button
-                            type="button"
-                            class="token-mini"
-                            id="tokenDisplay"
-                            title="查看 Token 使用详情"
-                            aria-label="查看 Token 使用详情"
-                            @click="emit('open-token-detail')"
-                        >
-                            TK <span id="totalInputTokens">{{ tokenMiniInput }}</span> / <span id="totalOutputTokens">{{ tokenMiniOutput }}</span>
-                        </button>
-                    </div>
 
                     <button
                         id="sendBtn"
@@ -243,6 +259,9 @@
 
     const draft = ref('')
     const inputRef = ref<HTMLTextAreaElement | null>(null)
+
+    /** 是否多行输入:容器由垂直居中切为底对齐,工具簇/发送按钮贴近末行(对齐主流聊天输入框) */
+    const isMultiline = ref(false)
 
     /** 恢复当前会话草稿(挂载与切换对话时调用):回到上次未发送的文字,并同步输入框高度 */
     function restoreDraft(): void {
@@ -350,7 +369,7 @@
     const toolsMenuOpen = computed(() => overlay.popover === 'tools-menu')
 
     /** 生成中:输入框保持可用,发送按钮切换为"停止" */
-    const streaming = computed(() => conversationStore.generating)
+    const streaming = computed(() => conversationStore.currentConversationGenerating)
 
     /** CTX 显示:当前模型上下文窗口(对齐原版 tokenBudgetUsage) */
     const ctxText = computed(() => {
@@ -543,6 +562,66 @@
     /** 直选上传进行中(防重入,按钮置灰) */
     const uploadingFiles = ref(false)
 
+    /** 拖拽悬停高亮(对齐原版 input-container.file-drop-active) */
+    const isDragOver = ref(false)
+
+    function handleDragOver(): void {
+        isDragOver.value = true
+    }
+
+    function handleDragLeave(event: DragEvent): void {
+        // 仅当离开容器本身时清除，避免子元素间移动触发闪烁
+        const related = event.relatedTarget as HTMLElement | null
+
+        if (!related || !(event.currentTarget as HTMLElement).contains(related)) {
+            isDragOver.value = false
+        }
+    }
+
+    async function handleDrop(event: DragEvent): Promise<void> {
+        isDragOver.value = false
+
+        const files = Array.from(event.dataTransfer?.files || [])
+
+        if (!files.length || uploadingFiles.value) {
+            return
+        }
+
+        uploadingFiles.value = true
+
+        try {
+            const uploaded: AttachmentInput[] = []
+
+            for (const file of files) {
+                const result = await uploadFile(file)
+                const sandboxPath = String(result.sandbox_path || '').trim()
+
+                if (!sandboxPath) {
+                    throw new Error(`${file.name} 上传结果缺少文件路径`)
+                }
+
+                const displayName = String(result.original_name || file.name)
+
+                uploaded.push({
+                    type: 'sandbox_file',
+                    name: displayName,
+                    original_name: displayName,
+                    sandbox_path: sandboxPath,
+                    stored_path: String(result.stored_path || sandboxPath),
+                    size: Number(result.size || file.size || 0),
+                })
+            }
+
+            emit('files-uploaded', uploaded)
+
+            showToast(`已附加 ${uploaded.length} 个文件`, 'success')
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : '上传失败', 'error')
+        } finally {
+            uploadingFiles.value = false
+        }
+    }
+
     /**
      * 输入区直选文件上传(对齐原版 fileInput → uploadSingleFileWithProgress):
      * 逐个走 /api/upload 任务链,成功后转为 sandbox_file 附件交父级并入待发送列表。
@@ -602,6 +681,9 @@
 
         el.style.height = 'auto'
         el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+
+        // 超过单行(约 1 行高 22px + 上下留白)即判定为多行,切换容器底对齐
+        isMultiline.value = el.scrollHeight > 34
     }
 
     /** 折叠/展开:容器与 wrapper 同步切换,两条 max-width 过渡同进同退,
@@ -671,6 +753,7 @@
         if (el) {
             el.value = ''
             el.style.height = 'auto'
+            isMultiline.value = false
         }
     }
 
@@ -712,7 +795,7 @@
 </script>
 
 <style scoped>
-    /* 消息队列徽标(新功能元素,样式贴近原版 token 显示) */
+    /* 消息队列徽标(新功能元素,样式贴近原版 token 显示;单行布局下压缩右距) */
     .queue-badge {
         display: inline-flex;
         align-items: center;
@@ -720,11 +803,12 @@
         background: var(--color-bg-hover);
         color: var(--color-accent-text);
         border-radius: 999px;
-        padding: 2px 10px;
-        font-size: 12px;
+        padding: 2px 8px;
+        font-size: 11px;
         font-weight: 600;
-        margin-right: 8px;
+        margin-right: 2px;
         user-select: none;
+        line-height: 1;
     }
 
     /* 待发送附件条(复用全局 upload-preview-card 卡片式样式,对齐原版 filePreviewArea) */
@@ -734,6 +818,62 @@
         gap: 10px;
         padding: 8px 12px;
         border-bottom: 1px solid var(--color-border);
+    }
+
+    /* ============ 行内工具芯片(上传/Thinking/Search) ============
+       图标芯片:未激活灰显、hover 反显;激活态着色(思考靛蓝 / 搜索天蓝)。
+       高度与发送按钮同簇,单行不额外占高,折叠/多行时随容器联动。 */
+    .composer-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        flex: 0 0 auto;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+        padding: 0;
+        box-sizing: border-box;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    }
+
+    .composer-chip:hover {
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
+    }
+
+    .composer-chip:focus-visible {
+        outline: 2px solid #93c5fd;
+        outline-offset: 1px;
+    }
+
+    .composer-chip-thinking.is-active {
+        background: rgba(99, 102, 241, 0.14);
+        border-color: rgba(99, 102, 241, 0.42);
+        color: #6366f1;
+    }
+
+    .composer-chip-search.is-active {
+        background: rgba(2, 132, 199, 0.14);
+        border-color: rgba(2, 132, 199, 0.42);
+        color: #0284c7;
+    }
+
+    /* 上传进行中:图标半透明提示 */
+    .is-uploading {
+        opacity: 0.45;
+        pointer-events: none;
+    }
+
+    /* 折叠按钮与发送同簇:清除 legacy 的 margin-left:auto 推挤,垂直居中即可 */
+    .input-collapse-btn {
+        margin: 0;
+        flex: 0 0 auto;
     }
 
     /* Token 点击区改为按钮后去默认样式，保留原版等宽字体与尺寸 */
@@ -758,6 +898,8 @@
     }
 
     .token-budget-usage {
+        display: inline-flex;
+        align-items: center;
         font-family: var(--font-mono);
         font-size: 11px;
         font-weight: 400;
@@ -766,6 +908,8 @@
     }
 
     .token-mini {
+        display: inline-flex;
+        align-items: center;
         font-family: var(--font-mono);
         font-size: 11px;
         font-weight: 400;
@@ -781,27 +925,76 @@
         border-radius: 4px;
     }
 
-    /* 上传进行中:图标半透明提示 */
-    .is-uploading {
-        opacity: 0.45;
-        pointer-events: none;
-    }
-
-    /* Tools 下拉在此位置需与 Thinking/Search 复选框视觉对齐,单独收敛为紧凑触发器 */
+    /* Tools 模式下拉:收敛为紧凑幽灵触发器(wrench 前缀图标 + 当前模式),
+       未激活样式对齐相邻芯片(透明底无边框),hover/展开反显 */
     .chat-tools-select :deep(.setting-select-trigger) {
-        height: 28px;
-        min-width: 96px;
-        padding: 0 8px;
-        font-size: 12px;
-        border-radius: 6px;
+        height: 30px;
+        min-width: 0;
+        padding: 0 6px 0 8px;
         gap: 6px;
+        font-size: 12px;
+        border-radius: 8px;
+        background: transparent;
+        border-color: transparent;
+        color: var(--color-text-secondary);
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }
 
-    .chat-tools-select :deep(.setting-select-trigger i) {
+    .chat-tools-select :deep(.setting-select-trigger:hover),
+    .chat-tools-select :deep(.setting-select-trigger.open) {
+        background: var(--color-bg-hover);
+        border-color: var(--color-border);
+        color: var(--color-text-primary);
+    }
+
+    .chat-tools-select :deep(.setting-select-prefix) {
+        display: inline-flex;
+        align-items: center;
+        font-size: 13px;
+        color: inherit;
+    }
+
+    .chat-tools-select :deep(.setting-select-trigger > i:last-child) {
         font-size: 10px;
     }
 
     .chat-tools-select :deep(.setting-select-label) {
         font-size: 12px;
+        white-space: nowrap;
+    }
+
+    /* 窄屏:先收掉 CTX/TK 文字(圆环仍可点开卡片),再收掉队列徽标与 Tools 文字 →
+        Tools 退化为仅 wrench 图标的圆芯片,保证 320px 宽度内不溢出 */
+    @media (max-width: 760px) {
+        .token-budget-usage,
+        .token-mini {
+            display: none;
+        }
+    }
+
+    @media (max-width: 560px) {
+        /* 工具 chip 收窄到 26px:工具行明显矮于输入行,拉开主次层次 */
+        .composer-chip {
+            width: 26px;
+            height: 26px;
+        }
+
+        .chat-tools-select :deep(.setting-select-trigger) {
+            width: 26px;
+            height: 26px;
+            padding: 0;
+            justify-content: center;
+        }
+
+        .chat-tools-select :deep(.setting-select-label),
+        .chat-tools-select :deep(.setting-select-trigger > i:last-child) {
+            display: none;
+        }
+
+        /* Grid 行1右端有充裕空间:恢复 CTX 用量文字(被 ≤760 规则隐藏),
+           与 CTX 环构成工具行右侧锚点,平衡整行 */
+        .token-budget-usage {
+            display: inline-flex;
+        }
     }
 </style>

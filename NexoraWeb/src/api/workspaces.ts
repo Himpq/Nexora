@@ -121,6 +121,22 @@ export interface WorkspaceTaskPayload {
     notes: string
 }
 
+/** 草稿条目(模型通过 workspace_draft_add 写入或用户手动添加,存于 workspace_drafts) */
+export interface WorkspaceDraftEntry {
+    draft_id?: string
+    title?: string
+    content?: string
+    added_by?: string
+    added_at?: string
+    [key: string]: unknown
+}
+
+/** 草稿新建载荷 */
+export interface WorkspaceDraftPayload {
+    title: string
+    content: string
+}
+
 export interface WorkspaceMemory {
     enabled?: boolean
     content?: string
@@ -149,6 +165,7 @@ export interface WorkspaceOverview {
         knowledge_documents?: number
         workspace_files?: number
         workspace_tasks?: number
+        workspace_drafts?: number
     }
     task_status_counts?: Record<string, number>
     open_task_count?: number
@@ -164,6 +181,7 @@ export interface WorkspaceDetail extends WorkspaceSummary {
     knowledge_documents?: WorkspaceKnowledgeDocument[]
     workspace_files?: WorkspaceFileEntry[]
     workspace_tasks?: WorkspaceTaskEntry[]
+    workspace_drafts?: WorkspaceDraftEntry[]
     workspace_memory?: WorkspaceMemory
     overview?: WorkspaceOverview
     [key: string]: unknown
@@ -467,6 +485,34 @@ export async function deleteWorkspaceTask(workspaceId: string, taskId: string): 
 
     if (!data.success || !data.workspace) {
         throw new Error(data.message || '任务删除失败')
+    }
+
+    return data.workspace
+}
+
+/** 新建草稿条目(模型工具与手动新建共用后端入口) */
+export async function createWorkspaceDraft(workspaceId: string, draft: WorkspaceDraftPayload): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/drafts`,
+        { method: 'POST', body: JSON.stringify(draft) }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '创建草稿失败')
+    }
+
+    return data.workspace
+}
+
+/** 删除草稿条目 */
+export async function deleteWorkspaceDraft(workspaceId: string, draftId: string): Promise<WorkspaceDetail> {
+    const data = await apiFetch<WorkspaceMutationResponse>(
+        `/api/workspace/${encodeURIComponent(workspaceId)}/drafts/${encodeURIComponent(draftId)}`,
+        { method: 'DELETE' }
+    )
+
+    if (!data.success || !data.workspace) {
+        throw new Error(data.message || '草稿删除失败')
     }
 
     return data.workspace

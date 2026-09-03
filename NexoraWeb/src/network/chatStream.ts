@@ -18,7 +18,7 @@
  */
 
 import type { AttachmentInput } from '@/api/attachments'
-import type { ChatMessage } from '@/api/conversations'
+import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
 
 /** 发送请求参数(对齐后端 /api/chat/stream 载荷) */
 export interface ChatStreamSendOptions {
@@ -37,6 +37,10 @@ export interface ChatStreamSendOptions {
     isRegenerate?: boolean
     /** 重答目标 assistant 消息索引(配合 isRegenerate 使用) */
     regenerateIndex?: number
+    /** 会话模式(chat/learning),后端落库 conversation_mode 并按模式注入学习上下文 */
+    conversationMode?: string
+    /** 会话所属 Workspace id:后端据此注入 Workspace 上下文与记忆/草稿工具(须确保会话已登记进该项目) */
+    workspaceId?: string
 }
 
 /** SSE 原始数据块(与后端 yield 的块 1:1,不做名字改写,便于层内调试) */
@@ -52,6 +56,8 @@ export interface ChatStreamChunk {
     cancel_reason?: string
     error?: string
     message?: string
+    /** 后端结构化错误码(type=error 帧 / stream_session 终帧),前端据此分类处理 */
+    error_code?: string
     model_name?: string
     provider?: string
     search_enabled?: boolean
@@ -64,10 +70,15 @@ export type ChatStreamEndReason = 'done' | 'aborted' | 'error'
 
 export interface ChatStreamEndInfo {
     error?: string
+    /** 后端结构化错误码(与 json_error 的 error_code / SSE error 帧一致) */
+    errorCode?: string
     cancelReason?: string
     finalContent?: string
     /** 后端落盘后的最终消息对象(含 metadata.versions),用于轻量收尾更新而非全量重载 */
     finalMessage?: Record<string, unknown>
+    contextEvents?: ConversationContextEvent[]
+    assistantIndex?: number
+    regenerateIndex?: number
 }
 
 /** 回调契约:onChunk 逐块分发,onEnd 终帧/断线统一收尾 */
@@ -103,23 +114,21 @@ const SNAPSHOT_THROTTLE_MS = 500
 /** 断线自动续播次数上限(对齐原版,避免无限重试) */
 const MAX_RECONNECT_ATTEMPTS = 2
 
+interface ActiveStreamContext {
+    controller: AbortController
+    streamId: string
+    conversationId: string
+    lastSeq: number
+    reconnectAttempts: number
+}
+
 export class ChatStreamClient {
 
-    private sending = false
+    /** 多会话并发:每条流独立上下文(会话 ID → 上下文) */
+    private activeStreams = new Map<string, ActiveStreamContext>()
 
-    private controller: AbortController | null = null
-
-    /** 当前流 stream_id(断线续播与取消定位使用) */
-    private streamId = ''
-
-    /** 当前流所属会话 ID(后端取消接口的定位兜底,懒创建会话时从流事件回填) */
-    private conversationId = ''
-
-    /** 已消费的最新序列号(断线续播断点) */
-    private lastSeq = 0
-
-    /** 已断线续播次数(限制最多 2 次,避免无限重试) */
-    private reconnectAttempts = 0
+    /** 兼容旧单流调用的兜底键(无 conversationId 时使用) */
+    private readonly FALLBACK_KEY = '__default__'
 
     /** 快照内容来源(宿主注入,层只负责序列化与存储) */
     private snapshotSource: ChatStreamSnapshotSource | null = null
@@ -128,19 +137,27 @@ export class ChatStreamClient {
 
     private snapshotTimer: number | null = null
 
-    /** 是否正在发送(供 UI 读取以禁用输入/按钮) */
+    /** 是否有任意流正在发送(供 UI 读取以禁用输入/按钮) */
     get isSending(): boolean {
-        return this.sending
+        return this.activeStreams.size > 0
     }
 
-    /** 当前流 ID(跨刷新恢复快照用) */
+    /** 指定会话是否正在发送 */
+    isSendingFor(conversationId: string): boolean {
+        const key = String(conversationId || '').trim() || this.FALLBACK_KEY
+        return this.activeStreams.has(key)
+    }
+
+    /** 当前流 ID(跨刷新恢复快照用):取首个活动流 */
     get activeStreamId(): string {
-        return this.streamId
+        const first = this.activeStreams.values().next().value as ActiveStreamContext | undefined
+        return first?.streamId || ''
     }
 
-    /** 已消费的最新序列号(断线续播断点) */
+    /** 已消费的最新序列号(断线续播断点):首个活动流 */
     get consumedSeq(): number {
-        return this.lastSeq
+        const first = this.activeStreams.values().next().value as ActiveStreamContext | undefined
+        return first?.lastSeq || 0
     }
 
     /** 注入快照内容来源(恢复与持久化共用;宿主在启动时设置一次) */
@@ -151,23 +168,27 @@ export class ChatStreamClient {
     /**
      * 节流持久化活动流快照(sessionStorage):
      * 刷新后据此恢复分离缓冲并通过 resume 续播;无活动流/内容源时跳过。
+     * 多会话并发时按快照所属会话查找对应 streamId/lastSeq。
      */
     persistSnapshot(force = false): void {
-        if (!this.sending || !this.streamId) {
-            return
-        }
-
         const context = this.snapshotSource?.() || null
 
         if (!context) {
             return
         }
 
+        const key = String(context.conversationId || '').trim() || this.FALLBACK_KEY
+        const streamCtx = this.activeStreams.get(key)
+
+        if (!streamCtx || !streamCtx.streamId) {
+            return
+        }
+
         const buildAndWrite = () => {
             const snapshot: ChatStreamSnapshot = {
                 conversationId: context.conversationId,
-                streamId: this.streamId,
-                lastSeq: this.lastSeq,
+                streamId: streamCtx.streamId,
+                lastSeq: streamCtx.lastSeq,
                 targetIndex: context.targetIndex,
                 modelName: context.assistant.model_name,
                 userMessage: context.userMessage,
@@ -236,26 +257,31 @@ export class ChatStreamClient {
     /**
      * 发送一条消息并消费流式响应
      *
-     * 返回 true 表示本次发送被接受;false 表示已有流在发送中被拒绝(发送锁生效)
+     * 返回 true 表示本次发送被接受;false 表示同会话已有流在发送中被拒绝(会话级发送锁)
+     * 不同会话允许并发:切换到其他对话直接发送,不再走队列
      */
     async send(options: ChatStreamSendOptions, handlers: ChatStreamHandlers): Promise<boolean> {
-        // 同步发送锁:函数入口立即检查并占位,不经过任何 await
-        if (this.sending) {
+        const key = String(options.conversationId || '').trim() || this.FALLBACK_KEY
+
+        // 会话级锁:同会话重复发送拒绝,跨会话并发允许
+        if (this.activeStreams.has(key)) {
             return false
         }
 
-        this.sending = true
-        this.controller = new AbortController()
-        this.streamId = ''
-        this.conversationId = String(options.conversationId || '')
-        this.lastSeq = 0
-        this.reconnectAttempts = 0
+        const ctx: ActiveStreamContext = {
+            controller: new AbortController(),
+            streamId: '',
+            conversationId: String(options.conversationId || ''),
+            lastSeq: 0,
+            reconnectAttempts: 0,
+        }
+
+        this.activeStreams.set(key, ctx)
 
         try {
-            await this.runStream(options, handlers)
+            await this.runStream(options, handlers, ctx)
         } finally {
-            this.sending = false
-            this.controller = null
+            this.activeStreams.delete(key)
         }
 
         return true
@@ -272,16 +298,21 @@ export class ChatStreamClient {
         fromSeq: number
         conversationId?: string
     }, handlers: ChatStreamHandlers): Promise<boolean> {
-        if (this.sending) {
+        const key = String(options.conversationId || '').trim() || String(options.streamId || '').trim() || this.FALLBACK_KEY
+
+        if (this.activeStreams.has(key)) {
             return false
         }
 
-        this.sending = true
-        this.controller = new AbortController()
-        this.streamId = String(options.streamId || '')
-        this.conversationId = String(options.conversationId || '')
-        this.lastSeq = Number(options.fromSeq) || 0
-        this.reconnectAttempts = 0
+        const ctx: ActiveStreamContext = {
+            controller: new AbortController(),
+            streamId: String(options.streamId || ''),
+            conversationId: String(options.conversationId || ''),
+            lastSeq: Number(options.fromSeq) || 0,
+            reconnectAttempts: 0,
+        }
+
+        this.activeStreams.set(key, ctx)
 
         try {
             const res = await fetch('/api/chat/stream/reconnect', {
@@ -292,10 +323,10 @@ export class ChatStreamClient {
                     'Accept': 'text/event-stream',
                 },
                 body: JSON.stringify({
-                    stream_id: this.streamId,
-                    from_seq: this.lastSeq,
+                    stream_id: ctx.streamId,
+                    from_seq: ctx.lastSeq,
                 }),
-                signal: this.controller?.signal,
+                signal: ctx.controller?.signal,
             })
 
             if (!res.ok || !res.body) {
@@ -304,7 +335,7 @@ export class ChatStreamClient {
                 return false
             }
 
-            await this.consumeStream(res, handlers)
+            await this.consumeStream(res, handlers, ctx)
 
             return true
         } catch (error) {
@@ -318,50 +349,93 @@ export class ChatStreamClient {
 
             return false
         } finally {
-            this.sending = false
-            this.controller = null
+            this.activeStreams.delete(key)
         }
     }
 
-    /** 中断当前流:通知后端取消生成,再 abort 本地读取 */
-    cancel(): void {
-        if (!this.sending) {
+    /**
+     * 中断流:可按会话定向取消
+     * 无参时取消所有活动流(兼容旧调用);传 conversationId 时仅取消该会话流
+     */
+    cancel(conversationId?: string): void {
+        if (this.activeStreams.size === 0) {
             return
         }
 
-        // 后端 /api/chat/stream/cancel 按 stream_id/conversation_id 定位流会话,
-        // 两者都缺时返回 400 且服务端会继续生成到结束 → 必须携带已记录的标识
-        const payload: Record<string, string> = {}
+        const targetKey = String(conversationId || '').trim()
 
-        if (this.streamId) {
-            payload.stream_id = this.streamId
-        }
+        // 定向取消单会话
+        if (targetKey) {
+            const ctx = this.activeStreams.get(targetKey) || this.activeStreams.get(this.FALLBACK_KEY)
 
-        if (this.conversationId) {
-            payload.conversation_id = this.conversationId
-        }
+            if (!ctx) {
+                return
+            }
 
-        void fetch('/api/chat/stream/cancel', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-            .then(async (res) => {
-                if (!res.ok) {
-                    const data = await res.json().catch(() => ({})) as { message?: string }
+            const payload: Record<string, string> = {}
 
-                    console.warn('[ChatStream] 服务端取消未被接受:', data.message || `HTTP ${res.status}`)
-                }
+            if (ctx.streamId) {
+                payload.stream_id = ctx.streamId
+            }
+
+            if (ctx.conversationId) {
+                payload.conversation_id = ctx.conversationId
+            }
+
+            void fetch('/api/chat/stream/cancel', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
             })
-            .catch(() => undefined)
+                .then(async (res) => {
+                    if (!res.ok) {
+                        const data = await res.json().catch(() => ({})) as { message?: string }
 
-        this.controller?.abort()
+                        console.warn('[ChatStream] 服务端取消未被接受:', data.message || `HTTP ${res.status}`)
+                    }
+                })
+                .catch(() => undefined)
+
+            ctx.controller.abort()
+
+            return
+        }
+
+        // 无参:取消全部(兼容旧行为,用户点击停止时通常只想停当前,但此处全停最安全)
+        for (const ctx of this.activeStreams.values()) {
+            const payload: Record<string, string> = {}
+
+            if (ctx.streamId) {
+                payload.stream_id = ctx.streamId
+            }
+
+            if (ctx.conversationId) {
+                payload.conversation_id = ctx.conversationId
+            }
+
+            void fetch('/api/chat/stream/cancel', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+                .then(async (res) => {
+                    if (!res.ok) {
+                        const data = await res.json().catch(() => ({})) as { message?: string }
+
+                        console.warn('[ChatStream] 服务端取消未被接受:', data.message || `HTTP ${res.status}`)
+                    }
+                })
+                .catch(() => undefined)
+
+            ctx.controller.abort()
+        }
     }
 
     /** 执行一次流式请求并解析 SSE 数据 */
-    private async runStream(options: ChatStreamSendOptions, handlers: ChatStreamHandlers): Promise<void> {
-        const controller = this.controller
+    private async runStream(options: ChatStreamSendOptions, handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<void> {
+        const controller = ctx.controller
 
         let res: Response
 
@@ -385,6 +459,8 @@ export class ChatStreamClient {
                     user_attachments: options.attachments && options.attachments.length > 0 ? options.attachments : undefined,
                     is_regenerate: !!options.isRegenerate,
                     regenerate_index: options.isRegenerate ? Number(options.regenerateIndex) : undefined,
+                    conversation_mode: options.conversationMode || undefined,
+                    workspace_id: options.workspaceId || undefined,
                 }),
                 signal: controller?.signal,
             })
@@ -405,12 +481,17 @@ export class ChatStreamClient {
             const text = await res.text().catch(() => '')
 
             let errorMessage = `请求失败(${res.status})`
+            let errorCode = ''
 
             try {
-                const data = JSON.parse(text) as { message?: string }
+                const data = JSON.parse(text) as { message?: string; error_code?: string }
 
                 if (data.message) {
                     errorMessage = data.message
+                }
+
+                if (data.error_code) {
+                    errorCode = String(data.error_code)
                 }
             } catch {
                 if (text) {
@@ -418,7 +499,7 @@ export class ChatStreamClient {
                 }
             }
 
-            handlers.onEnd?.('error', { error: errorMessage })
+            handlers.onEnd?.('error', { error: errorMessage, errorCode: errorCode || undefined })
 
             return
         }
@@ -429,11 +510,11 @@ export class ChatStreamClient {
             return
         }
 
-        await this.consumeStream(res, handlers)
+        await this.consumeStream(res, handlers, ctx)
     }
 
     /** 逐行消费 SSE 响应体并分发数据块 */
-    private async consumeStream(res: Response, handlers: ChatStreamHandlers): Promise<void> {
+    private async consumeStream(res: Response, handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<void> {
         const body = res.body as ReadableStream<Uint8Array> | null
 
         if (!body) {
@@ -460,12 +541,12 @@ export class ChatStreamClient {
                 buffer = lines.pop() || ''
 
                 for (const line of lines) {
-                    ended = this.handleLine(line, handlers) || ended
+                    ended = this.handleLine(line, handlers, ctx) || ended
                 }
             }
 
             if (buffer.trim()) {
-                ended = this.handleLine(buffer, handlers) || ended
+                ended = this.handleLine(buffer, handlers, ctx) || ended
             }
 
             if (!ended) {
@@ -479,7 +560,7 @@ export class ChatStreamClient {
             }
 
             // 断线(非用户取消):尝试自动续播一次(从断点恢复)
-            const reconnected = await this.tryReconnect(handlers)
+            const reconnected = await this.tryReconnect(handlers, ctx)
 
             if (!reconnected) {
                 handlers.onEnd?.('error', { error: '连接中断,自动续播失败' })
@@ -494,12 +575,12 @@ export class ChatStreamClient {
      *
      * 续播成功后继续消费(最终 onEnd 由续播后的流触发),最多续播 2 次。
      */
-    private async tryReconnect(handlers: ChatStreamHandlers): Promise<boolean> {
-        if (!this.streamId || this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    private async tryReconnect(handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<boolean> {
+        if (!ctx.streamId || ctx.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             return false
         }
 
-        this.reconnectAttempts += 1
+        ctx.reconnectAttempts += 1
 
         try {
             const res = await fetch('/api/chat/stream/reconnect', {
@@ -507,17 +588,17 @@ export class ChatStreamClient {
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    stream_id: this.streamId,
-                    from_seq: this.lastSeq,
+                    stream_id: ctx.streamId,
+                    from_seq: ctx.lastSeq,
                 }),
-                signal: this.controller?.signal,
+                signal: ctx.controller?.signal,
             })
 
             if (!res.ok || !res.body) {
                 return false
             }
 
-            await this.consumeStream(res, handlers)
+            await this.consumeStream(res, handlers, ctx)
 
             return true
         } catch {
@@ -530,7 +611,7 @@ export class ChatStreamClient {
      *
      * 返回 true 表示流已正常结束(done 终帧或 [DONE])
      */
-    private handleLine(line: string, handlers: ChatStreamHandlers): boolean {
+    private handleLine(line: string, handlers: ChatStreamHandlers, ctx: ActiveStreamContext): boolean {
         const trimmed = line.trim()
 
         if (trimmed === '[DONE]' || trimmed === 'data: [DONE]') {
@@ -559,15 +640,15 @@ export class ChatStreamClient {
 
         // 记录断点信息:stream_id、会话 ID 与已消费序列(断线续播/取消定位与快照数据源)
         if (chunk.stream_id) {
-            this.streamId = String(chunk.stream_id)
+            ctx.streamId = String(chunk.stream_id)
         }
 
-        if (!this.conversationId && chunk.conversation_id) {
-            this.conversationId = String(chunk.conversation_id)
+        if (!ctx.conversationId && chunk.conversation_id) {
+            ctx.conversationId = String(chunk.conversation_id)
         }
 
         if (Number.isFinite(Number(chunk._stream_seq))) {
-            this.lastSeq = Math.max(this.lastSeq, Number(chunk._stream_seq))
+            ctx.lastSeq = Math.max(ctx.lastSeq, Number(chunk._stream_seq))
         }
 
         // stream_session:元信息帧;终帧(done=true)携带后端错误/取消/最终消息信息
@@ -575,10 +656,18 @@ export class ChatStreamClient {
             if (chunk.done) {
                 const info: ChatStreamEndInfo = {
                     error: chunk.error || undefined,
+                    errorCode: typeof chunk.error_code === 'string' && chunk.error_code
+                        ? chunk.error_code
+                        : undefined,
                     cancelReason: chunk.cancel_reason || undefined,
                     finalMessage: (chunk.final_message && typeof chunk.final_message === 'object')
                         ? chunk.final_message as Record<string, unknown>
                         : undefined,
+                    contextEvents: Array.isArray(chunk.context_events)
+                        ? chunk.context_events as ConversationContextEvent[]
+                        : undefined,
+                    assistantIndex: Number.isFinite(Number(chunk.assistant_index)) ? Number(chunk.assistant_index) : undefined,
+                    regenerateIndex: Number.isFinite(Number(chunk.regenerate_index)) ? Number(chunk.regenerate_index) : undefined,
                 }
 
                 if (chunk.error) {

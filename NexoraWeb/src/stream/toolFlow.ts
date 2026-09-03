@@ -332,6 +332,10 @@ export function buildChineseToolAction(
         return '写入用户画像'
     }
 
+    if (compact === 'workspacedraftadd') {
+        return objectTitle ? `记录 Workspace 草稿 ${objectTitle}` : '记录 Workspace 草稿'
+    }
+
     if (compact.includes('localfileprobe') || /local file probe/i.test(title)) {
         return fileName ? `探测文件 ${fileName}` : '探测文件'
     }
@@ -398,6 +402,10 @@ export function buildChineseToolAction(
 
     if (compact.includes('shell') || compact.includes('terminal')) {
         return command ? `执行命令 ${clipExecutionFlowText(command, 34)}` : '执行命令'
+    }
+
+    if (compact === 'exawebsearch' || compact.includes('exawebsearch')) {
+        return query ? `Exa 搜索 ${clipExecutionFlowText(query, 34)}` : 'Exa 搜索'
     }
 
     if (compact.includes('websearch') || compact.includes('searchkeyword') || compact === 'websearchmeta') {

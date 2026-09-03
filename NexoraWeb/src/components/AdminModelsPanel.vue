@@ -31,7 +31,7 @@
                     </span>
                     <span class="admin-user-main">
                         <span class="admin-user-name">{{ provider }}</span>
-                        <span class="admin-user-meta">{{ modelCountByProvider(provider) }} 个模型 · {{ providerApiType(provider) }}</span>
+                        <span class="admin-user-meta">{{ modelCountByProvider(provider) }} 个模型 · {{ providerApiType(provider) }}<template v-if="providersRecord[provider]?.enable_search"> · <span style="color:var(--color-success-text)"><i class="fa-solid fa-magnifying-glass" aria-hidden="true" style="font-size:10px;"></i> 搜索</span></template></span>
                     </span>
                     <span class="model-provider-item-actions">
                         <button
@@ -276,6 +276,13 @@
                 <label for="adminProviderUserAgent">User-Agent(可选)</label>
                 <input id="adminProviderUserAgent" v-model="providerForm.user_agent" class="gddp-input" type="text" maxlength="200" placeholder="请求 UA,留空自动">
             </div>
+            <div class="gddp-form-field">
+                <label class="settings-toggle-row" for="adminProviderEnableSearch" style="margin-top:4px;">
+                    <input id="adminProviderEnableSearch" v-model="providerForm.enable_search" type="checkbox">
+                    <span>启用外部搜索能力（Exa）</span>
+                </label>
+                <div class="settings-help-text" style="margin-top:6px;">开启后该供应商的模型可调用 <code>exa_web_search</code> 工具，默认关闭</div>
+            </div>
             <div v-if="providerForm.api_type === 'ollama'" class="gddp-form-field">
                 <label for="adminProviderKeepAlive">Keep-Alive</label>
                 <input id="adminProviderKeepAlive" v-model="providerForm.keep_alive" class="gddp-input" type="text" maxlength="20" placeholder="例如:5m">
@@ -362,6 +369,7 @@
         base_url?: string
         api_type?: string
         user_agent?: string
+        enable_search?: boolean
         settings?: Record<string, unknown>
     }
 
@@ -1496,6 +1504,7 @@
         base_url: '',
         api_key: '',
         user_agent: '',
+        enable_search: false,
         keep_alive: '5m',
     })
 
@@ -1507,6 +1516,7 @@
         providerForm.base_url = ''
         providerForm.api_key = ''
         providerForm.user_agent = ''
+        providerForm.enable_search = false
         providerForm.keep_alive = '5m'
         providerFormOpen.value = true
     }
@@ -1521,6 +1531,7 @@
         providerForm.base_url = String(info.base_url || '')
         providerForm.api_key = ''
         providerForm.user_agent = String(info.user_agent || '')
+        providerForm.enable_search = Boolean(info.enable_search)
         providerForm.keep_alive = String((info.settings as Record<string, unknown>)?.keep_alive || '5m')
         providerFormOpen.value = true
     }
@@ -1558,6 +1569,7 @@
                 base_url: providerForm.base_url.trim(),
                 api_type: providerForm.api_type,
                 user_agent: providerForm.user_agent.trim(),
+                enable_search: providerForm.enable_search,
                 settings: providerForm.api_type === 'ollama' ? { keep_alive: providerForm.keep_alive.trim() || '5m' } : {},
             })
 

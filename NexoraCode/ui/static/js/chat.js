@@ -9035,7 +9035,7 @@ function buildModelBadgeTimingText(timing) {
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
     const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
         : '';
 
     const parts = [];
@@ -9059,7 +9059,7 @@ function buildModelBadgeTimingTitle(timing) {
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
     const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 100))}%`
+        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
         : '';
 
     const parts = [];
@@ -9269,7 +9269,7 @@ function applyTokenMiniDisplay(inputTokens, outputTokens, cachedInputTokens = 0,
     const cachedN = safeTokenInt(cachedInputTokens);
     const rawN = safeTokenInt(rawInputTokens);
     if (rawN > 0 && cachedN > 0) {
-        const rate = Math.min(100, Math.round((cachedN / rawN) * 100));
+        const rate = (Math.min(100, Math.round((cachedN / rawN) * 10000) / 100)).toFixed(2);
         rateEl.textContent = ` 缓存命中 ${rate}%`;
         rateEl.style.display = '';
     } else {

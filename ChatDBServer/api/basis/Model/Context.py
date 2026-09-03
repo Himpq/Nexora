@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Set, Tuple
+
+import sys as _sys
+try:
+    if hasattr(_sys.stdout, "reconfigure"):
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(_sys.stderr, "reconfigure"):
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from App.Utils import (
     sanitize_assistant_visible_content,
@@ -22,13 +31,17 @@ from App.Utils import (
 )
 import prompts
 
+from basis.index_codec import (
+    parse_effective_from,
+    parse_message_index,
+    snapshot_effective_from,
+)
 
-CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
-CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
-CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
-CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+from .turn_injection import (
+    build_profile_update_block,
+    build_skill_update_block,
+    is_volatile_injection,
+)
 
 
 class ChatContextPolicy(Enum):
@@ -127,6 +140,27 @@ class ChatContext:
 
     def chars(self) -> int:
         return sum(message.text_length(self._stringify_content) for message in self._messages)
+
+    def mark_degraded(self, reason: str, error: str = "") -> None:
+        """公开标记上下文降级，供外部构建流程调用。"""
+        self._trace_meta["context_degraded"] = True
+        self._trace_meta["context_degraded_reason"] = str(reason or "")
+        if error:
+            self._trace_meta["context_degraded_error"] = str(error)
+        self._stats["context_degraded"] = 1
+        self._stats["context_degraded_reason"] = str(reason or "")
+
+    def is_degraded(self) -> bool:
+        return bool(self._trace_meta.get("context_degraded"))
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "degraded": self.is_degraded(),
+            "reason": str(self._trace_meta.get("context_degraded_reason") or ""),
+            "error": str(self._trace_meta.get("context_degraded_error") or str(self._trace_meta.get("compression_error") or "")),
+            "trace_meta": dict(self._trace_meta),
+            "stats": dict(self._stats),
+        }
 
     def build(self) -> List[Dict[str, Any]]:
         messages = [message.to_dict() for message in self._messages]
@@ -314,8 +348,14 @@ class ChatContextManager:
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
         history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """构建模型首轮请求消息列表。"""
+        """构建模型首轮请求消息列表。
+
+        current_user_index：当前轮 user 消息的绝对下标（begin_user_turn 的 user_index）。
+        历史 diff 重建只覆盖严格早于它的变更，当前轮变更由 tail 注入，避免双重注入。
+        """
+
         context = self.build_initial_context(
             user_msg=user_msg,
             current_user_content=current_user_content,
@@ -325,8 +365,10 @@ class ChatContextManager:
             system_prompt_text=system_prompt_text,
             system_injection_texts=system_injection_texts,
             history_end_index_exclusive=history_end_index_exclusive,
+            current_user_index=current_user_index,
         )
         context.prepare()
+        self.model.record_context_diagnostics(context.diagnostics())
         return context.build()
 
     def build_current_turn_messages(
@@ -335,14 +377,96 @@ class ChatContextManager:
         current_user_content: Any,
         system_injection_texts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """构建续接缓存命中时只发送的当前轮消息。"""
+        """构建续接缓存命中时只发送的增量：仅尾部易变块 + 新用户，头稳定块已在缓存中。
+
+        消息顺序固定为「易变块（diff/沙箱/资源）→ 新用户」，配合 provider 的续接 ID，
+        实际语义为 SystemPrompt_001 + 历史 + Diff Inject + 新用户，head 不重建。
+        """
+
+        all_injections = self._normalize_system_injection_texts(system_injection_texts)
+        volatile_injections = [
+            t for t in all_injections if is_volatile_injection(t)
+        ]
         messages: List[Dict[str, Any]] = []
 
-        for text in self._normalize_system_injection_texts(system_injection_texts):
+        for text in volatile_injections:
             messages.append({"role": "system", "content": text})
 
         messages.append({"role": "user", "content": current_user_content})
         return messages
+
+    def build_knowledge_diff_injection(self, knowledge_delta: Optional[Dict[str, Any]]) -> str:
+        """把当前轮知识库变更格式化为 tail 注入块（head 保持基线不动）。
+
+        delta 由 Conversation Manager（service.begin_user_turn）在同一事务内于轮次
+        开头采样得出，与 context.knowledge_events 同源，是本轮变更的唯一权威来源。
+        本方法只负责格式化，不做任何基线读写 —— 在流式结束后回写基线的做法会把
+        「流式期间发生的变更」静默吞掉，导致下一轮 diff 恒为空。
+        """
+
+        if not isinstance(knowledge_delta, dict):
+            return ""
+
+        return self._build_knowledge_changed_text(
+            list(knowledge_delta.get("ws_removed") or [])
+            + list(knowledge_delta.get("global_removed") or []),
+            list(knowledge_delta.get("ws_added") or [])
+            + list(knowledge_delta.get("global_added") or []),
+        )
+
+    def _build_knowledge_event_block(self, event: Dict[str, Any]) -> str:
+        """从已落库的 knowledge_event 重建 diff 注入块（历史回放用）。
+
+        event 结构与轮次 delta 不同：added/removed 已是最终条目列表
+        （global 为 [{"title": t}]，workspace 为文档 dict），直接格式化即可。
+        """
+
+        if not isinstance(event, dict):
+            return ""
+
+        return self._build_knowledge_changed_text(event.get("removed"), event.get("added"))
+
+    def _build_knowledge_changed_text(self, removed_entries: Any, added_entries: Any) -> str:
+        """统一把知识库变更条目格式化为注入块，保持 head 前缀稳定。"""
+
+        removed = self._collect_knowledge_titles(removed_entries)
+        added = self._collect_knowledge_titles(added_entries)
+
+        if not added and not removed:
+            return ""
+
+        lines: List[str] = ["## Knowledge changed"]
+
+        for title in removed:
+            lines.append(f"- {title}")
+
+        for title in added:
+            lines.append(f"+ {title}")
+
+        return "\n".join(lines).strip()
+
+    def _collect_knowledge_titles(self, entries: Any) -> List[str]:
+        """把 workspace 文档 dict 与 global 裸标题统一成去重后的标题列表。"""
+
+        titles: List[str] = []
+        seen: Set[str] = set()
+
+        for entry in entries or []:
+            title = self._knowledge_document_title(entry)
+
+            if title and title not in seen:
+                seen.add(title)
+                titles.append(title)
+
+        return titles
+
+    def _knowledge_document_title(self, document: Any) -> str:
+        """取知识库条目标题：workspace 文档是 dict，global 列表是裸标题字符串。"""
+
+        if isinstance(document, dict):
+            return str(document.get("title") or document.get("name") or "").strip()
+
+        return str(document or "").strip()
 
     def build_initial_context(
         self,
@@ -354,10 +478,12 @@ class ChatContextManager:
         system_prompt_text: Optional[str] = None,
         system_injection_texts: Optional[List[str]] = None,
         history_end_index_exclusive: Optional[int] = None,
+        current_user_index: Optional[int] = None,
     ) -> ChatContext:
-        """构建并返回可继续 add/prepare/build 的上下文对象。"""
+        """构建并返回可继续 add/prepare/build 的上下文对象。纯排序器，不做内容变换。"""
         model = self.model
-        context_compact_mode = model._resolve_context_compact_mode()
+        # 纯排序器：compact 模式固定 off，内容已在外部归一化
+        context_compact_mode = "off"
         effective_system_prompt = str(system_prompt_text or model.system_prompt or "").strip()
         context = self.create_context(
             policy=ChatContextPolicy.NONE,
@@ -367,36 +493,203 @@ class ChatContextManager:
                 "model_name": str(model.model_name or ""),
             },
         )
-        context.add("system", effective_system_prompt)
-
-        for text in self._normalize_system_injection_texts(system_injection_texts):
-            context.add("system", text)
 
         history_messages: List[Dict[str, Any]] = []
         compression_marker: Optional[Dict[str, Any]] = None
+        # 一次读盘 bundle（ConversationService 提供）：消息 + 压缩 + 快照 + 事件共用同一份数据
+        context_bundle: Optional[Dict[str, Any]] = None
 
         if include_context and model.conversation_id:
+            # 优先使用 ConversationService
+            svc = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
             try:
-                history_messages = model.conversation_manager.get_messages(model.conversation_id)
-            except Exception:
-                history_messages = []
-
-            try:
-                compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
-            except Exception:
-                compression_marker = None
+                if svc is not None and hasattr(svc, "get_context_bundle"):
+                    # 单次 _load_v4：消息/压缩/快照/事件一次取出，避免多次整文件解析
+                    context_bundle = svc.get_context_bundle(model.conversation_id)
+                    history_messages = context_bundle.get("messages", [])
+                    compression_marker = context_bundle.get("compression")
+                else:
+                    if svc is not None and hasattr(svc, "get_messages"):
+                        history_messages = svc.get_messages(model.conversation_id)
+                    else:
+                        history_messages = model.conversation_manager.get_messages(model.conversation_id)
+                    try:
+                        if svc is not None and hasattr(svc, "get_latest_compression"):
+                            compression_marker = svc.get_latest_compression(model.conversation_id)
+                        elif svc is not None and hasattr(svc, "get_latest_context_compression"):
+                            compression_marker = svc.get_latest_context_compression(model.conversation_id)
+                        else:
+                            compression_marker = model.conversation_manager.get_latest_context_compression(model.conversation_id)
+                    except Exception as e:
+                        print(f"[CONTEXT] get_latest_compression 失败 conversation_id={model.conversation_id}: {e}")
+                        compression_marker = None
+                        context.mark_degraded("compression_load_failed", str(e))
+                        model.record_context_diagnostics(context.diagnostics())
+            except Exception as e:
+                print(f"[CONTEXT] get_messages 失败 conversation_id={model.conversation_id}: {e}")
+                # 会话读取失败不应伪装为空历史，向上抛出以中止上下文构建
+                raise
 
         history_messages = self._cut_history_for_regenerate(
             history_messages,
             history_end_index_exclusive,
         )
-        history_messages = self._apply_latest_compression_marker(
-            context,
+        history_messages, summary_memory_block = self._apply_latest_compression_marker(
             history_messages,
             compression_marker,
         )
 
+        # 头尾契约（重构后）：头稳定可缓存（system主prompt + Skill + 画像/知识库基线），尾仅 diff/沙箱/资源
+        # 顺序固定 头 + 历史 + 尾 + 新用户，保证 head+history 前缀可被 prefix cache 命中
+        # LRU 快照：head 首次构建后存快照，后续复用快照保证前缀命中，diff 仅 tail 追加
+        # 快照仅对主对话生效（persist_conversation）：记忆分析等子请求不得读写主对话快照
+        # volatile 标记常量收口于 basis.Model.turn_injection，新增 volatile 通道只改那里
+        all_injections = self._normalize_system_injection_texts(system_injection_texts)
+        stable_injections = [
+            t for t in all_injections if not is_volatile_injection(t)
+        ]
+        volatile_injections = [
+            t for t in all_injections if is_volatile_injection(t)
+        ]
+
+        # 尝试加载已存快照（LRU 命中关键）；仅主对话参与，避免子请求复用/污染 head
+        # 顺带读取 knowledge/profile/skill 事件，供历史回放时重建 tail 块（保证前缀稳定）
+        snapshot_content: Optional[str] = None
+        snapshot_efm: Optional[int] = None
+        knowledge_events_raw: List[Dict[str, Any]] = []
+        profile_events_raw: List[Dict[str, Any]] = []
+        skill_events_raw: List[Dict[str, Any]] = []
+        try:
+            if model.persist_conversation and model.conversation_id:
+                if context_bundle is not None:
+                    # 与消息/压缩同源，复用 bundle 免去再次读盘
+                    snaps = context_bundle.get("system_snapshots", [])
+                    if isinstance(snaps, list) and snaps:
+                        latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
+                        snapshot_content = str(latest.get("content") or "").strip() or None
+                        snapshot_efm = snapshot_effective_from(latest)
+                    raw_events = context_bundle.get("knowledge_events", [])
+                    if isinstance(raw_events, list):
+                        knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
+                    raw_profile_events = context_bundle.get("profile_events", [])
+                    if isinstance(raw_profile_events, list):
+                        profile_events_raw = [e for e in raw_profile_events if isinstance(e, dict)]
+                    raw_skill_events = context_bundle.get("skill_events", [])
+                    if isinstance(raw_skill_events, list):
+                        skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
+                else:
+                    svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
+                    if svc_snap and hasattr(svc_snap, "_load_v4"):
+                        snap_data = svc_snap._load_v4(model.conversation_id)
+                        snaps = snap_data.get("context", {}).get("system_snapshots", [])
+                        if isinstance(snaps, list) and snaps:
+                            latest = snaps[-1] if isinstance(snaps[-1], dict) else {}
+                            snapshot_content = str(latest.get("content") or "").strip() or None
+                            snapshot_efm = snapshot_effective_from(latest)
+                        raw_events = snap_data.get("context", {}).get("knowledge_events", [])
+                        if isinstance(raw_events, list):
+                            knowledge_events_raw = [e for e in raw_events if isinstance(e, dict)]
+                        raw_profile_events = snap_data.get("context", {}).get("profile_events", [])
+                        if isinstance(raw_profile_events, list):
+                            profile_events_raw = [e for e in raw_profile_events if isinstance(e, dict)]
+                        raw_skill_events = snap_data.get("context", {}).get("skill_events", [])
+                        if isinstance(raw_skill_events, list):
+                            skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
+        except Exception:
+            snapshot_content = None
+
+        # 压缩 cut 解析（供快照新鲜度判断、事件回放过滤与历史游标共用）
+        compression_cut_index = -1
+        if compression_marker:
+            compression_cut_index = parse_message_index(compression_marker.get("history_cut_index"))
+
+        # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前。
+        # knowledge / profile / skill 三类事件共用同一 (efm, block) 回放列表，
+        # 排序后按位插入，使任意轮次重建出的上下文与首次发送时一致。
+        history_event_blocks: List[Tuple[int, str]] = []
+        history_event_blocks.extend(
+            self._collect_replay_blocks(knowledge_events_raw, self._build_knowledge_event_block, compression_cut_index)
+        )
+        history_event_blocks.extend(
+            self._collect_replay_blocks(profile_events_raw, build_profile_update_block, compression_cut_index)
+        )
+        history_event_blocks.extend(
+            self._collect_replay_blocks(skill_events_raw, build_skill_update_block, compression_cut_index)
+        )
+        history_event_blocks.sort(key=lambda item: item[0])
+
+        # 快照过期判定（压缩换代）：快照生效点 <= 压缩 cut 说明 head 是压缩前构建的
+        # 旧画像/旧技能，必须全量重建；压缩后重建保存的新快照 efm = cut+1 > cut，
+        # 后续轮次判定不成立，继续复用快照命中缓存
+        snapshot_stale = bool(
+            snapshot_content
+            and compression_cut_index >= 0
+            and snapshot_efm is not None
+            and snapshot_efm <= compression_cut_index
+        )
+
+        if snapshot_content and history_messages and not snapshot_stale:
+            # 非首轮：复用快照保证 LRU 命中，head 不重建
+            merged_head = snapshot_content
+            if merged_head:
+                context.add("system", merged_head)
+        else:
+            # 首轮或无快照：构建新 head 并存快照
+            sanitized_head = str(effective_system_prompt or "").strip()
+            head_parts: List[str] = []
+            if sanitized_head:
+                head_parts.append(sanitized_head)
+            head_parts.extend(stable_injections)
+            merged_head = "\n\n".join([p for p in head_parts if str(p or "").strip()]).strip()
+            if merged_head:
+                context.add("system", merged_head)
+                # 存快照（仅主对话；子请求不参与，避免污染主对话 LRU 前缀）
+                # 统一走 Conversation Manager 的 record_system_snapshot（带锁 + validate + 索引 + epoch 自增），
+                # effective_from_message 取当前轮 user 下标：首轮为 0，确保按 efm 回放时语义正确
+                try:
+                    if model.persist_conversation and model.conversation_id:
+                        svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
+                        if svc_snap is not None and hasattr(svc_snap, "record_system_snapshot"):
+                            svc_snap.record_system_snapshot(
+                                model.conversation_id,
+                                {"content": merged_head, "reason": "chat_turn"},
+                                effective_from_message=current_user_index if current_user_index is not None else 0,
+                            )
+                except Exception as _e_snap:
+                    print(f"[SNAPSHOT] save failed: {_e_snap}".replace("\xa0", " "))
+
+        # 摘要块固定坑位：head 之后、历史之前。压缩换代后该结构冻结为
+        # [head(最新画像/技能), 摘要, 新历史...]，从重建下一轮起前缀重新稳定命中
+        if summary_memory_block:
+            context.add("system", summary_memory_block)
+
+        # 历史（V4 无 system 消息，仅 user/assistant）—— 紧跟 head，保证 head+history 前缀可缓存
+        # 知识库 diff 按生效点回放：在 effective_from_message 指向的 user 消息之前插入，
+        # 使任意轮次重建出的上下文与首次发送时一致，前缀缓存不因 diff 位置漂移而失效
+        history_msg_cursor = compression_cut_index + 1 if compression_cut_index >= 0 else 0
+        # 历史 diff 重建边界：只回放严格早于当前轮的变更（efm < 当前轮 user 下标），
+        # 当前轮的变更由 tail 注入，避免「历史重建 + tail」双重注入
+        history_event_boundary = current_user_index if current_user_index is not None else len(history_messages)
+        history_event_idx = 0
         for item in history_messages:
+            if (
+                current_user_index is not None
+                and history_msg_cursor >= current_user_index
+            ):
+                # 当前轮的 user 与占位 assistant 已由「尾部易变块 + 新 user」处理，
+                # 跳过历史回放，保证 diff 固定在生效 user 之前、且只注入一次
+                history_msg_cursor += 1
+                continue
+            # 同一生效点可能有多条事件（一轮内 workspace 与 global 知识变更各落一条，
+            # 且 knowledge / profile / skill 可同轮变更）：必须注入该 cursor 下的全部
+            # block，只注入第一个会让其余 diff 静默丢失（回放游标已前移无法回头匹配）
+            while (
+                history_event_idx < len(history_event_blocks)
+                and history_event_blocks[history_event_idx][0] == history_msg_cursor
+                and history_event_blocks[history_event_idx][0] < history_event_boundary
+            ):
+                context.add("system", history_event_blocks[history_event_idx][1])
+                history_event_idx += 1
             self._add_history_item_to_context(
                 context,
                 item,
@@ -404,24 +697,70 @@ class ChatContextManager:
                 allow_history_images=allow_history_images,
                 context_compact_mode=context_compact_mode,
             )
+            history_msg_cursor += 1
+
+        # 尾部易变块：仅沙箱/资源索引等，紧跟历史之后、新用户之前
+        for text in volatile_injections:
+            context.add("system", text)
 
         final_user_content = current_user_content if current_user_content is not None else user_msg
         final_user_sig = model._content_signature_for_dedupe(
             self._normalize_current_turn_dedupe_content(final_user_content)
         )
-        last_message = context.last()
+        last_user = None
+        for _idx in range(context.count() - 1, -1, -1):
+            _cand = context.get(_idx)
+            if _cand and _cand.role == "user":
+                last_user = _cand
+                break
         last_is_same_user = bool(
-            last_message
-            and last_message.role == "user"
+            last_user
             and model._content_signature_for_dedupe(
-                self._normalize_current_turn_dedupe_content(last_message.content)
+                self._normalize_current_turn_dedupe_content(last_user.content)
             ) == final_user_sig
         )
 
         if not last_is_same_user:
+            final_user_content = self._inject_time_prefix_to_user_content(final_user_content, use_responses_api)
             context.add("user", final_user_content)
 
+        try:
+            print(f"[CTX_FINAL] roles={[m.role for m in context._messages]} hist={len(history_messages)} vol={len(volatile_injections)}".replace("\xa0"," "))
+        except Exception:
+            pass
+        model.record_context_diagnostics(context.diagnostics())
+        model._last_context = context
         return context
+
+    def _collect_replay_blocks(
+        self,
+        events: List[Dict[str, Any]],
+        build_block: Callable[[Dict[str, Any]], str],
+        compression_cut_index: int,
+    ) -> List[Tuple[int, str]]:
+        """
+        把一类变更事件（知识/画像/技能）转换为 (efm, block) 回放列表。
+
+        efm <= compression_cut_index 的事件已被压缩摘要覆盖，内容已不在历史消息中，
+        回放它们既无对应落点，也会让按位匹配的回放游标停在死点上（后续事件全部丢失），
+        故在此直接过滤。过滤放在回放层而非落库裁剪（prune）——prune 失败或未执行时
+        上下文依然自洽，prune 只负责磁盘空间回收。
+        """
+
+        blocks: List[Tuple[int, str]] = []
+
+        for event in events:
+            efm = parse_effective_from(event.get("effective_from_message"))
+
+            if efm is None or efm <= compression_cut_index:
+                continue
+
+            block = build_block(event)
+
+            if block:
+                blocks.append((efm, block))
+
+        return blocks
 
     def _normalize_system_injection_texts(self, system_injection_texts: Optional[List[str]]) -> List[str]:
         """规整当前轮运行时 system 注入块。"""
@@ -438,6 +777,41 @@ class ChatContextManager:
 
         return normalized
 
+    def _inject_time_prefix_to_user_content(self, content: Any, use_responses_api: bool = False) -> Any:
+        """为当前轮 user 内容单次注入 [TIME] 前缀（不入 system，确保前缀缓存）。"""
+        from datetime import datetime
+
+        time_marker = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prefix = f"[TIME] {time_marker}\n"
+
+        if content is None:
+            return f"{prefix}"
+
+        if isinstance(content, str):
+            # 已带前缀则不重复
+            if content.lstrip().startswith("[TIME]") or content.lstrip().startswith("[历史消息时间:"):
+                return content
+
+            return f"{prefix}{content}"
+
+        if isinstance(content, list):
+            # 多模态：前置文本块
+            text_type = "input_text" if bool(use_responses_api) else "text"
+            # 检查首块是否已含时间
+            if content and isinstance(content[0], dict):
+                first_text = str(content[0].get("text") or content[0].get("content") or "")
+                if first_text.lstrip().startswith("[TIME]") or first_text.lstrip().startswith("[历史消息时间:"):
+                    return content
+
+            return [{ "type": text_type, "text": prefix.rstrip() }] + list(content)
+
+        # 其他类型转字符串
+        text = str(content)
+        if text.lstrip().startswith("[TIME]") or text.lstrip().startswith("[历史消息时间:"):
+            return text
+
+        return f"{prefix}{text}"
+
     def _add_history_item_to_context(
         self,
         context: ChatContext,
@@ -452,6 +826,19 @@ class ChatContextManager:
             return
 
         role = str(item.get("role", "") or "").strip()
+
+        # DSH 式增量存储：history 中已包含 system 快照，直接还原
+        if role == "system":
+            content = item.get("content", "")
+            # 系统快照为纯文本，无需图片/压缩处理
+            normalized = self._normalize_history_content(content)
+
+            if normalized is None:
+                return
+
+            # 保留原始文本，不做 compact，避免哈希漂移
+            context.add("system", normalized)
+            return
 
         if role not in ("user", "assistant"):
             return
@@ -478,15 +865,29 @@ class ChatContextManager:
         if normalized is None:
             return
 
-        model = self.model
-        normalized = model._compact_context_content(normalized, context_compact_mode)
-        normalized = self._strip_history_time_prefix_from_content(normalized)
+        # 纯排序器：不做 compact/sanitize，时间标记为唯一例外（保证时序可追溯）
+        if role == "user":
+            metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
+            time_marker = str(metadata.get("time_marker") or metadata.get("time") or "").strip()
 
-        if role == "assistant" and isinstance(normalized, str):
-            normalized = sanitize_assistant_visible_content(normalized)
+            if not time_marker:
+                ts_raw = str(item.get("timestamp") or "").strip()
+                if ts_raw:
+                    try:
+                        from datetime import datetime
 
-            if not str(normalized or "").strip():
-                return
+                        dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                        time_marker = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        time_marker = ""
+
+            if time_marker:
+                if isinstance(normalized, str):
+                    normalized = f"[TIME] {time_marker}\n{normalized}"
+                elif isinstance(normalized, list):
+                    time_text = f"[TIME] {time_marker}\n"
+                    text_type = "input_text" if bool(use_responses_api) else "text"
+                    normalized = [{"type": text_type, "text": time_text}] + list(normalized)
 
         context.add(role, normalized)
 
@@ -670,7 +1071,21 @@ class ChatContextManager:
         context_compact_mode: str,
     ) -> List[Dict[str, Any]]:
         metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
-        process_steps = metadata.get("process_steps", [])
+        process_steps = metadata.get("process_steps", []) if isinstance(metadata.get("process_steps"), list) else []
+
+        # 架构兼容：v4 存储为 trace，历史回放需投影为 process_steps
+        if not process_steps:
+            trace = item.get("trace", {}) if isinstance(item.get("trace"), dict) else {}
+
+            if isinstance(trace, dict) and trace.get("events"):
+                try:
+                    from basis.Conversation.telemetry import extract_process_steps_from_trace
+
+                    projected = extract_process_steps_from_trace(trace)
+                    if isinstance(projected, list) and projected:
+                        process_steps = projected
+                except Exception:
+                    process_steps = []
 
         if not isinstance(process_steps, list) or not process_steps:
             return []
@@ -691,38 +1106,19 @@ class ChatContextManager:
                 print("[CTX_HISTORY_TOOL_TRACE] skip incomplete assistant tool group")
                 continue
 
-            compacted_intro = model._compact_context_content(
-                group.get("content", ""),
-                context_compact_mode,
-            )
-
-            if isinstance(compacted_intro, str):
-                compacted_intro = sanitize_assistant_visible_content(compacted_intro)
-
+            # 纯回放：intro 保持原样，不做 compact/sanitize
             protocol_messages = self._build_tool_protocol_messages(
                 calls=calls,
                 results=results,
-                intro_content=compacted_intro,
+                intro_content=group.get("content", ""),
                 use_responses_api=use_responses_api,
                 context_compact_mode=context_compact_mode,
             )
             messages.extend(protocol_messages)
 
-        stripped_final = self._strip_system_injection_from_content(final_content)
-        normalized_final = self._normalize_history_content(stripped_final)
-
-        if normalized_final is not None:
-            normalized_final = model._compact_context_content(normalized_final, context_compact_mode)
-            normalized_final = self._strip_history_time_prefix_from_content(normalized_final)
-
-            if isinstance(normalized_final, str):
-                normalized_final = sanitize_assistant_visible_content(normalized_final)
-
-                if not str(normalized_final or "").strip():
-                    normalized_final = None
-
-        if normalized_final is not None:
-            messages.append({"role": "assistant", "content": normalized_final})
+        # 最终 assistant 文本：保持落库原样，不做二次清洗
+        if final_content and str(final_content).strip():
+            messages.append({"role": "assistant", "content": final_content})
 
         return messages
 
@@ -913,14 +1309,12 @@ class ChatContextManager:
 
         for call in calls:
             call_id = str(call.get("call_id", "") or "").strip()
-            compacted_result = model._compact_context_content(
-                result_by_call_id.get(call_id, ""),
-                context_compact_mode,
-            )
+            # 工具结果保持落库原样，不做 compact，保证三轮一致
+            raw_result = result_by_call_id.get(call_id, "")
             messages.append(
                 model.provider_adapter.build_function_output_message(
                     call_id=call_id,
-                    result=str(compacted_result or ""),
+                    result=str(raw_result or ""),
                     use_responses_api=False,
                 )
             )
@@ -950,14 +1344,11 @@ class ChatContextManager:
                 "name": str(call.get("name", "") or "").strip(),
                 "arguments": str(call.get("arguments", "{}") or "{}"),
             })
-            compacted_result = model._compact_context_content(
-                result_by_call_id.get(call_id, ""),
-                context_compact_mode,
-            )
+            raw_result = result_by_call_id.get(call_id, "")
             messages.append(
                 model.provider_adapter.build_function_output_message(
                     call_id=call_id,
-                    result=str(compacted_result or ""),
+                    result=str(raw_result or ""),
                     use_responses_api=True,
                 )
             )
@@ -985,35 +1376,35 @@ class ChatContextManager:
 
     def _apply_latest_compression_marker(
         self,
-        context: ChatContext,
         history_messages: List[Dict[str, Any]],
         compression_marker: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """把最近一次压缩摘要作为旧历史替代上下文注入。"""
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        应用最近一次压缩标记：截掉已被摘要覆盖的历史，返回 (截断后历史, 摘要块文本)。
+        摘要块由调用方在 head 之后固定坑位插入，保证压缩换代后结构为
+        [head, 摘要, 新历史...]，前缀可稳定命中。
+        """
         if not compression_marker or not isinstance(compression_marker, dict):
-            return history_messages
+            return history_messages, ""
 
         try:
             summary_text = self._strip_history_time_prefix_text(
                 str(compression_marker.get("summary", "") or "").strip()
             )
-            cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
+            cut_index = parse_message_index(compression_marker.get("history_cut_index"))
         except Exception:
             summary_text = ""
             cut_index = -1
 
         if not summary_text or cut_index < 0 or not history_messages:
-            return history_messages
+            return history_messages, ""
 
         if cut_index >= len(history_messages):
-            return history_messages
+            return history_messages, ""
 
         memory_block = self.build_context_compression_memory_block(summary_text)
 
-        if memory_block:
-            context.add("system", memory_block)
-
-        return history_messages[cut_index + 1:]
+        return history_messages[cut_index + 1:], (memory_block or "")
 
     def _normalize_history_content(self, content: Any) -> Any:
         """把历史内容规整成可放入模型消息的内容。"""
@@ -1126,192 +1517,3 @@ class ChatContextManager:
             "以下为已压缩历史的稳定记忆，请将其视为更早对话的替代上下文：\n"
             f"{summary}"
         )
-
-    def format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
-        """格式化待压缩历史消息。"""
-        model = self.model
-        compact_mode = model._resolve_context_compact_mode()
-        lines: List[str] = []
-
-        for item in messages or []:
-            if not isinstance(item, dict):
-                continue
-
-            role = str(item.get("role", "") or "").strip().upper()
-
-            if role not in {"USER", "ASSISTANT"}:
-                continue
-
-            compacted = model._compact_context_content(item.get("content", ""), compact_mode)
-            compacted = self._strip_history_time_prefix_from_content(compacted)
-
-            if role == "ASSISTANT" and isinstance(compacted, str):
-                compacted = sanitize_assistant_visible_content(compacted)
-
-            text = self.content_to_text_for_context_compression(compacted).strip()
-
-            if not text:
-                continue
-
-            lines.append(f"[{role}] {text}")
-
-        text = "\n".join(lines).strip()
-        history_limit = int(max(
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
-            min(
-                CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX,
-                int(getattr(model, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
-            ),
-        ))
-
-        if len(text) <= history_limit:
-            return text
-
-        head_len = int(max(20000, min(history_limit - 5000, int(history_limit * 0.35))))
-        tail_len = int(max(30000, history_limit - head_len - 80))
-
-        if head_len + tail_len > history_limit:
-            tail_len = max(12000, history_limit - head_len - 80)
-
-        head = text[:head_len]
-        tail = text[-tail_len:]
-        return f"{head}\n...[历史过长，已截断中段]...\n{tail}"
-
-    def run_context_compression_round(
-        self,
-        history_messages: List[Dict[str, Any]],
-        max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT,
-    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """执行专用上下文压缩轮次。"""
-        model = self.model
-        system_prompt = str(prompts.context_compression_system_prompt or "")
-        safe_max_chars = max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)),
-        )
-        history_text = self.format_messages_for_context_compression(history_messages)
-        profile_text = model._get_user_profile_memory_text()
-        recent_dialogue_text = model._get_recent_dialogue_memory_text()
-        print(
-            "[CTX_COMPRESS] source "
-            f"messages={len(history_messages or [])} "
-            f"history_chars={len(str(history_text or ''))} "
-            f"profile_chars={len(str(profile_text or ''))} "
-            f"recent_chars={len(str(recent_dialogue_text or ''))}"
-        )
-        prompt_text = prompts.build_context_compression_prompt(
-            history_text,
-            profile_text=profile_text,
-            recent_dialogue=recent_dialogue_text,
-            max_chars=safe_max_chars,
-        )
-        history_truncated = ("...[历史过长，已截断中段]..." in history_text)
-        out: Dict[str, Any] = {
-            "summary": "",
-            "prompt_text": str(prompt_text or ""),
-            "system_prompt": system_prompt,
-            "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
-            "profile_text": str(profile_text or ""),
-            "recent_dialogue": str(recent_dialogue_text or ""),
-            "history_text": str(history_text or ""),
-            "model_reply": "",
-            "error": "",
-            "history_message_count": int(len(history_messages or [])),
-            "history_chars": int(len(str(history_text or ""))),
-            "history_truncated": bool(history_truncated),
-            "history_limit_chars": int(getattr(model, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
-            "summary_max_chars": int(safe_max_chars),
-        }
-
-        if not history_text:
-            out["error"] = "empty_history"
-            return out
-
-        req_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_text},
-        ]
-        stream_text = ""
-        stream_error = ""
-        stream_emitted = False
-
-        try:
-            stream_response = model.provider_adapter.create_chat_completion(
-                client=model.client,
-                model=model.model_name,
-                messages=req_messages,
-                stream=True,
-            )
-            stream_events = model.provider_adapter.iter_stream_events(
-                stream_response,
-                use_responses_api=False,
-                native_web_search_enabled=False,
-            )
-
-            for event in stream_events:
-                if not isinstance(event, dict):
-                    continue
-
-                ev_type = str(event.get("type", "") or "").strip()
-
-                if ev_type != "content_delta":
-                    continue
-
-                delta = str(event.get("delta", "") or "")
-
-                if not delta:
-                    continue
-
-                stream_emitted = True
-                stream_text += delta
-                yield {
-                    "type": "model_reply_delta",
-                    "delta": delta,
-                    "model_reply": stream_text,
-                    "chars": int(len(stream_text)),
-                    "from_stream": True,
-                }
-        except Exception as exc:
-            stream_error = str(exc or "")
-            out["error"] = stream_error
-            print(f"[CTX_COMPRESS] stream compression round failed: {exc}")
-            yield {"type": "error", "error": stream_error, "from_stream": True}
-
-        final_stream_text = str(stream_text or "").strip()
-
-        if final_stream_text:
-            out["model_reply"] = final_stream_text
-            out["summary"] = final_stream_text[:safe_max_chars]
-            return out
-
-        try:
-            response = model.provider_adapter.create_chat_completion(
-                client=model.client,
-                model=model.model_name,
-                messages=req_messages,
-                stream=False,
-            )
-            text = str(model._extract_completion_text(response) or "").strip()
-            out["model_reply"] = text
-
-            if text:
-                if not stream_emitted:
-                    yield {
-                        "type": "model_reply_delta",
-                        "delta": text,
-                        "model_reply": text,
-                        "chars": int(len(text)),
-                        "from_stream": False,
-                    }
-
-                out["summary"] = text[:safe_max_chars]
-                return out
-        except Exception as exc:
-            print(f"[CTX_COMPRESS] model compression round failed: {exc}")
-            out["error"] = str(exc or "") or stream_error
-            yield {"type": "error", "error": out["error"], "from_stream": False}
-
-        if not out["error"] and stream_error:
-            out["error"] = stream_error
-
-        return out

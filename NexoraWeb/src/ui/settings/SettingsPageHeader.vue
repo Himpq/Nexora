@@ -14,6 +14,7 @@
                         :options="action.options || []"
                         :placeholder="action.placeholder"
                         :width="action.width || '120px'"
+                        size="compact"
                         @update:model-value="updateSelect(action.method, String($event))"
                     />
                     <Button

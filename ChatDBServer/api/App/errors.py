@@ -254,8 +254,54 @@ def _internal_error_response(exc):
     return json_error(message, status=500, error_type="internal")
 
 
+def _conversation_conflict_response(exc):
+    """Conversation 冲突域（索引过期/角色不符等）→ 409，机器码 conversation_index_stale。
+
+    前端依据 error_code=conversation_index_stale 识别"本地消息序号已过期"，
+    应刷新会话数据而不是把原始错误展示为未知错误。
+    """
+    details = dict(getattr(exc, "details", None) or {})
+    return json_error(
+        str(exc) or "会话状态冲突，消息索引已过期",
+        status=409,
+        error_type="conflict",
+        error_code="conversation_index_stale",
+        extras=details,
+    )
+
+
+def _conversation_not_found_response(exc):
+    return json_error(str(exc) or "会话不存在", status=404, error_type="not_found")
+
+
+def _conversation_validation_response(exc):
+    details = dict(getattr(exc, "details", None) or {})
+    return json_error(
+        str(exc) or "会话参数无效",
+        status=400,
+        error_type="invalid_request",
+        extras=details,
+    )
+
+
 def register_error_handlers(app: Flask) -> None:
     """注册全局错误处理器：ApiError / HTTPException / 通用 Exception / 404。"""
     app.register_error_handler(ApiError, _api_error_response)
     app.register_error_handler(Exception, _internal_error_response)
     app.register_error_handler(404, _http_exception_response)
+
+    # Conversation 域受控异常 → 结构化契约（懒导入避免与 basis 包循环依赖；
+    # errors.py 模块别名机制保证与服务层抛出的是同一异常对象）
+    try:
+        from basis.Conversation.errors import (
+            ConversationConflictError,
+            ConversationNotFoundError,
+            ConversationValidationError,
+        )
+    except Exception:
+        ConversationConflictError = None  # type: ignore[assignment]
+
+    if ConversationConflictError is not None:
+        app.register_error_handler(ConversationConflictError, _conversation_conflict_response)
+        app.register_error_handler(ConversationNotFoundError, _conversation_not_found_response)
+        app.register_error_handler(ConversationValidationError, _conversation_validation_response)

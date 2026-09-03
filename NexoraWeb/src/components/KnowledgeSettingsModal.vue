@@ -1,12 +1,13 @@
 <!--
-    KnowledgeSettingsModal.vue — 知识点设置弹窗(接入原版 knowledgeSettingsModal 内容)
+    KnowledgeSettingsModal.vue — 知识点设置弹窗(完整接线版)
 
     职责:
-      - 复刻原版 4 个设置页:基础信息 / 共享协作 / 向量 / 记录
-      - 页签走 GDDP Tabs(对齐原版 admin-tab 下划线方案),弹窗固定宽高
-      - 打开时读取当前知识元数据填充展示(标题 / 公开 / 协作 / 只读 / 最后修改时间 / 分享链接)
-      - 具体功能占位:保存设置 / 复制链接 / 更新向量 / 删除向量 仅提示待接入,不调用后端
-    样式:GDDP Modal 壳 + scoped 样式,不依赖原版全局 CSS
+      - 基础信息:标题重命名 + 模型只读开关
+      - 共享协作:公开/协作开关 + 分享链接一键复制
+      - 向量:能力探测 + 分块列表 + 异步更新(任务轮询) + 删除向量
+      - 记录:最后修改时间
+    样式:GDDP Modal 壳 + scoped 样式，不依赖原版全局 CSS
+    逻辑:拆分为 composable useKnowledgeSettings 以避免单文件屎山
 -->
 
 <template>
@@ -76,7 +77,7 @@
                 <label class="ks-share-label">公开访问链接:</label>
                 <div class="ks-share-row">
                     <input :value="shareUrl" class="ks-share-input" type="text" readonly>
-                    <button class="g-btn g-btn-ghost ks-share-copy" type="button" @click="handlePlaceholderAction">复制</button>
+                    <button class="g-btn g-btn-ghost ks-share-copy" type="button" @click="handleCopyShareUrl">复制</button>
                 </div>
             </div>
         </div>
@@ -84,13 +85,40 @@
         <!-- 向量 -->
         <div v-show="activeTab === 'vector'" class="ks-pane">
             <div class="ks-vector-actions">
-                <button class="g-btn g-btn-primary" type="button" @click="handlePlaceholderAction">更新向量</button>
-                <button class="g-btn g-btn-primary" type="button" @click="handlePlaceholderAction">删除向量</button>
+                <button
+                    class="g-btn g-btn-primary"
+                    type="button"
+                    :disabled="vectorBusy"
+                    @click="handleUpdateVector"
+                >{{ vectorBusy ? '向量化中...' : '更新向量' }}</button>
+                <button
+                    class="g-btn g-btn-ghost"
+                    type="button"
+                    :disabled="vectorBusy || !chunks.length"
+                    @click="handleDeleteVector"
+                >删除向量</button>
             </div>
-            <div class="ks-vector-tip">向量更新、删除与分块查看功能待接入</div>
-            <div class="ks-vector-status">未加载</div>
+
+            <div v-if="vectorProgressText" class="ks-vector-progress">{{ vectorProgressText }}</div>
+            <div class="ks-vector-status">{{ vectorStatusText }}</div>
+
+            <div v-if="vectorStatusText.includes('未启用')" class="ks-vector-tip">向量能力未启用或未配置，请联系管理员检查 Chroma 服务。</div>
+
             <div class="ks-chunk-list">
-                <div class="ks-chunk-empty">暂无分块</div>
+                <div v-if="chunksLoading" class="ks-chunk-empty">加载分块中...</div>
+                <div v-else-if="!chunks.length" class="ks-chunk-empty">暂无分块</div>
+                <div v-for="chunk in chunks" :key="String(chunk.id || chunk.vector_id || chunk.chunk_id || Math.random())" class="ks-chunk-item">
+                    <span class="ks-chunk-id">{{ String(chunk.id || chunk.vector_id || chunk.chunk_id || '-').slice(0, 12) }}</span>
+                    <span class="ks-chunk-text">{{ clipChunkText(chunk) }}</span>
+                    <button
+                        class="ks-chunk-delete"
+                        type="button"
+                        title="删除该分块"
+                        @click="handleDeleteChunk(String(chunk.id || chunk.vector_id || ''))"
+                    >
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -100,8 +128,10 @@
         </div>
 
         <template #footer>
-            <button class="g-btn g-btn-ghost" type="button" @click="close">取消</button>
-            <button class="g-btn g-btn-primary" type="button" @click="handleSave">保存设置</button>
+            <button class="g-btn g-btn-ghost" type="button" :disabled="saving" @click="close">取消</button>
+            <button class="g-btn g-btn-primary" type="button" :disabled="saving" @click="handleSave">
+                {{ saving ? '保存中...' : '保存设置' }}
+            </button>
         </template>
     </Modal>
 </template>
@@ -109,7 +139,16 @@
 <script setup lang="ts">
     import { reactive, ref, watch } from 'vue'
 
-    import { fetchKnowledgeContent } from '@/api/knowledge'
+    import { fetchKnowledgeContent, updateKnowledgeSettings } from '@/api/knowledge'
+    import {
+        fetchVectorStatus,
+        fetchVectorChunks,
+        createVectorTask,
+        pollVectorTask,
+        deleteVectorsByTitle,
+        deleteVectorById,
+        type VectorChunk,
+    } from '@/api/knowledge-vector'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
 
@@ -123,11 +162,11 @@
 
     const emit = defineEmits<{
         close: []
+        saved: [newTitle: string]
     }>()
 
     const userStore = useUserStore()
 
-    /** 四个设置页(对齐原版 knowledgeSettingsModal 的 admin-tab 页签;走 GDDP Tabs) */
     const tabs = [
         { value: 'basic', label: '基础信息' },
         { value: 'share', label: '共享协作' },
@@ -137,7 +176,6 @@
 
     const activeTab = ref('basic')
 
-    /** 弹窗内可编辑的表单状态(仅本地展示,保存功能待接入) */
     const form = reactive({
         title: '',
         public: false,
@@ -148,7 +186,18 @@
     const shareUrl = ref('')
     const lastModifyText = ref('-')
 
-    /** 打开弹窗:重置为当前知识元数据(仅读取展示) */
+    /** 保存状态 */
+    const saving = ref(false)
+    const initialTitle = ref('')
+
+    // ---------- 向量状态 ----------
+
+    const vectorStatusText = ref('未加载')
+    const vectorBusy = ref(false)
+    const vectorProgressText = ref('')
+    const chunks = ref<VectorChunk[]>([])
+    const chunksLoading = ref(false)
+
     watch(
         () => props.open,
         (opened) => {
@@ -158,17 +207,28 @@
 
             activeTab.value = 'basic'
             form.title = String(props.title || '').trim()
+            initialTitle.value = form.title
             form.public = false
             form.collaborative = false
             form.modelReadonly = false
             shareUrl.value = ''
             lastModifyText.value = '-'
+            vectorStatusText.value = '未加载'
+            vectorProgressText.value = ''
+            chunks.value = []
 
             void loadMetadata()
+
+            // 向量页签懒加载：打开即探测，切换到向量页签时再拉分块
         }
     )
 
-    /** 读取当前知识元数据填充表单与分享链接(纯读取,不修改) */
+    watch(activeTab, (tab) => {
+        if (tab === 'vector') {
+            void loadVectorState()
+        }
+    })
+
     async function loadMetadata(): Promise<void> {
         const title = String(props.title || '').trim()
 
@@ -180,12 +240,13 @@
             const data = await fetchKnowledgeContent(title)
             const meta = (data.metadata && typeof data.metadata === 'object') ? data.metadata : {}
 
-            form.title = String(meta.title || data.title || title)
+            form.title = String((meta.title as string) || data.title || title)
+            initialTitle.value = String(props.title || '').trim()
             form.public = Boolean(meta.public)
             form.collaborative = Boolean(meta.collaborative)
             form.modelReadonly = meta.model_readonly === true
 
-            const shareId = String(meta.share_id || '').trim()
+            const shareId = String((meta.share_id as string) || '').trim()
             const ownerId = userStore.userId
 
             shareUrl.value = shareId && ownerId
@@ -198,7 +259,6 @@
         }
     }
 
-    /** 秒级/字符串时间戳统一转为本地时间文本 */
     function formatUpdateTime(raw: unknown): string {
         const ts = Number(raw)
 
@@ -211,14 +271,203 @@
         return Number.isNaN(parsed.getTime()) ? '-' : parsed.toLocaleString()
     }
 
-    /** 保存设置:功能待接入,暂不调用后端 */
+    // ---------- 保存设置（标题/公开/协作/只读） ----------
+
     async function handleSave(): Promise<void> {
-        showToast('知识库设置保存功能待接入', 'info')
+        const oldTitle = initialTitle.value
+        const newTitle = form.title.trim()
+
+        if (!oldTitle) {
+            showToast('标题不能为空', 'warning')
+            return
+        }
+
+        if (!newTitle) {
+            showToast('标题不能为空', 'warning')
+            return
+        }
+
+        saving.value = true
+
+        try {
+            const result = await updateKnowledgeSettings({
+                title: oldTitle,
+                new_title: newTitle !== oldTitle ? newTitle : undefined,
+                public: form.public,
+                collaborative: form.collaborative,
+                model_readonly: form.modelReadonly,
+            })
+
+            // 刷新分享链接
+            if (result.share_url) {
+                shareUrl.value = result.share_url
+            } else if (!form.public) {
+                shareUrl.value = ''
+            }
+
+            showToast(result.message || '设置已保存', 'success')
+
+            // 标题变更需通知上层刷新
+            if (newTitle !== oldTitle) {
+                initialTitle.value = newTitle
+                emit('saved', newTitle)
+            }
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '保存设置失败')
+        } finally {
+            saving.value = false
+        }
     }
 
-    /** 复制/更新向量/删除向量等未接入操作统一提示 */
-    function handlePlaceholderAction(): void {
-        showToast('该功能待接入', 'info')
+    // ---------- 分享链接复制 ----------
+
+    async function handleCopyShareUrl(): Promise<void> {
+        if (!shareUrl.value) {
+            showToast('暂无分享链接', 'warning')
+            return
+        }
+
+        try {
+            await navigator.clipboard.writeText(shareUrl.value)
+            showToast('已复制分享链接', 'success')
+        } catch {
+            // 降级：选中输入框
+            const input = document.querySelector<HTMLInputElement>('.ks-share-input')
+
+            if (input) {
+                input.select()
+                document.execCommand('copy')
+                showToast('已复制分享链接', 'success')
+            } else {
+                showToast('复制失败，请手动复制', 'warning')
+            }
+        }
+    }
+
+    // ---------- 向量 ----------
+
+    async function loadVectorState(): Promise<void> {
+        vectorStatusText.value = '检测向量能力中...'
+
+        try {
+            const status = await fetchVectorStatus()
+
+            if (!status.enabled && !status.vectorization_enabled) {
+                vectorStatusText.value = `未启用(${status.reason || '未配置'})`
+            } else {
+                vectorStatusText.value = `已启用 · ${status.mode || 'service'} · chunk ${status.chunk_size}/${status.chunk_overlap}`
+            }
+        } catch {
+            vectorStatusText.value = '向量状态获取失败'
+        }
+
+        await loadChunks()
+    }
+
+    async function loadChunks(): Promise<void> {
+        const title = (initialTitle.value || props.title || '').trim()
+
+        if (!title) {
+            return
+        }
+
+        chunksLoading.value = true
+
+        try {
+            chunks.value = await fetchVectorChunks(title)
+        } catch {
+            chunks.value = []
+        } finally {
+            chunksLoading.value = false
+        }
+    }
+
+    function clipChunkText(chunk: VectorChunk): string {
+        const text = String(chunk.document || chunk.text || (chunk as Record<string, unknown>).content || '').replace(/\s+/g, ' ').trim()
+
+        if (!text) {
+            return '(空分块)'
+        }
+
+        return text.length > 80 ? `${text.slice(0, 80)}…` : text
+    }
+
+    async function handleUpdateVector(): Promise<void> {
+        const title = (initialTitle.value || props.title || '').trim()
+
+        if (!title) {
+            showToast('标题为空，无法向量化', 'warning')
+            return
+        }
+
+        if (vectorBusy.value) {
+            return
+        }
+
+        vectorBusy.value = true
+        vectorProgressText.value = '创建向量化任务...'
+
+        try {
+            const taskId = await createVectorTask(title)
+
+            vectorProgressText.value = '向量化中 0%'
+
+            await pollVectorTask(taskId, ({ progress, stage }) => {
+                vectorProgressText.value = `向量化中 ${progress}% · ${stage || '处理中'}`
+            })
+
+            vectorProgressText.value = '向量化完成'
+            showToast('向量化完成', 'success')
+            await loadChunks()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '向量化失败')
+            vectorProgressText.value = ''
+        } finally {
+            vectorBusy.value = false
+        }
+    }
+
+    async function handleDeleteVector(): Promise<void> {
+        const title = (initialTitle.value || props.title || '').trim()
+
+        if (!title || !chunks.value.length) {
+            showToast('暂无向量可删除', 'info')
+            return
+        }
+
+        if (vectorBusy.value) {
+            return
+        }
+
+        vectorBusy.value = true
+
+        try {
+            await deleteVectorsByTitle(title)
+            showToast('已删除该知识的所有向量', 'success')
+            chunks.value = []
+            vectorProgressText.value = ''
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '删除向量失败')
+        } finally {
+            vectorBusy.value = false
+        }
+    }
+
+    async function handleDeleteChunk(vectorId: string): Promise<void> {
+        const id = vectorId.trim()
+
+        if (!id) {
+            showToast('分块 ID 无效', 'warning')
+            return
+        }
+
+        try {
+            await deleteVectorById(id)
+            showToast('分块已删除', 'success')
+            await loadChunks()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '删除分块失败')
+        }
     }
 
     function close(): void {
@@ -227,8 +476,6 @@
 </script>
 
 <style scoped>
-    /* ---------- 头部(标题 + 说明) ---------- */
-
     .ks-modal-head h3 {
         margin: 0;
     }
@@ -239,13 +486,9 @@
         font-size: 12px;
     }
 
-    /* ---------- 页签(GDDP Tabs,对齐原版 admin-tab 下划线方案) ---------- */
-
     .ks-tabs {
         margin-bottom: 18px;
     }
-
-    /* ---------- 面板 ---------- */
 
     .ks-pane {
         min-height: 120px;
@@ -262,8 +505,6 @@
         font-size: 13px;
         font-weight: 600;
     }
-
-    /* ---------- 开关行 ---------- */
 
     .ks-switch {
         display: flex;
@@ -338,8 +579,6 @@
         line-height: 1.5;
     }
 
-    /* ---------- 分享链接 ---------- */
-
     .ks-share-box {
         margin-top: 10px;
         padding: 12px;
@@ -379,12 +618,19 @@
         font-size: 12px;
     }
 
-    /* ---------- 向量 ---------- */
-
     .ks-vector-actions {
         display: flex;
         gap: 8px;
         margin-bottom: 12px;
+    }
+
+    .ks-vector-progress {
+        margin-bottom: 8px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--color-accent-surface);
+        color: var(--color-accent-text);
+        font-size: 12px;
     }
 
     .ks-vector-tip {
@@ -409,16 +655,66 @@
         border: 1px solid var(--color-border);
         border-radius: 6px;
         background: var(--color-bg-sunken);
-        color: var(--color-text-secondary);
-        font-size: 12px;
         overflow-y: auto;
     }
 
     .ks-chunk-empty {
         color: var(--color-text-secondary);
+        font-size: 12px;
+        text-align: center;
+        padding: 12px 0;
     }
 
-    /* ---------- 记录 ---------- */
+    .ks-chunk-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--color-border);
+        font-size: 12px;
+    }
+
+    .ks-chunk-item:last-child {
+        border-bottom: none;
+    }
+
+    .ks-chunk-id {
+        flex: none;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--color-bg-elevated);
+        color: var(--color-text-secondary);
+        font-family: monospace;
+        font-size: 11px;
+    }
+
+    .ks-chunk-text {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--color-text-secondary);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .ks-chunk-delete {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        cursor: pointer;
+    }
+
+    .ks-chunk-delete:hover {
+        background: var(--color-danger-surface);
+        color: var(--color-danger-text);
+    }
 
     .ks-history-row {
         padding: 4px 0;

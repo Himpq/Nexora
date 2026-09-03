@@ -139,8 +139,8 @@ const emit = defineEmits<{
     const props = withDefaults(defineProps<{
         models: ModelItem[]
         knowledgeTitle?: string
-        /** 当前视图:chat(默认) | files(文件中心) | workspaces | knowledge(正文编辑) | knowledge-mgmt(知识库管理) | mail(邮件中心) */
-        view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail'
+        /** 当前视图:chat(默认) | files | workspaces | knowledge | knowledge-mgmt | mail | learning */
+        view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'
         /** 标题覆盖(如 Workspace 详情/共享对话标题);空串表示走视图默认标题 */
         overrideTitle?: string
         /** 覆盖标题的悬停说明(如「只读共享 · @owner」) */
@@ -202,6 +202,7 @@ const emit = defineEmits<{
         knowledge: '',
         'knowledge-mgmt': '知识库管理',
         mail: 'Mail',
+        learning: 'Learning',
     }
 
     const centerTitle = computed(() => {

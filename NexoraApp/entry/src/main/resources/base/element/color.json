@@ -1,0 +1,157 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#FFFFFF"
+    },
+
+    {
+      "name": "brand_primary",
+      "value": "#4C6FFF"
+    },
+    {
+      "name": "brand_secondary",
+      "value": "#7A5CFF"
+    },
+    {
+      "name": "brand_soft",
+      "value": "#EDF1FF"
+    },
+    {
+      "name": "brand_text",
+      "value": "#4C6FFF"
+    },
+
+    {
+      "name": "bg_page",
+      "value": "#F4F5F9"
+    },
+    {
+      "name": "bg_card",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "bg_sunken",
+      "value": "#F1F2F6"
+    },
+    {
+      "name": "bg_hover",
+      "value": "#F7F8FB"
+    },
+
+    {
+      "name": "bubble_user",
+      "value": "#4C6FFF"
+    },
+    {
+      "name": "bubble_assistant",
+      "value": "#FFFFFF"
+    },
+
+    {
+      "name": "text_primary",
+      "value": "#16181D"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#676E7D"
+    },
+    {
+      "name": "text_tertiary",
+      "value": "#9BA1AE"
+    },
+    {
+      "name": "text_inverse",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "text_brand",
+      "value": "#4C6FFF"
+    },
+    {
+      "name": "text_danger",
+      "value": "#E5484D"
+    },
+    {
+      "name": "text_success",
+      "value": "#17A34A"
+    },
+
+    {
+      "name": "divider",
+      "value": "#EDEEF2"
+    },
+    {
+      "name": "border",
+      "value": "#E6E8EF"
+    },
+    {
+      "name": "border_strong",
+      "value": "#D3D7E0"
+    },
+
+    {
+      "name": "icon_primary",
+      "value": "#2A2E38"
+    },
+    {
+      "name": "icon_secondary",
+      "value": "#8A90A0"
+    },
+    {
+      "name": "icon_brand",
+      "value": "#4C6FFF"
+    },
+
+    {
+      "name": "code_bg",
+      "value": "#F1F2F6"
+    },
+    {
+      "name": "code_text",
+      "value": "#D6336C"
+    },
+    {
+      "name": "quote_bar",
+      "value": "#C9D2E8"
+    },
+    {
+      "name": "skeleton",
+      "value": "#E9EBF0"
+    },
+
+    {
+      "name": "chip_bg",
+      "value": "#F1F2F6"
+    },
+    {
+      "name": "chip_bg_active",
+      "value": "#E7EDFF"
+    },
+    {
+      "name": "chip_text",
+      "value": "#4A5160"
+    },
+    {
+      "name": "chip_text_active",
+      "value": "#4C6FFF"
+    },
+
+    {
+      "name": "success",
+      "value": "#17A34A"
+    },
+    {
+      "name": "warning",
+      "value": "#F5A623"
+    },
+    {
+      "name": "danger",
+      "value": "#E5484D"
+    },
+    {
+      "name": "mask",
+      "value": "#99000000"
+    }
+  ]
+}

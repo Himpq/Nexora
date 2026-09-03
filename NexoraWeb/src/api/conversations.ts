@@ -43,10 +43,40 @@ export interface ChatMessage {
     role: 'user' | 'assistant' | 'system'
     content: string
     reasoning?: string
+    status?: 'completed' | 'partial' | 'error' | 'streaming'
+    pending?: boolean
+    model?: { name?: string; provider?: string }
+    summary?: string
+    usage?: Record<string, number>
+    trace?: {
+        events?: Array<Record<string, unknown>>
+        tool_calls?: Array<Record<string, unknown>>
+        tool_results?: Array<Record<string, unknown>>
+        content_segments?: Array<Record<string, unknown>>
+        errors?: Array<Record<string, unknown>>
+        [key: string]: unknown
+    }
+    error?: Record<string, unknown>
+    versions?: Array<Record<string, unknown>>
+    attachments?: Array<Record<string, unknown>>
+    metadata?: Record<string, unknown>
     /** 内容分段(思考/正文按输出顺序);流式期间为交错结构,收尾/历史加载后为规范结构 */
     segments?: MessageSegment[]
     model_name?: string
     created_at?: number
+    [key: string]: unknown
+}
+
+export interface ConversationContextEvent {
+    scope: 'workspace' | 'global'
+    added?: Array<Record<string, unknown>> | string[]
+    removed?: Array<Record<string, unknown>> | string[]
+    effective_from_message: number
+    hash?: string
+    prev_hash?: string
+    created_at?: string
+    documents_snapshot?: Array<Record<string, unknown>>
+    titles_snapshot?: string[]
     [key: string]: unknown
 }
 
@@ -74,9 +104,10 @@ export interface ConversationTurn {
     content: string
 }
 
-interface MessagesResponse {
+export interface MessagesResponse {
     success: boolean
     messages: ChatMessage[]
+    context_events?: ConversationContextEvent[]
     start_index: number
     end_index: number
     total: number

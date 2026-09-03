@@ -17,6 +17,7 @@ from App.Storage import UserFileSandbox
 from .document_generation import DocumentGenerationService
 from App.Utils import request_client_js_execution
 from basis.Conversation import persist_conversation_image_bytes
+from basis.Conversation.context_reader import ConversationContextReader
 from basis.TokenUsage import build_image_generation_log_context, record_papi_image_generation
 from basis.Model.Provider import create_provider_adapter
 from basis.Tool import canonicalize_tool_name
@@ -53,6 +54,7 @@ class ToolExecutor:
             "longterm_plan": self._longterm_plan,
             "longterm_update": self._longterm_update,
             "search": self._unified_search,
+            "exa_web_search": self._exa_web_search,
             "server_render_page": self._server_render_page,
             "generate_image": self._generate_image,
             "knowledge_search_keyword": self._search_keyword,
@@ -752,11 +754,48 @@ class ToolExecutor:
         )
         return "已删除基础知识"
 
+    # 旧批量 _update_basis 已试点下线（保留注释便于回滚）：
+    # 原实现支持 from_pos/to_pos/replacement + replacements[] + patch + edits[] 批量四选一，
+    # 长累计文本下批量 edits 易在 Flash 0731 上产生 JSON 语法错误，现改为仅允许单次原子 edit。
+
     def _update_basis(self, args: Dict[str, Any]) -> str:
         title = str(args.get("title", "") or "").strip()
         meta = self.model.user.getBasisMetadata(title) or {}
         if isinstance(meta, dict) and meta and bool(meta.get("model_readonly", False)):
             return "更新失败: 该知识已启用模型只读，模型只能查阅和引用，不能修改内容、标题或共享设置。"
+
+        # 试点：拦截旧批量参数，引导模型走单次 edit（兼容 edits 为字符串的错误序列化）
+        if "edits" in args:
+            raw_edits = args.get("edits")
+            # 旧批量无论是 list 还是误序列化为字符串都拦截
+            if isinstance(raw_edits, list) and len(raw_edits) > 0:
+                return "更新失败: 试点已下线批量 edits，单次仅允许1个单 edit。请改用单次参数 action+target+content/replacement，多次修改请多次调用。示例：{\"title\":\"...\",\"action\":\"insert_after\",\"target\":\"### 1. 标题\",\"content\":\"...\"}"
+            if isinstance(raw_edits, str) and str(raw_edits).strip():
+                # 典型错误：edits 传成了字符串 "[{...}]"
+                preview = str(raw_edits).strip()[:120]
+                return f"更新失败: edits 不应为字符串（收到 {preview}...），试点已下线批量 edits。请改用单次参数 action+target+content/replacement。示例：{{\"title\":\"...\",\"action\":\"insert_after\",\"target\":\"### 1. 标题\",\"content\":\"...\"}}"
+
+        if isinstance(args.get("replacements"), list) and len(args.get("replacements") or []) > 0:
+            return "更新失败: 试点已下线批量 replacements，请改用单次 action+target 方式，多次修改请多次调用。"
+
+        if str(args.get("patch") or "").strip():
+            return "更新失败: 试点已下线 patch 统一 diff，请改用单次 action+target 或 context 整段覆盖。"
+
+        if args.get("from_pos") is not None or args.get("to_pos") is not None:
+            return "更新失败: 试点已下线 from_pos/to_pos 区间替换，请改用单次 action+target 方式。"
+
+        # 试点：若既无 context 也无单 edit，且无标题/URL/公开等元数据变更，直接判定为无效调用
+        has_action = bool(str(args.get("action") or "").strip())
+        has_target = bool(str(args.get("target") or "").strip())
+        has_context = args.get("context") is not None
+        has_meta = any([
+            args.get("new_title"),
+            args.get("url") is not None,
+            args.get("public") is not None,
+            args.get("collaborative") is not None,
+        ])
+        if not has_context and not (has_action and has_target) and not has_meta:
+            return "更新失败: 未提供任何有效更新内容。单次仅支持 context 整段覆盖 或 action+target 单 edit 二选一。请检查是否误将 edits 传为字符串。"
 
         success, message = self.model.user.updateBasis(
             title=title,
@@ -765,12 +804,11 @@ class ToolExecutor:
             url=args.get("url"),
             is_public=args.get("public"),
             is_collaborative=args.get("collaborative"),
-            from_pos=args.get("from_pos"),
-            to_pos=args.get("to_pos"),
+            action=args.get("action"),
+            target=args.get("target"),
             replacement=args.get("replacement"),
-            replacements=args.get("replacements"),
-            patch=args.get("patch"),
-            edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
+            content=args.get("content"),
+            occurrence=args.get("occurrence"),
             dry_run=self._safe_bool(args.get("dry_run"), False),
             expected_sha256=args.get("expected_sha256"),
             timeline_actor={
@@ -794,10 +832,8 @@ class ToolExecutor:
                 updates.append(f"标题已更新为'{args.get('new_title')}'")
             if args.get("context"):
                 updates.append("内容已更新")
-            if args.get("replacement") is not None or args.get("replacements"):
-                updates.append("区间替换已应用")
-            if args.get("patch") or args.get("edits"):
-                updates.append("patch 已预览" if self._safe_bool(args.get("dry_run"), False) else "patch 已应用")
+            if args.get("action") and args.get("target"):
+                updates.append("单次编辑已应用" if not self._safe_bool(args.get("dry_run"), False) else "单次编辑已预览")
             if args.get("url"):
                 updates.append("来源链接已更新")
             if args.get("public") is not None:
@@ -1459,27 +1495,24 @@ class ToolExecutor:
         )
 
     def _get_context_length(self, args: Dict[str, Any]) -> str:
-        length = self.model.conversation_manager.get_context_length(
-            args.get("offset", 0),
-            conversation_id=self.model.conversation_id,
-        )
+        length = ConversationContextReader(self.model.username).get_length(self.model.conversation_id)
         return f"对话长度: {length} 字符"
 
     def _get_context(self, args: Dict[str, Any]) -> str:
-        content = self.model.conversation_manager.get_context(
-            args.get("offset", 0),
+        reader = ConversationContextReader(self.model.username)
+        content = reader.read(
+            self.model.conversation_id,
             args.get("from_pos", 0),
             args.get("to_pos", None),
-            conversation_id=self.model.conversation_id,
         )
         return content if content else "无内容"
 
     def _get_context_find_keyword(self, args: Dict[str, Any]) -> str:
-        return self.model.conversation_manager.get_context_find_keyword(
-            args.get("offset", 0),
+        reader = ConversationContextReader(self.model.username)
+        return reader.search(
+            self.model.conversation_id,
             args.get("keyword", ""),
             args.get("range", 10),
-            conversation_id=self.model.conversation_id,
         )
 
     def _send_email(self, args: Dict[str, Any]) -> str:
@@ -1931,6 +1964,118 @@ class ToolExecutor:
                     return items
 
         return items
+
+    def _exa_web_search(self, args: Dict[str, Any]) -> str:
+        """
+        Exa AI 神经搜索工具
+
+        强制使用 Exa 提供方，不受 web_search.active_provider 影响
+        不再受 providers.<name>.enable_search 限制（该开关仅控制原生 web_search），
+        只要配置了 EXA_API_KEY 即可调用；未配置时由 provider.search 返回明确错误。
+        """
+
+        query = str(args.get("query", "")).strip()
+
+        if not query:
+            return json.dumps({"success": False, "provider": "exa", "error": "query is required"}, ensure_ascii=False)
+
+        num_results = max(1, min(int(args.get("num_results") or args.get("numResults") or args.get("limit") or 8), 20))
+
+        search_type = str(args.get("type") or args.get("search_type") or "").strip().lower()
+
+        if search_type and search_type not in {"auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"}:
+            search_type = "auto"
+
+        include_domains = args.get("include_domains", args.get("includeDomains"))
+        exclude_domains = args.get("exclude_domains", args.get("excludeDomains"))
+
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+
+        try:
+            from App.Search.config import get_provider_config
+            from App.Search.factory import create_search_provider
+
+            provider_cfg = get_provider_config(cfg, "exa")
+            provider = create_search_provider("exa", provider_cfg)
+
+            kwargs: Dict[str, Any] = {"num_results": num_results}
+
+            if search_type:
+                kwargs["type"] = search_type
+
+            if isinstance(include_domains, list) and include_domains:
+                kwargs["includeDomains"] = [str(x).strip() for x in include_domains if str(x).strip()]
+
+            if isinstance(exclude_domains, list) and exclude_domains:
+                kwargs["excludeDomains"] = [str(x).strip() for x in exclude_domains if str(x).strip()]
+
+            result = provider.search(query=query, **kwargs)
+
+        except Exception as exc:
+            return json.dumps({"success": False, "provider": "exa", "query": query, "error": str(exc)}, ensure_ascii=False)
+
+        if not result.ok:
+            return json.dumps(
+                {"success": False, "provider": "exa", "query": query, "error": result.error},
+                ensure_ascii=False,
+            )
+
+        items = []
+
+        for hit in result.hits[:num_results]:
+            # Markdown 精简：片段与高亮截短，减少 token，同时保留 image/favicon/author 供展示
+            snippet_short = str(hit.snippet or "").strip()[:320]
+            highlights_short = [str(h).strip()[:280] for h in (hit.highlights or [])[:2] if str(h).strip()]
+
+            items.append(
+                {
+                    "title": hit.title,
+                    "url": hit.url,
+                    "snippet": snippet_short,
+                    "highlights": highlights_short,
+                    "published_date": hit.published_date,
+                    "score": hit.score,
+                    "image": hit.image,
+                    "favicon": hit.favicon,
+                    "author": hit.author,
+                }
+            )
+
+        payload: Dict[str, Any] = {
+            "success": True,
+            "provider": "exa",
+            "query": query,
+            "type": search_type or "auto",
+            "results": items,
+        }
+
+        # 顶层 images：仅保留可展示的真实配图，过滤 logo/favicon/svg/gif，去重
+        def _is_displayable(url: str) -> bool:
+            u = str(url or "").strip()
+            if not u.startswith("https://"):
+                return False
+            low = u.lower()
+            if low.endswith(".svg") or low.endswith(".ico") or low.endswith(".gif"):
+                return False
+            if any(tok in low for tok in ("logo", "favicon", "disambig", "sprite", "/40px-")):
+                return False
+            return True
+
+        seen = set()
+        filtered_images = []
+        for it in items:
+            u = str(it.get("image") or "").strip()
+            if _is_displayable(u) and u not in seen:
+                seen.add(u)
+                filtered_images.append(u)
+
+        payload["images"] = filtered_images
+
+        # 结构化输出透传（若提供方返回 output）
+        if isinstance(result.raw, dict) and result.raw.get("output"):
+            payload["output"] = result.raw.get("output")
+
+        return json.dumps(payload, ensure_ascii=False)
 
     def _server_render_page(self, args: Dict[str, Any]) -> str:
         url = str(args.get("url", "")).strip()

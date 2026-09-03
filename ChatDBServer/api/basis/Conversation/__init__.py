@@ -11,6 +11,9 @@ Nexora.basis.Conversation — 会话基础层
 - recover_conversation_bytes（repair）
 """
 from .manager import ConversationManager
+from .service import ConversationService
+from .trash import ConversationTrashService
+from .context_reader import ConversationContextReader
 from .repair import recover_conversation_bytes
 from .asset_store import (
     cleanup_conversation_assets,
@@ -32,6 +35,9 @@ from . import asset_store
 
 __all__ = [
     "ConversationManager",
+    "ConversationService",
+    "ConversationTrashService",
+    "ConversationContextReader",
     "recover_conversation_bytes",
     "persist_conversation_image_bytes",
     "asset_store",

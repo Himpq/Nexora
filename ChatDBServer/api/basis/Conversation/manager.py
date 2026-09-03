@@ -1,1665 +1,201 @@
 """
-对话管理器 - 管理用户的对话记录
+Nexora.basis.Conversation.manager — 兼容代理（Deprecated）
+
+此模块仅为旧导入兼容，内部全部转发至 ConversationService，零业务逻辑。
+新代码请直接使用：
+
+    from basis.Conversation import ConversationService
 """
-import os
-import json
-import shutil
-import threading
-from copy import deepcopy
-from contextlib import contextmanager
-from datetime import datetime
 
-from .repair import recover_conversation_bytes
-from App.Utils import sanitize_assistant_visible_content
-from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
-from basis.Database import get_path_lock, safe_write_json
+from __future__ import annotations
 
-CONVERSATION_INDEX_VERSION = 3
+from .service import ConversationService
+from .repository import conversation_base_path, conversation_index_path
+
+CONVERSATION_INDEX_VERSION = 4
+
 
 class ConversationManager:
-    """对话记录管理类"""
-    
-    def __init__(self, username):
-        """
-        初始化对话管理器
-        
-        Args:
-            username: 用户名
-        """
-        self.username = username
-        self.base_path = f"./data/users/{username}/conversations"
-        self.index_path = os.path.join(self.base_path, "conversation_index.json")
-        
-        # 确保对话目录存在
-        os.makedirs(self.base_path, exist_ok=True)
-        self._ensure_conversation_index()
-
-    @contextmanager
-    def _conversation_update_session(self, conversation_id):
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        with get_path_lock(conversation_path):
-            if not os.path.exists(conversation_path):
-                raise ValueError(f"对话不存在: {conversation_id}")
-            conversation_data = self._load_json_data(conversation_path, default=None)
-            if not isinstance(conversation_data, dict):
-                raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
-            yield conversation_path, conversation_data
-
-    def _load_json_data(self, file_path, default=None):
-        """尽量兼容损坏或非 UTF-8 的历史对话文件。"""
-        try:
-            with open(file_path, 'rb') as f:
-                raw = f.read()
-        except FileNotFoundError:
-            return default
-        except Exception:
-            return default
-
-        for encoding in ('utf-8', 'utf-8-sig'):
-            try:
-                return json.loads(raw.decode(encoding))
-            except UnicodeDecodeError:
-                continue
-            except Exception:
-                break
-
-        try:
-            return json.loads(raw.decode('utf-8', errors='replace'))
-        except Exception:
-            recovered = recover_conversation_bytes(raw, source_path=file_path)
-            if isinstance(recovered, dict):
-                return recovered
-            return default
-
-    def _load_conversation_data_for_update(self, conversation_id):
-        """仅在会话文件可正常解析时返回数据，避免把坏文件回写成空对象。"""
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-
-        conversation_data = self._load_json_data(conversation_path, default=None)
-        if not isinstance(conversation_data, dict):
-            raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
-        return conversation_path, conversation_data
-
-    def _save_json_atomic(self, file_path, payload):
-        """原子写入包裹"""
-        safe_write_json(file_path, payload, indent=2)
-
-        if os.path.normpath(os.path.abspath(file_path)) == os.path.normpath(os.path.abspath(self.index_path)):
-            return
-
-        self._sync_conversation_index_from_file(file_path, payload)
-
-    def _normalize_message_model_fields(self, message):
-        """同步历史 assistant 消息的模型字段，保证重答可以读取确定的模型来源。"""
-        if not isinstance(message, dict):
-            return False
-
-        role = str(message.get("role") or "").strip()
-        if role != "assistant":
-            return False
-
-        changed = False
-        metadata = message.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-            message["metadata"] = metadata
-            changed = True
-
-        top_model = str(message.get("model_name") or "").strip()
-        meta_model = str(metadata.get("model_name") or "").strip()
-        resolved_model = top_model or meta_model
-
-        if resolved_model:
-            if top_model != resolved_model:
-                message["model_name"] = resolved_model
-                changed = True
-
-            if meta_model != resolved_model:
-                metadata["model_name"] = resolved_model
-                changed = True
+    """Deprecated: 纯代理"""
 
-        return changed
+    def __init__(self, username: str):
+        self.username = str(username or "").strip()
+        self._svc = ConversationService(self.username)
+        self.base_path = conversation_base_path(self.username)
+        self.index_path = conversation_index_path(self.username)
 
-    def _assistant_process_steps_have_visible_output(self, metadata):
-        if not isinstance(metadata, dict):
-            return False
-
-        process_steps = metadata.get("process_steps", [])
-
-        if not isinstance(process_steps, list):
-            return False
-
-        return any(
-            isinstance(step, dict)
-            and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
-            for step in process_steps
-        )
-
-    def _assistant_variant_has_visible_output(self, content, metadata):
-        visible_content = sanitize_assistant_visible_content(content)
-
-        return bool(str(visible_content or "").strip()) or self._assistant_process_steps_have_visible_output(metadata)
-
-    def _sanitize_assistant_versions(self, versions):
-        if not isinstance(versions, list):
-            return []
-
-        cleaned_versions = []
-
-        for version in versions:
-            if not isinstance(version, dict):
-                continue
-
-            next_version = dict(version)
-            next_metadata = next_version.get("metadata", {})
-
-            if not isinstance(next_metadata, dict):
-                next_metadata = {}
-
-            next_version["metadata"] = next_metadata
-            next_version["content"] = sanitize_assistant_visible_content(next_version.get("content", ""))
-
-            if self._assistant_variant_has_visible_output(next_version.get("content", ""), next_metadata):
-                cleaned_versions.append(next_version)
-
-        return cleaned_versions
-
-    def ensure_conversation_compatibility(self, conversation_id):
-        """
-        懒迁移历史对话结构。
-        只同步已经存在的字段，不猜测缺失模型，避免把错误模型写入历史记录。
-        """
-        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-            messages = conversation_data.get("messages", [])
-            if not isinstance(messages, list):
-                raise ValueError(f"对话内容格式无效: {conversation_id}")
-
-            changed = False
-            for message in messages:
-                if self._normalize_message_model_fields(message):
-                    changed = True
-
-            if int(conversation_data.get("schema_version") or 1) < 2:
-                conversation_data["schema_version"] = 2
-                changed = True
-
-            if changed:
-                conversation_data["updated_at"] = datetime.now().isoformat()
-                self._save_json_atomic(conversation_path, conversation_data)
-
-            return conversation_data
-
-    def _compact_preview_text(self, text, limit=120):
-        value = " ".join(str(text or "").split())
-        if len(value) <= limit:
-            return value
-
-        return value[:limit].rstrip() + "..."
-
-    def _conversation_id_from_path(self, file_path):
-        filename = os.path.basename(str(file_path or "").strip())
-        if not filename.endswith(".json"):
-            return ""
-        if filename == os.path.basename(self.index_path):
-            return ""
-        return filename[:-5].strip()
-
-    def _load_conversation_index(self):
-        if not os.path.exists(self.index_path):
-            return None
-
-        index_data = self._load_json_data(self.index_path, default=None)
-        if not isinstance(index_data, dict):
-            return None
-
-        conversations = index_data.get("conversations", {})
-        if isinstance(conversations, list):
-            normalized = {}
-            for item in conversations:
-                if not isinstance(item, dict):
-                    continue
-                conversation_id = str(item.get("conversation_id") or item.get("id") or "").strip()
-                if not conversation_id:
-                    continue
-                normalized[conversation_id] = item
-            conversations = normalized
-        elif not isinstance(conversations, dict):
-            conversations = {}
-
-        index_data["conversations"] = conversations
-        return index_data
-
-    def _build_conversation_index_item(self, conversation_id, conversation_data):
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            messages = []
-
-        preview = ""
-        for msg in reversed(messages):
-            if not isinstance(msg, dict):
-                continue
-
-            role = str(msg.get("role") or "").strip().lower()
-            if role not in {"assistant", "user"}:
-                continue
-
-            exchange_summary = str(msg.get("exchange_summary") or "").strip()
-            content = str(msg.get("content") or "").strip()
-            raw_text = exchange_summary if exchange_summary else content
-            if raw_text:
-                preview = self._compact_preview_text(raw_text)
-                break
-
-        longterm = normalize_longterm_state(conversation_data.get("longterm", {}))
-        tags = conversation_data.get("tags", [])
-        if not isinstance(tags, list):
-            tags = []
-
-        metadata = conversation_data.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        learning_course_id = self._extract_learning_course_id(metadata)
-        learning_course_title = self._extract_learning_course_title(metadata)
-
-        nexoracode_project = metadata.get("nexoracode_project")
-        nexoracode_project_payload = {}
-        if isinstance(nexoracode_project, dict):
-            for key in ("project_id", "name", "path", "subtitle", "tree_scanned_at"):
-                value = str(nexoracode_project.get(key) or "").strip()
-
-                if value:
-                    nexoracode_project_payload[key] = value
-
-        item = {
-            "conversation_id": str(conversation_id),
-            "title": str(conversation_data.get("title", "未命名对话") or "未命名对话"),
-            "created_at": conversation_data.get("created_at"),
-            "updated_at": conversation_data.get("updated_at"),
-            "pin": bool(conversation_data.get("pin", False)),
-            "message_count": len(messages),
-            "conversation_mode": str(conversation_data.get("conversation_mode", "chat") or "chat"),
-            "tags": list(tags),
-            "longterm_active": bool(longterm.get("active", False)),
-            "longterm_task": str(longterm.get("task", "") or ""),
-            "longterm_step": str(longterm.get("step", "") or ""),
-            "preview": preview,
-        }
-
-        if learning_course_id:
-            item["learning_course_id"] = learning_course_id
-
-        if learning_course_title:
-            item["learning_course_title"] = learning_course_title
-
-        branch = conversation_data.get("branch", {})
-
-        if isinstance(branch, dict):
-            parent_conversation_id = str(branch.get("parent_conversation_id") or "").strip()
-            root_conversation_id = str(branch.get("root_conversation_id") or "").strip()
-
-            if parent_conversation_id and root_conversation_id:
-                item["branch"] = {
-                    "root_conversation_id": root_conversation_id,
-                    "parent_conversation_id": parent_conversation_id,
-                    "parent_message_index": int(branch.get("parent_message_index") or 0),
-                    "created_at": str(branch.get("created_at") or "").strip(),
-                }
-
-        if nexoracode_project_payload:
-            item["nexoracode_project"] = nexoracode_project_payload
-
-        return item
-
-    @staticmethod
-    def _extract_learning_course_id(metadata):
-        """从学习会话元数据中提取稳定的课程 ID，供侧栏分组使用。"""
-        source = metadata if isinstance(metadata, dict) else {}
-        nested_learning = source.get("learning") if isinstance(source.get("learning"), dict) else {}
-        candidates = (
-            source.get("learning_course_id"),
-            source.get("course_id"),
-            source.get("lecture_id"),
-            nested_learning.get("learning_course_id"),
-            nested_learning.get("course_id"),
-            nested_learning.get("lecture_id"),
-        )
-
-        for candidate in candidates:
-            value = str(candidate or "").strip()
-
-            if value:
-                return value
-
-        return ""
-
-    @staticmethod
-    def _extract_learning_course_title(metadata):
-        """从学习会话元数据中提取课程名称，课程 ID 仅用于稳定分组。"""
-        source = metadata if isinstance(metadata, dict) else {}
-        nested_learning = source.get("learning") if isinstance(source.get("learning"), dict) else {}
-        candidates = (
-            source.get("learning_course_title"),
-            source.get("course_title"),
-            source.get("lecture_title"),
-            nested_learning.get("learning_course_title"),
-            nested_learning.get("course_title"),
-            nested_learning.get("lecture_title"),
-        )
-
-        for candidate in candidates:
-            value = str(candidate or "").strip()
-
-            if value:
-                return value
-
-        return ""
-
-    def _write_conversation_index(self, index_data):
-        safe_write_json(self.index_path, index_data, indent=2)
-
-    def _rebuild_conversation_index(self):
-        conversations = {}
-
-        if os.path.exists(self.base_path):
-            for filename in os.listdir(self.base_path):
-                if not filename.endswith(".json"):
-                    continue
-                if filename == os.path.basename(self.index_path):
-                    continue
-
-                conversation_id = filename[:-5].strip()
-                if not conversation_id:
-                    continue
-
-                conversation_path = os.path.join(self.base_path, filename)
-                data = self._load_json_data(conversation_path, default=None)
-                if not isinstance(data, dict):
-                    continue
-
-                conversations[conversation_id] = self._build_conversation_index_item(conversation_id, data)
-
-        index_data = {
-            "version": CONVERSATION_INDEX_VERSION,
-            "updated_at": datetime.now().isoformat(),
-            "conversations": conversations,
-        }
-        self._write_conversation_index(index_data)
-        return index_data
-
-    def _ensure_conversation_index(self):
-        index_data = self._load_conversation_index()
-
-        if isinstance(index_data, dict) and int(index_data.get("version") or 0) >= CONVERSATION_INDEX_VERSION:
-            return index_data
-
-        return self._rebuild_conversation_index()
-
-    def _sync_conversation_index_from_file(self, file_path, payload):
-        conversation_id = self._conversation_id_from_path(file_path)
-        if not conversation_id:
-            return
-        if not isinstance(payload, dict):
-            return
-
-        index_data = self._load_conversation_index()
-        if not isinstance(index_data, dict):
-            index_data = {
-                "version": CONVERSATION_INDEX_VERSION,
-                "updated_at": datetime.now().isoformat(),
-                "conversations": {},
-            }
-
-        conversations = index_data.get("conversations", {})
-        if not isinstance(conversations, dict):
-            conversations = {}
-
-        conversations[conversation_id] = self._build_conversation_index_item(conversation_id, payload)
-        index_data["version"] = CONVERSATION_INDEX_VERSION
-        index_data["updated_at"] = datetime.now().isoformat()
-        index_data["conversations"] = conversations
-        self._write_conversation_index(index_data)
-
-    def _collect_reserved_numeric_conversation_ids(self):
-        """收集活跃会话和回收站会话占用的数字 ID，防止删除后被新会话复用。"""
-        reserved_ids = set()
-
-        if os.path.exists(self.base_path):
-            for filename in os.listdir(self.base_path):
-
-                if not filename.endswith('.json') or filename == os.path.basename(self.index_path):
-                    continue
-
-                try:
-                    reserved_ids.add(int(filename[:-5]))
-                except ValueError:
-                    continue
-
-        trash_path = os.path.join(os.path.dirname(self.base_path), "trash")
-
-        if not os.path.isdir(trash_path):
-            return reserved_ids
-
-        for filename in os.listdir(trash_path):
-
-            if not filename.endswith('.json'):
-                continue
-
-            entry = self._load_json_data(os.path.join(trash_path, filename), default=None)
-
-            if not isinstance(entry, dict) or str(entry.get("type") or "").strip() != "conversation":
-                continue
-
-            payload = entry.get("payload", {})
-            payload = payload if isinstance(payload, dict) else {}
-            conversation_id = str(entry.get("conversation_id") or payload.get("conversation_id") or "").strip()
-
-            try:
-                reserved_ids.add(int(conversation_id))
-            except ValueError:
-                continue
-
-        return reserved_ids
-
-    def restore_conversation(self, conversation_data, conversation_id, title=None):
-        """使用原 ID 原样恢复回收站会话，使仍保留关系的子分支自动重新归属。"""
-        if not isinstance(conversation_data, dict):
-            raise ValueError("恢复的对话内容格式无效")
-
-        restored_conversation_id = str(conversation_id or "").strip()
-
-        if not restored_conversation_id:
-            raise ValueError("恢复的对话缺少原 conversation_id")
-
-        conversation_path = os.path.join(self.base_path, f"{restored_conversation_id}.json")
-
-        with get_path_lock(self.base_path):
-
-            if os.path.exists(conversation_path):
-                raise ValueError(f"原 conversation_id 已被占用: {restored_conversation_id}")
-
-            restored_data = deepcopy(conversation_data)
-            restored_data["conversation_id"] = restored_conversation_id
-            restored_data["title"] = str(title or restored_data.get("title") or "恢复的对话").strip() or "恢复的对话"
-            restored_data["created_at"] = str(restored_data.get("created_at") or datetime.now().isoformat())
-            restored_data["updated_at"] = datetime.now().isoformat()
-
-            if not isinstance(restored_data.get("messages"), list):
-                restored_data["messages"] = []
-
-            self._save_json_atomic(conversation_path, restored_data)
-
-        return restored_conversation_id
-    
-    def create_conversation(
-        self,
-        conversation_id=None,
-        title="新对话",
-        conversation_mode="chat",
-        tags=None,
-        metadata=None,
-    ):
-        """
-        创建新对话
-        
-        Args:
-            conversation_id: 对话ID，如果为None则自动生成数字ID
-            title: 对话标题
-            
-        Returns:
-            str: 对话ID
-        """
-        with get_path_lock(self.base_path):
-            if conversation_id is None:
-                reserved_ids = self._collect_reserved_numeric_conversation_ids()
-                conversation_id = str(max(reserved_ids) + 1) if reserved_ids else "1"
-
-            conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-            normalized_mode = str(conversation_mode or "chat").strip() or "chat"
-            normalized_tags = []
-            if isinstance(tags, list):
-                seen = set()
-                for item in tags:
-                    tag = str(item or "").strip().lower()
-                    if not tag or tag in seen:
-                        continue
-                    seen.add(tag)
-                    normalized_tags.append(tag)
-            normalized_metadata = metadata if isinstance(metadata, dict) else {}
-            conversation_data = {
-                "conversation_id": conversation_id,
-                "title": title,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-                "pin": False,
-                "messages": [],
-                "conversation_mode": normalized_mode,
-                "tags": normalized_tags,
-                "metadata": normalized_metadata,
-                "longterm": conversation_longterm_root_state()
-            }
-            self._save_json_atomic(conversation_path, conversation_data)
-            return conversation_id
-
-    def _build_branch_title(self, source_conversation_id, source_title):
-        """根据直接父会话生成稳定、可区分的分支标题。"""
-        parent_id = str(source_conversation_id or "").strip()
-        base_title = str(source_title or "未命名对话").strip() or "未命名对话"
-        index_data = self._ensure_conversation_index()
-        conversations = index_data.get("conversations", {}) if isinstance(index_data, dict) else {}
-        branch_count = 0
-
-        if isinstance(conversations, dict):
-
-            for item in conversations.values():
-                branch = item.get("branch", {}) if isinstance(item, dict) else {}
-
-                if not isinstance(branch, dict):
-                    continue
-
-                if str(branch.get("parent_conversation_id") or "").strip() == parent_id:
-                    branch_count += 1
-
-        suffix = f" · 分支 {branch_count + 1}"
-        title_limit = 120
-        safe_base = base_title[:max(1, title_limit - len(suffix))].rstrip()
-        return f"{safe_base}{suffix}"
-
-    def _collect_puzzle_ids(self, value, result):
-        """递归收集已复制消息中真正出现的 puzzle_id。"""
-        if isinstance(value, dict):
-            puzzle_id = str(value.get("puzzle_id") or "").strip()
-
-            if puzzle_id:
-                result.add(puzzle_id)
-
-            for nested in value.values():
-                self._collect_puzzle_ids(nested, result)
-
-        elif isinstance(value, list):
-
-            for nested in value:
-                self._collect_puzzle_ids(nested, result)
-
-    def _copy_branch_puzzle_states(self, source_conversation, messages):
-        """只复制分支历史中仍可见的 Puzzle 状态，避免带入未来节点。"""
-        puzzle_ids = set()
-        self._collect_puzzle_ids(messages, puzzle_ids)
-
-        if not puzzle_ids:
-            return {}
-
-        source_states = source_conversation.get("puzzle_states", {})
-
-        if not isinstance(source_states, dict):
-            return {}
-
-        return {
-            puzzle_id: deepcopy(source_states[puzzle_id])
-            for puzzle_id in puzzle_ids
-            if puzzle_id in source_states
-        }
-
-    def fork_conversation(self, source_conversation_id, message_index, title=""):
-        """从一个已落库的 assistant 回答节点创建独立会话快照。"""
-        source_id = str(source_conversation_id or "").strip()
-
-        if not source_id:
-            raise ValueError("source_conversation_id 不能为空")
-
-        try:
-            target_index = int(message_index)
-        except Exception as error:
-            raise ValueError("message_index 必须是整数") from error
-
-        source = self.get_conversation(source_id)
-        messages = source.get("messages", [])
-
-        if not isinstance(messages, list):
-            raise ValueError(f"对话内容格式无效: {source_id}")
-
-        if target_index < 0 or target_index >= len(messages):
-            raise ValueError("分支节点已过期，请刷新会话后重试")
-
-        target_message = messages[target_index] if isinstance(messages[target_index], dict) else {}
-
-        if str(target_message.get("role") or "").strip() != "assistant":
-            raise ValueError("当前仅支持从 assistant 回答创建分支")
-
-        copied_messages = deepcopy(messages[:target_index + 1])
-        source_branch = source.get("branch", {}) if isinstance(source.get("branch"), dict) else {}
-        root_conversation_id = str(source_branch.get("root_conversation_id") or source_id).strip()
-        created_at = datetime.now().isoformat()
-        branch_title = str(title or "").strip()
-
-        if not branch_title:
-            branch_title = self._build_branch_title(source_id, source.get("title"))
-
-        branch_title = branch_title[:120]
-        metadata = deepcopy(source.get("metadata", {})) if isinstance(source.get("metadata"), dict) else {}
-        tags = deepcopy(source.get("tags", [])) if isinstance(source.get("tags"), list) else []
-        conversation_mode = str(source.get("conversation_mode") or "chat").strip() or "chat"
-        new_conversation_id = self.create_conversation(
-            title=branch_title,
-            conversation_mode=conversation_mode,
-            tags=tags,
-            metadata=metadata,
-        )
-
-        try:
-            with self._conversation_update_session(new_conversation_id) as (conversation_path, conversation_data):
-                conversation_data["messages"] = copied_messages
-                conversation_data["branch"] = {
-                    "root_conversation_id": root_conversation_id,
-                    "parent_conversation_id": source_id,
-                    "parent_message_index": target_index,
-                    "created_at": created_at,
-                }
-                conversation_data["schema_version"] = int(source.get("schema_version") or 2)
-                puzzle_states = self._copy_branch_puzzle_states(source, copied_messages)
-
-                if puzzle_states:
-                    conversation_data["puzzle_states"] = puzzle_states
-
-                conversation_data["updated_at"] = created_at
-                self._invalidate_resume_cache_fields(conversation_data)
-                self._save_json_atomic(conversation_path, conversation_data)
-        except Exception:
-            self.delete_conversation(new_conversation_id)
-            raise
-
-        return {
-            "conversation_id": str(new_conversation_id),
-            "title": branch_title,
-            "branch": {
-                "root_conversation_id": root_conversation_id,
-                "parent_conversation_id": source_id,
-                "parent_message_index": target_index,
-                "created_at": created_at,
-            },
-        }
-    
-    def update_title(self, conversation_id, title):
-        """
-        更新对话标题
-        
-        Args:
-            conversation_id: 对话ID
-            title: 新标题
-        """
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        
-        conversation_data["title"] = title
-        conversation_data["updated_at"] = datetime.now().isoformat()
-        
-        self._save_json_atomic(conversation_path, conversation_data)
-    
-    def update_conversation_title(self, conversation_id, title):
-        """
-        更新对话标题
-        
-        Args:
-            conversation_id: 对话ID
-            title: 新标题
-        """
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        
-        # 更新标题
-        conversation_data["title"] = title
-        conversation_data["updated_at"] = datetime.now().isoformat()
-        
-        # 保存对话
-        self._save_json_atomic(conversation_path, conversation_data)
-
-    def update_volc_response_id(self, conversation_id, response_id, model_name=None):
-        """
-        更新VolcEngine的Response ID，用于上下文续接
-        """
-        try:
-            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-                conversation_data["last_volc_response_id"] = response_id
-                if model_name:
-                    conversation_data["last_model_used"] = model_name
-                self._save_json_atomic(conversation_path, conversation_data)
-        except ValueError:
-            return
-
-    def update_conversation_fields(self, conversation_id, fields):
-        """
-        批量更新会话根字段，遇到字典值时做浅合并。
-        """
-        if not isinstance(fields, dict):
-            raise ValueError("fields 必须是字典")
-
-        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-            for key, value in fields.items():
-                if isinstance(value, dict) and isinstance(conversation_data.get(key), dict):
-                    merged = dict(conversation_data.get(key) or {})
-                    merged.update(value)
-                    conversation_data[key] = merged
-                else:
-                    conversation_data[key] = value
-
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            self._save_json_atomic(conversation_path, conversation_data)
-
-    def update_last_response_id(self, conversation_id, response_id, model_name=None):
-        """
-        更新可续接的 last response id（通用命名，兼容历史 volc 命名字段）
-        """
-        self.update_volc_response_id(conversation_id, response_id, model_name=model_name)
-
-    def _invalidate_resume_cache_fields(self, conversation_data):
-        """
-        会话分支被本地改写（删消息/切版本）后，必须清理远端续接ID，
-        否则下次请求会沿用旧 remote context，导致与当前可见历史不一致。
-        """
-        if not isinstance(conversation_data, dict):
-            return
-        for key in ("last_volc_response_id", "last_model_used"):
-            if key in conversation_data:
-                try:
-                    del conversation_data[key]
-                except Exception:
-                    conversation_data[key] = None
-            
-    def get_last_volc_response_id(self, conversation_id, current_model_name=None):
-        """
-        获取VolcEngine的Last Response ID
-        """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            return None
-
-        data = self._load_json_data(conversation_path, default={}) or {}
-        last_id = data.get("last_volc_response_id")
-        last_model = data.get("last_model_used")
-
-        def _norm_model_name(v):
-            return str(v or "").strip().lower()
-
-        current_model_norm = _norm_model_name(current_model_name)
-        last_model_norm = _norm_model_name(last_model)
-
-        # Check for model compatibility
-        # logic: if current model is known, and (last_model is different OR missing), reset it.
-        # (Assuming missing last_model implies it was the default/old model,
-        # so if we are using a specific new model, it's a mismatch).
-        if current_model_norm and last_model_norm and last_model_norm != current_model_norm:
-            print(f"[CACHE] Model mismatch. Last: {last_model}, Current: {current_model_name}. Resetting context ID.")
-            return None
-
-        return last_id
-
-    def get_last_response_id(self, conversation_id, current_model_name=None):
-        """
-        获取可续接的 last response id（通用命名，兼容历史 volc 命名字段）
-        """
-        return self.get_last_volc_response_id(conversation_id, current_model_name=current_model_name)
-
-    def add_message(self, conversation_id, role, content, metadata=None, index=None):
-        """
-        添加消息到对话
-        
-        Args:
-            conversation_id: 对话ID
-            role: 角色 (user/assistant/function)
-            content: 消息内容
-            metadata: 额外元数据（如函数调用信息、交流总结等）
-            index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
-        """
-        saved_index = None
-        normalized_role = str(role or "").strip()
-
-        if normalized_role == "assistant":
-            content = sanitize_assistant_visible_content(content)
-
-        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-            messages = conversation_data.get("messages", [])
-            if not isinstance(messages, list):
-                raise ValueError(f"对话内容格式无效: {conversation_id}")
-
-            message = {
-                "role": role,
-                "content": content,
-                "timestamp": datetime.now().isoformat()
-            }
-
-            if index is not None:
-                try:
-                    index = int(index)
-                except Exception:
-                    raise ValueError(f"消息索引无效: index={index}")
-
-                if index < 0 or index >= len(messages):
-                    raise ValueError(
-                        f"消息索引越界: index={index}, message_count={len(messages)}"
-                    )
-
-                old_msg = messages[index]
-                old_role = str((old_msg if isinstance(old_msg, dict) else {}).get("role") or "").strip()
-                new_role = str(role or "").strip()
-                if old_role != new_role:
-                    raise ValueError(
-                        f"消息索引角色不匹配: index={index}, expected={new_role}, actual={old_role}"
-                    )
-
-                old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
-                old_versions = self._sanitize_assistant_versions(old_metadata.get("versions", []))
-
-                if "metadata" not in message:
-                    message["metadata"] = {}
-                message["metadata"]["versions"] = list(old_versions)
-
-                if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
-                    prev_content = sanitize_assistant_visible_content(old_msg.get("content", ""))
-                    prev_ts = old_msg.get("timestamp", "")
-                    prev_meta_without_versions = {
-                        k: v for k, v in old_metadata.items() if k != "versions"
-                    }
-                    prev_variant = {
-                        "content": prev_content,
-                        "timestamp": prev_ts,
-                        "metadata": prev_meta_without_versions
-                    }
-                    if "exchange_summary" in old_msg:
-                        prev_variant["exchange_summary"] = old_msg["exchange_summary"]
-
-                    has_meaningful_content = bool(str(prev_content or "").strip())
-                    has_meaningful_steps = self._assistant_process_steps_have_visible_output(prev_meta_without_versions)
-                    if has_meaningful_content or has_meaningful_steps:
-                        existed = False
-                        for v in message["metadata"]["versions"]:
-                            if not isinstance(v, dict):
-                                continue
-                            if (
-                                str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
-                                and str(v.get("content", "")) == str(prev_variant.get("content", ""))
-                            ):
-                                existed = True
-                                break
-                        if not existed:
-                            message["metadata"]["versions"].append(prev_variant)
-
-            if metadata:
-                if "metadata" not in message:
-                    message["metadata"] = {}
-                message["metadata"].update(metadata)
-
-            if role == "assistant" and metadata and "exchange_summary" in metadata:
-                message["exchange_summary"] = metadata["exchange_summary"]
-            if role == "assistant":
-                model_name = ""
-                if isinstance(message.get("metadata"), dict):
-                    model_name = str(message["metadata"].get("model_name", "") or "").strip()
-                if model_name:
-                    message["model_name"] = model_name
-                elif "model_name" in message:
-                    del message["model_name"]
-
-            if index is not None:
-                messages[index] = message
-                saved_index = index
-                self._invalidate_resume_cache_fields(conversation_data)
-            else:
-                messages.append(message)
-                saved_index = len(messages) - 1
-
-            conversation_data["messages"] = messages
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            self._save_json_atomic(conversation_path, conversation_data)
-
-        return saved_index
-
-    def update_message_metadata(self, conversation_id, message_index, metadata_patch):
-        """原子合并单条消息元数据，不改写消息内容或版本。"""
-        try:
-            index = int(message_index)
-        except Exception as error:
-            raise ValueError(f"消息索引无效: index={message_index}") from error
-
-        patch = metadata_patch if isinstance(metadata_patch, dict) else {}
-
-        if not patch:
-            raise ValueError("消息元数据补丁不能为空")
-
-        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-            messages = conversation_data.get("messages", [])
-
-            if not isinstance(messages, list):
-                raise ValueError(f"对话内容格式无效: {conversation_id}")
-
-            if index < 0 or index >= len(messages):
-                raise ValueError(
-                    f"消息索引越界: index={index}, message_count={len(messages)}"
-                )
-
-            message = messages[index]
-
-            if not isinstance(message, dict):
-                raise ValueError(f"消息格式无效: index={index}")
-
-            metadata = message.get("metadata", {})
-
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            next_metadata = dict(metadata)
-            next_metadata.update(patch)
-            message["metadata"] = next_metadata
-            messages[index] = message
-            conversation_data["messages"] = messages
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            self._save_json_atomic(conversation_path, conversation_data)
-
-        return next_metadata
-
-    def validate_regenerate_target(self, conversation_id, message_index):
-        """
-        校验重答目标，确保覆盖点一定是 assistant，且前一条是触发它的 user。
-        """
-        try:
-            idx = int(message_index)
-        except Exception:
-            return False, "消息索引无效", {}
-
-        try:
-            conversation = self.get_conversation(conversation_id)
-        except Exception as e:
-            return False, str(e), {}
-
-        messages = conversation.get("messages", [])
-        if not isinstance(messages, list):
-            return False, "对话内容格式无效", {
-                "message_count": 0
-            }
-
-        if idx < 0 or idx >= len(messages):
-            return False, "消息索引已过期，请刷新后重试", {
-                "message_count": len(messages)
-            }
-
-        target = messages[idx] if isinstance(messages[idx], dict) else {}
-        target_role = str(target.get("role") or "").strip()
-        if target_role != "assistant":
-            return False, "重答目标必须是 assistant 消息", {
-                "message_count": len(messages),
-                "target_role": target_role,
-                "target_index": idx
-            }
-
-        user_index = idx - 1
-        if user_index < 0:
-            return False, "重答目标前缺少 user 消息", {
-                "message_count": len(messages),
-                "target_index": idx
-            }
-
-        source = messages[user_index] if isinstance(messages[user_index], dict) else {}
-        source_role = str(source.get("role") or "").strip()
-        if source_role != "user":
-            return False, "重答目标前一条不是 user 消息", {
-                "message_count": len(messages),
-                "target_index": idx,
-                "source_role": source_role
-            }
-
-        return True, "ok", {
-            "message_count": len(messages),
-            "target_index": idx,
-            "user_index": user_index,
-            "user_content": str(source.get("content") or ""),
-            "assistant_model_name": str(
-                target.get("model_name")
-                or (target.get("metadata", {}) if isinstance(target.get("metadata", {}), dict) else {}).get("model_name")
-                or ""
-            ).strip()
-        }
-
-    def delete_message(self, conversation_id, message_index):
-        """
-        删除指定索引所属的“单轮消息”
-        - 点击 user：删除该 user 以及其后紧邻的 assistant（若存在）
-        - 点击 assistant：删除该 assistant 以及其前紧邻的 user（若存在）
-        """
-        try:
-            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        except ValueError:
-            return False
-
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            return False
-        if 0 <= message_index < len(messages):
-            start = message_index
-            end = message_index
-            role = str(messages[message_index].get('role') or '').strip()
-
-            if role == 'user':
-                # user + next assistant
-                if message_index + 1 < len(messages):
-                    next_role = str(messages[message_index + 1].get('role') or '').strip()
-                    if next_role == 'assistant':
-                        end = message_index + 1
-            elif role == 'assistant':
-                # prev user + assistant
-                if message_index - 1 >= 0:
-                    prev_role = str(messages[message_index - 1].get('role') or '').strip()
-                    if prev_role == 'user':
-                        start = message_index - 1
-
-            del messages[start:end + 1]
-            conversation_data["messages"] = messages
-            self._invalidate_resume_cache_fields(conversation_data)
-            
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            
-            self._save_json_atomic(conversation_path, conversation_data)
-            return True
-        return False
-
-    def save_message_version(self, conversation_id, message_index):
-        """
-        为指定消息保存一个历史版本（用于重新回答切换）
-        将当前内容移入元数据的 versions 列表中
-        """
-        try:
-            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        except ValueError:
-            return False
-
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            return False
-        if 0 <= message_index < len(messages):
-            msg = messages[message_index]
-            if msg.get('role') != 'assistant':
-                return False
-                
-            # 初始化 metadata 和 versions
-            if "metadata" not in msg:
-                msg["metadata"] = {}
-            if "versions" not in msg["metadata"]:
-                msg["metadata"]["versions"] = []
-            msg["metadata"]["versions"] = self._sanitize_assistant_versions(msg["metadata"]["versions"])
-                
-            # 保存当前内容到版本列表 (不含 versions 自身以防无限嵌套)
-            version_data = {
-                "content": sanitize_assistant_visible_content(msg.get("content", "")),
-                "timestamp": msg.get("timestamp", ""),
-                "metadata": {k: v for k, v in msg.get("metadata", {}).items() if k != "versions"}
-            }
-            if "exchange_summary" in msg:
-                version_data["exchange_summary"] = msg["exchange_summary"]
-
-            has_meaningful_content = bool(str(version_data.get("content", "")).strip())
-            has_meaningful_steps = self._assistant_process_steps_have_visible_output(version_data.get("metadata", {}))
-            if has_meaningful_content or has_meaningful_steps:
-                existed = False
-                for v in msg["metadata"]["versions"]:
-                    if not isinstance(v, dict):
-                        continue
-                    if (
-                        str(v.get("timestamp", "")) == str(version_data.get("timestamp", ""))
-                        and str(v.get("content", "")) == str(version_data.get("content", ""))
-                    ):
-                        existed = True
-                        break
-                if not existed:
-                    msg["metadata"]["versions"].append(version_data)
-            
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            self._save_json_atomic(conversation_path, conversation_data)
-            return True
-        return False
-
-    def switch_message_version(self, conversation_id, message_index, version_index):
-        """
-        切换到指定的历史版本
-        """
-        try:
-            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        except ValueError:
-            return False
-
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            return False
-        if 0 <= message_index < len(messages):
-            msg = messages[message_index]
-            versions = msg.get("metadata", {}).get("versions", [])
-            
-            if 0 <= version_index <= len(versions):
-                # 如果 version_index == len(versions)，表示当前就是最新（或正在切换回当前路径）
-                # 这里逻辑需要稍微绕一下：versions里存的是“旧版本”
-                # 我们把当前内容和目标版本互换
-                
-                # 简单做法：把当前所有可能的状态（当前+历史）看做一个池子
-                all_variants = versions + [{
-                    "content": sanitize_assistant_visible_content(msg.get("content", "")),
-                    "timestamp": msg.get("timestamp", ""),
-                    "metadata": {k: v for k, v in msg.get("metadata", {}).items() if k != "versions"},
-                    "exchange_summary": msg.get("exchange_summary")
-                }]
-                
-                target = all_variants[version_index]
-                
-                # 更新消息
-                msg["content"] = sanitize_assistant_visible_content(target["content"])
-                msg["timestamp"] = target["timestamp"]
-                if target.get("exchange_summary"):
-                    msg["exchange_summary"] = target["exchange_summary"]
-                elif "exchange_summary" in msg:
-                    del msg["exchange_summary"]
-                
-                # 更新元数据（保留 versions 列表）
-                msg["metadata"] = target.get("metadata", {})
-
-                # 切换时保留全部其余变体(含正文为空的中途终止版本):
-                # 用户刚以"N/M 版本"看过它们,按可见性丢弃会导致 M 缩水、无法切回;
-                # 仅做结构清洗(非 dict 剔除/正文净化/剥离嵌套 versions 防无限嵌套)
-                kept_versions = []
-
-                for i, variant in enumerate(all_variants):
-                    if i == version_index or not isinstance(variant, dict):
-                        continue
-
-                    cleaned_variant = dict(variant)
-
-                    cleaned_variant["content"] = sanitize_assistant_visible_content(cleaned_variant.get("content", ""))
-                    cleaned_variant["metadata"] = {
-                        k: v for k, v in (cleaned_variant.get("metadata") or {}).items()
-                        if k != "versions"
-                    }
-
-                    kept_versions.append(cleaned_variant)
-
-                msg["metadata"]["versions"] = kept_versions
-                model_name = str(msg.get("metadata", {}).get("model_name", "") or "").strip()
-                if model_name:
-                    msg["model_name"] = model_name
-                elif "model_name" in msg:
-                    del msg["model_name"]
-                self._invalidate_resume_cache_fields(conversation_data)
-                
-                conversation_data["updated_at"] = datetime.now().isoformat()
-                self._save_json_atomic(conversation_path, conversation_data)
-                return True
-        return False
-
-    def get_conversation(self, conversation_id):
-        """
-        获取对话记录
-        
-        Args:
-            conversation_id: 对话ID
-            
-        Returns:
-            dict: 对话数据
-        """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-        
-        data = self._load_json_data(conversation_path, default=None)
-        if data is None:
-            raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
-        return data
-
-    def get_message_count(self, conversation_id):
-        """
-        获取对话中的消息总数
-        """
-        try:
-            conversation = self.get_conversation(conversation_id)
-            return len(conversation.get('messages', []))
-        except:
-            return 0
-
-    def get_last_user_message_index(self, conversation_id):
-        """
-        获取最后一条 user 消息索引，不存在返回 -1
-        """
-        try:
-            messages = self.get_messages(conversation_id)
-        except Exception:
-            return -1
-        for i in range(len(messages) - 1, -1, -1):
-            role = str((messages[i] or {}).get("role") or "").strip()
-            if role == "user":
-                return i
-        return -1
-
-    def update_user_message_content(self, conversation_id, message_index, new_content, only_last=True):
-        """
-        更新一条 user 消息内容。
-        - only_last=True 时仅允许修改最后一条 user 消息。
-        """
-        try:
-            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        except ValueError as e:
-            return False, str(e)
-
-        try:
-            idx = int(message_index)
-        except Exception:
-            return False, "消息索引无效"
-
-        text = str(new_content or "").strip()
-        if not text:
-            return False, "消息内容不能为空"
-
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            return False, "对话内容格式无效"
-        if not (0 <= idx < len(messages)):
-            return False, "消息不存在"
-
-        msg = messages[idx] if isinstance(messages[idx], dict) else {}
-        role = str(msg.get("role") or "").strip()
-        if role != "user":
-            return False, "仅支持修改用户消息"
-
-        if only_last:
-            last_user_index = -1
-            for i in range(len(messages) - 1, -1, -1):
-                m = messages[i] if isinstance(messages[i], dict) else {}
-                if str(m.get("role") or "").strip() == "user":
-                    last_user_index = i
-                    break
-            if idx != last_user_index:
-                return False, "仅支持修改最后一条用户消息"
-
-        msg["content"] = text
-        msg["timestamp"] = datetime.now().isoformat()
-        messages[idx] = msg
-        self._invalidate_resume_cache_fields(conversation_data)
-        conversation_data["messages"] = messages
-        conversation_data["updated_at"] = datetime.now().isoformat()
-
-        self._save_json_atomic(conversation_path, conversation_data)
-        return True, "ok"
-    
-    def list_conversations(self):
-        """
-        列出所有对话。
-
-        这里直接读取轻量索引，避免把每个会话的完整 messages 全量加载进内存。
-        
-        Returns:
-            list: 对话ID列表，按创建时间倒序排列
-        """
-        if not os.path.exists(self.base_path):
-            return []
-
-        index_data = self._load_conversation_index()
-        if not isinstance(index_data, dict):
-            index_data = self._rebuild_conversation_index()
-
-        conversation_map = index_data.get("conversations", {})
-        if not isinstance(conversation_map, dict):
-            conversation_map = {}
-
-        conversations = []
-        for conversation_id, item in conversation_map.items():
-            if not isinstance(item, dict):
-                continue
-
-            snapshot = dict(item)
-            snapshot["conversation_id"] = str(snapshot.get("conversation_id") or conversation_id)
-            conversations.append(snapshot)
-        
-        # 置顶优先，其次按更新时间倒序
-        conversations.sort(
-            key=lambda x: (
-                1 if bool(x.get('pin', False)) else 0,
-                str(x.get('updated_at') or "")
-            ),
-            reverse=True
-        )
-        return conversations
-
-    def set_conversation_pin(self, conversation_id, pin=True):
-        """设置对话置顶状态"""
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-
-        conversation_data["pin"] = bool(pin)
-
-        self._save_json_atomic(conversation_path, conversation_data)
-    
-    def delete_conversation(self, conversation_id):
-        """
-        删除对话
-        
-        Args:
-            conversation_id: 对话ID
-            
-        Returns:
-            bool: 是否成功删除
-        """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            return False
-        
-        os.remove(conversation_path)
-        self._remove_conversation_index(conversation_id)
-        return True
-
-    def _remove_conversation_index(self, conversation_id):
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            return
-
-        with get_path_lock(self.index_path):
-            index_data = self._load_conversation_index()
-            if not isinstance(index_data, dict):
-                return
-
-            conversations = index_data.get("conversations", {})
-            if not isinstance(conversations, dict):
-                conversations = {}
-
-            if cid not in conversations:
-                return
-
-            del conversations[cid]
-            index_data["updated_at"] = datetime.now().isoformat()
-            index_data["conversations"] = conversations
-            self._write_conversation_index(index_data)
-    
-    def get_messages(self, conversation_id, limit=None):
-        """
-        获取对话中的消息
-        
-        Args:
-            conversation_id: 对话ID
-            limit: 限制返回的消息数量（从最新开始）
-            
-        Returns:
-            list: 消息列表
-        """
-        conversation = self.get_conversation(conversation_id)
-        messages = conversation.get('messages', [])
-        
-        if limit:
-            messages = messages[-limit:]
-        
-        return messages
-
-    def get_latest_context_compression(self, conversation_id):
-        """
-        获取最近一次上下文压缩标记。
-        返回结构示例：
-        {
-          "summary": "...",
-          "history_cut_index": 42,
-          "created_at": "...",
-          "model": "...",
-          "provider": "..."
-        }
-        """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            return None
-        try:
-            conversation_data = self._load_json_data(conversation_path, default={}) or {}
-            arr = conversation_data.get("context_compressions", [])
-            if not isinstance(arr, list) or not arr:
-                return None
-            last = arr[-1]
-            return last if isinstance(last, dict) else None
-        except Exception:
-            return None
-
-    def append_context_compression(self, conversation_id, marker):
-        """
-        追加一条上下文压缩标记。
-        """
-        if not isinstance(marker, dict):
-            return False
-        try:
-            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
-                arr = conversation_data.get("context_compressions", [])
-                if not isinstance(arr, list):
-                    arr = []
-                item = {
-                    "summary": str(marker.get("summary", "") or "").strip(),
-                    "history_cut_index": int(marker.get("history_cut_index", -1) or -1),
-                    "created_at": str(marker.get("created_at", datetime.now().isoformat()) or datetime.now().isoformat()),
-                    "model": str(marker.get("model", "") or "").strip(),
-                    "provider": str(marker.get("provider", "") or "").strip(),
-                    "trigger_raw_input_tokens": int(marker.get("trigger_raw_input_tokens", 0) or 0),
-                    "context_window": int(marker.get("context_window", 0) or 0),
-                    "history_message_count": int(marker.get("history_message_count", 0) or 0),
-                    "history_chars": int(marker.get("history_chars", 0) or 0),
-                }
-                arr.append(item)
-                if len(arr) > 40:
-                    arr = arr[-40:]
-                conversation_data["context_compressions"] = arr
-                conversation_data["updated_at"] = datetime.now().isoformat()
-                self._save_json_atomic(conversation_path, conversation_data)
-                return True
-        except Exception:
-            return False
-    
-    def set_main_title(self, conversation_id, main_title):
-        """
-        设置当前这次交流的总结（针对最后一条assistant消息）
-        
-        Args:
-            conversation_id: 对话ID
-            main_title: 这次交流的总结
-        """
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError(f"对话内容格式无效: {conversation_id}")
-
-        # 找到最后一条assistant消息，添加exchange_summary
-        for msg in reversed(messages):
-            if msg["role"] == "assistant":
-                msg["exchange_summary"] = main_title
-                break
-        
-        conversation_data["updated_at"] = datetime.now().isoformat()
-        
-        self._save_json_atomic(conversation_path, conversation_data)
-    
-    def get_recent_exchange_summaries(self, conversation_id, limit=5):
-        """
-        获取最近几次交流的总结
-        
-        Args:
-            conversation_id: 对话ID
-            limit: 返回最近N次交流的总结
-            
-        Returns:
-            list: 交流总结列表 [{"user": "...", "summary": "..."}, ...]
-        """
-        messages = self.get_messages(conversation_id)
-        
-        summaries = []
-        current_pair = {}
-        
-        for msg in messages:
-            if msg["role"] == "user":
-                current_pair = {"user": msg["content"][:100]}  # 截取前100字
-            elif msg["role"] == "assistant":
-                if "exchange_summary" in msg:
-                    current_pair["summary"] = msg["exchange_summary"]
-                    summaries.append(current_pair)
-                    current_pair = {}
-        
-        return summaries[-limit:] if len(summaries) > limit else summaries
-    
-    def get_context_length(self, offset=0, conversation_id=None):
-        """
-        获取前offset个对话的总字符长度
-        
-        Args:
-            offset: 从最新往前数第offset个对话（0=当前，1=上一个）
-            conversation_id: 指定对话ID（如果指定则忽略offset，直接获取该对话长度）
-            
-        Returns:
-            int: 字符总长度
-        """
-        if conversation_id:
-            target_conv_id = conversation_id
-        else:
-            conversations = self.list_conversations()
-            if offset >= len(conversations):
-                return 0
-            target_conv_id = conversations[offset]['conversation_id']
-            
-        messages = self.get_messages(target_conv_id)
-        
-        total_length = 0
-        for msg in messages:
-            total_length += len(msg.get('content', ''))
-        
-        return total_length
-    
-    def get_context(self, offset=0, from_pos=0, to_pos=None, conversation_id=None):
-        """
-        获取前offset个对话从from_pos到to_pos字符的内容
-        
-        Args:
-            offset: 从最新往前数第offset个对话
-            from_pos: 起始字符位置
-            to_pos: 结束字符位置（None表示到结尾）
-            conversation_id: 指定对话ID（如果指定则忽略offset，直接获取该对话内容）
-            
-        Returns:
-            str: 截取的内容
-        """
-        if conversation_id:
-            target_conv_id = conversation_id
-        else:
-            conversations = self.list_conversations()
-            if offset >= len(conversations):
-                return ""
-            target_conv_id = conversations[offset]['conversation_id']
-
-        messages = self.get_messages(target_conv_id)
-        
-        # 拼接所有消息
-        full_text = ""
-        for msg in messages:
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            full_text += f"[{role}]: {content}\n\n"
-        
-        # 截取指定范围
-        if to_pos is None:
-            return full_text[from_pos:]
-        else:
-            return full_text[from_pos:to_pos]
-    
-    def get_context_find_keyword(self, offset=0, keyword="", range_size=10, conversation_id=None):
-        """
-        在前offset个对话中搜索关键词，返回关键词前后range_size个字符的上下文
-        
-        Args:
-            offset: 从最新往前数第offset个对话
-            keyword: 搜索关键词
-            range_size: 关键词前后返回的字符数
-            conversation_id: 指定对话ID（如果指定则忽略offset，直接在该对话中搜索）
-            
-        Returns:
-            str: 格式化的搜索结果
-        """
-        if conversation_id:
-            target_conv_id = conversation_id
-        else:
-            conversations = self.list_conversations()
-            if offset >= len(conversations):
-                return "对话不存在"
-            target_conv_id = conversations[offset]['conversation_id']
-
-        messages = self.get_messages(target_conv_id)
-        
-        results = []
-        for msg in messages:
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            
-            # 查找关键词的所有出现位置
-            start = 0
-            while True:
-                pos = content.find(keyword, start)
-                if pos == -1:
-                    break
-                
-                # 提取关键词前后的文本
-                context_start = max(0, pos - range_size)
-                context_end = min(len(content), pos + len(keyword) + range_size)
-                
-                before = content[context_start:pos]
-                match = content[pos:pos+len(keyword)]
-                after = content[pos+len(keyword):context_end]
-                
-                results.append(f"[{role}]: ...{before}【{match}】{after}...")
-                start = pos + 1
-        
-        if not results:
-            return f"未找到关键词: {keyword}"
-        
-        return "\n".join(results)
-    
-    def get_main_title(self, conversation_id, offset=0):
-        """
-        获取指定对话中前offset次交流的总结（从最近往前数）
-        
-        Args:
-            conversation_id: 对话ID
-            offset: 从最新往前数第offset次交流（0=当前未完成的交流，1=上一次交流）
-            
-        Returns:
-            str: 交流总结
-        """
-        messages = self.get_messages(conversation_id)
-        
-        # 找到所有有exchange_summary的assistant消息
-        summaries = []
-        for msg in messages:
-            if msg["role"] == "assistant" and "exchange_summary" in msg:
-                summaries.append(msg["exchange_summary"])
-        
-        if not summaries:
-            return "无交流总结"
-        
-        # offset=0返回最后一次，offset=1返回倒数第二次
-        index = -(offset + 1)
-        if abs(index) > len(summaries):
-            return "交流不存在"
-        
-        return summaries[index]
-
-
-if __name__ == "__main__":
-    # 测试代码
-    os.chdir("../")
-    
-    manager = ConversationManager("test_user")
-    
-    # 创建对话
-    conv_id = manager.create_conversation()
-    print(f"创建对话: {conv_id}")
-    
-    # 添加消息
-    manager.add_message(conv_id, "user", "你好")
-    manager.add_message(conv_id, "assistant", "你好！有什么我可以帮助你的吗？")
-    
-    # 获取对话
-    conversation = manager.get_conversation(conv_id)
-    print(f"对话内容: {conversation}")
-    
-    # 列出所有对话
-    conversations = manager.list_conversations()
-    print(f"所有对话: {conversations}")
+    def create_conversation(self, *a, **kw):
+        return self._svc.create_conversation(*a, **kw)
+
+    def get_conversation(self, *a, **kw):
+        return self._svc.get_conversation(*a, **kw)
+
+    def get_messages(self, *a, **kw):
+        return self._svc.get_messages(*a, **kw)
+
+    def get_message_count(self, *a, **kw):
+        return self._svc.get_message_count(*a, **kw)
+
+    def get_last_user_message_index(self, *a, **kw):
+        return self._svc.get_last_user_message_index(*a, **kw)
+
+    def list_conversations(self, *a, **kw):
+        return self._svc.list_conversations(*a, **kw)
+
+    def delete_conversation(self, *a, **kw):
+        return self._svc.delete_conversation(*a, **kw)
+
+    def restore_conversation(self, *a, **kw):
+        return self._svc.restore_conversation(*a, **kw)
+
+    def update_title(self, *a, **kw):
+        return self._svc.update_title(*a, **kw)
+
+    def update_conversation_title(self, *a, **kw):
+        return self._svc.update_conversation_title(*a, **kw)
+
+    def set_conversation_pin(self, *a, **kw):
+        return self._svc.set_conversation_pin(*a, **kw)
+
+    def set_pin(self, *a, **kw):
+        return self._svc.set_pin(*a, **kw)
+
+    def update_conversation_fields(self, *a, **kw):
+        return self._svc.update_conversation_fields(*a, **kw)
+
+    def ensure_conversation_compatibility(self, *a, **kw):
+        return self._svc.ensure_conversation_compatibility(*a, **kw)
+
+    def add_message(self, *a, **kw):
+        return self._svc.add_message(*a, **kw)
+
+    def update_message_metadata(self, *a, **kw):
+        return self._svc.update_message_metadata(*a, **kw)
+
+    def validate_regenerate_target(self, *a, **kw):
+        return self._svc.validate_regenerate_target(*a, **kw)
+
+    def resolve_regenerate_target(self, *a, **kw):
+        return self._svc.resolve_regenerate_target(*a, **kw)
+
+    def replace_assistant(self, *a, **kw):
+        return self._svc.replace_assistant(*a, **kw)
+
+    def edit_user_message(self, *a, **kw):
+        return self._svc.edit_user_message(*a, **kw)
+
+    def delete_turn(self, *a, **kw):
+        return self._svc.delete_turn(*a, **kw)
+
+    def delete_message(self, *a, **kw):
+        return self._svc.delete_turn(*a, **kw)
+
+    def save_message_version(self, *a, **kw):
+        return self._svc.save_message_version(*a, **kw)
+
+    def switch_message_version(self, *a, **kw):
+        return self._svc.switch_message_version(*a, **kw)
+
+    def update_user_message_content(self, *a, **kw):
+        return self._svc.update_user_message_content(*a, **kw)
+
+    def get_last_volc_response_id(self, *a, **kw):
+        return self._svc.get_last_volc_response_id(*a, **kw)
+
+    def get_last_response_id(self, *a, **kw):
+        return self._svc.get_last_response_id(*a, **kw)
+
+    def update_volc_response_id(self, *a, **kw):
+        return self._svc.update_volc_response_id(*a, **kw)
+
+    def update_last_response_id(self, *a, **kw):
+        return self._svc.update_last_response_id(*a, **kw)
+
+    def get_latest_compression(self, *a, **kw):
+        return self._svc.get_latest_compression(*a, **kw)
+
+    def get_latest_context_compression(self, *a, **kw):
+        return self._svc.get_latest_compression(*a, **kw)
+
+    def record_context_compression(self, *a, **kw):
+        return self._svc.record_context_compression(*a, **kw)
+
+    def append_context_compression(self, *a, **kw):
+        return self._svc.record_context_compression(*a, **kw)
+
+    def record_system_snapshot(self, *a, **kw):
+        return self._svc.record_system_snapshot(*a, **kw)
+
+    def record_knowledge_state(self, *a, **kw):
+        return self._svc.record_knowledge_state(*a, **kw)
+
+    def get_last_system_snapshot(self, *a, **kw):
+        return self._svc.get_last_system_snapshot(*a, **kw)
+
+    def has_system_snapshot(self, *a, **kw):
+        return self._svc.has_system_snapshot(*a, **kw)
+
+    def ensure_system_snapshot(self, *a, **kw):
+        return self._svc.ensure_system_snapshot(*a, **kw)
+
+    def get_last_knowledge_snapshot(self, *a, **kw):
+        return self._svc.get_last_knowledge_snapshot(*a, **kw)
+
+    def ensure_knowledge_diff_snapshot(self, *a, **kw):
+        return self._svc.ensure_knowledge_diff_snapshot(*a, **kw)
+
+    def get_last_global_knowledge_snapshot(self, *a, **kw):
+        return self._svc.get_last_global_knowledge_snapshot(*a, **kw)
+
+    def ensure_global_knowledge_diff_snapshot(self, *a, **kw):
+        return self._svc.ensure_global_knowledge_diff_snapshot(*a, **kw)
+
+    def set_main_title(self, *a, **kw):
+        return self._svc.set_main_title(*a, **kw)
+
+    def fork_conversation(self, *a, **kw):
+        return self._svc.fork_conversation(*a, **kw)
+
+    def get_context_length(self, *a, **kw):
+        return self._svc.get_context_length(*a, **kw)
+
+    def get_context(self, *a, **kw):
+        return self._svc.get_context(*a, **kw)
+
+    def get_context_find_keyword(self, *a, **kw):
+        return self._svc.get_context_find_keyword(*a, **kw)
+
+    def get_main_title(self, *a, **kw):
+        return self._svc.get_main_title(*a, **kw)
+
+    def get_recent_exchange_summaries(self, *a, **kw):
+        return self._svc.get_recent_exchange_summaries(*a, **kw)
+
+    def get_scope(self, *a, **kw):
+        return self._svc.get_scope(*a, **kw)
+
+    def set_workspace(self, *a, **kw):
+        return self._svc.set_workspace(*a, **kw)
+
+    def set_learning(self, *a, **kw):
+        return self._svc.set_learning(*a, **kw)
+
+    def replace_conversation_messages(self, *a, **kw):
+        return self._svc.replace_conversation_messages(*a, **kw)
+
+    def update_puzzle_state(self, *a, **kw):
+        return self._svc.update_puzzle_state(*a, **kw)
+
+    def get_puzzle_states(self, *a, **kw):
+        return self._svc.get_puzzle_states(*a, **kw)
+
+    def get_puzzle_state(self, *a, **kw):
+        return self._svc.get_puzzle_state(*a, **kw)
+
+    def get_conversation_usage(self, *a, **kw):
+        return self._svc.get_conversation_usage(*a, **kw)
+
+    def __getattr__(self, name):
+        if hasattr(self._svc, name):
+            return getattr(self._svc, name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")

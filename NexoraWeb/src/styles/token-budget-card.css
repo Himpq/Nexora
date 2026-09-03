@@ -120,3 +120,35 @@
 .token-budget-card-action:hover {
     background: var(--color-bg-hover);
 }
+
+/* Ring： legacy 手写优化迁移，conic-gradient token 化，去除硬编码灰白边 */
+.token-budget-ring {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    position: relative;
+    background: conic-gradient(var(--tb-color) var(--tb-angle), var(--color-bg-hover) 0deg);
+    border: 1px solid var(--color-border);
+    box-sizing: border-box;
+}
+
+.token-budget-ring::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--color-bg-elevated);
+}
+
+/* legacy 收编:.token-budget-mini 的取色变量与定位锚点
+   (ring 的 conic-gradient 与 absolute 子元素依赖,原定义在 legacy/style.css) */
+.token-budget-mini {
+    --tb-color: #22c55e;
+    --tb-angle: 0deg;
+    position: relative;
+}
+
+.token-budget-usage {
+    color: var(--color-text-secondary);
+    transition: color 0.16s ease, opacity 0.16s ease;
+}

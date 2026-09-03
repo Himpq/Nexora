@@ -292,6 +292,68 @@ export async function vectorizeKnowledge(title: string, content: string): Promis
     }
 }
 
+// ---------- 知识点设置（标题/公开/协作/模型只读） ----------
+
+export interface KnowledgeSettingsPayload {
+    title: string
+    new_title?: string
+    public?: boolean
+    collaborative?: boolean
+    model_readonly?: boolean
+}
+
+export async function updateKnowledgeSettings(payload: KnowledgeSettingsPayload): Promise<{ share_url: string; message: string }> {
+    const data = await apiFetch<{ success: boolean; share_url?: string; message?: string }>('/api/knowledge/settings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '保存设置失败')
+    }
+
+    return { share_url: data.share_url || '', message: data.message || '' }
+}
+
+// ---------- 导出 / 短期记忆补充 ----------
+
+/** 导出知识库为 Word（返回 Blob，调用方负责下载）。 */
+export async function exportKnowledgeWord(title?: string): Promise<Blob> {
+    const qs = title ? `?title=${encodeURIComponent(title)}` : ''
+    const res = await fetch(`/api/knowledge/export/word${qs}`, { credentials: 'include' })
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => null)
+        throw new Error(err?.message || `导出失败(${res.status})`)
+    }
+
+    return await res.blob()
+}
+
+/** 获取单条短期记忆正文（编辑回显用）。 */
+export async function fetchShortMemoryContent(title: string): Promise<ShortMemoryItem> {
+    const data = await apiFetch<{ success: boolean; memory?: ShortMemoryItem; error?: string; message?: string }>(
+        `/api/knowledge/short/${encodeURIComponent(title)}`
+    )
+
+    if (!data.memory) {
+        throw new Error(data.message || data.error || '读取短期记忆失败')
+    }
+
+    return data.memory
+}
+
+/** 清空全部短期记忆（重置用户画像）。 */
+export async function clearShortMemory(): Promise<void> {
+    const data = await apiFetch<{ success: boolean; message?: string }>('/api/knowledge/short/clear', {
+        method: 'POST',
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '清空短期记忆失败')
+    }
+}
+
 /** 知识库在线协作元数据(存于 fetchKnowledgeContent 返回的 metadata 中)。 */
 export interface KnowledgeCollabMeta {
     public?: boolean

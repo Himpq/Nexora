@@ -100,6 +100,8 @@
 
     const tasks = computed<WorkspaceTaskEntry[]>(() => Array.isArray(props.workspace.workspace_tasks) ? props.workspace.workspace_tasks : [])
 
+    const drafts = computed(() => Array.isArray(props.workspace.workspace_drafts) ? props.workspace.workspace_drafts : [])
+
     /**
      * 统计卡:后端聚合优先,字段缺省回落各资源数组长度
      * (对齐原版 counts.x || items.length 的兜底顺序)
@@ -124,6 +126,11 @@
             label: '未完成任务',
             value: Number(overview.value.open_task_count ?? tasks.value.filter(isTaskOpen).length),
             icon: 'fa-regular fa-circle-check',
+        },
+        {
+            label: '草稿',
+            value: Number(counts.value.workspace_drafts || drafts.value.length || 0),
+            icon: 'fa-regular fa-pen-to-square',
         },
     ])
 

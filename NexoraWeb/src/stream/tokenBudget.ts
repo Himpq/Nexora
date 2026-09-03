@@ -101,6 +101,16 @@ export function readMessageIoTokens(metadata: unknown): MessageIoTokens {
     }
 
     const record = metadata as Record<string, unknown>
+    const usage = record.usage && typeof record.usage === 'object'
+        ? record.usage as Record<string, unknown>
+        : null
+
+    if (usage) {
+        return {
+            round: readIoPayloadRecord(usage),
+            cumulative: readIoPayloadRecord(usage),
+        }
+    }
 
     return {
         round: readIoPayloadRecord(record.io_tokens_window),
@@ -109,12 +119,15 @@ export function readMessageIoTokens(metadata: unknown): MessageIoTokens {
 }
 
 /** 读取最后一条带 io_tokens metadata 的助手消息(无则返回空 payload) */
-export function readLastAssistantIoTokens(messages: Array<{ role?: string; metadata?: unknown }>): MessageIoTokens {
+export function readLastAssistantIoTokens(messages: Array<{ role?: string; metadata?: unknown; usage?: unknown }>): MessageIoTokens {
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
 
-        if (message && message.role === 'assistant' && message.metadata) {
-            const tokens = readMessageIoTokens(message.metadata)
+        if (message && message.role === 'assistant') {
+            const tokens = readMessageIoTokens({
+                ...(message.metadata && typeof message.metadata === 'object' ? message.metadata as Record<string, unknown> : {}),
+                usage: message.usage,
+            })
 
             if (hasAnyIo(tokens.round) || hasAnyIo(tokens.cumulative)) {
                 return tokens
