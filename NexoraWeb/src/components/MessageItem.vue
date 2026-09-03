@@ -132,6 +132,13 @@
                     </div>
                 </template>
 
+                <!-- 上下文压缩卡片(对齐原版:压缩先于正文执行,挂 assistant 首位;
+                     流式/历史回放均从此渲染,摘要输出随卡片走,不再沉底) -->
+                <ContextCompressionCard
+                    v-if="compressionStep"
+                    :step="compressionStep"
+                />
+
                 <!--
                     内容分段顺序渲染(思考/正文/工具链按输出时序交错):
                     思考行与工具行共用执行流程时间线形态;
@@ -272,12 +279,6 @@
                         </div>
                     </template>
                 </template>
-
-                <!-- 上下文压缩卡片(对齐原版 upsertContextCompressionCard:流式/历史回放均从此渲染) -->
-                <ContextCompressionCard
-                    v-if="compressionStep"
-                    :step="compressionStep"
-                />
 
                 <!--
                     操作栏(对齐原版:助手消息无条件提供重答/分支,不依赖正文存在,
