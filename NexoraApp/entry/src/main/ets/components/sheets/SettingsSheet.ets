@@ -64,6 +64,17 @@ export struct SettingsSheet {
                         }
                     });
 
+                    SwitchRow({
+                        icon: $r('app.media.ic_wrench'),
+                        title: '强制工具调用',
+                        subtitle: '下发全部业务工具给模型',
+                        checked: this.app.forceTools,
+                        tint: $r('app.color.text_brand'),
+                        onChanged: (checked: boolean) => {
+                            this.app.setForceTools(checked);
+                        }
+                    });
+
                     NavRow({
                         icon: $r('app.media.ic_spark'),
                         title: '默认模型',

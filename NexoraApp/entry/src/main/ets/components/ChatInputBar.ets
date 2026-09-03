@@ -3,14 +3,18 @@
 // 发送与停止是同一个位置的状态切换，避免生成中按钮跳动
 // 聚焦时输入栏边框出现品牌色发光，失焦时恢复
 
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { FontSize, Glow, Motion, Radius, Size, Space } from '../common/DesignToken';
+
+const DOMAIN: number = 0x0001;
+const TAG: string = 'ChatInputBar';
 
 @Component
 export struct ChatInputBar {
     @Link draft: string;
     // 模型展示 chip：通过 @StorageProp 从 AppStorage 获取模型名。
     // AppStorage 是应用级存储总线，不依赖组件树层级，比 @Provide/@Consume 更可靠
-    @StorageProp('inputModelLabel') inputModelLabel: string = '选择模型';
+    @StorageProp('inputModelLabel') @Watch('onModelLabelChanged') inputModelLabel: string = '选择模型';
     @Prop streaming: boolean = false;
     @Prop placeholder: string = '给 Nexora 发送消息…';
     onSend: () => void = () => {};
@@ -18,6 +22,15 @@ export struct ChatInputBar {
     onPickModel: () => void = () => {};
 
     @State private focused: boolean = false;
+
+    aboutToAppear(): void {
+        hilog.info(DOMAIN, TAG, '[init] inputModelLabel=%{public}s', this.inputModelLabel);
+    }
+
+    // @StorageProp 变更回调：确认 AppStorage 写入是否被 @StorageProp 检测到
+    onModelLabelChanged(): void {
+        hilog.info(DOMAIN, TAG, '[watch] inputModelLabel changed to: %{public}s', this.inputModelLabel);
+    }
 
     build() {
         Column({ space: Space.sm }) {
@@ -39,9 +52,25 @@ export struct ChatInputBar {
                 });
 
             Row({ space: Space.sm }) {
-                // 模型 chip 限宽截断：超长模型名在自身内省略，不挤压右侧发送按钮。
-                // 文本直接绑定 app.selectedModelLabel，@ObjectLink 驱动刷新
-                this.ToggleChip(this.inputModelLabel, $r('app.media.ic_spark'), false, '68%', () => {
+                // 模型 chip：直接内联而非走 @Builder，确保 @StorageProp 变更被 build() 依赖收集追踪
+                Row({ space: Space.xs }) {
+                    Image($r('app.media.ic_spark'))
+                        .width(14)
+                        .height(14)
+                        .fillColor($r('app.color.icon_secondary'));
+
+                    Text(this.inputModelLabel)
+                        .fontSize(FontSize.caption)
+                        .fontColor($r('app.color.text_secondary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis });
+                }
+                .constraintSize({ maxWidth: '68%' })
+                .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
+                .borderRadius(Radius.full)
+                .backgroundColor($r('app.color.bg_sunken'))
+                .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+                .onClick(() => {
                     this.onPickModel();
                 });
 
