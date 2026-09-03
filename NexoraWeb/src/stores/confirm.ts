@@ -37,6 +37,29 @@ function ensureRoot(): HTMLElement | null {
     return root
 }
 
+/**
+ * 遮罩安全关闭(对齐 Modal.vue 的 mousedown/mouseup 配对判定):
+ * 仅当按下与松开都落在遮罩自身才关闭;输入框内拖选文本后在遮罩或窗口外松开不再误关。
+ * 新手势的 mousedown 一定先于 mouseup 到达,陈旧标记不会污染下一次判定。
+ */
+function bindBackdropSafeClose(backdrop: HTMLElement, onClose: () => void): void {
+    let pressedOnBackdrop = false
+
+    backdrop.addEventListener('mousedown', (event) => {
+        pressedOnBackdrop = event.target === backdrop
+    })
+
+    backdrop.addEventListener('mouseup', (event) => {
+        const shouldClose = pressedOnBackdrop && event.target === backdrop
+
+        pressedOnBackdrop = false
+
+        if (shouldClose) {
+            onClose()
+        }
+    })
+}
+
 /** 打开确认小窗;resolve(true) 表示用户确认 */
 export function showConfirm(options: ConfirmOptions): Promise<boolean> {
     return new Promise((resolve) => {
@@ -102,11 +125,7 @@ export function showConfirm(options: ConfirmOptions): Promise<boolean> {
         backdrop.querySelector('[data-action="confirm"]')?.addEventListener('click', () => cleanup(true))
         backdrop.querySelector('[data-action="cancel"]')?.addEventListener('click', () => cleanup(false))
         backdrop.querySelector('.g-modal-close')?.addEventListener('click', () => cleanup(false))
-        backdrop.addEventListener('click', (event) => {
-            if (event.target === backdrop) {
-                cleanup(false)
-            }
-        })
+        bindBackdropSafeClose(backdrop, () => cleanup(false))
 
         document.addEventListener('keydown', onKeydown)
 
@@ -205,11 +224,7 @@ export function showPrompt(options: PromptOptions): Promise<string | null> {
         })
         backdrop.querySelector('[data-action="cancel"]')?.addEventListener('click', () => cleanup(null))
         backdrop.querySelector('.g-modal-close')?.addEventListener('click', () => cleanup(null))
-        backdrop.addEventListener('click', (event) => {
-            if (event.target === backdrop) {
-                cleanup(null)
-            }
-        })
+        bindBackdropSafeClose(backdrop, () => cleanup(null))
 
         input?.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
