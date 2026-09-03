@@ -4178,21 +4178,6 @@ function bindDebugConsoleUi() {
             closeDebugConsole();
         });
     }
-    if (els.forceContextCompressionBtn) {
-        els.forceContextCompressionBtn.addEventListener('click', () => {
-            const next = !forceContextCompressionOnce;
-            setForceContextCompressionOnce(next);
-            showToast(next ? '已启用：下次请求强制触发上下文压缩' : '已取消强制压缩');
-            if (next) {
-                appendDebugConsoleEntry({
-                    direction: 'client->local',
-                    stage: 'force_context_compression_armed',
-                    title: 'Force Compression',
-                    payload: { armed: true, applies_to_next_request_only: true }
-                });
-            }
-        });
-    }
 
     bindDebugConsoleDrag();
 
@@ -6552,7 +6537,6 @@ const els = {
     debugConsoleFunctionPage: document.getElementById('debugConsoleFunctionPage'),
     debugConsoleBody: document.getElementById('debugConsoleBody'),
     debugConsoleStatus: document.getElementById('debugConsoleStatus'),
-    forceContextCompressionBtn: document.getElementById('forceContextCompressionBtn'),
     copyDebugConsoleBtn: document.getElementById('copyDebugConsoleBtn'),
     clearDebugConsoleBtn: document.getElementById('clearDebugConsoleBtn'),
     closeDebugConsoleBtn: document.getElementById('closeDebugConsoleBtn'),

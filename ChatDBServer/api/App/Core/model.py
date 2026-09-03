@@ -4870,6 +4870,46 @@ class Model(MailMixin):
             context_compression_trigger_mode = ""
             context_compression_masked_image_count = 0
 
+            # 续接态旁路判断(不经全量也能触发):
+            # 续接请求只带增量,首轮 preflight 量不到总量;直接读上轮落库的服务商实测
+            # raw_input,超限即在本轮提为全量走既有压缩流程。尾部 streaming 占位 usage
+            # 为空,倒序跳过,只认 raw_input > 0 的已完成轮次。
+            resume_prior_raw_input = 0
+            resume_prior_over_threshold = False
+
+            if last_response_id and not context_window_fallback_default and int(context_window_limit) >= 1024:
+                try:
+                    _judge_history = self.conversation_manager.get_messages(self.conversation_id) or []
+
+                    for _old_msg in reversed(_judge_history):
+                        if not isinstance(_old_msg, dict):
+                            continue
+
+                        if str(_old_msg.get("role") or "").strip() != "assistant":
+                            continue
+
+                        _old_usage = _old_msg.get("usage") if isinstance(_old_msg.get("usage"), dict) else {}
+                        _old_raw = 0
+
+                        try:
+                            _old_raw = int(_old_usage.get("raw_input") or 0)
+                        except Exception:
+                            _old_raw = 0
+
+                        if _old_raw > 0:
+                            resume_prior_raw_input = int(_old_raw)
+                            break
+                except Exception:
+                    resume_prior_raw_input = 0
+
+                if resume_prior_raw_input > 0:
+                    _resume_ratio = 0.8 if normalized_conversation_mode == "learning" else 0.9
+                    _resume_threshold = int(max(1, int(context_window_limit)) * _resume_ratio)
+                    resume_prior_over_threshold = bool(resume_prior_raw_input >= _resume_threshold)
+
+                    if resume_prior_over_threshold:
+                        print(f"[CTX_COMPRESS] resume prior raw {resume_prior_raw_input} >= threshold {_resume_threshold}, promote to full")
+
             # 火山引擎特例：仅对本次请求载荷中的最后一条 user 内容补结尾换行
             if messages and isinstance(messages[-1], dict) and str(messages[-1].get("role", "") or "").strip() == "user":
                 messages[-1]["content"] = self._append_trailing_newline_for_user_content(messages[-1].get("content", ""))
@@ -5269,7 +5309,7 @@ class Model(MailMixin):
                                     title="Compression Compare",
                                     round_index=round_num
                                 )
-                        if force_context_compression and (not include_context or not messages_has_full_context):
+                        if force_context_compression and not include_context:
                             context_compression_trigger_mode = "force"
                             ctx_status = {
                                 "type": "context_compression_status",
@@ -5307,8 +5347,28 @@ class Model(MailMixin):
                                     round_index=round_num
                                 )
                         # 0) 首轮先判断是否需要自动上下文压缩（仅检查一次）。
-                        if (not context_compression_checked) and include_context and messages_has_full_context:
+                        # 续接态由旁路开门(resume 实测超限 / 手动 force),开门后先提为全量
+                        # (复用 learning 分支的提级模式),后继 preflight/摘要/切基全走既有流程。
+                        if (not context_compression_checked) and include_context and (messages_has_full_context or resume_prior_over_threshold or force_context_compression):
                             context_compression_checked = True
+
+                            if (resume_prior_over_threshold or force_context_compression) and not messages_has_full_context:
+                                previous_response_id = None
+                                messages = list(full_context_messages)
+                                messages_has_full_context = True
+                                request_promoted_to_full_context = True
+                                request_resume_id_seed = ""
+                                request_started_with_resume_id = False
+                                request_params = self._build_request_params(
+                                    messages=messages,
+                                    previous_response_id=previous_response_id,
+                                    enable_thinking=round_enable_thinking,
+                                    thinking_level=normalized_thinking_level,
+                                    enable_web_search=enable_web_search,
+                                    enable_tools=effective_enable_tools,
+                                    current_function_outputs=current_function_outputs,
+                                    runtime_function_tool_names=self._runtime_function_tool_names_for_request()
+                                )
                             try:
                                 runtime_input_pre = request_params.get("input", request_params.get("messages", []))
                                 runtime_input_text_pre_raw = json.dumps(runtime_input_pre, ensure_ascii=False, default=str)
