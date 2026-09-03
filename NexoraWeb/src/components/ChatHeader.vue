@@ -9,7 +9,8 @@
     <header class="chat-header">
         <div class="header-left">
             <!-- 文件中心/Workspaces/知识库等覆盖视图:左侧仅返回按钮(对齐原版 closeFileCenterOrReturn) -->
-            <template v-if="view !== 'chat'">
+            <!-- Learning 例外:保留折叠按钮 + 模型选择,侧栏对话发送沿用全局选中模型 -->
+            <template v-if="view !== 'chat' && view !== 'learning'">
                 <button class="btn-icon" title="Back" @click="emit('back-to-chat')">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="19" y1="12" x2="5" y2="12"></line>

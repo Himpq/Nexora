@@ -39,9 +39,8 @@
         />
 
         <main class="main-content">
-            <!-- Learning 视图由 iframe 占满内容区,宿主顶栏无承载信息,整体隐藏(返回走品牌栏) -->
+            <!-- 宿主顶栏常驻:Learning 视图下保留模型选择(返回走品牌栏,此处只做模型切换) -->
             <ChatHeader
-                v-show="!learningOpen"
                 :models="modelStore.models"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
@@ -568,7 +567,8 @@
             const cached = localStorage.getItem('nexora_learning_enabled')
             if (cached !== null) return JSON.parse(cached) as boolean
         } catch {}
-        return false
+
+        return true
     })())
     const learningFrontendUrl = ref('')
     /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
