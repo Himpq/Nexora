@@ -65,6 +65,7 @@ export interface StreamOptions {
     enableThinking: boolean;
     enableWebSearch: boolean;
     enableTools: boolean;
+    toolMode?: string;
 }
 
 // 流式请求体：conversation_id / model_name 可选，后端在缺省时新建会话 / 使用默认模型
@@ -75,6 +76,7 @@ export interface StreamRequestBody {
     enable_thinking: boolean;
     enable_web_search: boolean;
     enable_tools: boolean;
+    tool_mode?: string;
 }
 
 export class ChatStreamClient {
@@ -718,7 +720,8 @@ export class ChatStreamClient {
             model_name: options.modelName,
             enable_thinking: options.enableThinking,
             enable_web_search: options.enableWebSearch,
-            enable_tools: options.enableTools
+            enable_tools: options.enableTools,
+            tool_mode: options.toolMode
         };
 
         return body;

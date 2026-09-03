@@ -122,6 +122,15 @@ export class PreferencesUtil {
         await PreferencesUtil.saveBoolean(context, StorageKey.enableWebSearch, enabled);
     }
 
+    // 强制工具调用：开=force（下发全部业务工具），关=auto_off（仅下发控制工具）
+    static async loadForceTools(context: common.UIAbilityContext): Promise<boolean> {
+        return PreferencesUtil.loadBoolean(context, StorageKey.forceTools, true);
+    }
+
+    static async saveForceTools(context: common.UIAbilityContext, enabled: boolean): Promise<void> {
+        await PreferencesUtil.saveBoolean(context, StorageKey.forceTools, enabled);
+    }
+
     // 退出登录：清掉会话与身份，保留后端地址与偏好
     static async clearSession(context: common.UIAbilityContext): Promise<void> {
         const prefs: preferences.Preferences = await holder.open(context);

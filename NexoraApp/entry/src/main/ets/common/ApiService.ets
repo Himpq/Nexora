@@ -2,7 +2,7 @@
 // 每个方法对应一个后端端点，负责把 JSON 归一化成领域模型，UI 层只认识这里返回的类型
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, ModelItem } from './AppConfig';
+import { ConversationItem, KnowledgeItem, ModelItem } from './AppConfig';
 import { HttpResult, HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
 import { messageFromHistory, RawHistoryMessage } from './ChatTypes';
@@ -58,6 +58,36 @@ export interface MessageListResult {
     success: boolean;
     message: string;
     messages: ChatMessage[];
+    hasMoreBefore: boolean;
+    startIndex: number;
+    total: number;
+}
+
+// 知识库单条详情：GET /api/knowledge/basis/<title>
+export interface KnowledgeDetailResult {
+    success: boolean;
+    message: string;
+    title: string;
+    content: string;
+}
+
+// 知识库空白创建结果：POST /api/knowledge/basis/blank
+export interface KnowledgeCreateResult {
+    success: boolean;
+    message: string;
+    title: string;
+}
+
+// 更新知识库请求体（ArkTS 限制：字面量须对应显式声明的 interface）
+interface UpdateBasisRequestBody {
+    title: string;
+    content: string;
+    url: string;
+}
+
+// 空白知识库创建请求体
+interface CreateBlankRequestBody {
+    title_prefix: string;
 }
 
 // 后端消息体里模型上下文窗口的候选字段名
@@ -94,25 +124,39 @@ export class ApiService {
         return { success: true, message: '', data: list };
     }
 
-    // 会话消息：GET /api/conversations/{id}/messages
-    static async fetchMessages(conversationId: string): Promise<MessageListResult> {
-        const path: string = '/api/conversations/' + encodeURIComponent(conversationId) + '/messages?limit=50';
+    // 会话消息：GET /api/conversations/{id}/messages?limit=&before=
+    // before=0 表示取最近 limit 条；before>0 表示取该索引之前 limit 条（更早的消息）
+    static async fetchMessages(conversationId: string, limit: number, before: number): Promise<MessageListResult> {
+        let path: string = '/api/conversations/' + encodeURIComponent(conversationId) + '/messages?limit=' + limit;
+
+        if (before > 0) {
+            path += '&before=' + before;
+        }
+
         const result: HttpResult = await HttpUtil.get(path);
         const payload: Record<string, Object> | null = ApiService.readPayload(result, '会话消息');
 
         if (payload === null) {
-            return { success: false, message: ApiService.describeFailure(result), messages: [] };
+            return { success: false, message: ApiService.describeFailure(result), messages: [], hasMoreBefore: false, startIndex: 0, total: 0 };
         }
 
         const rawList: Object[] = Json.array(payload, 'messages');
+        const startIndex: number = Json.number(payload, 'start_index');
         const messages: ChatMessage[] = [];
 
         for (let i: number = 0; i < rawList.length; i++) {
             const raw: RawHistoryMessage = rawList[i] as RawHistoryMessage;
-            messages.push(messageFromHistory(raw, i));
+            messages.push(messageFromHistory(raw, startIndex + i));
         }
 
-        return { success: true, message: '', messages: messages };
+        return {
+            success: true,
+            message: '',
+            messages: messages,
+            hasMoreBefore: Json.boolean(payload, 'has_more_before'),
+            startIndex: startIndex,
+            total: Json.number(payload, 'total')
+        };
     }
 
     // 模型列表：GET /api/config，兼容数组与字典两种返回形态
@@ -202,6 +246,110 @@ export class ApiService {
         };
     }
 
+    // ---------- 知识库 ----------
+    // 知识库列表：GET /api/knowledge/basis?include_content=0（不带正文，列表场景）
+    static async fetchKnowledgeList(): Promise<ApiListResult<KnowledgeItem>> {
+        const result: HttpResult = await HttpUtil.get('/api/knowledge/basis?include_content=0');
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '知识库列表');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), data: [] };
+        }
+
+        const rawList: Object[] = Json.array(payload, 'knowledge');
+        const list: KnowledgeItem[] = [];
+
+        for (let i: number = 0; i < rawList.length; i++) {
+            const item: KnowledgeItem | null = ApiService.toKnowledgeItem(rawList[i]);
+
+            if (item !== null) {
+                list.push(item);
+            }
+        }
+
+        hilog.info(DOMAIN, TAG, 'knowledge list loaded, count=%{public}d', list.length);
+        return { success: true, message: '', data: list };
+    }
+
+    // 知识库单条详情：GET /api/knowledge/basis/<title>
+    static async fetchKnowledgeDetail(title: string): Promise<KnowledgeDetailResult> {
+        const path: string = '/api/knowledge/basis/' + encodeURIComponent(title);
+        const result: HttpResult = await HttpUtil.get(path);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '知识库详情');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), title: '', content: '' };
+        }
+
+        const knowledge: Record<string, Object> | null = Json.object(payload, 'knowledge');
+
+        if (knowledge === null) {
+            return { success: false, message: '知识库内容解析失败', title: '', content: '' };
+        }
+
+        return {
+            success: true,
+            message: '',
+            title: Json.string(knowledge, 'title'),
+            content: Json.string(knowledge, 'content')
+        };
+    }
+
+    // 创建空白知识库：POST /api/knowledge/basis/blank，返回服务端生成的标题
+    static async createBlankKnowledge(titlePrefix: string): Promise<KnowledgeCreateResult> {
+        const body: CreateBlankRequestBody = { title_prefix: titlePrefix };
+        const result: HttpResult = await HttpUtil.post('/api/knowledge/basis/blank', body);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '创建知识库');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), title: '' };
+        }
+
+        return {
+            success: true,
+            message: Json.string(payload, 'message'),
+            title: Json.string(payload, 'title')
+        };
+    }
+
+    // 更新知识库：PUT /api/knowledge/basis/<oldTitle>，body 含新标题与正文
+    static async updateKnowledge(oldTitle: string, newTitle: string, content: string): Promise<MutateResult> {
+        const path: string = '/api/knowledge/basis/' + encodeURIComponent(oldTitle);
+        const body: UpdateBasisRequestBody = { title: newTitle, content: content, url: '' };
+        const result: HttpResult = await HttpUtil.put(path, body);
+
+        if (result.code === 0 || !result.ok) {
+            return { success: false, message: ApiService.describeFailure(result) };
+        }
+
+        return { success: true, message: '' };
+    }
+
+    // 删除知识库：DELETE /api/knowledge/basis/<title>
+    static async deleteKnowledge(title: string): Promise<MutateResult> {
+        const path: string = '/api/knowledge/basis/' + encodeURIComponent(title);
+        const result: HttpResult = await HttpUtil.delete(path);
+
+        if (result.code === 0 || !result.ok) {
+            return { success: false, message: ApiService.describeFailure(result) };
+        }
+
+        return { success: true, message: '' };
+    }
+
+    // 置顶 / 取消置顶：PUT /api/knowledge/basis/<title>/pin
+    static async pinKnowledge(title: string, pin: boolean): Promise<MutateResult> {
+        const path: string = '/api/knowledge/basis/' + encodeURIComponent(title) + '/pin';
+        const body: PinRequestBody = { pin: pin };
+        const result: HttpResult = await HttpUtil.put(path, body);
+
+        if (result.code === 0 || !result.ok) {
+            return { success: false, message: ApiService.describeFailure(result) };
+        }
+
+        return { success: true, message: '' };
+    }
+
     // ---------- 内部实现 ----------
     // 统一判定：网络层失败或状态码非 200 一律视为业务失败，返回 null 交由调用方转成失败结果
     private static readPayload(result: HttpResult, scene: string): Record<string, Object> | null {
@@ -258,6 +406,25 @@ export class ApiService {
             time: TimeUtil.short(updatedAt),
             mode: Json.string(source, 'conversation_mode'),
             pin: Json.boolean(source, 'pin')
+        };
+    }
+
+    private static toKnowledgeItem(raw: Object): KnowledgeItem | null {
+        const source: Record<string, Object> = raw as Record<string, Object>;
+        const title: string = Json.string(source, 'title');
+
+        if (title.length === 0) {
+            return null;
+        }
+
+        const updatedAt: number = Json.number(source, 'updated_at');
+
+        return {
+            title: title,
+            pin: Json.boolean(source, 'pin'),
+            updatedAt: updatedAt,
+            time: TimeUtil.short(updatedAt),
+            basisId: Json.string(source, 'basis_id')
         };
     }
 

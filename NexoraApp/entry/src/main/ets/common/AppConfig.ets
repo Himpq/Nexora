@@ -11,6 +11,7 @@ export class StorageKey {
     static readonly selectedModel: string = 'selected_model';
     static readonly enableThinking: string = 'enable_thinking';
     static readonly enableWebSearch: string = 'enable_web_search';
+    static readonly forceTools: string = 'force_tools';
 }
 
 // ---------- 领域模型 ----------
@@ -67,6 +68,15 @@ export interface ConversationItem {
     time: string;
     mode: string;
     pin: boolean;
+}
+
+// 知识库列表条目：title 既是展示名也是唯一标识（后端以 title 为 key）
+export interface KnowledgeItem {
+    title: string;
+    pin: boolean;
+    updatedAt: number;
+    time: string;
+    basisId: string;
 }
 
 // ---------- 展示名清洗 ----------

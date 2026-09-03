@@ -4,7 +4,7 @@
 
 import common from '@ohos.app.ability.common';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, DEFAULT_BACKEND_URL, ModelItem, sanitizeDisplayName } from './AppConfig';
+import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, ModelItem, sanitizeDisplayName } from './AppConfig';
 import { ApiService, UserInfoResult } from './ApiService';
 import { HttpUtil } from './HttpUtil';
 import { PreferencesUtil } from './PreferencesUtil';
@@ -30,6 +30,8 @@ export class AppState {
     selectedModelLabel: string = '选择模型';
     enableThinking: boolean = false;
     enableWebSearch: boolean = true;
+    // 强制工具调用：true→请求体传 tool_mode='force'，false→传 'auto_off'
+    forceTools: boolean = true;
 
     // 会话列表
     conversations: ConversationItem[] = [];
@@ -41,6 +43,15 @@ export class AppState {
     // 先本地插入占位项，保证模型回复中侧栏就能看到并高亮当前会话；
     // 服务端刷新结果一旦包含该 id 即自动移除占位，不会与真实数据重复
     private pendingLocals: ConversationItem[] = [];
+
+    // 侧栏视图切换：对话列表 / 知识库列表
+    sidebarView: 'chat' | 'knowledge' = 'chat';
+
+    // 知识库列表
+    knowledgeList: KnowledgeItem[] = [];
+    knowledgeLoading: boolean = false;
+    knowledgeError: string = '';
+    private knowledgeRequestSeq: number = 0;
 
     private context: common.UIAbilityContext | null = null;
 
@@ -73,6 +84,12 @@ export class AppState {
         return this.selectedModelId.length > 0 ? this.selectedModelId : '选择模型';
     }
 
+    // 将模型标签同步到 AppStorage，驱动 @StorageProp('inputModelLabel') 的组件刷新
+    private syncModelLabelToStorage(): void {
+        AppStorage.setOrCreate('inputModelLabel', this.selectedModelLabel);
+        hilog.info(DOMAIN, TAG, '[syncToStorage] wrote inputModelLabel=%{public}s', this.selectedModelLabel);
+    }
+
     // ---------- 生命周期 ----------
     // 恢复本地持久化状态：后端地址、会话 Cookie、生成参数
     async restore(context: common.UIAbilityContext): Promise<void> {
@@ -83,10 +100,12 @@ export class AppState {
         this.selectedModelId = await PreferencesUtil.loadSelectedModel(context);
         this.enableThinking = await PreferencesUtil.loadEnableThinking(context);
         this.enableWebSearch = await PreferencesUtil.loadEnableWebSearch(context);
+        this.forceTools = await PreferencesUtil.loadForceTools(context);
 
         HttpUtil.setBackendUrl(this.backendUrl);
         HttpUtil.setSessionCookie(await PreferencesUtil.loadSessionCookie(context));
         this.selectedModelLabel = this.computeModelLabel();
+        this.syncModelLabelToStorage();
         hilog.info(DOMAIN, TAG, 'state restored, backend=%{public}s', this.backendUrl);
     }
 
@@ -131,6 +150,7 @@ export class AppState {
         this.models = [];
         this.selectedModelId = '';
         this.selectedModelLabel = '选择模型';
+        this.syncModelLabelToStorage();
     }
 
     // ---------- 配置 ----------
@@ -144,8 +164,11 @@ export class AppState {
     }
 
     async selectModel(modelId: string): Promise<void> {
+        hilog.info(DOMAIN, TAG, '[selectModel] enter modelId=%{public}s', modelId);
         this.selectedModelId = modelId;
         this.selectedModelLabel = this.computeModelLabel();
+        hilog.info(DOMAIN, TAG, '[selectModel] computed label=%{public}s', this.selectedModelLabel);
+        this.syncModelLabelToStorage();
 
         if (this.context !== null) {
             await PreferencesUtil.saveSelectedModel(this.context, modelId);
@@ -168,6 +191,14 @@ export class AppState {
         }
     }
 
+    async setForceTools(enabled: boolean): Promise<void> {
+        this.forceTools = enabled;
+
+        if (this.context !== null) {
+            await PreferencesUtil.saveForceTools(this.context, enabled);
+        }
+    }
+
     // ---------- 数据 ----------
     async refreshModels(): Promise<void> {
         const result = await ApiService.fetchModels();
@@ -184,6 +215,7 @@ export class AppState {
         }
 
         this.selectedModelLabel = this.computeModelLabel();
+        this.syncModelLabelToStorage();
     }
 
     async refreshConversations(): Promise<void> {
@@ -304,6 +336,86 @@ export class AppState {
 
         this.conversations = this.conversations.filter((item: ConversationItem): boolean => item.id !== conversationId);
         this.pendingLocals = this.pendingLocals.filter((item: ConversationItem): boolean => item.id !== conversationId);
+        return '';
+    }
+
+    // ---------- 侧栏视图与知识库 ----------
+    // 切换侧栏视图：切到知识库时自动拉取一次列表，保证数据不过期
+    setSidebarView(view: 'chat' | 'knowledge'): void {
+        if (this.sidebarView === view) {
+            return;
+        }
+
+        this.sidebarView = view;
+
+        if (view === 'knowledge') {
+            this.refreshKnowledgeList();
+        }
+    }
+
+    async refreshKnowledgeList(): Promise<void> {
+        const seq: number = ++this.knowledgeRequestSeq;
+        this.knowledgeLoading = true;
+        this.knowledgeError = '';
+
+        const result = await ApiService.fetchKnowledgeList();
+
+        if (seq !== this.knowledgeRequestSeq) {
+            return;
+        }
+
+        this.knowledgeLoading = false;
+
+        if (!result.success) {
+            this.knowledgeError = result.message;
+            return;
+        }
+
+        this.knowledgeList = this.sortKnowledgeItems(result.data);
+    }
+
+    // 知识库列表排序：置顶优先，同级别按更新时间降序
+    private sortKnowledgeItems(items: KnowledgeItem[]): KnowledgeItem[] {
+        const sorted: KnowledgeItem[] = items.slice();
+        sorted.sort((a: KnowledgeItem, b: KnowledgeItem): number => {
+            if (a.pin !== b.pin) {
+                return a.pin ? -1 : 1;
+            }
+
+            return b.updatedAt - a.updatedAt;
+        });
+        return sorted;
+    }
+
+    // 置顶 / 取消置顶：成功后本地更新并重排，保证置顶项即时前移
+    async setKnowledgePin(title: string, pin: boolean): Promise<string> {
+        const result = await ApiService.pinKnowledge(title, pin);
+
+        if (!result.success) {
+            return result.message;
+        }
+
+        const updated: KnowledgeItem[] = this.knowledgeList.map((item: KnowledgeItem): KnowledgeItem => {
+            if (item.title !== title) {
+                return item;
+            }
+
+            return { title: item.title, pin: pin, updatedAt: item.updatedAt, time: item.time, basisId: item.basisId };
+        });
+
+        this.knowledgeList = this.sortKnowledgeItems(updated);
+        return '';
+    }
+
+    // 删除知识库：成功后本地移除，失败返回错误文案
+    async deleteKnowledge(title: string): Promise<string> {
+        const result = await ApiService.deleteKnowledge(title);
+
+        if (!result.success) {
+            return result.message;
+        }
+
+        this.knowledgeList = this.knowledgeList.filter((item: KnowledgeItem): boolean => item.title !== title);
         return '';
     }
 
