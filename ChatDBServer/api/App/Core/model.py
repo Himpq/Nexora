@@ -5393,15 +5393,18 @@ class Model(MailMixin):
                             compression_ratio = 0.8 if normalized_conversation_mode == "learning" else 0.9
                             compression_threshold = int(max(1, context_window_limit) * compression_ratio)
                             force_compression_trigger = bool(force_context_compression)
-                            if force_compression_trigger or preflight_raw_input_tokens >= compression_threshold:
+                            # 触发口径取 preflight 与上轮实测的最大值:续接增量与日文假名
+                            # 为主的启发式低估都会让 preflight 偏小,用落盘实测兜底。
+                            trigger_basis_tokens = int(max(int(preflight_raw_input_tokens), int(resume_prior_raw_input)))
+                            if force_compression_trigger or trigger_basis_tokens >= compression_threshold:
                                 context_compression_triggered = True
-                                context_compression_trigger_raw_input = int(max(0, preflight_raw_input_tokens))
+                                context_compression_trigger_raw_input = int(max(0, trigger_basis_tokens))
                                 context_compression_trigger_mode = "force" if force_compression_trigger else "overload"
                                 ctx_status = {
                                     "type": "context_compression_status",
                                     "status": "start",
                                     "content": "上下文压缩中（强制）" if force_compression_trigger else "上下文压缩中",
-                                    "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                    "raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                     "context_window": int(max(0, context_window_limit)),
                                     "context_window_source": context_window_source,
                                     "compression_threshold": int(max(1, compression_threshold)),
@@ -5419,7 +5422,7 @@ class Model(MailMixin):
                                             "trigger_mode": context_compression_trigger_mode,
                                             "trigger_label": "强制触发" if force_compression_trigger else "上下文过载触发",
                                             "forced": bool(force_compression_trigger),
-                                            "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                            "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                             "compression_threshold": int(max(1, compression_threshold)),
                                             "context_window": int(max(0, context_window_limit)),
                                             "context_window_source": context_window_source,
@@ -5476,11 +5479,11 @@ class Model(MailMixin):
                                                 postflight_raw_input_tokens = int(exact_input_post)
                                         saved_raw_input_tokens = max(
                                             0,
-                                            int(max(0, preflight_raw_input_tokens)) - int(max(0, postflight_raw_input_tokens)),
+                                            int(max(0, trigger_basis_tokens)) - int(max(0, postflight_raw_input_tokens)),
                                         )
                                         saved_ratio_value = (
-                                            float(saved_raw_input_tokens) / float(preflight_raw_input_tokens)
-                                            if preflight_raw_input_tokens > 0 else 0.0
+                                            float(saved_raw_input_tokens) / float(trigger_basis_tokens)
+                                            if trigger_basis_tokens > 0 else 0.0
                                         )
                                         try:
                                             if learning_lecture_id:
@@ -5565,7 +5568,7 @@ class Model(MailMixin):
                                                 "append_mode": True,
                                                 "use_responses_api": bool(use_responses_api),
                                                 "instruction_chars": int(len(append_instruction)),
-                                                "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                                 "context_window": int(max(0, context_window_limit)),
                                                 "context_window_source": context_window_source,
                                                 "trigger_mode": context_compression_trigger_mode,
@@ -5670,7 +5673,7 @@ class Model(MailMixin):
                                                     "created_at": datetime.now().isoformat(),
                                                     "model": self.model_name,
                                                     "provider": self.provider,
-                                                    "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                    "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                                     "context_window": int(max(0, context_window_limit)),
                                                     "forced": bool(force_compression_trigger),
                                                     "trigger_mode": context_compression_trigger_mode,
