@@ -1,9 +1,10 @@
 // MessageBubble.ets - 单条消息的完整呈现
-// 用户消息走右侧气泡，助手消息走左侧无气泡流（豆包式），内部按需组合思考块 / 工具卡片 / Markdown
+// 用户消息走右侧气泡，助手消息走左侧无气泡流（豆包式）
+// 助手消息按 segments 数组原序渲染：Thinking1 → Tool → Thinking2 → Content，保持真实时序
 
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
-import { ChatMessage, ToolCallItem } from '../../common/ChatTypes';
+import { ChatMessage, MessageSegment, ToolCallItem } from '../../common/ChatTypes';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { BrandLogo } from '../common/BrandLogo';
 import { MarkdownView } from './MarkdownBlock';
@@ -16,23 +17,38 @@ export struct MessageBubble {
     @ObjectLink message: ChatMessage;
     onRegenerate: (message: ChatMessage) => void = () => {};
 
-    // UI 统一走普通方法而非原型 getter：@ObjectLink 组件 UI 更新路径下 getter 间接取值曾返回 undefined 触发崩溃
     private canShowActions(): boolean {
         return !this.message.streaming && this.message.content.length > 0;
     }
 
+    // 按 callId 在 toolCalls 数组中查找对应的 ToolCallItem
+    private findToolCall(callId: string): ToolCallItem | undefined {
+        for (let i: number = 0; i < this.message.toolCalls.length; i++) {
+            if (this.message.toolCalls[i].callId === callId) {
+                return this.message.toolCalls[i];
+            }
+        }
+
+        return undefined;
+    }
+
     build() {
-        Row({ space: Space.sm }) {
+        Column({ space: Space.xs }) {
             if (this.message.isUser) {
-                Blank();
-                this.UserBubble();
+                Row() {
+                    Blank();
+                    this.UserBubble();
+                }
+                .width('100%');
             } else {
+                // 助手消息：头像独占一行，下方内容区占满宽度，不被头像挤压
                 BrandLogo({ diameter: 28, showShadow: false });
+
                 this.AssistantContent();
             }
         }
         .width('100%')
-        .alignItems(VerticalAlign.Top)
+        .alignItems(HorizontalAlign.Start)
         .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.sm });
     }
 
@@ -56,44 +72,72 @@ export struct MessageBubble {
             .copyOption(CopyOptions.LocalDevice);
     }
 
+    // 助手内容：按 segments 数组原序渲染，保持 Thinking → Tool → Thinking2 → Content 时序
     @Builder
     AssistantContent() {
         Column({ space: Space.sm }) {
-            if (this.message.hasThinking) {
-                ThinkingBlock({ message: this.message });
-            }
-
-            if (this.message.hasToolCalls) {
-                Column({ space: Space.xs }) {
-                    ForEach(this.message.toolCalls, (item: ToolCallItem) => {
-                        ToolCallCard({ item: item });
-                    }, (item: ToolCallItem) => item.callId);
+            ForEach(this.message.segments, (segment: MessageSegment, index: number) => {
+                if (segment.type === 'reasoning') {
+                    ThinkingBlock({
+                        text: segment.text,
+                        streaming: this.message.streaming,
+                        autoCollapse: !this.message.thinkingExpanded
+                    });
                 }
-                .width('100%');
-            }
 
-            if (this.message.content.length > 0) {
-                MarkdownView({ source: this.message.content });
-            }
+                if (segment.type === 'function_call') {
+                    if (this.findToolCall(segment.callId ?? '') !== undefined) {
+                        ToolCallCard({ item: this.findToolCall(segment.callId ?? '') });
+                    }
+                }
 
-            if (this.message.streaming && this.message.content.length === 0 && !this.message.hasToolCalls) {
+                if (segment.type === 'content') {
+                    MarkdownView({ source: segment.text });
+                }
+
+                if (segment.type === 'error') {
+                    this.SegmentErrorLine(segment.text);
+                }
+            }, (segment: MessageSegment, index: number) => segment.type + '_' + index);
+
+            // 流式占位：仅在流式中且无任何内容/工具/思考时显示
+            if (this.message.streaming && this.message.content.length === 0 && !this.message.hasToolCalls && !this.message.hasThinking) {
                 StreamingDots();
             }
 
             if (this.message.errorMessage.length > 0) {
-                this.ErrorLine();
+                this.TopLevelErrorLine();
             }
 
             if (this.canShowActions()) {
                 this.MessageActions();
             }
         }
-        .layoutWeight(1)
+        .width('100%')
         .alignItems(HorizontalAlign.Start);
     }
 
     @Builder
-    ErrorLine() {
+    SegmentErrorLine(text: string) {
+        Row({ space: Space.xs }) {
+            Image($r('app.media.ic_error'))
+                .width(Size.iconSmall)
+                .height(Size.iconSmall)
+                .fillColor($r('app.color.text_danger'));
+
+            Text(text)
+                .fontSize(FontSize.small)
+                .fontColor($r('app.color.text_danger'))
+                .layoutWeight(1);
+        }
+        .width('100%')
+        .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
+        .borderRadius(Radius.md)
+        .backgroundColor($r('app.color.bg_sunken'));
+    }
+
+    @Builder
+    TopLevelErrorLine() {
         Row({ space: Space.xs }) {
             Image($r('app.media.ic_error'))
                 .width(Size.iconSmall)

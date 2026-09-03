@@ -104,7 +104,7 @@ export class ChatMessage {
         this.createdAt = Date.now();
         this.streaming = false;
         this.errorMessage = '';
-        this.thinkingExpanded = true;
+        this.thinkingExpanded = false;
         this.toolCalls = [];
         this.segments = [];
     }
@@ -116,8 +116,10 @@ export class ChatMessage {
     static createAssistant(): ChatMessage {
         const message: ChatMessage = new ChatMessage(0, 'assistant', '');
         message.streaming = true;
+        message.thinkingExpanded = true;
         return message;
     }
+
 
     get isUser(): boolean {
         return this.role === 'user';
