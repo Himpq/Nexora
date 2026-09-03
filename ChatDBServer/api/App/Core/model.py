@@ -5577,18 +5577,15 @@ class Model(MailMixin):
                                             title="Compression Source",
                                             round_index=round_num
                                         )
-                                    # 补 previous_response_id + 透传 tools：复用当轮已解析的续接 ID 与工具集，LLMFaker compression 才能命中 prefix cache
-                                    compression_previous_response_id = previous_response_id if isinstance(previous_response_id, str) and previous_response_id.strip() else None
-
+                                    # 摘要请求自带完整上下文,续接 ID 与工具集必须留空:
+                                    # 带续接会把整段历史再算一遍(重复计费且干扰摘要),
+                                    # 开工具会让模型走工具调用而非输出摘要正文(本轮只收 content_delta)。
                                     compression_run = {}
                                     compression_run_iter = run_append_compression_round(
                                         self,
                                         compress_messages,
                                         max_chars=self._context_compression_max_chars,
                                         use_responses_api=use_responses_api,
-                                        previous_response_id=compression_previous_response_id,
-                                        enable_tools=bool(effective_enable_tools),
-                                        runtime_function_tool_names=self._runtime_function_tool_names_for_request(),
                                     )
                                     try:
                                         while True:
