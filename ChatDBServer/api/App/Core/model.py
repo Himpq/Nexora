@@ -4870,14 +4870,16 @@ class Model(MailMixin):
             context_compression_trigger_mode = ""
             context_compression_masked_image_count = 0
 
-            # 续接态旁路判断(不经全量也能触发):
-            # 续接请求只带增量,首轮 preflight 量不到总量;直接读上轮落库的服务商实测
-            # raw_input,超限即在本轮提为全量走既有压缩流程。尾部 streaming 占位 usage
-            # 为空,倒序跳过,只认 raw_input > 0 的已完成轮次。
+            # 续接/全量通用旁路判断(不经全量重发也能触发):
+            # 续接请求只带增量,首轮 preflight 量不到总量;全量发送时启发式遇到日文假名
+            # 为主的内容会系统性低估(330 实测:启发式 6 万 vs 服务商实测 13.9 万)。
+            # 直接读上轮落库的服务商实测 raw_input,超限即走既有压缩流程(续接态先提为
+            # 全量,全量态直接触发)。尾部 streaming 占位 usage 为空,倒序跳过,只认
+            # raw_input > 0 的已完成轮次;重答走既有截断 preflight,不参与旁路。
             resume_prior_raw_input = 0
             resume_prior_over_threshold = False
 
-            if last_response_id and not context_window_fallback_default and int(context_window_limit) >= 1024:
+            if not is_regenerate and not context_window_fallback_default and int(context_window_limit) >= 1024:
                 try:
                     _judge_history = self.conversation_manager.get_messages(self.conversation_id) or []
 
@@ -5347,7 +5349,7 @@ class Model(MailMixin):
                                     round_index=round_num
                                 )
                         # 0) 首轮先判断是否需要自动上下文压缩（仅检查一次）。
-                        # 续接态由旁路开门(resume 实测超限 / 手动 force),开门后先提为全量
+                        # 旁路开门(上轮实测超限 / 手动 force):续接态开门后先提为全量
                         # (复用 learning 分支的提级模式),后继 preflight/摘要/切基全走既有流程。
                         if (not context_compression_checked) and include_context and (messages_has_full_context or resume_prior_over_threshold or force_context_compression):
                             context_compression_checked = True
