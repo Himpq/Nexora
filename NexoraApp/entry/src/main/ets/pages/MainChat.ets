@@ -8,19 +8,22 @@
 // 页面级统一 @State 持有进程单例（见工程约定），弹层收敛到单个 bindSheet
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
-import { ConversationItem, greetingOfHour, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
+import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
 import { ChatMessage } from '../common/ChatTypes';
 import { chatStream, StreamListener } from '../common/ChatStreamClient';
 import { FontSize, Glow, Motion, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { QuickActionGrid } from '../components/QuickActionGrid';
 import { MessageBubble } from '../components/chat/MessageBubble';
+import { TurnIndicatorPanel } from '../components/chat/TurnIndicatorPanel';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
 import { SettingsSheet } from '../components/sheets/SettingsSheet';
+import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
 
 const DOMAIN: number = 0x0001;
@@ -46,6 +49,11 @@ export struct MainChat {
     @State private loadingHistory: boolean = false;
     @State private loadError: string = '';
 
+    // 消息分页：初始只取最近一页，滚到顶部再加载更早的一页，避免长对话一次性渲染卡死主线程
+    @State private hasMoreMessages: boolean = false;
+    @State private oldestLoadedIndex: number = 0;
+    @State private loadingMoreMessages: boolean = false;
+
     // ---------- 快捷能力 ----------
     @State private greeting: string = '';
     @State private activatedActionId: string = '';
@@ -54,7 +62,9 @@ export struct MainChat {
 
     // ---------- 弹层（单 bindSheet：kind 决定内容与高度） ----------
     @State private showSheet: boolean = false;
-    @State private sheetIsModel: boolean = true;
+    @State private sheetKind: string = 'model';
+    // 知识库编辑目标标题：打开编辑弹层时设定
+    @State private knowledgeEditTarget: string = '';
 
     // 顶栏模型展示名镜像：选中模型/刷新清单后由 syncModelLabel() 同步（实测正常）。
     @State private modelLabel: string = '选择模型';
@@ -62,6 +72,15 @@ export struct MainChat {
     // ---------- 侧栏抽屉 ----------
     @State private sidebarOpen: boolean = false;
     @State private avatarPressed: boolean = false;
+
+    // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
+    @State private showScrollBottom: boolean = false;
+
+    // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
+    @State private activeTurnIndex: number = -1;
+
+    // 轮次跳转后临时高亮的消息索引（-1 表示无高亮）
+    @State private highlightIndex: number = -1;
     // 会话列表代次：每次刷新/置顶/删除后 +1，随 @Prop 下发侧栏并进 ForEach key，
     // 强制列表行整体重建——规避 @ObjectLink 对数组整体替换通知不稳导致的"重开侧栏才更新"
     @State private convEpoch: number = 0;
@@ -126,7 +145,7 @@ export struct MainChat {
         .height('100%')
         .backgroundColor($r('app.color.bg_page'))
         .bindSheet(this.showSheet, this.SheetBuilder(), {
-            height: this.sheetIsModel ? SheetSize.MEDIUM : SheetSize.LARGE,
+            height: this.sheetKind === 'model' ? SheetSize.MEDIUM : SheetSize.LARGE,
             showClose: false,
             dragBar: false,
             onDisappear: () => {
@@ -247,6 +266,11 @@ export struct MainChat {
                                 }
                             });
                         }
+                        // 轮次跳转高亮：目标消息临时加背景色，3 秒后自动清除
+                        .backgroundColor(index === this.highlightIndex
+                            ? $r('app.color.bg_sunken')
+                            : Color.Transparent)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeOut })
                         // 新消息入场过渡：配合 sendMessage 里的 animateTo 播放淡入上移，
                         // 让"发送/收到首段回复"不再是硬切闪烁
                         .transition(
@@ -261,7 +285,21 @@ export struct MainChat {
                 .listDirection(Axis.Vertical)
                 .edgeEffect(EdgeEffect.Spring)
                 .maintainVisibleContentPosition(true)
-                .padding({ top: Space.xs, bottom: Space.sm });
+                .padding({ top: Space.xs, bottom: Space.sm })
+                .onScrollIndex((start: number, end: number, center: number) => {
+                    // 末条可见时隐藏按钮，离开底部时显示
+                    this.showScrollBottom = end < this.messages.length - 1;
+                    // center < 0 表示列表尚未完成布局，此时不算轮次，避免覆盖 loadHistory 设的初始值
+                    if (center >= 0) {
+                        this.activeTurnIndex = this.computeActiveTurn(center);
+                    }
+                    hilog.info(DOMAIN, TAG, '[onScrollIndex] start=%{public}d end=%{public}d center=%{public}d activeTurn=%{public}d',
+                        start, end, center, this.activeTurnIndex);
+                    // 滚到顶部时加载更早的一页消息
+                    if (start <= 0) {
+                        this.loadMoreMessages();
+                    }
+                });
 
                 // 已打开会话但无消息（如空历史 / 加载失败后）：居中轻提示
                 if (this.messages.length === 0 && !this.loadingHistory) {
@@ -287,9 +325,62 @@ export struct MainChat {
                     .height(Size.iconLarge)
                     .color($r('app.color.brand_primary'));
             }
+
+            // 回到底部按钮：滚动离开底部时浮现，定位在内容区右下角（输入框正上方）
+            if (this.showScrollBottom && this.messages.length > 0) {
+                Stack() {
+                    this.ScrollBottomButton();
+                }
+                .alignContent(Alignment.BottomEnd)
+                .width('100%')
+                .height('100%')
+                .padding({ right: Space.lg, bottom: Space.lg })
+                .hitTestBehavior(HitTestMode.Transparent);
+            }
+
+            // 轮次指示器：右侧垂直居中，仅在有多轮对话时显示
+            if (this.countUserTurns() >= 2) {
+                Stack() {
+                    TurnIndicatorPanel({
+                        turnCount: this.countUserTurns(),
+                        activeIndex: this.activeTurnIndex,
+                        onJump: (turnIndex: number) => {
+                            this.jumpToTurn(turnIndex);
+                        },
+                        onRequirePreviews: (): string[] => {
+                            return this.buildTurnPreviews();
+                        }
+                    });
+                }
+                .alignContent(Alignment.End)
+                .width('100%')
+                .height('100%')
+                .padding({ right: Space.sm })
+                .hitTestBehavior(HitTestMode.Transparent);
+            }
         }
         .layoutWeight(1)
         .width('100%');
+    }
+
+    // 回到底部浮动按钮：圆形带阴影，点击平滑滚到最后一条消息
+    @Builder
+    ScrollBottomButton() {
+        Column() {
+            Image($r('app.media.ic_chevron_down'))
+                .width(Size.icon)
+                .height(Size.icon)
+                .fillColor($r('app.color.icon_secondary'));
+        }
+        .width(Size.touchTarget)
+        .height(Size.touchTarget)
+        .justifyContent(FlexAlign.Center)
+        .borderRadius(Size.touchTarget / 2)
+        .backgroundColor($r('app.color.bg_card'))
+        .shadow(Shadow.raised)
+        .onClick(() => {
+            this.scrollToEnd(true);
+        });
     }
 
     // 装饰背景：品牌色渐变光球，垫在问候区背后，仅空态出现
@@ -422,6 +513,19 @@ export struct MainChat {
                         this.app.refreshConversations().then(() => {
                             this.bumpList();
                         });
+                    },
+                    onOpenKnowledge: (title: string) => {
+                        this.closeSidebar();
+                        this.openSheetKnowledge(title);
+                    },
+                    onToggleKnowledgePin: (item: KnowledgeItem) => {
+                        this.toggleKnowledgePin(item);
+                    },
+                    onDeleteKnowledge: (item: KnowledgeItem) => {
+                        this.requestDeleteKnowledge(item);
+                    },
+                    onCreateKnowledge: () => {
+                        this.createKnowledge();
                     }
                 });
             }
@@ -441,12 +545,18 @@ export struct MainChat {
 
     // ---------- 弹层 ----------
     private openSheetModel(): void {
-        this.sheetIsModel = true;
+        this.sheetKind = 'model';
         this.showSheet = true;
     }
 
     private openSheetSettings(): void {
-        this.sheetIsModel = false;
+        this.sheetKind = 'settings';
+        this.showSheet = true;
+    }
+
+    private openSheetKnowledge(title: string): void {
+        this.knowledgeEditTarget = title;
+        this.sheetKind = 'knowledge';
         this.showSheet = true;
     }
 
@@ -456,16 +566,21 @@ export struct MainChat {
 
     @Builder
     SheetBuilder() {
-        if (this.sheetIsModel) {
+        if (this.sheetKind === 'model') {
             ModelPickerSheet({
                 app: this.app,
                 onPicked: (modelId: string) => {
+                    hilog.info(DOMAIN, TAG, '[onPicked] modelId=%{public}s', modelId);
                     this.app.selectModel(modelId);
+                    hilog.info(DOMAIN, TAG, '[onPicked] after selectModel, app.selectedModelId=%{public}s app.selectedModelLabel=%{public}s',
+                        this.app.selectedModelId, this.app.selectedModelLabel);
                     this.syncModelLabel();
+                    hilog.info(DOMAIN, TAG, '[onPicked] after syncModelLabel, AppStorage inputModelLabel=%{public}s',
+                        AppStorage.get<string>('inputModelLabel'));
                     this.closeSheet();
                 }
             });
-        } else {
+        } else if (this.sheetKind === 'settings') {
             SettingsSheet({
                 app: this.app,
                 onSaved: () => {
@@ -486,6 +601,22 @@ export struct MainChat {
                 onSignOut: () => {
                     this.closeSheet();
                     this.onSignOut();
+                }
+            });
+        } else {
+            KnowledgeEditorSheet({
+                app: this.app,
+                targetTitle: this.knowledgeEditTarget,
+                onSaved: () => {
+                    this.closeSheet();
+                    this.app.refreshKnowledgeList();
+                },
+                onDeleted: () => {
+                    this.closeSheet();
+                    this.app.refreshKnowledgeList();
+                },
+                onClose: () => {
+                    this.closeSheet();
                 }
             });
         }
@@ -515,12 +646,55 @@ export struct MainChat {
         });
     }
 
+    // ---------- 知识库行为 ----------
+    private toggleKnowledgePin(item: KnowledgeItem): void {
+        this.app.setKnowledgePin(item.title, !item.pin).then((message: string) => {
+            if (message.length > 0) {
+                promptAction.showToast({ message: message, duration: 2000 });
+            }
+        });
+    }
+
+    private requestDeleteKnowledge(item: KnowledgeItem): void {
+        promptAction.showDialog({
+            title: '删除知识库',
+            message: '确定删除「' + item.title + '」？此操作不可撤销。',
+            buttons: [
+                { text: '取消', color: $r('app.color.text_secondary') },
+                { text: '删除', color: $r('app.color.text_danger') }
+            ]
+        }).then((dialogResult) => {
+            if (dialogResult.index === 1) {
+                this.app.deleteKnowledge(item.title).then((message: string) => {
+                    if (message.length > 0) {
+                        promptAction.showToast({ message: message, duration: 2000 });
+                    }
+                });
+            }
+        });
+    }
+
+    private createKnowledge(): void {
+        ApiService.createBlankKnowledge('未命名知识库').then((result) => {
+            if (!result.success) {
+                promptAction.showToast({ message: result.message, duration: 2000 });
+                return;
+            }
+
+            this.app.refreshKnowledgeList();
+            this.closeSidebar();
+            this.openSheetKnowledge(result.title);
+        });
+    }
+
     // ---------- 会话行为 ----------
     private loadHistory(): void {
         this.loadingHistory = true;
         this.loadError = '';
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
 
-        ApiService.fetchMessages(this.conversationId).then((result) => {
+        ApiService.fetchMessages(this.conversationId, 20, 0).then((result) => {
             this.loadingHistory = false;
 
             if (!result.success) {
@@ -529,7 +703,49 @@ export struct MainChat {
             }
 
             this.messages = result.messages;
+            this.hasMoreMessages = result.hasMoreBefore;
+            this.oldestLoadedIndex = result.startIndex;
             this.scrollToEnd();
+            // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
+            this.activeTurnIndex = this.computeActiveTurn(this.messages.length - 1);
+            hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.activeTurnIndex);
+        });
+    }
+
+    // 加载更早的一页消息：滚到顶部时触发，插入列表头部并保持原可视位置
+    private loadMoreMessages(): void {
+        if (!this.hasMoreMessages || this.loadingMoreMessages || this.oldestLoadedIndex <= 0) {
+            return;
+        }
+
+        this.loadingMoreMessages = true;
+
+        ApiService.fetchMessages(this.conversationId, 20, this.oldestLoadedIndex).then((result) => {
+            this.loadingMoreMessages = false;
+
+            if (!result.success) {
+                return;
+            }
+
+            const insertedCount: number = result.messages.length;
+            let insertedUserCount: number = 0;
+            for (let i: number = 0; i < result.messages.length; i++) {
+                if (result.messages[i].isUser) {
+                    insertedUserCount++;
+                }
+            }
+            this.messages = [...result.messages, ...this.messages];
+            this.hasMoreMessages = result.hasMoreBefore;
+            this.oldestLoadedIndex = result.startIndex;
+            // 前面插入旧消息后所有 turn 索引偏移 insertedUserCount，同步校正高亮位置
+            this.activeTurnIndex += insertedUserCount;
+            hilog.info(DOMAIN, TAG, '[loadMore] inserted=%{public}d insertedUser=%{public}d activeTurn=%{public}d',
+                insertedCount, insertedUserCount, this.activeTurnIndex);
+
+            // 插入顶部后保持原可视位置：原第一条现位于 insertedCount，滚到该处
+            setTimeout(() => {
+                this.scroller.scrollToIndex(insertedCount, false, ScrollAlign.START);
+            }, 0);
         });
     }
 
@@ -623,7 +839,8 @@ export struct MainChat {
             modelName: this.app.selectedModelName.length > 0 ? this.app.selectedModelName : undefined,
             enableThinking: this.app.enableThinking,
             enableWebSearch: this.app.enableWebSearch,
-            enableTools: true
+            enableTools: true,
+            toolMode: this.app.forceTools ? 'force' : 'auto_off'
         }, this.listenerFor(assistantMessage));
     }
 
@@ -675,6 +892,8 @@ export struct MainChat {
         this.title = '新对话';
         this.messages = [];
         this.loadError = '';
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
         this.activatedActionId = '';
         this.closeSidebar();
     }
@@ -693,6 +912,71 @@ export struct MainChat {
         }
 
         this.scroller.scrollToIndex(this.messages.length - 1, smooth, ScrollAlign.END);
+    }
+
+    // 以可见区域中心索引为基准，找到最后一个位置 ≤ center 的用户轮次索引
+    private computeActiveTurn(center: number): number {
+        let turn: number = -1;
+
+        for (let i: number = 0; i <= center && i < this.messages.length; i++) {
+            if (this.messages[i].isUser) {
+                turn++;
+            }
+        }
+
+        return turn;
+    }
+
+    // 统计用户消息总轮次数
+    private countUserTurns(): number {
+        let count: number = 0;
+
+        for (let i: number = 0; i < this.messages.length; i++) {
+            if (this.messages[i].isUser) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    // 生成各轮次用户消息预览文本
+    private buildTurnPreviews(): string[] {
+        const previews: string[] = [];
+
+        for (let i: number = 0; i < this.messages.length; i++) {
+            if (this.messages[i].isUser) {
+                const content: string = this.messages[i].content;
+                previews.push(content.length > 50 ? content.substring(0, 50) + '…' : content);
+            }
+        }
+
+        return previews;
+    }
+
+    // 跳转到指定轮次：滚动使目标用户消息居中，并临时高亮
+    private jumpToTurn(turnIndex: number): void {
+        let userCount: number = 0;
+
+        for (let i: number = 0; i < this.messages.length; i++) {
+            if (this.messages[i].isUser) {
+                if (userCount === turnIndex) {
+                    this.scroller.scrollToIndex(i, true, ScrollAlign.CENTER);
+                    this.highlightMessage(i);
+                    return;
+                }
+
+                userCount++;
+            }
+        }
+    }
+
+    // 临时高亮指定消息：设置索引后 3 秒自动清除
+    private highlightMessage(index: number): void {
+        this.highlightIndex = index;
+        setTimeout(() => {
+            this.highlightIndex = -1;
+        }, 3000);
     }
 
     // 首轮生成结束后用首条提问作为会话标题
@@ -861,6 +1145,11 @@ export struct MainChat {
             },
             onContentDelta: (delta: string) => {
                 onUi(() => {
+                    // 正文到达：思考阶段结束，折叠 thinking 块
+                    if (assistant.thinkingExpanded) {
+                        assistant.thinkingExpanded = false;
+                    }
+
                     assistant.appendDelta('content', delta);
                     this.logStreamProgress(assistant, false);
                     this.scrollToEnd();
@@ -868,6 +1157,11 @@ export struct MainChat {
             },
             onToolCall: (name: string, callId: string, args: string, round: number) => {
                 onUi(() => {
+                    // 工具调用到达：思考阶段结束，折叠 thinking 块
+                    if (assistant.thinkingExpanded) {
+                        assistant.thinkingExpanded = false;
+                    }
+
                     assistant.beginToolCall(callId, name, args, round);
                     this.scrollToEnd();
                 });
