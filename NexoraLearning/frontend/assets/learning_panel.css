@@ -1109,6 +1109,21 @@
   flex-shrink: 0;
 }
 
+/* 加入学习切换按钮：与开始学习主 CTA 同尺寸的次要层级，白底描边、hover 加深 */
+.course-join-cta {
+  background: #ffffff;
+  border: 1px solid #c9ced6;
+  color: #20242c;
+  margin-left: 8px;
+}
+
+.course-join-cta:hover {
+  background: #f3f4f6;
+  border-color: #9aa3af;
+  color: #111827;
+  opacity: 1;
+}
+
 .learning-panel-copy {
   display: grid;
   gap: 4px;

@@ -148,9 +148,19 @@ export class ChatMessage {
         const last: MessageSegment | undefined = this.segments[this.segments.length - 1];
 
         if (last !== undefined && last.type === type) {
-            last.text += delta;
+            // 续写时创建新 segment 对象并赋值新数组：ArkUI ForEach 对对象属性续写
+            // 不触发子项刷新，只有 item 引用变化时才重新渲染
+            const updated: MessageSegment = {
+                type: last.type,
+                text: last.text + delta,
+                name: last.name,
+                callId: last.callId,
+                modelVisibleResult: last.modelVisibleResult,
+                round: last.round
+            };
+            this.segments = [...this.segments.slice(0, -1), updated];
         } else {
-            this.segments.push({ type: type, text: delta });
+            this.segments = [...this.segments, { type: type, text: delta }];
         }
 
         if (type === 'reasoning') {
@@ -160,7 +170,8 @@ export class ChatMessage {
         }
     }
 
-    // 工具调用发起
+    // 工具调用发起：首次创建时同步写入 segments，保证流式期间工具卡按真实时序渲染
+    // （MessageBubble 按 segments 遍历渲染 ToolCallCard，缺段则工具卡不显示）
     beginToolCall(callId: string, name: string, argumentsText: string, round: number): void {
         const existing: ToolCallItem | undefined = this.findToolCall(callId);
 
@@ -171,9 +182,10 @@ export class ChatMessage {
         }
 
         this.toolCalls = [...this.toolCalls, new ToolCallItem(callId, name, argumentsText, round)];
+        this.segments = [...this.segments, { type: 'function_call', text: argumentsText, name: name, callId: callId, round: round }];
     }
 
-    // 工具结果回填，按 callId 精确匹配
+    // 工具结果回填，按 callId 精确匹配：同步写入 segments 占位，确保后续正文新开段
     completeToolCall(callId: string, resultText: string): void {
         const target: ToolCallItem | undefined = this.findToolCall(callId);
 
@@ -183,6 +195,7 @@ export class ChatMessage {
 
         target.completeWith(resultText);
         this.toolCalls = [...this.toolCalls];
+        this.segments = [...this.segments, { type: 'function_result', text: resultText, name: target.name, callId: callId, round: target.round }];
     }
 
     failToolCall(callId: string, errorText: string): void {

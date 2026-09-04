@@ -39,6 +39,9 @@ DEFAULT_WEB_SEARCH_CONFIG: Dict[str, Any] = {
         "exa": {
             # 鉴权：优先读取此处，其次环境变量 EXA_API_KEY
             "api_key": "",
+            # Team Management 用量接口需单独的 team key（与搜索 key 权限不同）
+            "team_api_key": "",
+            "team_api_key_id": "",
             "base_url": "https://api.exa.ai",
             "type": "auto",
             "num_results": 10,
@@ -107,6 +110,23 @@ def resolve_exa_api_key(provider_config: Dict[str, Any]) -> str:
         return key
 
     return str(os.environ.get("EXA_API_KEY") or "").strip()
+
+
+def resolve_exa_team_api_key(provider_config: Dict[str, Any]) -> str:
+    """解析 Exa Team API Key：用于 /api-keys/{id}/usage，优先 team_api_key，其次回落搜索 key"""
+    key = str(provider_config.get("team_api_key") or "").strip()
+
+    if key:
+        return key
+
+    # 兼容环境变量
+    env_key = str(os.environ.get("EXA_TEAM_API_KEY") or os.environ.get("EXA_API_KEY") or "").strip()
+
+    if env_key:
+        return env_key
+
+    # 未配置 team key 时回落搜索 key（会 404 但给出友好提示）
+    return resolve_exa_api_key(provider_config)
 
 
 def list_configured_providers(main_config: Dict[str, Any]) -> List[str]:

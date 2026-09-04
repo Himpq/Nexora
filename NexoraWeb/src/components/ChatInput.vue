@@ -732,7 +732,8 @@
 
         const content = draft.value.trim()
 
-        if (!content) {
+        // 纯附件(单图/单文件)允许空文本发送,附件随消息持久化展示(对齐原版 uploadedFileIds 语义)
+        if (!content && attachmentList.value.length === 0) {
             return
         }
 

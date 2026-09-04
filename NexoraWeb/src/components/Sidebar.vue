@@ -477,6 +477,7 @@
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import { collapseMobileSidebar } from '@/ui/viewport'
 
     import ContextMenu from './ContextMenu.vue'
     import MarkdownView from './MarkdownView.vue'
@@ -612,6 +613,9 @@
     async function handleOpen(conversationId: string): Promise<void> {
         // 点击会话 = 回到聊天主视图(若当前停留在 Files/Workspaces 等视图则先返回)
         emit('open-chat')
+
+        // 移动端抽屉点选即收(桌面端空转,见 viewport.collapseMobileSidebar)
+        collapseMobileSidebar()
 
         try {
             await store.openConversation(conversationId)
@@ -844,7 +848,12 @@
     }
 
     function handleBrandClick(mode: 'nexora' | 'learning' | 'workspace'): void {
-        if (mode === 'learning' && !learningEnabled.value) return
+        if (mode === 'learning' && !learningEnabled.value) {
+            showToast('Learning 未启用，请在设置中开启', 'warning')
+
+            return
+        }
+
         if (mode === 'learning') {
             emit('open-learning')
             return

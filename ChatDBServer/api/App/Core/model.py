@@ -4870,6 +4870,48 @@ class Model(MailMixin):
             context_compression_trigger_mode = ""
             context_compression_masked_image_count = 0
 
+            # 续接/全量通用旁路判断(不经全量重发也能触发):
+            # 续接请求只带增量,首轮 preflight 量不到总量;全量发送时启发式遇到日文假名
+            # 为主的内容会系统性低估(330 实测:启发式 6 万 vs 服务商实测 13.9 万)。
+            # 直接读上轮落库的服务商实测 raw_input,超限即走既有压缩流程(续接态先提为
+            # 全量,全量态直接触发)。尾部 streaming 占位 usage 为空,倒序跳过,只认
+            # raw_input > 0 的已完成轮次;重答走既有截断 preflight,不参与旁路。
+            resume_prior_raw_input = 0
+            resume_prior_over_threshold = False
+
+            if not is_regenerate and not context_window_fallback_default and int(context_window_limit) >= 1024:
+                try:
+                    _judge_history = self.conversation_manager.get_messages(self.conversation_id) or []
+
+                    for _old_msg in reversed(_judge_history):
+                        if not isinstance(_old_msg, dict):
+                            continue
+
+                        if str(_old_msg.get("role") or "").strip() != "assistant":
+                            continue
+
+                        _old_usage = _old_msg.get("usage") if isinstance(_old_msg.get("usage"), dict) else {}
+                        _old_raw = 0
+
+                        try:
+                            _old_raw = int(_old_usage.get("raw_input") or 0)
+                        except Exception:
+                            _old_raw = 0
+
+                        if _old_raw > 0:
+                            resume_prior_raw_input = int(_old_raw)
+                            break
+                except Exception:
+                    resume_prior_raw_input = 0
+
+                if resume_prior_raw_input > 0:
+                    _resume_ratio = 0.8 if normalized_conversation_mode == "learning" else 0.9
+                    _resume_threshold = int(max(1, int(context_window_limit)) * _resume_ratio)
+                    resume_prior_over_threshold = bool(resume_prior_raw_input >= _resume_threshold)
+
+                    if resume_prior_over_threshold:
+                        print(f"[CTX_COMPRESS] resume prior raw {resume_prior_raw_input} >= threshold {_resume_threshold}, promote to full")
+
             # 火山引擎特例：仅对本次请求载荷中的最后一条 user 内容补结尾换行
             if messages and isinstance(messages[-1], dict) and str(messages[-1].get("role", "") or "").strip() == "user":
                 messages[-1]["content"] = self._append_trailing_newline_for_user_content(messages[-1].get("content", ""))
@@ -5269,7 +5311,7 @@ class Model(MailMixin):
                                     title="Compression Compare",
                                     round_index=round_num
                                 )
-                        if force_context_compression and (not include_context or not messages_has_full_context):
+                        if force_context_compression and not include_context:
                             context_compression_trigger_mode = "force"
                             ctx_status = {
                                 "type": "context_compression_status",
@@ -5307,8 +5349,28 @@ class Model(MailMixin):
                                     round_index=round_num
                                 )
                         # 0) 首轮先判断是否需要自动上下文压缩（仅检查一次）。
-                        if (not context_compression_checked) and include_context and messages_has_full_context:
+                        # 旁路开门(上轮实测超限 / 手动 force):续接态开门后先提为全量
+                        # (复用 learning 分支的提级模式),后继 preflight/摘要/切基全走既有流程。
+                        if (not context_compression_checked) and include_context and (messages_has_full_context or resume_prior_over_threshold or force_context_compression):
                             context_compression_checked = True
+
+                            if (resume_prior_over_threshold or force_context_compression) and not messages_has_full_context:
+                                previous_response_id = None
+                                messages = list(full_context_messages)
+                                messages_has_full_context = True
+                                request_promoted_to_full_context = True
+                                request_resume_id_seed = ""
+                                request_started_with_resume_id = False
+                                request_params = self._build_request_params(
+                                    messages=messages,
+                                    previous_response_id=previous_response_id,
+                                    enable_thinking=round_enable_thinking,
+                                    thinking_level=normalized_thinking_level,
+                                    enable_web_search=enable_web_search,
+                                    enable_tools=effective_enable_tools,
+                                    current_function_outputs=current_function_outputs,
+                                    runtime_function_tool_names=self._runtime_function_tool_names_for_request()
+                                )
                             try:
                                 runtime_input_pre = request_params.get("input", request_params.get("messages", []))
                                 runtime_input_text_pre_raw = json.dumps(runtime_input_pre, ensure_ascii=False, default=str)
@@ -5331,15 +5393,18 @@ class Model(MailMixin):
                             compression_ratio = 0.8 if normalized_conversation_mode == "learning" else 0.9
                             compression_threshold = int(max(1, context_window_limit) * compression_ratio)
                             force_compression_trigger = bool(force_context_compression)
-                            if force_compression_trigger or preflight_raw_input_tokens >= compression_threshold:
+                            # 触发口径取 preflight 与上轮实测的最大值:续接增量与日文假名
+                            # 为主的启发式低估都会让 preflight 偏小,用落盘实测兜底。
+                            trigger_basis_tokens = int(max(int(preflight_raw_input_tokens), int(resume_prior_raw_input)))
+                            if force_compression_trigger or trigger_basis_tokens >= compression_threshold:
                                 context_compression_triggered = True
-                                context_compression_trigger_raw_input = int(max(0, preflight_raw_input_tokens))
+                                context_compression_trigger_raw_input = int(max(0, trigger_basis_tokens))
                                 context_compression_trigger_mode = "force" if force_compression_trigger else "overload"
                                 ctx_status = {
                                     "type": "context_compression_status",
                                     "status": "start",
                                     "content": "上下文压缩中（强制）" if force_compression_trigger else "上下文压缩中",
-                                    "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                    "raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                     "context_window": int(max(0, context_window_limit)),
                                     "context_window_source": context_window_source,
                                     "compression_threshold": int(max(1, compression_threshold)),
@@ -5357,7 +5422,7 @@ class Model(MailMixin):
                                             "trigger_mode": context_compression_trigger_mode,
                                             "trigger_label": "强制触发" if force_compression_trigger else "上下文过载触发",
                                             "forced": bool(force_compression_trigger),
-                                            "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                            "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                             "compression_threshold": int(max(1, compression_threshold)),
                                             "context_window": int(max(0, context_window_limit)),
                                             "context_window_source": context_window_source,
@@ -5414,11 +5479,11 @@ class Model(MailMixin):
                                                 postflight_raw_input_tokens = int(exact_input_post)
                                         saved_raw_input_tokens = max(
                                             0,
-                                            int(max(0, preflight_raw_input_tokens)) - int(max(0, postflight_raw_input_tokens)),
+                                            int(max(0, trigger_basis_tokens)) - int(max(0, postflight_raw_input_tokens)),
                                         )
                                         saved_ratio_value = (
-                                            float(saved_raw_input_tokens) / float(preflight_raw_input_tokens)
-                                            if preflight_raw_input_tokens > 0 else 0.0
+                                            float(saved_raw_input_tokens) / float(trigger_basis_tokens)
+                                            if trigger_basis_tokens > 0 else 0.0
                                         )
                                         try:
                                             if learning_lecture_id:
@@ -5503,7 +5568,7 @@ class Model(MailMixin):
                                                 "append_mode": True,
                                                 "use_responses_api": bool(use_responses_api),
                                                 "instruction_chars": int(len(append_instruction)),
-                                                "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                                 "context_window": int(max(0, context_window_limit)),
                                                 "context_window_source": context_window_source,
                                                 "trigger_mode": context_compression_trigger_mode,
@@ -5512,18 +5577,15 @@ class Model(MailMixin):
                                             title="Compression Source",
                                             round_index=round_num
                                         )
-                                    # 补 previous_response_id + 透传 tools：复用当轮已解析的续接 ID 与工具集，LLMFaker compression 才能命中 prefix cache
-                                    compression_previous_response_id = previous_response_id if isinstance(previous_response_id, str) and previous_response_id.strip() else None
-
+                                    # 摘要请求自带完整上下文,续接 ID 与工具集必须留空:
+                                    # 带续接会把整段历史再算一遍(重复计费且干扰摘要),
+                                    # 开工具会让模型走工具调用而非输出摘要正文(本轮只收 content_delta)。
                                     compression_run = {}
                                     compression_run_iter = run_append_compression_round(
                                         self,
                                         compress_messages,
                                         max_chars=self._context_compression_max_chars,
                                         use_responses_api=use_responses_api,
-                                        previous_response_id=compression_previous_response_id,
-                                        enable_tools=bool(effective_enable_tools),
-                                        runtime_function_tool_names=self._runtime_function_tool_names_for_request(),
                                     )
                                     try:
                                         while True:
@@ -5608,7 +5670,7 @@ class Model(MailMixin):
                                                     "created_at": datetime.now().isoformat(),
                                                     "model": self.model_name,
                                                     "provider": self.provider,
-                                                    "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                    "trigger_raw_input_tokens": int(max(0, trigger_basis_tokens)),
                                                     "context_window": int(max(0, context_window_limit)),
                                                     "forced": bool(force_compression_trigger),
                                                     "trigger_mode": context_compression_trigger_mode,
@@ -7379,8 +7441,20 @@ class Model(MailMixin):
                                     v4_payload["error"] = {"message": str(terr or "")}
                                 v4_payload["status"] = "error"
                             if is_regenerate and regenerate_index is not None:
-                                self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
-                                saved_assistant_message_index = int(regenerate_index)
+                                # 空结果禁止覆盖：重答零产出时保留旧回复，不调用 replace。
+                                # 根因：330 号对话一次空 partial 覆盖了已完成的旧回复。
+                                regen_visible = str(saved_assistant_content or "").strip()
+
+                                regen_has_error = bool(v4_payload.get("error"))
+
+                                if not regen_visible and not regen_has_error:
+                                    print(
+                                        "[REGENERATE_EMPTY_SKIP] empty regenerate keeps old reply "
+                                        f"conversation_id={self.conversation_id} index={int(regenerate_index)}"
+                                    )
+                                else:
+                                    self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
+                                    saved_assistant_message_index = int(regenerate_index)
                             else:
                                 # 正常：finish placeholder
                                 target_idx = None

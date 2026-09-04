@@ -523,6 +523,19 @@
   }
 
   /**
+   * 加入学习切换按钮(课程主页操作区;onclick 由 handleCourseHomeClick 的
+   * data-action="toggle-learning" 分支处理,复用 toggleLearningSelection)
+   */
+  function renderLearningToggleButton(lectureId) {
+    const safeId = String(lectureId || "").trim();
+    const selected = state.selectedLearningLectureIds.includes(safeId);
+
+    return '<button class="course-home-cta course-intro-cta course-join-cta" type="button" data-action="toggle-learning" data-lecture-id="' + escapeHtml(safeId) + '">' +
+      escapeHtml(selected ? "退出学习" : "加入学习") +
+      "</button>";
+  }
+
+  /**
    * 课程内容功能区：课程简介 + 当前推进 + 学习信息，简介下方提供个性化学习入口，
    * 下方异步填充课程长简介。
    */
@@ -587,6 +600,7 @@
       '<div class="detail-description-label learning-panel-copy-label">课程简介</div>' +
       '<div class="detail-description-text learning-panel-summary-text">' + lectureDescription + '</div>' +
       '<div class="learning-panel-summary-actions">' +
+      renderLearningToggleButton(lectureId) +
       '<button class="course-home-cta course-intro-cta" type="button" data-action="start-learning-path" data-lecture-id="' + escapeHtml(lectureId) + '">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
       '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>' +

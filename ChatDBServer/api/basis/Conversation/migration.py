@@ -22,7 +22,7 @@ from App.Utils import sanitize_assistant_visible_content
 
 from .errors import ConversationMigrationError
 from .repository import conversation_base_path, conversation_file_path, conversation_index_path, load_json_compat
-from .schema import SCHEMA_VERSION, build_v4_skeleton, normalize_scope, sha16
+from .schema import SCHEMA_VERSION, build_v4_skeleton, merge_user_attachments, normalize_scope, sha16
 from .telemetry import build_trace_from_process_steps
 
 
@@ -234,8 +234,11 @@ def migrate_single_conversation_data(old: Dict[str, Any]) -> Dict[str, Any]:
             continue
         role = _coerce_str(msg.get("role"))
         if role == "user":
-            attachments = msg.get("attachments") if isinstance(msg.get("attachments"), list) else []
-            # 旧 user 可能无 metadata.attachments
+            top_attachments = msg.get("attachments") if isinstance(msg.get("attachments"), list) else []
+            legacy_metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+            legacy_attachments = legacy_metadata.get("attachments") if isinstance(legacy_metadata, dict) else []
+            # 旧 user 的图片只落在 metadata.attachments,不合并则迁移后轮次在历史里空白
+            attachments = merge_user_attachments(top_attachments, legacy_attachments)
             new_messages.append({
                 "role": "user",
                 "content": msg.get("content", ""),

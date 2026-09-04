@@ -39,9 +39,8 @@
         />
 
         <main class="main-content">
-            <!-- Learning 视图由 iframe 占满内容区,宿主顶栏无承载信息,整体隐藏(返回走品牌栏) -->
+            <!-- 宿主顶栏常驻:Learning 视图下保留模型选择(返回走品牌栏,此处只做模型切换) -->
             <ChatHeader
-                v-show="!learningOpen"
                 :models="modelStore.models"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
@@ -296,6 +295,8 @@
     import { useBottomFollow } from '@/composables/useBottomFollow'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
+    import { enterLearningLightTheme, exitLearningLightTheme } from '@/ui/theme'
+    import { collapseMobileSidebar, isMobileSidebarOpen, isMobileViewport } from '@/ui/viewport'
     import { useLearningViewSync } from '@/composables/useLearningViewSync'
     import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
 
@@ -568,7 +569,8 @@
             const cached = localStorage.getItem('nexora_learning_enabled')
             if (cached !== null) return JSON.parse(cached) as boolean
         } catch {}
-        return false
+
+        return true
     })())
     const learningFrontendUrl = ref('')
     /** iframe dashboard 状态回报,驱动侧栏功能区入口高亮(经 Sidebar props 下发) */
@@ -688,6 +690,15 @@
         })
     }
     watch([learningOpen, learningEnabled, learningSidebarView, learningCourseState], syncLearningBodyClass, { immediate: true, deep: true })
+
+    // Learning 内容区为白色:进出时整站暂切亮色/恢复(偏好不动,只动实际渲染)
+    watch(learningOpen, (open) => {
+        if (open) {
+            enterLearningLightTheme()
+        } else {
+            exitLearningLightTheme()
+        }
+    }, { immediate: true })
 
     // 偏好中关闭 Learning 的即时回退：若当前在 Learning 视图则自动回到聊天
     watch(learningEnabled, (enabled) => {
@@ -830,9 +841,8 @@
         }
         if (message.type === 'pointer-down') {
             // iframe 内的点击不会冒泡到宿主 document,移动端抽屉需按协定显式收起
-            if (window.matchMedia('(max-width: 980px)').matches && document.body.classList.contains('mobile-sidebar-open')) {
-                document.body.classList.remove('mobile-sidebar-open')
-            }
+            collapseMobileSidebar()
+
             return
         }
     }
@@ -844,6 +854,9 @@
     function handleOpenLearningConversation(conversationId: string): void {
         const cid = String(conversationId || '').trim()
         if (!cid) return
+
+        // 移动端抽屉点选即收(桌面端空转)
+        collapseMobileSidebar()
 
         learningSidebarView.value = 'conversation'
         void conversationStore.openConversation(cid).catch((error: unknown) => {
@@ -2395,7 +2408,7 @@
             selectionMenuRef.value.close()
         }
 
-        if (window.matchMedia('(max-width: 980px)').matches && document.body.classList.contains('mobile-sidebar-open')) {
+        if (isMobileViewport() && isMobileSidebarOpen()) {
             const sidebar = document.querySelector<HTMLElement>('.sidebar')
             const target = event.target as Node
             const toggleEls = document.querySelectorAll<HTMLElement>('#toggleSidebar, #toggleSidebarMobile')
@@ -2408,7 +2421,7 @@
                 return
             }
 
-            document.body.classList.remove('mobile-sidebar-open')
+            collapseMobileSidebar()
         }
     }
 

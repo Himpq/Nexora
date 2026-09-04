@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260730_style_unify_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_feed_composer.css?v=20260717_feed_composer_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_push.css?v=20260719_markdown_review_07">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260731_report_cleanup_01">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260903_join_model_01">
   <link rel="stylesheet" href="/api/frontend/assets/learning_chart_experiment.css?v=20260720_echarts_generic_01">
   <link rel="stylesheet" href="/api/frontend/assets/question_exam.css?v=20260718_exam_05">
   <link rel="stylesheet" href="/api/frontend/assets/learning_stream.css?v=20260718_stream_08">
@@ -534,8 +534,11 @@
   <script src="/api/frontend/assets/learning_resource_studio.js?v=20260719_markdown_review_05"></script>
   <script src="/api/frontend/assets/learning_video_studio.js?v=20260706_runtime_user_header_01"></script>
   <script src="/api/frontend/assets/vendor/echarts/echarts.min.js?v=6.1.0_b66b25ae"></script>
-  <script src="/api/frontend/assets/app.js?v=20260827_reader_consistency_01"></script>
-  <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260731_course_reopen_01"></script>
+  <script src="/api/frontend/assets/app.js?v=20260903_join_model_01"></script>
+  <!-- 20260903: course_workspace_bridge.js 版本号提升——bridge 新增 v1 信封归一化
+       (normalizeHostEnvelope, 2026-08-30) 并被宿主 NexoraWeb 依赖;资源响应头为
+       max-age=31536000 immutable,不变更 v 参数则旧 bridge 会被浏览器缓存一年 -->
+  <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260903_bridge_v1_01"></script>
 </body>
 </html>
 

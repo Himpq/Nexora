@@ -620,6 +620,24 @@ class ConversationService:
             old_versions = existing.get("versions", []) if isinstance(existing.get("versions"), list) else []
             new_payload = dict(payload or {})
             new_payload["role"] = "assistant"
+
+            # 空结果禁止覆盖旧回复：新内容无可见文本、无错误时，
+            # 不得覆盖已有可见旧回复（330 号对话曾被空 partial 覆盖丢失 eSIM 回复）。
+            new_visible = str(new_payload.get("content") or "").strip()
+
+            new_has_error = bool(new_payload.get("error"))
+
+            if isinstance(new_payload.get("metadata"), dict):
+                new_has_error = bool(new_has_error or new_payload["metadata"].get("terminal_error"))
+
+            old_visible = str(existing.get("content") or "").strip()
+
+            if not new_visible and not new_has_error and old_visible:
+                raise ConversationValidationError(
+                    f"空结果不得覆盖已有回复: index={idx}",
+                    details={"index": idx},
+                )
+
             # 保留原占位的 versions
             if "versions" not in new_payload or not isinstance(new_payload.get("versions"), list):
                 new_payload["versions"] = list(old_versions)
@@ -671,9 +689,21 @@ class ConversationService:
                 from .errors import ConversationTargetRoleError as _RoleErr
                 raise _RoleErr("update_assistant_partial 目标必须是 assistant", details={"target_index": idx})
             patch = dict(payload or {})
-            # 仅允许部分字段
+
+            # 空增量禁止清空旧回复：增量内容为空时不得覆盖已有可见内容。
             if "content" in patch:
                 from App.Utils import sanitize_assistant_visible_content as _san
+
+                new_visible = str(_san(patch.get("content", "")) or "").strip()
+
+                old_visible = str(msg.get("content") or "").strip()
+
+                if not new_visible and old_visible:
+                    raise ConversationValidationError(
+                        f"空增量不得覆盖已有回复: index={idx}",
+                        details={"index": idx},
+                    )
+
                 msg["content"] = _san(patch.get("content", ""))
             if "trace" in patch and isinstance(patch.get("trace"), dict):
                 current_trace = msg.get("trace", {}) if isinstance(msg.get("trace"), dict) else {}

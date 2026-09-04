@@ -1,4 +1,4 @@
-// ChatStreamClient.ets - 对话流式传输客户端
+﻿// ChatStreamClient.ets - 对话流式传输客户端
 // 协议：POST /api/chat/stream，SSE 增量推送 data: {type, delta, ...}，结束为 data: [DONE]
 // 本类只做「字节流 -> 事件」，事件如何落到消息模型由调用方决定
 //
@@ -106,6 +106,29 @@ export class ChatStreamClient {
     private pollDoneSeen: boolean = false;
     private pollSkipWarned: boolean = false;
 
+    // 客户端已渲染的总长度（SSE 帧 + 轮询差量合计），作为轮询差量基准。
+    // 仅用 pollContentLen 会在 SSE 已渲染部分内容后轮询从 0 开始重复渲染；
+    // 用 renderedContentLen 可保证轮询只补 SSE 没渲染到的部分
+    private renderedContentLen: number = 0;
+    private renderedReasoningLen: number = 0;
+
+    // SSE 提前结束（dataEnd/err 未收 [DONE]）但服务端仍在执行时，保存 resolve 让轮询接管到 done 再结束
+    private pendingResolve: (() => void) | null = null;
+
+    // 当前流的 listener，供 cancel 在 handover 状态下正确触发 onAborted 收尾
+    private currentListener: StreamListener | null = null;
+
+    // dataReceive 是否回调过：区分「SSE 正常逐帧」与「整包聚合」。
+    // 正常逐帧时轮询不拉 content（避免 pollContentLen>0 跳过 SSE 后续帧导致丢内容）；
+    // 整包聚合或 handover 时轮询才接管
+    private sseDataStarted: boolean = false;
+
+    // 轮询在 SSE 首帧前已渲染过内容时设为 true：此后轮询持续接管，SSE 帧全跳过避免重复
+    private pollerTakeover: boolean = false;
+
+    // 轮询已处理到的 render_chunks 索引：每次只派发新增的工具帧，避免重复
+    private pollRenderChunkIdx: number = 0;
+
     // 工具参数流式累积：function_call_delta 按 call_id 归并增量参数，
     // 每次 delta 后把「累积到当前的完整参数」派发给 UI（覆盖语义建卡/更新参数），
     // 不依赖上游是否补发完整 function_call 帧，卡片实时呈现且最终参数完整
@@ -138,6 +161,13 @@ export class ChatStreamClient {
         this.pollReasoningLen = 0;
         this.pollDoneSeen = false;
         this.pollSkipWarned = false;
+        this.renderedContentLen = 0;
+        this.renderedReasoningLen = 0;
+        this.pendingResolve = null;
+        this.currentListener = null;
+        this.sseDataStarted = false;
+        this.pollerTakeover = false;
+        this.pollRenderChunkIdx = 0;
         this.toolArgBufs.clear();
         this.stopPoller('reset');
 
@@ -156,12 +186,24 @@ export class ChatStreamClient {
             return;
         }
 
+        this.finished = true;
         this.stopPoller('cancel');
         this.notifyCancel();
 
         if (this.request !== null) {
             this.request.destroy();
             this.request = null;
+        }
+
+        // handover 状态下需触发 onAborted 并 resolve，否则 openStream Promise 永远 pending
+        if (this.pendingResolve !== null) {
+            if (this.currentListener !== null) {
+                this.currentListener.onAborted();
+            }
+
+            const resolve: () => void = this.pendingResolve;
+            this.pendingResolve = null;
+            resolve();
         }
 
         hilog.info(DOMAIN, TAG, 'cancel requested, stream=%{public}s', this.streamId);
@@ -171,6 +213,7 @@ export class ChatStreamClient {
     private async openStream(options: StreamOptions, listener: StreamListener): Promise<void> {
         const url: string = HttpUtil.getBackendUrl() + '/api/chat/stream';
         const decoder: util.TextDecoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
+        this.currentListener = listener;
 
         await new Promise<void>((resolve: () => void) => {
             const request: http.HttpRequest = http.createHttp();
@@ -182,6 +225,17 @@ export class ChatStreamClient {
             request.on('dataReceive', (data: ArrayBuffer) => {
                 if (this.finished) {
                     return;
+                }
+
+                // 首次收到 SSE 数据：标记 SSE 已启动。若轮询已先渲染过内容，
+                // 设 pollerTakeover 让轮询持续接管（SSE 帧全跳过避免重复）
+                if (!this.sseDataStarted) {
+                    this.sseDataStarted = true;
+
+                    if (this.pollContentLen > 0 || this.pollReasoningLen > 0) {
+                        this.pollerTakeover = true;
+                        hilog.info(DOMAIN, TAG, '[sse] dataReceive starts after poll rendered, poller takes over');
+                    }
                 }
 
                 this.recvBlocks = this.recvBlocks + 1;
@@ -201,9 +255,12 @@ export class ChatStreamClient {
                 this.drainBuffer(listener);
             });
 
-            // 连接结束：把缓冲里剩余的一行补完
+            // 连接结束：把缓冲里剩余的一行补完。
+            // 若未收 [DONE] 且会话已建立，说明 SSE 提前断开但服务端可能仍在执行——
+            // 不立即结束，保存 resolve 交由轮询接管拉取剩余内容直到服务端 done
             request.on('dataEnd', () => {
-                this.stopPoller('dataEnd');
+                hilog.info(DOMAIN, TAG, '[DBG:dataEnd] finished=%{public}s pollC=%{public}d pollR=%{public}d contentFrames=%{public}d takeover=%{public}s',
+                    this.finished, this.pollContentLen, this.pollReasoningLen, this.contentFrames, this.pollerTakeover);
 
                 if (this.finished) {
                     this.logRecvSummary('dataEnd-skip');
@@ -218,13 +275,14 @@ export class ChatStreamClient {
                     this.finished = this.handleLine(tail, listener);
                 }
 
-                if (!this.finished) {
-                    listener.onComplete('');
+                if (this.finished) {
+                    this.logRecvSummary('dataEnd-done');
+                    resolve();
+                    return;
                 }
 
-                this.finished = true;
-                this.logRecvSummary('dataEnd');
-                resolve();
+                // SSE 提前结束且未收 [DONE]：交轮询接管
+                this.handoverToPoller(resolve, listener, 'dataEnd');
             });
 
             request.request(url, {
@@ -236,11 +294,15 @@ export class ChatStreamClient {
                 usingCache: false,
                 expectDataType: http.HttpDataType.ARRAY_BUFFER,
                 connectTimeout: STREAM_CONNECT_TIMEOUT,
-                readTimeout: STREAM_READ_TIMEOUT
+                readTimeout: STREAM_READ_TIMEOUT,
+                remoteValidation: 'skip'
             }, (err: BusinessError, data: http.HttpResponse) => {
-                this.release(request, resolve, () => {
-                    this.resolveTransportResult(err, data, listener);
-                });
+                request.off('dataReceive');
+                request.off('dataEnd');
+                request.destroy();
+                this.request = null;
+
+                this.resolveTransportResult(err, data, listener, resolve);
             });
 
             // SSE 静默探测 -> 内容轮询接管：conversation_id 已知（新会话预创建 / 追问既有会话）时
@@ -250,21 +312,28 @@ export class ChatStreamClient {
         });
     }
 
-    // 释放监听与连接，然后执行结果判定
-    private release(request: http.HttpRequest, resolve: () => void, action: () => void): void {
-        request.off('dataReceive');
-        request.off('dataEnd');
-        request.destroy();
-        this.request = null;
-        this.stopPoller('release');
+    // SSE 提前结束（dataEnd/err 未收 [DONE]）但服务端可能仍在执行时，交轮询接管。
+    // 保存 resolve，启动轮询，直到轮询拉到 status=done 再 resolve 结束本次流
+    private handoverToPoller(resolve: () => void, listener: StreamListener, reason: string): void {
+        if (this.conversationId.length === 0) {
+            // 无会话 id 无法轮询，直接结束
+            listener.onComplete('');
+            this.finished = true;
+            this.logRecvSummary(reason);
+            resolve();
+            return;
+        }
 
-        action();
-        resolve();
+        hilog.info(DOMAIN, TAG, '[handover] sse ended without [DONE], poller takes over conv=%{public}s reason=%{public}s',
+            this.conversationId, reason);
+        this.pendingResolve = resolve;
+        this.startPoller(listener);
     }
 
-    private resolveTransportResult(err: BusinessError, data: http.HttpResponse, listener: StreamListener): void {
+    private resolveTransportResult(err: BusinessError, data: http.HttpResponse, listener: StreamListener, resolve: () => void): void {
         if (this.finished) {
             this.stopPoller('transport-finished');
+            resolve();
             return;
         }
 
@@ -272,15 +341,21 @@ export class ChatStreamClient {
             const message: string = err.message as string;
             const aborted: boolean = err.code === 2300012 || message.indexOf('abort') >= 0;
 
+            hilog.info(DOMAIN, TAG, '[DBG:transportErr] code=%{public}d aborted=%{public}s conv=%{public}s pollC=%{public}d contentFrames=%{public}d',
+                err.code, aborted, this.conversationId, this.pollContentLen, this.contentFrames);
+
             if (aborted) {
                 listener.onAborted();
-            } else {
-                hilog.error(DOMAIN, TAG, 'stream error: %{public}s', JSON.stringify(err));
-                listener.onError('网络异常，流式连接中断');
+                this.finished = true;
+                this.stopPoller('transport-abort');
+                resolve();
+                return;
             }
 
-            this.finished = true;
-            this.stopPoller('transport-error');
+            // 非中断错误：若会话已建立，交轮询接管（服务端可能仍在执行）；
+            // 否则无会话 id 无法轮询，只能报错结束
+            hilog.error(DOMAIN, TAG, 'stream error: %{public}s', JSON.stringify(err));
+            this.handoverToPoller(resolve, listener, 'transport-error');
             return;
         }
 
@@ -289,6 +364,7 @@ export class ChatStreamClient {
             listener.onError('请求失败(' + data.responseCode + ')');
             this.finished = true;
             this.stopPoller('transport-http');
+            resolve();
             return;
         }
 
@@ -328,14 +404,24 @@ export class ChatStreamClient {
 
         this.logRecvSummary('result');
 
-        if (!this.finished) {
-            // 纯文本兜底：仅在响应体不含任何 SSE 帧标记时，才把整体当最终正文
-            const plain: string = body.indexOf('data:') >= 0 ? '' : body.trim();
-            listener.onComplete(plain);
-            this.finished = true;
+        if (this.finished) {
+            this.stopPoller('transport-done');
+            resolve();
+            return;
         }
 
-        this.stopPoller('transport-end');
+        // 未收 [DONE]：交轮询接管（纯文本兜底仅在无 SSE 帧标记时把整体当最终正文）
+        const plain: string = body.indexOf('data:') >= 0 ? '' : body.trim();
+
+        if (plain.length > 0) {
+            listener.onComplete(plain);
+            this.finished = true;
+            this.stopPoller('transport-plain');
+            resolve();
+            return;
+        }
+
+        this.handoverToPoller(resolve, listener, 'transport-end');
     }
 
     // 汇总接收粒度日志：block 数=1 且 len 接近整包 => ArkUI http 栈聚合，轮询兜底已自动接管
@@ -391,17 +477,27 @@ export class ChatStreamClient {
         this.pollInFlight = true;
 
         try {
-            const sseFramesSeen: boolean = this.contentFrames + this.reasoningFrames > 0;
+            // SSE 正常逐帧推送时（dataReceive 已回调、未 handover、轮询未先接管），
+            // 轮询不拉 content——避免 pollContentLen>0 导致 SSE 后续 content 帧被 dispatch 跳过丢失。
+            // 仅 handover（SSE 断开）、整包聚合（dataReceive 未回调）或轮询已先接管时才拉
+            const sseAlive: boolean = this.sseDataStarted && this.pendingResolve === null && !this.pollerTakeover;
 
-            // SSE 已逐帧到达且轮询还没渲染任何内容：传输正常，关掉兜底避免双写
-            if (sseFramesSeen && this.pollContentLen === 0 && this.pollReasoningLen === 0) {
-                this.stopPoller('sse-alive');
+            hilog.info(DOMAIN, TAG,
+                '[DBG:pollTick] sseStarted=%{public}s takeover=%{public}s pending=%{public}s sseAlive=%{public}s streamId=%{public}s pollC=%{public}d pollR=%{public}d',
+                this.sseDataStarted, this.pollerTakeover, this.pendingResolve !== null, sseAlive,
+                this.streamId, this.pollContentLen, this.pollReasoningLen);
+
+            if (sseAlive) {
                 return;
             }
 
             if (this.streamId.length === 0) {
                 await this.resolveStreamIdViaStatus();
-                return;
+
+                // status 端点可能直接返回 done（生成已结束），尝试拉内容收尾
+                if (this.streamId.length === 0) {
+                    return;
+                }
             }
 
             await this.pullAccumulatedContent(listener);
@@ -462,8 +558,9 @@ export class ChatStreamClient {
         }
     }
 
-    // 拉累积正文做差量派发。服务端每次读取都会 rstrip，尾随空白可能出现短暂"缩回"：
-    // 只认单调增长，缩回轮直接跳过等下次追平，绝不回滚已渲染内容
+    // 拉累积正文做差量派发。差量基准为 renderedReasoningLen/renderedContentLen
+    // （SSE 已渲染 + 轮询已渲染的总长度），保证 SSE 渲染过的部分轮询不重复。
+    // 服务端 done 时触发 onComplete 收尾并 resolve 结束本次流
     private async pullAccumulatedContent(listener: StreamListener): Promise<void> {
         const result: HttpResult = await HttpUtil.get(
             '/api/chat/stream/content?stream_id=' + encodeURIComponent(this.streamId));
@@ -483,31 +580,81 @@ export class ChatStreamClient {
         const reasoning: string = Json.string(payload, 'reasoning_content');
         const status: string = Json.string(payload, 'status');
 
-        if (reasoning.length >= this.pollReasoningLen) {
-            const delta: string = reasoning.substring(this.pollReasoningLen);
+        hilog.info(DOMAIN, TAG,
+            '[DBG:pollContent] status=%{public}s contentLen=%{public}d reasoningLen=%{public}d renderedC=%{public}d renderedR=%{public}d',
+            status, content.length, reasoning.length, this.renderedContentLen, this.renderedReasoningLen);
+
+        if (reasoning.length >= this.renderedReasoningLen) {
+            const delta: string = reasoning.substring(this.renderedReasoningLen);
 
             if (delta.length > 0) {
-                this.pollReasoningLen = reasoning.length;
+                this.renderedReasoningLen = reasoning.length;
+                this.pollReasoningLen = this.pollReasoningLen + delta.length;
                 listener.onReasoningDelta(delta);
             }
         }
 
-        if (content.length >= this.pollContentLen) {
-            const delta: string = content.substring(this.pollContentLen);
+        if (content.length >= this.renderedContentLen) {
+            const delta: string = content.substring(this.renderedContentLen);
 
             if (delta.length > 0) {
-                this.pollContentLen = content.length;
+                this.renderedContentLen = content.length;
+                this.pollContentLen = this.pollContentLen + delta.length;
                 listener.onContentDelta(delta);
             }
         }
 
-        // 服务端 done 后轮询仍继续（SSE 收尾帧负责最终落定），只记一次
-        if (status === 'done' && !this.pollDoneSeen) {
-            this.pollDoneSeen = true;
+        // 派发 render_chunks 里的工具帧（function_call/function_result）。
+        // content/reasoning 已上面差量渲染，这里只处理工具生命周期帧，避免工具卡丢失
+        this.dispatchRenderChunks(payload, listener);
+
+        // 服务端 done：触发收尾，resolve 结束本次流
+        if (status === 'done' && !this.finished) {
             hilog.info(DOMAIN, TAG,
-                '[poll] server done contentLen=%{public}d reasoningLen=%{public}d, awaiting sse completion',
-                this.pollContentLen, this.pollReasoningLen);
+                '[poll] server done contentLen=%{public}d reasoningLen=%{public}d, completing',
+                this.renderedContentLen, this.renderedReasoningLen);
+            this.finished = true;
+            this.stopPoller('poll-done');
+            listener.onComplete('');
+
+            if (this.pendingResolve !== null) {
+                const resolve: () => void = this.pendingResolve;
+                this.pendingResolve = null;
+                resolve();
+            }
         }
+    }
+
+    // 从 render_chunks 派发工具帧：按 pollRenderChunkIdx 只处理新增的 chunk，
+    // 对 function_call 调 onToolCall 建卡，function_result 调 onToolResult 回填。
+    // content/reasoning 帧跳过（已由 content/reasoning_content 字段差量渲染）
+    private dispatchRenderChunks(payload: Record<string, Object>, listener: StreamListener): void {
+        const chunks: Object[] = Json.array(payload, 'render_chunks');
+
+        for (let i: number = this.pollRenderChunkIdx; i < chunks.length; i++) {
+            const rc: Record<string, Object> = chunks[i] as Record<string, Object>;
+            const rcType: string = Json.string(rc, 'type');
+
+            if (rcType === 'function_call') {
+                const name: string = Json.string(rc, 'name');
+                const callId: string = Json.string(rc, 'call_id');
+                const args: string = Json.string(rc, 'arguments');
+                const round: number = Json.number(rc, 'round');
+
+                hilog.info(DOMAIN, TAG, '[DBG:pollRender] function_call name=%{public}s call=%{public}s', name, callId);
+                listener.onToolCall(name, callId, args, round);
+            } else if (rcType === 'function_result') {
+                const name: string = Json.string(rc, 'name');
+                const callId: string = Json.string(rc, 'call_id');
+                const resultText: string = Json.string(rc, 'result');
+                const round: number = Json.number(rc, 'round');
+
+                hilog.info(DOMAIN, TAG, '[DBG:pollRender] function_result name=%{public}s call=%{public}s', name, callId);
+                listener.onToolResult(name, callId, resultText, round);
+            }
+        }
+
+        this.pollRenderChunkIdx = chunks.length;
     }
 
     // 轮询已接管渲染后，SSE 整包补发同族帧只在第一次触发时打一条日志，避免逐帧刷屏
@@ -570,6 +717,11 @@ export class ChatStreamClient {
 
         const type: string = (chunk.type ?? '').toLowerCase().trim();
 
+        hilog.info(DOMAIN, TAG,
+            '[DBG:dispatch] type=%{public}s pollContentLen=%{public}d pollReasoningLen=%{public}d sseStarted=%{public}s takeover=%{public}s pending=%{public}s',
+            type, this.pollContentLen, this.pollReasoningLen,
+            this.sseDataStarted, this.pollerTakeover, this.pendingResolve !== null);
+
         switch (type) {
             case 'stream_session':
                 this.sessionFrames = this.sessionFrames + 1;
@@ -587,7 +739,11 @@ export class ChatStreamClient {
                     return false;
                 }
 
-                listener.onReasoningDelta(this.deltaOf(chunk));
+                {
+                    const delta: string = this.deltaOf(chunk);
+                    this.renderedReasoningLen = this.renderedReasoningLen + delta.length;
+                    listener.onReasoningDelta(delta);
+                }
                 return false;
             case 'content':
             case 'content_delta':
@@ -597,18 +753,26 @@ export class ChatStreamClient {
 
                 // 轮询接管期间 SSE 整包补发正文帧：同上，跳过避免双写
                 if (this.pollContentLen > 0) {
+                    hilog.warn(DOMAIN, TAG, '[DBG:dispatch] SKIP content frame pollContentLen=%{public}d', this.pollContentLen);
                     this.warnPollSkipOnce('content');
                     return false;
                 }
 
-                listener.onContentDelta(this.deltaOf(chunk));
+                {
+                    const delta: string = this.deltaOf(chunk);
+                    this.renderedContentLen = this.renderedContentLen + delta.length;
+                    hilog.info(DOMAIN, TAG, '[DBG:dispatch] content delta len=%{public}d rendered=%{public}d', delta.length, this.renderedContentLen);
+                    listener.onContentDelta(delta);
+                }
                 return false;
             case 'function_call_delta':
+                hilog.info(DOMAIN, TAG, '[DBG:dispatch] function_call_delta name=%{public}s call=%{public}s', chunk.name ?? '', chunk.call_id ?? '');
                 // 工具参数流式分段：按 call_id 归并增量，把累积到当前的完整参数派发出去
                 // （UI 覆盖语义：首帧建卡，后续帧更新入参，无需等待完整 function_call）
                 this.toolCallDelta(chunk, listener);
                 return false;
             case 'function_call':
+                hilog.info(DOMAIN, TAG, '[DBG:dispatch] function_call name=%{public}s call=%{public}s', chunk.name ?? '', chunk.call_id ?? '');
                 // 完整参数帧：重置该 call_id 的累积缓冲，直接以全量参数建卡/更新
                 {
                     const callId: string = chunk.call_id ?? '';
@@ -745,7 +909,8 @@ export class ChatStreamClient {
             header: this.buildHeaders(),
             extraData: JSON.stringify(payload),
             connectTimeout: 5000,
-            readTimeout: 5000
+            readTimeout: 5000,
+            remoteValidation: 'skip'
         }, (_err: BusinessError, _data: http.HttpResponse) => {
             request.destroy();
         });

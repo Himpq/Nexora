@@ -103,8 +103,6 @@
     import { fetchUserPreferences, saveUserPreferences } from '@/api/preferences'
     import { showError, showToast } from '@/stores/notify'
 
-    import { useModelStore } from '@/stores/model'
-
     import { isThemePreference, setTheme, theme, type ThemePreference } from '@/ui/theme'
 
     import SettingCard from '@/ui/settings/SettingCard.vue'
@@ -146,8 +144,6 @@
         memory_update_model: '',
     })
 
-    const modelStore = useModelStore()
-
     /*
      * 主题下拉的读写模型:
      *   - get 读表单值(服务器回填只改 form.theme,不经过 setter,绝不反向改变当前主题);
@@ -165,18 +161,16 @@
     })
 
     /**
-     * 设置内模型选择统一到对话模型(modelStore 单一来源):
-     *   - 显示:优先记忆偏好,否则回退到当前对话模型,使设置框与头部保持一致
-     *   - 修改:写入记忆偏好(form)并同步到 modelStore.selectedId,头部实时更新、刷新保留
+     * 记忆模型与对话模型完全解耦:
+     *   - 显示:直接透出记忆偏好,空字符串即"使用当前对话模型"(跟随对话动态解析,见后端 _resolve_analysis_model);
+     *   - 修改:只写 form.memory_update_model,点"保存偏好"才落库,绝不触碰 modelStore.selectedId。
+     * 此前 get 用 `form || modelStore.selectedId` 回退,导致空偏好被快照为当前对话模型名;
+     * set 又调用 modelStore.selectModel,导致改记忆模型污染左上角对话模型。
      */
     const settingsModel = computed<string>({
-        get: () => form.memory_update_model || modelStore.selectedId,
+        get: () => form.memory_update_model,
         set: (value: string) => {
             form.memory_update_model = value
-
-            if (value) {
-                modelStore.selectModel(value)
-            }
         },
     })
 

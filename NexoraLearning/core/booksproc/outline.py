@@ -452,7 +452,8 @@ def generate_outline(
     model_name = str(models_cfg.get("default_nexora_model") or "").strip()
     temperature = 0.3
     max_output_tokens = 8000
-    request_timeout = 90
+    # 双跳(123->154 主站->隧道)路径单轮最长 240s;154 直连约 20-30s/轮
+    request_timeout = 240
 
     # 工具定义
     tools = _build_outline_tools()
@@ -520,6 +521,9 @@ def generate_outline(
             options={
                 "temperature": temperature,
                 "max_tokens": max_output_tokens,
+                # 双跳(nested papi)下 DeepSeek 默认开启思考会耗尽输出预算导致
+                # 工具调用缺失/超时;显式关闭思考与 154 直连隧道行为对齐
+                "think": False,
                 # PAPI 上游在工具调用开启时不会返回有效流式增量；浏览器 SSE
                 # 仍由 generate-stream 路由持续发送状态，模型工具请求固定非流式。
                 "stream": False,

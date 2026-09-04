@@ -98,7 +98,11 @@ export struct MessageBubble {
                 if (segment.type === 'error') {
                     this.SegmentErrorLine(segment.text);
                 }
-            }, (segment: MessageSegment, index: number) => segment.type + '_' + index);
+            // key 含 text.length：续写时 text 增长 → key 变化 → ForEach 重建子组件。
+            // 若 key 不含 text.length，ForEach 复用旧组件实例，MarkdownView 的
+            // @Prop @Watch('onSourceChange') 在 ForEach 复用路径下不触发 watch 回调，
+            // 导致 @State blocks 不更新 → 流式正文只显示首帧、后续增量全部丢失
+            }, (segment: MessageSegment, index: number) => segment.type + '_' + index + '_' + segment.text.length);
 
             // 流式占位：仅在流式中且无任何内容/工具/思考时显示
             if (this.message.streaming && this.message.content.length === 0 && !this.message.hasToolCalls && !this.message.hasThinking) {

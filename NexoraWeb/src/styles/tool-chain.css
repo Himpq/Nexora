@@ -289,6 +289,27 @@
     margin-bottom: 0;
 }
 
+/* 思考内容底部收起按钮:展开态左下角常驻,点击收起(与标题栏切换同一折叠状态) */
+.message-content .thinking-block.execution-flow-item .thinking-collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 4px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+}
+
+.message-content .thinking-block.execution-flow-item .thinking-collapse-btn:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
 /* 思考内容内的代码块不设高度钳制(对齐原版 max-height none 规则) */
 .message-content .thinking-block.execution-flow-item .thinking-content pre {
     max-height: none;

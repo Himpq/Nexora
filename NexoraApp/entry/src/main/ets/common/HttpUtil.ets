@@ -152,20 +152,21 @@ export class HttpUtil {
                 extraData: payload === undefined ? undefined : JSON.stringify(payload),
                 expectDataType: http.HttpDataType.STRING,
                 connectTimeout: CONNECT_TIMEOUT,
-                readTimeout: READ_TIMEOUT
+                readTimeout: READ_TIMEOUT,
+                remoteValidation: 'skip'
             }, (err: BusinessError, data: http.HttpResponse) => {
-                const cookie: string = HttpUtil.extractSessionCookie(data.header);
-
-                if (cookie.length > 0) {
-                    HttpUtil.sessionCookie = cookie;
-                }
-
                 request.destroy();
 
                 if (err) {
                     hilog.error(DOMAIN, TAG, 'request %{public}s failed: %{public}s', path, JSON.stringify(err));
                     resolve({ ok: false, code: 0, body: '' });
                     return;
+                }
+
+                const cookie: string = HttpUtil.extractSessionCookie(data.header);
+
+                if (cookie.length > 0) {
+                    HttpUtil.sessionCookie = cookie;
                 }
 
                 resolve({

@@ -145,11 +145,51 @@ def normalize_trace(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _attachment_identity(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+
+    return "|".join(str(item.get(key) or "") for key in (
+        "asset_id", "asset_url", "url", "sandbox_path", "stored_path", "name", "size",
+    ))
+
+
+def merge_user_attachments(top: Any, legacy: Any) -> List[Dict[str, Any]]:
+    """
+    合并顶层 attachments 与旧 metadata.attachments(读时兼容):
+    旧后端把图片只写 metadata(顶层为空数组),缺了这一步单图/单文件轮次在历史里就是空白。
+    双源同时落库时按身份键去重。
+    """
+    merged: List[Dict[str, Any]] = []
+    seen = set()
+
+    for source in (top, legacy):
+        if not isinstance(source, list):
+            continue
+
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+
+            identity = _attachment_identity(item)
+
+            if identity in seen:
+                continue
+
+            seen.add(identity)
+            merged.append(item)
+
+    return merged
+
+
 def normalize_user_message(raw: Dict[str, Any]) -> Dict[str, Any]:
     content = raw.get("content", "")
     # content 允许 str / list(多模态) / dict
     timestamp = _coerce_str(raw.get("timestamp")) or now_iso()
-    attachments = raw.get("attachments") if isinstance(raw.get("attachments"), list) else []
+    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    legacy = metadata.get("attachments") if isinstance(metadata, dict) else []
+    # 旧会话的图片只落在 metadata.attachments,不合并则归一化直接丢掉(历史轮次空白)
+    attachments = merge_user_attachments(raw.get("attachments"), legacy)
     msg: Dict[str, Any] = {
         "role": "user",
         "content": content,

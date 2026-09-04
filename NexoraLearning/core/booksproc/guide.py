@@ -520,7 +520,9 @@ def generate_pre_reading_questions(
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
                 "max_tokens": 1000,
-                "stream": bool(stream),
+                # 工具调用在双跳(123->154主站->隧道)下流式增量合并会产生截断
+                # (如 "[id\":" 缺 "{")，与 mindmap/outline 一致固定非流式
+                "stream": False,
                 "tools": tools,
                 "tool_choice": "auto",
             },
@@ -743,7 +745,8 @@ def generate_reader_guide(
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
                 "max_tokens": 2000,
-                "stream": bool(stream),
+                # 同上，工具调用固定非流式避免双跳增量截断
+                "stream": False,
                 "tools": tools,
                 "tool_choice": "auto",
             },

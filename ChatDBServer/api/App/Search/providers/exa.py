@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 import requests
 
 from ..base import SearchHit, SearchProvider, SearchResult
-from ..config import resolve_exa_api_key
+from ..config import resolve_exa_api_key, resolve_exa_team_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,282 @@ class ExaSearchProvider(SearchProvider):
 
         # 默认：highlights
         return {"highlights": True}
+
+    def get_billing(self) -> Dict[str, Any]:
+        """
+        查询 Exa 账单/用量
+
+        正确端点（Team Management）：
+            GET {base_url}/api-keys              — 列出当前 team 的所有 API Key，拿到 id
+            GET {base_url}/api-keys/{id}/usage   — 检索指定 Key 的用量与账单
+
+        认证：x-api-key
+        返回：{ total_cost_usd, period, cost_breakdown, api_key_name, ... }
+        兼容：旧文档的 /reference/billing 尝试保留作为 fallback（已 404）
+        """
+
+        cfg = self.provider_config if isinstance(self.provider_config, dict) else {}
+        # 搜索与用量权限分离：用量优先使用 team_api_key
+        team_api_key = resolve_exa_team_api_key(cfg)
+        api_key = resolve_exa_api_key(cfg)
+        billing_key = team_api_key or api_key
+
+        if not billing_key:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "error": "missing EXA_API_KEY: 请在 web_search.providers.exa.api_key 或环境变量 EXA_API_KEY 中配置",
+            }
+
+        # 若未配置 team key，给出明确提示（搜索 Key 会 404）
+        team_key_missing = not str(cfg.get("team_api_key") or "").strip() and not str(cfg.get("teamApiKey") or "").strip()
+
+        base_url = str(cfg.get("base_url") or "https://api.exa.ai").strip().rstrip("/")
+        timeout = float(cfg.get("timeout", 20) or 20)
+        timeout = max(5.0, min(timeout, 60.0))
+
+        headers = {
+            "x-api-key": billing_key,
+            "Accept": "application/json",
+        }
+
+        # 允许通过配置显式指定 api_key_id，避免每次都 list
+        explicit_id = str(cfg.get("team_api_key_id") or cfg.get("teamApiKeyId") or cfg.get("api_key_id") or cfg.get("apiKeyId") or "").strip()
+
+        api_key_id = explicit_id or ""
+
+        # 1) 若未显式指定，先尝试列出 Keys 获取 id
+        if not api_key_id:
+            list_endpoint = f"{base_url}/api-keys"
+
+            try:
+                resp = requests.get(
+                    list_endpoint,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                logger.error(f"Exa list api-keys failed: {exc}")
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": f"request failed (list keys): {exc}",
+                    "endpoint": list_endpoint,
+                }
+
+            if resp.status_code != 200:
+                detail = ""
+
+                try:
+                    detail = resp.text[:800]
+                except Exception:
+                    detail = ""
+
+                if resp.status_code == 404 and "NOT_FOUND" in detail:
+                    hint = ""
+                    if team_key_missing:
+                        hint = "未配置 Team API Key，已回落使用搜索 Key，因此无 Team 权限。请在下方“Team API Key”填入 Dashboard → Team Settings → API Keys 中的 Team Key（与搜索 Key 分开）。"
+
+                    # 搜索 Key 无 Team Management 权限是已知情况，给出可操作提示
+                    return {
+                        "ok": False,
+                        "provider": self.provider_name,
+                        "error": (
+                            "Exa 搜索 Key 不支持 Team Management 用量接口（api.exa.ai 返回 NOT_FOUND）。"
+                            f"{hint} "
+                            "请前往 https://dashboard.exa.ai 查看完整账单；"
+                            "单次搜索约 $0.007-0.015（openapi x-payment-info）。"
+                            f" 详情: http_404: {detail}"
+                        ),
+                        "status_code": resp.status_code,
+                        "endpoint": list_endpoint,
+                        "raw": detail,
+                    }
+
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": f"http_{resp.status_code}: {detail}",
+                    "status_code": resp.status_code,
+                    "endpoint": list_endpoint,
+                    "raw": detail,
+                }
+
+            try:
+                list_data = resp.json()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": f"invalid json response (list keys): {exc}",
+                    "raw": resp.text[:2000],
+                    "endpoint": list_endpoint,
+                }
+
+            # 兼容多种返回形状
+            candidates: List[Dict[str, Any]] = []
+
+            if isinstance(list_data, list):
+                candidates = [x for x in list_data if isinstance(x, dict)]
+            elif isinstance(list_data, dict):
+                for k in ("apiKeys", "api_keys", "keys", "data", "items", "results"):
+                    v = list_data.get(k)
+                    if isinstance(v, list):
+                        candidates = [x for x in v if isinstance(x, dict)]
+                        break
+                # 单对象也可能是直接的 key 详情
+                if not candidates and isinstance(list_data.get("id"), str):
+                    candidates = [list_data]
+
+            if not candidates:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": "invalid response: no api keys found",
+                    "raw": list_data,
+                    "endpoint": list_endpoint,
+                }
+
+            # 尝试按 key 精确匹配，否则取第一个
+            matched = None
+
+            # 优先通过后缀/前缀匹配（避免明文泄露时仅返回 masked）
+            api_key_suffix = api_key[-6:] if len(api_key) >= 6 else api_key
+
+            for item in candidates:
+                # 常见字段：id, key, api_key, masked_key, name
+                raw_key = str(item.get("key") or item.get("api_key") or item.get("apiKey") or "").strip()
+                masked = str(item.get("masked_key") or item.get("maskedKey") or item.get("key_preview") or "").strip()
+
+                if raw_key and raw_key == api_key:
+                    matched = item
+                    break
+
+                if api_key_suffix and masked and api_key_suffix in masked:
+                    matched = item
+                    break
+
+            if matched is None:
+                # 多 key 场景下，若无法精确匹配，优先取 created 最近或第一个
+                matched = candidates[0]
+
+            api_key_id = str(matched.get("id") or matched.get("api_key_id") or matched.get("apiKeyId") or "").strip()
+
+            if not api_key_id:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": "invalid response: api key id not found",
+                    "raw": matched,
+                    "endpoint": list_endpoint,
+                }
+
+        # 2) 查询用量
+        usage_endpoint = f"{base_url}/api-keys/{api_key_id}/usage"
+
+        # 默认查询近 30 天，服务端默认值也是 30 天，此处显式透传便于前端展示 period
+        # 可选 query：start_date, end_date, group_by
+
+        try:
+            resp = requests.get(
+                usage_endpoint,
+                headers=headers,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            logger.error(f"Exa usage request failed ({usage_endpoint}): {exc}")
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "error": f"request failed: {exc}",
+                "endpoint": usage_endpoint,
+            }
+
+        if resp.status_code != 200:
+            detail = ""
+
+            try:
+                detail = resp.text[:800]
+            except Exception:
+                detail = ""
+
+            if resp.status_code == 404 and "NOT_FOUND" in detail:
+                hint = ""
+                if team_key_missing:
+                    hint = "未配置 Team API Key，已回落使用搜索 Key。"
+
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "error": (
+                        "Exa 用量接口返回 NOT_FOUND（api.exa.ai /api-keys/{id}/usage 不可用）。"
+                        f"{hint} 该 Key 可能无 Team Management 权限，请前往 https://dashboard.exa.ai 查看账单；"
+                        "单次搜索约 $0.007-0.015。"
+                        f" 详情: http_404: {detail}"
+                    ),
+                    "status_code": resp.status_code,
+                    "endpoint": usage_endpoint,
+                    "raw": detail,
+                }
+
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "error": f"http_{resp.status_code}: {detail}",
+                "status_code": resp.status_code,
+                "endpoint": usage_endpoint,
+                "raw": detail,
+            }
+
+        try:
+            data = resp.json()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "error": f"invalid json response: {exc}",
+                "raw": resp.text[:2000],
+                "endpoint": usage_endpoint,
+            }
+
+        if not isinstance(data, dict):
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "error": "invalid response: expected json object",
+                "raw": data,
+                "endpoint": usage_endpoint,
+            }
+
+        # 标准字段
+        total_cost = data.get("total_cost_usd")
+        # 兼容 total_cost / amount
+        if total_cost is None:
+            total_cost = data.get("totalCostUsd") or data.get("total_cost") or data.get("cost")
+
+        try:
+            total_cost_num = float(total_cost) if total_cost is not None else 0.0
+        except Exception:
+            total_cost_num = 0.0
+
+        period = data.get("period") if isinstance(data.get("period"), dict) else {}
+        cost_breakdown = data.get("cost_breakdown") if isinstance(data.get("cost_breakdown"), list) else data.get("costBreakdown") if isinstance(data.get("costBreakdown"), list) else []
+
+        # 为了兼容旧前端的 balance 字段，同步返回 balance = total_cost
+        return {
+            "ok": True,
+            "provider": self.provider_name,
+            "api_key_id": api_key_id,
+            "api_key_name": str(data.get("api_key_name") or data.get("apiKeyName") or "").strip(),
+            "team_id": str(data.get("team_id") or data.get("teamId") or "").strip(),
+            "period": period,
+            "total_cost_usd": total_cost_num,
+            "balance": total_cost_num,
+            "currency": "USD",
+            "cost_breakdown": cost_breakdown,
+            "raw": data,
+            "endpoint": usage_endpoint,
+        }
 
     def health_check(self) -> Dict[str, Any]:
         cfg = self.provider_config if isinstance(self.provider_config, dict) else {}
