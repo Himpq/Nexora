@@ -95,12 +95,23 @@ export function initTheme(): void {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
 
     media.addEventListener('change', () => {
-        if (theme.preference === 'system') {
-            withThemeSwitchGuard(() => {
-                theme.resolved = readSystemTheme()
-                applyDocument()
-            })
+        if (theme.preference !== 'system') {
+            return
         }
+
+        const next = readSystemTheme()
+
+        // Learning 强制亮色期间跟随系统:只刷新暂存,界面保持亮色
+        if (learningLightDepth > 0) {
+            savedLearningResolved = next
+
+            return
+        }
+
+        withThemeSwitchGuard(() => {
+            theme.resolved = next
+            applyDocument()
+        })
     })
 }
 
@@ -127,6 +138,47 @@ export function setTheme(preference: ThemePreference): void {
         theme.resolved = preference === 'system' ? readSystemTheme() : preference
         applyDocument()
     })
+
+    // Learning 强制亮色期间改偏好:同步暂存,退出恢复时以最新选择为准
+    if (learningLightDepth > 0) {
+        savedLearningResolved = theme.resolved
+    }
+}
+
+/**
+ * Learning 强制亮色(内容区为白色 iframe,顶栏/侧栏跟暗色会断层):
+ * 进入压亮、退出恢复,用户偏好档位全程不动,仅暂存实际主题。
+ * 计数可重入,归零才恢复,避免嵌套调用失衡。
+ */
+let learningLightDepth = 0
+let savedLearningResolved: ResolvedTheme = 'light'
+
+/** 进入 Learning:强制整站亮色 */
+export function enterLearningLightTheme(): void {
+    if (learningLightDepth === 0) {
+        savedLearningResolved = theme.resolved
+    }
+
+    learningLightDepth += 1
+
+    if (theme.resolved !== 'light') {
+        withThemeSwitchGuard(() => {
+            theme.resolved = 'light'
+            applyDocument()
+        })
+    }
+}
+
+/** 离开 Learning:恢复进入前的实际主题 */
+export function exitLearningLightTheme(): void {
+    learningLightDepth = Math.max(0, learningLightDepth - 1)
+
+    if (learningLightDepth === 0 && theme.resolved !== savedLearningResolved) {
+        withThemeSwitchGuard(() => {
+            theme.resolved = savedLearningResolved
+            applyDocument()
+        })
+    }
 }
 
 /*
