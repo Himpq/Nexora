@@ -23,6 +23,9 @@ interface InlineStyle {
     fill?: boolean;
     marginTop?: number;
     marginBottom?: number;
+    align?: TextAlign;
+    paddingLeft?: number;
+    paddingRight?: number;
 }
 
 @Component
@@ -190,7 +193,7 @@ export struct MarkdownView {
         .width('100%')
     }
 
-    // 表格：表头加粗 + 底线，数据行等宽列，靠 layoutWeight(1) 对齐
+    // 表格：外层横向滚动避免列多挤压，表头分层底色 + 加粗，数据行等宽列，单元格支持行内样式
     @Builder
     TableBlock(block: MdBlock) {
         if (block.table !== null) {
@@ -200,45 +203,53 @@ export struct MarkdownView {
 
     @Builder
     TableContent(table: TableData) {
-        Column() {
-            Row() {
-                ForEach(table.headers, (cell: string, index: number) => {
-                    Text(cell)
-                        .fontSize(FontSize.body)
-                        .fontWeight(FontWeight.Bold)
-                        .fontColor($r('app.color.text_primary'))
-                        .layoutWeight(1)
-                        .textAlign(this.tableAlign(table.aligns, index))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs });
-                }, (cell: string, index: number) => index + '_' + cell);
-            }
-            .width('100%')
-            .borderWidth({ bottom: 1 })
-            .borderColor({ bottom: $r('app.color.divider') });
-
-            ForEach(table.rows, (row: string[], rowIndex: number) => {
+        Scroll() {
+            Column() {
                 Row() {
-                    ForEach(row, (cell: string, colIndex: number) => {
-                        Text(cell)
-                            .fontSize(FontSize.body)
-                            .fontColor($r('app.color.text_primary'))
-                            .layoutWeight(1)
-                            .textAlign(this.tableAlign(table.aligns, colIndex))
-                            .maxLines(2)
-                            .textOverflow({ overflow: TextOverflow.Ellipsis })
-                            .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs });
-                    }, (cell: string, colIndex: number) => colIndex + '_' + cell);
+                    ForEach(table.headers, (cell: InlinePiece[], index: number) => {
+                        this.InlineText(cell, FontSize.body, LineHeight.body, {
+                            bold: true,
+                            fill: true,
+                            align: this.tableAlign(table.aligns, index),
+                            paddingLeft: Space.sm,
+                            paddingRight: Space.sm
+                        });
+                    }, (cell: InlinePiece[], index: number) => 'h_' + index);
                 }
                 .width('100%')
-                .borderWidth({ bottom: 0.5 })
-                .borderColor({ bottom: $r('app.color.divider') });
-            }, (row: string[], rowIndex: number) => rowIndex + '_' + row.join('|'));
+                .backgroundColor($r('app.color.bg_sunken'))
+                .padding({ top: Space.sm, bottom: Space.sm })
+                .borderWidth({ bottom: 1 })
+                .borderColor({ bottom: $r('app.color.border_strong') });
+
+                ForEach(table.rows, (row: InlinePiece[][], rowIndex: number) => {
+                    Row() {
+                        ForEach(row, (cell: InlinePiece[], colIndex: number) => {
+                            this.InlineText(cell, FontSize.body, LineHeight.body, {
+                                fill: true,
+                                align: this.tableAlign(table.aligns, colIndex),
+                                paddingLeft: Space.sm,
+                                paddingRight: Space.sm
+                            });
+                        }, (cell: InlinePiece[], colIndex: number) => 'c_' + colIndex);
+                    }
+                    .width('100%')
+                    .padding({ top: Space.xs, bottom: Space.xs })
+                    .borderWidth({ bottom: 0.5 })
+                    .borderColor({ bottom: $r('app.color.divider') });
+                }, (row: InlinePiece[][], rowIndex: number) => 'r_' + rowIndex);
+            }
+            .width('100%')
+            .constraintSize({ minWidth: this.tableMinWidth(table.headers.length) })
+            .borderRadius(Radius.sm)
+            .backgroundColor($r('app.color.bg_card'))
+            .borderWidth(0.5)
+            .borderColor($r('app.color.border'))
+            .clip(true);
         }
-        .width('100%')
-        .borderRadius(Radius.sm)
-        .backgroundColor($r('app.color.bg_card'));
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Auto)
+        .width('100%');
     }
 
     // 行内文本：整段一个 Text，Span 只改变颜色 / 字重 / 字体，绝不改字号
@@ -271,10 +282,14 @@ export struct MarkdownView {
         .lineHeight(lineHeight)
         .width('100%')
         .wordBreak(WordBreak.BREAK_WORD)
-        .textAlign(TextAlign.Start)
+        .textAlign(style.align === undefined ? TextAlign.Start : style.align)
         .fontColor(style.color === undefined ? $r('app.color.text_primary') : style.color)
         .fontWeight(style.bold === true ? FontWeight.Bold : FontWeight.Regular)
         .layoutWeight(style.fill === true ? 1 : 0)
+        .padding({
+            left: style.paddingLeft === undefined ? 0 : style.paddingLeft,
+            right: style.paddingRight === undefined ? 0 : style.paddingRight
+        })
         .margin({
             top: style.marginTop === undefined ? 0 : style.marginTop,
             bottom: style.marginBottom === undefined ? 0 : style.marginBottom
@@ -307,6 +322,11 @@ export struct MarkdownView {
         }
 
         return TextAlign.Start;
+    }
+
+    // 表格最小宽度：每列至少 120vp，列多时撑出横向滚动区域，列少时撑满容器
+    private tableMinWidth(colCount: number): number {
+        return colCount * 120;
     }
 
     private copyToClipboard(text: string): void {

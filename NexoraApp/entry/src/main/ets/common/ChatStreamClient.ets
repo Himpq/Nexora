@@ -285,24 +285,24 @@ export class ChatStreamClient {
                 this.handoverToPoller(resolve, listener, 'dataEnd');
             });
 
-            request.request(url, {
+            // requestInStream：流式请求方法，dataReceive 逐片触发（SSE 逐帧到达），
+            // 不像普通 request 把整个响应体攒成整包一次性回调。callback 的 data 是响应码(number)，
+            // 响应体全走 dataReceive/dataEnd 事件，无 data.result 整包
+            request.requestInStream(url, {
                 method: http.RequestMethod.POST,
                 header: this.buildHeaders(),
                 extraData: JSON.stringify(this.buildBody(options)),
-                // 关键传输参数：禁用 http 缓存层；强制二进制流解码（默认 STRING 模式可能把
-                // 整个 SSE 响应按字符串聚合解码——"网页逐块、设备整包"的最大客户端嫌疑）
                 usingCache: false,
-                expectDataType: http.HttpDataType.ARRAY_BUFFER,
                 connectTimeout: STREAM_CONNECT_TIMEOUT,
                 readTimeout: STREAM_READ_TIMEOUT,
                 remoteValidation: 'skip'
-            }, (err: BusinessError, data: http.HttpResponse) => {
+            }, (err: BusinessError, code: number) => {
                 request.off('dataReceive');
                 request.off('dataEnd');
                 request.destroy();
                 this.request = null;
 
-                this.resolveTransportResult(err, data, listener, resolve);
+                this.resolveTransportResult(err, code, listener, resolve);
             });
 
             // SSE 静默探测 -> 内容轮询接管：conversation_id 已知（新会话预创建 / 追问既有会话）时
@@ -330,7 +330,8 @@ export class ChatStreamClient {
         this.startPoller(listener);
     }
 
-    private resolveTransportResult(err: BusinessError, data: http.HttpResponse, listener: StreamListener, resolve: () => void): void {
+    // requestInStream 的传输结果处理：callback 返回响应码(number)，响应体全走 dataReceive/dataEnd
+    private resolveTransportResult(err: BusinessError, code: number, listener: StreamListener, resolve: () => void): void {
         if (this.finished) {
             this.stopPoller('transport-finished');
             resolve();
@@ -359,64 +360,22 @@ export class ChatStreamClient {
             return;
         }
 
-        if (data.responseCode !== 200) {
-            hilog.error(DOMAIN, TAG, 'stream http code=%{public}d', data.responseCode);
-            listener.onError('请求失败(' + data.responseCode + ')');
+        // requestInStream 成功时 code 是 HTTP 响应码
+        if (code !== 200) {
+            hilog.error(DOMAIN, TAG, 'stream http code=%{public}d', code);
+            listener.onError('请求失败(' + code + ')');
             this.finished = true;
             this.stopPoller('transport-http');
             resolve();
             return;
         }
 
-        // 服务端未走增量、一次性返回时的收尾。
-        // 注意：部分网关/代理会把 SSE 攒成整包在一次回调里返回，此时 data.result 是
-        // 一长串 "data: {...}\n\n..." 原始帧文本——必须按 SSE 逐行解析，绝不能原样塞进
-        // content，否则气泡里会整屏显示 data: {"type":...} 协议原文（曾实测复现）。
-        const body: string = typeof data.result === 'string' ? (data.result as string) : '';
-
-        if (body.length > 0) {
-            // 走到这里说明 dataReceive 没有把 body 逐块派发完（或整包兜底路径），
-            // 记录真实接收粒度，供日志二分定位
-            this.recvBlocks = this.recvBlocks + 1;
-            this.recvBytes = this.recvBytes + body.length;
-            this.lastRecvAt = Date.now();
-
-            if (this.firstRecvAt === 0) {
-                this.firstRecvAt = this.lastRecvAt;
-            }
-
-            hilog.info(DOMAIN, TAG, '[result] whole-body len=%{public}d (dataReceive blocks=%{public}d)',
-                body.length, this.recvBlocks);
-
-            this.buffer = (this.buffer.length > 0 ? this.buffer + '\n' : '') + body;
-            this.drainBuffer(listener);
-
-            // 冲刷 drainBuffer 遗留的末行（整包结尾无换行时 [DONE]/收尾帧会残留在缓冲里）
-            if (!this.finished) {
-                const tail: string = this.buffer;
-                this.buffer = '';
-
-                if (tail.trim().length > 0) {
-                    this.finished = this.handleLine(tail, listener);
-                }
-            }
-        }
-
-        this.logRecvSummary('result');
+        // code=200：SSE 帧已由 dataReceive 逐片派发、dataEnd 收尾。
+        // 若 dataEnd 已收 [DONE] 则 finished=true；否则交轮询接管拉剩余内容
+        this.logRecvSummary('stream-end');
 
         if (this.finished) {
             this.stopPoller('transport-done');
-            resolve();
-            return;
-        }
-
-        // 未收 [DONE]：交轮询接管（纯文本兜底仅在无 SSE 帧标记时把整体当最终正文）
-        const plain: string = body.indexOf('data:') >= 0 ? '' : body.trim();
-
-        if (plain.length > 0) {
-            listener.onComplete(plain);
-            this.finished = true;
-            this.stopPoller('transport-plain');
             resolve();
             return;
         }

@@ -14,6 +14,7 @@ import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
 import { ChatMessage } from '../common/ChatTypes';
 import { chatStream, StreamListener } from '../common/ChatStreamClient';
+import { LiveViewController } from '../common/LiveViewController';
 import { FontSize, Glow, Motion, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { QuickActionGrid } from '../components/QuickActionGrid';
@@ -1153,6 +1154,9 @@ export struct MainChat {
                     assistant.appendDelta('content', delta);
                     this.logStreamProgress(assistant, false);
                     this.scrollToEnd();
+
+                    // 胶囊滚动窗口：截取正文末尾 5 字更新灵动岛胶囊（仅退后台活跃时生效）
+                    LiveViewController.shared.updateContent(assistant.content);
                 });
             },
             onToolCall: (name: string, callId: string, args: string, round: number) => {
@@ -1175,6 +1179,7 @@ export struct MainChat {
                 onUi(() => {
                     assistant.setError(message);
                     this.streaming = false;
+                    LiveViewController.shared.stop();
                 });
             },
             onComplete: (finalContent: string) => {
@@ -1190,6 +1195,8 @@ export struct MainChat {
                     this.deriveTitle();
                     this.app.updatePendingConversation(this.conversationId, this.title);
                     this.scheduleListRefresh();
+                    // 正常完成：胶囊改"回复完成"保留 5 秒后自动关闭
+                    LiveViewController.shared.finishGenerating();
                 });
             },
             onAborted: () => {
@@ -1199,6 +1206,7 @@ export struct MainChat {
                     this.deriveTitle();
                     this.app.updatePendingConversation(this.conversationId, this.title);
                     this.scheduleListRefresh();
+                    LiveViewController.shared.stop();
                 });
             }
         };

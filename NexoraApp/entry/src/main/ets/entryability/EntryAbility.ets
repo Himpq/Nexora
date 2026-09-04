@@ -3,6 +3,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 // 注意：KeyboardAvoidMode 与 SDK 中组件属性用全局枚举（component/common.d.ts，仅 DEFAULT/NONE）同名，
 // 直接 import 会被全局声明遮蔽导致取不到 RESIZE，故用别名绑定 UIContext 版（含 OFFSET/RESIZE/...）
 import { KeyboardAvoidMode as KeyboardAvoid, window } from '@kit.ArkUI';
+import { chatStream } from '../common/ChatStreamClient';
+import { LiveViewController } from '../common/LiveViewController';
 
 const DOMAIN = 0x0000;
 
@@ -71,10 +73,18 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+
+    // 回前台：停止"模型正在回复"实况窗（若未活跃则幂等返回）
+    LiveViewController.shared.stop();
   }
 
   onBackground(): void {
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+
+    // 流式回复进行中退到后台：发布实况窗在灵动岛胶囊态提示"模型正在回复"
+    if (chatStream.isStreaming) {
+      LiveViewController.shared.startGenerating();
+    }
   }
 }

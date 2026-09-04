@@ -3,6 +3,7 @@
 // 采用进程内单例 + @Observed，任一处修改都会驱动已挂载页面刷新
 
 import common from '@ohos.app.ability.common';
+import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, ModelItem, sanitizeDisplayName } from './AppConfig';
 import { ApiService, UserInfoResult } from './ApiService';
@@ -54,6 +55,9 @@ export class AppState {
     private knowledgeRequestSeq: number = 0;
 
     private context: common.UIAbilityContext | null = null;
+
+    // 服务端头像原始 URL：与本地落地路径分开存放，用于判断 URL 是否变化、避免重复下载
+    private avatarRemoteUrl: string = '';
 
     static readonly shared: AppState = new AppState();
 
@@ -146,6 +150,7 @@ export class AppState {
         this.loggedIn = false;
         this.displayName = '';
         this.avatarUrl = '';
+        this.avatarRemoteUrl = '';
         this.conversations = [];
         this.models = [];
         this.selectedModelId = '';
@@ -427,6 +432,8 @@ export class AppState {
 
         const result: UserInfoResult = await ApiService.fetchUserInfo();
 
+        hilog.info(DOMAIN, TAG, '[refreshUserProfile] success=%{public}s, rawAvatarUrl=%{public}s', result.success, result.avatarUrl);
+
         if (!result.success) {
             return;
         }
@@ -434,6 +441,8 @@ export class AppState {
         const display: string = sanitizeDisplayName(result.username);
         const serverId: string = sanitizeDisplayName(result.id);
         const avatar: string = this.toAbsoluteAvatarUrl(result.avatarUrl);
+
+        hilog.info(DOMAIN, TAG, '[refreshUserProfile] normalized avatar=%{public}s, lastRemote=%{public}s', avatar, this.avatarRemoteUrl);
 
         // 凭证本身是脏值（历史版本误存 "undefined"）时才用服务端登录 id 回填并持久化，
         // 避免把展示名写进登录凭证导致下次登录预填被带偏
@@ -447,9 +456,49 @@ export class AppState {
             this.displayName = display;
         }
 
-        if (avatar.length > 0 && avatar !== this.avatarUrl) {
-            this.avatarUrl = avatar;
+        // 头像：Image 组件无法加载自签 https 图片，需先下载到本地缓存再喂给 Image。
+        // avatarRemoteUrl 记录上次成功落地的服务端 URL，未变化时跳过重复下载
+        if (avatar.length === 0) {
+            hilog.info(DOMAIN, TAG, '[refreshUserProfile] avatar empty, clear local');
+            this.avatarRemoteUrl = '';
+            this.avatarUrl = '';
+        } else if (avatar !== this.avatarRemoteUrl) {
+            const localPath: string = await this.fetchAvatarToLocal(avatar);
+
+            if (localPath.length > 0) {
+                this.avatarRemoteUrl = avatar;
+                this.avatarUrl = localPath;
+                hilog.info(DOMAIN, TAG, '[refreshUserProfile] avatar updated, localPath=%{public}s', localPath);
+            }
+        } else {
+            hilog.info(DOMAIN, TAG, '[refreshUserProfile] avatar unchanged, skip download');
         }
+    }
+
+    // 下载网络头像到本地缓存，返回本地文件路径；Image 加载本地文件不涉及证书校验
+    private async fetchAvatarToLocal(url: string): Promise<string> {
+        if (this.context === null) {
+            hilog.error(DOMAIN, TAG, '[fetchAvatarToLocal] context is null, cannot download');
+            return '';
+        }
+
+        hilog.info(DOMAIN, TAG, '[fetchAvatarToLocal] downloading %{public}s', url);
+        const buffer: ArrayBuffer | null = await HttpUtil.downloadBinary(url);
+
+        if (buffer === null) {
+            hilog.error(DOMAIN, TAG, '[fetchAvatarToLocal] download returned null for %{public}s', url);
+            return '';
+        }
+
+        const localPath: string = this.context.cacheDir + '/avatar.png';
+        const file: fs.File = fs.openSync(localPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        fs.writeSync(file.fd, buffer);
+        fs.closeSync(file);
+
+        // Image 组件加载本地文件需 file:// URI 前缀，裸绝对路径会报 102091 get asset failed
+        const fileUri: string = 'file://' + localPath;
+        hilog.info(DOMAIN, TAG, '[fetchAvatarToLocal] ok, bytes=%{public}d, fileUri=%{public}s', buffer.byteLength, fileUri);
+        return fileUri;
     }
 
     // 头像地址归一化：服务端无公网 base 时只回相对路径，此处补齐为当前后端可达的绝对地址

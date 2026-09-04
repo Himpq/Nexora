@@ -1,16 +1,28 @@
 // UserAvatar.ets - 用户头像
 // 服务端头像地址可用时优先加载网络图；缺失、加载失败时回落为「首字母 + 品牌渐变底」的本地头像
 
+
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { sanitizeDisplayName } from '../../common/AppConfig';
 import { Size } from '../../common/DesignToken';
+
+const DOMAIN: number = 0x0001;
+const TAG: string = 'NexoraAvatar';
 
 @Component
 export struct UserAvatar {
     @Prop name: string = '';
-    @Prop avatarUrl: string = '';
+    // 头像地址变化时必须复位 loadFailed，否则首次加载失败后会永久卡在默认头像
+    @Prop @Watch('onAvatarUrlChanged') avatarUrl: string = '';
     @Prop diameter: number = Size.avatarLarge;
 
     @State private loadFailed: boolean = false;
+
+    // 头像地址变更（如登录后拉到真实 URL、刷新版本号变化）时复位失败标记，重新尝试加载网络图
+    private onAvatarUrlChanged(): void {
+        hilog.info(DOMAIN, TAG, 'avatarUrl changed -> %{public}s, reset loadFailed', this.avatarUrl);
+        this.loadFailed = false;
+    }
 
     build() {
         Stack() {
@@ -20,7 +32,8 @@ export struct UserAvatar {
                     .height(this.diameter)
                     .borderRadius(this.diameter / 2)
                     .objectFit(ImageFit.Cover)
-                    .onError(() => {
+                    .onError((error: ImageError) => {
+                        hilog.error(DOMAIN, TAG, 'Image load FAILED, url=%{public}s, err=%{public}s', this.avatarUrl, JSON.stringify(error));
                         this.loadFailed = true;
                     });
             } else {

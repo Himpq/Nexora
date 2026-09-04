@@ -23,9 +23,10 @@ export interface ListItem {
 }
 
 // 表格数据：表头 + 数据行 + 每列对齐方式（'left'|'center'|'right'|''）
+// 每个单元格存储行内片段数组，渲染层据此支持加粗 / 斜体 / 代码等行内样式
 export interface TableData {
-    headers: string[];
-    rows: string[][];
+    headers: InlinePiece[][];
+    rows: InlinePiece[][][];
     aligns: string[];
 }
 
@@ -364,11 +365,11 @@ class BlockScanner {
 
     // 表格块：表头行 + 分隔行 + 连续的数据行
     private readTable(): void {
-        const headers: string[] = BlockScanner.splitRow(this.lines[this.index]);
+        const headers: InlinePiece[][] = BlockScanner.parseRow(this.lines[this.index]);
         const aligns: string[] = BlockScanner.parseAlign(this.lines[this.index + 1]);
         this.index += 2;
 
-        const rows: string[][] = [];
+        const rows: InlinePiece[][][] = [];
 
         while (this.index < this.lines.length) {
             const line: string = this.lines[this.index];
@@ -377,7 +378,7 @@ class BlockScanner {
                 break;
             }
 
-            rows.push(BlockScanner.splitRow(line));
+            rows.push(BlockScanner.parseRow(line));
             this.index += 1;
         }
 
@@ -397,9 +398,9 @@ class BlockScanner {
 
     // 宽松表格块：无分隔行，首行为表头，后续连续同列数行为数据行，对齐全默认
     private readLooseTable(): void {
-        const headers: string[] = BlockScanner.splitRow(this.lines[this.index]);
+        const headers: InlinePiece[][] = BlockScanner.parseRow(this.lines[this.index]);
         const colCount: number = headers.length;
-        const rows: string[][] = [];
+        const rows: InlinePiece[][][] = [];
         this.index += 1;
 
         while (this.index < this.lines.length) {
@@ -409,7 +410,7 @@ class BlockScanner {
                 break;
             }
 
-            rows.push(BlockScanner.splitRow(line));
+            rows.push(BlockScanner.parseRow(line));
             this.index += 1;
         }
 
@@ -598,6 +599,18 @@ class BlockScanner {
 
         for (let i: number = 0; i < raw.length; i++) {
             result.push(raw[i].trim());
+        }
+
+        return result;
+    }
+
+    // 拆分表格行并解析每个单元格的行内样式，返回 InlinePiece[][] 供渲染层直接使用
+    private static parseRow(line: string): InlinePiece[][] {
+        const cells: string[] = BlockScanner.splitRow(line);
+        const result: InlinePiece[][] = [];
+
+        for (let i: number = 0; i < cells.length; i++) {
+            result.push(InlineScanner.parse(cells[i]));
         }
 
         return result;
