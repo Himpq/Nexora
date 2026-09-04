@@ -74,6 +74,7 @@
                                 :placeholder="formExa.api_key_masked || 'exa-...'"
                             >
                         </div>
+
                         <div class="gddp-form-field">
                             <label>搜索类型</label>
                             <SettingSelect v-model="formExa.type" :options="exaTypeOptions" width="100%" />
@@ -82,6 +83,7 @@
                             <label>Base URL</label>
                             <input v-model="formExa.base_url" class="gddp-input" type="text" placeholder="https://api.exa.ai">
                         </div>
+
                         <div class="gddp-form-field">
                             <label>超时秒数</label>
                             <input v-model="formExa.timeout" class="gddp-input" type="number" :min="5" :max="60" placeholder="20">
@@ -177,6 +179,8 @@
         { value: 'off', label: 'off' },
     ]
 
+    const STORAGE_KEY = 'admin_search_selected_provider'
+
     const loading = ref(false)
     const saving = ref(false)
     const config = ref<SearchConfig | null>(null)
@@ -251,7 +255,13 @@
         return String(config.value?.active_provider || '') === String(selectedProvider.value || '')
     })
 
-    watch(selectedProvider, () => {
+    watch(selectedProvider, (val) => {
+        try {
+            if (val) localStorage.setItem(STORAGE_KEY, String(val))
+        } catch {
+            // ignore storage errors
+        }
+
         syncFormFromConfig()
     })
 
@@ -315,12 +325,24 @@
         try {
             config.value = await fetchSearchConfig()
 
-            // 默认选中 active_provider，否则首位 exa
+            // 优先恢复上次用户选择（localStorage），否则回落到 active_provider，否则首位 exa
+            let desired = ''
+
+            try {
+                desired = String(localStorage.getItem(STORAGE_KEY) || '').trim()
+            } catch {
+                desired = ''
+            }
+
             const active = String(config.value.active_provider || 'exa').trim()
-            if (providerEntries.value.some(([k]) => k === active)) {
+            const candidates = providerEntries.value.map(([k]) => k)
+
+            if (desired && candidates.includes(desired)) {
+                selectedProvider.value = desired
+            } else if (active && candidates.includes(active)) {
                 selectedProvider.value = active
-            } else if (providerEntries.value.length) {
-                selectedProvider.value = providerEntries.value[0][0]
+            } else if (candidates.length) {
+                selectedProvider.value = candidates[0]
             }
 
             syncFormFromConfig()
@@ -448,5 +470,136 @@
         font-size: 12px;
         font-family: ui-monospace, "SF Mono", Consolas, monospace;
         word-break: break-all;
+    }
+
+    .admin-exa-billing {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--color-border);
+        border-radius: 10px;
+        background: var(--color-bg-sunken);
+    }
+
+    .admin-exa-billing-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+    }
+
+    .admin-exa-billing-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--color-text-primary);
+    }
+
+    .admin-exa-billing-refresh {
+        padding: 4px 10px;
+        font-size: 12px;
+        line-height: 1;
+    }
+
+    .admin-exa-billing-empty,
+    .admin-exa-billing-loading {
+        font-size: 12px;
+        color: var(--color-text-secondary);
+    }
+
+    .admin-exa-billing-error {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--color-danger-text);
+        background: var(--color-danger-surface);
+        border: 1px solid var(--color-danger-border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+        word-break: break-all;
+    }
+
+    .admin-exa-billing-value {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .admin-exa-billing-amount {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--color-text-primary);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .admin-exa-billing-currency {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--color-text-secondary);
+    }
+
+    .admin-exa-billing-sub {
+        margin-left: 6px;
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--color-text-tertiary, #999);
+    }
+
+    .admin-exa-billing-period {
+        font-size: 11px;
+        color: var(--color-text-secondary);
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
+        border-radius: 999px;
+        padding: 2px 8px;
+    }
+
+    .admin-exa-billing-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .admin-exa-billing-breakdown {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 2px;
+    }
+
+    .admin-exa-billing-breakdown-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--color-text-secondary);
+    }
+
+    .admin-exa-billing-breakdown-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .admin-exa-billing-breakdown-qty {
+        font-variant-numeric: tabular-nums;
+        color: var(--color-text-secondary);
+    }
+
+    .admin-exa-billing-breakdown-amt {
+        font-weight: 600;
+        color: var(--color-text-primary);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .admin-exa-billing-endpoint {
+        font-size: 11px;
+        color: var(--color-text-tertiary, #999);
+        font-family: ui-monospace, "SF Mono", Consolas, monospace;
     }
 </style>

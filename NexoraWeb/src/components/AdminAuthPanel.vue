@@ -246,17 +246,32 @@
         return keys.value.filter((key) => String(key.owner || '') === filter)
     })
 
-    /** 详情所属用户下拉候选:全部用户 + 当前值不在列表时补入(历史遗留 owner 保证回显) */
+    /**
+     * 详情所属用户下拉候选:值必须为登录 id(user_id),显示为"昵称 (id)"以避免
+     * 把 user.username(昵称/display_name)当作 owner 导致后端校验
+     * "PAPI key owner user not found" 的历史 Bug。
+     * 后端 load_users 以登录 id 为 key,/api/admin/users 返回 {user_id, username=display_name}。
+     */
     const ownerOptions = computed(() => {
-        const options = allUsers.value.map((user) => {
-            const name = String(user.username || user.user_id || '')
+        const options = allUsers.value
+            .map((user) => {
+                const uid = String(user.user_id || '').trim()
+                const displayName = String(user.username || '').trim()
 
-            return { value: name, label: name }
-        })
+                if (!uid) {
+                    return null
+                }
+
+                const label = displayName && displayName !== uid ? `${displayName} (${uid})` : uid
+
+                return { value: uid, label }
+            })
+            .filter((option): option is { value: string; label: string } => Boolean(option))
 
         const current = detailOwner.value.trim()
 
         if (current && !options.some((option) => option.value === current)) {
+            // 兼容历史遗留:旧 Key 的 owner 可能是昵称而非 id,仍需回显以便管理员纠正
             options.unshift({ value: current, label: current })
         }
 
@@ -430,7 +445,9 @@
         try {
             const result = keyModalMode.value === 'regenerate' && selectedKey.value
                 ? await regeneratePublicApiKey(selectedKey.value.id, name, { expire: expire.value })
-                : await generatePublicApiKey(name, { expire: expire.value, owner: String(userStore.username || '') })
+                // owner 必须是登录 id(userId),不能用 username(昵称/display_name);后者会触发后端校验失败
+                // "PAPI key owner user not found: <nickname>"
+                : await generatePublicApiKey(name, { expire: expire.value, owner: String(userStore.userId || '') })
 
             keyModalOpen.value = false
             plainKey.value = result.plainKey
