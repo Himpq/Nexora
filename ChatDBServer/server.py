@@ -1996,6 +1996,8 @@ def _normalize_web_search_config(raw: Any) -> Dict[str, Any]:
 
     providers['exa'] = {
         'api_key': str(exa_raw.get('api_key') or '').strip(),
+        'team_api_key': str(exa_raw.get('team_api_key') or exa_raw.get('teamApiKey') or '').strip(),
+        'team_api_key_id': str(exa_raw.get('team_api_key_id') or exa_raw.get('teamApiKeyId') or exa_raw.get('api_key_id') or '').strip(),
         'base_url': str(exa_raw.get('base_url') or 'https://api.exa.ai').strip().rstrip('/') or 'https://api.exa.ai',
         'type': exa_type,
         'num_results': max(1, min(int(exa_raw.get('num_results') or exa_raw.get('numResults') or 10), 20)),
@@ -2033,8 +2035,10 @@ def _web_search_config_public_payload(web_cfg: Dict[str, Any]) -> Dict[str, Any]
 
         if name == 'exa':
             row['api_key_masked'] = _mask_public_api_key(row.get('api_key'))
+            row['team_api_key_masked'] = _mask_public_api_key(row.get('team_api_key'))
             # 前端不直接展示明文，保留长度提示
             row['has_api_key'] = bool(str(row.get('api_key') or '').strip())
+            row['has_team_api_key'] = bool(str(row.get('team_api_key') or '').strip())
 
         providers_pub[name] = row
 
@@ -12166,6 +12170,21 @@ def admin_update_search_config():
                     except Exception:
                         pass
 
+                # Team 管理 Key（独立于搜索 Key）
+                for team_field in ('team_api_key', 'teamApiKey'):
+                    if team_field in exa_in:
+                        new_team = str(exa_in.get(team_field) or '').strip()
+                        if new_team and '****' in new_team:
+                            pass
+                        else:
+                            cur['team_api_key'] = new_team
+                        break
+
+                for team_id_field in ('team_api_key_id', 'teamApiKeyId', 'api_key_id', 'apiKeyId'):
+                    if team_id_field in exa_in:
+                        cur['team_api_key_id'] = str(exa_in.get(team_id_field) or '').strip()
+                        break
+
             # DuckDuckGo
             ddg_in = providers_data.get('duckduckgo') if isinstance(providers_data.get('duckduckgo'), dict) else {}
 
@@ -12197,6 +12216,98 @@ def admin_update_search_config():
         })
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/search/exa/billing', methods=['GET'])
+@require_admin
+def admin_get_exa_billing():
+    """
+    查询 Exa 账户余额（后端代理，避免前端直接暴露 API Key）
+
+    请求：GET /api/admin/search/exa/billing
+    认证：管理员登录态
+    响应：{ success, balance, currency, endpoint, raw? }
+    """
+
+    try:
+        cfg = ensure_main_config_defaults()
+        web_cfg = _get_web_search_config(cfg)
+
+        # 读取 Exa 配置
+        exa_cfg = {}
+        try:
+            providers = web_cfg.get('providers') if isinstance(web_cfg.get('providers'), dict) else {}
+            exa_cfg = providers.get('exa') if isinstance(providers.get('exa'), dict) else {}
+        except Exception:
+            exa_cfg = {}
+
+        api_key = str((exa_cfg or {}).get('api_key') or '').strip()
+        team_key = str((exa_cfg or {}).get('team_api_key') or '').strip()
+
+        if not api_key and not team_key:
+            return jsonify({
+                'success': False,
+                'message': '未配置 Exa API Key，请先在搜索 API 配置中填写',
+            }), 400
+
+        if not team_key:
+            # 提示需要单独的 Team Key
+            pass
+
+        # 代理到 Exa 官方 billing 端点
+        try:
+            from api.App.Search.factory import create_search_provider
+            from api.App.Search.config import get_provider_config as _get_provider_cfg_alt
+        except Exception:
+            # 兼容部分部署下 api 包名为 App
+            from App.Search.factory import create_search_provider  # type: ignore
+            from App.Search.config import get_provider_config as _get_provider_cfg_alt  # type: ignore
+
+        # 优先用统一工厂，避免重复解析逻辑
+        try:
+            provider_cfg = _get_provider_cfg_alt(cfg, 'exa')
+        except Exception:
+            provider_cfg = exa_cfg if isinstance(exa_cfg, dict) else {}
+
+        provider = create_search_provider('exa', provider_cfg)
+
+        # 调用 provider 层 billing
+        result = provider.get_billing()  # type: ignore[attr-defined]
+
+        if not isinstance(result, dict):
+            return jsonify({'success': False, 'message': 'billing 返回格式异常'}), 500
+
+        if not result.get('ok'):
+            msg = str(result.get('error') or '查询余额失败')
+
+            # 401/403 透传为 400，便于前端提示密钥问题
+            status = 400 if any(k in msg.lower() for k in ('401', '403', 'unauthorized', 'invalid api key')) else 502
+
+            return jsonify({
+                'success': False,
+                'message': msg,
+                'provider': result.get('provider') or 'exa',
+                'status_code': result.get('status_code'),
+                'raw': result.get('raw'),
+            }), status
+
+        return jsonify({
+            'success': True,
+            'provider': result.get('provider') or 'exa',
+            'balance': result.get('balance'),
+            'total_cost_usd': result.get('total_cost_usd'),
+            'currency': result.get('currency') or 'USD',
+            'api_key_id': result.get('api_key_id') or '',
+            'api_key_name': result.get('api_key_name') or '',
+            'team_id': result.get('team_id') or '',
+            'period': result.get('period') or {},
+            'cost_breakdown': result.get('cost_breakdown') or [],
+            'endpoint': result.get('endpoint') or '',
+            'raw': result.get('raw'),
+        })
+
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
