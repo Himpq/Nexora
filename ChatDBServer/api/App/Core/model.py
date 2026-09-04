@@ -7441,8 +7441,20 @@ class Model(MailMixin):
                                     v4_payload["error"] = {"message": str(terr or "")}
                                 v4_payload["status"] = "error"
                             if is_regenerate and regenerate_index is not None:
-                                self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
-                                saved_assistant_message_index = int(regenerate_index)
+                                # 空结果禁止覆盖：重答零产出时保留旧回复，不调用 replace。
+                                # 根因：330 号对话一次空 partial 覆盖了已完成的旧回复。
+                                regen_visible = str(saved_assistant_content or "").strip()
+
+                                regen_has_error = bool(v4_payload.get("error"))
+
+                                if not regen_visible and not regen_has_error:
+                                    print(
+                                        "[REGENERATE_EMPTY_SKIP] empty regenerate keeps old reply "
+                                        f"conversation_id={self.conversation_id} index={int(regenerate_index)}"
+                                    )
+                                else:
+                                    self.conversation_service.replace_assistant(self.conversation_id, int(regenerate_index), v4_payload)
+                                    saved_assistant_message_index = int(regenerate_index)
                             else:
                                 # 正常：finish placeholder
                                 target_idx = None

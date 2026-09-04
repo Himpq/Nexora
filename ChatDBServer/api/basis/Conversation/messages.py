@@ -261,6 +261,25 @@ def replace_assistant_message(
     # 清理可能从旧 metadata 透传的 versions 嵌套
     normalized["versions"] = [dict(v) for v in normalized.get("versions", []) if isinstance(v, dict)]
 
+    # 空结果禁止覆盖旧回复：新内容无可见文本、无工具调用、无错误时，
+    # 不得覆盖已有可见旧回复（330 号对话曾被空 partial 覆盖丢失 eSIM 回复）。
+    new_visible = str(normalized.get("content") or "").strip()
+
+    new_trace = normalized.get("trace") if isinstance(normalized.get("trace"), dict) else {}
+
+    new_has_tools = bool(
+        isinstance(new_trace, dict)
+        and (new_trace.get("tool_calls") or new_trace.get("tool_results"))
+    )
+
+    new_has_error = bool(normalized.get("error"))
+
+    if not new_visible and not new_has_tools and not new_has_error and has_visible:
+        raise ConversationValidationError(
+            f"空结果不得覆盖已有回复: index={idx}",
+            details={"index": idx},
+        )
+
     messages[idx] = normalized
     conversation_data["messages"] = messages
     conversation_data["updated_at"] = now_iso()
