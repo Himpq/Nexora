@@ -83,3 +83,4 @@ NexoraHarmony2
 # Ad-hoc probe / diagnostic leftovers (repo root, never commit)
 /_tmp_*.py
 /tmp*.txt
+temp_jar_extract
