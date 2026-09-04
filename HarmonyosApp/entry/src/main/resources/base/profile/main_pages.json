@@ -1,0 +1,9 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/TodayTask",
+    "pages/Reader",
+    "pages/Quiz",
+    "pages/Report"
+  ]
+}

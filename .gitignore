@@ -1,5 +1,8 @@
 Rubbish
 __pycache__/
+.pytest_cache/
+.hvigor/
+.benchmarks/
 webview_storage/
 ChatDBServer/temp/
 ChatDBServer/data/
@@ -54,15 +57,8 @@ NexoraLearning/frontend/assets/vendor/echarts/LICENSE
 # Local教材/imports and generated processing artifacts.
 **/*.epub
 NexoraLearning/logs/
-HarmonyosData/generated/
-HarmonyosData/local/
-HarmonyosData/*.docx
-HarmonyosData/*.pdf
-HarmonyosData/*.zip
-HarmonyosData/*.mp4
-HarmonyosData/*.jpg
-# Extracted competition forms may contain team members' personal information.
-HarmonyosData/_doc.txt
+# Ignore the entire HarmonyosData directory (local working data only).
+HarmonyosData/
 data/
 NexoraSearch/storage
 .npm-cache/
@@ -83,3 +79,10 @@ NexoraHarmony2
 # Ad-hoc probe / diagnostic leftovers (repo root, never commit)
 /_tmp_*.py
 /tmp*.txt
+
+# 本地验证产物：模拟器截图 / 控件树转储（devecocli ui 输出）
+HarmonyosApp/.verify/
+
+# 会话调试转储文件（临时 JSON/文本，不入库）
+_*.json
+_*.txt

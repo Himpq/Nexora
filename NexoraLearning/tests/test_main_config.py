@@ -4,10 +4,32 @@ import os
 import unittest
 from unittest.mock import patch
 
-from main import _apply_environment_overrides
+from main import _apply_environment_overrides, _load_local_env
 
 
 class MainConfigTests(unittest.TestCase):
+    def test_direct_launch_loads_ignored_local_env_without_overwriting_process_env(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env.local").write_text(
+                "NEXORALEARNING_NEXORA_API_KEY=from-file\nNEXORALEARNING_PORT=5001\n",
+                encoding="utf-8",
+            )
+            with patch("main.ROOT", root), patch.dict(os.environ, {"NEXORALEARNING_PORT": "5019"}, clear=False):
+                previous_key = os.environ.pop("NEXORALEARNING_NEXORA_API_KEY", None)
+                try:
+                    _load_local_env()
+                    self.assertEqual(os.environ["NEXORALEARNING_NEXORA_API_KEY"], "from-file")
+                    self.assertEqual(os.environ["NEXORALEARNING_PORT"], "5019")
+                finally:
+                    if previous_key is None:
+                        os.environ.pop("NEXORALEARNING_NEXORA_API_KEY", None)
+                    else:
+                        os.environ["NEXORALEARNING_NEXORA_API_KEY"] = previous_key
+
     def test_environment_overrides_do_not_require_config_file(self):
         config = {
             "port": 5001,
