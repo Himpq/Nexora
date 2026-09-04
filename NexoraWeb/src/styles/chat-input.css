@@ -84,14 +84,42 @@
     min-width: 0;
 }
 
-/* 正文输入:吃满剩余宽度;收起/展开的隐藏动画状态见下方 collapse 段 */
+/* 正文输入:吃满剩余宽度;自管高度与滚动,不共用下方收起组的 overflow:hidden, */
+/* 否则超长文本被裁且滚动条出不来;收起/展开的隐藏动画状态见下方 collapse 段 */
 .input-container.composer-compact #messageInput {
     flex: 1 1 auto;
     width: auto;
     min-width: 48px;
     min-height: 30px;
+    max-height: 220px;
     padding: 4px 0;
-    overflow-y: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #c3cbd4 transparent;
+    transition:
+        max-height 0.32s ease-in-out,
+        min-height 0.32s ease-in-out;
+}
+
+.input-container.composer-compact #messageInput::-webkit-scrollbar {
+    width: 8px;
+}
+
+.input-container.composer-compact #messageInput::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.input-container.composer-compact #messageInput::-webkit-scrollbar-thumb {
+    background: #c3cbd4;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+.input-container.composer-compact #messageInput::-webkit-scrollbar-thumb:hover {
+    background: #9aa3af;
+    background-clip: content-box;
 }
 
 /* 右状态簇:token 行 + 折叠按钮 + 发送按钮,右缘对齐,不再换行堆叠 */
@@ -204,9 +232,9 @@
     margin: 0 auto;
 }
 
-/* 收起过程中:工具簇 / 正文 / 状态行 整组滑出(动画隐藏),footer 只保留折叠按钮 */
+/* 收起过程中:工具簇 / 状态行整组滑出(动画隐藏),footer 只保留折叠按钮;
+   正文 #messageInput 自管滚动(见上方专属规则),不进本组避免 overflow:hidden 锁死滚动 */
 #nexora-app #inputWrapper .input-container.composer-compact .input-options,
-#nexora-app #inputWrapper .input-container.composer-compact #messageInput,
 #nexora-app #inputWrapper .input-container.composer-compact .token-footer-left,
 #nexora-app #inputWrapper .input-container.composer-compact .btn-send {
     max-height: 220px;
