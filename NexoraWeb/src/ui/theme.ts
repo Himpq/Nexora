@@ -152,6 +152,8 @@ export function setTheme(preference: ThemePreference): void {
  */
 let learningLightDepth = 0
 let savedLearningResolved: ResolvedTheme = 'light'
+/** 是否实际压过亮色(只恢复自己压过的,冷启动的 exit 直接空转) */
+let learningLightApplied = false
 
 /** 进入 Learning:强制整站亮色 */
 export function enterLearningLightTheme(): void {
@@ -166,6 +168,8 @@ export function enterLearningLightTheme(): void {
             theme.resolved = 'light'
             applyDocument()
         })
+
+        learningLightApplied = true
     }
 }
 
@@ -173,11 +177,15 @@ export function enterLearningLightTheme(): void {
 export function exitLearningLightTheme(): void {
     learningLightDepth = Math.max(0, learningLightDepth - 1)
 
-    if (learningLightDepth === 0 && theme.resolved !== savedLearningResolved) {
-        withThemeSwitchGuard(() => {
-            theme.resolved = savedLearningResolved
-            applyDocument()
-        })
+    if (learningLightDepth === 0 && learningLightApplied) {
+        learningLightApplied = false
+
+        if (theme.resolved !== savedLearningResolved) {
+            withThemeSwitchGuard(() => {
+                theme.resolved = savedLearningResolved
+                applyDocument()
+            })
+        }
     }
 }
 

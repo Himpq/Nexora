@@ -163,6 +163,16 @@
                         </div>
                         <div class="thinking-content">
                             <MarkdownView :content="item.segment.text" />
+                            <!-- 展开态左下角收起按钮:与标题栏切换同一折叠状态 -->
+                            <button
+                                type="button"
+                                class="thinking-collapse-btn"
+                                title="收起思考过程"
+                                @click="toggleReasoning(item.sourceIndex)"
+                            >
+                                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+                                <span>收起</span>
+                            </button>
                         </div>
                     </div>
 
