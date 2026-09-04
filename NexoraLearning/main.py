@@ -20,6 +20,25 @@ CONFIG_PATH = DATA_DIR / "config.json"
 
 os.chdir(ROOT)
 
+
+def _load_local_env() -> None:
+    """Load ignored local development secrets when main.py is launched directly."""
+    env_path = ROOT / ".env.local"
+    if not env_path.exists():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name and name not in os.environ:
+            os.environ[name] = value.strip().strip('"').strip("'")
+
 DEFAULT_CONFIG = {
     "port": 5001,
     "debug": False,
@@ -193,11 +212,23 @@ DEFAULT_CONFIG = {
     "vectorization": {
         "chunk_size": 600,
         "chunk_overlap": 80
+    },
+    "proactive": {
+        "judgment": {
+            "enabled": True,
+            "model": "",
+            "timeout": 40,
+            # 默认模型带推理链：预算要装下思考 + 一段 JSON，否则正文为空、回退规则。
+            "max_tokens": 2000,
+            "temperature": 0.2,
+            "think": False
+        }
     }
 }
 
 def ensure_bootstrap():
     """确保 data 目录和配置文件存在"""
+    _load_local_env()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
    # (DATA_DIR / "courses").mkdir(exist_ok=True)
     (DATA_DIR / "lectures").mkdir(exist_ok=True)
@@ -316,6 +347,10 @@ def create_app():
     from api.agent_facade import agent_facade_bp, init_agent_facade
     init_agent_facade(cfg)
     app.register_blueprint(agent_facade_bp)
+
+    # B1 夜间备课调度器（§4.1）：每天 02:00 触发 + 阶段完成监控，幂等启动。
+    from core.booksproc.scheduler import start_nightly_scheduler
+    start_nightly_scheduler(cfg)
 
     @app.route("/health")
     def health():

@@ -20,7 +20,9 @@ from urllib.parse import urlencode
 from flask import Blueprint, jsonify, request
 
 from core import user as user_store
-from core.booksproc.chapter_quiz import load_or_create_chapter_quiz
+from core.booksproc.chapter_quiz import grade_question, load_or_create_chapter_quiz, load_quiz_by_id
+from core.decision import DIALOG_RECORD_TYPE, build_context_bundle, mark_decision_response, rebut
+from core.decision import evaluate as evaluate_decision
 from core.lectures import (
     get_book,
     get_lecture,
@@ -415,6 +417,55 @@ def _chapter_context_text(lecture_id: str, book_id: str, chapter_index: int, lim
     return index.chapter_text(chapter.index)[:limit]
 
 
+def _chapter_number_from_question(question: str) -> Optional[int]:
+    """Extract a Chinese/Arabic chapter reference from a natural-language question."""
+    import re
+
+    match = re.search(r"第\s*([0-9一二三四五六七八九十百零两]+)\s*章", question or "")
+    if match is None:
+        return None
+    raw = match.group(1)
+    if raw.isdigit():
+        value = int(raw)
+    else:
+        digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+        if raw == "十":
+            value = 10
+        elif "十" in raw:
+            left, _, right = raw.partition("十")
+            value = (digits.get(left, 1) * 10) + (digits.get(right, 0) if right else 0)
+        elif "百" in raw:
+            left, _, right = raw.partition("百")
+            value = digits.get(left, 1) * 100 + (digits.get(right, 0) if right else 0)
+        else:
+            value = digits.get(raw, -1)
+    return value - 1 if value > 0 else None
+
+
+def _looks_like_context_refusal(answer: str) -> bool:
+    """Recognize a model refusal caused only by missing textbook detail."""
+    text = str(answer or "").strip()
+    return any(marker in text for marker in (
+        "无法依据上下文回答",
+        "无法回答",
+        "信息不足",
+        "未提供具体",
+        "没有提供具体",
+        "请问您具体想了解",
+    ))
+
+
+def _offline_learning_answer(question: str) -> str:
+    """Small deterministic fallback for local/offline demos when no model is configured."""
+    if "傅里叶变换" in question:
+        return "傅里叶变换把一个信号分解为不同频率的正弦波（或复指数）叠加，从而把时域问题转换到频域分析。"
+    if "卷积" in question and ("是什么" in question or "概念" in question or "解释" in question):
+        return "卷积描述一个函数沿另一个函数滑动时的加权累积，是信号处理和神经网络中提取局部模式的基础运算。"
+    if "梯度下降" in question:
+        return "梯度下降沿损失函数梯度相反的方向迭代更新参数，使模型逐步接近误差更小的解。"
+    return ""
+
+
 def _resolve_session_target(
     username: str,
     data: Mapping[str, Any],
@@ -704,6 +755,14 @@ def agent_plan():
         return _failure(action, code, message, status=status)
     available_minutes = max(5, min(240, _safe_int(data.get("available_minutes"), 30)))
     intent = str(data.get("intent") or "continue_learning").strip() or "continue_learning"
+    timestamp = int(time.time())
+    user_store.append_learning_record(_CFG, username, {
+        "type": "agent_user_msg",
+        "message_id": f"usr_{uuid.uuid4().hex[:20]}",
+        "text": intent,
+        "timestamp": timestamp,
+        "source": "app",
+    })
     plan = {
         "status": "ready",
         "intent": intent,
@@ -712,6 +771,15 @@ def agent_plan():
         "target": target,
         "estimated_minutes": min(available_minutes, 25),
     }
+    user_store.append_learning_record(_CFG, username, {
+        "type": "agent_plan_response",
+        "message_id": f"plan_{uuid.uuid4().hex[:20]}",
+        "text": plan["reason"],
+        "reason": plan["reason"],
+        "target": target,
+        "estimated_minutes": plan["estimated_minutes"],
+        "timestamp": timestamp,
+    })
     return _response(action=action, data={"plan": plan}, next_actions=[{"type": "open_session", "target": target}])
 
 
@@ -771,9 +839,17 @@ def agent_ask_in_context():
     question = str(data.get("question") or data.get("message") or "").strip()
     if not question:
         return _failure(action, "INVALID_ARGUMENT", "question is required.")
+    # 入口来源（app / xiaoyi / a2a / photo）与拍照文本：进入对话留痕，成为下一次裁决的上下文。
+    source = str(data.get("source") or "app").strip()[:16] or "app"
+    photo_text = str(data.get("photo_text") or data.get("image_text") or "").strip()[:4000]
+    if photo_text and source == "app":
+        source = "photo"
     lecture_id = str(data.get("lecture_id") or "").strip()
     book_id = str(data.get("book_id") or "").strip()
     context_text = str(data.get("context_text") or data.get("selected_text") or "").strip()
+    requested_chapter = data.get("chapter_index")
+    if requested_chapter is None:
+        requested_chapter = _chapter_number_from_question(question)
     if lecture_id and book_id:
         if not _valid_identifier(lecture_id) or not _valid_identifier(book_id):
             return _failure(action, "INVALID_ARGUMENT", "lecture_id or book_id is invalid.")
@@ -788,9 +864,9 @@ def agent_ask_in_context():
             return _failure(action, "COURSE_NOT_FOUND", "lecture or book not found.", status=404)
         from core.bookindex import get_book_index, resolve_chapter
 
-        if "chapter_index" in data:
+        if requested_chapter is not None:
             _, chapter, chapter_error = resolve_chapter(
-                _CFG, lecture_id, book_id, data.get("chapter_index")
+                _CFG, lecture_id, book_id, requested_chapter
             )
             if chapter_error or chapter is None:
                 return _failure(
@@ -804,30 +880,90 @@ def agent_ask_in_context():
             context_text = get_book_index(_CFG, lecture_id, book_id).plain[:12000]
     if not context_text:
         context_text = "当前没有可用的教材上下文。"
+    if photo_text:
+        context_text = f"学生拍下的教材/题目内容：\n{photo_text}\n\n{context_text}"
+    timestamp = int(time.time())
+    # 先写用户消息，再调用模型；网络/模型失败也不能丢失用户的输入。
+    user_store.append_learning_record(_CFG, username, {
+        "type": "agent_user_msg",
+        "message_id": f"usr_{uuid.uuid4().hex[:20]}",
+        "text": question[:400],
+        "timestamp": timestamp,
+        "source": source,
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+    })
+    answer_source = "textbook_context"
     if _PROXY is None:
-        return _failure(action, "MODEL_UNAVAILABLE", "Nexora model proxy is not initialized.", status=503)
+        answer = _offline_learning_answer(question)
+        if not answer:
+            return _failure(action, "MODEL_UNAVAILABLE", "Nexora model proxy is not initialized.", status=503)
+        answer_source = "general_knowledge_fallback"
+    else:
+        answer = ""
     model_cfg = _CFG.get("models") if isinstance(_CFG.get("models"), dict) else {}
     intensive = model_cfg.get("intensive_reading") if isinstance(model_cfg.get("intensive_reading"), dict) else {}
     model = str(intensive.get("model_name") or model_cfg.get("default_nexora_model") or "").strip() or None
     prompt = (
-        "你是 Nexora Learning 的教材辅导助手。只依据给定教材上下文回答，若上下文不足请明确说明。"
-        "回答简洁、适合学生继续学习，不要编造教材中不存在的事实。\n\n"
+        "你是 Nexora Learning 的教材辅导助手。优先依据教材上下文回答；教材没有覆盖时，"
+        "允许用可靠的通用知识补充，并明确说出哪些是教材外补充。回答简洁、适合学生继续学习，"
+        "不要因为上下文不完整就拒答，也不要编造教材中不存在的具体引用。\n\n"
         f"教材上下文：\n{context_text[:12000]}\n\n学生问题：{question}"
     )
-    result = _PROXY.complete_raw(
-        messages=[{"role": "user", "content": prompt}],
-        model=model,
-        username=username,
-        api_mode="chat",
-        options={"temperature": 0.2, "max_tokens": 1200},
-        request_timeout=30,
-    )
-    if not result.get("success"):
-        return _failure(action, "MODEL_UNAVAILABLE", str(result.get("message") or "model request failed"), status=503)
-    answer = _PROXY.extract_output_text(result.get("payload") if isinstance(result.get("payload"), dict) else {})
+    if _PROXY is not None:
+        result = _PROXY.complete_raw(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            username=username,
+            api_mode="chat",
+            options={"temperature": 0.2, "max_tokens": 1200},
+            request_timeout=30,
+        )
+        if not result.get("success"):
+            answer = _offline_learning_answer(question)
+            answer_source = "general_knowledge_fallback" if answer else "textbook_context"
+            if not answer:
+                return _failure(action, "MODEL_UNAVAILABLE", str(result.get("message") or "model request failed"), status=503)
+        else:
+            answer = _PROXY.extract_output_text(result.get("payload") if isinstance(result.get("payload"), dict) else {})
     if not answer:
-        return _failure(action, "MODEL_EMPTY", "model returned an empty answer.", status=502)
-    return _response(action=action, data={"answer": answer, "source": "textbook_context", "lecture_id": lecture_id, "book_id": book_id, "context_chars": len(context_text)})
+        answer = _offline_learning_answer(question)
+        answer_source = "general_knowledge_fallback" if answer else "textbook_context"
+        if not answer:
+            return _failure(action, "MODEL_EMPTY", "model returned an empty answer.", status=502)
+    if _PROXY is not None and _looks_like_context_refusal(answer):
+        # 模型有时仍会被“教材优先”误导成拒答；第二次明确要求通用知识补足，避免学习对话卡死。
+        rescue_prompt = (
+            "请直接回答学生问题。教材上下文仅作为参考，若没有覆盖定义，必须使用可靠的通用知识补充；"
+            "先给出结论，不要拒答，不要反问。控制在一到三句话，并说明这是通用知识补充。\n\n"
+            f"教材上下文：\n{context_text[:8000]}\n\n学生问题：{question}"
+        )
+        rescue = _PROXY.complete_raw(
+            messages=[{"role": "user", "content": rescue_prompt}],
+            model=model,
+            username=username,
+            api_mode="chat",
+            options={"temperature": 0.35, "max_tokens": 500},
+            request_timeout=30,
+        )
+        rescue_answer = _PROXY.extract_output_text(rescue.get("payload") if isinstance(rescue.get("payload"), dict) else {}) if rescue.get("success") else ""
+        if rescue_answer and not _looks_like_context_refusal(rescue_answer):
+            answer = rescue_answer
+        elif "傅里叶变换" in question:
+            answer = _offline_learning_answer(question)
+            answer_source = "general_knowledge_fallback"
+    user_store.append_learning_record(_CFG, username, {
+        "type": DIALOG_RECORD_TYPE,
+        "dialog_id": f"dlg_{uuid.uuid4().hex[:20]}",
+        "source": source,
+        "question": question[:8000],
+        "answer": answer[:8000],
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "has_photo": bool(photo_text),
+        "timestamp": timestamp,
+    })
+    return _response(action=action, data={"answer": answer, "source": answer_source, "entry_source": source, "lecture_id": lecture_id, "book_id": book_id, "context_chars": len(context_text)})
 
 
 @agent_facade_bp.route("/review-plan", methods=["POST"])
@@ -855,6 +991,88 @@ def agent_review_plan():
     if isinstance(response_payload, dict):
         _remember_idempotent(cache_key, response_payload)
     return jsonify(response_payload)
+
+
+@agent_facade_bp.route("/review/submit", methods=["POST"])
+def agent_review_submit():
+    """今日复习交卷：判分并写进答题记录 / 时间线。"""
+    action = "review_submit"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    quiz_id = str(data.get("quiz_id") or "").strip()
+    if not quiz_id:
+        return _failure(action, "INVALID_ARGUMENT", "quiz_id is required.")
+    answers = data.get("answers")
+    if answers is not None and not isinstance(answers, list):
+        return _failure(action, "INVALID_ARGUMENT", "answers must be an array.")
+    quiz = load_quiz_by_id(_CFG, username, quiz_id)
+    questions = quiz.get("questions") if isinstance(quiz.get("questions"), list) else []
+    if not questions:
+        return _failure(action, "QUIZ_NOT_FOUND", "review quiz not found.", status=404)
+    answer_map: Dict[str, str] = {}
+    for item in answers or []:
+        if not isinstance(item, Mapping):
+            continue
+        question_id = str(item.get("question_id") or item.get("source_id") or "").strip()
+        if question_id:
+            answer_map[question_id] = str(item.get("answer") or "").strip()
+    timestamp = int(time.time())
+    lecture_id = str(data.get("lecture_id") or quiz.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or quiz.get("book_id") or "").strip()
+    chapter_index = _safe_int(data.get("chapter_index"), _safe_int(quiz.get("chapter_index"), 0))
+    chapter_name = str(data.get("chapter_name") or quiz.get("chapter_name") or "").strip()
+    scored: list[Dict[str, Any]] = []
+    correct = 0
+    for index, question in enumerate(questions):
+        if not isinstance(question, Mapping):
+            continue
+        question_id = str(question.get("source_id") or question.get("question_id") or f"q{index}").strip()
+        user_answer = answer_map.get(question_id, "")
+        is_correct = grade_question(question, user_answer) if user_answer else False
+        if is_correct:
+            correct += 1
+        user_store.append_question_completion(_CFG, username, {
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_index": chapter_index,
+            "chapter_name": chapter_name,
+            "question_title": str(question.get("title") or question.get("content") or "")[:120],
+            "is_correct": is_correct,
+            "timestamp": timestamp,
+        })
+        scored.append({"question_id": question_id, "is_correct": is_correct})
+    total = len(scored)
+    score_text = f"{correct}/{total}" if total else "0/0"
+    user_store.append_learning_record(_CFG, username, {
+        "type": DIALOG_RECORD_TYPE,
+        "dialog_id": f"dlg_{uuid.uuid4().hex[:20]}",
+        "source": "app",
+        "question": f"我做完了「{chapter_name or '这一章'}」的复习题",
+        "answer": f"这组题你对了 {score_text}。" + ("错的几道，回头在原文里再看一眼。" if total and correct < total else "这章你吃得很稳。"),
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "timestamp": timestamp,
+    })
+    user_store.append_learning_record(_CFG, username, {
+        "type": "agent_event",
+        "event": "quiz_submitted",
+        "event_id": f"rev_{uuid.uuid4().hex[:16]}",
+        "chapter_name": chapter_name,
+        "timestamp": timestamp,
+    })
+    log_event("agent_review_submit", "复习交卷", payload={"user_id": username, "quiz_id": quiz_id, "score": score_text})
+    return _response(action=action, data={
+        "quiz_id": quiz_id,
+        "score": score_text,
+        "correct": correct,
+        "total": total,
+        "items": scored,
+    })
 
 
 @agent_facade_bp.route("/tasks/<task_id>", methods=["GET"])
@@ -909,3 +1127,684 @@ def agent_event():
         user_store.append_learning_record(_CFG, username, record)
     log_event("agent_event", "Agent learning event recorded.", payload={"user_id": username, "event": event_name, "event_id": event_id, "duplicate": duplicate})
     return _response(action=action, data={"accepted": True, "duplicate": duplicate, "event_id": event_id})
+
+
+# ---------------------------------------------------------------------------
+# 主动决策器（B4）：/decision 调试评估入口、/decision/respond 卡片回复回喂、
+# GET /events 时间线读取（§3.1 TimelineEntry 契约）。
+# ---------------------------------------------------------------------------
+
+
+def _entry_ts(record: Mapping[str, Any]) -> int:
+    """学习记录时间戳（秒）→ 时间线条目毫秒时间戳。"""
+    return int(_record_timestamp(record) * 1000)
+
+
+def _proactive_actions(record: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    decision_id = str(record.get("decision_id") or "").strip()
+    if not decision_id:
+        return []
+    return [
+        {"label": "好", "action": "decision_accept", "payload": {"decision_id": decision_id}},
+        {"label": "晚点", "action": "decision_defer", "payload": {"decision_id": decision_id}},
+        {"label": "不用了", "action": "decision_dismiss", "payload": {"decision_id": decision_id}},
+    ]
+
+
+def _timeline_entries(records: list[Dict[str, Any]], limit: int = 100) -> list[Dict[str, Any]]:
+    """把学习记录映射为 §3.1 TimelineEntry 列表（ts 升序，取最近 limit 条）。"""
+    entries: list[Dict[str, Any]] = []
+    for row in records:
+        if not isinstance(row, Mapping):
+            continue
+        record_type = str(row.get("type") or "").strip()
+        if record_type == "agent_decision":
+            card = row.get("card")
+            entries.append({
+                "id": str(row.get("decision_id") or "").strip(),
+                "kind": str(row.get("kind") or "agent_hold").strip(),
+                "ts": _entry_ts(row),
+                "text": str(row.get("text") or "").strip(),
+                "reason": str(row.get("reason") or "").strip(),
+                "evidence": [dict(item) for item in row.get("evidence") or [] if isinstance(item, Mapping)],
+                "card": dict(card) if isinstance(card, Mapping) else None,
+                "actions": _proactive_actions(row) if isinstance(card, Mapping) else [],
+                "unattended": True,
+                "status": str(row.get("status") or "pending").strip(),
+                "trigger": str(row.get("trigger") or "").strip(),
+                # 决策器已算出抑制原因与综合分（core/decision/engine.py），此前未下发。
+                # 端侧据此渲染「它为什么没打扰你」——§11.4 第 4 条「克制是设计的一部分」的可视化载体。
+                "suppressed_by": str(row.get("suppressed_by") or "").strip(),
+                "score": row.get("score"),
+                # Judgment Loop：出现形态、模型裁决摘要、它当时看到的上下文（长按展开）。
+                "channel": str(row.get("channel") or "").strip(),
+                "judgment": dict(row["judgment"]) if isinstance(row.get("judgment"), Mapping) else None,
+                "context": dict(row["context"]) if isinstance(row.get("context"), Mapping) else None,
+            })
+        elif record_type == DIALOG_RECORD_TYPE:
+            source = str(row.get("source") or "app").strip()
+            source_label = {"xiaoyi": "在小艺里", "a2a": "通过另一个智能体", "photo": "拍了张教材"}.get(source, "")
+            entries.append({
+                "id": str(row.get("dialog_id") or "").strip(),
+                "kind": "agent_msg",
+                "ts": _entry_ts(row),
+                "text": str(row.get("answer") or "").strip()[:8000],
+                "reason": f"你{source_label}问我：{str(row.get('question') or '').strip()[:200]}",
+                "evidence": [],
+                "card": None,
+                "actions": [],
+                "unattended": False,
+                "channel": source,
+            })
+        elif record_type == "agent_user_msg":
+            entries.append({
+                "id": str(row.get("message_id") or uuid.uuid4().hex).strip(),
+                "kind": "user_msg",
+                "ts": _entry_ts(row),
+                "text": str(row.get("text") or row.get("question") or "").strip(),
+                "reason": "",
+                "evidence": [],
+                "card": None,
+                "actions": [],
+                "unattended": False,
+                "channel": str(row.get("source") or "app").strip(),
+            })
+        elif record_type == "agent_plan_response":
+            target = row.get("target") if isinstance(row.get("target"), Mapping) else {}
+            entries.append({
+                "id": str(row.get("message_id") or uuid.uuid4().hex).strip(),
+                "kind": "agent_msg",
+                "ts": _entry_ts(row),
+                "text": str(row.get("text") or "").strip(),
+                "reason": str(row.get("reason") or "").strip(),
+                "evidence": [],
+                "card": {
+                    "type": "plan",
+                    "chapter": str(target.get("chapter_name") or "下一章"),
+                    "minutes": int(row.get("estimated_minutes") or 25),
+                    "why": str(row.get("reason") or ""),
+                },
+                "actions": [],
+                "unattended": False,
+                "channel": "app",
+            })
+        elif record_type == "agent_session_opened":
+            chapter = str(row.get("chapter_name") or "").strip()
+            entries.append({
+                "id": str(row.get("session_id") or "").strip(),
+                "kind": "system",
+                "ts": _entry_ts(row),
+                "text": f"我开了一个学习会话：{chapter}" if chapter else "我开了一个学习会话。",
+                "reason": "",
+                "evidence": [],
+                "card": None,
+                "actions": [],
+                "unattended": False,
+            })
+        elif record_type == "agent_event":
+            event_name = str(row.get("event") or "").strip()
+            if event_name in _SILENT_EVENTS:
+                # 内部记账事件（裁决回喂、心跳）不上时间线：那是它的账本，不是它的日记。
+                continue
+            text = _EVENT_COPY.get(event_name)
+            if text is None:
+                text = f"你完成了章节：{str(row.get('chapter_name') or str(row.get('chapter_index') or '')).strip()}" if event_name == "chapter_completed" else f"我记下了一件事：{_humanize_event(event_name)}。"
+            entries.append({
+                "id": str(row.get("event_id") or "").strip(),
+                "kind": "system",
+                "ts": _entry_ts(row),
+                "text": text,
+                "reason": "",
+                "evidence": [],
+                "card": None,
+                "actions": [],
+                "unattended": False,
+            })
+    entries.sort(key=lambda item: int(item["ts"] or 0))
+    entries = _collapse_repeats(entries)
+    return entries[-max(1, min(500, limit)):]
+
+
+# 只记账、不上日记的事件。
+_SILENT_EVENTS = frozenset({"facet_verdict", "heartbeat", "telemetry_flush", "form_refresh"})
+
+_EVENT_COPY = {
+    "session_started": "你开始了学习。",
+    "session_completed": "你学完了这一节。",
+    "session_closed": "你合上了书。",
+    "learning_session_completed": "你学完了这一节。",
+    "quiz_submitted": "你交了卷。",
+    "reading_done": "你读完了这一章。",
+}
+
+
+def _humanize_event(event_name: str) -> str:
+    return event_name.replace("_", " ") if event_name else "未命名事件"
+
+
+def _collapse_repeats(entries: list[Dict[str, Any]], window_ms: int = 45 * 60 * 1000) -> list[Dict[str, Any]]:
+    """同一句系统话在 45 分钟内重复出现，折成一条「……（×N）」——四条「我开了一个学习会话」不是四件事。"""
+    collapsed: list[Dict[str, Any]] = []
+    for entry in entries:
+        previous = collapsed[-1] if collapsed else None
+        if (
+            previous is not None
+            and entry["kind"] == "system"
+            and previous["kind"] == "system"
+            and previous.get("_base_text", previous["text"]) == entry["text"]
+            and int(entry["ts"]) - int(previous["ts"]) <= window_ms
+        ):
+            count = int(previous.get("_repeat", 1)) + 1
+            previous["_repeat"] = count
+            previous["_base_text"] = previous.get("_base_text", previous["text"])
+            previous["text"] = f"{previous['_base_text']}（这段时间里 {count} 次）"
+            previous["ts"] = entry["ts"]
+            continue
+        collapsed.append(dict(entry))
+    for entry in collapsed:
+        entry.pop("_repeat", None)
+        entry.pop("_base_text", None)
+    return collapsed
+
+
+@agent_facade_bp.route("/events", methods=["GET"])
+def agent_events():
+    """时间线：最近 N 条 §3.1 TimelineEntry（ts 升序）。"""
+    action = "events"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_user(None, action)
+    if error is not None:
+        return error
+    limit = _safe_int(request.args.get("limit"), 100)
+    records = user_store.list_learning_records(_CFG, username) or []
+    entries = _timeline_entries(records, limit)
+    return _response(action=action, data={"entries": entries, "count": len(entries), "generated_at": int(time.time())})
+
+
+@agent_facade_bp.route("/decision", methods=["POST"])
+def agent_decision():
+    """决策器调试入口（§4.6）：手动注入信号并立即求值，用于排练与录制兜底。
+
+    无论 fire 真假都写入时间线（agent_act / agent_hold）。
+    """
+    action = "decision"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    target = data.get("target")
+    if target is not None and not isinstance(target, dict):
+        return _failure(action, "INVALID_ARGUMENT", "target must be an object.")
+    if isinstance(target, dict):
+        for field in ("lecture_id", "book_id"):
+            value = str(target.get(field) or "").strip()
+            if value and not _valid_identifier(value):
+                return _failure(action, "INVALID_ARGUMENT", f"{field} is invalid.")
+    signals = data.get("signals")
+    if signals is not None and not isinstance(signals, dict):
+        return _failure(action, "INVALID_ARGUMENT", "signals must be an object.")
+    now = _safe_int(data.get("now"), 0) or None
+    minutes = _safe_int(data.get("minutes"), 0) or None
+    trigger = str(data.get("trigger") or "").strip()
+    decision = evaluate_decision(
+        _CFG,
+        username,
+        trigger=trigger,
+        signals=dict(signals) if isinstance(signals, dict) else None,
+        target=dict(target) if isinstance(target, dict) else None,
+        minutes=minutes,
+        now=now,
+    )
+    record = dict(decision)
+    record["type"] = "agent_decision"
+    record["username"] = username
+    user_store.append_learning_record(_CFG, username, record)
+    log_event(
+        "agent_decision",
+        "Proactive decision evaluated.",
+        payload={"user_id": username, "decision_id": decision["decision_id"], "fire": decision["fire"], "trigger": decision["trigger"]},
+    )
+    next_actions: list[Dict[str, Any]] = []
+    if decision["fire"] and isinstance(decision.get("target"), dict) and decision["target"].get("lecture_id"):
+        next_actions.append({"type": "open_session", "target": decision["target"]})
+    return _response(action=action, data={"decision": decision}, next_actions=next_actions)
+
+
+@agent_facade_bp.route("/flow/accept", methods=["POST"])
+def agent_flow_accept():
+    """N5 闭环排练入口：建流程（同 decision accept 语义）。"""
+    action = "flow_accept"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    from core.agent_flow import start_flow
+
+    target = data.get("target")
+    if not isinstance(target, dict):
+        return _failure(action, "INVALID_ARGUMENT", "target is required.")
+    if not str(target.get("lecture_id") or "").strip() or not str(target.get("book_id") or "").strip():
+        return _failure(action, "INVALID_ARGUMENT", "target.lecture_id and target.book_id are required.")
+    result = start_flow(_CFG, username, target, now=_safe_int(data.get("now"), 0) or None)
+    log_event("agent_flow_accept", "闭环流程启动", payload={"user_id": username, "flow_id": result["flow_id"]})
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/flow/event", methods=["POST"])
+def agent_flow_event():
+    """流程事件推进（reading_done）。"""
+    action = "flow_event"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    flow_id = str(data.get("flow_id") or "").strip()
+    if not _valid_identifier(flow_id):
+        return _failure(action, "INVALID_ARGUMENT", "flow_id is invalid.")
+    from core.agent_flow import flow_event
+
+    result = flow_event(_CFG, username, flow_id, str(data.get("event") or "").strip())
+    if result.get("error"):
+        return _failure(action, result["error"], "flow event rejected.")
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/flow/submit", methods=["POST"])
+def agent_flow_submit():
+    """判分 + 画像更新 + 备下一章 + wrapup 卡。"""
+    action = "flow_submit"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    flow_id = str(data.get("flow_id") or "").strip()
+    if not _valid_identifier(flow_id):
+        return _failure(action, "INVALID_ARGUMENT", "flow_id is invalid.")
+    answers = data.get("answers")
+    if answers is not None and not isinstance(answers, list):
+        return _failure(action, "INVALID_ARGUMENT", "answers must be an array.")
+    from core.agent_flow import submit_answers
+
+    result = submit_answers(_CFG, username, flow_id, answers or [], force_uncertain=bool(data.get("force_uncertain")))
+    if result.get("error"):
+        return _failure(action, result["error"], "flow submit rejected.")
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/flow/uncertain", methods=["POST"])
+def agent_flow_uncertain():
+    """wrapup 卡 uncertain 裁决回喂。"""
+    action = "flow_uncertain"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    flow_id = str(data.get("flow_id") or "").strip()
+    question_id = str(data.get("question_id") or "").strip()
+    verdict = str(data.get("verdict") or "").strip()
+    if not _valid_identifier(flow_id) or not question_id:
+        return _failure(action, "INVALID_ARGUMENT", "flow_id and question_id are required.")
+    from core.agent_flow import uncertain_verdict
+
+    result = uncertain_verdict(_CFG, username, flow_id, question_id, verdict)
+    if result.get("error"):
+        return _failure(action, result["error"], "uncertain verdict rejected.")
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/flow/state", methods=["GET"])
+def agent_flow_state():
+    """流程状态（断点恢复渲染用）。"""
+    action = "flow_state"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_user(None, action)
+    if error is not None:
+        return error
+    flow_id = str(request.args.get("flow_id") or "").strip()
+    if not flow_id:
+        return _failure(action, "INVALID_ARGUMENT", "flow_id is required.")
+    from core.agent_flow import flow_state
+
+    return _response(action=action, data=flow_state(_CFG, username, flow_id))
+
+
+@agent_facade_bp.route("/toolbox/kb-upsert", methods=["POST"])
+def agent_toolbox_kb_upsert():
+    """T1：资料入库 → kbfile 卡。"""
+    action = "toolbox_kb_upsert"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    project_id = str(data.get("project_id") or "default").strip()
+    texts = data.get("texts")
+    if not isinstance(texts, list) or not texts:
+        return _failure(action, "INVALID_ARGUMENT", "texts must be a non-empty array.")
+    from core.toolbox import kb_upsert
+
+    result = kb_upsert(_CFG, username, project_id, texts)
+    if not result.get("ok"):
+        return _response(action=action, data=result)
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/toolbox/kb-query", methods=["POST"])
+def agent_toolbox_kb_query():
+    """T2：知识库检索 → citation 卡。"""
+    action = "toolbox_kb_query"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    query = str(data.get("query") or "").strip()
+    if not query:
+        return _failure(action, "INVALID_ARGUMENT", "query is required.")
+    from core.toolbox import kb_query
+
+    result = kb_query(_CFG, username, str(data.get("project_id") or "default").strip(), query, _safe_int(data.get("k"), 3))
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/toolbox/search", methods=["POST"])
+def agent_toolbox_search():
+    """T3：联网补充 → search 卡。"""
+    action = "toolbox_search"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    query = str(data.get("query") or "").strip()
+    if not query:
+        return _failure(action, "INVALID_ARGUMENT", "query is required.")
+    from core.toolbox import web_search
+
+    result = web_search(_CFG, username, query, _safe_int(data.get("limit"), 3))
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/toolbox/mail-latest", methods=["POST"])
+def agent_toolbox_mail_latest():
+    """T4：最新邮件 → mail 卡。"""
+    action = "toolbox_mail"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    from core.toolbox import mail_fetch
+
+    result = mail_fetch(_CFG, username, str(data.get("group") or "").strip(), str(data.get("user") or "").strip(), _safe_int(data.get("limit"), 3))
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/toolbox/videos", methods=["POST"])
+def agent_toolbox_videos():
+    """T6：章节配套视频 → video 卡。"""
+    action = "toolbox_videos"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return _failure(action, "INVALID_ARGUMENT", "lecture_id is required.")
+    from core.toolbox import video_for_lecture
+
+    result = video_for_lecture(_CFG, username, lecture_id, _safe_int(data.get("limit"), 3))
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/toolbox/orchestrate", methods=["POST"])
+def agent_toolbox_orchestrate():
+    """跨域编排：「把最新作业邮件整理成计划，附件入库」。"""
+    action = "toolbox_orchestrate"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    from core.toolbox import orchestrate
+
+    result = orchestrate(_CFG, username, str(data.get("command") or "").strip())
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/prereq/check", methods=["POST"])
+def agent_prereq_check():
+    """前置知识缺口检查（B2，§4.2）：给定章节 → 跨课程同名概念的掌握度缺口 + prereq 卡。"""
+    action = "prereq_check"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = _safe_int(data.get("chapter_index"), -1)
+    if not lecture_id or not book_id or chapter_index < 0:
+        return _failure(action, "INVALID_ARGUMENT", "lecture_id, book_id and chapter_index are required.")
+    now = _safe_int(data.get("now"), 0) or None
+    from core.cognition.prereq import check_prereq
+
+    result = check_prereq(_CFG, username, lecture_id, book_id, chapter_index, now=now)
+    log_event("agent_prereq_check", "前置知识缺口检查", payload={"user_id": username, "lecture_id": lecture_id, "chapter_index": chapter_index})
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/cognition/overview", methods=["GET"])
+def agent_cognition_overview():
+    """面二（§6.3）：用户全部已选课程的认知状态 → UserModelFacet 判断列表 + 掌握度热力图数据。"""
+    action = "cognition_overview"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_user(None, action)
+    if error is not None:
+        return error
+    from core.cognition.facets import build_facets
+
+    data = build_facets(_CFG, username)
+    return _response(action=action, data=data)
+
+
+@agent_facade_bp.route("/cognition/verdict", methods=["POST"])
+def agent_cognition_verdict():
+    """面二反驳回喂（§6.3）：agree/disagree 写 review 证据（disagree=0 拉低掌握度，即时生效）。"""
+    action = "cognition_verdict"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    facet_id = str(data.get("facet_id") or "").strip()
+    verdict = str(data.get("verdict") or "").strip()
+    if not _valid_identifier(facet_id, max_length=160):
+        return _failure(action, "INVALID_ARGUMENT", "facet_id is invalid.")
+    if verdict not in {"agree", "disagree"}:
+        return _failure(action, "INVALID_ARGUMENT", "verdict must be agree or disagree.")
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    concept_id = str(data.get("concept_id") or "").strip()
+    from core.cognition.facets import record_verdict
+
+    result = record_verdict(_CFG, username, facet_id, verdict, lecture_id=lecture_id, book_id=book_id, concept_id=concept_id)
+    # 反驳变成对话：带 note 的 disagree 送回模型，由它回应并改写判断；同时留痕为对话上下文。
+    note = str(data.get("note") or "").strip()[:300]
+    claim = str(data.get("claim") or "").strip()[:200]
+    if note:
+        evidence_labels = [str(item) for item in data.get("evidence") or [] if str(item).strip()][:6] if isinstance(data.get("evidence"), list) else []
+        reply = rebut(_CFG, claim=claim or facet_id, evidence=evidence_labels, note=note)
+        result = dict(result)
+        result["reply"] = reply
+        user_store.append_learning_record(_CFG, username, {
+            "type": DIALOG_RECORD_TYPE,
+            "dialog_id": f"dlg_{uuid.uuid4().hex[:20]}",
+            "source": "rebuttal",
+            "question": f"反驳「{claim or facet_id}」：{note}",
+            "answer": str((reply or {}).get("reply") or "我记下了你的反驳。"),
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+        })
+    log_event("agent_cognition_verdict", "面二判断已回喂", payload={"user_id": username, "facet_id": facet_id, "verdict": verdict})
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/judgment/context", methods=["GET"])
+def agent_judgment_context():
+    """它此刻看到了什么：ContextBundle 只读快照（演示与排练用，不落时间线、不调模型）。"""
+    action = "judgment_context"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_user(None, action)
+    if error is not None:
+        return error
+    now = _safe_int(request.args.get("now"), 0) or int(time.time())
+    bundle = build_context_bundle(_CFG, username, now=now, trigger=str(request.args.get("trigger") or "").strip())
+    return _response(action=action, data={"bundle": bundle})
+
+
+@agent_facade_bp.route("/context/device", methods=["POST"])
+def agent_context_device():
+    """端侧上报设备上下文（未来 24h 日历、免打扰、情景、粗粒度位置）。
+
+    手机前台时上报一次；此后夜间备课、邮件、困惑等任何触发源求值时，决策器都能看到。
+    """
+    action = "context_device"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    from core.decision.device_context import save_device_context
+
+    reported_at = _safe_int(data.get("now"), 0) or None
+    record = save_device_context(_CFG, username, data, now=reported_at)
+    return _response(action=action, data={"stored": True, "calendar_count": len(record["calendar"]), "reported_at": record["reported_at"]})
+
+
+@agent_facade_bp.route("/confusion/scan", methods=["POST"])
+def agent_confusion_scan():
+    """困惑地图手动排练入口（B3，§4.3）：归因阅读信号、写证据与 confusion 卡。"""
+    action = "confusion_scan"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    now = _safe_int(data.get("now"), 0) or None
+    from core.cognition.attribution import scan_confusion
+
+    result = scan_confusion(_CFG, username, now=now)
+    log_event("agent_confusion_scan", "困惑地图手动触发", payload={"user_id": username})
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/prep/run", methods=["POST"])
+def agent_prep_run():
+    """夜间备课手动排练入口（B1，§4.1）：立即执行一次备课扫描并做一轮完成检查。"""
+    action = "prep_run"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    now = _safe_int(data.get("now"), 0) or None
+    from core.booksproc.scheduler import run_prep_now
+
+    result = run_prep_now(_CFG, username, now=now)
+    log_event("agent_prep_run", "夜间备课手动触发", payload={"user_id": username})
+    return _response(action=action, data=result)
+
+
+@agent_facade_bp.route("/decision/respond", methods=["POST"])
+def agent_decision_respond():
+    """主动推送卡三按钮回喂（§6.1）：accept / defer / dismiss。"""
+    action = "decision_respond"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_user(data, action)
+    if error is not None:
+        return error
+    decision_id = str(data.get("decision_id") or "").strip()
+    if not _valid_identifier(decision_id):
+        return _failure(action, "INVALID_ARGUMENT", "decision_id is invalid.")
+    response = str(data.get("response") or "").strip()
+    if response not in {"accept", "defer", "dismiss"}:
+        return _failure(action, "INVALID_ARGUMENT", "response must be accept, defer or dismiss.")
+    result = mark_decision_response(_CFG, username, decision_id, response)
+    if not result.get("updated"):
+        return _failure(action, "DECISION_NOT_FOUND", "decision not found for this user.", status=404)
+    record = result.get("record") if isinstance(result.get("record"), dict) else {}
+    next_actions: list[Dict[str, Any]] = []
+    if response == "accept" and isinstance(record.get("target"), dict) and record["target"].get("lecture_id"):
+        next_actions.append({"type": "open_session", "target": record["target"]})
+        # N5 点头即闭环：accept 自动启动持久化执行链。
+        from core.agent_flow import start_flow
+
+        flow = start_flow(_CFG, username, record["target"])
+        next_actions.append({"type": "flow", "flow_id": flow["flow_id"], "session_id": flow["session_id"], "target": record["target"]})
+        log_event("agent_decision_accept_flow", "主动推送接受并启动闭环", payload={"user_id": username, "decision_id": decision_id, "flow_id": flow["flow_id"]})
+    log_event(
+        "agent_decision_respond",
+        "Proactive decision responded.",
+        payload={"user_id": username, "decision_id": decision_id, "response": response},
+    )
+    return _response(
+        action=action,
+        data={
+            "updated": True,
+            "decision_id": decision_id,
+            "status": response,
+            "backoff": bool(result.get("backoff")),
+            "retry_at": result.get("retry_at"),
+        },
+        next_actions=next_actions,
+    )

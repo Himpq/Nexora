@@ -145,6 +145,9 @@ class AgentFacadeTests(unittest.TestCase):
             self.assertTrue(plan_body["success"])
             self.assertEqual(plan_body["data"]["plan"]["target"]["lecture_id"], lecture["id"])
             self.assertEqual(plan_body["data"]["plan"]["target"]["book_id"], book["id"])
+            planned_events = client.get("/api/agent/v1/events", headers={"X-Nexora-Username": "demo"}).get_json()["data"]["entries"]
+            self.assertTrue(any(item["kind"] == "user_msg" and item["text"] == "continue_learning" for item in planned_events))
+            self.assertTrue(any(item["kind"] == "agent_msg" and item["card"]["type"] == "plan" for item in planned_events))
 
             opened = client.post(
                 "/api/agent/v1/open-session",
@@ -306,6 +309,92 @@ class AgentFacadeTests(unittest.TestCase):
             self.assertIn("第二章 反向传播", prompt)
             self.assertNotIn("第一章 梯度下降是一种优化方法", prompt)
 
+    def test_natural_chapter_question_and_dialog_are_persisted(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            calls = []
+
+            class FakeProxy:
+                def complete_raw(self, **kwargs):
+                    calls.append(kwargs)
+                    return {"success": True, "payload": {"answer": "傅里叶变换把信号表示为不同频率正弦波的叠加。"}}
+
+                def extract_output_text(self, payload):
+                    return str(payload.get("answer") or "")
+
+            with patch("api.agent_facade._PROXY", FakeProxy()):
+                client = app.test_client()
+                response = client.post(
+                    "/api/agent/v1/ask-in-context",
+                    json={
+                        "username": "demo",
+                        "lecture_id": lecture["id"],
+                        "book_id": book["id"],
+                        "question": "请用一句话解释第二章的核心概念。",
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("学生问题：请用一句话解释第二章的核心概念。", calls[0]["messages"][0]["content"])
+                entries = client.get("/api/agent/v1/events", headers={"X-Nexora-Username": "demo"}).get_json()["data"]["entries"]
+                self.assertTrue(any(item["kind"] == "user_msg" and "第二章" in item["text"] for item in entries))
+                self.assertTrue(any(item["kind"] == "agent_msg" and "傅里叶变换" in item["text"] for item in entries))
+
+    def test_context_refusal_is_retried_with_general_knowledge(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            calls = []
+
+            class FakeProxy:
+                def complete_raw(self, **kwargs):
+                    calls.append(kwargs)
+                    answer = "无法依据上下文回答。" if len(calls) == 1 else "傅里叶变换将信号分解为不同频率成分。"
+                    return {"success": True, "payload": {"answer": answer}}
+
+                def extract_output_text(self, payload):
+                    return str(payload.get("answer") or "")
+
+            with patch("api.agent_facade._PROXY", FakeProxy()):
+                response = app.test_client().post(
+                    "/api/agent/v1/ask-in-context",
+                    json={
+                        "username": "demo",
+                        "lecture_id": lecture["id"],
+                        "book_id": book["id"],
+                        "question": "请解释第二章傅里叶变换。",
+                    },
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["data"]["answer"], "傅里叶变换将信号分解为不同频率成分。")
+            self.assertEqual(len(calls), 2)
+
+    def test_fourier_question_has_offline_fallback_when_model_unavailable(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            with patch("api.agent_facade._PROXY", None):
+                response = app.test_client().post(
+                    "/api/agent/v1/ask-in-context",
+                    json={
+                        "username": "demo",
+                        "lecture_id": lecture["id"],
+                        "book_id": book["id"],
+                        "question": "请解释傅里叶变换。",
+                    },
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["data"]["source"], "general_knowledge_fallback")
+
     def test_review_task_is_pollable_and_idempotent(self):
         import tempfile
         from pathlib import Path
@@ -375,6 +464,98 @@ class AgentFacadeTests(unittest.TestCase):
             self.assertTrue(
                 response.get_json()["data"]["entry_url"].startswith("https://chat.himpqblog.cn:5002/api/frontend/?")
             )
+
+    def test_review_submit_grades_choice_and_short_answer(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            quiz_id = "chapter_quiz_review_demo"
+            quiz_path = Path(cfg["data_dir"]) / "users" / "demo" / "chapter_quizzes" / f"{quiz_id}.json"
+            quiz_path.parent.mkdir(parents=True, exist_ok=True)
+            quiz_path.write_text(json.dumps({
+                "quiz_id": quiz_id,
+                "lecture_id": lecture["id"],
+                "book_id": book["id"],
+                "chapter_index": 0,
+                "chapter_name": "第一章 梯度下降",
+                "questions": [
+                    {
+                        "title": "选择题",
+                        "content": "哪一项是优化方法",
+                        "type": "choice",
+                        "options": ["梯度下降", "随机猜测"],
+                        "answer": "A",
+                        "source_id": "q1",
+                    },
+                    {
+                        "title": "简答题",
+                        "content": "数据模型的抽象层次",
+                        "type": "text",
+                        "options": ["无"],
+                        "answer": "概念-逻辑-物理",
+                        "source_id": "q2",
+                    },
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            client = app.test_client()
+            response = client.post(
+                "/api/agent/v1/review/submit",
+                headers={"X-Nexora-Username": "demo"},
+                json={
+                    "quiz_id": quiz_id,
+                    "lecture_id": lecture["id"],
+                    "book_id": book["id"],
+                    "chapter_index": 0,
+                    "chapter_name": "第一章 梯度下降",
+                    "answers": [
+                        {"question_id": "q1", "answer": "梯度下降"},
+                        {"question_id": "q2", "answer": "概念-逻辑-物理三层"},
+                    ],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            body = response.get_json()
+            self.assertEqual(body["data"]["score"], "2/2")
+            self.assertEqual(body["data"]["correct"], 2)
+            entries = client.get("/api/agent/v1/events", headers={"X-Nexora-Username": "demo"}).get_json()["data"]["entries"]
+            self.assertTrue(any(item["kind"] == "agent_msg" and "2/2" in item["text"] for item in entries))
+
+    def test_dialog_keeps_long_answers(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            lecture, book = _seed_course(cfg)
+            long_answer = "答案" + ("很长的讲解。" * 80)
+
+            class FakeProxy:
+                def complete_raw(self, **kwargs):
+                    return {"success": True, "payload": {"answer": long_answer}}
+
+                def extract_output_text(self, payload):
+                    return str(payload.get("answer") or "")
+
+            with patch("api.agent_facade._PROXY", FakeProxy()):
+                client = app.test_client()
+                response = client.post(
+                    "/api/agent/v1/ask-in-context",
+                    json={
+                        "username": "demo",
+                        "lecture_id": lecture["id"],
+                        "book_id": book["id"],
+                        "question": "请详细讲",
+                    },
+                )
+            self.assertEqual(response.status_code, 200)
+            entries = client.get("/api/agent/v1/events", headers={"X-Nexora-Username": "demo"}).get_json()["data"]["entries"]
+            stored = [item["text"] for item in entries if item["kind"] == "agent_msg"]
+            self.assertTrue(any(len(text) > 400 for text in stored))
+            self.assertTrue(any(long_answer[:200] in text for text in stored))
 
 
 if __name__ == "__main__":

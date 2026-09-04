@@ -2,15 +2,43 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "Nexora 学习智能体"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "它在你不在的时候替你读书；白天只在对的时刻出现。"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "Nexora"
+    },
+    {
+      "name": "mic_reason",
+      "value": "用于语音输入与跟学习伙伴对话"
+    },
+    {
+      "name": "calendar_reason",
+      "value": "把学习计划写进日历并在到点时提醒你"
+    },
+    {
+      "name": "EntryFormAbility_label",
+      "value": "Nexora 今日卡"
+    },
+    {
+      "name": "EntryFormAbility_desc",
+      "value": "今日学习一句话与快捷回应"
+    },
+    {
+      "name": "form_display_name",
+      "value": "Nexora 今日卡"
+    },
+    {
+      "name": "form_desc",
+      "value": "决策器的一句话 + 好/晚点"
+    },
+    {
+      "name": "agent_ext_desc",
+      "value": "Nexora 学习智能体（端侧 A2A）"
     }
   ]
 }

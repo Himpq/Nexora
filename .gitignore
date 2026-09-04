@@ -79,3 +79,10 @@ NexoraHarmony2
 # Ad-hoc probe / diagnostic leftovers (repo root, never commit)
 /_tmp_*.py
 /tmp*.txt
+
+# 本地验证产物：模拟器截图 / 控件树转储（devecocli ui 输出）
+HarmonyosApp/.verify/
+
+# 会话调试转储文件（临时 JSON/文本，不入库）
+_*.json
+_*.txt
