@@ -123,10 +123,16 @@ MAP_TOOL_NAMES = {
 
 
 # 用户画像已直接注入 system prompt，写入由回复后的 MEMORY 队列独占处理。
+# 主对话不注入低频、危险或已暂停的工具；保留处理器与历史别名，避免破坏内部流程。
 MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES = {
     "memory_profile_read",
     "memory_short_update",
     "memory_short_add",
+    "cloud_file_apply_diff",
+    "cloud_file_edit",
+    "knowledge_basis_delete",
+    "arxiv_search",
+    "ask_for_permission",
 }
 
 
@@ -1601,7 +1607,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_apply_diff",
-            "description": "对用户云端文件区中的单个文本文件应用统一 diff。只接受 patch 文本；需要按 target 编辑时改用 cloud_file_edit。dry_run=true 时只返回预览 diff，不写入。",
+            "description": "对用户云端文件区中的单个文本文件应用统一 diff。只接受 patch 文本；dry_run=true 时只返回预览 diff，不写入。",
             "parameters": {
                 "type": "object",
                 "properties": {

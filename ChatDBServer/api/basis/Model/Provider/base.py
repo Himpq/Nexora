@@ -9,6 +9,37 @@ import prompts
 TOOL_ARGUMENT_DELTA_CHUNK_CHARS = 384
 
 
+def append_stream_delta(current: Any, incoming: Any):
+    """按协议逐字追加流式增量，任何重复字符都属于有效数据。"""
+    current_text = str(current or "")
+    incoming_text = str(incoming or "")
+
+    return current_text + incoming_text, incoming_text
+
+
+def reconcile_stream_snapshot(current: Any, snapshot: Any, field_name: str = "stream field"):
+    """合并完整快照；快照与已收增量冲突时直接暴露上游协议错误。"""
+    current_text = str(current or "")
+    snapshot_text = str(snapshot or "")
+
+    if not snapshot_text:
+        return current_text, ""
+
+    if not current_text:
+        return snapshot_text, snapshot_text
+
+    if snapshot_text == current_text:
+        return current_text, ""
+
+    if snapshot_text.startswith(current_text):
+        return snapshot_text, snapshot_text[len(current_text):]
+
+    raise ValueError(
+        f"{field_name} snapshot conflicts with streamed deltas: "
+        f"delta_chars={len(current_text)} snapshot_chars={len(snapshot_text)}"
+    )
+
+
 def _iter_chunked_function_call_delta(event: Dict[str, Any]):
     """Split oversized tool argument deltas so UI can render file writes progressively."""
     if not isinstance(event, dict):
@@ -786,6 +817,25 @@ class ProviderInterface(ABC):
             explicit_reasoning_accumulator = previous + piece
             return piece
 
+        def _merge_reasoning_fields(primary: Any, explicit: Any) -> str:
+            """合并同一事件中的并行 reasoning 字段，不参与工具参数拼接。"""
+            primary_text = str(primary or "")
+            explicit_text = str(explicit or "")
+
+            if not explicit_text:
+                return primary_text
+
+            if not primary_text:
+                return explicit_text
+
+            if explicit_text == primary_text or explicit_text in primary_text:
+                return primary_text
+
+            if primary_text in explicit_text:
+                return explicit_text
+
+            return primary_text + explicit_text
+
         def _split_delta_content(content_val: Any) -> Dict[str, str]:
             content_parts: List[str] = []
             reasoning_parts: List[str] = []
@@ -808,39 +858,11 @@ class ProviderInterface(ABC):
                 "reasoning": "".join(reasoning_parts),
             }
 
-        def _merge_stream_fragment(base: str, frag: str) -> str:
-            base_s = str(base or "")
-            frag_s = str(frag or "")
-            if not frag_s:
-                return base_s
-            if not base_s:
-                return frag_s
-            if frag_s == base_s:
-                return base_s
-            if frag_s.startswith(base_s):
-                return frag_s
-            if base_s.startswith(frag_s):
-                return base_s
-            if base_s.endswith(frag_s):
-                return base_s
-            if (len(frag_s) >= 16) and (frag_s in base_s):
-                return base_s
-            return base_s + frag_s
-
-        def _merge_stream_fragment_delta(base: str, frag: str):
-            """Return merged text plus the actual new fragment to emit downstream."""
-            base_s = str(base or "")
-            merged = _merge_stream_fragment(base_s, frag)
-
-            if merged == base_s:
-                return merged, ""
-
-            if merged.startswith(base_s):
-                return merged, merged[len(base_s):]
-
-            return merged, str(frag or "")
-
-        def _apply_tool_call_delta(tc_obj: Any, idx_default: int = 0) -> Optional[Dict[str, Any]]:
+        def _apply_tool_call_fragment(
+            tc_obj: Any,
+            idx_default: int = 0,
+            fragment_mode: str = "delta",
+        ) -> Optional[Dict[str, Any]]:
             try:
                 idx = int(_obj_get_raw(tc_obj, "index", idx_default) or idx_default)
             except Exception:
@@ -870,10 +892,24 @@ class ProviderInterface(ABC):
             emitted_args_delta = ""
 
             if name_delta:
-                fc["name"], emitted_name_delta = _merge_stream_fragment_delta(old_name, str(name_delta))
+                if fragment_mode == "snapshot":
+                    fc["name"], emitted_name_delta = reconcile_stream_snapshot(
+                        old_name,
+                        name_delta,
+                        "tool name",
+                    )
+                else:
+                    fc["name"], emitted_name_delta = append_stream_delta(old_name, name_delta)
 
             if args_delta:
-                fc["arguments"], emitted_args_delta = _merge_stream_fragment_delta(old_args, str(args_delta))
+                if fragment_mode == "snapshot":
+                    fc["arguments"], emitted_args_delta = reconcile_stream_snapshot(
+                        old_args,
+                        args_delta,
+                        "tool arguments",
+                    )
+                else:
+                    fc["arguments"], emitted_args_delta = append_stream_delta(old_args, args_delta)
 
             if not (emitted_name_delta or emitted_args_delta):
                 return None
@@ -940,7 +976,7 @@ class ProviderInterface(ABC):
                 msg_obj = _obj_get_raw(choice0, "message", None)
                 if msg_obj is not None:
                     msg_split = _split_delta_content(_obj_get_raw(msg_obj, "content", None))
-                    msg_reasoning_raw = _merge_stream_fragment(
+                    msg_reasoning_raw = _merge_reasoning_fields(
                         msg_split.get("reasoning", ""),
                         _extract_reasoning_fields(msg_obj),
                     )
@@ -957,7 +993,11 @@ class ProviderInterface(ABC):
                         msg_tool_calls = [msg_tool_calls]
                     if isinstance(msg_tool_calls, list):
                         for tc in msg_tool_calls:
-                            fc_delta = _apply_tool_call_delta(tc, idx_default=0)
+                            fc_delta = _apply_tool_call_fragment(
+                                tc,
+                                idx_default=0,
+                                fragment_mode="snapshot",
+                            )
                             if fc_delta:
                                 yield from _iter_chunked_function_call_delta(fc_delta)
 
@@ -967,7 +1007,7 @@ class ProviderInterface(ABC):
 
             split_payload = _split_delta_content(_obj_get_raw(delta, "content", None))
             content_piece = split_payload.get("content", "")
-            reasoning_piece_raw = _merge_stream_fragment(
+            reasoning_piece_raw = _merge_reasoning_fields(
                 split_payload.get("reasoning", ""),
                 _extract_reasoning_fields(delta),
             )
@@ -984,14 +1024,14 @@ class ProviderInterface(ABC):
                 tool_calls = [tool_calls]
             if isinstance(tool_calls, list) and tool_calls:
                 for tc in tool_calls:
-                    fc_delta = _apply_tool_call_delta(tc, idx_default=0)
+                    fc_delta = _apply_tool_call_fragment(tc, idx_default=0, fragment_mode="delta")
                     if fc_delta:
                         yield from _iter_chunked_function_call_delta(fc_delta)
 
             # Legacy stream shape: delta.function_call.{name,arguments}
             legacy_fc = _obj_get_raw(delta, "function_call", None)
             if legacy_fc is not None:
-                fc_delta = _apply_tool_call_delta(legacy_fc, idx_default=0)
+                fc_delta = _apply_tool_call_fragment(legacy_fc, idx_default=0, fragment_mode="delta")
                 if fc_delta:
                     yield from _iter_chunked_function_call_delta(fc_delta)
 
