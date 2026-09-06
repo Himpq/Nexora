@@ -12,6 +12,7 @@ from basis.Conversation import trash as trash_module
 from basis.Conversation.context_reader import ConversationContextReader
 from basis.Conversation.errors import ConversationConflictError, ConversationValidationError
 from basis.Conversation.repository import _server_data_root, conversation_file_path
+from basis.Conversation.schema import normalize_trace
 from basis.Model.Context import ChatContext
 
 
@@ -100,11 +101,30 @@ class ConversationV4RegressionTest(unittest.TestCase):
     def test_context_diagnostics_are_public(self):
         context = ChatContext()
         self.assertFalse(context.is_degraded())
+        context.update_trace_meta({
+            "cache_attribution": {
+                "cache_path": "resume",
+                "stable_head_chars": 128,
+            }
+        })
         context.mark_degraded("compression_load_failed", "broken")
         diagnostics = context.diagnostics()
         self.assertTrue(diagnostics["degraded"])
         self.assertEqual(diagnostics["reason"], "compression_load_failed")
         self.assertEqual(diagnostics["error"], "broken")
+        self.assertEqual(diagnostics["cache_attribution"]["cache_path"], "resume")
+        self.assertEqual(diagnostics["cache_attribution"]["stable_head_chars"], 128)
+
+    def test_trace_extensions_are_preserved(self):
+        trace = normalize_trace({
+            "events": [],
+            "extensions": {
+                "cache_attribution": {
+                    "tool_count": 3,
+                }
+            },
+        })
+        self.assertEqual(trace["extensions"]["cache_attribution"]["tool_count"], 3)
 
 
 if __name__ == "__main__":

@@ -136,13 +136,37 @@ def normalize_trace(raw: Any) -> Dict[str, Any]:
     def _list(key: str) -> List[Any]:
         value = raw.get(key)
         return list(value) if isinstance(value, list) else []
-    return {
+    normalized = {
         "events": _list("events"),
         "tool_calls": _list("tool_calls"),
         "tool_results": _list("tool_results"),
         "content_segments": _list("content_segments"),
         "errors": _list("errors"),
     }
+
+    extensions = raw.get("extensions")
+    normalized_extensions = {}
+
+    if isinstance(extensions, dict):
+        token_trace_id = str(extensions.get("token_response_trace_id") or "").strip()
+
+        if token_trace_id:
+            normalized_extensions["token_response_trace_id"] = token_trace_id
+
+        cache_attribution = extensions.get("cache_attribution")
+
+        if isinstance(cache_attribution, dict) and cache_attribution:
+            normalized_extensions["cache_attribution"] = copy.deepcopy(cache_attribution)
+
+        memory_analysis = extensions.get("memory_analysis")
+
+        if isinstance(memory_analysis, dict) and memory_analysis:
+            normalized_extensions["memory_analysis"] = copy.deepcopy(memory_analysis)
+
+    if normalized_extensions:
+        normalized["extensions"] = normalized_extensions
+
+    return normalized
 
 
 def _attachment_identity(item: Any) -> str:

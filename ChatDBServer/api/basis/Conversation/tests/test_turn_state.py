@@ -30,6 +30,7 @@ from basis.Model.turn_injection import (
     SKILLS_CHANGED_MARKER,
     build_profile_update_block,
     build_skill_update_block,
+    get_volatile_injection_name,
     is_volatile_injection,
 )
 
@@ -137,6 +138,9 @@ class TestInjectionBlocks(unittest.TestCase):
         self.assertTrue(is_volatile_injection("前缀\n## User profile updated\n内容"))
         self.assertTrue(is_volatile_injection("## Skills changed"))
         self.assertFalse(is_volatile_injection("普通 stable 注入块"))
+        self.assertEqual(get_volatile_injection_name("## Knowledge changed\n+ 条目"), "knowledge_diff")
+        self.assertEqual(get_volatile_injection_name("## Workspace Resource Index\n资源"), "workspace_resource_index")
+        self.assertEqual(get_volatile_injection_name("普通 stable 注入块"), "")
 
 
 class TestBeginUserTurnIntegration(unittest.TestCase):
@@ -212,4 +216,3 @@ class TestBeginUserTurnIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
