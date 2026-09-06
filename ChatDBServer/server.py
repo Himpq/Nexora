@@ -45,6 +45,7 @@ from App.Storage import UserFileSandbox
 from basis.Model.Provider import create_provider_adapter
 from App.Utils import add_request_listener, pull_pending_request, submit_request_result
 from App.Agent import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
+from App.Core.context_window import configure_context_window_fetchers
 from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
 from Map.baidu import load_map_scene_for_map_id
