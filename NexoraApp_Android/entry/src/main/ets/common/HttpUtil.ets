@@ -134,6 +134,52 @@ export class HttpUtil {
         HttpUtil.clearSession();
     }
 
+    // 下载二进制资源（如头像）：自签 https 证书下 Image 组件无法直接加载网络图片，
+    // 需通过此处跳过证书校验拉取字节流，由调用方写入本地后再喂给 Image
+    static async downloadBinary(url: string): Promise<ArrayBuffer | null> {
+        if (url.length === 0) {
+            return null;
+        }
+
+        return new Promise<ArrayBuffer | null>((resolve: (value: ArrayBuffer | null) => void) => {
+            const request: http.HttpRequest = http.createHttp();
+
+            request.request(url, {
+                method: http.RequestMethod.GET,
+                header: HttpUtil.buildHeaders(),
+                expectDataType: http.HttpDataType.ARRAY_BUFFER,
+                connectTimeout: CONNECT_TIMEOUT,
+                readTimeout: READ_TIMEOUT,
+                remoteValidation: 'skip'
+            }, (err: BusinessError, data: http.HttpResponse) => {
+                request.destroy();
+
+                if (err) {
+                    hilog.error(DOMAIN, TAG, 'download %{public}s failed: %{public}s', url, JSON.stringify(err));
+                    resolve(null);
+                    return;
+                }
+
+                if (data.responseCode !== 200) {
+                    hilog.error(DOMAIN, TAG, 'download %{public}s non-200: %{public}d', url, data.responseCode);
+                    resolve(null);
+                    return;
+                }
+
+                const result: Object = data.result;
+
+                if (result instanceof ArrayBuffer) {
+                    hilog.info(DOMAIN, TAG, 'download %{public}s ok, bytes=%{public}d', url, (result as ArrayBuffer).byteLength);
+                    resolve(result);
+                    return;
+                }
+
+                hilog.error(DOMAIN, TAG, 'download %{public}s unexpected result type', url);
+                resolve(null);
+            });
+        });
+    }
+
     // ---------- 内部实现 ----------
     private static async send(method: http.RequestMethod, path: string, payload?: Object): Promise<HttpResult> {
         const url: string = HttpUtil.backendUrl + path;

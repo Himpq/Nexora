@@ -92,7 +92,7 @@ export struct SettingsSheet {
                         }
                     });
 
-                    Text('Nexora Harmony · 内部演示版')
+                    Text('Nexora Harmony · v1.0.2')
                         .fontSize(FontSize.caption)
                         .fontColor($r('app.color.text_tertiary'))
                         .width('100%')

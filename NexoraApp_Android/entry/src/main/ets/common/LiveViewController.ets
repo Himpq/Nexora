@@ -14,6 +14,16 @@ export class LiveViewController {
         return;
     }
 
+    // 更新实况窗内容：跨平台版空实现
+    async updateContent(fullText: string): Promise<void> {
+        return;
+    }
+
+    // 回复完成，实况窗改"完成"并延时关闭：跨平台版空实现
+    async finishGenerating(): Promise<void> {
+        return;
+    }
+
     // 停止实况窗：跨平台版空实现
     async stop(): Promise<void> {
         return;

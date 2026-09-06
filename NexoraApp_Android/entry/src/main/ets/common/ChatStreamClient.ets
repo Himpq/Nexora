@@ -13,6 +13,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { HttpUtil, HttpResult } from './HttpUtil';
 import { Json } from './JsonUtil';
+import { TokenUsage } from './ChatTypes';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraStream';
@@ -44,15 +45,25 @@ export interface StreamChunk {
     arguments_delta?: string;
     result?: string;
     round?: number;
+    // token_usage 帧字段
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    raw_input_tokens?: number;
+    cached_input_tokens?: number;
+    // stream_session 帧字段
+    assistant_index?: number;
 }
 
 // 流式事件回调：全部必填，避免出现「事件来了没人处理」的静默分支
 export interface StreamListener {
     onConversationId: (conversationId: string) => void;
+    onAssistantIndex: (index: number) => void;
     onReasoningDelta: (delta: string) => void;
     onContentDelta: (delta: string) => void;
     onToolCall: (name: string, callId: string, args: string, round: number) => void;
     onToolResult: (name: string, callId: string, result: string, round: number) => void;
+    onTokenUsage: (usage: TokenUsage) => void;
     onError: (message: string) => void;
     onComplete: (finalContent: string) => void;
     onAborted: () => void;
@@ -66,6 +77,8 @@ export interface StreamOptions {
     enableWebSearch: boolean;
     enableTools: boolean;
     toolMode?: string;
+    isRegenerate?: boolean;
+    regenerateIndex?: number;
 }
 
 // 流式请求体：conversation_id / model_name 可选，后端在缺省时新建会话 / 使用默认模型
@@ -77,6 +90,8 @@ export interface StreamRequestBody {
     enable_web_search: boolean;
     enable_tools: boolean;
     tool_mode?: string;
+    is_regenerate?: boolean;
+    regenerate_index?: number;
 }
 
 export class ChatStreamClient {
@@ -754,6 +769,18 @@ export class ChatStreamClient {
             case 'function_result':
                 listener.onToolResult(chunk.name ?? '', chunk.call_id ?? '', chunk.result ?? '', chunk.round ?? 0);
                 return false;
+            case 'token_usage':
+                {
+                    const usage: TokenUsage = {
+                        inputTokens: chunk.input_tokens ?? 0,
+                        outputTokens: chunk.output_tokens ?? 0,
+                        totalTokens: chunk.total_tokens ?? 0,
+                        rawInputTokens: chunk.raw_input_tokens ?? 0,
+                        cachedInputTokens: chunk.cached_input_tokens ?? 0
+                    };
+                    listener.onTokenUsage(usage);
+                }
+                return false;
             case 'error':
                 listener.onError(chunk.message ?? chunk.error ?? '生成过程出错');
                 return false;
@@ -787,7 +814,12 @@ export class ChatStreamClient {
     }
 
     private handleSessionChunk(chunk: StreamChunk, listener: StreamListener): boolean {
+        // 首帧（done !== true）：提取 assistant_index 供前端回填消息索引
         if (chunk.done !== true) {
+            if (chunk.assistant_index !== undefined && chunk.assistant_index >= 0) {
+                listener.onAssistantIndex(chunk.assistant_index);
+            }
+
             return false;
         }
 
@@ -844,7 +876,9 @@ export class ChatStreamClient {
             enable_thinking: options.enableThinking,
             enable_web_search: options.enableWebSearch,
             enable_tools: options.enableTools,
-            tool_mode: options.toolMode
+            tool_mode: options.toolMode,
+            is_regenerate: options.isRegenerate,
+            regenerate_index: options.regenerateIndex
         };
 
         return body;

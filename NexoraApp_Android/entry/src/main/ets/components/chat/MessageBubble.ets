@@ -4,7 +4,7 @@
 
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
-import { ChatMessage, MessageSegment, ToolCallItem } from '../../common/ChatTypes';
+import { ChatMessage, MessageSegment, ToolCallItem, TokenUsage } from '../../common/ChatTypes';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { BrandLogo } from '../common/BrandLogo';
 import { MarkdownView } from './MarkdownBlock';
@@ -15,7 +15,7 @@ import { ToolCallCard } from './ToolCallCard';
 @Component
 export struct MessageBubble {
     @ObjectLink message: ChatMessage;
-    onRegenerate: (message: ChatMessage) => void = () => {};
+    onRegenerate: () => void = () => {};
 
     private canShowActions(): boolean {
         return !this.message.streaming && this.message.content.length > 0;
@@ -113,6 +113,10 @@ export struct MessageBubble {
                 this.TopLevelErrorLine();
             }
 
+            if (this.message.usage !== null) {
+                this.TokenUsageBar();
+            }
+
             if (this.canShowActions()) {
                 this.MessageActions();
             }
@@ -159,6 +163,46 @@ export struct MessageBubble {
         .backgroundColor($r('app.color.bg_sunken'));
     }
 
+    // Token 用量条：模型名称 + I/O 与缓存命中，仅在 usage 有数据时出现
+    @Builder
+    TokenUsageBar() {
+        Column({ space: Space.xxs }) {
+            if (this.message.modelName.length > 0) {
+                Text(this.message.modelName)
+                    .fontSize(FontSize.micro)
+                    .fontColor($r('app.color.text_tertiary'));
+            }
+
+            Text(this.buildUsageText())
+                .fontSize(FontSize.micro)
+                .fontColor($r('app.color.text_tertiary'));
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: Space.xs, right: Space.xs, top: Space.xxs, bottom: Space.xxs });
+    }
+
+    // 用量文案：I/O: 输入/输出 + 可选 E/C: 有效/缓存 (命中率%)
+    private buildUsageText(): string {
+        const usage: TokenUsage | null = this.message.usage;
+
+        if (usage === null) {
+            return '';
+        }
+
+        let text: string = 'I/O: ' + usage.inputTokens + '/' + usage.outputTokens;
+
+        if (usage.rawInputTokens > 0 || usage.cachedInputTokens > 0) {
+            const effective: number = Math.max(0, usage.rawInputTokens - usage.cachedInputTokens);
+            const pct: number = usage.rawInputTokens > 0
+                ? Math.min(100, Math.round((usage.cachedInputTokens / usage.rawInputTokens) * 10000) / 100)
+                : 0;
+            text += '  E/C: ' + effective + '/' + usage.cachedInputTokens + ' (' + pct.toFixed(2) + '%)';
+        }
+
+        return text;
+    }
+
     // 消息操作条：生成结束后淡入，提供复制与重新生成
     @Builder
     MessageActions() {
@@ -168,7 +212,7 @@ export struct MessageBubble {
             });
 
             this.ActionChip('重新生成', $r('app.media.ic_refresh'), () => {
-                this.onRegenerate(this.message);
+                this.onRegenerate();
             });
         }
         .width('100%')
