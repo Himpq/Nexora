@@ -11,6 +11,8 @@ from functools import wraps
 
 from App.Utils import append_log_text, log_event
 from basis.Permission import PERMISSION_DEFAULTS as _PAPI_PERMISSION_DEFAULTS
+
+from .admin_keys import resolve_public_api_key_auth
 from basis.Model.Provider.base import append_stream_delta, reconcile_stream_snapshot
 
 
@@ -65,20 +67,12 @@ def require_papi_key(f):
             or _extract_bearer_token(request.headers.get('Authorization'))
             or request.args.get('api_key')
         )
-        module = _resolve_server_module()
-        resolver = getattr(module, 'resolve_public_api_key_auth', None)
-        if callable(resolver):
-            auth = resolver(auth_key, request_path=request.path, method=request.method)
-            if not isinstance(auth, dict) or not bool(auth.get('ok')):
-                status_code = int((auth or {}).get('status') or 401)
-                message = str((auth or {}).get('message') or 'Invalid or missing API Key: authentication failed')
-                return jsonify({'success': False, 'message': message}), status_code
-            request.environ['papi.auth'] = auth
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'PAPI authentication resolver is unavailable',
-            }), 500
+        auth = resolve_public_api_key_auth(auth_key, request_path=request.path, method=request.method)
+        if not isinstance(auth, dict) or not bool(auth.get('ok')):
+            status_code = int((auth or {}).get('status') or 401)
+            message = str((auth or {}).get('message') or 'Invalid or missing API Key: authentication failed')
+            return jsonify({'success': False, 'message': message}), status_code
+        request.environ['papi.auth'] = auth
         return f(*args, **kwargs)
     return decorated_function
 

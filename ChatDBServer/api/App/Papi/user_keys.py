@@ -5,6 +5,19 @@ from typing import Any, Dict, Optional
 
 from flask import Blueprint, jsonify, request, session
 
+from .admin_keys import (
+    PUBLIC_API_EXPIRE_PRESETS,
+    PUBLIC_API_PERMISSION_LABELS,
+    _build_public_api_key_state,
+    _create_public_api_key,
+    _delete_public_api_key,
+    _find_papi_key_by_id,
+    _list_papi_key_records,
+    _normalize_public_api_permissions,
+    _regenerate_public_api_key,
+    _update_public_api_key,
+)
+
 
 user_papi_keys_bp = Blueprint("user_papi_keys", __name__)
 
@@ -13,7 +26,7 @@ def _resolve_server_module():
     for module_name in ("__main__", "server"):
         module = sys.modules.get(module_name)
 
-        if module is not None and hasattr(module, "_list_papi_key_records"):
+        if module is not None and hasattr(module, "load_users"):
             return module
 
     return importlib.import_module("server")
@@ -47,7 +60,7 @@ def _current_username() -> str:
 
 
 def _owned_key_record(key_id: str) -> Optional[Dict[str, Any]]:
-    record = _server_attr("_find_papi_key_by_id")(key_id, include_revoked=True)
+    record = _find_papi_key_by_id(key_id, include_revoked=True)
 
     if not isinstance(record, dict):
         return None
@@ -63,10 +76,9 @@ def _owned_key_record(key_id: str) -> Optional[Dict[str, Any]]:
 
 def _owned_key_states():
     username = _current_username()
-    records = _server_attr("_list_papi_key_records")(include_revoked=False)
-    build_state = _server_attr("_build_public_api_key_state")
+    records = _list_papi_key_records(include_revoked=False)
     return [
-        build_state(record)
+        _build_public_api_key_state(record)
         for record in records
         if str(record.get("scope") or "").strip().lower() == "owner"
         and str(record.get("owner") or "").strip() == username
@@ -86,15 +98,13 @@ def _user_keys_payload() -> Dict[str, Any]:
     ensure_config = _server_attr("ensure_main_config_defaults")
     config = ensure_config()
     api_cfg = config.get("api") if isinstance(config.get("api"), dict) else {}
-    expire_presets = _server_attr("PUBLIC_API_EXPIRE_PRESETS")
-    permission_labels = _server_attr("PUBLIC_API_PERMISSION_LABELS")
     return {
         "keys": _owned_key_states(),
         "expire_options": [
             {"id": option_id, "label": str(meta.get("label") or option_id)}
-            for option_id, meta in expire_presets.items()
+            for option_id, meta in PUBLIC_API_EXPIRE_PRESETS.items()
         ],
-        "permission_labels": dict(permission_labels),
+        "permission_labels": dict(PUBLIC_API_PERMISSION_LABELS),
         "public_api_enabled": bool(api_cfg.get("public_api_enabled")),
     }
 
@@ -120,8 +130,7 @@ def create_user_papi_key():
 
     try:
         username = _current_username()
-        normalize_permissions = _server_attr("_normalize_public_api_permissions")
-        record, plain_key = _server_attr("_create_public_api_key")(
+        record, plain_key = _create_public_api_key(
             expire_option=expire,
             permissions=normalize_permissions(data.get("permissions")),
             scope="owner",
@@ -133,7 +142,7 @@ def create_user_papi_key():
         return jsonify({
             "success": True,
             "message": "PAPI Key 创建成功，明文仅展示一次。",
-            "key": _server_attr("_build_public_api_key_state")(record),
+            "key": _build_public_api_key_state(record),
             "public_api_key": plain_key,
         })
     except ValueError as exc:
@@ -155,7 +164,7 @@ def regenerate_user_papi_key(key_id: str):
     expire = str(data.get("expire") or record.get("expire_option") or "").strip().lower()
 
     try:
-        updated, plain_key = _server_attr("_regenerate_public_api_key")(
+        updated, plain_key = _regenerate_public_api_key(
             key_id=str(record.get("id") or ""),
             expire_option=expire,
             actor=_current_username(),
@@ -163,7 +172,7 @@ def regenerate_user_papi_key(key_id: str):
         return jsonify({
             "success": True,
             "message": "PAPI Key 已轮换，旧 Key 立即失效。",
-            "key": _server_attr("_build_public_api_key_state")(updated),
+            "key": _build_public_api_key_state(updated),
             "public_api_key": plain_key,
         })
     except ValueError as exc:
@@ -190,9 +199,9 @@ def update_user_papi_key(key_id: str):
         permissions = None
 
         if "permissions" in data:
-            permissions = _server_attr("_normalize_public_api_permissions")(data.get("permissions"))
+            permissions = _normalize_public_api_permissions(data.get("permissions"))
 
-        updated = _server_attr("_update_public_api_key")(
+        updated = _update_public_api_key(
             key_id=str(record.get("id") or ""),
             permissions=permissions,
             expire_option=str(data.get("expire") or "").strip().lower() if "expire" in data else None,
@@ -202,7 +211,7 @@ def update_user_papi_key(key_id: str):
         return jsonify({
             "success": True,
             "message": "PAPI Key 设置已保存。",
-            "key": _server_attr("_build_public_api_key_state")(updated),
+            "key": _build_public_api_key_state(updated),
         })
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
@@ -220,8 +229,8 @@ def delete_user_papi_key(key_id: str):
         return jsonify({"success": False, "message": "PAPI key not found"}), 404
 
     try:
-        _server_attr("_delete_public_api_key")(key_id=str(record.get("id") or ""))
-        remaining = _server_attr("_list_papi_key_records")(include_revoked=False)
+        _delete_public_api_key(key_id=str(record.get("id") or ""))
+        remaining = _list_papi_key_records(include_revoked=False)
 
         if not remaining:
             _save_public_api_enabled(False)
