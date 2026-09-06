@@ -11,6 +11,9 @@ notification.py 的定位方式从模块位置推导，不反向 import server�
 
 import json
 import os
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from flask import Blueprint, jsonify, request, session
@@ -24,6 +27,10 @@ stats_bp = Blueprint('observability_stats', __name__)
 
 # 与 server.py 顶部常量同源的数据文件路径（ChatDBServer 根 = 本文件向上 4 级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+DATA_RES_DIR = os.path.join(BASE_DIR, 'data', 'res')
+STATUS_PROVIDER_ICON_MAP_PATH = os.path.join(DATA_RES_DIR, 'provider_icon_map.json')
+OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH = os.path.join(BASE_DIR, 'data', 'openrouter_models_snapshot.json')
+OPENROUTER_MODELS_SNAPSHOT_PATH = os.path.join(DATA_RES_DIR, 'openrouter_models_snapshot.json')
 
 
 def _safe_int_status(value: Any, default: int = 0) -> int:
@@ -282,3 +289,402 @@ def reconcile_all_user_token_logs_api():
         return jsonify({'success': True, 'summary': summary, 'reports': reports})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ==================== 图标表与模型/供应商归一化（B2a 批次迁入） ====================
+
+DEFAULT_STATUS_PROVIDER_ICON_MAP = {
+    'github': '',
+    'alibabacloud': '/static/img/Index/static/icons/aliyun.png',
+    'aliyun': '/static/img/icons/tongyi_single_icon.png',
+    'bytedance': '/static/img/icons/volcengine_single_icon.svg',
+    'volcengine': '/static/img/icons/volcengine_single_icon.svg',
+    'qq': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'wechat': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'tencent': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'deepseek': '/static/img/icons/deepseek_single_icon.svg',
+    'openai': '/static/img/icons/openai_single_icon.svg',
+    'stepfun': '/static/img/icons/stepfun_single_icon.png',
+    'moonshot': '/static/img/icons/kimi_single_icon.png',
+    'kimi': '/static/img/icons/kimi_single_icon.png',
+    'minimax': '/static/img/icons/minimax_single_icon.png',
+    'siliconflow': '/static/img/icons/siliconflow_single_icon.svg',
+    'openrouter': '/static/img/icons/openrouter_single_icon.svg',
+    'xunfei': '/static/img/icons/xunfei_spark_single_icon.svg',
+    'spark': '/static/img/icons/xunfei_spark_single_icon.svg',
+    'hunyuan': '/static/img/icons/hunyuan_single_icon.png',
+    'ollama': '/static/img/icons/ollama_single_icon.svg',
+    'nvidia': '/static/img/icons/nvidia.svg',
+    'zhipu': '/static/img/icons/zhipu_single_icon.svg',
+    'zhipuai': '/static/img/icons/zhipu_single_icon.svg',
+    'zai': '/static/img/icons/zhipu_single_icon.svg',
+    'bigmodel': '/static/img/icons/zhipu_single_icon.svg'
+}
+
+
+def _load_status_provider_icon_map() -> Dict[str, str]:
+    file_map: Dict[str, str] = {}
+    try:
+        if os.path.exists(STATUS_PROVIDER_ICON_MAP_PATH):
+            payload = json.loads(Path(STATUS_PROVIDER_ICON_MAP_PATH).read_text(encoding='utf-8'))
+            if isinstance(payload, dict) and isinstance(payload.get('icons'), dict):
+                payload = payload.get('icons')
+            if isinstance(payload, dict):
+                for k, v in payload.items():
+                    key = str(k or '').strip().lower()
+                    if not key:
+                        continue
+                    file_map[key] = str(v or '').strip()
+    except Exception:
+        file_map = {}
+
+    merged = dict(DEFAULT_STATUS_PROVIDER_ICON_MAP)
+    merged.update(file_map)
+
+    # 首次启动自动落盘，便于统一在 data/res 管理。
+    try:
+        os.makedirs(os.path.dirname(STATUS_PROVIDER_ICON_MAP_PATH), exist_ok=True)
+        if not os.path.exists(STATUS_PROVIDER_ICON_MAP_PATH):
+            Path(STATUS_PROVIDER_ICON_MAP_PATH).write_text(
+                json.dumps({"icons": merged}, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+    except Exception:
+        pass
+    return merged
+
+
+STATUS_PROVIDER_ICON_MAP = _load_status_provider_icon_map()
+
+
+def _status_provider_icon(provider: str) -> str:
+    p = str(provider or '').strip().lower()
+    return STATUS_PROVIDER_ICON_MAP.get(p, '')
+
+
+def _status_normalize_latency_ms(value: Any, output_tokens: int = 0, duration_hint_ms: int = 0, for_ttft: bool = False) -> int:
+    """
+    Normalize mixed latency units (seconds/ms) into milliseconds.
+    Some historical logs may store seconds in *_ms fields.
+    """
+    try:
+        v = float(value)
+    except Exception:
+        return 0
+    if not (v > 0):
+        return 0
+    # Very small values are almost certainly seconds.
+    if v < 1.0:
+        return max(1, int(round(v * 1000.0)))
+    is_int_like = abs(v - round(v)) < 1e-6
+    # Decimal small numbers are commonly seconds (e.g. 2.4 -> 2400ms).
+    if (not is_int_like) and v < 120.0:
+        return max(1, int(round(v * 1000.0)))
+    # Duration with very small value but large output is likely seconds.
+    if (not for_ttft) and v <= 30.0 and int(output_tokens or 0) >= 128:
+        return max(1, int(round(v * 1000.0)))
+    # TTFT tiny integer while duration is already very large usually means seconds.
+    if for_ttft and v <= 10.0 and int(duration_hint_ms or 0) >= 1000:
+        return max(1, int(round(v * 1000.0)))
+    return max(1, int(round(v)))
+
+
+_STATUS_OPENROUTER_MODEL_CACHE: Dict[str, Any] = {
+    'mtime': None,
+    'alias_to_canonical': {},
+    'canonical_meta': {}
+}
+_STATUS_PROVIDER_ALIAS_MAP = {
+    'bytedance-seed': 'volcengine',
+    'byte': 'volcengine',
+    'siliconflow': 'siliconflow',
+    'azure': 'openai',
+    'zhipuai': 'zhipu',
+    'zai': 'zhipu',
+    'bigmodel': 'zhipu'
+}
+
+
+def _status_normalize_provider(provider: str) -> str:
+    p = str(provider or '').strip().lower()
+    if not p:
+        return 'unknown'
+    return _STATUS_PROVIDER_ALIAS_MAP.get(p, p)
+
+
+def _status_extract_model_leaf(raw_model: str) -> str:
+    src = str(raw_model or '').strip()
+    if not src:
+        return ''
+    out = src.split('?', 1)[0].strip()
+    if '/' in out and not out.startswith('http'):
+        out = out.split('/', 1)[1].strip()
+    if ':' in out:
+        head, tail = out.rsplit(':', 1)
+        if str(tail or '').strip().lower() in {'free', 'beta', 'alpha', 'preview', 'latest'}:
+            out = head.strip()
+    return out.strip()
+
+
+def _status_normalize_model_key(raw_model: str) -> str:
+    leaf = _status_extract_model_leaf(raw_model)
+    s = str(leaf or '').strip().lower()
+    if not s:
+        return 'unknown'
+    s = s.replace('（', '(').replace('）', ')')
+    s = re.sub(r'[\[\]{}()]+', '-', s)
+    s = re.sub(r'[_.\s/]+', '-', s)
+    # qwen3.5 / gpt5 这类前缀+版本号，补齐分隔符；保留 v3.2 这种写法。
+    s = re.sub(r'^(qwen|gpt|gemini|claude|mistral|deepseek|kimi|glm|step|doubao)(?=\d)', r'\1-', s)
+    # 去掉常见日期后缀，例如 -251201 / -20251201。
+    s = re.sub(r'-(?:\d{6}|\d{8})$', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    if s.startswith('bytedance-seed-'):
+        s = f"doubao-seed-{s[len('bytedance-seed-'):]}"
+    elif s.startswith('seed-'):
+        s = f"doubao-seed-{s[len('seed-'):]}"
+    return s or 'unknown'
+
+
+def _status_release_stem(key: str) -> str:
+    s = str(key or '').strip().lower()
+    if not s:
+        return ''
+    patterns = [
+        r'-(?:\d{4}-\d{2}-\d{2})$',
+        r'-(?:\d{2}-\d{2})$',
+        r'-(?:\d{8}|\d{6})$',
+        r'-(?:\d{4}|\d{3})$',
+        r'-(?:preview|beta|alpha|latest)$'
+    ]
+    while True:
+        changed = False
+        for pat in patterns:
+            nxt = re.sub(pat, '', s, flags=re.IGNORECASE).strip('-')
+            if nxt and nxt != s:
+                s = nxt
+                changed = True
+                break
+        if not changed:
+            break
+    return s
+
+
+def _status_strip_release_suffix_for_display(name: str) -> str:
+    s = str(name or '').strip()
+    if not s:
+        return ''
+    patterns = [
+        r'[-_.](?:\d{4}[-_.]\d{2}[-_.]\d{2})$',
+        r'[-_.](?:\d{2}[-_.]\d{2})$',
+        r'[-_.](?:\d{8}|\d{6})$',
+        r'[-_.](?:\d{4}|\d{3})$',
+        r'[-_.](?:preview|beta|alpha|latest)$'
+    ]
+    while True:
+        changed = False
+        for pat in patterns:
+            nxt = re.sub(pat, '', s, flags=re.IGNORECASE).strip('-_.')
+            if nxt and nxt != s:
+                s = nxt
+                changed = True
+                break
+        if not changed:
+            break
+    return s or str(name or '').strip()
+
+
+def _load_status_openrouter_model_index() -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    path = OPENROUTER_MODELS_SNAPSHOT_PATH
+    if (not os.path.exists(path)) and os.path.exists(OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH):
+        path = OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        mtime = None
+    if _STATUS_OPENROUTER_MODEL_CACHE.get('mtime') == mtime:
+        alias_to_canonical = _STATUS_OPENROUTER_MODEL_CACHE.get('alias_to_canonical') or {}
+        canonical_meta = _STATUS_OPENROUTER_MODEL_CACHE.get('canonical_meta') or {}
+        if isinstance(alias_to_canonical, dict) and isinstance(canonical_meta, dict):
+            return alias_to_canonical, canonical_meta
+
+    alias_to_canonical: Dict[str, str] = {}
+    canonical_meta: Dict[str, Dict[str, str]] = {}
+    try:
+        payload = json.loads(Path(path).read_text(encoding='utf-8'))
+        rows = payload.get('data', []) if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                model_id = str(item.get('id') or '').strip()
+                if not model_id:
+                    continue
+                leaf = _status_extract_model_leaf(model_id)
+                if not leaf:
+                    continue
+                normalized = _status_normalize_model_key(leaf)
+                if normalized == 'unknown':
+                    continue
+                canonical = _status_release_stem(normalized) or normalized
+                vendor = ''
+                if '/' in model_id:
+                    vendor = str(model_id.split('/', 1)[0] or '').strip().lower()
+                display = _status_strip_release_suffix_for_display(leaf)
+                if not display:
+                    display = leaf
+
+                prev_meta = canonical_meta.get(canonical)
+                if not prev_meta:
+                    canonical_meta[canonical] = {
+                        'display': display,
+                        'vendor': vendor
+                    }
+                else:
+                    prev_display = str(prev_meta.get('display') or '').strip()
+                    if (not prev_display) or (len(display) < len(prev_display)):
+                        prev_meta['display'] = display
+                    if not prev_meta.get('vendor') and vendor:
+                        prev_meta['vendor'] = vendor
+
+                alias_to_canonical[normalized] = canonical
+                alias_to_canonical[canonical] = canonical
+    except Exception:
+        alias_to_canonical = {}
+        canonical_meta = {}
+
+    _STATUS_OPENROUTER_MODEL_CACHE['mtime'] = mtime
+    _STATUS_OPENROUTER_MODEL_CACHE['alias_to_canonical'] = alias_to_canonical
+    _STATUS_OPENROUTER_MODEL_CACHE['canonical_meta'] = canonical_meta
+    return alias_to_canonical, canonical_meta
+
+
+def _status_canonicalize_model(raw_model: str) -> Tuple[str, str]:
+    normalized = _status_normalize_model_key(raw_model)
+    if normalized == 'unknown':
+        return 'unknown', 'unknown'
+    alias_to_canonical, canonical_meta = _load_status_openrouter_model_index()
+    canonical = alias_to_canonical.get(normalized, '')
+    if not canonical:
+        stem = _status_release_stem(normalized)
+        canonical = alias_to_canonical.get(stem, stem or normalized)
+    meta = canonical_meta.get(canonical, {})
+    display = str(meta.get('display') or '').strip() or canonical
+    if canonical.startswith('doubao-seed-') and display.startswith('seed-'):
+        display = f"doubao-{display}"
+    return canonical, display
+
+
+def _status_icon_provider_for_model(model_name: str, fallback_provider: str = 'unknown') -> str:
+    key = str(model_name or '').strip().lower()
+    if not key or key == 'unknown':
+        return _status_normalize_provider(fallback_provider)
+    if key.startswith('glm') or key.startswith('chatglm'):
+        return 'zhipu'
+    if key.startswith('gpt') or key.startswith('chatgpt') or key.startswith('o1') or key.startswith('o3') or key.startswith('o4'):
+        return 'openai'
+    if key.startswith('deepseek'):
+        return 'deepseek'
+    if key.startswith('doubao-seed') or key.startswith('seed'):
+        return 'volcengine'
+    if key.startswith('qwen'):
+        return 'aliyun'
+    if key.startswith('kimi') or key.startswith('moonshot'):
+        return 'kimi'
+    if key.startswith('step'):
+        return 'stepfun'
+    return _status_normalize_provider(fallback_provider)
+
+
+def _status_add_provider_count(row: Dict[str, Any], provider: str, weight: int = 1) -> None:
+    if not isinstance(row, dict):
+        return
+    p = _status_normalize_provider(provider)
+    if not p or p == 'unknown':
+        return
+    counts = row.setdefault('_providerCounts', {})
+    if not isinstance(counts, dict):
+        counts = {}
+        row['_providerCounts'] = counts
+    counts[p] = _safe_int_status(counts.get(p, 0)) + max(1, _safe_int_status(weight, 1))
+
+
+def _ensure_status_model_row(model_map: Dict[str, Dict[str, Any]], model_name: str, display_name: str = '') -> Dict[str, Any]:
+    key = str(model_name or 'unknown').strip() or 'unknown'
+    if key not in model_map:
+        model_map[key] = {
+            'id': key,
+            'name': str(display_name or key).strip() or key,
+            'provider': 'unknown',
+            'icon': '',
+            'score': 0,
+            'totalTokens': 0,
+            'tokenLogCount': 0,
+            'callCount': 0,
+            'toolCalls': 0,
+            'successRate': 100.0,
+            'failureCount': 0,
+            '_providerCounts': {},
+            'complexityLoad': {
+                'simple': 0,
+                'medium': 0,
+                'complex': 0
+            }
+        }
+    elif display_name:
+        prev = str(model_map[key].get('name') or '').strip()
+        if not prev or prev == key:
+            model_map[key]['name'] = str(display_name).strip() or key
+    return model_map[key]
+
+
+def _tool_call_count_from_steps(steps: Any) -> int:
+    arr = steps if isinstance(steps, list) else []
+    return sum(1 for step in arr if isinstance(step, dict) and str(step.get('type') or '') == 'function_call')
+
+
+def _status_parse_timestamp(raw: Any) -> Optional[datetime]:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    # token_usage.json may use "YYYY-mm-dd HH:MM:SS" or ISO strings.
+    formats = [
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M:%S.%f',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%dT%H:%M:%S.%f'
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    try:
+        iso_text = text[:-1] + '+00:00' if text.endswith('Z') else text
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _ensure_status_recent_row(recent_map: Dict[str, Dict[str, Any]], model_name: str, display_name: str = '') -> Dict[str, Any]:
+    key = str(model_name or 'unknown').strip() or 'unknown'
+    if key not in recent_map:
+        recent_map[key] = {
+            'id': key,
+            'name': str(display_name or key).strip() or key,
+            'provider': 'unknown',
+            'icon': '',
+            'score': 0,
+            'recentCalls': 0,
+            'recentTokens': 0,
+            '_providerCounts': {}
+        }
+    elif display_name:
+        prev = str(recent_map[key].get('name') or '').strip()
+        if not prev or prev == key:
+            recent_map[key]['name'] = str(display_name).strip() or key
+    return recent_map[key]
