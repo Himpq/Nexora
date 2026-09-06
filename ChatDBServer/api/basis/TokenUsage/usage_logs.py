@@ -13,7 +13,8 @@ USAGE_LOG_FILENAMES = {
     "tool_usage.json",
 }
 USAGE_LOG_MAX_RECORDS = {
-    "token_usage.json": 1000,
+    # Token history is used for all-time accounting; compaction must not discard old rows.
+    "token_usage.json": 0,
     "tool_usage.json": 5000,
 }
 USAGE_LOG_COMPACT_SIZE_BYTES = {
@@ -138,6 +139,30 @@ def read_usage_log_records(json_path: str, limit: int = 0) -> List[Dict[str, Any
     return rows
 
 
+def dedupe_token_log_records(records: Any, source: str = "token") -> List[Dict[str, Any]]:
+    """按持久化日志 ID 去重,保留没有 ID 的历史记录。"""
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    source_name = str(source or "token").strip() or "token"
+
+    for item in records if isinstance(records, list) else []:
+        if not isinstance(item, dict):
+            continue
+
+        log_id = str(item.get("log_id") or item.get("id") or "").strip()
+        identity = f"{source_name}:{log_id}" if log_id else ""
+
+        if identity and identity in seen:
+            continue
+
+        if identity:
+            seen.add(identity)
+
+        result.append(item)
+
+    return result
+
+
 def _invalidate_usage_log_cache(json_path: str) -> None:
     with _USAGE_LOG_READ_CACHE_LOCK:
         _USAGE_LOG_READ_CACHE.pop(_cache_key(json_path), None)
@@ -173,13 +198,16 @@ def _usage_log_compact_size_bytes(json_path: str) -> int:
 def _compact_usage_log_records(json_path: str, max_records: int) -> Dict[str, Any]:
     path = str(json_path or "").strip()
     jsonl_path = usage_jsonl_path(path)
-    limit = max(1, int(max_records or _usage_log_max_records(path)))
+    limit = max(0, int(max_records if max_records is not None else _usage_log_max_records(path)))
 
     with get_path_lock(path):
         with get_path_lock(jsonl_path):
             live_rows = _read_jsonl_records(jsonl_path)
             legacy_rows = _read_legacy_json_records(path)
-            merged_rows = (live_rows + legacy_rows)[:limit]
+            merged_rows = live_rows + legacy_rows
+
+            if limit > 0:
+                merged_rows = merged_rows[:limit]
             safe_write_json(path, merged_rows, indent=4)
 
             if os.path.exists(jsonl_path):

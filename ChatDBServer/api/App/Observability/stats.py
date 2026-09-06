@@ -22,6 +22,7 @@ from App.Runtime import get_service_status_monitor
 from App.Utils import resolve_configured_path, safe_join_path
 from basis.Permission import require_admin, require_login
 from basis.TokenUsage import (
+    dedupe_token_log_records,
     is_usage_log_path,
     iter_papi_image_log_entries,
     iter_papi_token_log_entries,
@@ -130,33 +131,16 @@ def _status_token_log_identity(log: Dict[str, Any], source: str) -> str:
 
 def _status_dedupe_token_logs(logs: Any, source: str) -> List[Dict[str, Any]]:
     """去除同一日志 ID 的重复读取结果,保留没有 ID 的旧记录。"""
-    result: List[Dict[str, Any]] = []
-    seen: Set[str] = set()
-
-    for item in logs if isinstance(logs, list) else []:
-        if not isinstance(item, dict):
-            continue
-
-        identity = _status_token_log_identity(item, source)
-
-        if identity and identity in seen:
-            continue
-
-        if identity:
-            seen.add(identity)
-
-        result.append(item)
-
-    return result
+    return dedupe_token_log_records(logs, source)
 
 
 def _reconcile_user_token_logs(
     username: str,
     user_path: str,
-    drop_orphans: bool = True,
-    drop_zero_tokens: bool = True,
-    dedupe: bool = True,
-    write_back: bool = True,
+    drop_orphans: bool = False,
+    drop_zero_tokens: bool = False,
+    dedupe: bool = False,
+    write_back: bool = False,
     update_user_meta: bool = True
 ) -> Dict[str, Any]:
     uname = str(username or '').strip()
@@ -199,7 +183,12 @@ def _reconcile_user_token_logs(
         total = _safe_int_status(item.get('total_tokens', 0))
         input_tokens = _safe_int_status(item.get('input_tokens', 0))
         output_tokens = _safe_int_status(item.get('output_tokens', 0))
-        if drop_orphans and conv_id and conv_id not in existing_conv_ids:
+        if (
+            drop_orphans
+            and conv_id
+            and not conv_id.startswith('transient')
+            and conv_id not in existing_conv_ids
+        ):
             report['removed_orphan'] += 1
             continue
         if drop_zero_tokens and total <= 0 and input_tokens <= 0 and output_tokens <= 0:
@@ -209,27 +198,30 @@ def _reconcile_user_token_logs(
 
     result_logs: List[Dict[str, Any]] = filtered_logs
     if dedupe:
-        slot_by_key: Dict[str, Tuple[int, Dict[str, Any]]] = {}
-        key_order: List[str] = []
+        slot_by_identity: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+
         for idx, item in enumerate(filtered_logs):
-            key = '|'.join([
-                str(item.get('conversation_id') or ''),
-                str(item.get('timestamp') or ''),
-                str(item.get('action') or ''),
-                str(item.get('provider') or ''),
-                str(item.get('model') or '')
-            ])
-            if key not in slot_by_key:
-                slot_by_key[key] = (idx, item)
-                key_order.append(key)
+            identity = _status_token_log_identity(item, 'chat')
+
+            if not identity:
+                slot_by_identity[f'legacy:{idx}'] = (idx, item)
                 continue
-            prev_idx, prev_item = slot_by_key[key]
+
+            if identity not in slot_by_identity:
+                slot_by_identity[identity] = (idx, item)
+                continue
+
+            prev_idx, prev_item = slot_by_identity[identity]
             prev_total = _safe_int_status(prev_item.get('total_tokens', 0))
             now_total = _safe_int_status(item.get('total_tokens', 0))
             if now_total >= prev_total:
-                slot_by_key[key] = (idx, item)
+                slot_by_identity[identity] = (idx, item)
             report['deduped_dropped'] += 1
-        result_logs = [slot_by_key[key][1] for key in key_order if key in slot_by_key]
+
+        result_logs = [
+            item
+            for _, item in sorted(slot_by_identity.values(), key=lambda pair: pair[0])
+        ]
 
     report['after_count'] = len(result_logs)
     report['after_total_tokens'] = sum(_safe_int_status(item.get('total_tokens', 0)) for item in result_logs)
@@ -269,10 +261,10 @@ def reconcile_current_user_token_logs_api():
     if not username:
         return jsonify({'success': False, 'message': '未登录'}), 401
     data = request.get_json(silent=True) or {}
-    dry_run = bool(data.get('dry_run', False))
-    drop_orphans = bool(data.get('drop_orphans', True))
-    drop_zero_tokens = bool(data.get('drop_zero_tokens', True))
-    dedupe = bool(data.get('dedupe', True))
+    dry_run = bool(data.get('dry_run', True))
+    drop_orphans = bool(data.get('drop_orphans', False))
+    drop_zero_tokens = bool(data.get('drop_zero_tokens', False))
+    dedupe = bool(data.get('dedupe', False))
 
     try:
         users = load_users()
@@ -295,10 +287,10 @@ def reconcile_current_user_token_logs_api():
 @require_admin
 def reconcile_all_user_token_logs_api():
     data = request.get_json(silent=True) or {}
-    dry_run = bool(data.get('dry_run', False))
-    drop_orphans = bool(data.get('drop_orphans', True))
-    drop_zero_tokens = bool(data.get('drop_zero_tokens', True))
-    dedupe = bool(data.get('dedupe', True))
+    dry_run = bool(data.get('dry_run', True))
+    drop_orphans = bool(data.get('drop_orphans', False))
+    drop_zero_tokens = bool(data.get('drop_zero_tokens', False))
+    dedupe = bool(data.get('dedupe', False))
     targets = data.get('usernames')
 
     try:
@@ -727,6 +719,7 @@ def _ensure_status_recent_row(recent_map: Dict[str, Dict[str, Any]], model_name:
             'score': 0,
             'recentCalls': 0,
             'recentTokens': 0,
+            'recentOutputTokens': 0,
             '_providerCounts': {}
         }
     elif display_name:
@@ -795,10 +788,18 @@ def build_status_overview() -> Dict[str, Any]:
             provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
             model = str(log.get('model') or 'unknown').strip() or 'unknown'
             key = _status_token_log_identity(log, 'chat') or f'chat:{username}:legacy:{log_index}'
-            total = log.get('total_tokens', None)
-            if total is None:
-                total = _safe_int_status(log.get('input_tokens', 0)) + _safe_int_status(log.get('output_tokens', 0))
-            total = _safe_int_status(total)
+            input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
+            output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+            token_details = log.get('token_details') if isinstance(log.get('token_details'), dict) else {}
+            raw_input_tokens = _safe_int_status(
+                token_details.get('raw_input_tokens', input_tokens),
+                input_tokens
+            )
+            recorded_total = _safe_int_status(log.get('total_tokens', 0), 0)
+            if raw_input_tokens > 0 or output_tokens > 0:
+                total = raw_input_tokens + output_tokens
+            else:
+                total = recorded_total
             ts_dt = _status_parse_timestamp(timestamp)
             prev = deduped_token_logs.get(key)
             if prev is None or total >= _safe_int_status(prev.get('total_tokens', 0)):
@@ -806,6 +807,7 @@ def build_status_overview() -> Dict[str, Any]:
                     'provider': provider,
                     'model': model,
                     'total_tokens': total,
+                    'output_tokens': _safe_int_status(log.get('output_tokens', 0), 0),
                     'timestamp_dt': ts_dt
                 }
 
@@ -849,6 +851,7 @@ def build_status_overview() -> Dict[str, Any]:
                 recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
                 recent['recentCalls'] += 1
                 recent['recentTokens'] += total
+                recent['recentOutputTokens'] += _safe_int_status(item.get('output_tokens', 0), 0)
                 _status_add_provider_count(recent, provider)
 
         for s_item in speed_deduped_logs.values():
@@ -994,6 +997,7 @@ def build_status_overview() -> Dict[str, Any]:
             recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
             recent['recentCalls'] += 1
             recent['recentTokens'] += total
+            recent['recentOutputTokens'] += output_tokens
             _status_add_provider_count(recent, provider)
 
         duration_ms = _status_normalize_latency_ms(log.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
@@ -1152,9 +1156,6 @@ def build_status_overview() -> Dict[str, Any]:
     max_calls = max((_safe_int_status(item.get('callCount', 0)) for item in model_map.values()), default=0)
     max_tokens = max((_safe_int_status(item.get('totalTokens', 0)) for item in model_map.values()), default=0)
     max_tools = max((_safe_int_status(item.get('toolCalls', 0)) for item in model_map.values()), default=0)
-    max_recent_calls = max((_safe_int_status(item.get('recentCalls', 0)) for item in recent_24h_map.values()), default=0)
-    max_recent_tokens = max((_safe_int_status(item.get('recentTokens', 0)) for item in recent_24h_map.values()), default=0)
-
     for row in model_map.values():
         call_count = _safe_int_status(row.get('callCount', 0))
         token_total = _safe_int_status(row.get('totalTokens', 0))
@@ -1178,9 +1179,8 @@ def build_status_overview() -> Dict[str, Any]:
         row['score'] = int(score)
 
     for row in recent_24h_map.values():
-        call_factor = (_safe_int_status(row.get('recentCalls', 0)) / max_recent_calls * 45.0) if max_recent_calls else 0.0
-        token_factor = (_safe_int_status(row.get('recentTokens', 0)) / max_recent_tokens * 55.0) if max_recent_tokens else 0.0
-        score = round(min(100.0, call_factor + token_factor))
+        total_tokens = _safe_int_status(row.get('recentTokens', 0))
+        score = total_tokens
         if str(row.get('id') or '') == 'unknown':
             score = 0
         row['score'] = int(score)
@@ -1197,8 +1197,8 @@ def build_status_overview() -> Dict[str, Any]:
     recent_24h = sorted(
         recent_24h_map.values(),
         key=lambda item: (
-            _safe_int_status(item.get('score', 0)),
             _safe_int_status(item.get('recentTokens', 0)),
+            _safe_int_status(item.get('recentOutputTokens', 0)),
             _safe_int_status(item.get('recentCalls', 0))
         ),
         reverse=True
@@ -1576,73 +1576,80 @@ def admin_model_speed_stats():
 
         now = datetime.now()
         cutoff = now - timedelta(days=days)
-        users_root = safe_join_path(BASE_DIR, 'data', 'users')
         model_map: Dict[str, Dict[str, Any]] = {}
+        speed_logs: List[Dict[str, Any]] = []
 
-        if os.path.isdir(users_root):
-            for username in os.listdir(users_root):
-                user_path = safe_join_path(users_root, username)
-                if not os.path.isdir(user_path):
-                    continue
-                token_logs = _read_json_list_safe(safe_join_path(user_path, 'token_usage.json'))
-                for raw in token_logs:
-                    if not isinstance(raw, dict):
-                        continue
-                    ts = _status_parse_timestamp(raw.get('timestamp'))
-                    if not isinstance(ts, datetime) or ts < cutoff:
-                        continue
+        users_meta = load_users()
+        if isinstance(users_meta, dict):
+            for username in users_meta.keys():
+                user_path = _status_resolve_user_path(username, users_meta=users_meta)
+                token_file = safe_join_path(user_path, 'token_usage.json')
+                speed_logs.extend(
+                    _status_dedupe_token_logs(read_usage_log_records(token_file), 'chat')
+                )
 
-                    model_raw = str(raw.get('model') or 'unknown').strip() or 'unknown'
-                    provider = _status_normalize_provider(str(raw.get('provider') or 'unknown').strip() or 'unknown')
-                    model_name, display_name = _status_canonicalize_model(model_raw)
+        speed_logs.extend(
+            _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi')
+        )
 
-                    row = model_map.setdefault(model_name, {
-                        'id': model_name,
-                        'name': str(display_name or model_name).strip() or model_name,
-                        'provider': provider,
-                        '_providerCounts': {},
-                        'samples': 0,
-                        'ttft_ms_total': 0,
-                        'ttft_ms_count': 0,
-                        'duration_ms_total': 0,
-                        'duration_ms_count': 0,
-                        'gen_ms_total': 0,
-                        'gen_ms_count': 0,
-                        'output_tokens_total': 0,
-                        'effective_output_tokens': 0
-                    })
-                    if display_name and (not str(row.get('name') or '').strip() or str(row.get('name') or '').strip() == model_name):
-                        row['name'] = str(display_name).strip() or model_name
-                    _status_add_provider_count(row, provider)
-                    row['samples'] += 1
+        for raw in speed_logs:
+            if not isinstance(raw, dict):
+                continue
+            ts = _status_parse_timestamp(raw.get('timestamp'))
+            if not isinstance(ts, datetime) or ts < cutoff:
+                continue
 
-                    output_tokens = _safe_int_status(raw.get('output_tokens', 0), 0)
-                    duration_ms = _status_normalize_latency_ms(raw.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
-                    if duration_ms <= 0:
-                        token_details = raw.get('token_details') if isinstance(raw.get('token_details'), dict) else {}
-                        duration_ms = _status_normalize_latency_ms(token_details.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
-                    ttft_ms = _status_normalize_latency_ms(raw.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
-                    if ttft_ms <= 0:
-                        token_details = raw.get('token_details') if isinstance(raw.get('token_details'), dict) else {}
-                        ttft_ms = _status_normalize_latency_ms(token_details.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+            model_raw = str(raw.get('model') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(raw.get('provider') or 'unknown').strip() or 'unknown')
+            model_name, display_name = _status_canonicalize_model(model_raw)
 
-                    if duration_ms > 0:
-                        row['duration_ms_total'] += duration_ms
-                        row['duration_ms_count'] += 1
-                        gen_ms = duration_ms
-                        if ttft_ms > 0 and ttft_ms < duration_ms:
-                            gen_ms = max(1, duration_ms - ttft_ms)
-                        if gen_ms > 0:
-                            row['gen_ms_total'] += gen_ms
-                            row['gen_ms_count'] += 1
-                    if ttft_ms > 0:
-                        row['ttft_ms_total'] += ttft_ms
-                        row['ttft_ms_count'] += 1
-                    if output_tokens > 0:
-                        row['output_tokens_total'] += output_tokens
-                    if duration_ms > 0 and output_tokens > 0:
-                        # Keep TPS numerator aligned with valid-latency samples only.
-                        row['effective_output_tokens'] += output_tokens
+            row = model_map.setdefault(model_name, {
+                'id': model_name,
+                'name': str(display_name or model_name).strip() or model_name,
+                'provider': provider,
+                '_providerCounts': {},
+                'samples': 0,
+                'ttft_ms_total': 0,
+                'ttft_ms_count': 0,
+                'duration_ms_total': 0,
+                'duration_ms_count': 0,
+                'gen_ms_total': 0,
+                'gen_ms_count': 0,
+                'output_tokens_total': 0,
+                'effective_output_tokens': 0
+            })
+            if display_name and (not str(row.get('name') or '').strip() or str(row.get('name') or '').strip() == model_name):
+                row['name'] = str(display_name).strip() or model_name
+            _status_add_provider_count(row, provider)
+            row['samples'] += 1
+
+            output_tokens = _safe_int_status(raw.get('output_tokens', 0), 0)
+            duration_ms = _status_normalize_latency_ms(raw.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+            if duration_ms <= 0:
+                token_details = raw.get('token_details') if isinstance(raw.get('token_details'), dict) else {}
+                duration_ms = _status_normalize_latency_ms(token_details.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+            ttft_ms = _status_normalize_latency_ms(raw.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+            if ttft_ms <= 0:
+                token_details = raw.get('token_details') if isinstance(raw.get('token_details'), dict) else {}
+                ttft_ms = _status_normalize_latency_ms(token_details.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+
+            if duration_ms > 0:
+                row['duration_ms_total'] += duration_ms
+                row['duration_ms_count'] += 1
+                gen_ms = duration_ms
+                if ttft_ms > 0 and ttft_ms < duration_ms:
+                    gen_ms = max(1, duration_ms - ttft_ms)
+                if gen_ms > 0:
+                    row['gen_ms_total'] += gen_ms
+                    row['gen_ms_count'] += 1
+            if ttft_ms > 0:
+                row['ttft_ms_total'] += ttft_ms
+                row['ttft_ms_count'] += 1
+            if output_tokens > 0:
+                row['output_tokens_total'] += output_tokens
+            if duration_ms > 0 and output_tokens > 0:
+                # Keep TPS numerator aligned with valid-latency samples only.
+                row['effective_output_tokens'] += output_tokens
 
         rows: List[Dict[str, Any]] = []
         min_ttft = None

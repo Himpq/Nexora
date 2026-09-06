@@ -18,10 +18,10 @@ from pathlib import Path
 
 from flask import current_app, jsonify, request, session
 
-from App.Utils import safe_join_path
+from App.Utils import resolve_configured_path, safe_join_path
 from basis.Permission import require_admin
 from basis.Permission.model_permissions import get_user_model_blacklist
-from basis.TokenUsage import read_usage_log_records
+from basis.TokenUsage import dedupe_token_log_records, iter_papi_token_log_entries, read_usage_log_records
 from basis.User import load_users, save_users
 
 from .routes import build_user_avatar_url, get_local_mail_profile, user_bp
@@ -42,6 +42,31 @@ def configure_user_admin_routes(get_config_all):
     _get_config_all = get_config_all
 
 
+def _resolve_user_data_path(user_id, info):
+    default_path = safe_join_path(BASE_DIR, 'data', 'users', str(user_id or '').strip())
+    raw_path = str((info or {}).get('path') or '').strip() if isinstance(info, dict) else ''
+
+    if not raw_path:
+        return default_path
+
+    return resolve_configured_path(BASE_DIR, raw_path, fallback=default_path)
+
+
+def _safe_token_total(log):
+    if not isinstance(log, dict):
+        return 0
+
+    total = log.get('total_tokens', None)
+
+    if total is None:
+        total = log.get('input_tokens', 0) + log.get('output_tokens', 0)
+
+    try:
+        return max(0, int(total or 0))
+    except Exception:
+        return 0
+
+
 def _is_safe_username(username) -> bool:
     """username 用作目录名，拒绝路径分隔符与相对路径标记。"""
     return bool(username) and '/' not in username and '\\' not in username and username not in ('.', '..')
@@ -53,24 +78,29 @@ def admin_get_users():
     """获取所有用户信息"""
     try:
         users = load_users()
+        papi_totals = {}
+
+        for log in dedupe_token_log_records(list(iter_papi_token_log_entries()), 'papi'):
+            username = str(log.get('username') or '').strip()
+
+            if username:
+                papi_totals[username] = papi_totals.get(username, 0) + _safe_token_total(log)
 
         user_list = []
         for user_id, info in users.items():
             # 计算总 token 消耗 (从 token_usage.json 读取)
             total_tokens = 0
-            user_token_file = safe_join_path(BASE_DIR, 'data', 'users', user_id, 'token_usage.json')
+            user_path = _resolve_user_data_path(user_id, info)
+            user_token_file = safe_join_path(user_path, 'token_usage.json')
             try:
-                tokens = read_usage_log_records(user_token_file)
+                tokens = dedupe_token_log_records(read_usage_log_records(user_token_file), 'chat')
 
                 for log in tokens:
-                    t = log.get('total_tokens', None)
-
-                    if t is None:
-                        t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-
-                    total_tokens += int(t or 0)
+                    total_tokens += _safe_token_total(log)
             except Exception as e:
                 current_app.logger.warning('admin user token usage load failed for %s: %s', user_id, e)
+
+            total_tokens += papi_totals.get(str(user_id), 0)
 
             user_list.append({
                 'user_id': user_id,
