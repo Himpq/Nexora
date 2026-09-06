@@ -84,3 +84,6 @@ NexoraHarmony2
 /_tmp_*.py
 /tmp*.txt
 temp_jar_extract
+# HarmonyOS hvigor build cache and app build logs (never version these)
+.hvigor/
+NexoraApp/build_log.txt
