@@ -72,7 +72,7 @@ from App.Memory import get_memory_analysis_queue
 from basis.TokenUsage import TokenUsageDetailPresenter
 from App.Executor import load_longdoc_skill_catalog
 from App.Core import SystemSettingsRuntimeSyncer
-from App.Observability import ServiceStatusMonitor
+from App.Runtime import get_service_status_monitor, install_service_status_monitor, start_service_status_monitor
 from basis.TokenUsage import (
     get_server_quota_status,
     update_server_quota_config,
@@ -2874,16 +2874,9 @@ def get_config_all():
     return _config_basis.get_config_all(_main_config_migration_hook)
 
 
-SERVICE_STATUS_MONITOR = ServiceStatusMonitor(
-    get_config_all,
-    SERVICE_STATUS_HISTORY_PATH,
-    interval_seconds=60,
-)
-
-
-def start_service_status_monitor() -> None:
-    """Start the shared service-health poller once for this server process."""
-    SERVICE_STATUS_MONITOR.start()
+# 进程级服务健康监控单例装配：依赖（配置访问、历史路径）由本组装层注入，
+# 单例本体与启动逻辑收敛在 App.Runtime，供后续迁移出去的域模块复用。
+install_service_status_monitor(get_config_all, SERVICE_STATUS_HISTORY_PATH)
 
 
 @app.before_request
@@ -8972,7 +8965,7 @@ def rank_overview_api():
 
 @app.route('/api/status/overview', methods=['GET'])
 def service_status_overview_api():
-    return jsonify({'success': True, 'status': SERVICE_STATUS_MONITOR.overview()})
+    return jsonify({'success': True, 'status': get_service_status_monitor().overview()})
 
 
 @app.route('/api/health', methods=['GET'])
