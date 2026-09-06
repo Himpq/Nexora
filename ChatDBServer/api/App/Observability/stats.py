@@ -115,6 +115,41 @@ def _status_normalize_token_log_entry(raw: Dict[str, Any]) -> Dict[str, Any]:
     return log
 
 
+def _status_token_log_identity(log: Dict[str, Any], source: str) -> str:
+    """只用持久化的唯一日志 ID 识别重复记录,不把同一秒的真实请求合并。"""
+    if not isinstance(log, dict):
+        return ''
+
+    log_id = str(log.get('log_id') or log.get('id') or '').strip()
+
+    if not log_id:
+        return ''
+
+    return f'{str(source or "token").strip()}:{log_id}'
+
+
+def _status_dedupe_token_logs(logs: Any, source: str) -> List[Dict[str, Any]]:
+    """去除同一日志 ID 的重复读取结果,保留没有 ID 的旧记录。"""
+    result: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    for item in logs if isinstance(logs, list) else []:
+        if not isinstance(item, dict):
+            continue
+
+        identity = _status_token_log_identity(item, source)
+
+        if identity and identity in seen:
+            continue
+
+        if identity:
+            seen.add(identity)
+
+        result.append(item)
+
+    return result
+
+
 def _reconcile_user_token_logs(
     username: str,
     user_path: str,
@@ -745,10 +780,13 @@ def build_status_overview() -> Dict[str, Any]:
         if not os.path.isdir(user_path):
             continue
 
-        token_logs = _read_json_list_safe(safe_join_path(user_path, 'token_usage.json'))
+        token_logs = _status_dedupe_token_logs(
+            _read_json_list_safe(safe_join_path(user_path, 'token_usage.json')),
+            'chat',
+        )
         speed_deduped_logs: Dict[str, Dict[str, Any]] = {}
         deduped_token_logs: Dict[str, Dict[str, Any]] = {}
-        for log in token_logs:
+        for log_index, log in enumerate(token_logs):
             if not isinstance(log, dict):
                 continue
             conversation_id = str(log.get('conversation_id') or '').strip()
@@ -756,7 +794,7 @@ def build_status_overview() -> Dict[str, Any]:
             action = str(log.get('action') or 'chat').strip() or 'chat'
             provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
             model = str(log.get('model') or 'unknown').strip() or 'unknown'
-            key = '|'.join([str(username), conversation_id, timestamp, action, provider, model])
+            key = _status_token_log_identity(log, 'chat') or f'chat:{username}:legacy:{log_index}'
             total = log.get('total_tokens', None)
             if total is None:
                 total = _safe_int_status(log.get('input_tokens', 0)) + _safe_int_status(log.get('output_tokens', 0))
@@ -771,7 +809,7 @@ def build_status_overview() -> Dict[str, Any]:
                     'timestamp_dt': ts_dt
                 }
 
-            # 速度榜单样本（按相同主键去重，优先保留耗时更长且输出更多的记录）
+            # 速度榜单样本与 Token 统计使用同一条日志身份,避免同秒请求互相覆盖。
             output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
             duration_ms = _status_normalize_latency_ms(log.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
             ttft_ms = _status_normalize_latency_ms(log.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
@@ -929,7 +967,7 @@ def build_status_overview() -> Dict[str, Any]:
                     row['complexityLoad'][bucket] += 1
                     complexity[bucket] += 1
 
-    for log in iter_papi_token_log_entries():
+    for log in _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi'):
         if not isinstance(log, dict):
             continue
 
@@ -1295,7 +1333,7 @@ def admin_token_stats():
         for username in os.listdir(user_dir):
             token_file = safe_join_path(user_dir, username, "token_usage.json")
             try:
-                logs = read_usage_log_records(token_file)
+                logs = _status_dedupe_token_logs(read_usage_log_records(token_file), 'chat')
 
                 for log in logs:
                     t = log.get('total_tokens', None)
@@ -1306,6 +1344,15 @@ def admin_token_stats():
                     total_tokens += int(t or 0)
             except Exception as e:
                 current_app.logger.warning('admin token stats load failed for %s: %s', username, e)
+
+        for log in _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi'):
+            t = log.get('total_tokens', None)
+
+            if t is None:
+                t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
+
+            total_tokens += int(t or 0)
+
         return jsonify({'success': True, 'total': total_tokens})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -1347,6 +1394,7 @@ def _admin_normalize_token_log_for_user(log: Dict[str, Any], source: str) -> Dic
     timestamp = str(src.get('timestamp') or '').strip()
 
     return {
+        'log_id': str(src.get('log_id') or src.get('id') or '').strip(),
         'timestamp': timestamp,
         'timestamp_dt': _status_parse_timestamp(timestamp),
         'source': str(source or src.get('source') or 'chat').strip() or 'chat',
@@ -1372,11 +1420,14 @@ def _admin_collect_user_token_logs(username: str) -> List[Dict[str, Any]]:
     user_path = _status_resolve_user_path(target_username)
     logs: List[Dict[str, Any]] = []
 
-    for item in _read_json_list_safe(safe_join_path(user_path, 'token_usage.json')):
+    for item in _status_dedupe_token_logs(
+        _read_json_list_safe(safe_join_path(user_path, 'token_usage.json')),
+        'chat',
+    ):
         if isinstance(item, dict):
             logs.append(_admin_normalize_token_log_for_user(item, 'chat'))
 
-    for item in iter_papi_token_log_entries():
+    for item in _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi'):
         if not isinstance(item, dict):
             continue
 
@@ -1872,40 +1923,59 @@ def admin_token_timeseries():
 
     provider_totals = {}
     model_totals = {}
+
+    def add_log(log: Dict[str, Any]) -> None:
+        if not isinstance(log, dict):
+            return
+
+        timestamp = _status_parse_timestamp(log.get('timestamp'))
+
+        if not isinstance(timestamp, datetime):
+            return
+
+        day = timestamp.strftime('%Y-%m-%d')
+
+        if day not in buckets:
+            return
+
+        in_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
+        out_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+        total = log.get('total_tokens', None)
+
+        if total is None:
+            total = in_tokens + out_tokens
+
+        total = _safe_int_status(total, in_tokens + out_tokens)
+        buckets[day]['input_tokens'] += in_tokens
+        buckets[day]['output_tokens'] += out_tokens
+        buckets[day]['total_tokens'] += total
+        buckets[day]['requests'] += 1
+
+        provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
+        model = str(log.get('model') or 'unknown').strip() or 'unknown'
+
+        if provider not in provider_totals:
+            provider_totals[provider] = {'tokens': 0, 'requests': 0}
+
+        if model not in model_totals:
+            model_totals[model] = {'tokens': 0, 'requests': 0}
+
+        provider_totals[provider]['tokens'] += total
+        provider_totals[provider]['requests'] += 1
+        model_totals[model]['tokens'] += total
+        model_totals[model]['requests'] += 1
+
     user_dir = safe_join_path(BASE_DIR, "data", "users")
+
     if os.path.exists(user_dir):
         for username in os.listdir(user_dir):
             token_file = safe_join_path(user_dir, username, "token_usage.json")
-            logs = read_usage_log_records(token_file)
 
-            for log in logs:
-                ts = str(log.get('timestamp', ''))
-                day = ts[:10]
-                if day not in buckets:
-                    continue
+            for log in _status_dedupe_token_logs(read_usage_log_records(token_file), 'chat'):
+                add_log(log)
 
-                in_tokens = int(log.get('input_tokens', 0) or 0)
-                out_tokens = int(log.get('output_tokens', 0) or 0)
-                total = log.get('total_tokens', None)
-                if total is None:
-                    total = in_tokens + out_tokens
-                total = int(total or 0)
-
-                buckets[day]['input_tokens'] += in_tokens
-                buckets[day]['output_tokens'] += out_tokens
-                buckets[day]['total_tokens'] += total
-                buckets[day]['requests'] += 1
-
-                provider = (log.get('provider') or 'unknown').strip() or 'unknown'
-                model = (log.get('model') or 'unknown').strip() or 'unknown'
-                if provider not in provider_totals:
-                    provider_totals[provider] = {'tokens': 0, 'requests': 0}
-                if model not in model_totals:
-                    model_totals[model] = {'tokens': 0, 'requests': 0}
-                provider_totals[provider]['tokens'] += total
-                provider_totals[provider]['requests'] += 1
-                model_totals[model]['tokens'] += total
-                model_totals[model]['requests'] += 1
+    for log in _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi'):
+        add_log(log)
 
     series = {
         'input_tokens': [buckets[d]['input_tokens'] for d in labels],

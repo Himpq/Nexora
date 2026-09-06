@@ -309,12 +309,6 @@
       ]
     ],
     [
-      "/api/admin/search/exa/billing",
-      [
-        "GET"
-      ]
-    ],
-    [
       "/api/admin/status/token-logs/reconcile",
       [
         "POST"

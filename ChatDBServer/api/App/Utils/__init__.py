@@ -12,6 +12,7 @@ Nexora.app.utils — 应用层基础工具
 from .coerce import as_bool
 from .secure import (
     escape_html_text,
+    mask_public_api_key,
     normalize_text,
     resolve_configured_path,
     safe_filename,
