@@ -221,7 +221,7 @@ export class LiveViewController {
                 title: CAPSULE_TITLE,
                 content: text,
                 icon: 'liveview_icon.png',
-                backgroundColor: '#FF317AF7'
+                backgroundColor: '#FF372B55'
             }
         };
     }

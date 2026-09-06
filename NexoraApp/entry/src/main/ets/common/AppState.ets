@@ -56,6 +56,9 @@ export class AppState {
 
     private context: common.UIAbilityContext | null = null;
 
+    // 系统返回键处理函数：由 MainChat 在 aboutToAppear 中注入，Index.onBackPress 调用
+    backHandler: (() => boolean) | null = null;
+
     // 服务端头像原始 URL：与本地落地路径分开存放，用于判断 URL 是否变化、避免重复下载
     private avatarRemoteUrl: string = '';
 

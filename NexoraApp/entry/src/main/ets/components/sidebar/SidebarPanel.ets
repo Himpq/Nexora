@@ -36,17 +36,9 @@ export struct SidebarPanel {
     onCreateKnowledge: () => void = () => {};
 
     private listScroller: Scroller = new Scroller();
-    // 侧栏实例创建时刻：仅挂载后短暂窗口内随代次滚动（打开侧栏定位当前会话），
-    // 之后刷新/置顶/删除等代次变化不再强制滚动，避免列表被反复拉回中部造成视觉跳动
-    private bornAt: number = 0;
 
     aboutToAppear(): void {
-        this.bornAt = Date.now();
-
-        // 侧栏由宿主按需挂载，展开动画结束（240ms）后再把选中会话滚到可视区中部
-        setTimeout(() => {
-            this.scrollToActive();
-        }, 280);
+        // 始终挂载模式：首次出现时不滚动（侧栏初始隐藏），由 onEpochChanged 在打开时触发
     }
 
     build() {
@@ -77,7 +69,7 @@ export struct SidebarPanel {
                                 ListItem() {
                                     this.ConversationRow(item);
                                 }
-                            }, (item: ConversationItem) => item.id);
+                            }, (item: ConversationItem) => item.id + '_' + this.convEpoch);
                         }
                         .layoutWeight(1)
                         .width('100%')
@@ -442,7 +434,7 @@ export struct SidebarPanel {
                 this.onOpenSettings();
             });
 
-            Text('Nexora Harmony · v0.11.0')
+            Text('Nexora Harmony · v1.0.2')
                 .fontSize(FontSize.caption)
                 .fontColor($r('app.color.text_tertiary'))
                 .width('100%')
@@ -508,13 +500,11 @@ export struct SidebarPanel {
     // 滚动定位到当前会话（打开侧栏场景），此后代次变化不再滚动——列表数据就地更新即可，
     // 强制滚动会把用户正在浏览的位置反复拉走（旧实现每次刷新都滚，视觉上正是"列表跳变"的一部分）
     private onEpochChanged(): void {
-        if (Date.now() - this.bornAt > 1500) {
-            return;
-        }
-
+        // 代次变化（打开侧栏/刷新/置顶/删除）时延迟滚动到当前会话，
+        // 等 240ms 展开动画 + 列表数据到位后再定位
         setTimeout(() => {
             this.scrollToActive();
-        }, 200);
+        }, 300);
     }
 
     private scrollToActive(): void {

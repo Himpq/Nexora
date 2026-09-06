@@ -6,6 +6,15 @@ export type SegmentType = 'reasoning' | 'content' | 'function_call' | 'function_
 export type MessageRole = 'user' | 'assistant';
 export type ToolStatus = 'running' | 'done' | 'error';
 
+// Token 用量：流式 token_usage 帧与历史消息 usage 字段统一映射到此
+export interface TokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    rawInputTokens: number;
+    cachedInputTokens: number;
+}
+
 // 流式分片：与后端 SSE 的 segment 一一对应
 export interface MessageSegment {
     type: SegmentType;
@@ -94,6 +103,7 @@ export class ChatMessage {
     thinkingExpanded: boolean;
     toolCalls: ToolCallItem[];
     segments: MessageSegment[];
+    usage: TokenUsage | null;
 
     constructor(index: number, role: MessageRole, content: string) {
         this.index = index;
@@ -107,6 +117,7 @@ export class ChatMessage {
         this.thinkingExpanded = false;
         this.toolCalls = [];
         this.segments = [];
+        this.usage = null;
     }
 
     static createUser(text: string): ChatMessage {
@@ -214,6 +225,10 @@ export class ChatMessage {
         this.streaming = false;
     }
 
+    setUsage(usage: TokenUsage): void {
+        this.usage = usage;
+    }
+
     finish(): void {
         this.streaming = false;
     }
@@ -263,6 +278,7 @@ export interface RawHistoryMessage {
     created_at?: number;
     metadata?: Record<string, Object>;
     trace?: RawTrace;
+    usage?: Record<string, Object>;
 }
 
 // 从历史响应还原一条可渲染消息：优先按 process_steps / trace 还原完整链路，否则退化为正文+思考
@@ -272,6 +288,7 @@ export function messageFromHistory(raw: RawHistoryMessage, index: number): ChatM
     message.modelName = raw.model_name ?? '';
     message.reasoning = raw.reasoning ?? '';
     message.createdAt = raw.created_at ?? Date.now();
+    message.usage = readUsageFromHistory(raw);
 
     // 步骤源优先级：v3 metadata.process_steps → v4 trace(events 或四桶)。trace 里的
     // reasoning_content 步骤让思考链可还原；tool_calls/tool_results 重建工具卡生命周期
@@ -501,4 +518,60 @@ function rebuildFlatFromSegments(message: ChatMessage): void {
 
     message.reasoning = reasoning;
     message.content = content;
+}
+
+// 从历史消息还原 Token 用量：v4 顶层 usage → v3 metadata.io_tokens
+function readUsageFromHistory(raw: RawHistoryMessage): TokenUsage | null {
+    const fromTop: TokenUsage | null = readUsageDict(raw.usage);
+
+    if (fromTop !== null) {
+        return fromTop;
+    }
+
+    if (raw.metadata !== undefined) {
+        const ioRaw: Object | undefined = raw.metadata['io_tokens'];
+
+        if (ioRaw !== undefined && typeof ioRaw === 'object') {
+            return readUsageDict(ioRaw as Record<string, Object>);
+        }
+    }
+
+    return null;
+}
+
+function readUsageDict(dict: Record<string, Object> | undefined): TokenUsage | null {
+    if (dict === undefined) {
+        return null;
+    }
+
+    const input: number = readNum(dict, 'input', 'input_tokens');
+    const output: number = readNum(dict, 'output', 'output_tokens');
+
+    if (input === 0 && output === 0) {
+        return null;
+    }
+
+    return {
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: readNum(dict, 'total', 'total_tokens'),
+        rawInputTokens: readNum(dict, 'raw_input', 'raw_input_tokens'),
+        cachedInputTokens: readNum(dict, 'cached_input', 'cached_input_tokens')
+    };
+}
+
+function readNum(dict: Record<string, Object>, key1: string, key2: string): number {
+    const v1: Object | undefined = dict[key1];
+
+    if (typeof v1 === 'number') {
+        return v1;
+    }
+
+    const v2: Object | undefined = dict[key2];
+
+    if (typeof v2 === 'number') {
+        return v2;
+    }
+
+    return 0;
 }

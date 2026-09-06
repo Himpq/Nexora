@@ -151,24 +151,18 @@ export struct MarkdownView {
         .borderRadius(Radius.md)
     }
 
-    // 引用块：左侧竖条 + 弱化正文
+    // 引用块：左侧竖条（用左边框实现，避免 height('100%') 循环依赖导致极高） + 弱化正文
     @Builder
     QuoteBlock(block: MdBlock) {
-        Row({ space: Space.md }) {
-            Column()
-                .width(3)
-                .height('100%')
-                .backgroundColor($r('app.color.quote_bar'))
-                .borderRadius(Radius.full);
-
+        Column() {
             this.InlineText(block.inline, FontSize.body, LineHeight.body, {
-                color: $r('app.color.text_secondary'),
-                fill: true
+                color: $r('app.color.text_secondary')
             });
         }
         .width('100%')
-        .alignItems(VerticalAlign.Top)
-        .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs })
+        .borderWidth({ left: 3 })
+        .borderColor({ left: $r('app.color.quote_bar') })
+        .padding({ left: Space.sm, right: Space.sm, top: Space.xs, bottom: Space.xs });
     }
 
     // 列表：标记列固定宽度，正文自适应，保证多行条目缩进对齐

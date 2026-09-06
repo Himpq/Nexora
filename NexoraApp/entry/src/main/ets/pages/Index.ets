@@ -21,6 +21,15 @@ struct Index {
         this.bootstrap();
     }
 
+    // 系统返回键：委托给 MainChat 注入的 backHandler（侧边栏→收起，弹层→关闭，对话→新对话）
+    onBackPress(): boolean {
+        if (this.app.backHandler !== null) {
+            return this.app.backHandler();
+        }
+
+        return false;
+    }
+
     // 启动链路：恢复本地状态 → 校验会话有效性 → 决定进入登录还是主界面
     private async bootstrap(): Promise<void> {
         const host = this.getUIContext().getHostContext();

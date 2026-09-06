@@ -19,7 +19,7 @@ export struct KnowledgeEditorSheet {
 
     @State private titleDraft: string = '';
     @State private contentDraft: string = '';
-    @State private preview: boolean = false;
+    @State private preview: boolean = true;
     @State private loading: boolean = true;
     @State private saving: boolean = false;
     @State private error: string = '';
