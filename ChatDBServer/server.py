@@ -70,6 +70,7 @@ import basis.Permission.AuthKey as _authkey
 import basis.Config as _config_basis
 import basis.User as _user_basis
 from basis.User.routes import build_user_avatar_url, configure_user_routes, get_local_mail_profile, user_bp
+from basis.User.admin_routes import configure_user_admin_routes
 from App.Components import build_learning_context_payload, build_learning_memory_blocks
 from App.Components import get_learning_runtime_local_config
 from App.Memory import get_memory_analysis_queue
@@ -7127,80 +7128,6 @@ def get_config():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/admin/users/<target_username>/models', methods=['GET'])
-@app.route('/api/admin/user/models', methods=['GET'])
-@require_admin
-def admin_get_user_models(target_username=None):
-    """获取用户可用模型列表（管理员）"""
-    target_username = normalize_text(target_username or request.args.get('username', ''), default='')
-
-    if not target_username:
-        return jsonify({"success": False, "message": "Missing username"}), 400
-
-    try:
-        config = get_config_all()
-        all_models = config.get('models', {})
-
-        blacklist_path = './data/model_permissions.json'
-        blacklist = []
-        if os.path.exists(blacklist_path):
-            with open(blacklist_path, 'r', encoding='utf-8') as f:
-                perm_config = json.load(f)
-                user_blacklists = perm_config.get('user_blacklists', {})
-                blacklist = user_blacklists.get(target_username, perm_config.get('default_blacklist', []))
-
-        models = []
-        for model_id, info in all_models.items():
-            models.append({
-                'id': model_id,
-                'name': info.get('name', model_id),
-                'provider': info.get('provider', 'volcengine'),
-                'status': info.get('status', 'normal'),
-                'is_blocked': model_id in blacklist
-            })
-
-        return jsonify({"success": True, "models": models})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
-
-
-@app.route('/api/admin/users/<target_username>/models', methods=['PUT'])
-@app.route('/api/admin/user/models/update', methods=['POST'])
-@require_admin
-def admin_update_user_models(target_username=None):
-    """更新用户的模型黑名单"""
-    data = request.get_json(silent=True) or {}
-    target_username = target_username or data.get('username')
-    blocked_models = data.get('blocked_models', []) # 传递 ID 列表
-    
-    if not target_username:
-        return jsonify({"success": False, "message": "Missing username"}), 400
-        
-    try:
-        blacklist_path = './data/model_permissions.json'
-        if not os.path.exists(blacklist_path):
-            perm_config = {"default_blacklist": [], "user_blacklists": {}}
-        else:
-            with open(blacklist_path, 'r', encoding='utf-8') as f:
-                perm_config = json.load(f)
-        
-        # 更新黑名单
-        if 'user_blacklists' not in perm_config:
-            perm_config['user_blacklists'] = {}
-            
-        perm_config['user_blacklists'][target_username] = blocked_models
-        
-        with open(blacklist_path, 'w', encoding='utf-8') as f:
-            json.dump(perm_config, f, indent=4, ensure_ascii=False)
-            
-        return jsonify({'success': True, 'message': f'用户 {target_username} 的模型权限已更新'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
-    return jsonify({'success': False, 'message': '配置加载失败'})
-
-
 @app.route('/api/admin/system/settings', methods=['GET'])
 @require_admin
 def admin_get_system_settings():
@@ -12970,6 +12897,7 @@ from App.Papi import papi_bp
 from App.Papi import user_papi_keys_bp
 # 用户域路由装配：注入依赖后挂载自 basis.User 迁出的蓝图
 configure_user_routes(BASE_DIR, get_config_all, get_public_base_url)
+configure_user_admin_routes(get_config_all)
 from basis.TokenUsage.routes import _normalize_quota_on_exhausted_action, configure_quota_admin_routes, quota_admin_bp
 from App.Storage.routes import configure_storage_admin_routes, storage_admin_bp
 from App.Search.admin_routes import configure_search_admin_routes, search_admin_bp

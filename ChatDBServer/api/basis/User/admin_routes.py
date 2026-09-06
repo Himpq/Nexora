@@ -20,6 +20,7 @@ from flask import current_app, jsonify, request, session
 
 from App.Utils import safe_join_path
 from basis.Permission import require_admin
+from basis.Permission.model_permissions import get_user_model_blacklist
 from basis.TokenUsage import read_usage_log_records
 from basis.User import load_users, save_users
 
@@ -27,6 +28,18 @@ from .routes import build_user_avatar_url, get_local_mail_profile, user_bp
 
 # 与 server.py 顶部常量同源（ChatDBServer 根 = 本文件向上 4 级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+_get_config_all = None
+
+
+def configure_user_admin_routes(get_config_all):
+    """server 组装期注入依赖（仅允许调用一次）。"""
+    global _get_config_all
+
+    if _get_config_all is not None:
+        raise RuntimeError('user admin routes already configured')
+
+    _get_config_all = get_config_all
 
 
 def _is_safe_username(username) -> bool:
@@ -253,5 +266,70 @@ def admin_update_user_profile(user_id=None):
         users[user_id]['display_name'] = display_name
         save_users(users)
         return jsonify({'success': True, 'message': '用户资料已更新'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@user_bp.route('/api/admin/users/<target_username>/models', methods=['GET'])
+@user_bp.route('/api/admin/user/models', methods=['GET'])
+@require_admin
+def admin_get_user_models(target_username=None):
+    """获取用户可用模型列表（管理员）"""
+    target_username = (target_username or request.args.get('username', '')).strip() or ''
+
+    if not target_username:
+        return jsonify({"success": False, "message": "Missing username"}), 400
+
+    try:
+        config = _get_config_all()
+        all_models = config.get('models', {})
+        blacklist = get_user_model_blacklist(target_username)
+
+        models = []
+        for model_id, info in all_models.items():
+            models.append({
+                'id': model_id,
+                'name': info.get('name', model_id),
+                'provider': info.get('provider', 'volcengine'),
+                'status': info.get('status', 'normal'),
+                'is_blocked': model_id in blacklist
+            })
+
+        return jsonify({"success": True, "models": models})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+
+@user_bp.route('/api/admin/users/<target_username>/models', methods=['PUT'])
+@user_bp.route('/api/admin/user/models/update', methods=['POST'])
+@require_admin
+def admin_update_user_models(target_username=None):
+    """更新用户的模型黑名单"""
+    data = request.get_json(silent=True) or {}
+    target_username = target_username or data.get('username')
+    blocked_models = data.get('blocked_models', [])  # 传递 ID 列表
+
+    if not target_username:
+        return jsonify({"success": False, "message": "Missing username"}), 400
+
+    try:
+        blacklist_path = './data/model_permissions.json'
+        if not os.path.exists(blacklist_path):
+            perm_config = {"default_blacklist": [], "user_blacklists": {}}
+        else:
+            perm_config = json.loads(Path(blacklist_path).read_text(encoding='utf-8'))
+
+        # 更新黑名单
+        if 'user_blacklists' not in perm_config:
+            perm_config['user_blacklists'] = {}
+
+        perm_config['user_blacklists'][target_username] = blocked_models
+
+        Path(blacklist_path).write_text(
+            json.dumps(perm_config, indent=4, ensure_ascii=False),
+            encoding='utf-8'
+        )
+
+        return jsonify({'success': True, 'message': f'用户 {target_username} 的模型权限已更新'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
