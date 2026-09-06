@@ -4,6 +4,7 @@
  * 对应后端路由:
  *   GET /api/admin/system/settings    读取系统总设置
  *   POST /api/admin/system/settings   保存系统总设置
+ *   POST /api/test/:service            服务端发起健康检查
  */
 
 import { apiFetch } from './client'
@@ -28,6 +29,15 @@ interface SystemSettingsResponse {
     message?: string
 }
 
+export interface ServiceHealthTestResult {
+    success: boolean
+    message?: string
+    service?: string
+    test_url?: string
+    upstream_status?: number
+    elapsed_ms?: number
+}
+
 /** 读取系统总设置 */
 export async function fetchAdminSystemSettings(): Promise<AdminSystemSettings | null> {
     const data = await apiFetch<SystemSettingsResponse>('/api/admin/system/settings')
@@ -49,4 +59,15 @@ export async function saveAdminSystemSettings(settings: AdminSystemSettings): Pr
     if (!data.success) {
         throw new Error(data.message || '保存失败')
     }
+}
+
+/** 由 ChatDB 服务端探测上游,避免浏览器跨域导致误报 Failed to fetch。 */
+export async function testAdminServiceHealth(
+    serviceName: string,
+    payload: { service_url: string; timeout?: number; health_path?: string },
+): Promise<ServiceHealthTestResult> {
+    return apiFetch<ServiceHealthTestResult>(`/api/test/${encodeURIComponent(serviceName)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    })
 }

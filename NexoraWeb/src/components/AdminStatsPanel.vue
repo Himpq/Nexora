@@ -35,8 +35,27 @@
             <div ref="trendChartRef" class="admin-token-trend-chart"></div>
             <div v-if="trendTopModels.length" class="admin-token-trend-top">
                 <span v-for="row in trendTopModels" :key="row.name" class="trend-top-chip" :title="`${row.name}: ${formatNumber(row.tokens)}`">
-                    {{ row.name }} <b>{{ formatNumber(row.tokens) }}</b>
+                    <span class="trend-top-chip-name">{{ row.name }}</span>
+                    <b>{{ formatNumber(row.tokens) }}</b>
                 </span>
+            </div>
+            <div v-if="trendTopModels.length" class="admin-model-usage-wrap">
+                <table class="admin-model-usage-table">
+                    <thead>
+                        <tr>
+                            <th>模型</th>
+                            <th>请求数</th>
+                            <th>统计 Token</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="row in trendTopModels" :key="`model-usage-${row.name}`">
+                            <td :title="row.name">{{ row.name }}</td>
+                            <td class="mono">{{ formatNumber(row.requests) }}</td>
+                            <td class="mono">{{ formatNumber(row.tokens) }}</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -184,7 +203,8 @@
             <div ref="toolChartRef" class="admin-token-trend-chart"></div>
             <div v-if="topFailedTools.length" class="admin-token-trend-top">
                 <span v-for="row in topFailedTools" :key="row.name" class="trend-top-chip danger" :title="`${row.name}: ${row.errors} 次失败`">
-                    {{ row.name }} <b>{{ row.errors }}</b>
+                    <span class="trend-top-chip-name">{{ row.name }}</span>
+                    <b>{{ row.errors }}</b>
                 </span>
             </div>
         </div>
@@ -212,7 +232,7 @@ import { isInsideOpenPopover } from '@/ui/overlay'
     /** Token 趋势 */
     const trendChartRef = ref<HTMLDivElement | null>(null)
     const trendMeta = ref('加载中...')
-    const trendTopModels = ref<Array<{ name: string; tokens: number }>>([])
+    const trendTopModels = ref<Array<{ name: string; tokens: number; requests: number }>>([])
     let trendChart: echarts.ECharts | null = null
 
     /** 单用户查询 */
@@ -301,9 +321,13 @@ import { isInsideOpenPopover } from '@/ui/overlay'
             const data = await fetchTokenTimeseries(30)
 
             trendMeta.value = data.series.total_tokens.length
-                ? `共 ${formatNumber(data.series.total_tokens.reduce((a, b) => a + b, 0))} tokens · ${data.series.requests.reduce((a, b) => a + b, 0)} 次请求`
+                ? `共 ${formatNumber(data.series.total_tokens.reduce((a, b) => a + b, 0))} 统计 Token · ${data.series.requests.reduce((a, b) => a + b, 0)} 次请求`
                 : '暂无数据'
-            trendTopModels.value = data.top_models.map((row) => ({ name: row.name, tokens: row.tokens }))
+            trendTopModels.value = data.top_models.map((row) => ({
+                name: row.name,
+                tokens: row.tokens,
+                requests: row.requests,
+            }))
 
             await nextTick()
 
@@ -558,14 +582,24 @@ import { isInsideOpenPopover } from '@/ui/overlay'
         font-size: 11.5px;
         color: var(--color-text-secondary);
         max-width: 220px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .trend-top-chip-name {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
     .trend-top-chip b {
+        flex: none;
         color: var(--color-text-primary);
         font-variant-numeric: tabular-nums;
+        white-space: nowrap;
     }
 
     .trend-top-chip.danger {
@@ -713,11 +747,15 @@ import { isInsideOpenPopover } from '@/ui/overlay'
     .admin-user-token-recent-wrap {
         border: 1px solid var(--color-border);
         border-radius: 8px;
-        overflow: hidden;
+        max-height: 320px;
+        overflow-x: auto;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
 
     .admin-user-token-recent-table {
         width: 100%;
+        min-width: 640px;
         border-collapse: collapse;
         font-size: 12.5px;
     }
@@ -730,10 +768,60 @@ import { isInsideOpenPopover } from '@/ui/overlay'
     }
 
     .admin-user-token-recent-table th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
         background: var(--color-bg-sunken);
         font-size: 11.5px;
         font-weight: 600;
         color: var(--color-text-secondary);
+    }
+
+    .admin-model-usage-wrap {
+        margin-top: 12px;
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        overflow-x: auto;
+    }
+
+    .admin-model-usage-table {
+        width: 100%;
+        min-width: 520px;
+        border-collapse: collapse;
+        font-size: 12px;
+    }
+
+    .admin-model-usage-table th,
+    .admin-model-usage-table td {
+        padding: 8px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .admin-model-usage-table th {
+        background: var(--color-bg-sunken);
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--color-text-secondary);
+    }
+
+    .admin-model-usage-table td:first-child {
+        max-width: 360px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .admin-model-usage-table td:nth-child(2),
+    .admin-model-usage-table td:nth-child(3),
+    .admin-model-usage-table th:nth-child(2),
+    .admin-model-usage-table th:nth-child(3) {
+        width: 140px;
+        white-space: nowrap;
+    }
+
+    .admin-model-usage-table tr:last-child td {
+        border-bottom: none;
     }
 
     .admin-user-token-recent-table tr:last-child td {
