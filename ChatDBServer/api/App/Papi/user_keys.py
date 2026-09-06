@@ -132,7 +132,7 @@ def create_user_papi_key():
         username = _current_username()
         record, plain_key = _create_public_api_key(
             expire_option=expire,
-            permissions=normalize_permissions(data.get("permissions")),
+            permissions=_normalize_public_api_permissions(data.get("permissions")),
             scope="owner",
             owner=username,
             name=str(data.get("name") or "").strip(),

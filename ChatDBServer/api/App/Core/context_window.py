@@ -10,16 +10,13 @@ Nexora.App.Core.context_window — 模型上下文窗口解析与缓存（自 se
 """
 
 import json
+import logging
 import os
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib import request as urllib_request
-
-import httpx
-
 from basis.Model.Provider import create_provider_adapter
 
 # 与 server.py 顶部常量同源（ChatDBServer 根 = 本文件向上 3 级：App/Core/...）
@@ -27,6 +24,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 DATA_RES_DIR = os.path.join(BASE_DIR, 'data', 'res')
 MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
 MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_RES_DIR, 'models_context_window.json')
+LOGGER = logging.getLogger(__name__)
 
 _MODELS_CTX_CACHE_LOCK = threading.Lock()
 _PROVIDER_CTX_BG_REFRESH_LOCK = threading.Lock()
@@ -151,8 +149,8 @@ def _save_models_context_window_cache(cache_obj):
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding='utf-8'
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning('context window cache write failed: %s', exc)
 
 
 def _extract_context_window_from_provider_row(row_obj):
@@ -329,8 +327,8 @@ def _launch_provider_context_refresh_bg(provider_key, refresh_fn, min_interval_s
     def _runner():
         try:
             refresh_fn()
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.warning('context window background refresh failed provider=%s: %s', provider, exc)
         finally:
             with _PROVIDER_CTX_BG_REFRESH_LOCK:
                 _PROVIDER_CTX_BG_REFRESHING[provider] = False
@@ -425,7 +423,8 @@ def _refresh_volc_context_window_map(config_obj, timeout=8.0, force_remote=False
         merged.update(fresh_map)
         _write_cached_volc_context_window_map(merged)
         return merged
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning('volcengine context window refresh failed: %s', exc)
         return cached
 
 
@@ -641,8 +640,8 @@ def _refresh_ollama_context_window_map(config_obj, timeout=8.0, force_remote=Fal
             if isinstance(refreshed, dict) and refreshed:
                 merged.update(refreshed)
                 continue
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.warning('ollama context window refresh failed provider=%s: %s', provider_name, exc)
 
         merged.update(cached)
 
@@ -750,7 +749,8 @@ def _refresh_generic_provider_context_window_map(config_obj, provider_key, timeo
         merged.update(fresh_map)
         _write_cached_provider_context_window_map(provider_name, merged)
         return merged
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning('generic context window refresh failed provider=%s: %s', provider_name, exc)
         return cached
 
 

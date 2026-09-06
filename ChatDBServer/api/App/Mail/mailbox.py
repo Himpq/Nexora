@@ -10,6 +10,7 @@ Nexora.App.Mail.mailbox — NexoraMail 客户端封装与 /api/mail/me/* 路由
 未装配即处理请求视为组装顺序错误，本模块不设兜底默认值，不反向 import server。
 """
 
+import base64
 import json
 import os
 import re

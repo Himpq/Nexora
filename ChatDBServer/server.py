@@ -46,6 +46,14 @@ from basis.Model.Provider import create_provider_adapter
 from App.Utils import add_request_listener, pull_pending_request, submit_request_result
 from App.Agent import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from App.Core.context_window import configure_context_window_fetchers
+from App.Papi.admin_keys import (
+    _list_papi_key_records,
+    _migrate_legacy_public_api_key,
+    _migrate_papi_key_scope_schema,
+    _normalize_public_api_permissions,
+    configure_papi_admin_keys,
+    papi_admin_bp,
+)
 from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
 from Map.baidu import load_map_scene_for_map_id
@@ -961,6 +969,8 @@ def _ensure_server_bootstrap_files():
         pass
 
 
+# PAPI migration helpers are needed by the config migration hook during bootstrap.
+configure_papi_admin_keys(PAPI_KEYS_PATH, ensure_main_config_defaults, save_main_config)
 _ensure_server_bootstrap_files()
 
 
@@ -12042,13 +12052,6 @@ from App.Core.context_window import (
     _resolve_volc_context_window_by_model_id,
     _resolve_aliyun_context_window_by_model_id,
 )
-from App.Papi.admin_keys import configure_papi_admin_keys, papi_admin_bp
-from App.Papi.admin_keys import (
-    _list_papi_key_records,
-    _migrate_legacy_public_api_key,
-    _migrate_papi_key_scope_schema,
-    resolve_public_api_key_auth,
-)
 from Map.routes import configure_map_config_routes, map_config_bp
 import App.Mail.admin_routes
 import basis.User.admin_routes
@@ -12087,7 +12090,6 @@ app.register_blueprint(gen_image_admin_bp)
 
 # PAPI 密钥装配：密钥文件路径与主配置读写由本组装层注入
 configure_context_window_fetchers(_fetch_aliyun_models_page, _fetch_volc_foundation_models_context_map)
-configure_papi_admin_keys(PAPI_KEYS_PATH, ensure_main_config_defaults, save_main_config)
 app.register_blueprint(papi_admin_bp)
 from App.Agent import agent_permissions_bp
 app.register_blueprint(agent_permissions_bp)
