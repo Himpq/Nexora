@@ -12,15 +12,22 @@ notification.py 的定位方式从模块位置推导，不反向 import server�
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from flask import Blueprint, jsonify, request, session
 
+from App.Runtime import get_service_status_monitor
 from App.Utils import resolve_configured_path, safe_join_path
 from basis.Permission import require_admin, require_login
-from basis.TokenUsage import is_usage_log_path, read_usage_log_records, replace_usage_log_records
+from basis.TokenUsage import (
+    is_usage_log_path,
+    iter_papi_image_log_entries,
+    iter_papi_token_log_entries,
+    read_usage_log_records,
+    replace_usage_log_records,
+)
 from basis.User import load_users, save_users
 
 stats_bp = Blueprint('observability_stats', __name__)
@@ -688,3 +695,587 @@ def _ensure_status_recent_row(recent_map: Dict[str, Dict[str, Any]], model_name:
         if not prev or prev == key:
             recent_map[key]['name'] = str(display_name).strip() or key
     return recent_map[key]
+
+
+# ==================== 状态总览聚合（B2b 批次迁入） ====================
+
+def build_status_overview() -> Dict[str, Any]:
+    users_root = safe_join_path(BASE_DIR, 'data', 'users')
+    model_map: Dict[str, Dict[str, Any]] = {}
+    speed_map: Dict[str, Dict[str, Any]] = {}
+    recent_24h_map: Dict[str, Dict[str, Any]] = {}
+    tool_failure_map: Dict[str, Dict[str, Any]] = {}
+    fallback_tool_complexity_tasks: Dict[str, Dict[str, Any]] = {}
+    complexity = {'simple': 0, 'medium': 0, 'complex': 0}
+    image_stats = {
+        'requests': 0,
+        'successes': 0,
+        'failures': 0,
+        'images': 0,
+        'recent24hRequests': 0,
+        'recent24hImages': 0
+    }
+    total_tokens = 0
+    total_tool_calls = 0
+    total_tool_failures = 0
+    cutoff_24h = datetime.now() - timedelta(hours=24)
+
+    if not os.path.exists(users_root):
+        return {
+            'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
+            'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/{token_log,image_log}.jsonl',
+            'totals': {'tokens': 0, 'modelCalls': 0, 'toolCalls': 0, 'toolFailures': 0},
+            'imageStats': image_stats,
+            'complexity': complexity,
+            'models': [],
+            'speedModels': [],
+            'speedWindowDays': 30,
+            'speedMinSamples': 3,
+            'toolFailures': [],
+            'recent24h': [],
+            'recent24hWindowHours': 24
+        }
+
+    for username in os.listdir(users_root):
+        user_path = safe_join_path(users_root, username)
+        if not os.path.isdir(user_path):
+            continue
+
+        token_logs = _read_json_list_safe(safe_join_path(user_path, 'token_usage.json'))
+        speed_deduped_logs: Dict[str, Dict[str, Any]] = {}
+        deduped_token_logs: Dict[str, Dict[str, Any]] = {}
+        for log in token_logs:
+            if not isinstance(log, dict):
+                continue
+            conversation_id = str(log.get('conversation_id') or '').strip()
+            timestamp = str(log.get('timestamp') or '').strip()
+            action = str(log.get('action') or 'chat').strip() or 'chat'
+            provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
+            model = str(log.get('model') or 'unknown').strip() or 'unknown'
+            key = '|'.join([str(username), conversation_id, timestamp, action, provider, model])
+            total = log.get('total_tokens', None)
+            if total is None:
+                total = _safe_int_status(log.get('input_tokens', 0)) + _safe_int_status(log.get('output_tokens', 0))
+            total = _safe_int_status(total)
+            ts_dt = _status_parse_timestamp(timestamp)
+            prev = deduped_token_logs.get(key)
+            if prev is None or total >= _safe_int_status(prev.get('total_tokens', 0)):
+                deduped_token_logs[key] = {
+                    'provider': provider,
+                    'model': model,
+                    'total_tokens': total,
+                    'timestamp_dt': ts_dt
+                }
+
+            # 速度榜单样本（按相同主键去重，优先保留耗时更长且输出更多的记录）
+            output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+            duration_ms = _status_normalize_latency_ms(log.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+            ttft_ms = _status_normalize_latency_ms(log.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+            token_details = log.get('token_details') if isinstance(log.get('token_details'), dict) else {}
+            if duration_ms <= 0:
+                duration_ms = _status_normalize_latency_ms(token_details.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+            if ttft_ms <= 0:
+                ttft_ms = _status_normalize_latency_ms(token_details.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+            speed_item = {
+                'provider': provider,
+                'model': model,
+                'duration_ms': max(0, duration_ms),
+                'ttft_ms': max(0, ttft_ms),
+                'output_tokens': max(0, output_tokens)
+            }
+            prev_speed = speed_deduped_logs.get(key)
+            if prev_speed is None:
+                speed_deduped_logs[key] = speed_item
+            else:
+                prev_score = _safe_int_status(prev_speed.get('duration_ms', 0), 0) + _safe_int_status(prev_speed.get('output_tokens', 0), 0)
+                cur_score = speed_item['duration_ms'] + speed_item['output_tokens']
+                if cur_score >= prev_score:
+                    speed_deduped_logs[key] = speed_item
+
+        for item in deduped_token_logs.values():
+            total = _safe_int_status(item.get('total_tokens', 0))
+            total_tokens += total
+            model_raw = str(item.get('model') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(item.get('provider') or 'unknown').strip() or 'unknown')
+            model_name, display_name = _status_canonicalize_model(model_raw)
+            row = _ensure_status_model_row(model_map, model_name, display_name)
+            row['totalTokens'] += total
+            row['tokenLogCount'] += 1
+            _status_add_provider_count(row, provider)
+            ts_dt = item.get('timestamp_dt')
+            if isinstance(ts_dt, datetime) and ts_dt >= cutoff_24h:
+                recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
+                recent['recentCalls'] += 1
+                recent['recentTokens'] += total
+                _status_add_provider_count(recent, provider)
+
+        for s_item in speed_deduped_logs.values():
+            model_raw = str(s_item.get('model') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(s_item.get('provider') or 'unknown').strip() or 'unknown')
+            model_name, display_name = _status_canonicalize_model(model_raw)
+            s_row = speed_map.setdefault(model_name, {
+                'id': model_name,
+                'name': str(display_name or model_name).strip() or model_name,
+                '_providerCounts': {},
+                'samples': 0,
+                'duration_ms_total': 0,
+                'duration_ms_count': 0,
+                'gen_ms_total': 0,
+                'gen_ms_count': 0,
+                'ttft_ms_total': 0,
+                'ttft_ms_count': 0,
+                'output_tokens_total': 0,
+                'effective_output_tokens_total': 0
+            })
+            if display_name and (not str(s_row.get('name') or '').strip() or str(s_row.get('name') or '').strip() == model_name):
+                s_row['name'] = str(display_name).strip() or model_name
+            _status_add_provider_count(s_row, provider)
+            s_row['samples'] += 1
+            duration_ms = _safe_int_status(s_item.get('duration_ms', 0), 0)
+            ttft_ms = _safe_int_status(s_item.get('ttft_ms', 0), 0)
+            output_tokens = _safe_int_status(s_item.get('output_tokens', 0), 0)
+            if duration_ms > 0:
+                s_row['duration_ms_total'] += duration_ms
+                s_row['duration_ms_count'] += 1
+                gen_ms = duration_ms
+                if ttft_ms > 0 and ttft_ms < duration_ms:
+                    gen_ms = max(1, duration_ms - ttft_ms)
+                if gen_ms > 0:
+                    s_row['gen_ms_total'] += gen_ms
+                    s_row['gen_ms_count'] += 1
+                if output_tokens > 0:
+                    # Keep TPS numerator aligned with valid-latency samples only.
+                    s_row['effective_output_tokens_total'] += output_tokens
+            if ttft_ms > 0:
+                s_row['ttft_ms_total'] += ttft_ms
+                s_row['ttft_ms_count'] += 1
+            if output_tokens > 0:
+                s_row['output_tokens_total'] += output_tokens
+
+        tool_logs = _read_json_list_safe(safe_join_path(user_path, 'tool_usage.json'))
+        for log in tool_logs:
+            if not isinstance(log, dict):
+                continue
+            total_tool_calls += 1
+            success = bool(log.get('success', True))
+            if not success:
+                total_tool_failures += 1
+            tool_name = str(log.get('tool_name') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(log.get('provider') or 'unknown').strip() or 'unknown')
+            model_raw = str(log.get('model') or 'unknown').strip() or 'unknown'
+            model_name, display_name = _status_canonicalize_model(model_raw)
+            row = _ensure_status_model_row(model_map, model_name, display_name)
+            row['toolCalls'] += 1
+            if not success:
+                row['failureCount'] += 1
+            _status_add_provider_count(row, provider)
+
+            conversation_id = str(log.get('conversation_id') or '').strip()
+            if conversation_id:
+                task_key = '|'.join([str(username), conversation_id, model_name])
+                task_item = fallback_tool_complexity_tasks.setdefault(task_key, {
+                    'model': model_name,
+                    'display_name': display_name,
+                    'provider': provider,
+                    'calls': 0,
+                })
+                task_item['calls'] = _safe_int_status(task_item.get('calls', 0), 0) + 1
+
+            fail_row = tool_failure_map.setdefault(tool_name, {
+                'name': tool_name,
+                'count': 0,
+                'note': ''
+            })
+            if not success:
+                fail_row['count'] += 1
+                err_text = str(log.get('error_message') or '').strip()
+                if err_text:
+                    fail_row['note'] = err_text[:120]
+
+        conv_dir = safe_join_path(user_path, 'conversations')
+        if os.path.exists(conv_dir):
+            for filename in os.listdir(conv_dir):
+                if not filename.endswith('.json'):
+                    continue
+                conv_path = os.path.join(conv_dir, filename)
+                try:
+                    convo = json.loads(Path(conv_path).read_text(encoding='utf-8'))
+                except Exception:
+                    continue
+                messages = convo.get('messages', []) if isinstance(convo, dict) else []
+                if not isinstance(messages, list):
+                    continue
+                for msg in messages:
+                    if not isinstance(msg, dict) or str(msg.get('role') or '') != 'assistant':
+                        continue
+                    md = msg.get('metadata', {}) if isinstance(msg.get('metadata'), dict) else {}
+                    model_raw = str(md.get('model_name') or msg.get('model_name') or '').strip() or 'unknown'
+                    model_name, display_name = _status_canonicalize_model(model_raw)
+                    row = _ensure_status_model_row(model_map, model_name, display_name)
+                    row['callCount'] += 1
+                    provider = _status_normalize_provider(str(md.get('provider') or msg.get('provider') or '').strip() or 'unknown')
+                    _status_add_provider_count(row, provider)
+                    tool_call_count = _tool_call_count_from_steps(md.get('process_steps', []))
+                    if tool_call_count <= 2:
+                        bucket = 'simple'
+                    elif tool_call_count <= 7:
+                        bucket = 'medium'
+                    else:
+                        bucket = 'complex'
+                    row['complexityLoad'][bucket] += 1
+                    complexity[bucket] += 1
+
+    for log in iter_papi_token_log_entries():
+        if not isinstance(log, dict):
+            continue
+
+        input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
+        output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+        total = log.get('total_tokens', None)
+        if total is None:
+            total = input_tokens + output_tokens
+        total = _safe_int_status(total, 0)
+        total_tokens += total
+
+        model_raw = str(log.get('model') or 'unknown').strip() or 'unknown'
+        provider = _status_normalize_provider(str(log.get('provider') or 'unknown').strip() or 'unknown')
+        model_name, display_name = _status_canonicalize_model(model_raw)
+        row = _ensure_status_model_row(model_map, model_name, display_name)
+        row['totalTokens'] += total
+        row['tokenLogCount'] += 1
+        row['callCount'] += 1
+        row['complexityLoad']['simple'] += 1
+        _status_add_provider_count(row, provider)
+
+        ts_dt = _status_parse_timestamp(log.get('timestamp'))
+        if isinstance(ts_dt, datetime) and ts_dt >= cutoff_24h:
+            recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
+            recent['recentCalls'] += 1
+            recent['recentTokens'] += total
+            _status_add_provider_count(recent, provider)
+
+        duration_ms = _status_normalize_latency_ms(log.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+        ttft_ms = _status_normalize_latency_ms(log.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+        s_row = speed_map.setdefault(model_name, {
+            'id': model_name,
+            'name': str(display_name or model_name).strip() or model_name,
+            '_providerCounts': {},
+            'samples': 0,
+            'duration_ms_total': 0,
+            'duration_ms_count': 0,
+            'gen_ms_total': 0,
+            'gen_ms_count': 0,
+            'ttft_ms_total': 0,
+            'ttft_ms_count': 0,
+            'output_tokens_total': 0,
+            'effective_output_tokens_total': 0
+        })
+        if display_name and (not str(s_row.get('name') or '').strip() or str(s_row.get('name') or '').strip() == model_name):
+            s_row['name'] = str(display_name).strip() or model_name
+        _status_add_provider_count(s_row, provider)
+        s_row['samples'] += 1
+        if duration_ms > 0:
+            s_row['duration_ms_total'] += duration_ms
+            s_row['duration_ms_count'] += 1
+            gen_ms = duration_ms
+            if ttft_ms > 0 and ttft_ms < duration_ms:
+                gen_ms = max(1, duration_ms - ttft_ms)
+            if gen_ms > 0:
+                s_row['gen_ms_total'] += gen_ms
+                s_row['gen_ms_count'] += 1
+            if output_tokens > 0:
+                s_row['effective_output_tokens_total'] += output_tokens
+        if ttft_ms > 0:
+            s_row['ttft_ms_total'] += ttft_ms
+            s_row['ttft_ms_count'] += 1
+        if output_tokens > 0:
+            s_row['output_tokens_total'] += output_tokens
+
+    for log in iter_papi_image_log_entries():
+        if not isinstance(log, dict):
+            continue
+
+        image_stats['requests'] += 1
+
+        status = str(log.get('status') or '').strip().lower()
+        image_count = _safe_int_status(log.get('image_count', 0), 0)
+        if image_count <= 0:
+            images = log.get('images') if isinstance(log.get('images'), list) else []
+            image_count = len(images)
+
+        if status == 'success':
+            image_stats['successes'] += 1
+            image_stats['images'] += image_count
+        else:
+            image_stats['failures'] += 1
+
+        ts_dt = _status_parse_timestamp(log.get('timestamp'))
+        if isinstance(ts_dt, datetime) and ts_dt >= cutoff_24h:
+            image_stats['recent24hRequests'] += 1
+            if status == 'success':
+                image_stats['recent24hImages'] += image_count
+
+    fallback_complexity_by_model: Dict[str, Dict[str, int]] = {}
+    for task_item in fallback_tool_complexity_tasks.values():
+        if not isinstance(task_item, dict):
+            continue
+        model_name = str(task_item.get('model') or 'unknown').strip() or 'unknown'
+        calls = _safe_int_status(task_item.get('calls', 0), 0)
+        if calls <= 0:
+            continue
+        if calls <= 2:
+            bucket = 'simple'
+        elif calls <= 7:
+            bucket = 'medium'
+        else:
+            bucket = 'complex'
+        per_model = fallback_complexity_by_model.setdefault(model_name, {'simple': 0, 'medium': 0, 'complex': 0})
+        per_model[bucket] = _safe_int_status(per_model.get(bucket, 0), 0) + 1
+
+    for model_name, row in model_map.items():
+        if not isinstance(row, dict):
+            continue
+        load = row.get('complexityLoad', {}) if isinstance(row.get('complexityLoad'), dict) else {}
+        load_total = (
+            _safe_int_status(load.get('simple', 0), 0)
+            + _safe_int_status(load.get('medium', 0), 0)
+            + _safe_int_status(load.get('complex', 0), 0)
+        )
+        if load_total > 0:
+            continue
+        fallback_load = fallback_complexity_by_model.get(model_name)
+        if not isinstance(fallback_load, dict):
+            call_count = _safe_int_status(row.get('callCount', 0), 0)
+            if call_count > 0:
+                row['complexityLoad'] = {
+                    'simple': call_count,
+                    'medium': 0,
+                    'complex': 0,
+                }
+            continue
+        row['complexityLoad'] = {
+            'simple': _safe_int_status(fallback_load.get('simple', 0), 0),
+            'medium': _safe_int_status(fallback_load.get('medium', 0), 0),
+            'complex': _safe_int_status(fallback_load.get('complex', 0), 0),
+        }
+
+    complexity = {'simple': 0, 'medium': 0, 'complex': 0}
+    for row in model_map.values():
+        if not isinstance(row, dict):
+            continue
+        load = row.get('complexityLoad', {}) if isinstance(row.get('complexityLoad'), dict) else {}
+        complexity['simple'] += _safe_int_status(load.get('simple', 0), 0)
+        complexity['medium'] += _safe_int_status(load.get('medium', 0), 0)
+        complexity['complex'] += _safe_int_status(load.get('complex', 0), 0)
+
+    for _, row in model_map.items():
+        counts = row.get('_providerCounts', {}) if isinstance(row.get('_providerCounts'), dict) else {}
+        known = [(name, _safe_int_status(v, 0)) for name, v in counts.items() if str(name or '') and str(name) != 'unknown']
+        known = [item for item in known if item[1] > 0]
+        if len(known) >= 2:
+            provider = 'multi'
+        elif len(known) == 1:
+            provider = known[0][0]
+        else:
+            provider = str(row.get('provider') or 'unknown').strip() or 'unknown'
+        row['provider'] = provider
+        icon_provider = _status_icon_provider_for_model(str(row.get('id') or ''), provider)
+        row['icon'] = _status_provider_icon(icon_provider)
+        row.pop('_providerCounts', None)
+        tool_calls = _safe_int_status(row.get('toolCalls', 0))
+        failures = _safe_int_status(row.get('failureCount', 0))
+        call_count = _safe_int_status(row.get('callCount', 0))
+        token_log_count = _safe_int_status(row.get('tokenLogCount', 0))
+        row['tokenCoverage'] = round((token_log_count / call_count * 100.0), 1) if call_count > 0 else 0.0
+        if tool_calls > 0:
+            row['successRate'] = round(max(0.0, (tool_calls - failures) / tool_calls * 100.0), 1)
+        else:
+            row['successRate'] = 100.0
+
+    for _, row in recent_24h_map.items():
+        counts = row.get('_providerCounts', {}) if isinstance(row.get('_providerCounts'), dict) else {}
+        known = [(name, _safe_int_status(v, 0)) for name, v in counts.items() if str(name or '') and str(name) != 'unknown']
+        known = [item for item in known if item[1] > 0]
+        if len(known) >= 2:
+            provider = 'multi'
+        elif len(known) == 1:
+            provider = known[0][0]
+        else:
+            provider = str(row.get('provider') or 'unknown').strip() or 'unknown'
+        row['provider'] = provider
+        icon_provider = _status_icon_provider_for_model(str(row.get('id') or ''), provider)
+        row['icon'] = _status_provider_icon(icon_provider)
+        row.pop('_providerCounts', None)
+
+    max_calls = max((_safe_int_status(item.get('callCount', 0)) for item in model_map.values()), default=0)
+    max_tokens = max((_safe_int_status(item.get('totalTokens', 0)) for item in model_map.values()), default=0)
+    max_tools = max((_safe_int_status(item.get('toolCalls', 0)) for item in model_map.values()), default=0)
+    max_recent_calls = max((_safe_int_status(item.get('recentCalls', 0)) for item in recent_24h_map.values()), default=0)
+    max_recent_tokens = max((_safe_int_status(item.get('recentTokens', 0)) for item in recent_24h_map.values()), default=0)
+
+    for row in model_map.values():
+        call_count = _safe_int_status(row.get('callCount', 0))
+        token_total = _safe_int_status(row.get('totalTokens', 0))
+        tool_calls = _safe_int_status(row.get('toolCalls', 0))
+        success_rate = max(0.0, min(100.0, float(row.get('successRate', 0.0)))) / 100.0
+        call_ratio = (call_count / max_calls) if max_calls > 0 else 0.0
+        token_ratio = (token_total / max_tokens) if max_tokens > 0 else 0.0
+        tool_ratio = (tool_calls / max_tools) if max_tools > 0 else 0.0
+
+        raw_score = (
+            success_rate * 0.38
+            + call_ratio * 0.30
+            + token_ratio * 0.22
+            + tool_ratio * 0.10
+        ) * 100.0
+        score = round(max(0.0, min(100.0, raw_score)))
+        if call_count <= 0 and token_total <= 0 and tool_calls <= 0:
+            score = 0
+        if str(row.get('id') or '') == 'unknown':
+            score = 0
+        row['score'] = int(score)
+
+    for row in recent_24h_map.values():
+        call_factor = (_safe_int_status(row.get('recentCalls', 0)) / max_recent_calls * 45.0) if max_recent_calls else 0.0
+        token_factor = (_safe_int_status(row.get('recentTokens', 0)) / max_recent_tokens * 55.0) if max_recent_tokens else 0.0
+        score = round(min(100.0, call_factor + token_factor))
+        if str(row.get('id') or '') == 'unknown':
+            score = 0
+        row['score'] = int(score)
+
+    models = sorted(
+        model_map.values(),
+        key=lambda item: (
+            _safe_int_status(item.get('score', 0)),
+            _safe_int_status(item.get('callCount', 0)),
+            _safe_int_status(item.get('totalTokens', 0))
+        ),
+        reverse=True
+    )
+    recent_24h = sorted(
+        recent_24h_map.values(),
+        key=lambda item: (
+            _safe_int_status(item.get('score', 0)),
+            _safe_int_status(item.get('recentTokens', 0)),
+            _safe_int_status(item.get('recentCalls', 0))
+        ),
+        reverse=True
+    )[:12]
+
+    tool_failures = sorted(
+        [item for item in tool_failure_map.values() if _safe_int_status(item.get('count', 0)) > 0],
+        key=lambda item: _safe_int_status(item.get('count', 0)),
+        reverse=True
+    )[:8]
+
+    total_model_calls = sum(_safe_int_status(item.get('callCount', 0)) for item in models)
+
+    # Speed leaderboard (status page): balanced TTFT + output throughput.
+    # Do not hard-filter low-sample models here; UI can still show sample count.
+    speed_min_samples = 3
+    speed_rows: List[Dict[str, Any]] = []
+    speed_min_ttft = None
+    speed_max_tps = 0.0
+    for s in speed_map.values():
+        samples = _safe_int_status(s.get('samples', 0), 0)
+        duration_count = _safe_int_status(s.get('duration_ms_count', 0), 0)
+        gen_count = _safe_int_status(s.get('gen_ms_count', 0), 0)
+        ttft_count = _safe_int_status(s.get('ttft_ms_count', 0), 0)
+        duration_total = _safe_int_status(s.get('duration_ms_total', 0), 0)
+        gen_total = _safe_int_status(s.get('gen_ms_total', 0), 0)
+        output_total = _safe_int_status(s.get('output_tokens_total', 0), 0)
+        effective_output_total = _safe_int_status(s.get('effective_output_tokens_total', 0), 0)
+        avg_duration_ms = (duration_total / duration_count) if duration_count > 0 else 0.0
+        avg_ttft_ms = (float(s.get('ttft_ms_total', 0)) / ttft_count) if ttft_count > 0 else 0.0
+        tps_denom_ms = gen_total if gen_total > 0 else duration_total
+        avg_output_tps = (effective_output_total * 1000.0 / tps_denom_ms) if tps_denom_ms > 0 and effective_output_total > 0 else 0.0
+        speed_row = {
+            'id': str(s.get('id') or 'unknown'),
+            'name': str(s.get('name') or s.get('id') or 'unknown'),
+            'provider': 'unknown',
+            'icon': '',
+            'samples': samples,
+            'outputTokens': int(max(0, output_total)),
+            'avgDurationMs': round(avg_duration_ms, 1) if avg_duration_ms > 0 else 0.0,
+            'avgTTFTMs': round(avg_ttft_ms, 1) if avg_ttft_ms > 0 else 0.0,
+            'avgOutputTPS': round(avg_output_tps, 3),
+            'score': 0.0
+        }
+        counts = s.get('_providerCounts', {}) if isinstance(s.get('_providerCounts'), dict) else {}
+        known = [(name, _safe_int_status(v, 0)) for name, v in counts.items() if str(name or '') and str(name) != 'unknown']
+        known = [item for item in known if item[1] > 0]
+        if len(known) >= 2:
+            provider = 'multi'
+        elif len(known) == 1:
+            provider = known[0][0]
+        else:
+            provider = 'unknown'
+        speed_row['provider'] = provider
+        icon_provider = _status_icon_provider_for_model(str(speed_row.get('id') or ''), provider)
+        speed_row['icon'] = _status_provider_icon(icon_provider)
+        speed_rows.append(speed_row)
+        if speed_row['avgTTFTMs'] > 0 and (speed_min_ttft is None or speed_row['avgTTFTMs'] < speed_min_ttft):
+            speed_min_ttft = speed_row['avgTTFTMs']
+        if speed_row['avgOutputTPS'] > speed_max_tps:
+            speed_max_tps = speed_row['avgOutputTPS']
+
+    speed_min_ttft = float(speed_min_ttft or 0.0)
+    speed_max_tps = float(speed_max_tps or 0.0)
+    for s in speed_rows:
+        ttft = float(s.get('avgTTFTMs') or 0.0)
+        tps = float(s.get('avgOutputTPS') or 0.0)
+        ttft_score = 0.0
+        if speed_min_ttft > 0 and ttft > 0:
+            ttft_score = min(100.0, max(0.0, (speed_min_ttft / ttft) * 100.0))
+        tps_score = 0.0
+        if speed_max_tps > 0 and tps > 0:
+            tps_score = min(100.0, max(0.0, (tps / speed_max_tps) * 100.0))
+        s['score'] = round(ttft_score * 0.45 + tps_score * 0.55, 1)
+
+    speed_rows = sorted(
+        speed_rows,
+        key=lambda item: (
+            float(item.get('score', 0.0)),
+            float(item.get('avgOutputTPS', 0.0)),
+            -float(item.get('avgTTFTMs', 1e18))
+        ),
+        reverse=True
+    )[:12]
+
+    return {
+        'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
+        'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/{token_log,image_log}.jsonl',
+        'totals': {
+            'tokens': total_tokens,
+            'modelCalls': total_model_calls,
+            'toolCalls': total_tool_calls,
+            'toolFailures': total_tool_failures
+        },
+        'imageStats': image_stats,
+        'complexity': complexity,
+        'models': models[:12],
+        'speedModels': speed_rows,
+        'speedWindowDays': 30,
+        'speedMinSamples': speed_min_samples,
+        'toolFailures': tool_failures,
+        'recent24h': recent_24h,
+        'recent24hWindowHours': 24
+    }
+
+
+@stats_bp.route('/api/rank/overview', methods=['GET'])
+def rank_overview_api():
+    try:
+        return jsonify({'success': True, 'status': build_status_overview()})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@stats_bp.route('/api/status/overview', methods=['GET'])
+def service_status_overview_api():
+    return jsonify({'success': True, 'status': get_service_status_monitor().overview()})
+
+
+@stats_bp.route('/api/health', methods=['GET'])
+def service_health_api():
+    return jsonify({'success': True, 'service': 'Nexora'})
