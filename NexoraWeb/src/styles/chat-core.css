@@ -2015,10 +2015,10 @@ body.learning-course-workspace-active .sidebar-header{
 
 .question-card-body{
     border: none;
-    border-left: 2px solid #d4d8de;
+    border-left: 2px solid var(--color-border);
     border-radius: 0;
     background: transparent;
-    color: #20242c;
+    color: var(--color-text-primary);
     padding: 10px 0 10px 14px;
 }
 
@@ -2039,7 +2039,7 @@ body.learning-course-workspace-active .sidebar-header{
 .question-card-pill{
     flex: 0 0 auto;
     padding: 5px 10px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--color-border-input);
     border-radius: 999px;
     font-size: 11px;
     line-height: 1;
@@ -2056,7 +2056,7 @@ body.learning-course-workspace-active .sidebar-header{
 
 .question-card-content{
     margin-top: 6px;
-    color: #3f4654;
+    color: var(--color-text-secondary);
     font-size: 13px;
     line-height: 1.65;
 }
@@ -2069,10 +2069,10 @@ body.learning-course-workspace-active .sidebar-header{
 }
 
 .question-choice-btn,.question-other-submit{
-    border: 1px solid #d8dde4;
+    border: 1px solid var(--color-border-input);
     border-radius: 4px;
     background: var(--color-bg-elevated);
-    color: #20242c;
+    color: var(--color-text-primary);
     min-height: 34px;
     padding: 8px 11px;
     font-size: 13px;
@@ -2082,7 +2082,7 @@ body.learning-course-workspace-active .sidebar-header{
 }
 
 .question-choice-btn:hover,.question-other-submit:hover{
-    border-color: #b8c0ca;
+    border-color: var(--color-border-strong);
     background: var(--color-bg-sunken);
 }
 
@@ -2096,10 +2096,10 @@ body.learning-course-workspace-active .sidebar-header{
 .question-other-input{
     flex: 1;
     min-width: 0;
-    border: 1px solid #d8dde4;
+    border: 1px solid var(--color-border-input);
     border-radius: 4px;
     background: var(--color-bg-elevated);
-    color: #20242c;
+    color: var(--color-text-primary);
     padding: 8px 10px;
     font-size: 13px;
 }
