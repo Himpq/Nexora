@@ -102,6 +102,25 @@ def _safe_unlink(path: Optional[str]) -> None:
         pass
 
 
+def _mail_payload_to_bytes(payload: Any) -> bytes:
+    """Read a file payload byte-for-byte or encode an in-memory mail as UTF-8."""
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+
+    if isinstance(payload, str) and os.path.isfile(payload):
+        with open(payload, 'rb') as payload_file:
+            return payload_file.read()
+
+    text = str(payload if payload is not None else '')
+    return text.encode('utf-8', errors='surrogateescape')
+
+
+def _write_mail_content(path: str, payload: Any) -> None:
+    """Persist mail content without decoding or re-encoding file-backed payloads."""
+    with open(path, 'wb') as content_file:
+        content_file.write(_mail_payload_to_bytes(payload))
+
+
 @dataclass
 class SessionState:
     peer: str
@@ -722,7 +741,12 @@ def handle_auth(conn, connfile, cmds, state: SessionState, userGroup):
             log_message=f"AUTH Fal: {username}")
 
 def handle(conn: socket.socket, addr, user_group, listen_port):
-    connfile = SocketUtils.make_connfile(conn, mode='r', encoding='utf-8')
+    connfile = SocketUtils.make_connfile(
+        conn,
+        mode='r',
+        encoding='utf-8',
+        errors='surrogateescape',
+    )
 
     try:
         peer_info = conn.getpeername()
@@ -800,7 +824,7 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
     def _append_data_line(line: str) -> None:
         fp = state.data_fp
         if fp:
-            chunk = line.encode() if isinstance(line, str) else line
+            chunk = line.encode('utf-8', errors='surrogateescape') if isinstance(line, str) else line
             fp.write(chunk)
             state.data_size += len(chunk)
             if state.data_size > max_message_bytes:
@@ -819,8 +843,8 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
 
         if state.attributes.get('ip_send_limit_reserved'):
             try:
-                with open(data_file, 'r', encoding='utf-8', errors='replace') as fp:
-                    recent_header = fp.read(65536)
+                with open(data_file, 'rb') as fp:
+                    recent_header = fp.read(65536).decode('utf-8', errors='surrogateescape')
                 IPSendLimiter.record_subject(state.peer, parse_subject(recent_header))
             except Exception as exc:
                 state.log(f"IP send limit subject recording failed: {exc}")
@@ -857,8 +881,8 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
                 raw_original = ''
                 try:
                     if data_file and os.path.exists(data_file):
-                        with open(data_file, 'r', encoding='utf-8', errors='replace') as fp:
-                            raw_original = fp.read(8192)
+                        with open(data_file, 'rb') as fp:
+                            raw_original = fp.read(8192).decode('utf-8', errors='surrogateescape')
                 except Exception:
                     raw_original = ''
                 sendDsnMail(sender_addr, raw_original, all_attempts, user_group)
@@ -963,7 +987,12 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
                         else:
                             break
                     else:
-                        connfile = SocketUtils.make_connfile(conn, mode='r', encoding='utf-8')
+                        connfile = SocketUtils.make_connfile(
+                            conn,
+                            mode='r',
+                            encoding='utf-8',
+                            errors='surrogateescape',
+                        )
                         state.authenticated = False
                         state.user = None
                         state.reset_envelope()
@@ -1028,18 +1057,6 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             return False
         return perm in perms
 
-    def _read_mail_data_text(payload):
-        try:
-            if isinstance(payload, str) and os.path.exists(payload):
-                with open(payload, 'r', encoding='utf-8', errors='replace') as pf:
-                    return pf.read()
-            return str(payload)
-        except Exception:
-            try:
-                return str(payload)
-            except Exception:
-                return ""
-
     def _save_sender_sent_copy():
         """SMTP 层统一保存发件副本：sender/sent/<mail_id>"""
         try:
@@ -1060,8 +1077,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             mail_dir = os.path.join(sent_root, mail_id)
             os.makedirs(mail_dir, exist_ok=True)
 
-            with open(os.path.join(mail_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-                f.write(_read_mail_data_text(data))
+            _write_mail_content(os.path.join(mail_dir, 'content.txt'), data)
 
             with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
                 sent_info = {
@@ -1099,20 +1115,8 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
 
         os.makedirs(mail_dir, exist_ok=True)
 
-        with open(os.path.join(mail_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-            # 如果 data 表示一个文件路径，则把文件内容移动/复制到 mailbox
-            try:
-                if isinstance(data, str) and os.path.exists(data):
-                    # 复制而不是 move，避免破坏后续多收件人投递和发件副本保存
-                    with open(data, 'r', encoding='utf-8', errors='replace') as sf:
-                        f.write(sf.read())
-                else:
-                    f.write(data)
-            except Exception:
-                try:
-                    f.write(str(data))
-                except Exception:
-                    pass
+        # 如果 data 表示一个文件路径，则按原始字节复制，避免破坏 MIME/charset 信息。
+        _write_mail_content(os.path.join(mail_dir, 'content.txt'), data)
 
         mail_info = {
             'sender': sender,
@@ -1388,8 +1392,10 @@ def sendErrorMail(sender, recipient, data, userGroup, reason="Email delivery fai
     loginfo.write(f"[{sender}][SMTP] Sending error mail {error_mail_id} from {sender} to {recipient}")
     os.makedirs(error_mail_dir, exist_ok=True)
 
-    with open(os.path.join(error_mail_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-        f.write(loadErrorMailContent(sender, recipient, data, reason, detail))
+    _write_mail_content(
+        os.path.join(error_mail_dir, 'content.txt'),
+        loadErrorMailContent(sender, recipient, data, reason, detail),
+    )
 
     mail_info = {
         'sender': userGroup.getErrorMailFrom(),
@@ -1502,8 +1508,7 @@ def sendDsnMail(sender, original, attempts, userGroup):
 
         # 如果模板包含完整头部则直接写入；否则构建 MIME multipart
         if used_template and (html.lstrip().startswith('Date:') or 'MIME-Version:' in html or 'Content-Type:' in html or html.lstrip().startswith('From:')):
-            with open(os.path.join(note_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-                f.write(html)
+            _write_mail_content(os.path.join(note_dir, 'content.txt'), html)
             with open(os.path.join(note_dir, 'mail.json'), 'w', encoding='utf-8') as f:
                 note_info = {'sender': userGroup.getErrorMailFrom(), 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}
                 json.dump(note_info, f, indent=2)
@@ -1573,8 +1578,7 @@ def sendDsnMail(sender, original, attempts, userGroup):
             mime_lines.append(f"--{boundary}--")
 
             mime_text = '\r\n'.join(mime_lines)
-            with open(os.path.join(note_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-                f.write(mime_text)
+            _write_mail_content(os.path.join(note_dir, 'content.txt'), mime_text)
             with open(os.path.join(note_dir, 'mail.json'), 'w', encoding='utf-8') as f:
                 note_info = {'sender': from_addr, 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}
                 json.dump(note_info, f, indent=2)
@@ -1977,8 +1981,7 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
                         note_id = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
                         note_dir = os.path.join(path, note_id)
                         os.makedirs(note_dir, exist_ok=True)
-                        with open(os.path.join(note_dir, 'content.txt'), 'w', encoding='utf-8') as f:
-                            f.write(notice)
+                        _write_mail_content(os.path.join(note_dir, 'content.txt'), notice)
                         with open(os.path.join(note_dir, 'mail.json'), 'w', encoding='utf-8') as f:
                             json.dump({'sender': services.get('MailRelay', {}).get('relayUsername', 'relay'), 'recipient': sender, 'timestamp': int(time.time()), 'id': note_id}, f, indent=2)
                         loginfo.write(f"[{sender}][SMTP] Mail delivered via relay and notification saved as {note_id}")

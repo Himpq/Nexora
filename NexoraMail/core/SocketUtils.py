@@ -94,9 +94,12 @@ def safe_dup_socket(conn, connfile=None, log=None):
         return conn
 
 
-def make_connfile(conn, mode='r', encoding='utf-8'):
+def make_connfile(conn, mode='r', encoding='utf-8', errors=None):
     """Create a text-file wrapper for the socket. Centralized makefile calls."""
     try:
-        return conn.makefile(mode, encoding=encoding)
+        kwargs = {'encoding': encoding}
+        if errors is not None:
+            kwargs['errors'] = errors
+        return conn.makefile(mode, **kwargs)
     except Exception:
         return None
