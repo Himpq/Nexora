@@ -3,11 +3,13 @@ Nexora.app.utils — 应用层基础工具
 
 纯标准库依赖的工具函数，被应用层各模块复用。
 - secure.py: 安全工具（文件名/路径/HTML 转义）
+- coerce.py: 基础类型归一化（布尔值解析）
 - text_patch.py: 文本补丁（diff/apply/range 替换）
 - history_sanitizer.py: 历史消息清洗
 - runlog.py: 运行日志
 - client_tool_bridge.py: 客户端工具桥
 """
+from .coerce import as_bool
 from .secure import (
     escape_html_text,
     normalize_text,
