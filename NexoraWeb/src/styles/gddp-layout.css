@@ -5,8 +5,33 @@
  * 组件不再依赖页面宽度或视图名称编写特例布局。
  */
 
+/*
+ * 应用根布局契约:
+ * html/body 是固定视口,Vue 挂载链路只能在视口内伸缩。
+ * 只给 body 设置 overflow:hidden 不足以约束 html 的 scrollWidth,
+ * 所以根节点与应用容器必须同时封顶,避免视图切换时产生页面级横向滚动。
+ */
+html,
+body,
+#app,
+#nexora-app {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+}
+
+html,
+body {
+    height: 100%;
+    overflow: hidden;
+}
+
 .app-container {
+    position: relative;
     display: flex;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     height: 100%;
     overflow: hidden;
 }
@@ -14,7 +39,9 @@
 .main-content {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
+    /* flex 基准固定为 0,主区只占侧栏后的剩余宽度,不带入内容固有宽度 */
+    flex: 1 1 0;
+    width: 0;
     min-width: 0;
     min-height: 0;
     overflow: hidden;

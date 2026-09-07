@@ -16,6 +16,8 @@
   flex-direction: column;
   transform: translateX(105%);
   opacity: 0;
+  /* transform 只负责滑出动画,关闭态必须禁止绘制,避免定位规则重叠时出现整块黑色区域 */
+  visibility: hidden;
   pointer-events: none;
   will-change: transform, opacity;
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
@@ -24,6 +26,7 @@
 .knowledge-sidebar.visible{
   transform: translateX(0);
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
 }
 .knowledge-sidebar.panel-animating{
@@ -381,5 +384,4 @@
 /*
  * knowledge.css — 知识库视图域 (阶段2c 续,自 legacy/style.css 收编)
  */
-
 

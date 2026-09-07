@@ -523,6 +523,8 @@
         display: flex;
         flex-direction: column;
         flex: 1;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
         overflow: hidden;
         background: var(--color-bg-elevated);

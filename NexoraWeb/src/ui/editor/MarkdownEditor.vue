@@ -460,6 +460,8 @@
         display: flex;
         flex-direction: column;
         flex: 1;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
         overflow: hidden;
         background: var(--color-bg-elevated);
@@ -481,6 +483,8 @@
         align-items: center;
         gap: 2px;
         flex-shrink: 0;
+        width: 100%;
+        min-width: 0;
         padding: 6px 10px;
         border-bottom: 1px solid var(--color-border);
         background: var(--color-bg-elevated);
@@ -567,8 +571,11 @@
 
     .gddp-markdown-host {
         flex: 1;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
         position: relative;
+        overflow: hidden;
     }
 
     /* 隐藏 Toast UI 原生工具栏,改用自定义工具栏 */
@@ -578,6 +585,8 @@
 
     /* 高度链:defaultUI → main → main-container → md-container → vertical-style */
     .gddp-markdown-host :deep(.toastui-editor-defaultUI) {
+        width: 100%;
+        min-width: 0;
         height: 100%;
         min-height: 0;
         border: 0;
@@ -586,16 +595,23 @@
 
     .gddp-markdown-host :deep(.toastui-editor-main) {
         flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
+        overflow: hidden;
     }
 
     .gddp-markdown-host :deep(.toastui-editor-main-container) {
+        width: 100%;
+        min-width: 0;
         height: 100%;
         min-height: 0;
     }
 
     .gddp-markdown-host :deep(.toastui-editor-md-container) {
         display: block;
+        width: 100%;
+        min-width: 0;
         height: 100%;
         min-height: 0;
         overflow: hidden;
@@ -605,6 +621,8 @@
     .gddp-markdown-host :deep(.toastui-editor-md-vertical-style) {
         display: flex;
         align-items: stretch;
+        width: 100%;
+        min-width: 0;
         height: 100% !important;
         min-height: 0 !important;
     }
@@ -614,6 +632,7 @@
         flex-direction: column;
         flex: 1 1 50%;
         min-width: 0;
+        max-width: 100%;
         height: 100% !important;
         min-height: 0 !important;
     }
@@ -621,6 +640,8 @@
     /* ProseMirror 撑满编辑区(修复其 height 非 100% 导致编辑区塌陷) */
     .gddp-markdown-host :deep(.toastui-editor-md-container .ProseMirror) {
         flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
         height: 100% !important;
         min-height: 100% !important;
         overflow-y: auto !important;
@@ -630,10 +651,12 @@
     .gddp-markdown-host :deep(.toastui-editor-md-container .toastui-editor-md-preview) {
         flex: 1 1 50%;
         min-width: 0;
+        max-width: 100%;
         height: 100%;
         min-height: 0;
         overflow-y: auto;
         overflow-x: hidden;
+        overscroll-behavior: contain;
     }
 
     /* 分屏分隔条:位于 main-container 内、md-container 的兄弟节点,默认隐藏 */
