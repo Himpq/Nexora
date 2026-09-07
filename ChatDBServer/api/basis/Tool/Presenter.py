@@ -476,6 +476,15 @@ class ToolResultPresenter:
             lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
+        if str(payload.get("content_type") or "").strip().lower() == "image":
+            lines.extend([
+                "",
+                "### Content",
+                "",
+                str(payload.get("message") or "图片文件，未转换为文本。"),
+            ])
+            return "\n".join(lines).strip()
+
         lines.extend([
             "",
             "### Content",

@@ -1571,10 +1571,31 @@ class ToolExecutor:
                 to_line=args.get("to_line"),
                 from_pos=offset,
                 to_pos=to_pos,
+                include_image_metadata=True,
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+
+    def prepare_cloud_file_image_input(self, file_ref: str) -> Dict[str, Any]:
+        """准备云端图片的内联输入，不将原始字节放入工具结果或持久化数据。"""
+        asset = self._file_sandbox.read_image_asset(file_ref)
+        image_bytes = asset.get("bytes")
+        mime = str(asset.get("mime") or "").strip()
+
+        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+            raise ValueError("图片原始内容为空。")
+
+        if not mime.startswith("image/"):
+            raise ValueError("图片 MIME 类型无效。")
+
+        encoded = base64.b64encode(bytes(image_bytes)).decode("ascii")
+        return {
+            "url": f"data:{mime};base64,{encoded}",
+            "mime": mime,
+            "name": str((asset.get("file") or {}).get("original_name") or "").strip(),
+            "size": len(image_bytes),
+        }
 
     def _file_write(self, args: Dict[str, Any]) -> str:
         file_ref = args.get("file_path") or args.get("path") or args.get("file")

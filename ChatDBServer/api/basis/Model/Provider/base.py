@@ -342,6 +342,53 @@ class ProviderInterface(ABC):
             "content": str(result or "")
         }
 
+    def build_image_input_messages(
+        self,
+        *,
+        image_inputs: Optional[List[Dict[str, Any]]] = None,
+        use_responses_api: bool,
+    ) -> List[Dict[str, Any]]:
+        """按当前 Provider 协议构建独立的图片输入消息。"""
+        normalized_images = []
+
+        for item in image_inputs or []:
+            if not isinstance(item, dict):
+                continue
+
+            image_url = str(item.get("url") or "").strip()
+
+            if image_url:
+                normalized_images.append(image_url)
+
+        if not normalized_images:
+            return []
+
+        image_content = []
+        text_type = "input_text" if use_responses_api else "text"
+        image_content.append({
+            "type": text_type,
+            "text": "以下是 cloud_file_read 读取到的图片，请结合用户问题进行分析。",
+        })
+
+        for image_url in normalized_images:
+            if use_responses_api:
+                image_content.append({"type": "input_image", "image_url": image_url})
+            else:
+                image_content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+        # 图片作为独立 user 内容发送，避免要求所有 Provider 都接受带图片的 tool content。
+        return [{"role": "user", "content": image_content}]
+
+    def supports_vision_input(self, model_name: str) -> bool:
+        """判断当前模型是否允许接收图片输入，不发起额外网络探测。"""
+        matcher = getattr(self, "_model_matches_capability", None)
+
+        if not callable(matcher):
+            return False
+
+        model_id = str(model_name or "").strip()
+        return bool(matcher({"id": model_id, "name": model_id, "raw": {}}, "vision"))
+
     def detect_round_search_enabled(
         self,
         *,

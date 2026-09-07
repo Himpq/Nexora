@@ -413,6 +413,9 @@ class Model(MailMixin):
         self._temp_context_settings = {}
         # 双轨显示：缓存生效时保留完整展示用 markdown，供前端优先渲染
         self._pending_display_results: Dict[str, str] = {}
+        # 工具图片只在当前回复的下一轮请求中使用，不进入工具结果字符串或会话历史。
+        self._pending_tool_image_inputs: Dict[str, List[Dict[str, Any]]] = {}
+        self._model_vision_input_capability: Optional[bool] = None
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -2257,6 +2260,12 @@ class Model(MailMixin):
             
             # 执行函数
             raw_result = self._execute_function_impl(function_name, args)
+            raw_result = self._prepare_tool_image_attachment(
+                function_name,
+                args,
+                raw_result,
+                call_id,
+            )
 
             # 双轨：先基于原始结果生成完整展示用 markdown（不受缓存/截断影响），供前端优先渲染
             try:
@@ -2999,6 +3008,95 @@ class Model(MailMixin):
         """函数执行实现（委托给统一工具执行器）"""
         return self.tool_executor.execute(function_name, args)
 
+    def _current_model_supports_vision_input(self) -> bool:
+        """通过 Provider Adapter 判断当前模型是否支持图片输入。"""
+        if self._model_vision_input_capability is not None:
+            return bool(self._model_vision_input_capability)
+
+        checker = getattr(self.provider_adapter, "supports_vision_input", None)
+        supported = False
+
+        if callable(checker):
+            supported = bool(checker(self.model_name))
+
+        self._model_vision_input_capability = supported
+        print(
+            f"[VISION_GATE] provider={self.provider} model={self.model_name} "
+            f"supported={supported}"
+        )
+        return supported
+
+    def _prepare_tool_image_attachment(
+        self,
+        function_name: str,
+        args: Dict[str, Any],
+        raw_result: str,
+        call_id: str,
+    ) -> str:
+        """把 cloud_file_read 的图片结果转换为当前请求的内部图片附件。"""
+        if canonicalize_tool_name(function_name) != "cloud_file_read":
+            return raw_result
+
+        try:
+            payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except Exception:
+            return raw_result
+
+        if not isinstance(payload, dict) or str(payload.get("content_type") or "").strip().lower() != "image":
+            return raw_result
+
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+
+        if not file_ref:
+            return raw_result
+
+        if not self._current_model_supports_vision_input():
+            payload["image_input"] = {
+                "attached": False,
+                "reason": "current_model_does_not_support_vision",
+            }
+            payload["message"] = "图片文件已找到，但当前模型不支持图片输入，无法读取图像内容；请勿根据文件名或元数据推测图片内容。"
+            return json.dumps(payload, ensure_ascii=False)
+
+        try:
+            prepared = self.tool_executor.prepare_cloud_file_image_input(str(file_ref))
+            image_url = str(prepared.get("url") or "").strip()
+
+            if not image_url:
+                raise ValueError("未生成有效的图片输入。")
+
+            safe_call_id = str(call_id or "").strip()
+
+            if safe_call_id:
+                self._pending_tool_image_inputs[safe_call_id] = [prepared]
+
+            payload["image_input"] = {
+                "attached": True,
+                "mime": str(prepared.get("mime") or "").strip(),
+                "size": int(prepared.get("size") or 0),
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as error:
+            print(
+                f"[VISION_INPUT] prepare failed provider={self.provider} "
+                f"model={self.model_name} file={str(file_ref)} error={error}"
+            )
+            payload["image_input"] = {
+                "attached": False,
+                "reason": "image_prepare_failed",
+            }
+            payload["message"] = f"图片文件已找到，但原图未能传入当前模型：{error}"
+            return json.dumps(payload, ensure_ascii=False)
+
+    def _consume_tool_image_inputs(self, call_id: str) -> List[Dict[str, Any]]:
+        """取出工具调用准备好的图片附件，确保每个附件只发送一次。"""
+        safe_call_id = str(call_id or "").strip()
+
+        if not safe_call_id:
+            return []
+
+        return self._pending_tool_image_inputs.pop(safe_call_id, [])
+
     def _model_visible_function_result(self, function_name: str, result: Any, args: Optional[Dict[str, Any]] = None) -> str:
         """Extract the short result text that is sent back to the model."""
         raw_name = str(function_name or "").strip()
@@ -3503,6 +3601,7 @@ class Model(MailMixin):
 
         response_trace_id = uuid.uuid4().hex
         self._cache_attribution = {}
+        self._pending_tool_image_inputs = {}
 
         try:
             quota_gate = get_generation_quota_gate(provider_name=self.provider, model_name=self.model_name)
@@ -6765,6 +6864,7 @@ class Model(MailMixin):
                         ])
                         
                         function_outputs = []
+                        round_tool_image_inputs: List[Dict[str, Any]] = []
                         
                         for func_call in function_calls:
                             func_name = func_call["name"]
@@ -6951,6 +7051,7 @@ class Model(MailMixin):
                             yield step_result
                             
                             # 收集函数输出（provider adapter 统一构建）
+                            tool_image_inputs = self._consume_tool_image_inputs(call_id)
                             current_function_outputs.append(
                                 self.provider_adapter.build_function_output_message(
                                     call_id=call_id,
@@ -6958,9 +7059,17 @@ class Model(MailMixin):
                                     use_responses_api=use_responses_api
                                 )
                             )
+                            round_tool_image_inputs.extend(tool_image_inputs)
 
                         if process_steps and process_steps[-1].get("type") in {"question", "puzzle"}:
                             break
+
+                        current_function_outputs.extend(
+                            self.provider_adapter.build_image_input_messages(
+                                image_inputs=round_tool_image_inputs,
+                                use_responses_api=use_responses_api,
+                            )
+                        )
 
                         # [FIX] 工具调用结束后的过渡提示（由 provider adapter 决定是否需要）
                         if self.provider_adapter.should_append_tool_completion_hint(use_responses_api=use_responses_api):

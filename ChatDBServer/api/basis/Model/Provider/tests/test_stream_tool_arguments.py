@@ -106,5 +106,33 @@ class StreamToolArgumentsTest(unittest.TestCase):
             reconcile_stream_snapshot('{"port":670', '{"port":6800}', "arguments")
 
 
+class FunctionOutputMessagesTest(unittest.TestCase):
+    def setUp(self):
+        self.provider = _TestProvider("test", {})
+        self.image_url = "data:image/png;base64,AAAA"
+
+    def test_chat_completion_uses_image_url_content(self):
+        messages = self.provider.build_image_input_messages(
+            image_inputs=[{"url": self.image_url}],
+            use_responses_api=False,
+        )
+
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"][0]["type"], "text")
+        self.assertEqual(messages[0]["content"][1]["type"], "image_url")
+        self.assertEqual(messages[0]["content"][1]["image_url"]["url"], self.image_url)
+
+    def test_responses_api_uses_input_image_content(self):
+        messages = self.provider.build_image_input_messages(
+            image_inputs=[{"url": self.image_url}],
+            use_responses_api=True,
+        )
+
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"][0]["type"], "input_text")
+        self.assertEqual(messages[0]["content"][1]["type"], "input_image")
+        self.assertEqual(messages[0]["content"][1]["image_url"], self.image_url)
+
+
 if __name__ == "__main__":
     unittest.main()
