@@ -1,9 +1,10 @@
 // MainChat.ets - 主对话页（豆包式单一主页）
 // 登录后的唯一主页 = 对话界面本身，取代旧「HomePage 首页 + ChatPage 详情」的两页跳转：
-//  - 顶栏左侧头像点击滑出侧栏抽屉（账号卡 / 新对话 / 最近对话 / 设置 / 退出）
+//  - 顶栏左侧头像点击滑出侧栏抽屉（功能入口：新对话/邮件 / 最近对话 / 视图切换 / 账户行）
 //  - 中间列展示会话标题 + 当前模型（可点切换），右侧 + 新建对话
 //  - 空态显示问候 + 快捷能力宫格，发送后原地进入消息流（不压栈）
 //  - 历史会话从侧栏点选后「原地替换状态」，会话删除后若删的是当前会话则复位空态
+//  - 邮件为独立界面：侧栏入口触发，本页全屏覆盖层挂载，返回键先退详情再退页面
 // 键盘 RESIZE 避让与系统栏同色已在 EntryAbility 全局配置，本页不重复处理
 // 页面级统一 @State 持有进程单例（见工程约定），弹层收敛到单个 bindSheet
 
@@ -26,6 +27,7 @@ import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
 import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
+import { MailPage } from '../components/mail/MailPage';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
@@ -81,6 +83,11 @@ export struct MainChat {
     // 拖拽起始时的 translate 值（跟手拖动用，非响应式）
     private dragStartTranslate: number = 0;
 
+    // ---------- 邮件页（全屏覆盖层） ----------
+    // 条件挂载 + 右滑转场；mailDetailOpen 以 @Link 下发 MailPage，返回键先退详情再退页面
+    @State private mailOpen: boolean = false;
+    @State private mailDetailOpen: boolean = false;
+
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
     @State private showScrollBottom: boolean = false;
 
@@ -124,8 +131,18 @@ export struct MainChat {
         };
     }
 
-    // 系统返回键处理：优先级 侧边栏 > 弹层 > 对话→新对话
+    // 系统返回键处理：优先级 邮件页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
+        if (this.mailOpen) {
+            if (this.mailDetailOpen) {
+                this.mailDetailOpen = false;
+                return true;
+            }
+
+            this.closeMail();
+            return true;
+        }
+
         if (this.sidebarOpen) {
             this.closeSidebar();
             return true;
@@ -177,6 +194,21 @@ export struct MainChat {
 
             // 侧栏抽屉层：始终挂载，用 translate/opacity 控制显隐（避免 if 卸载退场动画失效）
             this.SidebarLayer();
+
+            // 邮件页层：条件挂载，整页右滑进出（进入即拉取当前箱列表）
+            if (this.mailOpen) {
+                MailPage({
+                    app: this.app,
+                    mailDetailOpen: $mailDetailOpen,
+                    onBack: () => {
+                        this.closeMail();
+                    }
+                })
+                    .width('100%')
+                    .height('100%')
+                    .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
         }
         .width('100%')
         .height('100%')
@@ -542,6 +574,10 @@ export struct MainChat {
                     onNewChat: () => {
                         this.startNewRound();
                     },
+                    onOpenMail: () => {
+                        this.closeSidebar();
+                        this.openMail();
+                    },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
                     },
@@ -679,6 +715,17 @@ export struct MainChat {
                 }
             });
         }
+    }
+
+    // ---------- 邮件页 ----------
+    // 打开邮件页：进入即拉取当前箱列表（与打开侧栏即刷新会话同一策略）
+    private openMail(): void {
+        this.app.refreshMailList();
+        this.mailOpen = true;
+    }
+
+    private closeMail(): void {
+        this.mailOpen = false;
     }
 
     // ---------- 侧栏开关 ----------

@@ -5,7 +5,7 @@
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, ModelItem, sanitizeDisplayName } from './AppConfig';
+import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, MailItem, ModelItem, sanitizeDisplayName } from './AppConfig';
 import { ApiService, UserInfoResult } from './ApiService';
 import { HttpUtil } from './HttpUtil';
 import { PreferencesUtil } from './PreferencesUtil';
@@ -53,6 +53,17 @@ export class AppState {
     knowledgeLoading: boolean = false;
     knowledgeError: string = '';
     private knowledgeRequestSeq: number = 0;
+
+    // 邮箱视图：收件箱 / 已发送
+    mailBox: 'inbox' | 'sent' = 'inbox';
+    // 邮件搜索关键字：非空时随列表请求下发服务端 q 参数
+    mailQuery: string = '';
+    // 邮件列表（当前箱）
+    mailList: MailItem[] = [];
+    mailLoading: boolean = false;
+    mailError: string = '';
+    // 邮件列表请求序号：并发刷新时只采纳最后一次的结果（与会话列表同一防串台机制）
+    private mailRequestSeq: number = 0;
 
     private context: common.UIAbilityContext | null = null;
 
@@ -158,6 +169,9 @@ export class AppState {
         this.models = [];
         this.selectedModelId = '';
         this.selectedModelLabel = '选择模型';
+        this.mailBox = 'inbox';
+        this.mailList = [];
+        this.mailError = '';
         this.syncModelLabelToStorage();
     }
 
@@ -424,6 +438,77 @@ export class AppState {
         }
 
         this.knowledgeList = this.knowledgeList.filter((item: KnowledgeItem): boolean => item.title !== title);
+        return '';
+    }
+
+    // ---------- 邮件 ----------
+    // 切换邮箱视图：切箱即清空搜索与列表并重新拉取，避免两箱数据互串
+    setMailBox(box: 'inbox' | 'sent'): void {
+        if (this.mailBox === box) {
+            return;
+        }
+
+        this.mailBox = box;
+        this.mailQuery = '';
+        this.mailList = [];
+        this.mailError = '';
+        this.refreshMailList();
+    }
+
+    // 更新搜索关键字并重新拉取：与当前关键字相同则不动作（重复回车不重复请求）
+    setMailQuery(query: string): void {
+        const next: string = query.trim();
+
+        if (this.mailQuery === next) {
+            return;
+        }
+
+        this.mailQuery = next;
+        this.mailList = [];
+        this.mailError = '';
+        this.refreshMailList();
+    }
+
+    // 拉取当前箱的邮件列表首页（读取场景一次一页已足够，深入分页待有需求再加）
+    async refreshMailList(): Promise<void> {
+        const seq: number = ++this.mailRequestSeq;
+        this.mailLoading = true;
+        this.mailError = '';
+
+        const result = await ApiService.fetchMailList(this.mailBox, 0, 50, this.mailQuery);
+
+        // 过期响应丢弃：期间用户已切箱或再次刷新时，旧箱数据不允许覆盖新状态
+        if (seq !== this.mailRequestSeq) {
+            return;
+        }
+
+        this.mailLoading = false;
+
+        if (!result.success) {
+            this.mailError = result.message;
+            return;
+        }
+
+        this.mailList = result.mails;
+    }
+
+    // 标记邮件已读：服务端落盘后同步更新本地列表项，列表未读点即时消失
+    async markMailRead(mailId: string): Promise<string> {
+        const result = await ApiService.markMailRead(mailId);
+
+        if (!result.success) {
+            return result.message;
+        }
+
+        const updated: MailItem[] = this.mailList.map((item: MailItem): MailItem => {
+            if (item.id !== mailId) {
+                return item;
+            }
+
+            return { id: item.id, box: item.box, subject: item.subject, peer: item.peer, time: item.time, unread: false, preview: item.preview };
+        });
+
+        this.mailList = updated;
         return '';
     }
 

@@ -1,5 +1,5 @@
 // SidebarPanel.ets - 左侧抽屉内容（豆包式侧栏）
-// 账号卡 + 新对话 + 最近对话列表（点击切换、⋯菜单置顶/删除）+ 设置 / 退出登录
+// 顶部功能入口行（新对话/新建知识库 + 邮件）+ 最近对话列表（点击切换、⋯菜单置顶/删除）+ 视图切换 + 紧凑账户行
 // 数据直接消费 AppState 单例（@Observed），会话增删改后列表自动刷新，宿主只负责显隐与业务回调
 // 注意：本组件是组件级，@ObjectLink 由宿主页面的 @State 单例注入，符合工程约定
 
@@ -8,6 +8,9 @@ import { AppState } from '../../common/AppState';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { UserAvatar } from '../common/UserAvatar';
 import { IconButton } from '../common/IconButton';
+
+// 版本说明：与后端地址合并展示在侧栏底部说明行
+const APP_VERSION_LABEL: string = 'v1.0.2';
 
 @Component
 export struct SidebarPanel {
@@ -21,6 +24,8 @@ export struct SidebarPanel {
     // 会话列表代次：宿主每次刷新/置顶/删除后 +1（见 convList 注释）
     @Prop @Watch('onEpochChanged') convEpoch: number = 0;
     onNewChat: () => void = () => {};
+    // 打开独立邮件页：由宿主关闭抽屉后全屏挂载
+    onOpenMail: () => void = () => {};
     onOpenConversation: (conversationId: string, title: string) => void = () => {};
     onTogglePin: (item: ConversationItem) => void = () => {};
     onDeleteRequest: (item: ConversationItem) => void = () => {};
@@ -43,9 +48,7 @@ export struct SidebarPanel {
 
     build() {
         Column() {
-            this.AccountHeader();
-
-            this.NewChatButton();
+            this.ActionEntries();
 
             // 分隔线：区分顶部功能区与列表区
             Divider()
@@ -119,7 +122,7 @@ export struct SidebarPanel {
 
             this.ViewSwitcher();
 
-            this.Footer();
+            this.AccountFooter();
         }
         .width('100%')
         .height('100%')
@@ -128,76 +131,47 @@ export struct SidebarPanel {
 
     // ---------- 区域 ----------
 
-    // 账号卡：头像 + 展示名 + 后端地址（脏值已在展示层清洗）
+    // 顶部功能入口行：新对话/新建知识库 + 邮件
+    // 行高与会话行一致（50），文案随侧栏视图切换沿用旧胶囊按钮逻辑
     @Builder
-    AccountHeader() {
-        Row({ space: Space.md }) {
-            UserAvatar({
-                name: this.accountDisplayName(),
-                avatarUrl: this.app.avatarUrl,
-                diameter: 44
+    ActionEntries() {
+        Column({ space: Space.xs }) {
+            this.ActionRow($r('app.media.ic_plus'), this.app.sidebarView === 'chat' ? '新对话' : '新建知识库', (): void => {
+                if (this.app.sidebarView === 'chat') {
+                    this.onNewChat();
+                } else {
+                    this.onCreateKnowledge();
+                }
             });
 
-            Column({ space: Space.xxs }) {
-                Text(this.accountDisplayName())
-                    .fontSize(FontSize.bodyLarge)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor($r('app.color.text_primary'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis });
-
-                Text(this.app.backendUrl)
-                    .fontSize(FontSize.caption)
-                    .lineHeight(LineHeight.caption)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis });
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start);
+            this.ActionRow($r('app.media.ic_mail'), '邮件', (): void => {
+                this.onOpenMail();
+            });
         }
         .width('100%')
-        .padding({ left: Space.lg, right: Space.lg, top: Space.xl, bottom: Space.md });
+        .padding({ left: Space.md, right: Space.md, top: Space.xl, bottom: Space.md });
     }
 
-    // 新对话主按钮：内容自适应宽度的居中胶囊（不贴满侧栏宽度，避免视觉过大）
+    // 功能入口行：图标 + 文案的通栏行，样式对齐会话行
     @Builder
-    NewChatButton() {
-        Row({ space: Space.sm }) {
-            Image($r('app.media.ic_plus'))
+    ActionRow(icon: ResourceStr, label: string, action: () => void) {
+        Row({ space: Space.md }) {
+            Image(icon)
                 .width(Size.icon)
                 .height(Size.icon)
-                .fillColor($r('app.color.text_inverse'));
+                .fillColor($r('app.color.icon_secondary'));
 
-            Text(this.app.sidebarView === 'chat' ? '新对话' : '新建知识库')
+            Text(label)
                 .fontSize(FontSize.body)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_inverse'));
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1);
         }
-        .height(44)
-        .padding({ left: Space.xxl, right: Space.xxl })
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(Radius.full)
-        .linearGradient({
-            angle: 135,
-            colors: [
-                [$r('app.color.brand_primary'), 0],
-                [$r('app.color.brand_secondary'), 1]
-            ]
-        })
-        .margin({ bottom: Space.md })
-        .shadow({
-            radius: 12,
-            color: '#334C6FFF',
-            offsetX: 0,
-            offsetY: 4
-        })
+        .width('100%')
+        .height(50)
+        .padding({ left: Space.lg, right: Space.md })
+        .borderRadius(Radius.md)
         .onClick(() => {
-            if (this.app.sidebarView === 'chat') {
-                this.onNewChat();
-            } else {
-                this.onCreateKnowledge();
-            }
+            action();
         });
     }
 
@@ -406,43 +380,50 @@ export struct SidebarPanel {
         .padding({ left: Space.lg, right: Space.lg, top: Space.sm });
     }
 
-    // 底部：设置
+    // 底部账户区：紧凑账户行（头像 + 展示名 + 设置按钮）与「后端地址 · 版本」说明行
+    // 展示名沿用 accountDisplayName 普通方法链路（@ObjectLink 组件 getter 间接取值曾崩溃，见其注释）
     @Builder
-    Footer() {
-        Column({ space: Space.xs }) {
+    AccountFooter() {
+        Column() {
             Row({ space: Space.md }) {
-                Image($r('app.media.ic_settings'))
-                    .width(Size.icon)
-                    .height(Size.icon)
-                    .fillColor($r('app.color.icon_secondary'));
+                UserAvatar({
+                    name: this.accountDisplayName(),
+                    avatarUrl: this.app.avatarUrl,
+                    diameter: 32
+                });
 
-                Text('设置')
+                Text(this.accountDisplayName())
                     .fontSize(FontSize.body)
+                    .fontWeight(FontWeight.Medium)
                     .fontColor($r('app.color.text_primary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
                     .layoutWeight(1);
 
-                Image($r('app.media.ic_chevron_right'))
-                    .width(Size.iconSmall)
-                    .height(Size.iconSmall)
-                    .fillColor($r('app.color.icon_secondary'));
+                IconButton({
+                    icon: $r('app.media.ic_settings'),
+                    iconSize: Size.icon,
+                    buttonSize: Size.touchTarget,
+                    onTap: () => {
+                        this.onOpenSettings();
+                    }
+                });
             }
             .width('100%')
-            .height(50)
-            .padding({ left: Space.lg, right: Space.lg })
-            .borderRadius(Radius.md)
-            .onClick(() => {
-                this.onOpenSettings();
-            });
+            .height(48)
+            .padding({ left: Space.lg, right: Space.xs });
 
-            Text('Nexora Harmony · v1.0.2')
+            Text(this.app.backendUrl + ' · ' + APP_VERSION_LABEL)
                 .fontSize(FontSize.caption)
+                .lineHeight(LineHeight.caption)
                 .fontColor($r('app.color.text_tertiary'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%')
                 .textAlign(TextAlign.Center)
-                .padding({ top: Space.sm, bottom: Space.lg });
+                .padding({ top: Space.xs, bottom: Space.lg });
         }
-        .width('100%')
-        .padding({ left: Space.md, right: Space.md, top: Space.xs });
+        .width('100%');
     }
 
     // 视图切换器：对话 / 知识库 segmented，下划线指示器随选中态滑动
