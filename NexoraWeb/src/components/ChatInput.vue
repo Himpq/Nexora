@@ -549,7 +549,7 @@
         return 'fa-regular fa-file'
     }
 
-    /** TK mini 输入/输出展示(今日基数 + 流式增量,数据源 conversation store,对齐原版 applyTokenMiniDisplay) */
+    /** TK mini 输入/输出展示(当前会话累计基数 + 流式增量,数据源 conversation store) */
     const tokenMiniInput = computed(() => conversationStore.tokenMiniText.input)
     const tokenMiniOutput = computed(() => conversationStore.tokenMiniText.output)
 

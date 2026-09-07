@@ -34,7 +34,11 @@ import {
     rebuildSegmentsFromFlat,
     type MessageSegment,
 } from '@/stream/messageSegments'
-import { estimateStreamTokensByText, safeTokenInt } from '@/stream/tokenBudget'
+import {
+    estimateStreamTokensByText,
+    mergeTokenMiniStats,
+    safeTokenInt,
+} from '@/stream/tokenBudget'
 
 interface ConversationState {
     conversations: ConversationSummary[]
@@ -67,7 +71,7 @@ interface ConversationState {
     loadSeq: number
     /** 输入区「TK 输入/输出」mini 展示状态(对齐原版 tokenMiniState) */
     tokenMini: {
-        /** 今日基数:会话统计接口的 today_input/today_output */
+        /** 当前会话累计基数:会话统计接口的 input_total/output_total */
         baseInput: number
         baseOutput: number
         /** 流式 usage 增量(token_usage 块快照差分) */
@@ -159,7 +163,7 @@ export const useConversationStore = defineStore('conversation', {
             this.streamingTargetIndex = snapshot.targetIndex
             this.streamTokenProfile = null
 
-            // 跨刷新恢复:以持久化统计重建今日基数(流式增量部分从断点重新累积)
+            // 跨刷新恢复:以持久化统计重建当前会话累计基数(流式增量从断点重新累积)
             void this.refreshTokenMiniBase(snapshot.conversationId)
         },
 
@@ -226,7 +230,7 @@ export const useConversationStore = defineStore('conversation', {
             this.messagesLoading = false
             this.turns = []
 
-            // 新对话无历史:清零 TK mini 今日基数与流式增量
+            // 新对话无历史:清零 TK mini 当前会话累计基数与流式增量
             void this.refreshTokenMiniBase('')
         },
 
@@ -331,7 +335,7 @@ export const useConversationStore = defineStore('conversation', {
 
                     await this.loadTurns()
 
-                    // TK mini 基数随会话切换刷新(今日统计,非阻塞)
+                    // TK mini 基数随会话切换刷新(当前会话累计统计,非阻塞)
                     void this.refreshTokenMiniBase(conversationId)
 
                     console.debug(`[conv-load] ${conversationId} turns done total=${(performance.now() - t0).toFixed(0)}ms`)
@@ -526,7 +530,8 @@ export const useConversationStore = defineStore('conversation', {
             this.streamingConversationId = this.currentId
             this.streamingTargetIndex = assistantMessage.index
 
-            // 新一轮流开始:清空上一轮的流式增量估算,今日基数继续沿用
+            // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
+            tokenMiniRefreshSeq += 1
             this.resetTokenMiniStreamPart()
 
             // 注册分离缓冲:切走期间增量照常写入该对象,切回时接回列表(零丢失)
@@ -574,7 +579,8 @@ export const useConversationStore = defineStore('conversation', {
             this.streamingConversationId = this.currentId
             this.generating = true
 
-            // 新一轮流开始:清空上一轮的流式增量估算,今日基数继续沿用
+            // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
+            tokenMiniRefreshSeq += 1
             this.resetTokenMiniStreamPart()
 
             // 注册分离缓冲(重答场景无新增用户消息)
@@ -812,8 +818,8 @@ export const useConversationStore = defineStore('conversation', {
             this.streamingConversationId = ''
             this.streamingTargetIndex = null
 
-            // 流结束:刷新 TK mini 今日基数(含本轮回写)并清空流式增量
-            void this.refreshTokenMiniBase(convId)
+            // 流结束:刷新 TK mini 当前会话累计基数;统计尚未落库时保留本轮流式增量
+            void this.refreshTokenMiniBase(convId, { preserveStreamPart: true })
         },
 
         /**
@@ -1051,8 +1057,8 @@ export const useConversationStore = defineStore('conversation', {
             this.streamingConversationId = ''
             this.streamingTargetIndex = null
 
-            // 流结束(含中断):刷新 TK mini 今日基数并清空流式增量(对齐原版 finishTokenMiniStreaming)
-            void this.refreshTokenMiniBase(convId)
+            // 流结束(含中断):刷新 TK mini 当前会话累计基数;统计尚未落库时保留本轮流式增量
+            void this.refreshTokenMiniBase(convId, { preserveStreamPart: true })
         },
 
         /**
@@ -1177,7 +1183,7 @@ export const useConversationStore = defineStore('conversation', {
 
         // ── TK mini(输入区 tokenDisplay)──────────
 
-        /** 新一轮流开始:重置流式增量估算(今日基数保留,对齐原版 resetTokenMiniStreamPart) */
+        /** 新一轮流开始:重置流式增量估算(当前会话累计基数保留,对齐原版 resetTokenMiniStreamPart) */
         resetTokenMiniStreamPart(): void {
             const mini = this.tokenMini
 
@@ -1190,18 +1196,30 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /**
-         * 刷新 TK mini 今日基数(对齐原版 refreshTokenMiniForConversation):
-         * 以会话统计接口的今日输入/输出为基数;非阻塞,失败保留旧值。
+         * 刷新 TK mini 当前会话累计基数:
+         * 以会话统计接口的 input_total/output_total 为基数;统计未落库时保留流式增量。
          */
-        async refreshTokenMiniBase(conversationId: string): Promise<void> {
+        async refreshTokenMiniBase(
+            conversationId: string,
+            options: { preserveStreamPart?: boolean } = {},
+        ): Promise<void> {
             const seq = ++tokenMiniRefreshSeq
             const cid = String(conversationId || '').trim()
+            const preserveStreamPart = options.preserveStreamPart === true
+            const previousBaseInput = this.tokenMini.baseInput
+            const previousBaseOutput = this.tokenMini.baseOutput
+            const streamInput = this.tokenMini.streamInput
+            const streamOutput = this.tokenMini.streamOutput
+            const estimatedStreamOutput = this.tokenMini.estimatedStreamOutput
 
-            this.resetTokenMiniStreamPart()
+            if (!preserveStreamPart) {
+                this.resetTokenMiniStreamPart()
+            }
 
             if (!cid) {
                 this.tokenMini.baseInput = 0
                 this.tokenMini.baseOutput = 0
+                this.resetTokenMiniStreamPart()
 
                 return
             }
@@ -1213,10 +1231,25 @@ export const useConversationStore = defineStore('conversation', {
                     return
                 }
 
-                this.tokenMini.baseInput = Number(stats.today_input || 0)
-                this.tokenMini.baseOutput = Number(stats.today_output || 0)
+                const merged = mergeTokenMiniStats({
+                    previousBaseInput,
+                    previousBaseOutput,
+                    streamInput,
+                    streamOutput,
+                    estimatedStreamOutput,
+                    inputTotal: stats.input_total,
+                    outputTotal: stats.output_total,
+                    preserveStreamPart,
+                })
+
+                this.tokenMini.baseInput = merged.baseInput
+                this.tokenMini.baseOutput = merged.baseOutput
+                this.resetTokenMiniStreamPart()
+                this.tokenMini.streamInput = merged.streamInput
+                this.tokenMini.streamOutput = merged.streamOutput
+                this.tokenMini.estimatedStreamOutput = merged.estimatedStreamOutput
             } catch {
-                // 统计拉取失败(网络/未登录等)保持旧基数,不阻塞聊天主流程
+                // 统计拉取失败(网络/未登录等)保持当前展示,不阻塞聊天主流程
             }
         },
 
@@ -1432,7 +1465,7 @@ export const useConversationStore = defineStore('conversation', {
 
         /**
          * 输入区 「TK 输入/输出」mini 展示(对齐原版 renderTokenMiniFromState):
-         * 输入 = 今日基数 + usage 增量;输出 = 今日基数 + max(usage 输出, 估算输出)。
+         * 输入 = 当前会话累计基数 + usage 增量;输出 = 当前会话累计基数 + max(usage 输出, 估算输出)。
          */
         tokenMiniText(state): { input: string; output: string } {
             const mini = state.tokenMini

@@ -18,6 +18,7 @@ import {
     buildTokenBudgetHoverText,
     buildTokenBudgetTooltipModel,
     computeContextWindowUsedTokens,
+    mergeTokenMiniStats,
     normalizeContextWindow,
     readLastAssistantIoTokens,
     readMessageIoTokens,
@@ -217,7 +218,75 @@ function testBuildTokenBudgetHoverTextEstimated() {
     assert.ok(text.includes('（上限估算）'), '估算口径剩余窗口带上限标注')
 }
 
-/** 场景 9:全部用例 */
+/** 场景 10:TK mini 刷新时处理统计落库竞态 */
+function testTokenMiniRefresh() {
+    const staleStats = mergeTokenMiniStats({
+        previousBaseInput: 0,
+        previousBaseOutput: 0,
+        streamInput: 120,
+        streamOutput: 60,
+        estimatedStreamOutput: 60,
+        inputTotal: 0,
+        outputTotal: 0,
+        preserveStreamPart: true,
+    })
+
+    assert.equal(staleStats.baseInput, 0, '统计未落库时累计基数保持接口值')
+    assert.equal(staleStats.baseOutput, 0, '统计未落库时累计基数保持接口值')
+    assert.equal(staleStats.streamInput, 120, '统计未落库时保留流式输入')
+    assert.equal(staleStats.streamOutput, 60, '统计未落库时保留流式输出')
+    assert.equal(staleStats.baseInput + staleStats.streamInput, 120, '统计未落库时输入展示不被清零')
+    assert.equal(staleStats.baseOutput + staleStats.streamOutput, 60, '统计未落库时输出展示不被清零')
+
+    const persistedStats = mergeTokenMiniStats({
+        previousBaseInput: 0,
+        previousBaseOutput: 0,
+        streamInput: 120,
+        streamOutput: 60,
+        estimatedStreamOutput: 60,
+        inputTotal: 120,
+        outputTotal: 60,
+        preserveStreamPart: true,
+    })
+
+    assert.equal(persistedStats.baseInput, 120, '累计统计包含本轮时更新输入基数')
+    assert.equal(persistedStats.baseOutput, 60, '累计统计包含本轮时更新输出基数')
+    assert.equal(persistedStats.streamInput, 0, '累计统计包含本轮时清空流式输入')
+    assert.equal(persistedStats.streamOutput, 0, '累计统计包含本轮时清空流式输出')
+
+    const partialPersist = mergeTokenMiniStats({
+        previousBaseInput: 100,
+        previousBaseOutput: 50,
+        streamInput: 20,
+        streamOutput: 10,
+        estimatedStreamOutput: 10,
+        inputTotal: 120,
+        outputTotal: 50,
+        preserveStreamPart: true,
+    })
+
+    assert.equal(partialPersist.baseInput, 120, '输入累计已落库时更新输入基数')
+    assert.equal(partialPersist.streamInput, 0, '输入累计已落库时清空输入增量')
+    assert.equal(partialPersist.streamOutput, 10, '输出累计未落库时保留输出增量')
+
+    const resetStats = mergeTokenMiniStats({
+        previousBaseInput: 100,
+        previousBaseOutput: 50,
+        streamInput: 20,
+        streamOutput: 10,
+        estimatedStreamOutput: 10,
+        inputTotal: 100,
+        outputTotal: 50,
+        preserveStreamPart: false,
+    })
+
+    assert.equal(resetStats.baseInput, 100, '切换会话时读取目标会话输入累计')
+    assert.equal(resetStats.baseOutput, 50, '切换会话时读取目标会话输出累计')
+    assert.equal(resetStats.streamInput, 0, '切换会话时清空输入增量')
+    assert.equal(resetStats.streamOutput, 0, '切换会话时清空输出增量')
+}
+
+/** 场景 11:全部用例 */
 function testAll() {
     testNormalizeContextWindow()
     testReadMessageIoTokens()
@@ -228,6 +297,7 @@ function testAll() {
     testBuildTokenBudgetTooltipModelNoWindow()
     testBuildTokenBudgetHoverText()
     testBuildTokenBudgetHoverTextEstimated()
+    testTokenMiniRefresh()
 }
 
 testAll()
