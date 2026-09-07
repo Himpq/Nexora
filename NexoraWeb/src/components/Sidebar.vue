@@ -446,13 +446,9 @@
                         <i class="fa-solid fa-gear" aria-hidden="true"></i>
                         <span>设置</span>
                     </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('timeline')">
-                        <i class="fa-solid fa-timeline" aria-hidden="true"></i>
-                        <span>时间线</span>
-                    </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('trash')">
-                        <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
-                        <span>回收站</span>
+                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('changes')">
+                        <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
+                        <span>变更</span>
                     </a>
                     <div class="menu-divider"></div>
                     <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
@@ -489,8 +485,7 @@
         'open-workspaces': []
         'open-files': []
         'open-knowledge-mgmt': []
-        'open-trash': []
-        'open-timeline': []
+        'open-changes': []
         'open-learning': []
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
         'learning-new': []
@@ -915,7 +910,7 @@
     }
 
     /** 用户菜单动作(原版 userMenu 的菜单项) */
-    function handleMenuAction(action: 'rank' | 'settings' | 'timeline' | 'trash' | 'logout'): void {
+    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'logout'): void {
         closePopover('user-menu')
 
         if (action === 'rank') {
@@ -931,14 +926,8 @@
             return
         }
 
-        if (action === 'timeline') {
-            emit('open-timeline')
-
-            return
-        }
-
-        if (action === 'trash') {
-            emit('open-trash')
+        if (action === 'changes') {
+            emit('open-changes')
 
             return
         }

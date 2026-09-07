@@ -16,6 +16,7 @@ import { initTheme } from '@/ui/theme'
 // 设计资产加载顺序:原版 CSS(legacy)在前,GDDP 在后 —— 与收编前入口页的层叠顺序一致
 import './styles/legacy.css'
 import './styles/gddp.css'
+import './styles/changes.css'
 import './styles/scrollbar.css'
 import './styles/model-select.css'
 import './styles/gddp-layout.css'

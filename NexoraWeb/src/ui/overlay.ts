@@ -22,6 +22,7 @@
 import { reactive } from 'vue'
 
 export type ContentViewId = 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'
+export type PanelId = 'files' | 'knowledge'
 
 /** 浮层状态(响应式单例) */
 export const overlay = reactive({
@@ -136,13 +137,13 @@ export function closePanel(id: string): void {
 /**
  * 打开一个内容级视图(自动关闭下拉/右侧栏;内容级视图彼此互斥)
  *
- * keepPanel=true 时保留右侧栏面板(如从知识库面板打开知识库正文,面板保持可继续浏览)。
+ * keepPanel 指定要保留的右侧栏面板;只有当前面板 id 与它一致时才保留。
  */
-export function openView(id: ContentViewId, options: { keepPanel?: boolean } = {}): void {
+export function openView(id: ContentViewId, options: { keepPanel?: PanelId } = {}): void {
     overlay.view = id
     overlay.popover = null
 
-    if (!options.keepPanel) {
+    if (options.keepPanel !== overlay.panel) {
         overlay.panel = null
     }
 }

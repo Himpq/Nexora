@@ -33,8 +33,7 @@
             @learning-nav="handleLearningNav"
             @learning-new="handleLearningNew"
             @open-learning-conversation="handleOpenLearningConversation"
-            @open-trash="trashOpen = true"
-            @open-timeline="timelineOpen = true"
+            @open-changes="changesOpen = true"
             @view-branch-source="handleViewBranchSource"
         />
 
@@ -243,7 +242,7 @@
             @saved="handleKnowledgeSettingsSaved"
         />
 
-        <TrashModal :open="trashOpen" @close="trashOpen = false" @restored="handleTrashRestored" />
+        <ChangesModal :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
 
         <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
@@ -252,8 +251,6 @@
             :url="imageViewerUrl"
             @close="imageViewerUrl = ''"
         />
-
-        <TimelinePanel :open="timelineOpen" @close="timelineOpen = false" />
 
         <NotesPanel
             ref="notesPanelRef"
@@ -302,6 +299,7 @@
 
     import ChatHeader from '@/components/ChatHeader.vue'
     import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
+    import ChangesModal from '@/components/ChangesModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -319,9 +317,7 @@
     import LearningFrameView from '@/components/LearningFrameView.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
-    import TimelinePanel from '@/components/TimelinePanel.vue'
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
-    import TrashModal from '@/components/TrashModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
     import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
 
@@ -343,8 +339,7 @@
 
     const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
     const settingsOpen = ref(false)
-    const trashOpen = ref(false)
-    const timelineOpen = ref(false)
+    const changesOpen = ref(false)
     const notesOpen = ref(false)
     const sidebarCollapsed = ref(false)
     const tokenDetailOpen = ref(false)
@@ -1881,8 +1876,9 @@
     function handleOpenKnowledgeDocument(title: string): void {
         knowledgeTitle.value = title
 
-        // 保留知识库面板:从右侧栏打开正文后仍可继续浏览文档列表
-        openView('knowledge', { keepPanel: true })
+        // 仅保留知识库面板:从知识库侧栏打开正文后仍可继续浏览文档列表;
+        // 若当前是文件面板,必须关闭它,不能把任意面板带进知识库正文。
+        openView('knowledge', { keepPanel: 'knowledge' })
     }
 
     /** 知识库被删除:若当前正文正打开该文档则返回聊天主视图 */

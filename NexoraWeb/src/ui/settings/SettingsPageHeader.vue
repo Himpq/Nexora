@@ -20,7 +20,7 @@
                     <Button
                         v-else
                         :class="{ 'is-hidden': !isActionVisible(action) }"
-                        variant="secondary"
+                        :variant="action.variant || 'secondary'"
                         size="compact"
                         :icon="action.icon"
                         @click="emit('action', action.method)"
@@ -59,6 +59,7 @@
         type?: 'button' | 'select' | 'subtabs'
         label?: string
         icon?: string
+        variant?: 'primary' | 'secondary' | 'danger' | 'quiet'
         method: string
         placeholder?: string
         options?: Array<{ value: string; label: string }>
