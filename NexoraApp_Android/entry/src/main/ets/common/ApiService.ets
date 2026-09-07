@@ -2,7 +2,7 @@
 // 每个方法对应一个后端端点，负责把 JSON 归一化成领域模型，UI 层只认识这里返回的类型
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, KnowledgeItem, ModelItem } from './AppConfig';
+import { ConversationItem, KnowledgeItem, MailDetail, MailItem, ModelItem } from './AppConfig';
 import { HttpResult, HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
 import { messageFromHistory, RawHistoryMessage } from './ChatTypes';
@@ -88,6 +88,25 @@ interface UpdateBasisRequestBody {
 // 空白知识库创建请求体
 interface CreateBlankRequestBody {
     title_prefix: string;
+}
+
+// 邮件已读标记请求体（ArkTS 限制：字面量须对应显式声明的 interface）
+interface MailReadRequestBody {
+    is_read: boolean;
+}
+
+// 邮件列表结果：收件箱/已发送共用，mails 已归一化为 MailItem
+export interface MailListResult {
+    success: boolean;
+    message: string;
+    mails: MailItem[];
+}
+
+// 邮件详情结果：正文为服务端提取的纯文本
+export interface MailDetailResult {
+    success: boolean;
+    message: string;
+    mail: MailDetail | null;
 }
 
 // 后端消息体里模型上下文窗口的候选字段名
@@ -350,6 +369,81 @@ export class ApiService {
         return { success: true, message: '' };
     }
 
+    // ---------- 邮件 ----------
+    // 邮件列表：GET /api/mail/me/{inbox|sent}?offset=&limit=[&q=]，服务端按登录用户自动绑定邮箱
+    // query 非空时作为服务端搜索关键字下发（q 参数）
+    static async fetchMailList(box: string, offset: number, limit: number, query: string): Promise<MailListResult> {
+        let path: string = '/api/mail/me/' + box + '?offset=' + offset + '&limit=' + limit;
+
+        if (query.length > 0) {
+            path += '&q=' + encodeURIComponent(query);
+        }
+
+        const result: HttpResult = await HttpUtil.get(path);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '邮件列表');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), mails: [] };
+        }
+
+        const rawList: Object[] = Json.array(payload, 'mails');
+        const mails: MailItem[] = [];
+
+        for (let i: number = 0; i < rawList.length; i++) {
+            const item: MailItem | null = ApiService.toMailItem(rawList[i], box);
+
+            if (item !== null) {
+                mails.push(item);
+            }
+        }
+
+        hilog.info(DOMAIN, TAG, 'mail list loaded, box=%{public}s count=%{public}d', box, mails.length);
+        return { success: true, message: '', mails: mails };
+    }
+
+    // 邮件详情：GET /api/mail/me/{box}/<mail_id>，正文取服务端提取的纯文本 content_text
+    static async fetchMailDetail(box: string, mailId: string): Promise<MailDetailResult> {
+        const path: string = '/api/mail/me/' + box + '/' + encodeURIComponent(mailId);
+        const result: HttpResult = await HttpUtil.get(path);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '邮件详情');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), mail: null };
+        }
+
+        const source: Record<string, Object> | null = Json.object(payload, 'mail');
+
+        if (source === null) {
+            return { success: false, message: '邮件内容解析失败', mail: null };
+        }
+
+        const timestamp: number = Json.number(source, 'timestamp');
+        const id: string = Json.string(source, 'id');
+        const mail: MailDetail = {
+            id: id.length > 0 ? id : mailId,
+            subject: Json.string(source, 'subject'),
+            sender: Json.string(source, 'sender'),
+            recipient: Json.string(source, 'recipient'),
+            time: timestamp > 0 ? TimeUtil.short(timestamp) : Json.string(source, 'date'),
+            content: Json.string(source, 'content_text'),
+            contentHtml: Json.string(source, 'content_html')
+        };
+        return { success: true, message: '', mail: mail };
+    }
+
+    // 标记已读：PATCH /api/mail/me/inbox/<mail_id>/read（已发送箱无已读概念，仅收件箱调用）
+    static async markMailRead(mailId: string): Promise<MutateResult> {
+        const path: string = '/api/mail/me/inbox/' + encodeURIComponent(mailId) + '/read';
+        const body: MailReadRequestBody = { is_read: true };
+        const result: HttpResult = await HttpUtil.patch(path, body);
+
+        if (result.code === 0 || !result.ok) {
+            return { success: false, message: ApiService.describeFailure(result) };
+        }
+
+        return { success: true, message: '' };
+    }
+
     // ---------- 内部实现 ----------
     // 统一判定：网络层失败或状态码非 200 一律视为业务失败，返回 null 交由调用方转成失败结果
     private static readPayload(result: HttpResult, scene: string): Record<string, Object> | null {
@@ -425,6 +519,30 @@ export class ApiService {
             updatedAt: updatedAt,
             time: TimeUtil.short(updatedAt),
             basisId: Json.string(source, 'basis_id')
+        };
+    }
+
+    // 邮件列表项归一化：peer 按来源取发件人（收件箱）或收件人（已发送）；
+    // 时间优先取 timestamp 短格式，缺失时直接展示服务端 date 文案
+    private static toMailItem(raw: Object, box: string): MailItem | null {
+        const source: Record<string, Object> = raw as Record<string, Object>;
+        const id: string = Json.string(source, 'id');
+
+        if (id.length === 0) {
+            return null;
+        }
+
+        const subject: string = Json.string(source, 'subject');
+        const timestamp: number = Json.number(source, 'timestamp');
+
+        return {
+            id: id,
+            box: box,
+            subject: subject.length > 0 ? subject : '（无主题）',
+            peer: box === 'inbox' ? Json.string(source, 'sender') : Json.string(source, 'recipient'),
+            time: timestamp > 0 ? TimeUtil.short(timestamp) : Json.string(source, 'date'),
+            unread: !Json.boolean(source, 'is_read'),
+            preview: Json.string(source, 'preview_text')
         };
     }
 

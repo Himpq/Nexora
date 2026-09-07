@@ -79,6 +79,29 @@ export interface KnowledgeItem {
     basisId: string;
 }
 
+// 邮件列表条目：收件箱 / 已发送共用，box 标记来源；peer 按来源取发件人或收件人
+export interface MailItem {
+    id: string;
+    box: string;
+    subject: string;
+    peer: string;
+    time: string;
+    unread: boolean;
+    preview: string;
+}
+
+// 邮件详情：GET /api/mail/me/{box}/<id> 归一化后的形态；正文优先用 contentHtml（HTML 邮件），
+// 纯文本邮件只有 content；两字段都来自服务端提取结果
+export interface MailDetail {
+    id: string;
+    subject: string;
+    sender: string;
+    recipient: string;
+    time: string;
+    content: string;
+    contentHtml: string;
+}
+
 // ---------- 展示名清洗 ----------
 // 历史版本可能把字面量 "undefined" 落进了持久化昵称，展示前统一归空，避免界面出现 "晚上好undefined"
 // 入参放宽为可空：持久化/服务端字段在极端时序下可能为 undefined，一律归空而不是抛异常

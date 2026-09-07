@@ -89,6 +89,11 @@ export class HttpUtil {
         return HttpUtil.send(http.RequestMethod.PUT, path, payload);
     }
 
+    // 局部字段修改走 PATCH（邮件已读标记等），payload 只携带被变更的字段
+    static async patch(path: string, payload: Object): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.PATCH, path, payload);
+    }
+
     // 删除走 DELETE，通常无需请求体
     static async delete(path: string): Promise<HttpResult> {
         return HttpUtil.send(http.RequestMethod.DELETE, path, undefined);
