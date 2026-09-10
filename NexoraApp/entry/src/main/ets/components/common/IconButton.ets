@@ -26,16 +26,22 @@ export struct IconButton {
         .height(this.buttonSize)
         .justifyContent(FlexAlign.Center)
         .borderRadius(this.buttonSize / 2)
-        .backgroundColor(this.bg)
+        .backgroundColor(this.pressed ? $r('app.color.bg_pressed') : this.bg)
         .opacity(this.isEnabled ? 1 : 0.35)
         .scale({ x: this.pressed ? PressScale.pressed : PressScale.normal, y: this.pressed ? PressScale.pressed : PressScale.normal })
-        .animation({ duration: Motion.durationFast, curve: Motion.spring })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
         .onTouch((event: TouchEvent) => {
             if (!this.isEnabled) {
                 return;
             }
 
-            this.pressed = event.type === TouchType.Down;
+            if (event.type === TouchType.Down) {
+                this.pressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressed = false;
+            }
         })
         .onClick(() => {
             if (this.isEnabled) {

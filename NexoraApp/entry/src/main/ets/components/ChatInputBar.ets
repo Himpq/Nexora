@@ -1,10 +1,10 @@
 // ChatInputBar.ets - 对话输入栏
 // 首页与对话页共用：多行自适应输入框 + 模型/能力开关 + 发送/停止按钮
 // 发送与停止是同一个位置的状态切换，避免生成中按钮跳动
-// 聚焦时输入栏边框出现品牌色发光，失焦时恢复
+// 聚焦时输入栏边框提亮，失焦时恢复
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { FontSize, Glow, Motion, Radius, Size, Space } from '../common/DesignToken';
+import { FontSize, Motion, PressScale, Radius, Size, Space } from '../common/DesignToken';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'ChatInputBar';
@@ -22,6 +22,8 @@ export struct ChatInputBar {
     onPickModel: () => void = () => {};
 
     @State private focused: boolean = false;
+    @State private modelPressed: boolean = false;
+    @State private sendPressed: boolean = false;
 
     aboutToAppear(): void {
         hilog.info(DOMAIN, TAG, '[init] inputModelLabel=%{public}s', this.inputModelLabel);
@@ -68,8 +70,17 @@ export struct ChatInputBar {
                 .constraintSize({ maxWidth: '68%' })
                 .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
                 .borderRadius(Radius.full)
-                .backgroundColor($r('app.color.bg_sunken'))
-                .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+                .backgroundColor(this.modelPressed ? $r('app.color.bg_pressed') : $r('app.color.bg_sunken'))
+                .animation({ duration: Motion.durationPress, curve: Motion.press })
+                .onTouch((event: TouchEvent) => {
+                    if (event.type === TouchType.Down) {
+                        this.modelPressed = true;
+                    }
+
+                    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                        this.modelPressed = false;
+                    }
+                })
                 .onClick(() => {
                     this.onPickModel();
                 });
@@ -87,17 +98,17 @@ export struct ChatInputBar {
         .borderRadius(Radius.xl)
         .backgroundColor($r('app.color.bg_card'))
         .shadow({
-            radius: this.focused ? Glow.focusRadius : 16,
-            color: this.focused ? '#334C6FFF' : '#140F1E14',
+            radius: 12,
+            color: this.focused ? '#1A4C6FFF' : '#140F1E14',
             offsetX: 0,
-            offsetY: this.focused ? 0 : 6
+            offsetY: this.focused ? 2 : 6
         })
         .border({
-            width: this.focused ? 1.5 : 0,
+            width: this.focused ? 1 : 0,
             color: $r('app.color.brand_primary'),
             style: BorderStyle.Solid
         })
-        .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
+        .animation({ duration: Motion.durationFast, curve: Motion.easeOut });
     }
 
     // 发送 / 停止：同一位置切换，图标交叉淡入淡出并伴随轻微缩放
@@ -121,14 +132,21 @@ export struct ChatInputBar {
         .width(Size.sendButton)
         .height(Size.sendButton)
         .borderRadius(Radius.full)
-        .linearGradient({
-            angle: 135,
-            colors: [
-                [$r('app.color.brand_primary'), 0],
-                [$r('app.color.brand_secondary'), 1]
-            ]
+        .backgroundColor($r('app.color.brand_primary'))
+        .scale({
+            x: this.sendPressed ? PressScale.pressed : PressScale.normal,
+            y: this.sendPressed ? PressScale.pressed : PressScale.normal
         })
-        .animation({ duration: Motion.durationBase, curve: Motion.spring })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+                this.sendPressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.sendPressed = false;
+            }
+        })
         .onClick(() => {
             if (this.streaming) {
                 this.onStop();

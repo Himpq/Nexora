@@ -16,6 +16,7 @@ import { ToolCallCard } from './ToolCallCard';
 export struct MessageBubble {
     @ObjectLink message: ChatMessage;
     onRegenerate: () => void = () => {};
+    @State private pressedActionLabel: string = '';
 
     private canShowActions(): boolean {
         return !this.message.streaming && this.message.content.length > 0;
@@ -233,7 +234,19 @@ export struct MessageBubble {
         }
         .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
         .borderRadius(Radius.full)
-        .backgroundColor($r('app.color.bg_sunken'))
+        .backgroundColor(this.pressedActionLabel === label
+            ? $r('app.color.bg_pressed')
+            : $r('app.color.bg_sunken'))
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+                this.pressedActionLabel = label;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressedActionLabel = '';
+            }
+        })
         .onClick(action);
     }
 

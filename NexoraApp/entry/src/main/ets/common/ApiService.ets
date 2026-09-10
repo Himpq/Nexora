@@ -2,7 +2,7 @@
 // 每个方法对应一个后端端点，负责把 JSON 归一化成领域模型，UI 层只认识这里返回的类型
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, KnowledgeItem, MailDetail, MailItem, ModelItem } from './AppConfig';
+import { ConversationItem, KnowledgeItem, MailDetail, MailItem, ModelItem, NoteItem, NoteNotebook, NotesStore } from './AppConfig';
 import { HttpResult, HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
 import { messageFromHistory, RawHistoryMessage } from './ChatTypes';
@@ -107,6 +107,41 @@ export interface MailDetailResult {
     success: boolean;
     message: string;
     mail: MailDetail | null;
+}
+
+// 随笔云存储结果：后端返回三方合并后的完整快照，UI 层只消费归一化后的 NoteItem
+export interface NotesStoreResult {
+    success: boolean;
+    message: string;
+    store: NotesStore | null;
+}
+
+interface NotesStoreRequestBody {
+    store: NotesStorePayload;
+    baseStore: NotesStorePayload;
+}
+
+interface NotesStorePayload {
+    activeNotebookId: string;
+    notebooks: NoteNotebookPayload[];
+    notes: RemoteNotePayload[];
+    updatedAt: number;
+}
+
+interface NoteNotebookPayload {
+    id: string;
+    name: string;
+    ts: number;
+}
+
+interface RemoteNotePayload {
+    id: string;
+    notebookId: string;
+    text: string;
+    source: string;
+    sourceTitle: string;
+    anchor: Record<string, Object> | null;
+    ts: number;
 }
 
 // 后端消息体里模型上下文窗口的候选字段名
@@ -369,6 +404,50 @@ export class ApiService {
         return { success: true, message: '' };
     }
 
+    // 随笔快照：GET /api/notes/store
+    static async fetchNotesStore(): Promise<NotesStoreResult> {
+        const result: HttpResult = await HttpUtil.get('/api/notes/store');
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '随笔列表');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), store: null };
+        }
+
+        const rawStore: Record<string, Object> | null = Json.object(payload, 'store');
+        const store: NotesStore | null = rawStore === null ? null : ApiService.toNotesStore(rawStore);
+
+        if (store === null) {
+            return { success: false, message: '随笔数据解析失败', store: null };
+        }
+
+        hilog.info(DOMAIN, TAG, 'notes store loaded, count=%{public}d', store.notes.length);
+        return { success: true, message: '', store: store };
+    }
+
+    // 随笔快照：PUT /api/notes/store，提交当前快照与上次云端基线，由服务端合并
+    static async saveNotesStore(store: NotesStore, baseStore: NotesStore): Promise<NotesStoreResult> {
+        const body: NotesStoreRequestBody = {
+            store: ApiService.toNotesStorePayload(store),
+            baseStore: ApiService.toNotesStorePayload(baseStore)
+        };
+        const result: HttpResult = await HttpUtil.put('/api/notes/store', body);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '保存随笔');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), store: null };
+        }
+
+        const rawStore: Record<string, Object> | null = Json.object(payload, 'store');
+        const normalized: NotesStore | null = rawStore === null ? null : ApiService.toNotesStore(rawStore);
+
+        if (normalized === null) {
+            return { success: false, message: '保存后的随笔数据解析失败', store: null };
+        }
+
+        hilog.info(DOMAIN, TAG, 'notes store saved, count=%{public}d', normalized.notes.length);
+        return { success: true, message: '', store: normalized };
+    }
+
     // ---------- 邮件 ----------
     // 邮件列表：GET /api/mail/me/{inbox|sent}?offset=&limit=[&q=]，服务端按登录用户自动绑定邮箱
     // query 非空时作为服务端搜索关键字下发（q 参数）
@@ -519,6 +598,111 @@ export class ApiService {
             updatedAt: updatedAt,
             time: TimeUtil.short(updatedAt),
             basisId: Json.string(source, 'basis_id')
+        };
+    }
+
+    private static toNotesStore(raw: Record<string, Object>): NotesStore | null {
+        const rawNotebooks: Object[] = Json.array(raw, 'notebooks');
+        const notebooks: NoteNotebook[] = [];
+
+        for (let i: number = 0; i < rawNotebooks.length; i++) {
+            const notebook: NoteNotebook | null = ApiService.toNoteNotebook(rawNotebooks[i]);
+
+            if (notebook === null) {
+                return null;
+            }
+
+            notebooks.push(notebook);
+        }
+
+        if (notebooks.length === 0) {
+            return null;
+        }
+
+        const activeNotebookId: string = Json.string(raw, 'activeNotebookId');
+        const notebookExists: boolean = notebooks.some((item: NoteNotebook): boolean => item.id === activeNotebookId);
+
+        if (!notebookExists) {
+            return null;
+        }
+
+        const rawNotes: Object[] = Json.array(raw, 'notes');
+        const notes: NoteItem[] = [];
+
+        for (let i: number = 0; i < rawNotes.length; i++) {
+            const note: NoteItem | null = ApiService.toNoteItem(rawNotes[i]);
+
+            if (note === null) {
+                return null;
+            }
+
+            notes.push(note);
+        }
+
+        return {
+            activeNotebookId: activeNotebookId,
+            notebooks: notebooks,
+            notes: notes,
+            updatedAt: TimeUtil.toMillis(Json.number(raw, 'updatedAt'))
+        };
+    }
+
+    private static toNoteNotebook(raw: Object): NoteNotebook | null {
+        const source: Record<string, Object> = raw as Record<string, Object>;
+        const id: string = Json.string(source, 'id');
+        const name: string = Json.string(source, 'name');
+        const ts: number = TimeUtil.toMillis(Json.number(source, 'ts'));
+
+        if (id.length === 0 || name.length === 0 || ts <= 0) {
+            return null;
+        }
+
+        return { id: id, name: name, ts: ts };
+    }
+
+    private static toNoteItem(raw: Object): NoteItem | null {
+        const source: Record<string, Object> = raw as Record<string, Object>;
+        const id: string = Json.string(source, 'id');
+        const content: string = Json.string(source, 'text');
+        const notebookId: string = Json.string(source, 'notebookId');
+        const updatedAt: number = TimeUtil.toMillis(Json.number(source, 'ts'));
+
+        if (id.length === 0 || content.trim().length === 0 || notebookId.length === 0 || updatedAt <= 0) {
+            return null;
+        }
+
+        return {
+            id: id,
+            content: content,
+            updatedAt: updatedAt,
+            notebookId: notebookId,
+            source: Json.string(source, 'source'),
+            sourceTitle: Json.string(source, 'sourceTitle'),
+            anchor: Json.object(source, 'anchor')
+        };
+    }
+
+    private static toNotesStorePayload(store: NotesStore): NotesStorePayload {
+        const notebooks: NoteNotebookPayload[] = store.notebooks.map((item: NoteNotebook): NoteNotebookPayload => {
+            return { id: item.id, name: item.name, ts: item.ts };
+        });
+        const notes: RemoteNotePayload[] = store.notes.map((item: NoteItem): RemoteNotePayload => {
+            return {
+                id: item.id,
+                notebookId: item.notebookId,
+                text: item.content,
+                source: item.source,
+                sourceTitle: item.sourceTitle,
+                anchor: item.anchor,
+                ts: item.updatedAt
+            };
+        });
+
+        return {
+            activeNotebookId: store.activeNotebookId,
+            notebooks: notebooks,
+            notes: notes,
+            updatedAt: Date.now()
         };
     }
 

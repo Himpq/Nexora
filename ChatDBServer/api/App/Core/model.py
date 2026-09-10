@@ -411,8 +411,9 @@ class Model(MailMixin):
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
-        # 双轨显示：缓存生效时保留完整展示用 markdown，供前端优先渲染
+        # 工具结果展示：文本与媒体分轨保存，供前端分别渲染
         self._pending_display_results: Dict[str, str] = {}
+        self._pending_display_media: Dict[str, Dict[str, Any]] = {}
         # 工具图片只在当前回复的下一轮请求中使用，不进入工具结果字符串或会话历史。
         self._pending_tool_image_inputs: Dict[str, List[Dict[str, Any]]] = {}
         self._model_vision_input_capability: Optional[bool] = None
@@ -2280,6 +2281,18 @@ class Model(MailMixin):
                         # 同时以 call_id 为键再存一份，兼容调用方以 call_id 取
                         if call_id:
                             self._pending_display_results[str(call_id).strip()] = display_md
+
+                    display_media = self.tool_result_presenter.extract_display_media(
+                        function_name,
+                        full_args,
+                        raw_result,
+                    )
+
+                    if isinstance(display_media, dict) and display_media.get("items"):
+                        self._pending_display_media[pending_key] = display_media
+
+                        if call_id:
+                            self._pending_display_media[str(call_id).strip()] = display_media
             except Exception:
                 pass
 
@@ -6966,6 +6979,7 @@ class Model(MailMixin):
                             # 记录结果步骤（双轨：前端优先 display_model_visible_result，上下文仍用 model_visible_result）
                             display_key = str(call_id or "").strip()
                             display_result = self._pending_display_results.pop(display_key, None) if display_key else None
+                            display_media = self._pending_display_media.pop(display_key, None) if display_key else None
                             # 兼容兜底：若未按 call_id 缓存，尝试按任意 pending 键取一次（单轮单工具场景）
                             if not display_result and self._pending_display_results:
                                 # 取最早一条与当前 func_name 相关的展示
@@ -6975,6 +6989,10 @@ class Model(MailMixin):
                                     cand = self._pending_display_results.get(k)
                                     if isinstance(cand, str) and cand.strip():
                                         display_result = self._pending_display_results.pop(k, None)
+
+                                        if display_media is None:
+                                            display_media = self._pending_display_media.pop(k, None)
+
                                         break
 
                             step_result = {
@@ -6988,6 +7006,9 @@ class Model(MailMixin):
                             if display_result and isinstance(display_result, str) and display_result.strip() and display_result.strip() != model_visible_result.strip():
                                 step_result["display_result"] = display_result
                                 step_result["display_model_visible_result"] = display_result
+
+                            if isinstance(display_media, dict) and display_media.get("items"):
+                                step_result["display_media"] = display_media
                             if "index" in func_call:
                                 step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)

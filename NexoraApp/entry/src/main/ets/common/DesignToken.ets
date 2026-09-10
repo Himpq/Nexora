@@ -71,9 +71,10 @@ export class Shadow {
 
 // 动效：统一时长与插值曲线，消除硬出现硬消失
 export class Motion {
-    static readonly durationFast: number = 160;
-    static readonly durationBase: number = 240;
-    static readonly durationSlow: number = 400;
+    static readonly durationFast: number = 140;
+    static readonly durationPress: number = 100;
+    static readonly durationBase: number = 220;
+    static readonly durationSlow: number = 320;
 
     // 弹性曲线：用于弹层、按压回弹、列表插入
     static readonly spring: ICurve = curves.springMotion(0.42, 0.86);
@@ -81,13 +82,15 @@ export class Motion {
     // 缓出曲线：用于透明度淡入淡出
     static readonly easeOut: ICurve = curves.cubicBezierCurve(0.22, 1, 0.36, 1);
     static readonly easeInOut: ICurve = curves.cubicBezierCurve(0.4, 0, 0.2, 1);
+    // 按压曲线：快速到位，松手立即回到原位，不产生网页式弹跳
+    static readonly press: ICurve = curves.cubicBezierCurve(0.2, 0, 0, 1);
 }
 
-// 按压态缩放：配合 scale 与 spring 使用
+// 按压态缩放：只做轻微压下，避免手机端控件像网页卡片一样跳动
 export class PressScale {
     static readonly normal: number = 1;
-    static readonly pressed: number = 0.96;
-    static readonly pressedDeep: number = 0.92;
+    static readonly pressed: number = 0.98;
+    static readonly pressedDeep: number = 0.96;
 }
 
 // 入场动画延迟：用于首页各区域交错出现
@@ -97,15 +100,15 @@ export class StaggerDelay {
     static readonly actions: number = 160;
     static readonly recent: number = 240;
     static readonly actionCardBase: number = 40;
-    static readonly actionCardStep: number = 60;
+    static readonly actionCardStep: number = 28;
 }
 
 // 发光效果：用于装饰背景球和聚焦态
 export class Glow {
     static readonly brandRadius: number = 120;
-    static readonly brandOpacity: number = 0.12;
+    static readonly brandOpacity: number = 0.08;
     static readonly secondaryRadius: number = 80;
-    static readonly secondaryOpacity: number = 0.08;
+    static readonly secondaryOpacity: number = 0.05;
     static readonly focusRadius: number = 20;
     static readonly focusOpacity: number = 0.15;
 }

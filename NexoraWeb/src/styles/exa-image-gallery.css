@@ -1,0 +1,107 @@
+/**
+ * exa-image-gallery.css — Exa 搜索结果图片画廊
+ *
+ * 画廊是工具行下方的独立媒体区域，不继承工具输出面板的折叠与等宽文本样式。
+ */
+
+.message-content .exa-image-gallery {
+    width: calc(100% - 18px);
+    max-width: 100%;
+    min-width: 0;
+    margin: 8px 0 14px 18px;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.message-content .exa-image-gallery-track {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 2px 2px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scroll-snap-type: inline proximity;
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+    touch-action: pan-x;
+}
+
+.message-content .exa-image-gallery-track::-webkit-scrollbar {
+    height: 6px;
+}
+
+.message-content .exa-image-gallery-track::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 3px;
+}
+
+.message-content .exa-image-gallery-track::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.message-content .exa-image-card {
+    display: block;
+    flex: 0 0 184px;
+    aspect-ratio: 4 / 3;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-elevated);
+    overflow: hidden;
+    cursor: zoom-in;
+    scroll-snap-align: start;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.message-content .exa-image-card:hover:not(:disabled),
+.message-content .exa-image-card:focus-visible:not(:disabled) {
+    border-color: var(--color-border-strong);
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.12);
+    outline: none;
+}
+
+.message-content .exa-image-card img {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    object-fit: cover;
+}
+
+.message-content .exa-image-card.is-failed {
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    cursor: default;
+}
+
+.message-content .exa-image-card-error {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+.message-content .tool-usage.execution-flow-item:has(+ .exa-image-gallery)::before {
+    display: none;
+}
+
+@media (max-width: 640px) {
+    .message-content .exa-image-gallery {
+        width: calc(100% - 8px);
+        margin-left: 8px;
+    }
+
+    .message-content .exa-image-card {
+        flex-basis: 154px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-content .exa-image-card {
+        transition: none;
+    }
+}

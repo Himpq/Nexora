@@ -93,6 +93,7 @@ def extract_process_steps_from_trace(trace: Dict[str, Any]) -> List[Dict[str, An
             "model_visible_result": result.get("model_visible_result", ""),
             "display_result": result.get("display_result", result.get("display_model_visible_result", "")),
             "display_model_visible_result": result.get("display_model_visible_result", result.get("display_result", "")),
+            "display_media": copy.deepcopy(result.get("display_media")),
             "call_id": str(result.get("call_id") or ""),
             "success": bool(result.get("success", True)),
             "round": result.get("round"),

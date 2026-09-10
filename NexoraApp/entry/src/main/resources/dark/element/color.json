@@ -38,6 +38,10 @@
       "name": "bg_hover",
       "value": "#22262F"
     },
+    {
+      "name": "bg_pressed",
+      "value": "#14FFFFFF"
+    },
 
     {
       "name": "bubble_user",

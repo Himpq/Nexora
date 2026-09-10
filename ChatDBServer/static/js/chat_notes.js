@@ -109,6 +109,7 @@ let notesMobilePanelState = {
 let notesCloudSyncTimer = null;
 let notesCloudSyncPendingStore = null;
 let notesCloudSyncInFlight = false;
+let notesCloudBaseStore = null;
 let notesMutationSeq = 0;
 let timelineState = {
     open: false,
@@ -155,8 +156,17 @@ function createDefaultNotebook() {
     return {
         id: NOTES_DEFAULT_NOTEBOOK_ID,
         name: '默认笔记本',
-        ts: Math.floor(Date.now() / 1000)
+        ts: Date.now()
     };
+}
+
+function normalizeNotesTimestampMs(raw, fallback = Date.now()) {
+    const value = Number(raw || 0);
+    if (!Number.isFinite(value) || value <= 0) return Number(fallback || 0);
+    if (value < 100000000000) return Math.floor(value * 1000);
+    if (value < 100000000000000) return Math.floor(value);
+    if (value < 100000000000000000) return Math.floor(value / 1000);
+    return Math.floor(value / 1000000);
 }
 
 function createDefaultNotesStore() {
@@ -214,7 +224,7 @@ async function ensureNotesStorageUserId() {
 function getNotesStoreUpdatedAt(store) {
     const src = (store && typeof store === 'object') ? store : {};
     const value = Number(src.updatedAt || src.storeUpdatedAt || 0);
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    return normalizeNotesTimestampMs(value, 0);
 }
 
 function notesStoreHasUserData(store) {
@@ -251,11 +261,11 @@ function normalizeNotebookItem(raw) {
     const src = (raw && typeof raw === 'object') ? raw : {};
     const id = String(src.id || '').trim() || `nb_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
     const name = String(src.name || '').trim() || '未命名笔记本';
-    const ts = Number(src.ts || Math.floor(Date.now() / 1000));
+    const ts = normalizeNotesTimestampMs(src.ts, Date.now());
     return {
         id,
         name,
-        ts: Number.isFinite(ts) ? Math.floor(ts) : Math.floor(Date.now() / 1000)
+        ts
     };
 }
 
@@ -298,7 +308,7 @@ function normalizeNoteItem(raw) {
     const text = String(src.text || '').trim();
     if (!text) return null;
     const notebookId = String(src.notebookId || NOTES_DEFAULT_NOTEBOOK_ID).trim() || NOTES_DEFAULT_NOTEBOOK_ID;
-    const ts = Number(src.ts || Math.floor(Date.now() / 1000));
+    const ts = normalizeNotesTimestampMs(src.ts, Date.now());
     return {
         id: String(src.id || `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`),
         notebookId,
@@ -306,7 +316,7 @@ function normalizeNoteItem(raw) {
         source: String(src.source || '聊天'),
         sourceTitle: String(src.sourceTitle || ''),
         anchor: normalizeNoteAnchor(src.anchor),
-        ts: Number.isFinite(ts) ? Math.floor(ts) : Math.floor(Date.now() / 1000)
+        ts
     };
 }
 
@@ -354,6 +364,30 @@ function applyNotesStoreToState(store) {
     notesState.storeUpdatedAt = getNotesStoreUpdatedAt(src);
 }
 
+function cloneNotesStore(store) {
+    const src = (store && typeof store === 'object') ? store : {};
+    const notebooks = Array.isArray(src.notebooks) ? src.notebooks : [];
+    const notes = Array.isArray(src.notes) ? src.notes : [];
+    return {
+        activeNotebookId: String(src.activeNotebookId || NOTES_DEFAULT_NOTEBOOK_ID),
+        notebooks: notebooks.map((item) => ({
+            id: String((item && item.id) || ''),
+            name: String((item && item.name) || '未命名笔记本'),
+            ts: normalizeNotesTimestampMs(item && item.ts, Date.now())
+        })),
+        notes: notes.map((item) => ({
+            id: String((item && item.id) || ''),
+            notebookId: String((item && item.notebookId) || NOTES_DEFAULT_NOTEBOOK_ID),
+            text: String((item && (item.text || item.content)) || ''),
+            source: String((item && item.source) || '随笔'),
+            sourceTitle: String((item && item.sourceTitle) || ''),
+            anchor: item && item.anchor ? item.anchor : null,
+            ts: normalizeNotesTimestampMs(item && (item.ts || item.updatedAt), Date.now())
+        })),
+        updatedAt: getNotesStoreUpdatedAt(src)
+    };
+}
+
 function buildNotesStorePayload() {
     return {
         activeNotebookId: String(notesState.activeNotebookId || NOTES_DEFAULT_NOTEBOOK_ID),
@@ -384,12 +418,12 @@ async function fetchNotesStoreFromCloud() {
     }
 }
 
-async function saveNotesStoreToCloud(store) {
+async function saveNotesStoreToCloud(store, baseStore) {
     try {
         const res = await fetch('/api/notes/store', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ store })
+            body: JSON.stringify({ store, baseStore })
         });
         if (!res.ok) return null;
         const data = await res.json();
@@ -402,13 +436,19 @@ async function saveNotesStoreToCloud(store) {
 
 async function flushNotesCloudSync() {
     if (notesCloudSyncInFlight) return;
+    if (!notesCloudBaseStore) return;
     const payload = notesCloudSyncPendingStore || buildNotesStorePayload();
+    const requestMutationSeq = notesMutationSeq;
+    const baseStore = notesCloudBaseStore;
     notesCloudSyncPendingStore = null;
     notesCloudSyncInFlight = true;
     try {
-        const saved = await saveNotesStoreToCloud(payload);
+        const saved = await saveNotesStoreToCloud(payload, baseStore);
         if (saved) {
-            applyNotesStoreToState(saved);
+            notesCloudBaseStore = cloneNotesStore(saved);
+            if (requestMutationSeq === notesMutationSeq) {
+                applyNotesStoreToState(saved);
+            }
         }
     } finally {
         notesCloudSyncInFlight = false;
@@ -509,6 +549,7 @@ async function hydrateNotesState() {
     const requestSeq = notesMutationSeq;
     const cloudStore = await fetchNotesStoreFromCloud();
     if (cloudStore) {
+        notesCloudBaseStore = cloneNotesStore(cloudStore);
         if (requestSeq !== notesMutationSeq) {
             renderNotesList();
             return;
@@ -528,6 +569,7 @@ async function hydrateNotesState() {
         if (!cloudHasUserData) {
             if (cloudUpdatedAt > 0) {
                 if (currentUpdatedAt > 0 && cloudUpdatedAt <= currentUpdatedAt) {
+                    saveNotesToStorage({ immediate: true });
                     renderNotesList();
                     return;
                 }
@@ -549,13 +591,16 @@ async function hydrateNotesState() {
         }
 
         if (!shouldApplyNotesStoreUpdate(notesState, cloudStore)) {
+            if (getNotesStoreSignature(buildNotesStorePayload()) !== getNotesStoreSignature(notesCloudBaseStore)) {
+                saveNotesToStorage({ immediate: true });
+            }
             renderNotesList();
             return;
         }
         applyNotesStoreToState(cloudStore);
     } else {
-        // 云端不可用时，保留当前状态并尝试回写。
-        saveNotesToStorage({ immediate: true });
+        // 云端读取失败时只保留本地缓存，不允许拿未知基线回写覆盖云端。
+        notesCloudBaseStore = null;
     }
     renderNotesList();
 }
@@ -607,7 +652,7 @@ function createNotebook() {
     const notebook = {
         id: `nb_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
         name: name.slice(0, 36),
-        ts: Math.floor(Date.now() / 1000)
+        ts: Date.now()
     };
     notesState.notebooks = [notebook, ...(Array.isArray(notesState.notebooks) ? notesState.notebooks : [])];
     notesState.activeNotebookId = notebook.id;
@@ -679,10 +724,10 @@ function downloadActiveNotebook() {
 }
 
 function formatNoteTime(ts) {
-    const n = Number(ts || 0);
-    if (!n) return '-';
+    const millis = normalizeNotesTimestampMs(ts, 0);
+    if (!millis) return '-';
     try {
-        return new Date(n * 1000).toLocaleString();
+        return new Date(millis).toLocaleString();
     } catch (e) {
         return '-';
     }
@@ -1556,13 +1601,13 @@ function bindTimelinePanelDrag() {
 }
 
 function formatTimelineDateParts(ts) {
-    const n = Number(ts || 0);
-    if (!n) {
+    const millis = normalizeNotesTimestampMs(ts, 0);
+    if (!millis) {
         return { date: '-', time: '--:--' };
     }
 
     try {
-        const d = new Date(n * 1000);
+        const d = new Date(millis);
 
         return {
             date: d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
@@ -3025,7 +3070,7 @@ function addNoteItemFromSelection(selectionText, sourceMeta = {}) {
         source,
         sourceTitle,
         anchor,
-        ts: Math.floor(Date.now() / 1000)
+        ts: Date.now()
     };
     notesState.items = [item, ...(Array.isArray(notesState.items) ? notesState.items : [])];
     saveNotesToStorage({ immediate: true });

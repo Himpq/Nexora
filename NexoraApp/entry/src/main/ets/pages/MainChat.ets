@@ -1,6 +1,6 @@
 // MainChat.ets - 主对话页（豆包式单一主页）
 // 登录后的唯一主页 = 对话界面本身，取代旧「HomePage 首页 + ChatPage 详情」的两页跳转：
-//  - 顶栏左侧头像点击滑出侧栏抽屉（功能入口：新对话/邮件 / 最近对话 / 视图切换 / 账户行）
+//  - 顶栏左侧头像点击滑出侧栏抽屉（功能入口：新对话/邮件/随笔 / 最近对话 / 视图切换 / 账户行）
 //  - 中间列展示会话标题 + 当前模型（可点切换），右侧 + 新建对话
 //  - 空态显示问候 + 快捷能力宫格，发送后原地进入消息流（不压栈）
 //  - 历史会话从侧栏点选后「原地替换状态」，会话删除后若删的是当前会话则复位空态
@@ -16,7 +16,7 @@ import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACT
 import { ChatMessage, TokenUsage } from '../common/ChatTypes';
 import { chatStream, StreamListener } from '../common/ChatStreamClient';
 import { LiveViewController } from '../common/LiveViewController';
-import { FontSize, Glow, Motion, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
+import { FontSize, Glow, Motion, PressScale, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { QuickActionGrid } from '../components/QuickActionGrid';
 import { MessageBubble } from '../components/chat/MessageBubble';
@@ -28,6 +28,8 @@ import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
 import { MailPage } from '../components/mail/MailPage';
+import { NotesEntryCard } from '../components/notes/NotesEntryCard';
+import { NotesPage } from '../components/notes/NotesPage';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
@@ -73,13 +75,13 @@ export struct MainChat {
 
     // 顶栏模型展示名镜像：选中模型/刷新清单后由 syncModelLabel() 同步（实测正常）。
     @State private modelLabel: string = '选择模型';
-
     // ---------- 侧栏抽屉 ----------
     // 始终挂载，用 translate+opacity 控制显隐：避免 if 卸载时退场动画失效（关闭动画直接偏移）
     @State private sidebarOpen: boolean = false;
     @State private sidebarTranslate: number = -DRAWER_WIDTH;
     @State private sidebarOverlayOpacity: number = 0;
     @State private avatarPressed: boolean = false;
+    @State private modelTitlePressed: boolean = false;
     // 拖拽起始时的 translate 值（跟手拖动用，非响应式）
     private dragStartTranslate: number = 0;
 
@@ -88,8 +90,14 @@ export struct MainChat {
     @State private mailOpen: boolean = false;
     @State private mailDetailOpen: boolean = false;
 
+    // 随笔页（全屏覆盖层）：编辑态由宿主持有，系统返回键可先退出编辑再退出页面
+    @State private notesOpen: boolean = false;
+    @State private noteEditorOpen: boolean = false;
+    @State private noteLaunchEditor: boolean = false;
+
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
     @State private showScrollBottom: boolean = false;
+    @State private scrollBottomPressed: boolean = false;
 
     // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
     @State private activeTurnIndex: number = -1;
@@ -119,6 +127,7 @@ export struct MainChat {
         this.app.refreshConversations().then(() => {
             this.bumpList();
         });
+        this.app.refreshNotes();
         this.app.refreshUserProfile();
 
         // 空态区域交错入场（仅问候 / 快捷能力两个区块，输入栏常驻底部不做位移）
@@ -131,7 +140,7 @@ export struct MainChat {
         };
     }
 
-    // 系统返回键处理：优先级 邮件页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
+    // 系统返回键处理：优先级 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
         if (this.mailOpen) {
             if (this.mailDetailOpen) {
@@ -140,6 +149,16 @@ export struct MainChat {
             }
 
             this.closeMail();
+            return true;
+        }
+
+        if (this.notesOpen) {
+            if (this.noteEditorOpen) {
+                this.noteEditorOpen = false;
+                return true;
+            }
+
+            this.closeNotes();
             return true;
         }
 
@@ -209,6 +228,22 @@ export struct MainChat {
                     .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
             }
+
+            // 随笔页层：与邮件同级的轻量全屏容器，避免把编辑态塞进知识库弹层
+            if (this.notesOpen) {
+                NotesPage({
+                    app: this.app,
+                    noteEditorOpen: $noteEditorOpen,
+                    launchEditor: this.noteLaunchEditor,
+                    onBack: () => {
+                        this.closeNotes();
+                    }
+                })
+                    .width('100%')
+                    .height('100%')
+                    .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
         }
         .width('100%')
         .height('100%')
@@ -240,11 +275,20 @@ export struct MainChat {
             .height(Size.touchTarget)
             .justifyContent(FlexAlign.Center)
             .borderRadius(Size.touchTarget / 2)
-            .backgroundColor(this.avatarPressed ? $r('app.color.bg_sunken') : Color.Transparent)
-            .scale({ x: this.avatarPressed ? 0.94 : 1, y: this.avatarPressed ? 0.94 : 1 })
-            .animation({ duration: Motion.durationFast, curve: Motion.spring })
+            .backgroundColor(this.avatarPressed ? $r('app.color.bg_pressed') : Color.Transparent)
+            .scale({
+                x: this.avatarPressed ? PressScale.pressed : PressScale.normal,
+                y: this.avatarPressed ? PressScale.pressed : PressScale.normal
+            })
+            .animation({ duration: Motion.durationPress, curve: Motion.press })
             .onTouch((event: TouchEvent) => {
-                this.avatarPressed = event.type === TouchType.Down;
+                if (event.type === TouchType.Down) {
+                    this.avatarPressed = true;
+                }
+
+                if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                    this.avatarPressed = false;
+                }
             })
             .onClick(() => {
                 this.openSidebar();
@@ -277,6 +321,18 @@ export struct MainChat {
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start)
+            .borderRadius(Radius.md)
+            .backgroundColor(this.modelTitlePressed ? $r('app.color.bg_pressed') : Color.Transparent)
+            .animation({ duration: Motion.durationPress, curve: Motion.press })
+            .onTouch((event: TouchEvent) => {
+                if (event.type === TouchType.Down) {
+                    this.modelTitlePressed = true;
+                }
+
+                if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                    this.modelTitlePressed = false;
+                }
+            })
             .onClick(() => {
                 this.openSheetModel();
             });
@@ -306,6 +362,12 @@ export struct MainChat {
                     Scroll() {
                         Column({ space: Space.xl }) {
                             this.GreetingBlock();
+
+                            NotesEntryCard({
+                                onTap: () => {
+                                    this.openNotes(true);
+                                }
+                            });
 
                             QuickActionGrid({
                                 actions: QUICK_ACTIONS,
@@ -337,15 +399,18 @@ export struct MainChat {
                         }
                         // 轮次跳转高亮：目标消息临时加背景色，3 秒后自动清除
                         .backgroundColor(index === this.highlightIndex
-                            ? $r('app.color.bg_sunken')
+                            ? $r('app.color.brand_soft')
                             : Color.Transparent)
-                        .animation({ duration: Motion.durationBase, curve: Motion.easeOut })
-                        // 新消息入场过渡：配合 sendMessage 里的 animateTo 播放淡入上移，
-                        // 让"发送/收到首段回复"不再是硬切闪烁
+                        .border({
+                            width: index === this.highlightIndex ? 1 : 0,
+                            color: $r('app.color.brand_primary')
+                        })
+                        .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+                        // 新消息入场只做极短的淡入与轻微位移，避免内容流像网页列表一样飞入
                         .transition(
                             TransitionEffect.OPACITY
-                                .combine(TransitionEffect.translate({ y: 10 }))
-                                .animation({ duration: Motion.durationBase, curve: Motion.easeOut })
+                                .combine(TransitionEffect.translate({ y: 4 }))
+                                .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
                         );
                     }, (message: ChatMessage, index: number) => message.index + '_' + message.role);
                 }
@@ -446,8 +511,22 @@ export struct MainChat {
         .height(Size.touchTarget)
         .justifyContent(FlexAlign.Center)
         .borderRadius(Size.touchTarget / 2)
-        .backgroundColor($r('app.color.bg_card'))
+        .backgroundColor(this.scrollBottomPressed ? $r('app.color.bg_pressed') : $r('app.color.bg_card'))
         .shadow(Shadow.raised)
+        .scale({
+            x: this.scrollBottomPressed ? PressScale.pressed : PressScale.normal,
+            y: this.scrollBottomPressed ? PressScale.pressed : PressScale.normal
+        })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+                this.scrollBottomPressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.scrollBottomPressed = false;
+            }
+        })
         .onClick(() => {
             this.scrollToEnd(true);
         });
@@ -503,8 +582,8 @@ export struct MainChat {
         .alignItems(HorizontalAlign.Start)
         .padding({ top: Space.md, bottom: Space.xs })
         .opacity(this.greetingVisible ? 1 : 0)
-        .translate({ y: this.greetingVisible ? 0 : 24 })
-        .animation({ duration: Motion.durationSlow, curve: Motion.easeOut });
+        .translate({ y: this.greetingVisible ? 0 : 8 })
+        .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
     }
 
     // 历史加载失败提示条：可点刷新重试
@@ -577,6 +656,10 @@ export struct MainChat {
                     onOpenMail: () => {
                         this.closeSidebar();
                         this.openMail();
+                    },
+                    onOpenNotes: () => {
+                        this.closeSidebar();
+                        this.openNotes(false);
                     },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
@@ -726,6 +809,20 @@ export struct MainChat {
 
     private closeMail(): void {
         this.mailOpen = false;
+    }
+
+    // ---------- 随笔页 ----------
+    // 首页入口直接进入编辑态，侧栏入口进入按日期分组的列表态
+    private openNotes(launchEditor: boolean): void {
+        this.noteLaunchEditor = launchEditor;
+        this.noteEditorOpen = launchEditor;
+        this.notesOpen = true;
+    }
+
+    private closeNotes(): void {
+        this.noteEditorOpen = false;
+        this.noteLaunchEditor = false;
+        this.notesOpen = false;
     }
 
     // ---------- 侧栏开关 ----------

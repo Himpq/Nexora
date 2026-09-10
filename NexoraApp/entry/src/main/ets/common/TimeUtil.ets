@@ -1,17 +1,31 @@
 // TimeUtil.ets - 时间戳到展示文案的转换
 // 后端时间戳秒 / 毫秒混用，统一在此判定量级后格式化
 
-const SECONDS_BOUNDARY: number = 10000000000;
+const SECONDS_BOUNDARY: number = 100000000000;
+const MICROSECONDS_BOUNDARY: number = 100000000000000;
+const NANOSECONDS_BOUNDARY: number = 100000000000000000;
 const ONE_DAY_MS: number = 24 * 60 * 60 * 1000;
 
 export class TimeUtil {
-    // 归一化到毫秒：小于 1e10 视为秒级
+    // 归一化到毫秒：兼容旧服务端的秒、毫秒，以及误写入的微秒/纳秒
     static toMillis(timestamp: number): number {
-        if (timestamp <= 0) {
+        if (!Number.isFinite(timestamp) || timestamp <= 0) {
             return 0;
         }
 
-        return timestamp < SECONDS_BOUNDARY ? timestamp * 1000 : timestamp;
+        if (timestamp < SECONDS_BOUNDARY) {
+            return timestamp * 1000;
+        }
+
+        if (timestamp < MICROSECONDS_BOUNDARY) {
+            return timestamp;
+        }
+
+        if (timestamp < NANOSECONDS_BOUNDARY) {
+            return timestamp / 1000;
+        }
+
+        return timestamp / 1000000;
     }
 
     // 列表场景的短格式：今天显示时分，昨天显示「昨天」，更早显示月-日

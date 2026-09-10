@@ -65,7 +65,8 @@ struct Index {
         }
         .width('100%')
         .height('100%')
-        .backgroundColor($r('app.color.bg_page'));
+        // background 会把背景绘制延伸到系统手势区，但不会改变页面子组件的安全区排版。
+        .background($r('app.color.bg_page'));
     }
 
     // 登录成功进入主界面，主页 aboutToAppear 自行拉取模型与会话

@@ -75,13 +75,7 @@ export struct KnowledgeEditorSheet {
                 .fontColor($r('app.color.text_inverse'))
                 .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.sm })
                 .borderRadius(Radius.md)
-                .linearGradient({
-                    angle: 135,
-                    colors: [
-                        [$r('app.color.brand_primary'), 0],
-                        [$r('app.color.brand_secondary'), 1]
-                    ]
-                })
+                .backgroundColor($r('app.color.brand_primary'))
                 .opacity(this.isSaveEnabled() ? 1 : 0.4)
                 .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
                 .onClick(() => {

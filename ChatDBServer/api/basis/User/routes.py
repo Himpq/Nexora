@@ -398,20 +398,23 @@ def get_notes_store():
 @user_bp.route('/api/notes/store', methods=['PUT', 'POST'])
 @require_login
 def save_notes_store():
-    """保存当前用户笔记云存储（全量覆盖）。"""
+    """基于客户端上次读取的快照合并当前用户笔记云存储。"""
     username = session.get('username')
     if not username:
         return jsonify({'success': False, 'message': '未登录'}), 401
 
     payload = request.get_json(silent=True) or {}
     store = payload.get('store')
+    base_store = payload.get('baseStore')
     if not isinstance(store, dict):
         return jsonify({'success': False, 'message': 'store 参数缺失或格式错误'}), 400
+    if not isinstance(base_store, dict):
+        return jsonify({'success': False, 'message': 'baseStore 参数缺失或格式错误'}), 400
 
     try:
         user = User(username)
         before_store = user.get_notes_store()
-        normalized = user.save_notes_store(store)
+        normalized = user.save_notes_store(store, base_store)
         try:
             record_notes_snapshot_change(
                 username,

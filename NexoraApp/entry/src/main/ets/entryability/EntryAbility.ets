@@ -41,22 +41,25 @@ export default class EntryAbility extends UIAbility {
   // 键盘与系统栏统一配置：
   // 1. 输入法弹出改为「压缩可用高度」而不是默认的整体上移/悬浮——
   //    避免聊天页标题栏被顶出屏幕、输入栏（模型选择/发送按钮）被键盘盖住
-  // 2. 状态栏/导航栏（手势条）颜色对齐页面底色，消除底部白边；深浅两套色值取自 color.json
-  private applyWindowChrome(windowStage: window.WindowStage): void {
+  // 2. 导航栏保持透明，由系统负责手势区背景合成，避免内容与手势条之间出现白色断层
+  private async applyWindowChrome(windowStage: window.WindowStage): Promise<void> {
     try {
       const win: window.Window = windowStage.getMainWindowSync();
+      // 使用官方非沉浸式窗口布局，让系统自动为页面内容避让状态栏和导航区域。
+      // 页面背景由 Index.background() 单独延伸到透明手势区，不在业务页面读取或计算系统栏高度。
+      await win.setWindowLayoutFullScreen(false);
       // 键盘避让模式在 UIContext 上设置（KeyboardAvoidMode 枚举从 @kit.ArkUI 顶层导入）：
       // RESIZE = 输入法弹出时压缩可用高度，避免标题栏被顶飞、输入栏被键盘覆盖
       win.getUIContext().setKeyboardAvoidMode(KeyboardAvoid.RESIZE);
 
       const isDark: boolean = this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
-      const barBg: string = isDark ? '#0E1015' : '#F4F5F9';
+      const statusBarBg: string = isDark ? '#0E1015' : '#F4F5F9';
       const barContent: string = isDark ? '#9AA1B0' : '#676E7D';
 
       win.setWindowSystemBarProperties({
-        statusBarColor: barBg,
+        statusBarColor: statusBarBg,
         statusBarContentColor: barContent,
-        navigationBarColor: barBg,
+        navigationBarColor: '#00000000',
         navigationBarContentColor: barContent
       });
       hilog.info(DOMAIN, 'testTag', 'window chrome applied, dark=%{public}s', isDark ? 'yes' : 'no');

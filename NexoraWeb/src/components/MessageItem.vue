@@ -279,6 +279,13 @@
                             </div>
                         </div>
 
+                        <!-- Exa 图片直接贴在搜索工具行下方，不增加标题/数量/说明 -->
+                        <ExaImageGallery
+                            v-if="item.exaImageGallery"
+                            :gallery="item.exaImageGallery"
+                            @open-image="emit('open-image', $event)"
+                        />
+
                         <!-- 地图工具:独立渲染交互地图卡片(渲染器自动扫描 ```nexora-map* 围栏) -->
                         <div
                             v-if="item.mapMarkdown"
@@ -365,6 +372,13 @@
         resolveDraftCallResult,
         type DraftCallView,
     } from '@/stream/draftCall'
+    import {
+        isExaWebSearchToolName,
+        readExaImageGallery,
+        readExaImageGalleryFromResult,
+        stripExaImageMarkdown,
+        type ExaImageGalleryData,
+    } from '@/stream/exaMedia'
     import type { QuestionPayload } from '@/stream/questionCard'
     import { buildQuestionCardId, readQuestionLock, writeQuestionLock } from '@/stream/questionCard'
     import { ensureNexoraMapRendererAssets } from '@/stream/mapRenderer'
@@ -375,6 +389,7 @@
 
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
+    import ExaImageGallery from './ExaImageGallery.vue'
 
     import type { ConversationContextEvent } from '@/api/conversations'
 
@@ -467,6 +482,8 @@
         markdownMode: boolean
         /** 地图工具:独立地图卡片 markdown(```nexora-map* 围栏,渲染器自动扫描) */
         mapMarkdown?: string
+        /** Exa 工具:搜索行下方的独立图片画廊 */
+        exaImageGallery?: ExaImageGalleryData
         /** Workspace 草稿工具:内联小卡片视图(参数流式呈现,替代折叠工具行) */
         draft?: DraftCallView
     }
@@ -573,7 +590,12 @@
                 const rawName = segment.name || 'tool'
                 const displaySource = String((segment as any).displayResult || segment.modelVisibleResult || '').trim()
                 const markdownMode = displaySource !== ''
-                const display = markdownMode ? displaySource : String(segment.text || '')
+                const rawDisplay = markdownMode ? displaySource : String(segment.text || '')
+                const isExaSearch = isExaWebSearchToolName(rawName)
+                const display = isExaSearch ? stripExaImageMarkdown(rawDisplay) : rawDisplay
+                const exaImageGallery = isExaSearch
+                    ? (readExaImageGallery(segment.displayMedia) || readExaImageGalleryFromResult(String(segment.text || '')))
+                    : undefined
 
                 for (let i = items.length - 1; i >= 0; i -= 1) {
                     const candidate = items[i]
@@ -588,7 +610,7 @@
                         continue
                     }
 
-                    applyToolResult(candidate, display, markdownMode, String(segment.text || ''))
+                    applyToolResult(candidate, display, markdownMode, String(segment.text || ''), exaImageGallery)
 
                     return
                 }
@@ -606,9 +628,10 @@
                     args: {},
                     outputText: '',
                     markdownMode: false,
+                    exaImageGallery,
                 }
 
-                applyToolResult(orphan, display, markdownMode, String(segment.text || ''))
+                applyToolResult(orphan, display, markdownMode, String(segment.text || ''), exaImageGallery)
                 items.push(orphan)
 
                 return
@@ -658,7 +681,13 @@
     })
 
     /** 结果落位到工具行:更新标题/状态/输出(文件读取类不提供展开,对齐原版规则) */
-    function applyToolResult(item: ToolRenderItem, display: string, markdownMode: boolean, rawResult: string): void {
+    function applyToolResult(
+        item: ToolRenderItem,
+        display: string,
+        markdownMode: boolean,
+        rawResult: string,
+        exaImageGallery?: ExaImageGalleryData,
+    ): void {
         item.running = false
         item.status = '完成'
 
@@ -669,6 +698,7 @@
 
         item.title = buildChineseToolAction(item.rawName, item.args, display, rawResult)
         item.markdownMode = markdownMode
+        item.exaImageGallery = exaImageGallery
 
         if (isFileReadToolName(item.rawName)) {
             item.outputText = ''

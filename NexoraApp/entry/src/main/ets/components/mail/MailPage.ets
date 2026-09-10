@@ -33,7 +33,6 @@ export struct MailPage {
     private listRestoreOffset: number = 0;
     // Web 组件控制器：WebOptions 必填项（正文经 src 声明式加载，控制器仅作挂载与后续扩展操作入口）
     private webController: webview.WebviewController = new webview.WebviewController();
-
     private listScroller: Scroller = new Scroller();
 
     build() {
@@ -120,7 +119,9 @@ export struct MailPage {
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
                 .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .textOverflow({ overflow: TextOverflow.Ellipsis });
+
+            Blank()
                 .layoutWeight(1);
 
             if (!this.mailDetailOpen) {
@@ -138,10 +139,18 @@ export struct MailPage {
         .padding({ left: Space.xs, right: Space.xs, top: Space.sm, bottom: Space.sm });
     }
 
-    // 箱体切换：收件箱 / 已发送，下划线指示器随选中态滑动（与侧栏 ViewSwitcher 同一交互语言）
+    // 箱体切换：收件箱 / 已发送，浅色选中底随状态滑动（与侧栏 ViewSwitcher 同一交互语言）
     @Builder
     BoxSwitcher() {
-        Column() {
+        Stack({ alignContent: Alignment.TopStart }) {
+            Column()
+                .width('50%')
+                .height(36)
+                .borderRadius(Radius.md)
+                .backgroundColor($r('app.color.brand_soft'))
+                .translate({ x: this.app.mailBox === 'inbox' ? '0%' : '100%' })
+                .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
+
             Row() {
                 Text('收件箱')
                     .fontSize(FontSize.body)
@@ -171,20 +180,11 @@ export struct MailPage {
                     });
             }
             .width('100%')
-            .height(40);
-
-            // 下划线指示器：宽度 50%，translate x 滑动到选中箱下方
-            // Column 必须左对齐（与侧栏 ViewSwitcher 一致）：默认居中会把指示器顶到 25%~75% 区间造成偏移
-            Divider()
-                .strokeWidth(2)
-                .color($r('app.color.brand_primary'))
-                .width('50%')
-                .translate({ x: this.app.mailBox === 'inbox' ? '0%' : '100%' })
-                .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
+            .height(36);
         }
         .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding({ left: Space.lg, right: Space.lg, top: Space.xs, bottom: Space.xs });
+        .height(36)
+        .padding({ left: Space.lg, right: Space.lg });
     }
 
     // 搜索框：回车提交触发服务端 q 搜索，有内容时提供一键清除

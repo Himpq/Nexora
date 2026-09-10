@@ -26,6 +26,7 @@ import {
 } from '@/api/conversations'
 import { chatStream, type ChatStreamSnapshot } from '@/network/chatStream'
 import { parseContextCompressionStep } from '@/stream/contextCompression'
+import { readExaImageGallery } from '@/stream/exaMedia'
 import type { QuestionPayload } from '@/stream/questionCard'
 import {
     appendSegmentDelta,
@@ -673,6 +674,7 @@ export const useConversationStore = defineStore('conversation', {
                 displayResult: typeof (step as any).display_model_visible_result === 'string' && (step as any).display_model_visible_result.trim()
                     ? String((step as any).display_model_visible_result)
                     : typeof (step as any).display_result === 'string' ? String((step as any).display_result) : undefined,
+                displayMedia: readExaImageGallery(step.display_media),
                 round: Number(step.round) || undefined,
             }
 

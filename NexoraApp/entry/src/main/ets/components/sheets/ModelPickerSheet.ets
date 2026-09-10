@@ -10,6 +10,8 @@ export struct ModelPickerSheet {
     @ObjectLink app: AppState;
     onPicked: (modelId: string) => void = () => {};
 
+    @State private pressedModelId: string = '';
+
     build() {
         Column({ space: Space.sm }) {
             Column()
@@ -80,8 +82,19 @@ export struct ModelPickerSheet {
         .borderRadius(Radius.lg)
         .backgroundColor(model.id === this.app.selectedModelId
             ? $r('app.color.brand_soft')
-            : $r('app.color.bg_card'))
-        .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+            : this.pressedModelId === model.id
+                ? $r('app.color.bg_pressed')
+                : $r('app.color.bg_card'))
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+                this.pressedModelId = model.id;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressedModelId = '';
+            }
+        })
         .onClick(() => {
             this.onPicked(model.id);
         });

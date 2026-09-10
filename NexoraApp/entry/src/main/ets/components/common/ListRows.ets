@@ -90,10 +90,16 @@ export struct NavRow {
         .width('100%')
         .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md })
         .borderRadius(Radius.lg)
-        .backgroundColor(this.pressed ? $r('app.color.bg_hover') : $r('app.color.bg_card'))
-        .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+        .backgroundColor(this.pressed ? $r('app.color.bg_pressed') : $r('app.color.bg_card'))
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
         .onTouch((event: TouchEvent) => {
-            this.pressed = event.type === TouchType.Down;
+            if (event.type === TouchType.Down) {
+                this.pressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressed = false;
+            }
         })
         .onClick(() => {
             this.onTap();
@@ -107,6 +113,8 @@ export struct DangerRow {
     @Prop title: string;
     @Prop icon: ResourceStr = $r('app.media.ic_logout');
     onTap: () => void = () => {};
+
+    @State private pressed: boolean = false;
 
     build() {
         Row({ space: Space.md }) {
@@ -123,7 +131,17 @@ export struct DangerRow {
         .width('100%')
         .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md })
         .borderRadius(Radius.lg)
-        .backgroundColor($r('app.color.bg_card'))
+        .backgroundColor(this.pressed ? $r('app.color.bg_pressed') : $r('app.color.bg_card'))
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+                this.pressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressed = false;
+            }
+        })
         .onClick(() => {
             this.onTap();
         });

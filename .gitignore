@@ -87,3 +87,5 @@ temp_jar_extract
 # HarmonyOS hvigor build cache and app build logs (never version these)
 .hvigor/
 NexoraApp/build_log.txt
+
+.hf_cache

@@ -17,6 +17,7 @@
 
 import type { ChatMessage } from '@/api/conversations'
 import type { QuestionPayload } from '@/stream/questionCard'
+import { readExaImageGallery, type ExaImageGalleryData } from '@/stream/exaMedia'
 
 /** 分段类型:思考过程 / 正文 / 工具调用 / 工具结果 / 交互问题 / 终态错误 */
 export type MessageSegmentType = 'reasoning' | 'content' | 'function_call' | 'function_result' | 'question' | 'error'
@@ -34,6 +35,8 @@ export interface MessageSegment {
     modelVisibleResult?: string
     /** 工具分段专用:前端优先展示结果(双轨：缓存截胡时展示真实列表) */
     displayResult?: string
+    /** 工具分段专用:前端独立媒体展示(当前用于 Exa 图片画廊) */
+    displayMedia?: ExaImageGalleryData
     /** 工具分段专用:所属工具轮次(对齐 process_steps.round) */
     round?: number
     /** question 分段专用:问题载荷(question_title/content/choices/allow_other/permission_request 等) */
@@ -236,6 +239,7 @@ function stepToSegment(step: Record<string, unknown>): MessageSegment | null {
             callId: String(step.call_id || ''),
             modelVisibleResult: modelVis,
             displayResult: displayCand,
+            displayMedia: readExaImageGallery(step.display_media),
             round: Number(step.round) || undefined,
         }
     }

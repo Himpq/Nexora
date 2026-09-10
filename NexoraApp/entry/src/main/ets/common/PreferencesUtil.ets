@@ -131,6 +131,15 @@ export class PreferencesUtil {
         await PreferencesUtil.saveBoolean(context, StorageKey.forceTools, enabled);
     }
 
+    // 随笔按登录账号隔离：同一台设备切换账号时不会串出上一位用户的私密内容
+    static async loadNotes(context: common.UIAbilityContext, username: string): Promise<string> {
+        return PreferencesUtil.loadString(context, StorageKey.notesPrefix + username, '');
+    }
+
+    static async saveNotes(context: common.UIAbilityContext, username: string, value: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.notesPrefix + username, value);
+    }
+
     // 退出登录：清掉会话与身份，保留后端地址与偏好
     static async clearSession(context: common.UIAbilityContext): Promise<void> {
         const prefs: preferences.Preferences = await holder.open(context);

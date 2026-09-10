@@ -5,10 +5,12 @@
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, MailItem, ModelItem, sanitizeDisplayName } from './AppConfig';
-import { ApiService, UserInfoResult } from './ApiService';
+import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, MailItem, ModelItem, NoteItem, NoteNotebook, NotesStore, sanitizeDisplayName } from './AppConfig';
+import { ApiService, NotesStoreResult, UserInfoResult } from './ApiService';
 import { HttpUtil } from './HttpUtil';
+import { Json } from './JsonUtil';
 import { PreferencesUtil } from './PreferencesUtil';
+import { TimeUtil } from './TimeUtil';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraState';
@@ -65,6 +67,19 @@ export class AppState {
     // 邮件列表请求序号：并发刷新时只采纳最后一次的结果（与会话列表同一防串台机制）
     private mailRequestSeq: number = 0;
 
+    // 随笔：本地轻量记录，与知识库完全分离
+    notes: NoteItem[] = [];
+    notesLoading: boolean = false;
+    notesError: string = '';
+    private notesWriteChain: Promise<void> = Promise.resolve();
+    private noteSequence: number = 0;
+    private notesStore: NotesStore | null = null;
+    // 最近一次成功读取/写入的云端快照，随笔保存必须以此作为三方合并基线
+    private notesBaseStore: NotesStore | null = null;
+    private notesMutationSeq: number = 0;
+    private notesRequestSeq: number = 0;
+    private notesRemoteReady: boolean = false;
+
     private context: common.UIAbilityContext | null = null;
 
     // 系统返回键处理函数：由 MainChat 在 aboutToAppear 中注入，Index.onBackPress 调用
@@ -119,6 +134,7 @@ export class AppState {
         this.enableThinking = await PreferencesUtil.loadEnableThinking(context);
         this.enableWebSearch = await PreferencesUtil.loadEnableWebSearch(context);
         this.forceTools = await PreferencesUtil.loadForceTools(context);
+        await this.loadNotes();
 
         HttpUtil.setBackendUrl(this.backendUrl);
         HttpUtil.setSessionCookie(await PreferencesUtil.loadSessionCookie(context));
@@ -149,6 +165,7 @@ export class AppState {
         this.username = username;
         this.loggedIn = true;
         await this.persistSession();
+        await this.loadNotes();
         await this.refreshModels();
         return '';
     }
@@ -172,6 +189,13 @@ export class AppState {
         this.mailBox = 'inbox';
         this.mailList = [];
         this.mailError = '';
+        this.notes = [];
+        this.notesError = '';
+        this.notesStore = null;
+        this.notesBaseStore = null;
+        this.notesMutationSeq = 0;
+        this.notesRequestSeq += 1;
+        this.notesRemoteReady = false;
         this.syncModelLabelToStorage();
     }
 
@@ -490,6 +514,288 @@ export class AppState {
         }
 
         this.mailList = result.mails;
+    }
+
+    // ---------- 随笔 ----------
+    // 生成仅供当前编辑态使用的 id；空白草稿不会立即写入列表，避免返回后产生空卡片
+    newNoteId(): string {
+        this.noteSequence += 1;
+        return Date.now().toString() + '_' + this.noteSequence.toString();
+    }
+
+    // 登录后从云端读取完整快照，并把它固定为后续保存的三方合并基线
+    async refreshNotes(): Promise<void> {
+        if (!this.loggedIn) {
+            return;
+        }
+
+        const requestSeq: number = ++this.notesRequestSeq;
+        this.notesLoading = true;
+        this.notesRemoteReady = false;
+        this.notesError = '';
+        const result: NotesStoreResult = await ApiService.fetchNotesStore();
+
+        if (requestSeq !== this.notesRequestSeq) {
+            return;
+        }
+
+        this.notesLoading = false;
+
+        if (!result.success || result.store === null) {
+            this.notesRemoteReady = false;
+            this.notesError = result.message;
+            hilog.error(DOMAIN, TAG, '[refreshNotes] failed: %{public}s', result.message);
+            return;
+        }
+
+        this.applyNotesStore(result.store);
+        this.notesBaseStore = this.copyNotesStore(result.store);
+        this.notesRemoteReady = true;
+        await this.cacheNotes();
+    }
+
+    // 按更新时间降序保存随笔：本地先更新，云端依据基线做串行三方合并
+    async saveNote(noteId: string, content: string): Promise<string> {
+        if (noteId.trim().length === 0) {
+            return '笔记标识无效';
+        }
+
+        if (!this.notesRemoteReady || this.notesStore === null) {
+            return '云端随笔正在加载，请稍后再试';
+        }
+
+        const nextContent: string = content;
+        const existing: NoteItem | null = this.findNote(noteId);
+
+        if (nextContent.trim().length === 0) {
+            if (existing === null) {
+                return '';
+            }
+
+            this.notes = this.notes.filter((item: NoteItem): boolean => item.id !== noteId);
+        } else if (existing === null) {
+            this.notes = this.sortNotes([...this.notes, {
+                id: noteId,
+                content: nextContent,
+                updatedAt: Date.now(),
+                notebookId: this.notesStore.activeNotebookId,
+                source: '随笔',
+                sourceTitle: '',
+                anchor: null
+            }]);
+        } else {
+            this.notes = this.sortNotes(this.notes.map((item: NoteItem): NoteItem => {
+                if (item.id !== noteId) {
+                    return item;
+                }
+
+                return {
+                    id: item.id,
+                    content: nextContent,
+                    updatedAt: Date.now(),
+                    notebookId: item.notebookId,
+                    source: item.source,
+                    sourceTitle: item.sourceTitle,
+                    anchor: item.anchor
+                };
+            }));
+        }
+
+        this.notesStore = this.storeWithNotes(this.notes);
+        this.notesMutationSeq += 1;
+        const mutationSeq: number = this.notesMutationSeq;
+        await this.cacheNotes();
+        return this.persistNotesSnapshot(this.notesStore, mutationSeq);
+    }
+
+    // 删除随笔：第一版不提供复杂回收站，删除后立即从本地列表移除并同步云端
+    async deleteNote(noteId: string): Promise<string> {
+        if (!this.notesRemoteReady || this.notesStore === null) {
+            return '云端随笔正在加载，请稍后再试';
+        }
+
+        const next: NoteItem[] = this.notes.filter((item: NoteItem): boolean => item.id !== noteId);
+
+        if (next.length === this.notes.length) {
+            return '';
+        }
+
+        this.notes = next;
+        this.notesStore = this.storeWithNotes(this.notes);
+        this.notesMutationSeq += 1;
+        const mutationSeq: number = this.notesMutationSeq;
+        await this.cacheNotes();
+        return this.persistNotesSnapshot(this.notesStore, mutationSeq);
+    }
+
+    private async loadNotes(): Promise<void> {
+        this.notesBaseStore = null;
+        this.notesRemoteReady = false;
+
+        if (this.context === null || this.username.trim().length === 0) {
+            this.notes = [];
+            return;
+        }
+
+        this.notesLoading = true;
+        this.notesError = '';
+
+        try {
+            const raw: string = await PreferencesUtil.loadNotes(this.context, this.username.trim());
+
+            if (raw.length === 0) {
+                this.notes = [];
+                return;
+            }
+
+            const parsed: Object[] | null = Json.parseArray(raw);
+
+            if (parsed === null) {
+                this.notesError = '本地随笔数据无法读取，请清理应用数据后重试';
+                return;
+            }
+
+            const loaded: NoteItem[] = [];
+
+            for (let i: number = 0; i < parsed.length; i++) {
+                const source: Record<string, Object> = parsed[i] as Record<string, Object>;
+                const id: string = Json.string(source, 'id');
+                const content: string = Json.string(source, 'content');
+                const updatedAt: number = TimeUtil.toMillis(Json.number(source, 'updatedAt'));
+
+                if (id.length === 0 || content.trim().length === 0 || updatedAt <= 0) {
+                    this.notesError = '本地随笔数据格式错误，请清理应用数据后重试';
+                    return;
+                }
+
+                loaded.push({
+                    id: id,
+                    content: content,
+                    updatedAt: updatedAt,
+                    notebookId: Json.string(source, 'notebookId').length > 0 ? Json.string(source, 'notebookId') : 'nb_default',
+                    source: Json.string(source, 'source').length > 0 ? Json.string(source, 'source') : '随笔',
+                    sourceTitle: Json.string(source, 'sourceTitle'),
+                    anchor: Json.object(source, 'anchor')
+                });
+            }
+
+            this.notes = this.sortNotes(loaded);
+        } catch (error) {
+            hilog.error(DOMAIN, TAG, '[loadNotes] failed: %{public}s', JSON.stringify(error));
+            this.notesError = '本地随笔读取失败，请重试';
+        } finally {
+            this.notesLoading = false;
+        }
+    }
+
+    private findNote(noteId: string): NoteItem | null {
+        for (let i: number = 0; i < this.notes.length; i++) {
+            if (this.notes[i].id === noteId) {
+                return this.notes[i];
+            }
+        }
+
+        return null;
+    }
+
+    private sortNotes(items: NoteItem[]): NoteItem[] {
+        const sorted: NoteItem[] = items.slice();
+        sorted.sort((a: NoteItem, b: NoteItem): number => b.updatedAt - a.updatedAt);
+        return sorted;
+    }
+
+    private applyNotesStore(store: NotesStore): void {
+        this.notesStore = {
+            activeNotebookId: store.activeNotebookId,
+            notebooks: store.notebooks.slice(),
+            notes: this.sortNotes(store.notes),
+            updatedAt: store.updatedAt
+        };
+        this.notes = this.sortNotes(store.notes);
+    }
+
+    private copyNotesStore(store: NotesStore): NotesStore {
+        return {
+            activeNotebookId: store.activeNotebookId,
+            notebooks: store.notebooks.map((item: NoteNotebook): NoteNotebook => {
+                return { id: item.id, name: item.name, ts: item.ts };
+            }),
+            notes: store.notes.map((item: NoteItem): NoteItem => {
+                return {
+                    id: item.id,
+                    content: item.content,
+                    updatedAt: item.updatedAt,
+                    notebookId: item.notebookId,
+                    source: item.source,
+                    sourceTitle: item.sourceTitle,
+                    anchor: item.anchor
+                };
+            }),
+            updatedAt: store.updatedAt
+        };
+    }
+
+    private storeWithNotes(notes: NoteItem[]): NotesStore {
+        const store: NotesStore = this.notesStore as NotesStore;
+        return {
+            activeNotebookId: store.activeNotebookId,
+            notebooks: store.notebooks.slice(),
+            notes: notes.slice(),
+            updatedAt: Date.now()
+        };
+    }
+
+    // 所有云端写入串行执行，并保留请求序号，避免旧响应覆盖较新的本地编辑
+    private persistNotesSnapshot(snapshot: NotesStore, mutationSeq: number): Promise<string> {
+        const write: Promise<string> = this.notesWriteChain.then(
+            (): Promise<string> => this.writeNotesSnapshot(snapshot, mutationSeq),
+            (): Promise<string> => this.writeNotesSnapshot(snapshot, mutationSeq)
+        );
+        this.notesWriteChain = write.then(
+            (): void => {},
+            (): void => {}
+        );
+        return write;
+    }
+
+    private async writeNotesSnapshot(snapshot: NotesStore, mutationSeq: number): Promise<string> {
+        if (this.notesBaseStore === null) {
+            const message: string = '云端随笔基线缺失，请刷新后重试';
+            this.notesError = message;
+            hilog.error(DOMAIN, TAG, '[writeNotesSnapshot] base store missing');
+            return message;
+        }
+
+        const result: NotesStoreResult = await ApiService.saveNotesStore(snapshot, this.notesBaseStore);
+
+        if (!result.success || result.store === null) {
+            this.notesError = result.message;
+            hilog.error(DOMAIN, TAG, '[writeNotesSnapshot] failed: %{public}s', result.message);
+            return result.message;
+        }
+
+        this.notesBaseStore = this.copyNotesStore(result.store);
+
+        // 有更新的本地编辑排在当前请求后面时，不能用旧响应覆盖编辑器里的新内容。
+        if (mutationSeq === this.notesMutationSeq) {
+            this.applyNotesStore(result.store);
+            await this.cacheNotes();
+        }
+
+        this.notesError = '';
+        return '';
+    }
+
+    private async cacheNotes(): Promise<void> {
+        if (this.context === null || this.username.trim().length === 0) {
+            return;
+        }
+
+        try {
+            await PreferencesUtil.saveNotes(this.context, this.username.trim(), JSON.stringify(this.notes));
+        } catch (error) {
+            hilog.error(DOMAIN, TAG, '[cacheNotes] failed: %{public}s', JSON.stringify(error));
+        }
     }
 
     // 标记邮件已读：服务端落盘后同步更新本地列表项，列表未读点即时消失

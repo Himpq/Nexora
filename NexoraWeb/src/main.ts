@@ -33,6 +33,7 @@ import './styles/chat-input.css'
 import './styles/token-budget-card.css'
 import './styles/mail-center.css'
 import './styles/tool-chain.css'
+import './styles/exa-image-gallery.css'
 import './styles/workspaces.css'
 import './styles/toastui-theme.css'
 
