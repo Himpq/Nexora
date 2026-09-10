@@ -6,16 +6,21 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
 import { ChatMessage, MessageSegment, ToolCallItem, TokenUsage } from '../../common/ChatTypes';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
+import { QuestionItem } from '../../common/QuestionLocks';
 import { BrandLogo } from '../common/BrandLogo';
 import { MarkdownView } from './MarkdownBlock';
+import { QuestionCard } from './QuestionCard';
 import { StreamingDots } from './StreamingDots';
 import { ThinkingBlock } from './ThinkingBlock';
-import { ToolCallCard } from './ToolCallCard';
+import { ToolSegment } from './ToolSegment';
 
 @Component
 export struct MessageBubble {
     @ObjectLink message: ChatMessage;
+    conversationId: string = '';
     onRegenerate: () => void = () => {};
+    onOpenImage: (url: string) => void = () => {};
+    onQuestionAnswer: (item: QuestionItem, answer: string) => void = () => {};
     @State private pressedActionLabel: string = '';
 
     private canShowActions(): boolean {
@@ -27,6 +32,17 @@ export struct MessageBubble {
         for (let i: number = 0; i < this.message.toolCalls.length; i++) {
             if (this.message.toolCalls[i].callId === callId) {
                 return this.message.toolCalls[i];
+            }
+        }
+
+        return undefined;
+    }
+
+    // 按 callId 在 questions 数组中查找对应的 QuestionItem
+    private findQuestion(callId: string): QuestionItem | undefined {
+        for (let i: number = 0; i < this.message.questions.length; i++) {
+            if (this.message.questions[i].callId === callId) {
+                return this.message.questions[i];
             }
         }
 
@@ -88,7 +104,22 @@ export struct MessageBubble {
 
                 if (segment.type === 'function_call') {
                     if (this.findToolCall(segment.callId ?? '') !== undefined) {
-                        ToolCallCard({ item: this.findToolCall(segment.callId ?? '') });
+                        ToolSegment({
+                            item: this.findToolCall(segment.callId ?? ''),
+                            conversationId: this.conversationId,
+                            onOpenImage: this.onOpenImage
+                        });
+                    }
+                }
+
+                if (segment.type === 'question') {
+                    if (this.findQuestion(segment.callId ?? '') !== undefined) {
+                        QuestionCard({
+                            item: this.findQuestion(segment.callId ?? ''),
+                            onAnswer: (item: QuestionItem, answer: string) => {
+                                this.onQuestionAnswer(item, answer);
+                            }
+                        });
                     }
                 }
 
@@ -105,8 +136,8 @@ export struct MessageBubble {
             // 导致 @State blocks 不更新 → 流式正文只显示首帧、后续增量全部丢失
             }, (segment: MessageSegment, index: number) => segment.type + '_' + index + '_' + segment.text.length);
 
-            // 流式占位：仅在流式中且无任何内容/工具/思考时显示
-            if (this.message.streaming && this.message.content.length === 0 && !this.message.hasToolCalls && !this.message.hasThinking) {
+            // 流式占位：仅在流式中且无任何内容/工具/思考/问题时显示
+            if (this.message.streaming && this.message.content.length === 0 && !this.message.hasToolCalls && !this.message.hasThinking && !this.message.hasQuestions) {
                 StreamingDots();
             }
 

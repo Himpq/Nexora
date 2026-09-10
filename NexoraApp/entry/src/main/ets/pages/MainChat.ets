@@ -13,12 +13,15 @@ import { promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
-import { ChatMessage, TokenUsage } from '../common/ChatTypes';
+import { ChatMessage, TokenUsage, ToolResultPayload } from '../common/ChatTypes';
 import { chatStream, StreamListener } from '../common/ChatStreamClient';
 import { LiveViewController } from '../common/LiveViewController';
+import { MapRendererConfig } from '../common/MapRendererConfig';
+import { QuestionItem, readQuestionLock, writeQuestionLock } from '../common/QuestionLocks';
 import { FontSize, Glow, Motion, PressScale, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { QuickActionGrid } from '../components/QuickActionGrid';
+import { ImageViewer } from '../components/chat/ImageViewer';
 import { MessageBubble } from '../components/chat/MessageBubble';
 import { TurnIndicatorPanel } from '../components/chat/TurnIndicatorPanel';
 import { IconButton } from '../components/common/IconButton';
@@ -99,6 +102,9 @@ export struct MainChat {
     @State private showScrollBottom: boolean = false;
     @State private scrollBottomPressed: boolean = false;
 
+    // 全屏图片查看器当前图片地址（空串表示关闭）
+    @State private viewerUrl: string = '';
+
     // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
     @State private activeTurnIndex: number = -1;
 
@@ -130,6 +136,9 @@ export struct MainChat {
         this.app.refreshNotes();
         this.app.refreshUserProfile();
 
+        // 地图渲染配置轻量预取：登录后只拉一次，地图结果到达时无需等待
+        MapRendererConfig.ensure();
+
         // 空态区域交错入场（仅问候 / 快捷能力两个区块，输入栏常驻底部不做位移）
         setTimeout(() => { this.greetingVisible = true; }, StaggerDelay.greeting);
         setTimeout(() => { this.actionsVisible = true; }, StaggerDelay.actions);
@@ -140,8 +149,13 @@ export struct MainChat {
         };
     }
 
-    // 系统返回键处理：优先级 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
+    // 系统返回键处理：图片查看器 > 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
+        if (this.viewerUrl.length > 0) {
+            this.viewerUrl = '';
+            return true;
+        }
+
         if (this.mailOpen) {
             if (this.mailDetailOpen) {
                 this.mailDetailOpen = false;
@@ -243,6 +257,18 @@ export struct MainChat {
                     .height('100%')
                     .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
+
+            // 全屏图片查看器：最顶层，点击任意区域或系统返回键关闭
+            if (this.viewerUrl.length > 0) {
+                ImageViewer({
+                    url: this.viewerUrl,
+                    onClose: () => {
+                        this.viewerUrl = '';
+                    }
+                })
+                    .width('100%')
+                    .height('100%');
             }
         }
         .width('100%')
@@ -392,8 +418,15 @@ export struct MainChat {
                         ListItem() {
                             MessageBubble({
                                 message: message,
+                                conversationId: this.conversationId,
                                 onRegenerate: () => {
                                     this.regenerate(index);
+                                },
+                                onOpenImage: (url: string) => {
+                                    this.viewerUrl = url;
+                                },
+                                onQuestionAnswer: (item: QuestionItem, answer: string) => {
+                                    this.answerQuestion(item, answer);
                                 }
                             });
                         }
@@ -942,6 +975,7 @@ export struct MainChat {
             this.messages = result.messages;
             this.hasMoreMessages = result.hasMoreBefore;
             this.oldestLoadedIndex = result.startIndex;
+            this.applyQuestionLocks(this.messages);
             this.scrollToEnd();
             // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
             this.activeTurnIndex = this.computeActiveTurn(this.messages.length - 1);
@@ -985,6 +1019,7 @@ export struct MainChat {
             this.messages = [...dedupedMessages, ...this.messages];
             this.hasMoreMessages = result.hasMoreBefore;
             this.oldestLoadedIndex = result.startIndex;
+            this.applyQuestionLocks(dedupedMessages);
 
             // 恢复滚动位置：原 startBeforeLoad 处的消息现在在 startBeforeLoad + insertedCount
             setTimeout(() => {
@@ -1047,12 +1082,23 @@ export struct MainChat {
 
     // 实际发流：消息入列 + 侧栏即时占位（若列表还没有该会话）+ 挂流
     private dispatchSend(text: string): void {
-        if (this.streaming) {
+        // 双保险：UI streaming 与传输层 streaming 任一仍在进行都拒绝发送。
+        // 若只查 UI streaming，传输层尚未释放时 start() 会静默返回，而消息已入列并置 streaming=true，
+        // 界面会永久卡在"生成中"（三个点不消失、无任何请求）
+        if (this.streaming || chatStream.isStreaming) {
+            this.notify('已有回复生成中，请稍候', 1200);
             return;
         }
 
+        // 本地消息必须分配连续且唯一的 index：列表 ForEach key 由 message.index 派生，
+        // 新建消息若恒为 0 会与首条消息 key 冲突，ArkUI 按 key 复用组件导致列表错位/末条重复
+        // （表现：发送瞬间最后一条消息被重复渲染、工具调用段位置错乱；重进会话后索引来自服务端才正常）。
+        // 取末条 index + 1 同时与后端持久化索引对齐
+        const baseIndex: number = this.messages.length > 0 ? this.messages[this.messages.length - 1].index + 1 : 0;
         const userMessage: ChatMessage = ChatMessage.createUser(text);
+        userMessage.index = baseIndex;
         const assistantMessage: ChatMessage = ChatMessage.createAssistant();
+        assistantMessage.index = baseIndex + 1;
         // 追加包在显式 animateTo 中：配合 ListItem 的 transition 播放"淡入 + 轻微上移"，
         // 消除新消息硬插入的闪烁感（空态问候页首次切入消息流时尤其明显）
         animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
@@ -1128,6 +1174,7 @@ export struct MainChat {
         target.reasoning = '';
         target.segments = [];
         target.toolCalls = [];
+        target.questions = [];
         target.usage = null;
         target.errorMessage = '';
         target.streaming = true;
@@ -1152,6 +1199,59 @@ export struct MainChat {
             isRegenerate: true,
             regenerateIndex: target.index
         }, this.listenerFor(target));
+    }
+
+    // question 作答：写本地回答锁并作为普通用户消息发送
+    // （与 Web handleQuestionAnswer 一致：上一条助手消息以 await 收尾，模型把该消息当回答继续）
+    private answerQuestion(item: QuestionItem, answer: string): void {
+        const text: string = answer.trim();
+
+        if (text.length === 0 || item.answered || item.submitting) {
+            return;
+        }
+
+        if (this.streaming || chatStream.isStreaming) {
+            this.notify('已有回复生成中，请稍候', 1200);
+            return;
+        }
+
+        item.submitting = true;
+
+        this.app.loadQuestionLocks().then((store: string) => {
+            const updated: string = writeQuestionLock(store, this.conversationId, item.cardId, text);
+            this.app.saveQuestionLocks(updated);
+            item.markAnswered(text);
+            this.dispatchSend(text);
+        });
+    }
+
+    // 本地回答锁恢复：历史加载 / 分页 / question 帧到达时把已答卡片置为锁定态
+    private applyQuestionLocks(messages: ChatMessage[]): void {
+        const conversationId: string = this.conversationId;
+
+        if (conversationId.length === 0 || messages.length === 0) {
+            return;
+        }
+
+        this.app.loadQuestionLocks().then((store: string) => {
+            for (let m: number = 0; m < messages.length; m++) {
+                const message: ChatMessage = messages[m];
+
+                for (let q: number = 0; q < message.questions.length; q++) {
+                    const item: QuestionItem = message.questions[q];
+
+                    if (item.answered) {
+                        continue;
+                    }
+
+                    const locked: string = readQuestionLock(store, conversationId, item.cardId);
+
+                    if (locked.length > 0) {
+                        message.markQuestionAnswered(item.callId, locked);
+                    }
+                }
+            }
+        });
     }
 
     // 打开历史会话：原地替换会话状态并载入历史，不做导航压栈
@@ -1464,9 +1564,21 @@ export struct MainChat {
                     this.scrollToEnd();
                 });
             },
-            onToolResult: (name: string, callId: string, result: string, round: number) => {
+            onToolResult: (name: string, callId: string, payload: ToolResultPayload, round: number) => {
                 onUi(() => {
-                    assistant.completeToolCall(callId, result);
+                    assistant.completeToolCall(callId, payload);
+                });
+            },
+            onQuestion: (callId: string, payload: Object | null, round: number) => {
+                onUi(() => {
+                    // question 工具等待作答：关闭思考块并挂载交互卡片，回答走 answerQuestion
+                    if (assistant.thinkingExpanded) {
+                        assistant.thinkingExpanded = false;
+                    }
+
+                    assistant.beginQuestion(callId, payload);
+                    this.applyQuestionLocks([assistant]);
+                    this.scrollToEnd();
                 });
             },
             onTokenUsage: (usage: TokenUsage) => {

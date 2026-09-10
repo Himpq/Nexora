@@ -523,6 +523,21 @@ export class AppState {
         return Date.now().toString() + '_' + this.noteSequence.toString();
     }
 
+    // question 回答锁：后端不持久化作答态，App 重启后靠本地锁恢复已回答卡片
+    async loadQuestionLocks(): Promise<string> {
+        if (this.context === null) {
+            return '{}';
+        }
+
+        return PreferencesUtil.loadQuestionLocks(this.context);
+    }
+
+    async saveQuestionLocks(storeJson: string): Promise<void> {
+        if (this.context !== null) {
+            await PreferencesUtil.saveQuestionLocks(this.context, storeJson);
+        }
+    }
+
     // 登录后从云端读取完整快照，并把它固定为后续保存的三方合并基线
     async refreshNotes(): Promise<void> {
         if (!this.loggedIn) {

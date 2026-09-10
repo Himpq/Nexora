@@ -140,6 +140,15 @@ export class PreferencesUtil {
         await PreferencesUtil.saveString(context, StorageKey.notesPrefix + username, value);
     }
 
+    // question 回答锁：跨会话共用一个 JSON 字典，键含 conversationId 天然隔离
+    static async loadQuestionLocks(context: common.UIAbilityContext): Promise<string> {
+        return PreferencesUtil.loadString(context, StorageKey.questionLocks, '{}');
+    }
+
+    static async saveQuestionLocks(context: common.UIAbilityContext, value: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.questionLocks, value);
+    }
+
     // 退出登录：清掉会话与身份，保留后端地址与偏好
     static async clearSession(context: common.UIAbilityContext): Promise<void> {
         const prefs: preferences.Preferences = await holder.open(context);
