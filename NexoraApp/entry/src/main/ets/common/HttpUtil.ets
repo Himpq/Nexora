@@ -76,27 +76,27 @@ export class HttpUtil {
     }
 
     // ---------- 传输 ----------
-    static async get(path: string): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.GET, path, undefined);
+    static async get(pathOrUrl: string, headers?: Record<string, string>): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers);
     }
 
-    static async post(path: string, payload: Object): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.POST, path, payload);
+    static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.POST, pathOrUrl, payload, headers);
     }
 
     // 置顶等资源状态修改走 PUT，payload 为完整的变更请求体
-    static async put(path: string, payload: Object): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.PUT, path, payload);
+    static async put(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.PUT, pathOrUrl, payload, headers);
     }
 
     // 局部字段修改走 PATCH（邮件已读标记等），payload 只携带被变更的字段
-    static async patch(path: string, payload: Object): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.PATCH, path, payload);
+    static async patch(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.PATCH, pathOrUrl, payload, headers);
     }
 
     // 删除走 DELETE，通常无需请求体
-    static async delete(path: string): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.DELETE, path, undefined);
+    static async delete(pathOrUrl: string, headers?: Record<string, string>): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.DELETE, pathOrUrl, undefined, headers);
     }
 
     // ---------- 鉴权 ----------
@@ -186,11 +186,11 @@ export class HttpUtil {
     }
 
     // ---------- 内部实现 ----------
-    private static async send(method: http.RequestMethod, path: string, payload?: Object): Promise<HttpResult> {
-        const url: string = HttpUtil.backendUrl + path;
+    private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object, headers?: Record<string, string>): Promise<HttpResult> {
+        const url: string = HttpUtil.resolveUrl(pathOrUrl);
 
-        if (HttpUtil.backendUrl.length === 0) {
-            hilog.error(DOMAIN, TAG, 'backend url is empty, path=%{public}s', path);
+        if (url.length === 0) {
+            hilog.error(DOMAIN, TAG, 'request url is empty, path=%{public}s', pathOrUrl);
             return { ok: false, code: 0, body: '' };
         }
 
@@ -199,7 +199,7 @@ export class HttpUtil {
 
             request.request(url, {
                 method: method,
-                header: HttpUtil.buildHeaders(),
+                header: HttpUtil.buildHeaders(headers),
                 extraData: payload === undefined ? undefined : JSON.stringify(payload),
                 expectDataType: http.HttpDataType.STRING,
                 connectTimeout: CONNECT_TIMEOUT,
@@ -209,7 +209,7 @@ export class HttpUtil {
                 request.destroy();
 
                 if (err) {
-                    hilog.error(DOMAIN, TAG, 'request %{public}s failed: %{public}s', path, JSON.stringify(err));
+                    hilog.error(DOMAIN, TAG, 'request %{public}s failed: %{public}s', pathOrUrl, JSON.stringify(err));
                     resolve({ ok: false, code: 0, body: '' });
                     return;
                 }
@@ -229,13 +229,33 @@ export class HttpUtil {
         });
     }
 
-    private static buildHeaders(): Record<string, string> {
+    private static resolveUrl(pathOrUrl: string): string {
+        if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+            return pathOrUrl;
+        }
+
+        if (HttpUtil.backendUrl.length === 0) {
+            return '';
+        }
+
+        return HttpUtil.backendUrl + pathOrUrl;
+    }
+
+    private static buildHeaders(extra?: Record<string, string>): Record<string, string> {
         const headers: Record<string, string> = {
             'Content-Type': 'application/json'
         };
 
         if (HttpUtil.sessionCookie.length > 0) {
             headers['Cookie'] = HttpUtil.sessionCookie;
+        }
+
+        if (extra !== undefined) {
+            const keys: string[] = Object.keys(extra);
+
+            for (let i: number = 0; i < keys.length; i++) {
+                headers[keys[i]] = extra[keys[i]];
+            }
         }
 
         return headers;

@@ -6,10 +6,13 @@ import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ConversationItem, DEFAULT_BACKEND_URL, KnowledgeItem, MailItem, ModelItem, NoteItem, NoteNotebook, NotesStore, sanitizeDisplayName } from './AppConfig';
-import { ApiService, NotesStoreResult, UserInfoResult } from './ApiService';
+import { ApiService, LearningRuntimeResult, NotesStoreResult, UserInfoResult } from './ApiService';
 import { HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
+import { LearningApi } from './LearningApi';
 import { PreferencesUtil } from './PreferencesUtil';
+import { ReaderPalette, ReaderTheme } from './DesignToken';
+import { RemoteImageCache } from './RemoteImageCache';
 import { TimeUtil } from './TimeUtil';
 
 const DOMAIN: number = 0x0001;
@@ -80,6 +83,17 @@ export class AppState {
     private notesRequestSeq: number = 0;
     private notesRemoteReady: boolean = false;
 
+    // Learning 入口：运行时开关与前端工作区地址（管理端配置，随偏好接口下发）
+    learningEnabled: boolean = false;
+    learningFrontendUrl: string = '';
+
+    // 阅读器偏好（本地持久化，随启动恢复）：字号 / 行距档（0 紧凑 / 1 适中 / 2 疏松）/ 主题
+    readerFontSize: number = 16;
+    readerLineSpacing: number = 1;
+    readerTheme: string = 'day';
+    // 各书上次阅读章节（bookId → chapterIndex，内存 + 本地 JSON 双写）
+    private readerPositions: Record<string, number> = {};
+
     private context: common.UIAbilityContext | null = null;
 
     // 系统返回键处理函数：由 MainChat 在 aboutToAppear 中注入，Index.onBackPress 调用
@@ -127,6 +141,8 @@ export class AppState {
     // 恢复本地持久化状态：后端地址、会话 Cookie、生成参数
     async restore(context: common.UIAbilityContext): Promise<void> {
         this.context = context;
+        // 需登录图片的本地缓存需要 cacheDir，随启动一并注入
+        RemoteImageCache.shared.attach(context);
         this.backendUrl = await PreferencesUtil.loadBackendUrl(context, DEFAULT_BACKEND_URL);
         // 历史版本可能把字面量 "undefined" 写进 username 键，读取即清洗，展示/预填不再依赖各页兜底
         this.username = sanitizeDisplayName(await PreferencesUtil.loadUsername(context));
@@ -134,6 +150,10 @@ export class AppState {
         this.enableThinking = await PreferencesUtil.loadEnableThinking(context);
         this.enableWebSearch = await PreferencesUtil.loadEnableWebSearch(context);
         this.forceTools = await PreferencesUtil.loadForceTools(context);
+        this.readerFontSize = await PreferencesUtil.loadReaderFontSize(context);
+        this.readerLineSpacing = await PreferencesUtil.loadReaderLineSpacing(context);
+        this.readerTheme = await PreferencesUtil.loadReaderTheme(context);
+        this.readerPositions = AppState.parseReaderPositions(await PreferencesUtil.loadReaderPositions(context));
         await this.loadNotes();
 
         HttpUtil.setBackendUrl(this.backendUrl);
@@ -189,6 +209,8 @@ export class AppState {
         this.mailBox = 'inbox';
         this.mailList = [];
         this.mailError = '';
+        // 退出即失效 Learning 内容接口（用户标识清空，避免串到下个账号）
+        LearningApi.shared.configure('');
         this.notes = [];
         this.notesError = '';
         this.notesStore = null;
@@ -243,6 +265,94 @@ export class AppState {
         if (this.context !== null) {
             await PreferencesUtil.saveForceTools(this.context, enabled);
         }
+    }
+
+    // ---------- 阅读器 ----------
+    // 阅读偏好写入：内存即时生效 + 本地持久化，非法值收敛到合法范围
+    async setReaderFontSize(size: number): Promise<void> {
+        const next: number = size < 14 ? 14 : (size > 22 ? 22 : size);
+        this.readerFontSize = next;
+
+        if (this.context !== null) {
+            await PreferencesUtil.saveReaderFontSize(this.context, next);
+        }
+    }
+
+    async setReaderLineSpacing(index: number): Promise<void> {
+        const next: number = index < 0 ? 0 : (index > 2 ? 2 : index);
+        this.readerLineSpacing = next;
+
+        if (this.context !== null) {
+            await PreferencesUtil.saveReaderLineSpacing(this.context, next);
+        }
+    }
+
+    async setReaderTheme(theme: string): Promise<void> {
+        const next: string = theme === 'night' || theme === 'sepia' ? theme : 'day';
+        this.readerTheme = next;
+
+        if (this.context !== null) {
+            await PreferencesUtil.saveReaderTheme(this.context, next);
+        }
+    }
+
+    // 阅读器当前主题色板：阅读页统一取色
+    readerPalette(): ReaderPalette {
+        return ReaderTheme.byName(this.readerTheme);
+    }
+
+    // 阅读行高 = 字号 × 档位倍率（紧凑 1.5 / 适中 1.7 / 疏松 2.0）
+    readerLineHeight(): number {
+        const ratio: number = this.readerLineSpacing === 0 ? 1.5 : (this.readerLineSpacing === 2 ? 2.0 : 1.7);
+
+        return Math.round(this.readerFontSize * ratio);
+    }
+
+    // 某书上次阅读章节（无记录返回 -1）
+    readPosition(bookId: string): number {
+        const value: number | undefined = this.readerPositions[bookId];
+
+        return value === undefined ? -1 : value;
+    }
+
+    // 记录阅读位置：内存即时生效 + 本地 JSON 双写
+    async saveReadPosition(bookId: string, chapterIndex: number): Promise<void> {
+        if (bookId.length === 0 || chapterIndex < 0) {
+            return;
+        }
+
+        this.readerPositions[bookId] = chapterIndex;
+
+        if (this.context !== null) {
+            await PreferencesUtil.saveReaderPositions(this.context, JSON.stringify(this.readerPositions));
+        }
+    }
+
+    private static parseReaderPositions(raw: string): Record<string, number> {
+        const out: Record<string, number> = {};
+
+        try {
+            const parsed: Object = JSON.parse(raw) as Object;
+
+            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                return out;
+            }
+
+            const record: Record<string, Object> = parsed as Record<string, Object>;
+            const keys: string[] = Object.keys(record);
+
+            for (let i: number = 0; i < keys.length; i++) {
+                const value: Object | undefined = record[keys[i]];
+
+                if (typeof value === 'number') {
+                    out[keys[i]] = value as number;
+                }
+            }
+        } catch {
+            // 解析失败按空处理，不阻塞主流程
+        }
+
+        return out;
     }
 
     // ---------- 数据 ----------
@@ -463,6 +573,22 @@ export class AppState {
 
         this.knowledgeList = this.knowledgeList.filter((item: KnowledgeItem): boolean => item.title !== title);
         return '';
+    }
+
+    // ---------- Learning ----------
+    // 拉取 Learning 运行时配置（管理端开关 + 前端工作区页面地址）。
+    // 内容接口自身只需要用户标识：服务根恒为本应用后端（见 LearningHttp）。
+    async refreshLearningRuntime(): Promise<void> {
+        const result: LearningRuntimeResult = await ApiService.fetchLearningRuntime();
+
+        if (!result.success) {
+            hilog.warn(DOMAIN, TAG, 'load learning runtime failed: %{public}s', result.message);
+            return;
+        }
+
+        this.learningEnabled = result.enabled;
+        this.learningFrontendUrl = result.frontendUrl;
+        LearningApi.shared.configure(this.username);
     }
 
     // ---------- 邮件 ----------

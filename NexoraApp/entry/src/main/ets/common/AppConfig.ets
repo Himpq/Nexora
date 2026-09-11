@@ -15,6 +15,12 @@ export class StorageKey {
     static readonly notesPrefix: string = 'notes_';
     // question 回答锁：JSON 字典 { "conversationId::cardId": "answer" }，与 Web localStorage 同构
     static readonly questionLocks: string = 'question_locks';
+    // 阅读器偏好：字号（数字字符串）/ 行距档（0 紧凑 / 1 适中 / 2 疏松）/ 主题（day/night/sepia）
+    static readonly readerFontSize: string = 'reader_font_size';
+    static readonly readerLineSpacing: string = 'reader_line_spacing';
+    static readonly readerTheme: string = 'reader_theme';
+    // 各书上次阅读章节：JSON 字典 { bookId: chapterIndex }
+    static readonly readerPositions: string = 'reader_positions';
 }
 
 // ---------- 领域模型 ----------

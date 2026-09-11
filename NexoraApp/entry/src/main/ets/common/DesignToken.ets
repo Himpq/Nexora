@@ -128,3 +128,75 @@ export class Breathe {
     static readonly maxScale: number = 1.05;
     static readonly duration: number = 2000;
 }
+
+// ---------- 阅读器主题 ----------
+// 固定色板（不跟随系统深色模式，保证纸张质感在各模式下稳定）
+export interface ReaderPalette {
+    page: string;
+    card: string;
+    text: string;
+    secondary: string;
+    divider: string;
+    brand: string;
+    // 卡片内的控件底色：比 card 沉一档，保证按钮在深色面板上依然可辨
+    sunken: string;
+    // 品牌色之上的前景色：夜间品牌色偏亮，白字对比度不够
+    onBrand: string;
+}
+
+export class ReaderTheme {
+    static readonly DAY: ReaderPalette = {
+        page: '#F4F5F9',
+        card: '#FFFFFF',
+        text: '#16181D',
+        secondary: '#676E7D',
+        divider: '#E4E7ED',
+        brand: '#4C6FFF',
+        sunken: '#F1F2F6',
+        onBrand: '#FFFFFF',
+    };
+    static readonly NIGHT: ReaderPalette = {
+        page: '#0D0F14',
+        card: '#171B23',
+        text: '#E8EAF0',
+        secondary: '#9AA1B0',
+        divider: '#262B36',
+        brand: '#7A8CFF',
+        sunken: '#232833',
+        onBrand: '#0D0F14',
+    };
+    static readonly SEPIA: ReaderPalette = {
+        page: '#F1E8D3',
+        card: '#FAF3E2',
+        text: '#4A3F30',
+        secondary: '#8A7A63',
+        divider: '#E0D3B6',
+        brand: '#4C6FFF',
+        sunken: '#F0E6CF',
+        onBrand: '#FFFFFF',
+    };
+
+    static label(name: string): string {
+        if (name === 'night') {
+            return '夜间';
+        }
+
+        if (name === 'sepia') {
+            return '护眼';
+        }
+
+        return '白天';
+    }
+
+    static byName(name: string): ReaderPalette {
+        if (name === 'night') {
+            return ReaderTheme.NIGHT;
+        }
+
+        if (name === 'sepia') {
+            return ReaderTheme.SEPIA;
+        }
+
+        return ReaderTheme.DAY;
+    }
+}

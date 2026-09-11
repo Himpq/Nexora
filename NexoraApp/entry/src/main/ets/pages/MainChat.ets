@@ -14,7 +14,8 @@ import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
 import { ChatMessage, TokenUsage, ToolResultPayload } from '../common/ChatTypes';
-import { chatStream, StreamListener } from '../common/ChatStreamClient';
+import { chatStream, ConversationModePayload, StreamListener, StreamOptions } from '../common/ChatStreamClient';
+import { ConversationBuffer } from '../common/ConversationBuffer';
 import { LiveViewController } from '../common/LiveViewController';
 import { MapRendererConfig } from '../common/MapRendererConfig';
 import { QuestionItem, readQuestionLock, writeQuestionLock } from '../common/QuestionLocks';
@@ -33,12 +34,36 @@ import { SidebarPanel } from '../components/sidebar/SidebarPanel';
 import { MailPage } from '../components/mail/MailPage';
 import { NotesEntryCard } from '../components/notes/NotesEntryCard';
 import { NotesPage } from '../components/notes/NotesPage';
+import { LearningPage } from '../components/learning/LearningPage';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
 const TITLE_MAX_LENGTH: number = 18;
 // 侧栏抽屉宽度：固定 vp，translate 用 -100% 相对自身宽，隐藏时刚好滑出屏幕
 const DRAWER_WIDTH: number = 304;
+// 新会话预创建失败时，承载该流的本地临时键前缀（SSE 首帧绑定真实会话 ID 后迁移）
+const PENDING_STREAM_PREFIX: string = 'pending:';
+
+// 单条流的绑定上下文：本地临时键的流在服务端返回会话 ID 后迁移，
+// context.key 始终指向当前缓冲/传输锁键，回调据此路由事件与视图更新
+interface StreamContext {
+    key: string;
+    conversationId: string;
+}
+
+// 单次发送要带上的会话模式：learning 会话由后端挂载 NexoraLearning 运行时，
+// payload 决定运行时内的子场景（如 interview=true 走六维画像快速评估链路）
+interface SendMode {
+    conversationMode: string;
+    payload: ConversationModePayload;
+}
+
+// 学习会话固定标识：后端 conversation_mode 字段值
+const LEARNING_MODE: string = 'learning';
+// 画像快速评估会话标题
+const PROFILE_INTERVIEW_TITLE: string = '学习画像评估';
+// 画像评估开场消息：真正的评估指令由后端画像访谈链路注入系统提示，客户端只负责发起这一轮
+const PROFILE_INTERVIEW_KICKOFF: string = '开始我的六维学习画像快速评估';
 
 @Component
 export struct MainChat {
@@ -56,6 +81,17 @@ export struct MainChat {
     @State private title: string = '新对话';
     @State private loadingHistory: boolean = false;
     @State private loadError: string = '';
+
+    // ---------- 多会话并行缓冲 ----------
+    // 会话键 → 本地消息缓冲：切走的流持续写入自己的缓冲，切回时原样接上
+    private buffers: Map<string, ConversationBuffer> = new Map<string, ConversationBuffer>();
+    // 进行中流的键集合（会话 ID 或本地临时键）：判定会话级生成状态与侧栏指示
+    private streamingKeys: Set<string> = new Set<string>();
+    // 侧栏流式指示镜像：普通 Set 变更不驱动 UI，重算为新数组交给 @Prop 刷新
+    @State private streamingConvIds: string[] = [];
+    // 空白新会话在预创建失败时承载本次流的本地临时键（绑定真实 ID 后清空）
+    private pendingSendKey: string = '';
+    private pendingKeySeq: number = 0;
 
     // 消息分页：初始只取最近一页，滚到顶部再加载更早的一页，避免长对话一次性渲染卡死主线程
     @State private hasMoreMessages: boolean = false;
@@ -98,6 +134,11 @@ export struct MainChat {
     @State private noteEditorOpen: boolean = false;
     @State private noteLaunchEditor: boolean = false;
 
+    // Learning 工作区（全屏覆盖层）：原生 ArkUI 学习页；内层导航深度由子组件经 @Link 回报，
+    // 系统返回键逐级回退（阅读器 → 课程目录 → 课程列表 → 退出学习）
+    @State private learningOpen: boolean = false;
+    @State private learningNavDepth: number = 0;
+
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
     @State private showScrollBottom: boolean = false;
     @State private scrollBottomPressed: boolean = false;
@@ -135,6 +176,8 @@ export struct MainChat {
         });
         this.app.refreshNotes();
         this.app.refreshUserProfile();
+        // Learning 运行时配置轻量预取：侧栏入口生效前拿到开关与工作区地址
+        void this.app.refreshLearningRuntime();
 
         // 地图渲染配置轻量预取：登录后只拉一次，地图结果到达时无需等待
         MapRendererConfig.ensure();
@@ -176,6 +219,16 @@ export struct MainChat {
             return true;
         }
 
+        if (this.learningOpen) {
+            if (this.learningNavDepth > 0) {
+                this.learningNavDepth = this.learningNavDepth - 1;
+                return true;
+            }
+
+            this.learningOpen = false;
+            return true;
+        }
+
         if (this.sidebarOpen) {
             this.closeSidebar();
             return true;
@@ -214,7 +267,7 @@ export struct MainChat {
                         this.sendDraft();
                     },
                     onStop: () => {
-                        chatStream.cancel();
+                        this.stopStreaming();
                     },
                     onPickModel: () => {
                         this.openSheetModel();
@@ -251,6 +304,27 @@ export struct MainChat {
                     launchEditor: this.noteLaunchEditor,
                     onBack: () => {
                         this.closeNotes();
+                    }
+                })
+                    .width('100%')
+                    .height('100%')
+                    .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
+
+            // Learning 工作区层：与邮件/随笔同级的全屏覆盖层（原生 ArkUI 学习页）
+            if (this.learningOpen) {
+                LearningPage({
+                    app: this.app,
+                    navDepth: $learningNavDepth,
+                    onBack: () => {
+                        this.learningOpen = false;
+                    },
+                    onOpenImage: (url: string) => {
+                        this.viewerUrl = url;
+                    },
+                    onStartProfileInterview: () => {
+                        this.startProfileInterview();
                     }
                 })
                     .width('100%')
@@ -445,7 +519,11 @@ export struct MainChat {
                                 .combine(TransitionEffect.translate({ y: 4 }))
                                 .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
                         );
-                    }, (message: ChatMessage, index: number) => message.index + '_' + message.role);
+                    // 键值取消息实例身份 uid，不能取 index + role：各会话的本地消息索引都从 0 起，
+                    // 跨会话切换时键值必然重复，ForEach 非首次渲染对已存在的键值直接复用旧节点
+                    // 且不更新入参，节点里的 @ObjectLink 仍指向上一个会话的消息对象——表现为切回
+                    // 正在生成的会话后界面停在旧内容、后台流式增量写进了没人订阅的对象
+                    }, (message: ChatMessage) => message.uid);
                 }
                 .width('100%')
                 .height('100%')
@@ -638,7 +716,7 @@ export struct MainChat {
                 iconSize: Size.iconSmall,
                 buttonSize: 32,
                 onTap: () => {
-                    this.loadHistory();
+                    this.loadHistory(this.conversationId);
                 }
             });
         }
@@ -683,6 +761,7 @@ export struct MainChat {
                     activeConversationId: this.conversationId,
                     convList: this.convListSnapshot,
                     convEpoch: this.convEpoch,
+                    streamingIds: this.streamingConvIds,
                     onNewChat: () => {
                         this.startNewRound();
                     },
@@ -693,6 +772,9 @@ export struct MainChat {
                     onOpenNotes: () => {
                         this.closeSidebar();
                         this.openNotes(false);
+                    },
+                    onOpenLearning: () => {
+                        void this.openLearning();
                     },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
@@ -858,6 +940,58 @@ export struct MainChat {
         this.notesOpen = false;
     }
 
+    // ---------- Learning 工作区 ----------
+    // 打开 Learning：先刷新运行时配置（管理端开关/地址可能刚变更），校验后进入全屏工作区
+    private async openLearning(): Promise<void> {
+        await this.app.refreshLearningRuntime();
+
+        if (!this.app.learningEnabled) {
+            this.notify('Learning 未启用', 1600);
+            return;
+        }
+
+        if (this.app.learningFrontendUrl.trim().length === 0) {
+            this.notify('Learning 未配置前端地址', 1600);
+            return;
+        }
+
+        this.closeSidebar();
+        this.learningNavDepth = 0;
+        this.learningOpen = true;
+    }
+
+    // 学习侧发起一轮学习会话（当前用于六维画像快速评估）：
+    // 评估必须跑在 NexoraLearning 的画像链路上——只有 conversation_mode='learning' 的会话，
+    // 后端才会挂载学习运行时（question 工具逐维出选择题、submit_profile_score 写回评分），
+    // 并由 payload.interview=true 把画像访谈指令注入系统提示。
+    // 因此这里新建一个学习会话并切过去，客户端只发一条开场消息，不搬运评估指令原文。
+    private startProfileInterview(): void {
+        this.learningOpen = false;
+        this.learningNavDepth = 0;
+
+        // 当前会话正在生成时不抢占：新会话照常预建，等这一轮结束再发
+        if (this.isCurrentStreaming()) {
+            this.notify('当前回复生成中，请稍后再开始评估', 2000);
+            return;
+        }
+
+        ApiService.createConversation(PROFILE_INTERVIEW_TITLE, LEARNING_MODE).then((created) => {
+            if (!created.success || created.conversationId.length === 0) {
+                this.notify('评估会话创建失败：' + created.message, 2400);
+                return;
+            }
+
+            this.openConversation(created.conversationId, PROFILE_INTERVIEW_TITLE);
+            this.app.refreshConversations().then(() => {
+                this.bumpList();
+            });
+
+            const payload: ConversationModePayload = { learning: true, interview: true };
+            const mode: SendMode = { conversationMode: LEARNING_MODE, payload: payload };
+            this.dispatchSend(PROFILE_INTERVIEW_KICKOFF, created.conversationId, true, mode);
+        });
+    }
+
     // ---------- 侧栏开关 ----------
     // 打开/关闭用 animateTo 驱动 translate+opacity 属性动画（始终挂载，无 if 卸载退场动画问题）
     private openSidebar(): void {
@@ -958,49 +1092,79 @@ export struct MainChat {
     }
 
     // ---------- 会话行为 ----------
-    private loadHistory(): void {
+    // 加载指定会话的最近一页历史：写入该会话缓冲；仅在仍查看该会话时镜像到视图。
+    // 缓冲里比服务端本页更新的消息（未落库的提问 / 刚生成完的回复）一并保留，
+    // 合并规则见 mergeHistoryWithLive
+    private loadHistory(conversationId: string): void {
         this.loadingHistory = true;
         this.loadError = '';
         this.hasMoreMessages = false;
         this.oldestLoadedIndex = 0;
 
-        ApiService.fetchMessages(this.conversationId, 20, 0).then((result) => {
-            this.loadingHistory = false;
+        ApiService.fetchMessages(conversationId, 20, 0).then((result) => {
+            const isViewing: boolean = this.currentBufferKey() === conversationId;
+
+            if (isViewing) {
+                this.loadingHistory = false;
+            }
 
             if (!result.success) {
-                this.loadError = result.message;
+                if (isViewing) {
+                    this.loadError = result.message;
+                }
+
                 return;
             }
 
-            this.messages = result.messages;
-            this.hasMoreMessages = result.hasMoreBefore;
-            this.oldestLoadedIndex = result.startIndex;
-            this.applyQuestionLocks(this.messages);
-            this.scrollToEnd();
-            // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
-            this.activeTurnIndex = this.computeActiveTurn(this.messages.length - 1);
-            hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.activeTurnIndex);
+            const buffer: ConversationBuffer = this.bufferFor(conversationId);
+            // 服务端本页窗口之后的本地消息（尚未落库的提问 / 刚生成完但落库有延迟的回复）
+            // 由缓冲保留，窗口内以服务端为准：否则切走期间生成结束时切回，回复会凭空消失
+            const windowEnd: number = result.startIndex + result.messages.length;
+            const history: ChatMessage[] = this.mergeHistoryWithLive(result.messages, buffer.messages, windowEnd);
+
+            buffer.messages = history;
+            buffer.hasMore = result.hasMoreBefore;
+            buffer.oldestIndex = result.startIndex;
+
+            if (isViewing) {
+                this.messages = history;
+                this.hasMoreMessages = result.hasMoreBefore;
+                this.oldestLoadedIndex = result.startIndex;
+                this.applyQuestionLocks(conversationId, history);
+                this.scrollToEnd();
+                // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
+                this.activeTurnIndex = this.computeActiveTurn(this.messages.length - 1);
+                hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.activeTurnIndex);
+            }
         });
     }
 
-    // 加载更早的一页消息：滚到顶部时触发，插入列表头部
+    // 加载更早的一页消息：只作用于当前查看会话的缓冲，插入列表头部
     // 记录加载前可见位置，加载后 scrollToIndex 恢复到原位置（偏移 insertedCount）
     private loadMoreMessages(): void {
-        if (!this.hasMoreMessages || this.loadingMoreMessages || this.oldestLoadedIndex <= 0) {
+        const key: string = this.currentBufferKey();
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined || !buffer.hasMore || this.loadingMoreMessages || buffer.oldestIndex <= 0) {
             return;
         }
 
         this.loadingMoreMessages = true;
         const startBeforeLoad: number = this.scrollStartBeforeLoad;
 
-        ApiService.fetchMessages(this.conversationId, 20, this.oldestLoadedIndex).then((result) => {
+        ApiService.fetchMessages(key, 20, buffer.oldestIndex).then((result) => {
+            // 期间切走：结果作废，缓冲一致性由该会话下次打开时的初始页加载保证
+            if (this.currentBufferKey() !== key) {
+                return;
+            }
+
             if (!result.success) {
                 this.loadingMoreMessages = false;
                 return;
             }
 
             // 去重：跳过新加载消息中与已有消息 index 重叠的部分
-            const existingMinIndex: number = this.messages.length > 0 ? this.messages[0].index : -1;
+            const existingMinIndex: number = buffer.messages.length > 0 ? buffer.messages[0].index : -1;
             const dedupedMessages: ChatMessage[] = [];
 
             for (let i: number = 0; i < result.messages.length; i++) {
@@ -1010,16 +1174,21 @@ export struct MainChat {
             }
 
             if (dedupedMessages.length === 0) {
+                buffer.hasMore = false;
                 this.hasMoreMessages = false;
                 this.loadingMoreMessages = false;
                 return;
             }
 
             const insertedCount: number = dedupedMessages.length;
-            this.messages = [...dedupedMessages, ...this.messages];
-            this.hasMoreMessages = result.hasMoreBefore;
-            this.oldestLoadedIndex = result.startIndex;
-            this.applyQuestionLocks(dedupedMessages);
+            buffer.messages = [...dedupedMessages, ...buffer.messages];
+            buffer.hasMore = result.hasMoreBefore;
+            buffer.oldestIndex = result.startIndex;
+
+            this.messages = buffer.messages;
+            this.hasMoreMessages = buffer.hasMore;
+            this.oldestLoadedIndex = buffer.oldestIndex;
+            this.applyQuestionLocks(key, dedupedMessages);
 
             // 恢复滚动位置：原 startBeforeLoad 处的消息现在在 startBeforeLoad + insertedCount
             setTimeout(() => {
@@ -1041,106 +1210,125 @@ export struct MainChat {
         this.sendMessage(text);
     }
 
-    // 发送消息入口：新对话（无 conversation_id）先预建会话拿 id 再发流（prepareNewRoundThenSend），
-    // 追问/重答走 dispatchSend 直发。预创建让 conversation_id 在流开始前已知：
+    // 发送消息入口：当前查看会话正在生成时拒绝；空白新会话先预建会话拿 id 再发流。
+    // 预创建让 conversation_id 在流开始前已知：
     //   ① 侧栏在回复途中即可出现新会话并可高亮（不再等 SSE 首帧——整包聚合时首帧要流末才到）；
-    //   ② ChatStreamClient 轮询兜底可凭 conversation_id 解 stream 做增量渲染（整包也逐段显示）
+    //   ② ChatStreamClient 轮询兜底可凭 conversation_id 解 stream 做增量渲染（整包也逐段显示）。
+    // 预创建是异步的：期间用户切走也照常发送到目标会话（后台生成），不丢弃本次提问。
     private sendMessage(text: string): void {
-        if (this.streaming) {
+        if (this.isCurrentStreaming()) {
             return;
         }
 
-        if (this.conversationId.length === 0) {
-            this.prepareNewRoundThenSend(text);
+        if (this.conversationId.length > 0) {
+            this.dispatchSend(text, this.conversationId, false);
             return;
         }
 
-        this.dispatchSend(text);
-    }
-
-    // 新对话首问：先 POST /api/conversations 建空会话拿 id，再发流。
-    // 失败自动退回老路径（conversation_id 保持空，由 SSE 首帧 stream_session 带回并绑定，侧栏延后出现）
-    private prepareNewRoundThenSend(text: string): void {
         ApiService.createConversation(text).then((created) => {
-            // 预创建是异步的：期间用户若已切到别的会话（conversationId 被 openConversation 改走），
-            // 放弃本次发送，避免问句落错会话
-            if (this.conversationId.length > 0 && this.conversationId !== created.conversationId) {
-                hilog.warn(DOMAIN, TAG, 'pre-create raced with conversation switch, send dropped');
+            const stillOnBlank: boolean = this.conversationId.length === 0;
+
+            if (created.success && created.conversationId.length > 0) {
+                hilog.info(DOMAIN, TAG, 'conversation pre-created: %{public}s', created.conversationId);
+                this.dispatchSend(text, created.conversationId, stillOnBlank);
                 return;
             }
 
-            if (created.success && created.conversationId.length > 0) {
-                this.conversationId = created.conversationId;
-                hilog.info(DOMAIN, TAG, 'conversation pre-created: %{public}s', created.conversationId);
-            } else {
-                hilog.warn(DOMAIN, TAG, 'pre-create failed (%{public}s), fallback to sse-head binding', created.message);
-            }
-
-            this.dispatchSend(text);
+            // 预创建失败：用本地临时键承载本次流，SSE 首帧带回真实 ID 后迁移（会话列表延后出现）
+            hilog.warn(DOMAIN, TAG, 'pre-create failed (%{public}s), fallback to sse-head binding', created.message);
+            this.dispatchSend(text, this.nextPendingKey(), stillOnBlank);
         });
     }
 
-    // 实际发流：消息入列 + 侧栏即时占位（若列表还没有该会话）+ 挂流
-    private dispatchSend(text: string): void {
-        // 双保险：UI streaming 与传输层 streaming 任一仍在进行都拒绝发送。
-        // 若只查 UI streaming，传输层尚未释放时 start() 会静默返回，而消息已入列并置 streaming=true，
-        // 界面会永久卡在"生成中"（三个点不消失、无任何请求）
-        if (this.streaming || chatStream.isStreaming) {
-            this.notify('已有回复生成中，请稍候', 1200);
+    // 实际发流：消息写入目标会话缓冲 + 侧栏即时占位（若列表还没有该会话）+ 挂流。
+    // targetKey 为该流在本地缓冲/传输锁中的键（真实会话 ID；预创建失败时为本地临时键）；
+    // adoptView 表示用户仍停留在发起发送的空白视图上，发送后直接换绑到该流（后台流不劫持当前视图）
+    private dispatchSend(text: string, targetKey: string, adoptView: boolean, mode?: SendMode): void {
+        if (this.streamingKeys.has(targetKey) || chatStream.isStreamingFor(targetKey)) {
+            this.notify('该对话已有回复生成中，请稍候', 1200);
             return;
         }
 
+        const buffer: ConversationBuffer = this.bufferFor(targetKey);
         // 本地消息必须分配连续且唯一的 index：列表 ForEach key 由 message.index 派生，
         // 新建消息若恒为 0 会与首条消息 key 冲突，ArkUI 按 key 复用组件导致列表错位/末条重复
         // （表现：发送瞬间最后一条消息被重复渲染、工具调用段位置错乱；重进会话后索引来自服务端才正常）。
         // 取末条 index + 1 同时与后端持久化索引对齐
-        const baseIndex: number = this.messages.length > 0 ? this.messages[this.messages.length - 1].index + 1 : 0;
+        const baseIndex: number = buffer.messages.length > 0 ? buffer.messages[buffer.messages.length - 1].index + 1 : 0;
         const userMessage: ChatMessage = ChatMessage.createUser(text);
         userMessage.index = baseIndex;
         const assistantMessage: ChatMessage = ChatMessage.createAssistant();
         assistantMessage.index = baseIndex + 1;
+
         // 追加包在显式 animateTo 中：配合 ListItem 的 transition 播放"淡入 + 轻微上移"，
         // 消除新消息硬插入的闪烁感（空态问候页首次切入消息流时尤其明显）
         animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
-            this.messages = [...this.messages, userMessage, assistantMessage];
+            if (adoptView) {
+                if (targetKey.startsWith(PENDING_STREAM_PREFIX)) {
+                    this.pendingSendKey = targetKey;
+                } else {
+                    this.conversationId = targetKey;
+                }
+            }
+
+            this.appendMessages(targetKey, [userMessage, assistantMessage]);
         });
-        this.streaming = true;
+
+        this.streamingKeys.add(targetKey);
+        this.syncStreamingState();
         this.lastContentLog = -1;
         this.lastReasoningLog = -1;
 
         // 预创建/既有会话：消息入列后即可让侧栏出现本会话（ensureConversationVisible 内部幂等：
         // 列表或占位里已有则直接返回）。整包聚合传输下不再依赖迟到的 SSE 首帧才显示新会话
-        if (this.conversationId.length > 0) {
+        if (!targetKey.startsWith(PENDING_STREAM_PREFIX)) {
             const alreadyVisible: boolean = this.app.conversations
-                .some((item: ConversationItem): boolean => item.id === this.conversationId);
+                .some((item: ConversationItem): boolean => item.id === targetKey);
 
             if (!alreadyVisible) {
-                this.app.ensureConversationVisible(this.conversationId, this.firstQuestionHint());
+                this.app.ensureConversationVisible(targetKey, this.firstQuestionHint(targetKey));
                 this.app.refreshConversations().then(() => {
                     this.bumpList();
                 });
             }
         }
 
-        this.scrollToEnd(true);
+        if (this.currentBufferKey() === targetKey) {
+            this.scrollToEnd(true);
+        }
 
-        chatStream.start({
+        const streamOptions: StreamOptions = {
             message: text,
-            conversationId: this.conversationId.length > 0 ? this.conversationId : undefined,
+            conversationId: targetKey.startsWith(PENDING_STREAM_PREFIX) ? undefined : targetKey,
             modelName: this.app.selectedModelName.length > 0 ? this.app.selectedModelName : undefined,
             enableThinking: this.app.enableThinking,
             enableWebSearch: this.app.enableWebSearch,
             enableTools: true,
             toolMode: this.app.forceTools ? 'force' : 'auto_off'
-        }, this.listenerFor(assistantMessage));
+        };
+
+        // 学习会话首问要显式带上模式与运行时载荷：后端据此挂载 NexoraLearning 工具集与画像访谈指令
+        if (mode !== undefined) {
+            streamOptions.conversationMode = mode.conversationMode;
+            streamOptions.conversationModePayload = mode.payload;
+        }
+
+        chatStream.start(targetKey, streamOptions, this.listenerFor(assistantMessage, targetKey));
     }
 
     // 重新生成：通过后端 is_regenerate 机制覆盖目标回答（自动保存旧版本）。
     // 不截断消息列表、不新增用户消息，直接清空目标 assistant 消息并锁定流式更新该消息。
     // 直接接收 ForEach 的数组索引，不依赖 indexOf（@ObjectLink 代理与原数组引用不等）
     private regenerate(targetIndex: number): void {
-        if (this.streaming) {
-            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: streaming=true');
+        if (this.isCurrentStreaming()) {
+            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: current conversation streaming');
+            return;
+        }
+
+        const key: string = this.currentBufferKey();
+
+        if (key.length === 0) {
+            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: no conversation key');
             return;
         }
 
@@ -1180,15 +1368,18 @@ export struct MainChat {
         target.streaming = true;
         target.thinkingExpanded = true;
         this.messages = [...this.messages];
+        // 重答目标就在当前会话缓冲中：视图重建的数组同步回缓冲，保持单一数据源
+        this.bufferFor(key).messages = this.messages;
 
-        this.streaming = true;
+        this.streamingKeys.add(key);
+        this.syncStreamingState();
         this.lastContentLog = -1;
         this.lastReasoningLog = -1;
 
         // 滚动到目标消息位置，让用户看到正在重答的消息
         this.scroller.scrollToIndex(targetIndex, true, ScrollAlign.CENTER);
 
-        chatStream.start({
+        chatStream.start(key, {
             message: question,
             conversationId: this.conversationId,
             modelName: this.app.selectedModelName.length > 0 ? this.app.selectedModelName : undefined,
@@ -1198,7 +1389,7 @@ export struct MainChat {
             toolMode: this.app.forceTools ? 'force' : 'auto_off',
             isRegenerate: true,
             regenerateIndex: target.index
-        }, this.listenerFor(target));
+        }, this.listenerFor(target, key));
     }
 
     // question 作答：写本地回答锁并作为普通用户消息发送
@@ -1210,8 +1401,8 @@ export struct MainChat {
             return;
         }
 
-        if (this.streaming || chatStream.isStreaming) {
-            this.notify('已有回复生成中，请稍候', 1200);
+        if (this.isCurrentStreaming() || chatStream.isStreamingFor(this.currentBufferKey())) {
+            this.notify('当前对话已有回复生成中,请稍候', 1200);
             return;
         }
 
@@ -1221,14 +1412,12 @@ export struct MainChat {
             const updated: string = writeQuestionLock(store, this.conversationId, item.cardId, text);
             this.app.saveQuestionLocks(updated);
             item.markAnswered(text);
-            this.dispatchSend(text);
+            this.dispatchSend(text, this.currentBufferKey(), false);
         });
     }
 
     // 本地回答锁恢复：历史加载 / 分页 / question 帧到达时把已答卡片置为锁定态
-    private applyQuestionLocks(messages: ChatMessage[]): void {
-        const conversationId: string = this.conversationId;
-
+    private applyQuestionLocks(conversationId: string, messages: ChatMessage[]): void {
         if (conversationId.length === 0 || messages.length === 0) {
             return;
         }
@@ -1254,42 +1443,58 @@ export struct MainChat {
         });
     }
 
-    // 打开历史会话：原地替换会话状态并载入历史，不做导航压栈
+    // 打开历史会话：切到目标会话并恢复现场，不中断任何进行中的流。
+    // 目标会话正在生成时以本地缓冲为准（服务端尚未落盘），其余情况重新拉取权威历史
     private openConversation(conversationId: string, convTitle: string): void {
-        if (this.streaming) {
-            this.stopStreaming();
-        }
-
         this.conversationId = conversationId;
+        this.pendingSendKey = '';
         this.title = convTitle.length > 0 ? convTitle : '新对话';
-        this.messages = [];
-        this.loadError = '';
         this.activatedActionId = '';
-        this.loadHistory();
+        this.loadError = '';
+        this.loadingMoreMessages = false;
         this.closeSidebar();
-    }
 
-    // 新开一轮：清空会话上下文回到空白态（顶栏 + 侧栏共用）
-    private startNewRound(): void {
-        if (this.streaming) {
-            this.notify('正在生成中，请先停止', 1200);
+        const buffer: ConversationBuffer | undefined = this.buffers.get(conversationId);
+
+        if (this.streamingKeys.has(conversationId) && buffer !== undefined) {
+            this.messages = buffer.messages;
+            this.hasMoreMessages = buffer.hasMore;
+            this.oldestLoadedIndex = buffer.oldestIndex;
+            this.loadingHistory = false;
+            this.syncStreamingState();
+            this.scrollToEnd();
+            this.activeTurnIndex = this.computeActiveTurn(this.messages.length - 1);
             return;
         }
 
-        this.stopStreaming();
+        this.messages = [];
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
+        this.syncStreamingState();
+        this.loadHistory(conversationId);
+    }
+
+    // 新开一轮：切到空白视图回到空白态（顶栏 + 侧栏共用），不中断后台流
+    private startNewRound(): void {
         this.conversationId = '';
+        this.pendingSendKey = '';
         this.title = '新对话';
         this.messages = [];
         this.loadError = '';
+        this.loadingHistory = false;
         this.hasMoreMessages = false;
         this.oldestLoadedIndex = 0;
         this.activatedActionId = '';
+        this.syncStreamingState();
         this.closeSidebar();
     }
 
+    // 停止当前查看会话的流：后台其他会话的流不受影响
     private stopStreaming(): void {
-        if (chatStream.isStreaming) {
-            chatStream.cancel();
+        const key: string = this.currentBufferKey();
+
+        if (key.length > 0) {
+            chatStream.cancel(key);
         }
     }
 
@@ -1368,29 +1573,29 @@ export struct MainChat {
         }, 3000);
     }
 
-    // 首轮生成结束后用首条提问作为会话标题
-    private deriveTitle(): void {
-        if (this.title !== '新对话' || this.messages.length === 0) {
-            return;
+    // 以指定会话缓冲的首条提问生成标题（流结束时用于顶栏与侧栏占位项）
+    private deriveTitleFor(key: string): string {
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined || buffer.messages.length === 0) {
+            return '新对话';
         }
 
-        const first: ChatMessage = this.messages[0];
+        const first: ChatMessage = buffer.messages[0];
 
-        if (!first.isUser) {
-            return;
+        if (!first.isUser || first.content.length === 0) {
+            return '新对话';
         }
 
-        this.title = first.content.length > TITLE_MAX_LENGTH
+        return first.content.length > TITLE_MAX_LENGTH
             ? first.content.substring(0, TITLE_MAX_LENGTH) + '…'
             : first.content;
     }
 
     // 回复完成 / 中止后轮询刷新会话列表：服务端对"新会话入库 / 标题落盘"存在可见延迟，
     // 单次延时刷新可能拉到的还是旧列表（表现为"重开侧栏才出现新会话"）。
-    // 改为按 0.6s/2s/4.5s/9s 递增重试，直到当前会话出现在列表里为止。
-    private scheduleListRefresh(): void {
-        const targetId: string = this.conversationId;
-
+    // 改为按 0.6s/2s/4.5s/9s 递增重试，直到该会话出现在列表里为止（与当前查看哪个会话无关）
+    private scheduleListRefresh(targetId: string): void {
         if (targetId.length === 0) {
             return;
         }
@@ -1401,11 +1606,6 @@ export struct MainChat {
         const pollOnce = (): void => {
             this.app.refreshConversations().then(() => {
                 this.bumpList();
-
-                // 轮询期间用户已切到别的会话：不再打扰
-                if (this.conversationId !== targetId) {
-                    return;
-                }
 
                 const found: boolean = this.app.conversations.some((item: ConversationItem): boolean => item.id === targetId);
 
@@ -1487,6 +1687,11 @@ export struct MainChat {
     }
 
     private async performDelete(item: ConversationItem): Promise<void> {
+        if (this.streamingKeys.has(item.id)) {
+            this.notify('回复生成中，请先停止再操作', 1600);
+            return;
+        }
+
         const error: string = await this.app.deleteConversation(item.id);
 
         if (error.length > 0) {
@@ -1496,6 +1701,7 @@ export struct MainChat {
 
         this.notify('会话已删除');
         this.bumpList();
+        this.buffers.delete(item.id);
 
         // 删的是当前正在看的会话：复位到新对话空态，避免停留在已删除会话的消息上
         if (item.id === this.conversationId) {
@@ -1503,11 +1709,18 @@ export struct MainChat {
         }
     }
 
-    // 流式事件到消息模型的映射：所有增量最终都落到同一条 assistant 消息上。
+    // 流式事件到消息模型的映射：所有增量落到该流自己的 assistant 消息上。
+    // streamKey 为这条流在本地缓冲/传输锁中的键：新会话预创建失败时是本地临时键，
+    // SSE 首帧带回真实会话 ID 后迁移；事件只在流所属会话正在查看时才驱动滚动。
     // 统一经 UI 线程跳板（setTimeout 0）再改 @Observed 消息：
     // http 流回调线程不保证是 UI 线程，直接在此改 @Observed 字段可能不触发界面通知，
     // 表现为"服务端在推、界面一字不流"（曾实测复现），必须回到 UI 线程再落地。
-    private listenerFor(assistant: ChatMessage): StreamListener {
+    private listenerFor(assistant: ChatMessage, streamKey: string): StreamListener {
+        const context: StreamContext = {
+            key: streamKey,
+            conversationId: streamKey.startsWith(PENDING_STREAM_PREFIX) ? '' : streamKey
+        };
+
         const onUi = (action: () => void): void => {
             setTimeout(() => {
                 action();
@@ -1517,10 +1730,9 @@ export struct MainChat {
         return {
             onConversationId: (conversationId: string) => {
                 onUi(() => {
-                    this.conversationId = conversationId;
-                    hilog.info(DOMAIN, TAG, 'conversation bound: %{public}s', conversationId);
+                    this.bindPendingStream(context, conversationId);
                     // 会话已建立：立即本地占位 + 刷新一次列表，让新会话在回复途中就出现在侧栏并可高亮
-                    this.app.ensureConversationVisible(conversationId, this.firstQuestionHint());
+                    this.app.ensureConversationVisible(conversationId, this.firstQuestionHint(context.key));
                     this.app.refreshConversations().then(() => {
                         this.bumpList();
                     });
@@ -1547,7 +1759,10 @@ export struct MainChat {
 
                     assistant.appendDelta('content', delta);
                     this.logStreamProgress(assistant, false);
-                    this.scrollToEnd();
+
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEnd();
+                    }
 
                     // 胶囊滚动窗口：截取正文末尾 5 字更新灵动岛胶囊（仅退后台活跃时生效）
                     LiveViewController.shared.updateContent(assistant.content);
@@ -1561,7 +1776,10 @@ export struct MainChat {
                     }
 
                     assistant.beginToolCall(callId, name, args, round);
-                    this.scrollToEnd();
+
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEnd();
+                    }
                 });
             },
             onToolResult: (name: string, callId: string, payload: ToolResultPayload, round: number) => {
@@ -1577,8 +1795,11 @@ export struct MainChat {
                     }
 
                     assistant.beginQuestion(callId, payload);
-                    this.applyQuestionLocks([assistant]);
-                    this.scrollToEnd();
+                    this.applyQuestionLocks(context.conversationId, [assistant]);
+
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEnd();
+                    }
                 });
             },
             onTokenUsage: (usage: TokenUsage) => {
@@ -1589,8 +1810,12 @@ export struct MainChat {
             onError: (message: string) => {
                 onUi(() => {
                     assistant.setError(message);
-                    this.streaming = false;
-                    LiveViewController.shared.stop();
+                    this.finishStream(context.key);
+
+                    // 还有别的会话在生成：实况窗保留，等待最后一个流收尾
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.stop();
+                    }
                 });
             },
             onComplete: (finalContent: string) => {
@@ -1602,25 +1827,173 @@ export struct MainChat {
                     }
 
                     assistant.finish();
-                    this.streaming = false;
-                    this.deriveTitle();
-                    this.app.updatePendingConversation(this.conversationId, this.title);
-                    this.scheduleListRefresh();
-                    // 正常完成：胶囊改"回复完成"保留 5 秒后自动关闭
-                    LiveViewController.shared.finishGenerating();
+                    this.finishStream(context.key);
+                    this.finalizeStreamConversation(context);
+
+                    // 最后一个流完成：胶囊改"回复完成"保留 5 秒后自动关闭
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.finishGenerating();
+                    }
                 });
             },
             onAborted: () => {
                 onUi(() => {
                     assistant.finish();
-                    this.streaming = false;
-                    this.deriveTitle();
-                    this.app.updatePendingConversation(this.conversationId, this.title);
-                    this.scheduleListRefresh();
-                    LiveViewController.shared.stop();
+                    this.finishStream(context.key);
+                    this.finalizeStreamConversation(context);
+
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.stop();
+                    }
                 });
             }
         };
+    }
+
+    // 流正常结束/中止后的会话收尾：更新标题与侧栏占位项，并按需刷新会话列表
+    private finalizeStreamConversation(context: StreamContext): void {
+        const derived: string = this.deriveTitleFor(context.key);
+
+        // 仍停留在该流所属会话且标题还是默认值时，顶栏同步为推导标题
+        if (this.currentBufferKey() === context.key && this.title === '新对话') {
+            this.title = derived;
+        }
+
+        if (context.conversationId.length > 0) {
+            this.app.updatePendingConversation(context.conversationId, derived);
+        }
+
+        this.scheduleListRefresh(context.conversationId);
+    }
+
+    // ---------- 多会话并行辅助 ----------
+
+    // 当前视图对应的缓冲键：已打开会话用会话 ID；空白会话发送中（预创建失败）用本地临时键
+    private currentBufferKey(): string {
+        return this.conversationId.length > 0 ? this.conversationId : this.pendingSendKey;
+    }
+
+    // 当前查看会话是否正在生成
+    private isCurrentStreaming(): boolean {
+        return this.streamingKeys.has(this.currentBufferKey());
+    }
+
+    // 取指定会话的缓冲，不存在则新建
+    private bufferFor(key: string): ConversationBuffer {
+        const existing: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (existing !== undefined) {
+            return existing;
+        }
+
+        const buffer: ConversationBuffer = new ConversationBuffer();
+        this.buffers.set(key, buffer);
+        return buffer;
+    }
+
+    // 向指定会话缓冲追加消息；该会话正是当前视图时同步镜像到 @State（驱动渲染）
+    private appendMessages(key: string, messages: ChatMessage[]): void {
+        const buffer: ConversationBuffer = this.bufferFor(key);
+        buffer.messages = [...buffer.messages, ...messages];
+
+        if (this.currentBufferKey() === key) {
+            this.messages = buffer.messages;
+        }
+    }
+
+    // 流收尾：从进行中集合移除并同步输入栏/侧栏状态
+    private finishStream(key: string): void {
+        this.streamingKeys.delete(key);
+        this.syncStreamingState();
+    }
+
+    // 同步生成态：输入栏当前会话开关 + 侧栏各会话流式指示
+    private syncStreamingState(): void {
+        this.streaming = this.isCurrentStreaming();
+        this.syncStreamingConvIds();
+    }
+
+    // 侧栏指示镜像：重算为新数组触发 @Prop 刷新（本地临时键尚未绑定真实会话，不出现在侧栏）
+    private syncStreamingConvIds(): void {
+        const ids: string[] = [];
+
+        this.streamingKeys.forEach((key: string): void => {
+            if (!key.startsWith(PENDING_STREAM_PREFIX)) {
+                ids.push(key);
+            }
+        });
+
+        this.streamingConvIds = ids;
+    }
+
+    // 生成新的本地临时流键（新会话预创建失败时使用，SSE 绑定真实 ID 后迁移）
+    private nextPendingKey(): string {
+        this.pendingKeySeq = this.pendingKeySeq + 1;
+        return PENDING_STREAM_PREFIX + Date.now() + ':' + this.pendingKeySeq;
+    }
+
+    // 新会话流首次拿到真实会话 ID：迁移本地缓冲与传输锁键；
+    // 若用户仍停留在这次空白发送的视图上则直接换绑，消息流不中断
+    private bindPendingStream(context: StreamContext, conversationId: string): void {
+        const fromKey: string = context.key;
+
+        if (fromKey === conversationId) {
+            context.conversationId = conversationId;
+            return;
+        }
+
+        const buffer: ConversationBuffer | undefined = this.buffers.get(fromKey);
+
+        if (buffer !== undefined) {
+            this.buffers.delete(fromKey);
+            this.buffers.set(conversationId, buffer);
+        }
+
+        this.streamingKeys.delete(fromKey);
+        this.streamingKeys.add(conversationId);
+        chatStream.rekey(fromKey, conversationId);
+
+        context.key = conversationId;
+        context.conversationId = conversationId;
+
+        if (this.pendingSendKey === fromKey) {
+            this.pendingSendKey = '';
+            this.conversationId = conversationId;
+        }
+
+        this.syncStreamingState();
+        hilog.info(DOMAIN, TAG, 'conversation bound: %{public}s', conversationId);
+    }
+
+    // 历史窗口与本地缓冲按索引合并，取并集：
+    //  - 服务端本页覆盖到的索引以服务端为准（落库内容是权威版本）
+    //  - 仍在流式生成的助手消息例外：服务端此刻还没有它，增量只能由本地版本承载
+    //  - 索引超出本页末条的本地消息：服务端尚未落库，必须保留，否则切回时回复消失
+    // windowEnd 为本页窗口右边界（startIndex + 本页条数）
+    private mergeHistoryWithLive(history: ChatMessage[], live: ChatMessage[], windowEnd: number): ChatMessage[] {
+        const byIndex: Map<number, ChatMessage> = new Map<number, ChatMessage>();
+
+        for (let i: number = 0; i < history.length; i++) {
+            byIndex.set(history[i].index, history[i]);
+        }
+
+        for (let i: number = 0; i < live.length; i++) {
+            const message: ChatMessage = live[i];
+            const localOnly: boolean = message.index >= windowEnd || message.streaming;
+
+            if (localOnly) {
+                byIndex.set(message.index, message);
+            }
+        }
+
+        const merged: ChatMessage[] = [];
+
+        byIndex.forEach((message: ChatMessage): void => {
+            merged.push(message);
+        });
+        merged.sort((a: ChatMessage, b: ChatMessage): number => a.index - b.index);
+
+        return merged;
     }
 
     // ---------- 展示文案 ----------
@@ -1629,10 +2002,16 @@ export struct MainChat {
         return this.conversationId.length > 0 ? '继续追问…' : '给 Nexora 发送消息，或试试下面的能力…';
     }
 
-    // 当前会话的首问文本（截断），用于回复途中侧栏占位项的标题
-    private firstQuestionHint(): string {
-        for (let i: number = 0; i < this.messages.length; i++) {
-            const message: ChatMessage = this.messages[i];
+    // 指定会话缓冲的首问文本（截断），用于回复途中侧栏占位项的标题
+    private firstQuestionHint(key: string): string {
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined) {
+            return '新对话';
+        }
+
+        for (let i: number = 0; i < buffer.messages.length; i++) {
+            const message: ChatMessage = buffer.messages[i];
 
             if (message.isUser && message.content.length > 0) {
                 return message.content.length > TITLE_MAX_LENGTH

@@ -36,6 +36,7 @@ export interface ConversationCreateResult {
 // 预创建请求体（ArkTS 限制：字面量须对应显式声明的 interface，不能赋给 Record）
 interface CreateConversationRequestBody {
     title: string;
+    conversation_mode?: string;
 }
 
 // 置顶请求体（ArkTS 限制：字面量须对应显式声明的 interface，不能赋给 Record）
@@ -132,6 +133,14 @@ export interface NotesStoreResult {
     success: boolean;
     message: string;
     store: NotesStore | null;
+}
+
+// Learning 运行时配置结果：管理端开关 + 前端工作区页面地址
+export interface LearningRuntimeResult {
+    success: boolean;
+    message: string;
+    enabled: boolean;
+    frontendUrl: string;
 }
 
 interface NotesStoreRequestBody {
@@ -365,9 +374,16 @@ export class ApiService {
 
     // 预创建空会话：新对话首问在发流前先建会话，让 conversation_id 在流开始前已知
     // -> 侧栏可即时占位（回复途中即可见/高亮），且 ChatStreamClient 轮询兜底可凭 conversation_id 取流
-    static async createConversation(title: string): Promise<ConversationCreateResult> {
+    // mode 用于把会话固化在某个模式上（'learning' 的学习会话由后端持久化，后续消息自动沿用该模式）
+    static async createConversation(title: string, mode: string = ''): Promise<ConversationCreateResult> {
         const safeTitle: string = title.trim();
         const body: CreateConversationRequestBody = { title: safeTitle.length > 0 ? safeTitle : '新对话' };
+        const safeMode: string = mode.trim();
+
+        if (safeMode.length > 0) {
+            body.conversation_mode = safeMode;
+        }
+
         const result: HttpResult = await HttpUtil.post('/api/conversations', body);
         const payload: Record<string, Object> | null = ApiService.readPayload(result, '预创建会话');
 
@@ -529,6 +545,29 @@ export class ApiService {
 
         hilog.info(DOMAIN, TAG, 'notes store saved, count=%{public}d', normalized.notes.length);
         return { success: true, message: '', store: normalized };
+    }
+
+    // ---------- Learning ----------
+    // Learning 运行时配置：GET /api/user/preferences（learning_runtime 在响应顶层，与 preferences 平级）
+    static async fetchLearningRuntime(): Promise<LearningRuntimeResult> {
+        const result: HttpResult = await HttpUtil.get('/api/user/preferences');
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, 'Learning 配置');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), enabled: false, frontendUrl: '' };
+        }
+
+        const runtime: Record<string, Object> | null = Json.object(payload, 'learning_runtime');
+
+        if (runtime === null) {
+            return { success: false, message: 'Learning 未配置', enabled: false, frontendUrl: '' };
+        }
+
+        const enabled: boolean = Json.boolean(runtime, 'enabled');
+        const frontendUrl: string = Json.string(runtime, 'frontend_url');
+
+        hilog.info(DOMAIN, TAG, 'learning runtime loaded, enabled=%{public}s', enabled ? 'true' : 'false');
+        return { success: true, message: '', enabled: enabled, frontendUrl: frontendUrl };
     }
 
     // ---------- 邮件 ----------

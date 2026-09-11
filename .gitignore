@@ -89,3 +89,6 @@ temp_jar_extract
 NexoraApp/build_log.txt
 
 .hf_cache
+.stale_build_backup/
+.tmp_shots/
+NexoraApp/build_log.txt

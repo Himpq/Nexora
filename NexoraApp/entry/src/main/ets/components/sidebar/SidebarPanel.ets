@@ -23,11 +23,15 @@ export struct SidebarPanel {
     @Prop convList: ConversationItem[] = [];
     // 会话列表代次：宿主每次刷新/置顶/删除后 +1（见 convList 注释）
     @Prop @Watch('onEpochChanged') convEpoch: number = 0;
+    // 正在生成的会话 ID 列表：多会话并行时后台会话继续出流，行内显示"生成中…"指示
+    @Prop streamingIds: string[] = [];
     onNewChat: () => void = () => {};
     // 打开独立邮件页：由宿主关闭抽屉后全屏挂载
     onOpenMail: () => void = () => {};
     // 打开轻量随笔页：由宿主关闭抽屉后全屏挂载
     onOpenNotes: () => void = () => {};
+    // 打开 Learning 工作区：由宿主关闭抽屉后全屏挂载（ArkWeb 薄挂载）
+    onOpenLearning: () => void = () => {};
     onOpenConversation: (conversationId: string, title: string) => void = () => {};
     onTogglePin: (item: ConversationItem) => void = () => {};
     onDeleteRequest: (item: ConversationItem) => void = () => {};
@@ -71,13 +75,14 @@ export struct SidebarPanel {
                     } else if (this.convList.length === 0 && !this.app.conversationsLoading) {
                         this.EmptyHint();
                     } else {
-                        // space=1 固定行距，行高固定 50：每项布局高恒为 51，消除任何"估算高/实测高"两阶段跳变
+                        // space=1 固定行距，行高固定 50：每项布局高恒为 51，消除任何"估算高/实测高"两阶段跳变。
+                        // key 并入流式态：ForEach 同 key 行不会重跑构建，生成开始/结束需靠 key 变化重建该行
                         List({ scroller: this.listScroller, space: 1 }) {
                             ForEach(this.convList, (item: ConversationItem) => {
                                 ListItem() {
                                     this.ConversationRow(item);
                                 }
-                            }, (item: ConversationItem) => item.id + '_' + this.convEpoch);
+                            }, (item: ConversationItem) => item.id + '_' + this.convEpoch + (this.isStreaming(item.id) ? '_streaming' : ''));
                         }
                         .layoutWeight(1)
                         .width('100%')
@@ -155,6 +160,10 @@ export struct SidebarPanel {
 
             this.ActionRow('notes', $r('app.media.ic_edit'), '随笔', (): void => {
                 this.onOpenNotes();
+            });
+
+            this.ActionRow('learning', $r('app.media.ic_book'), '学习', (): void => {
+                this.onOpenLearning();
             });
         }
         .width('100%')
@@ -254,11 +263,19 @@ export struct SidebarPanel {
                 }
                 .width('100%');
 
-                Text(item.time)
-                    .fontSize(FontSize.caption)
-                    .lineHeight(LineHeight.caption)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .maxLines(1);
+                if (this.isStreaming(item.id)) {
+                    Text('生成中…')
+                        .fontSize(FontSize.caption)
+                        .lineHeight(LineHeight.caption)
+                        .fontColor($r('app.color.text_brand'))
+                        .maxLines(1);
+                } else {
+                    Text(item.time)
+                        .fontSize(FontSize.caption)
+                        .lineHeight(LineHeight.caption)
+                        .fontColor($r('app.color.text_tertiary'))
+                        .maxLines(1);
+                }
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start);
@@ -521,6 +538,11 @@ export struct SidebarPanel {
     // ---------- 行为 ----------
     private isActive(conversationId: string): boolean {
         return this.activeConversationId === conversationId;
+    }
+
+    // 该会话是否正在生成（多会话并行下后台会话也持续出流，行内显示指示）
+    private isStreaming(conversationId: string): boolean {
+        return this.streamingIds.indexOf(conversationId) >= 0;
     }
 
     // 列表代次变化（宿主刷新/置顶/删除/新会话占位后都会 bump）：仅侧栏刚挂载的短暂窗口内

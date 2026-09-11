@@ -77,6 +77,13 @@ export interface StreamListener {
     onAborted: () => void;
 }
 
+// 学习运行时载荷：learning 打开 NexoraLearning 运行时，interview 在其内部切到六维画像访谈链路
+// （ArkTS 下字面量必须对应显式声明的 interface，不能直接赋给 Record）
+export interface ConversationModePayload {
+    learning?: boolean;
+    interview?: boolean;
+}
+
 export interface StreamOptions {
     message: string;
     conversationId?: string;
@@ -87,6 +94,9 @@ export interface StreamOptions {
     toolMode?: string;
     isRegenerate?: boolean;
     regenerateIndex?: number;
+    // 会话模式：'learning' 时后端挂载 NexoraLearning 运行时（学习工具 + 画像访谈指令）
+    conversationMode?: string;
+    conversationModePayload?: ConversationModePayload;
 }
 
 // 流式请求体：conversation_id / model_name 可选，后端在缺省时新建会话 / 使用默认模型
@@ -100,11 +110,15 @@ export interface StreamRequestBody {
     tool_mode?: string;
     is_regenerate?: boolean;
     regenerate_index?: number;
+    conversation_mode?: string;
+    conversation_mode_payload?: ConversationModePayload;
 }
 
 // 单条流的会话状态：每条流独立持有，旧流的传输/轮询回调只影响自己，
 // 不会再触碰新流的 finished / buffer 等共享标志（曾导致新流帧被旧回调丢弃）
 class ChatStreamSession {
+    // 本流在 ChatStreamClient.sessions 中的键（会话 ID 或本地临时键）：流结束时按此键释放
+    sessionKey: string = '';
     private request: http.HttpRequest | null = null;
     private streamId: string = '';
     private conversationId: string = '';
@@ -916,7 +930,9 @@ class ChatStreamSession {
             enable_tools: options.enableTools,
             tool_mode: options.toolMode,
             is_regenerate: options.isRegenerate,
-            regenerate_index: options.regenerateIndex
+            regenerate_index: options.regenerateIndex,
+            conversation_mode: options.conversationMode,
+            conversation_mode_payload: options.conversationModePayload
         };
 
         return body;
@@ -948,37 +964,72 @@ class ChatStreamSession {
     }
 }
 
-// 全局唯一流式入口：同一时刻只允许一条流在运行。
-// 每次 start 创建独立的 ChatStreamSession 承载该流全部状态，
-// 旧流在早于发送完成前释放（轮询判定 done 立即 resolve）也不会污染新流
+// 全局唯一流式入口：按会话键隔离，多会话可并行。
+// 每次 start 创建独立的 ChatStreamSession 承载该流全部状态与传输锁；
+// 同会话重复发送在 start 入口拒绝，跨会话互不影响。
+// 会话键约定：已创建会话用真实会话 ID；新会话预创建失败时用调用方生成的本地临时键，
+// 流内首次拿到 conversation_id 后由调用方调 rekey 迁移到真实 ID
 export class ChatStreamClient {
-    private session: ChatStreamSession | null = null;
+    // 会话键 → 活动流
+    private sessions: Map<string, ChatStreamSession> = new Map<string, ChatStreamSession>();
 
     get isStreaming(): boolean {
-        return this.session !== null;
+        return this.sessions.size > 0;
     }
 
-    async start(options: StreamOptions, listener: StreamListener): Promise<void> {
-        if (this.session !== null) {
+    // 当前活动流数量：实况窗收尾据此判断是否还有别的会话在生成
+    get streamingCount(): number {
+        return this.sessions.size;
+    }
+
+    isStreamingFor(sessionKey: string): boolean {
+        return this.sessions.has(sessionKey);
+    }
+
+    async start(sessionKey: string, options: StreamOptions, listener: StreamListener): Promise<void> {
+        if (this.sessions.has(sessionKey)) {
             return;
         }
 
         const session: ChatStreamSession = new ChatStreamSession();
-        this.session = session;
+        session.sessionKey = sessionKey;
+        this.sessions.set(sessionKey, session);
 
         try {
             await session.run(options, listener);
         } finally {
-            if (this.session === session) {
-                this.session = null;
-            }
+            this.sessions.delete(session.sessionKey);
         }
     }
 
-    cancel(): void {
-        if (this.session !== null) {
-            this.session.cancel();
+    // 新会话流拿到服务端 ID 后迁移锁键：活动流集合继续以真实会话 ID 指认同一条流
+    rekey(fromKey: string, toKey: string): void {
+        const session: ChatStreamSession | undefined = this.sessions.get(fromKey);
+
+        if (session === undefined) {
+            return;
         }
+
+        this.sessions.delete(fromKey);
+        session.sessionKey = toKey;
+        this.sessions.set(toKey, session);
+    }
+
+    // 取消：不传键取消全部（登出）；传键只停该会话的流，后台其他会话不受影响
+    cancel(sessionKey?: string): void {
+        if (sessionKey !== undefined) {
+            const session: ChatStreamSession | undefined = this.sessions.get(sessionKey);
+
+            if (session !== undefined) {
+                session.cancel();
+            }
+
+            return;
+        }
+
+        this.sessions.forEach((session: ChatStreamSession): void => {
+            session.cancel();
+        });
     }
 }
 
