@@ -13,6 +13,7 @@ import { QuestionCard } from './QuestionCard';
 import { StreamingDots } from './StreamingDots';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolSegment } from './ToolSegment';
+import { UserAttachments } from './UserAttachments';
 
 @Component
 export struct MessageBubble {
@@ -52,9 +53,22 @@ export struct MessageBubble {
     build() {
         Column({ space: Space.xs }) {
             if (this.message.isUser) {
-                Row() {
-                    Blank();
-                    this.UserBubble();
+                // 用户消息：气泡（有正文时）+ 附件区（图片缩略图/文件胶囊），同侧右对齐
+                Column({ space: Space.xs }) {
+                    if (this.message.content.length > 0) {
+                        Row() {
+                            Blank();
+                            this.UserBubble();
+                        }
+                        .width('100%');
+                    }
+
+                    if (this.message.attachments.length > 0) {
+                        UserAttachments({
+                            attachments: this.message.attachments,
+                            onOpenImage: this.onOpenImage
+                        });
+                    }
                 }
                 .width('100%');
             } else {
