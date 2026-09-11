@@ -10,6 +10,9 @@ import { VoiceRecognizerService } from '../../common/VoiceRecognizerService';
 import { IconButton } from '../common/IconButton';
 
 const ONE_DAY_MS: number = 24 * 60 * 60 * 1000;
+// 无输入判定：识别启动 5 秒后音频峰值仍贴着底噪（0.04），视为麦克风没有真实信号
+const VOICE_SILENCE_WATCH_MS: number = 5000;
+const VOICE_SILENCE_FLOOR: number = 0.06;
 
 @Component
 export struct NotesPage {
@@ -17,6 +20,9 @@ export struct NotesPage {
     @Link @Watch('onEditorOpenChanged') noteEditorOpen: boolean;
     onBack: () => void = () => {};
     @Prop launchEditor: boolean = false;
+
+    // 沉浸式布局下页面铺到物理屏底，列表末尾要让出一次手势区
+    @StorageProp('insetBottom') private insetBottom: number = 0;
 
     @State private searchDraft: string = '';
     @State private activeNoteId: string = '';
@@ -27,6 +33,9 @@ export struct NotesPage {
     @State private voiceError: string = '';
     @State private voiceLevels: number[] = [0.15, 0.22, 0.32, 0.18, 0.28, 0.14, 0.2, 0.3, 0.16, 0.24, 0.18, 0.28, 0.2, 0.14, 0.26, 0.18, 0.22, 0.15];
     private saveTimer: number = -1;
+    // 语音输入期间的输入能量峰值：全程只升不降，用于判定「有没有真的收到麦克风信号」
+    private voicePeak: number = 0;
+    private voiceSilenceTimer: number = -1;
     private voiceBaseText: string = '';
     private voiceCommittedText: string = '';
     private voiceDraftText: string = '';
@@ -40,6 +49,7 @@ export struct NotesPage {
 
     aboutToDisappear(): void {
         this.clearSaveTimer();
+        this.clearVoiceSilenceTimer();
         this.voiceService.cancel();
     }
 
@@ -152,7 +162,7 @@ export struct NotesPage {
                 .constraintSize({ minHeight: '100%' })
                 .justifyContent(FlexAlign.Start)
                 .alignItems(HorizontalAlign.Start)
-                .padding({ left: Space.lg, right: Space.lg, bottom: Space.xl });
+                .padding({ left: Space.lg, right: Space.lg, bottom: Space.xl + this.insetBottom });
             }
             .layoutWeight(1)
             .width('100%')
@@ -288,7 +298,7 @@ export struct NotesPage {
                 this.VoiceWaveform();
             }
 
-            Text(this.voiceListening ? '正在识别 · 点击结束' : this.voiceError.length > 0 ? this.voiceError : '语音输入')
+            Text(this.voiceStatusLabel())
                 .fontSize(FontSize.caption)
                 .fontColor(this.voiceError.length > 0
                     ? $r('app.color.text_danger')
@@ -509,6 +519,7 @@ export struct NotesPage {
         this.voiceDraftText = '';
         this.resetVoiceLevels();
         this.voiceListening = true;
+        this.startVoiceSilenceWatch();
 
         const message: string = await this.voiceService.start(host as common.UIAbilityContext, {
             onText: (text: string, isFinal: boolean): void => {
@@ -536,18 +547,54 @@ export struct NotesPage {
                 }
 
                 if (!isListening) {
+                    this.clearVoiceSilenceTimer();
                     this.resetVoiceLevels();
                 }
             },
             onLevel: (level: number): void => {
+                this.voicePeak = Math.max(this.voicePeak, level);
                 this.pushVoiceLevel(level);
             }
         });
 
         if (message.length > 0) {
             this.voiceListening = false;
+            this.clearVoiceSilenceTimer();
             this.voiceError = message;
             this.resetVoiceLevels();
+        }
+    }
+
+    // 无输入看门狗：识别已启动但一段时间内音频能量始终在底噪上，说明麦克风没有真实输入
+    // （模拟器/无输入设备最常见）。识别服务本身不会报错，只能由界面侧给出明确反馈，
+    // 否则用户只会看到「正在识别」一直转、拿不到任何文字。
+    private startVoiceSilenceWatch(): void {
+        this.clearVoiceSilenceTimer();
+        this.voicePeak = 0;
+        this.voiceSilenceTimer = setTimeout(() => {
+            this.voiceSilenceTimer = -1;
+
+            if (!this.voiceListening || this.voicePeak > VOICE_SILENCE_FLOOR) {
+                return;
+            }
+
+            this.voiceError = '未检测到麦克风输入，请检查设备麦克风';
+        }, VOICE_SILENCE_WATCH_MS);
+    }
+
+    // 识别状态文案：错误提示优先于进行态，否则无输入提示会被「正在识别」永久遮住
+    private voiceStatusLabel(): string {
+        if (this.voiceError.length > 0) {
+            return this.voiceError;
+        }
+
+        return this.voiceListening ? '正在识别 · 点击结束' : '语音输入';
+    }
+
+    private clearVoiceSilenceTimer(): void {
+        if (this.voiceSilenceTimer >= 0) {
+            clearTimeout(this.voiceSilenceTimer);
+            this.voiceSilenceTimer = -1;
         }
     }
 

@@ -22,6 +22,9 @@ export struct MailPage {
     @Link @Watch('onDetailOpenChanged') mailDetailOpen: boolean;
     onBack: () => void = () => {};
 
+    // 沉浸式布局下页面铺到物理屏底，列表末尾要让出一次手势区，否则最后一条永远差一截
+    @StorageProp('insetBottom') private insetBottom: number = 0;
+
     @State private detail: MailDetail | null = null;
     @State private detailLoading: boolean = false;
     @State private detailError: string = '';
@@ -74,7 +77,7 @@ export struct MailPage {
                         .width('100%')
                         .edgeEffect(EdgeEffect.Spring)
                         .scrollBar(BarState.Off)
-                        .padding({ left: Space.md, right: Space.md, bottom: Space.lg })
+                        .padding({ left: Space.md, right: Space.md, bottom: Space.lg + this.insetBottom })
                         .onAppear(() => {
                             // 列表重建（详情返回）后恢复浏览位置：详情打开前保存的偏移只消费一次
                             if (this.listRestoreOffset > 0) {

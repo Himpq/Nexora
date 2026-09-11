@@ -17,6 +17,10 @@ struct Index {
     @State private ready: boolean = false;
     @State private loggedIn: boolean = false;
 
+    // 沉浸式布局下系统不再替页面避让状态栏，避让高度由 EntryAbility 量好下发。
+    // 这里是应用唯一根节点，顶部垫付一次即对全部页面生效，业务页面无需各自处理。
+    @StorageProp('insetTop') private insetTop: number = 0;
+
     aboutToAppear(): void {
         this.bootstrap();
     }
@@ -65,7 +69,8 @@ struct Index {
         }
         .width('100%')
         .height('100%')
-        // background 会把背景绘制延伸到系统手势区，但不会改变页面子组件的安全区排版。
+        // 顶部让出状态栏；底部不再让出，页面一路铺到物理屏底（手势区由页面底色接管）
+        .padding({ top: this.insetTop })
         .background($r('app.color.bg_page'));
     }
 

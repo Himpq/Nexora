@@ -27,7 +27,6 @@ Write-Host '=== NexoraApp 构建 ===' -ForegroundColor Cyan
 # 停止 daemon
 Write-Host '[1/4] 停止 hvigor daemon...' -ForegroundColor Yellow
 & $NODE $HVIGORW --stop-daemon 2>&1 | Out-Null
-$global:LASTEXITCODE = 0
 
 # 清理
 if ($Clean) {
@@ -41,11 +40,20 @@ if ($Clean) {
     Write-Host '[2/4] 跳过清理（增量构建）' -ForegroundColor Gray
 }
 
-# 构建
+# 构建：hvigorw 由子进程输出到控制台，必须显式落盘才能用于失败判定（仅看退出码会漏报编译错误）
 Write-Host '[3/4] 构建 HAP...' -ForegroundColor Yellow
-& $NODE $HVIGORW assembleHap --mode module
-if ($LASTEXITCODE -ne 0) {
-    Write-Host '  构建失败!' -ForegroundColor Red
+& $NODE $HVIGORW assembleHap --mode module 2>&1 | Tee-Object -FilePath "$PROJECT\build_log.txt"
+$buildExit = $LASTEXITCODE
+
+$logText = Get-Content "$PROJECT\build_log.txt" -Raw -ErrorAction SilentlyContinue
+$hasCompilerError = $logText -match 'ArkTS Compiler Error|BUILD FAILED|FAILURE: Build' -or $logText -match 'COMPILE RESULT:FAIL'
+
+if ($buildExit -ne 0 -or $hasCompilerError) {
+    Write-Host "  构建失败! 详情见 build_log.txt（exit=$buildExit）" -ForegroundColor Red
+    if ($hasCompilerError) {
+        Select-String -Path "$PROJECT\build_log.txt" -Pattern 'Error Message:|COMPILE RESULT' |
+            Select-Object -First 30 | ForEach-Object { Write-Host "    $($_.Line.Trim())" -ForegroundColor DarkYellow }
+    }
     exit 1
 }
 Write-Host '  构建成功' -ForegroundColor Green

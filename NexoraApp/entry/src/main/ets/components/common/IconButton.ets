@@ -10,6 +10,8 @@ export struct IconButton {
     @Prop buttonSize: number = Size.touchTarget;
     @Prop tint: ResourceColor = $r('app.color.icon_secondary');
     @Prop bg: ResourceColor = Color.Transparent;
+    // 按压底色默认走系统色；阅读器等固定色板场景需传入自己的下沉色
+    @Prop pressedBg: ResourceColor = $r('app.color.bg_pressed');
     @Prop isEnabled: boolean = true;
     onTap: () => void = () => {};
 
@@ -26,7 +28,7 @@ export struct IconButton {
         .height(this.buttonSize)
         .justifyContent(FlexAlign.Center)
         .borderRadius(this.buttonSize / 2)
-        .backgroundColor(this.pressed ? $r('app.color.bg_pressed') : this.bg)
+        .backgroundColor(this.pressed ? this.pressedBg : this.bg)
         .opacity(this.isEnabled ? 1 : 0.35)
         .scale({ x: this.pressed ? PressScale.pressed : PressScale.normal, y: this.pressed ? PressScale.pressed : PressScale.normal })
         .animation({ duration: Motion.durationPress, curve: Motion.press })

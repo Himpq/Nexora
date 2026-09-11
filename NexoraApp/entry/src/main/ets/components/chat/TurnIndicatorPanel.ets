@@ -12,9 +12,9 @@ const PREVIEW_WIDTH: number = 200;
 @Component
 export struct TurnIndicatorPanel {
     // 总轮次数（用户消息条数）
-    @Prop @Watch('onPropsChange') turnCount: number;
-    // 当前激活轮次索引（-1 表示无）
-    @Prop @Watch('onPropsChange') activeIndex: number;
+    @Prop @Watch('onTurnCountChange') turnCount: number;
+    // 当前激活轮次索引（-1 表示无）：滚动跨过用户消息时高频变化
+    @Prop @Watch('onActiveIndexChange') activeIndex: number;
     // 跳转回调：传入轮次索引
     onJump: (index: number) => void = () => {};
     // 按需获取预览文本列表
@@ -22,7 +22,9 @@ export struct TurnIndicatorPanel {
 
     @State private expanded: boolean = false;
     @State private previews: string[] = [];
+    // 横线窗口：只渲染激活轮次附近的 PANEL_MAX_LINES 条（key + 起始索引）
     @State private lineKeys: string[] = [];
+    @State private lineStart: number = 0;
     // 预览浮层显隐动画：始终挂载，用 width+opacity 属性动画控制（避免 if 卸载退场动画失效）
     @State private previewWidth: number = 0;
     @State private previewOpacity: number = 0;
@@ -31,27 +33,56 @@ export struct TurnIndicatorPanel {
     private previewScroller: Scroller = new Scroller();
 
     aboutToAppear(): void {
-        this.rebuildLineKeys();
+        this.rebuildLineWindow();
         this.previews = this.onRequirePreviews();
     }
 
-    // turnCount 或 activeIndex 变化时同步刷新横线 key 和预览列表，
-    // 确保分块加载更多消息后预览列表与实际消息一致
-    private onPropsChange(): void {
-        this.rebuildLineKeys();
+    // 轮次数变化（发新消息 / 补载历史）才刷新横线窗口与预览列表
+    private onTurnCountChange(): void {
+        this.rebuildLineWindow();
         this.previews = this.onRequirePreviews();
     }
 
-    private rebuildLineKeys(): void {
-        const keys: string[] = [];
-        for (let i: number = 0; i < this.turnCount; i++) {
-            keys.push('turn_' + i);
+    // 激活轮次变化（快速滚动跨过用户消息时每轮触发一次）：
+    // 只重建窗口内最多 8 条横线，绝不重扫消息生成预览。
+    // 旧实现把 activeIndex 编进全部横线的 key 并在此 O(n) 重扫消息刷新预览，
+    // 长会话下每次跨过用户消息都会整体销毁重建几百条横线 → 滚动突然卡顿、指示条跳动
+    private onActiveIndexChange(): void {
+        this.rebuildLineWindow();
+    }
+
+    // 重建横线窗口：仅保留激活轮次附近 PANEL_MAX_LINES 条，
+    // 窗口起点夹紧在 [0, turnCount - size]，保证列表头尾不露出空白
+    private rebuildLineWindow(): void {
+        const total: number = this.turnCount;
+        const size: number = Math.min(total, PANEL_MAX_LINES);
+
+        if (size <= 0) {
+            this.lineStart = 0;
+            this.lineKeys = [];
+            return;
         }
+
+        let start: number = 0;
+
+        if (this.activeIndex >= 0) {
+            start = this.activeIndex - Math.floor((size - 1) / 2);
+        }
+
+        start = Math.max(0, Math.min(start, total - size));
+        this.lineStart = start;
+
+        const keys: string[] = [];
+
+        for (let i: number = 0; i < size; i++) {
+            keys.push('turn_' + (start + i));
+        }
+
         this.lineKeys = keys;
     }
 
     // 展开：先刷新预览列表，再动画展开宽度+透明度，布局就绪后滚动到当前轮次；收起：反向动画
-    // 预览列表缓存于 @State previews：onPropsChange 在 turnCount/activeIndex 变化时同步刷新，
+    // 预览列表缓存于 @State previews：turnCount 变化（发消息/补载历史）时刷新，
     // 展开时再刷新一次确保内容最新；ForEach 监听 @State previews 触发重建
     private toggleExpand(): void {
         if (this.expanded) {
@@ -121,10 +152,11 @@ export struct TurnIndicatorPanel {
                             .width('100%')
                             .height(LINE_HEIGHT)
                             .borderRadius(LINE_HEIGHT / 2)
-                            .backgroundColor(index === this.activeIndex
+                            .backgroundColor(this.lineStart + index === this.activeIndex
                                 ? $r('app.color.brand_primary')
                                 : $r('app.color.divider'));
-                    }, (key: string, index: number) => key + '_' + this.activeIndex);
+                    // key 并入高亮态：ForEach 同 key 行不会重跑构建，高亮切换需靠 key 变化重建该行
+                    }, (key: string, index: number) => key + '_' + (this.lineStart + index === this.activeIndex ? 'on' : 'off'));
                 }
                 .width('100%')
                 .translate({ y: this.computeLineTranslate() })
@@ -143,7 +175,7 @@ export struct TurnIndicatorPanel {
         });
     }
 
-    // 计算横线列表平移量：使高亮线尽量居中，列表头尾贴边不露出空白
+    // 计算横线窗口平移量：使高亮线尽量居中，窗口起点已夹紧保证头尾贴边不露空白
     private computeLineTranslate(): number {
         if (this.turnCount <= PANEL_MAX_LINES || this.activeIndex < 0) {
             return 0;
@@ -151,20 +183,10 @@ export struct TurnIndicatorPanel {
 
         const itemStep: number = LINE_HEIGHT + LINE_GAP;
         const centerOffset: number = (PANEL_MAX_LINES - 1) / 2;
-        let translate: number = -(this.activeIndex - centerOffset) * itemStep;
+        const position: number = this.activeIndex - this.lineStart;
+        const translate: number = (centerOffset - position) * itemStep;
 
-        // 限制平移范围：列表头尾不露出空白
-        const minTranslate: number = -((this.turnCount - PANEL_MAX_LINES) * itemStep);
-
-        if (translate > 0) {
-            translate = 0;
-        }
-
-        if (translate < minTranslate) {
-            translate = minTranslate;
-        }
-
-        return translate;
+        return translate > 0 ? 0 : translate;
     }
 
     // 预览浮层：始终挂载，用 width+opacity 动画控制显隐（避免 if 卸载退场动画偏移）

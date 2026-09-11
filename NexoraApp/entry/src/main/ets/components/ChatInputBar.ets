@@ -15,6 +15,8 @@ export struct ChatInputBar {
     // 模型展示 chip：通过 @StorageProp 从 AppStorage 获取模型名。
     // AppStorage 是应用级存储总线，不依赖组件树层级，比 @Provide/@Consume 更可靠
     @StorageProp('inputModelLabel') @Watch('onModelLabelChanged') inputModelLabel: string = '选择模型';
+    // 沉浸式布局下页面一路铺到物理屏底，输入栏必须自己让开手势区
+    @StorageProp('insetBottom') private insetBottom: number = 0;
     @Prop streaming: boolean = false;
     @Prop placeholder: string = '给 Nexora 发送消息…';
     onSend: () => void = () => {};
@@ -95,6 +97,8 @@ export struct ChatInputBar {
         }
         .width('100%')
         .padding({ left: Space.lg, right: Space.xs, top: Space.lg, bottom: Space.md })
+        // 悬浮卡片形态：整块抬到手势区之上，卡片下方留白由页面底色接管
+        .margin({ bottom: this.insetBottom })
         .borderRadius(Radius.xl)
         .backgroundColor($r('app.color.bg_card'))
         .shadow({

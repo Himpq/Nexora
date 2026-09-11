@@ -12,6 +12,15 @@ const TAG: string = 'VoiceRecognizer';
 const MICROPHONE_PERMISSION: string = 'ohos.permission.MICROPHONE';
 const AUDIO_PACKET_SIZE: number = 1280;
 const AUDIO_PACKET_INTERVAL_MS: number = 40;
+// 收尾阶段音频泵间隔：队列有积压时快速送完再 finish，避免停止后等待数秒才出结果
+const FINISH_PUMP_INTERVAL_MS: number = 5;
+// 引擎启动超时：部分设备/模拟器上 startListening 不会回调 onStart，
+// 不设超时会让整个启动链路永久挂起（麦克风也不会启动）
+const ENGINE_START_TIMEOUT_MS: number = 8000;
+// 长语音模式必须显式给最大时长，否则默认 20 秒即中断
+const MAX_AUDIO_DURATION_MS: number = 3600000;
+// 引擎就绪前最多缓存的音频包（约 4 秒），防止引擎异常时无界堆积
+const MAX_PENDING_AUDIO_PACKETS: number = 100;
 
 export interface VoiceRecognitionCallbacks {
     onText: (text: string, isFinal: boolean) => void;
@@ -34,11 +43,18 @@ export class VoiceRecognizerService {
     private finishing: boolean = false;
     private engineFinishRequested: boolean = false;
     private lastLevelAt: number = 0;
+    private engineStartTimer: number = -1;
 
-    // 启动一次中文长语音识别，并在引擎确认就绪后才开始采集和发送音频。
+    // 启动一次中文长语音识别：先建引擎与采集器，再立即开始采集并送入音频；
+    // 引擎 onStart 只用于解锁音频泵，绝不阻塞麦克风启动（否则引擎异常时收不到任何音频）
     async start(context: common.UIAbilityContext, callbacks: VoiceRecognitionCallbacks): Promise<string> {
         if (this.active) {
             return '语音识别正在进行';
+        }
+
+        // 系统能力检查：模拟器上不存在该能力，继续执行只会挂在等 onStart 上
+        if (!canIUse('SystemCapability.AI.SpeechRecognizer')) {
+            return '当前设备不支持语音识别(模拟器不可用)';
         }
 
         this.callbacks = callbacks;
@@ -82,6 +98,11 @@ export class VoiceRecognizerService {
                     this.engineStartResolver = resolve;
                 }
             );
+            this.engineStartTimer = setTimeout(() => {
+                this.engineStartTimer = -1;
+                this.resolveEngineStart('语音识别启动超时，请重试');
+            }, ENGINE_START_TIMEOUT_MS);
+
             this.engine.startListening({
                 sessionId: this.sessionId,
                 audioInfo: {
@@ -89,22 +110,37 @@ export class VoiceRecognizerService {
                     sampleRate: 16000,
                     soundChannel: 1,
                     sampleBit: 16
+                },
+                extraParams: {
+                    // 1 = 外部写入音频流模式（手动 writeAudio）；长语音必须显式声明最大时长
+                    recognitionMode: 1,
+                    maxAudioDuration: MAX_AUDIO_DURATION_MS
                 }
             });
 
-            const engineStartError: string = await engineStartPromise;
+            // 立即开始采集：音频信号/波形不依赖引擎就绪，引擎未就绪前的数据先入队，onStart 后统一泵出
+            await currentCapturer.start();
 
-            if (engineStartError.length > 0 || !this.active || this.engine === undefined) {
+            const engineStartError: string = await engineStartPromise;
+            this.clearEngineStartTimer();
+
+            // 用户中途结束/取消：按正常收尾返回，不作为错误提示
+            if (!this.active || engineStartError === '语音识别已结束') {
+                this.releaseResources();
+                return '';
+            }
+
+            if (engineStartError.length > 0 || this.engine === undefined) {
                 this.releaseResources();
                 return engineStartError.length > 0 ? engineStartError : '语音识别启动失败';
             }
 
-            await currentCapturer.start();
             hilog.info(DOMAIN, TAG, 'voice recognition started, session=%{public}s', this.sessionId);
             return '';
         } catch (error) {
             const message: string = this.formatError(error as BusinessError);
             hilog.error(DOMAIN, TAG, 'voice recognition start failed: %{public}s', message);
+            this.clearEngineStartTimer();
             this.resolveEngineStart(message);
             this.releaseResources();
             return message;
@@ -136,6 +172,8 @@ export class VoiceRecognizerService {
         }
 
         this.flushPendingAudio();
+        // 收尾阶段切换为快速泵：先停旧节奏，避免积压音频按实时速度拖延 finish
+        this.stopAudioPump();
 
         if (this.audioQueue.length === 0) {
             this.finishEngine();
@@ -205,7 +243,10 @@ export class VoiceRecognizerService {
                 hilog.info(DOMAIN, TAG, 'recognition engine started, session=%{public}s message=%{public}s',
                     sessionId, eventMessage);
                 this.engineStarted = true;
+                this.clearEngineStartTimer();
                 this.resolveEngineStart('');
+                // 引擎就绪：把等待期间缓存的音频统一泵出，避免开头语音被丢弃
+                this.startAudioPump();
                 this.notifyState(true, '正在识别…');
             },
             onEvent: (_sessionId: string, _eventCode: number, _eventMessage: string): void => {},
@@ -240,12 +281,12 @@ export class VoiceRecognizerService {
     }
 
     private forwardAudio(buffer: ArrayBuffer): void {
-        if (!this.active || this.finishing || !this.engineStarted || this.engine === undefined ||
-            this.sessionId.length === 0) {
+        if (!this.active || this.finishing || this.engine === undefined || this.sessionId.length === 0) {
             return;
         }
 
         try {
+            // 波形采样不依赖引擎状态：引擎未就绪时也要反映真实麦克风信号
             this.notifyLevel(this.calculateSignalLevel(buffer));
             const incoming: Uint8Array = new Uint8Array(buffer);
             const merged: Uint8Array = new Uint8Array(this.pendingAudio.length + incoming.length);
@@ -260,7 +301,15 @@ export class VoiceRecognizerService {
             }
 
             this.pendingAudio = merged.slice(offset);
-            this.startAudioPump();
+
+            // 引擎异常时采集仍在继续：队列设上限，超出丢弃最早的数据包
+            while (this.audioQueue.length > MAX_PENDING_AUDIO_PACKETS) {
+                this.audioQueue.shift();
+            }
+
+            if (this.engineStarted) {
+                this.startAudioPump();
+            }
         } catch (error) {
             const message: string = this.formatError(error as BusinessError);
             hilog.error(DOMAIN, TAG, 'audio forwarding failed: %{public}s', message);
@@ -297,7 +346,7 @@ export class VoiceRecognizerService {
         this.writeNextAudioPacket();
         this.audioSendTimer = setInterval(() => {
             this.writeNextAudioPacket();
-        }, AUDIO_PACKET_INTERVAL_MS);
+        }, this.finishing ? FINISH_PUMP_INTERVAL_MS : AUDIO_PACKET_INTERVAL_MS);
     }
 
     private flushPendingAudio(): void {
@@ -363,6 +412,14 @@ export class VoiceRecognizerService {
         }
     }
 
+    // 清除引擎启动超时定时器：onStart/失败/释放时统一调用，避免超时回调串到下一轮会话
+    private clearEngineStartTimer(): void {
+        if (this.engineStartTimer >= 0) {
+            clearTimeout(this.engineStartTimer);
+            this.engineStartTimer = -1;
+        }
+    }
+
     private calculateSignalLevel(buffer: ArrayBuffer): number {
         const samples: Int16Array = new Int16Array(buffer);
 
@@ -415,6 +472,7 @@ export class VoiceRecognizerService {
         this.pendingAudio = new Uint8Array(0);
         this.audioQueue = [];
         this.stopAudioPump();
+        this.clearEngineStartTimer();
         this.lastLevelAt = 0;
         this.resolveEngineStart('语音识别已结束');
 
