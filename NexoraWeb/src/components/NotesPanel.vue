@@ -3,7 +3,8 @@
 
     设计:
       - 复用原版全局样式类(.notes-panel / -head / -notebook-row / -list / note-item 等)
-      - notebook 选择为自建下拉(禁用原生 select);新建/清空/删除/下载对齐原版按钮
+      - notebook 选择为自建下拉(禁用原生 select),开合经 GDDP 浮层协调器统一管理
+      - 新建/清空/删除/下载对齐原版按钮
       - 云同步:打开时 GET /api/notes/store,变更后防抖 PUT(对齐原版 saveNotesToStorage)
       - 拖拽/resize/位置持久化与时间线面板同一套交互
 -->
@@ -103,6 +104,7 @@
     import { fetchNotesStore, saveNotesStore } from '@/api/notes'
     import { showConfirm, showPrompt } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
+    import { closePopover, openPopover, overlay } from '@/ui/overlay'
     import { usePanelDrag } from '@/ui/usePanelDrag'
 
     import MarkdownView from './MarkdownView.vue'
@@ -120,6 +122,9 @@
     const LAYOUT_KEY = 'nexora_notes_panel_layout_v2'
     const SYNC_DEBOUNCE_MS = 800
 
+    /** notebook 下拉浮层 id(GDDP 协调器内全局唯一) */
+    const NOTEBOOK_POPOVER_ID = 'notes-notebook'
+
     const store = ref<NotesStore>({
         activeNotebookId: 'nb_default',
         notebooks: [{ id: 'nb_default', name: '默认笔记本', ts: Math.floor(Date.now() / 1000) }],
@@ -127,8 +132,10 @@
         updatedAt: 0,
     })
     const loading = ref(false)
-    const notebookMenuOpen = ref(false)
     const notebookSelectWrapRef = ref<HTMLElement | null>(null)
+
+    /** notebook 下拉是否打开:由浮层协调器统一保证互斥与外部点击关闭 */
+    const notebookMenuOpen = computed(() => overlay.popover === NOTEBOOK_POPOVER_ID)
 
     /** 面板根元素(模板 ref 绑定;拖拽中由 usePanelDrag 直写 style) */
     const panelEl = ref<HTMLElement | null>(null)
@@ -181,14 +188,10 @@
             if (opened) {
                 restoreLayout()
                 void load()
-
-                document.addEventListener('click', handleOutsideClick)
             } else {
                 stopPolling()
                 resetDragState()
-                notebookMenuOpen.value = false
-
-                document.removeEventListener('click', handleOutsideClick)
+                closePopover(NOTEBOOK_POPOVER_ID)
             }
         }
     )
@@ -196,21 +199,8 @@
     onBeforeUnmount(() => {
         stopPolling()
         resetDragState()
-        document.removeEventListener('click', handleOutsideClick)
+        closePopover(NOTEBOOK_POPOVER_ID)
     })
-
-    /** 外部点击关闭 notebook 下拉(自建下拉统一处理) */
-    function handleOutsideClick(event: MouseEvent): void {
-        const target = event.target as HTMLElement | null
-
-        if (!target) {
-            return
-        }
-
-        if (notebookSelectWrapRef.value && !notebookSelectWrapRef.value.contains(target)) {
-            notebookMenuOpen.value = false
-        }
-    }
 
     /** 加载云端 store(对齐原版 fetchNotesStoreFromCloud) */
     async function load(): Promise<void> {
@@ -265,15 +255,21 @@
         }
     }
 
-    /** notebook 下拉切换 */
+    /** notebook 下拉切换:经 GDDP 协调器开合 */
     function toggleNotebookMenu(): void {
-        notebookMenuOpen.value = !notebookMenuOpen.value
+        if (notebookMenuOpen.value) {
+            closePopover(NOTEBOOK_POPOVER_ID)
+
+            return
+        }
+
+        openPopover(NOTEBOOK_POPOVER_ID, notebookSelectWrapRef.value)
     }
 
     /** 切换当前笔记本 */
     function selectNotebook(id: string): void {
         store.value.activeNotebookId = id
-        notebookMenuOpen.value = false
+        closePopover(NOTEBOOK_POPOVER_ID)
 
         scheduleSync()
     }

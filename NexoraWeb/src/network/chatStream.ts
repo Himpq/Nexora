@@ -11,9 +11,9 @@
  *     (attachSnapshotSource)提供,避免本层依赖 UI store
  *
  * 恢复时序约定(宿主遵守,见 ChatView.onMounted):
- *   1. takeSnapshot() + store.restorePendingStream() 【必须先于任何会话加载/跳转】
- *   2. 再按 ?cid= / 恢复会话打开对话(openConversation 内合并可见列表)
- *   3. 最后 resume() 续播剩余流
+ *   1. takeSnapshot() + 逐条 store.restorePendingStream() 【必须先于任何会话加载/跳转】
+ *   2. 再按 ?cid= / 主恢复会话打开对话(openConversation 内合并可见列表)
+ *   3. 最后逐条 resume() 续播剩余流
  *   顺序颠倒会导致"刷新后可见列表没有恢复内容、流只在缓冲里跑"。
  */
 
@@ -98,13 +98,16 @@ export interface ChatStreamSnapshot {
     assistant: ChatMessage
 }
 
-/** 快照内容来源:宿主(store)提供进行中流的缓冲上下文;无活动流返回 null */
-export type ChatStreamSnapshotSource = () => {
+/** 宿主提供的单条活动流缓冲上下文(网络层补齐 streamId/lastSeq 后落盘) */
+export interface ChatStreamSnapshotContext {
     conversationId: string
     targetIndex: number
     assistant: ChatMessage
     userMessage?: ChatMessage
-} | null
+}
+
+/** 快照内容来源:宿主(store)提供全部进行中流的缓冲上下文;无活动流返回空数组 */
+export type ChatStreamSnapshotSource = () => ChatStreamSnapshotContext[]
 
 const SNAPSHOT_KEY = 'nexora_active_stream_v1'
 
@@ -167,36 +170,41 @@ export class ChatStreamClient {
 
     /**
      * 节流持久化活动流快照(sessionStorage):
-     * 刷新后据此恢复分离缓冲并通过 resume 续播;无活动流/内容源时跳过。
-     * 多会话并发时按快照所属会话查找对应 streamId/lastSeq。
+     * 刷新后据此恢复全部并行流的分离缓冲并通过 resume 续播;无活动流时清除快照。
+     * 多会话并发时逐条与会话传输上下文(streamId/lastSeq)配对。
      */
     persistSnapshot(force = false): void {
-        const context = this.snapshotSource?.() || null
-
-        if (!context) {
-            return
-        }
-
-        const key = String(context.conversationId || '').trim() || this.FALLBACK_KEY
-        const streamCtx = this.activeStreams.get(key)
-
-        if (!streamCtx || !streamCtx.streamId) {
-            return
-        }
+        const contexts = this.snapshotSource?.() || []
 
         const buildAndWrite = () => {
-            const snapshot: ChatStreamSnapshot = {
-                conversationId: context.conversationId,
-                streamId: streamCtx.streamId,
-                lastSeq: streamCtx.lastSeq,
-                targetIndex: context.targetIndex,
-                modelName: context.assistant.model_name,
-                userMessage: context.userMessage,
-                assistant: { ...context.assistant },
-            }
+            const snapshots: ChatStreamSnapshot[] = []
+
+            contexts.forEach((context) => {
+                const key = String(context.conversationId || '').trim() || this.FALLBACK_KEY
+                const streamCtx = this.activeStreams.get(key)
+
+                // 仅持久化仍有真实传输上下文的流:已完成/已断开的缓冲不进入快照
+                if (!streamCtx || !streamCtx.streamId) {
+                    return
+                }
+
+                snapshots.push({
+                    conversationId: context.conversationId,
+                    streamId: streamCtx.streamId,
+                    lastSeq: streamCtx.lastSeq,
+                    targetIndex: context.targetIndex,
+                    modelName: context.assistant.model_name,
+                    userMessage: context.userMessage,
+                    assistant: { ...context.assistant },
+                })
+            })
 
             try {
-                sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot))
+                if (snapshots.length > 0) {
+                    sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshots))
+                } else {
+                    sessionStorage.removeItem(SNAPSHOT_KEY)
+                }
             } catch {
                 // 配额/隐私模式失败不阻塞主流程:仅丢失"刷新恢复"能力
             }
@@ -222,33 +230,70 @@ export class ChatStreamClient {
         }
     }
 
-    /** 读取并清除 sessionStorage 中的活动流快照(启动恢复入口) */
-    takeSnapshot(): ChatStreamSnapshot | null {
-        let snapshot: ChatStreamSnapshot | null = null
+    /** 读取并清除 sessionStorage 中的全部活动流快照(启动恢复入口) */
+    takeSnapshot(): ChatStreamSnapshot[] {
+        let snapshots: ChatStreamSnapshot[] = []
 
         try {
             const raw = sessionStorage.getItem(SNAPSHOT_KEY)
 
             if (raw) {
-                const parsed = JSON.parse(raw) as ChatStreamSnapshot
+                const parsed = JSON.parse(raw) as unknown
 
-                if (parsed && parsed.conversationId && parsed.streamId && parsed.assistant) {
-                    snapshot = parsed
+                if (Array.isArray(parsed)) {
+                    snapshots = parsed.filter((item): item is ChatStreamSnapshot => {
+                        const snapshot = item as ChatStreamSnapshot
+
+                        return !!snapshot && !!snapshot.conversationId && !!snapshot.streamId && !!snapshot.assistant
+                    })
                 }
             }
         } catch {
-            snapshot = null
+            snapshots = []
         }
 
         this.clearSnapshot()
 
-        return snapshot
+        return snapshots
     }
 
-    /** 清除活动流快照(流结束/缓冲被消费后调用,避免陈旧快照误触发恢复) */
-    clearSnapshot(): void {
+    /**
+     * 清除活动流快照:
+     * 不传会话 ID 时清除全部;传 ID 时仅移除该会话条目,保留其他并行流的恢复能力。
+     */
+    clearSnapshot(conversationId?: string): void {
         try {
-            sessionStorage.removeItem(SNAPSHOT_KEY)
+            if (!conversationId) {
+                sessionStorage.removeItem(SNAPSHOT_KEY)
+
+                return
+            }
+
+            const raw = sessionStorage.getItem(SNAPSHOT_KEY)
+
+            if (!raw) {
+                return
+            }
+
+            const parsed = JSON.parse(raw) as unknown
+
+            if (!Array.isArray(parsed)) {
+                sessionStorage.removeItem(SNAPSHOT_KEY)
+
+                return
+            }
+
+            const remaining = parsed.filter((item) => {
+                const snapshot = item as ChatStreamSnapshot
+
+                return String(snapshot?.conversationId || '') !== conversationId
+            })
+
+            if (remaining.length > 0) {
+                sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(remaining))
+            } else {
+                sessionStorage.removeItem(SNAPSHOT_KEY)
+            }
         } catch {
             // 忽略
         }

@@ -15,6 +15,11 @@
     position: relative;
 }
 
+/*
+ * 开合显隐与动效由 GDDP panels.css 统一接管(display:flex + visibility/
+ * opacity/transform 过渡);此处禁止再声明 display / z-index,否则本文件晚于
+ * gddp.css 加载会覆盖 GDDP 规则,导致开合动画失效(历史回归点)。
+ */
 .notes-panel{
     position: fixed;
     right: 20px;
@@ -28,14 +33,8 @@
     border: 1px solid var(--color-border);
     border-radius: 14px;
     box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
-    z-index: 3600;
-    display: none;
     flex-direction: column;
     overflow: hidden;
-}
-
-.notes-panel.active{
-    display: flex;
 }
 
 .notes-panel.dragging,.notes-panel.resizing{
@@ -48,7 +47,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 10px 12px;
-    border-bottom: 1px solid #edf2f9;
+    border-bottom: 1px solid var(--color-border);
     background: linear-gradient(180deg, var(--color-bg-sunken) 0%, var(--color-bg-elevated) 100%);
     cursor: move;
     touch-action: none;
@@ -100,7 +99,7 @@
 
 .notes-notebook-row{
     padding: 9px 10px;
-    border-bottom: 1px solid #edf2f9;
+    border-bottom: 1px solid var(--color-border);
     background: var(--color-bg-sunken);
     display: flex;
     align-items: center;
@@ -193,11 +192,11 @@
 }
 
 .note-item.drag-over-top{
-    box-shadow: inset 0 2px 0 #0f172a;
+    box-shadow: inset 0 2px 0 var(--color-text-primary);
 }
 
 .note-item.drag-over-bottom{
-    box-shadow: inset 0 -2px 0 #0f172a;
+    box-shadow: inset 0 -2px 0 var(--color-text-primary);
 }
 
 .note-del-btn{
@@ -223,7 +222,7 @@
 }
 
 .note-del-btn:hover{
-    color: #ef4444;
+    color: var(--color-danger-text);
 }
 
 .note-text{
@@ -353,9 +352,9 @@
     cursor: nwse-resize;
     touch-action: none;
     background:
-      linear-gradient(135deg, transparent 40%, #94a3b8 40%, #94a3b8 48%, transparent 48%),
-      linear-gradient(135deg, transparent 58%, #94a3b8 58%, #94a3b8 66%, transparent 66%),
-      linear-gradient(135deg, transparent 76%, #94a3b8 76%, #94a3b8 84%, transparent 84%);
+      linear-gradient(135deg, transparent 40%, var(--color-border-strong) 40%, var(--color-border-strong) 48%, transparent 48%),
+      linear-gradient(135deg, transparent 58%, var(--color-border-strong) 58%, var(--color-border-strong) 66%, transparent 66%),
+      linear-gradient(135deg, transparent 76%, var(--color-border-strong) 76%, var(--color-border-strong) 84%, transparent 84%);
     border-bottom-right-radius: 12px;
     opacity: 0.68;
 }
