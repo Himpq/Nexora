@@ -12,6 +12,8 @@ export class StorageKey {
     static readonly enableThinking: string = 'enable_thinking';
     static readonly enableWebSearch: string = 'enable_web_search';
     static readonly forceTools: string = 'force_tools';
+    // question 回答锁：JSON 字典 { "conversationId::cardId": "answer" }，与 Web localStorage 同构
+    static readonly questionLocks: string = 'question_locks';
 }
 
 // ---------- 领域模型 ----------

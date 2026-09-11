@@ -441,6 +441,21 @@ export class AppState {
         return '';
     }
 
+    // question 回答锁：后端不持久化作答态，App 重启后靠本地锁恢复已回答卡片
+    async loadQuestionLocks(): Promise<string> {
+        if (this.context === null) {
+            return '{}';
+        }
+
+        return PreferencesUtil.loadQuestionLocks(this.context);
+    }
+
+    async saveQuestionLocks(storeJson: string): Promise<void> {
+        if (this.context !== null) {
+            await PreferencesUtil.saveQuestionLocks(this.context, storeJson);
+        }
+    }
+
     // ---------- 邮件 ----------
     // 切换邮箱视图：切箱即清空搜索与列表并重新拉取，避免两箱数据互串
     setMailBox(box: 'inbox' | 'sent'): void {

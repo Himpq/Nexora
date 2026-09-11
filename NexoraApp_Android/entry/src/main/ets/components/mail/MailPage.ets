@@ -327,8 +327,6 @@ export struct MailPage {
                         .width('100%')
                         .layoutWeight(1)
                         .javaScriptAccess(false)
-                        .darkMode(WebDarkMode.Off)
-                        .forceDarkAccess(false)
                         .backgroundColor('#FFFFFF')
                         .onPageEnd((event: OnPageEndEvent) => {
                             hilog.info(DOMAIN, TAG, '[mailWeb] page end, url head=%{public}s', event.url.substring(0, 120));

@@ -63,6 +63,24 @@ export interface MessageListResult {
     total: number;
 }
 
+// 地图渲染配置：GET /api/map/provider → map_provider.map_renderer_config
+export interface MapRendererConfigResult {
+    success: boolean;
+    message: string;
+    provider: string;
+    baiduMapAk: string;
+    baiduMapVersion: string;
+    tiandituMapTk: string;
+    tiandituMapVersion: string;
+}
+
+// 地图 scene：GET /api/map/conversations/{cid}/maps/{mapId}/scene
+export interface MapSceneResult {
+    success: boolean;
+    message: string;
+    sceneJson: string;
+}
+
 // 知识库单条详情：GET /api/knowledge/basis/<title>
 export interface KnowledgeDetailResult {
     success: boolean;
@@ -176,6 +194,71 @@ export class ApiService {
             startIndex: startIndex,
             total: Json.number(payload, 'total')
         };
+    }
+
+    // 地图渲染配置：GET /api/map/provider；渲染键嵌在 map_provider.map_renderer_config 一层之下
+    static async fetchMapRendererConfig(): Promise<MapRendererConfigResult> {
+        const result: HttpResult = await HttpUtil.get('/api/map/provider');
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '地图配置');
+
+        if (payload === null) {
+            return {
+                success: false,
+                message: ApiService.describeFailure(result),
+                provider: '',
+                baiduMapAk: '',
+                baiduMapVersion: '',
+                tiandituMapTk: '',
+                tiandituMapVersion: ''
+            };
+        }
+
+        const providerNode: Record<string, Object> | null = Json.object(payload, 'map_provider');
+        const renderer: Record<string, Object> | null = providerNode === null
+            ? null
+            : Json.object(providerNode, 'map_renderer_config');
+
+        if (renderer === null) {
+            return {
+                success: false,
+                message: '地图渲染配置缺失',
+                provider: '',
+                baiduMapAk: '',
+                baiduMapVersion: '',
+                tiandituMapTk: '',
+                tiandituMapVersion: ''
+            };
+        }
+
+        return {
+            success: true,
+            message: '',
+            provider: Json.string(renderer, 'provider'),
+            baiduMapAk: Json.string(renderer, 'baiduMapAk'),
+            baiduMapVersion: Json.string(renderer, 'baiduMapVersion'),
+            tiandituMapTk: Json.string(renderer, 'tiandituMapTk'),
+            tiandituMapVersion: Json.string(renderer, 'tiandituMapVersion')
+        };
+    }
+
+    // 地图 scene：GET /api/map/conversations/{cid}/maps/{mapId}/scene，scene 原样序列化交给渲染器
+    static async fetchMapScene(conversationId: string, mapId: string): Promise<MapSceneResult> {
+        const path: string = '/api/map/conversations/' + encodeURIComponent(conversationId)
+            + '/maps/' + encodeURIComponent(mapId) + '/scene';
+        const result: HttpResult = await HttpUtil.get(path);
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '地图记录');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result), sceneJson: '' };
+        }
+
+        const scene: Record<string, Object> | null = Json.object(payload, 'scene');
+
+        if (scene === null) {
+            return { success: false, message: '地图记录不存在', sceneJson: '' };
+        }
+
+        return { success: true, message: '', sceneJson: JSON.stringify(scene) };
     }
 
     // 模型列表：GET /api/config，兼容数组与字典两种返回形态

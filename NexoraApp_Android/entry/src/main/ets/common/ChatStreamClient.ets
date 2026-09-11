@@ -13,7 +13,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { HttpUtil, HttpResult } from './HttpUtil';
 import { Json } from './JsonUtil';
-import { TokenUsage } from './ChatTypes';
+import { makeToolResultPayload, TokenUsage, ToolResultPayload } from './ChatTypes';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraStream';
@@ -45,6 +45,13 @@ export interface StreamChunk {
     arguments_delta?: string;
     result?: string;
     round?: number;
+    // function_result 双轨展示字段：前端展示轨与结构化媒体（Exa 图片画廊）
+    model_visible_result?: string;
+    display_result?: string;
+    display_model_visible_result?: string;
+    display_media?: Object;
+    // question 帧载荷（question 工具等待用户作答）
+    question?: Object;
     // token_usage 帧字段
     input_tokens?: number;
     output_tokens?: number;
@@ -62,7 +69,8 @@ export interface StreamListener {
     onReasoningDelta: (delta: string) => void;
     onContentDelta: (delta: string) => void;
     onToolCall: (name: string, callId: string, args: string, round: number) => void;
-    onToolResult: (name: string, callId: string, result: string, round: number) => void;
+    onToolResult: (name: string, callId: string, payload: ToolResultPayload, round: number) => void;
+    onQuestion: (callId: string, payload: Object | null, round: number) => void;
     onTokenUsage: (usage: TokenUsage) => void;
     onError: (message: string) => void;
     onComplete: (finalContent: string) => void;
@@ -94,8 +102,9 @@ export interface StreamRequestBody {
     regenerate_index?: number;
 }
 
-export class ChatStreamClient {
-    private streaming: boolean = false;
+// 单条流的会话状态：每条流独立持有，旧流的传输/轮询回调只影响自己，
+// 不会再触碰新流的 finished / buffer 等共享标志（曾导致新流帧被旧回调丢弃）
+class ChatStreamSession {
     private request: http.HttpRequest | null = null;
     private streamId: string = '';
     private conversationId: string = '';
@@ -130,6 +139,10 @@ export class ChatStreamClient {
     // SSE 提前结束（dataEnd/err 未收 [DONE]）但服务端仍在执行时，保存 resolve 让轮询接管到 done 再结束
     private pendingResolve: (() => void) | null = null;
 
+    // openStream 的 resolve：轮询直接判定服务端 done（非 handover 路径）时立即结束 start()，
+    // 否则要等 dataEnd 才释放 streaming 标志，期间用户新发消息会被 start() 的 streaming 守卫静默丢弃
+    private openStreamResolve: (() => void) | null = null;
+
     // 当前流的 listener，供 cancel 在 handover 状态下正确触发 onAborted 收尾
     private currentListener: StreamListener | null = null;
 
@@ -149,17 +162,8 @@ export class ChatStreamClient {
     // 不依赖上游是否补发完整 function_call 帧，卡片实时呈现且最终参数完整
     private toolArgBufs: Map<string, string> = new Map();
 
-    get isStreaming(): boolean {
-        return this.streaming;
-    }
-
     // 发起一次流式对话，返回时流已结束（完成 / 取消 / 出错）
-    async start(options: StreamOptions, listener: StreamListener): Promise<void> {
-        if (this.streaming) {
-            return;
-        }
-
-        this.streaming = true;
+    async run(options: StreamOptions, listener: StreamListener): Promise<void> {
         this.streamId = '';
         this.conversationId = options.conversationId ?? '';
         this.buffer = '';
@@ -179,6 +183,7 @@ export class ChatStreamClient {
         this.renderedContentLen = 0;
         this.renderedReasoningLen = 0;
         this.pendingResolve = null;
+        this.openStreamResolve = null;
         this.currentListener = null;
         this.sseDataStarted = false;
         this.pollerTakeover = false;
@@ -189,18 +194,13 @@ export class ChatStreamClient {
         try {
             await this.openStream(options, listener);
         } finally {
-            this.streaming = false;
             this.request = null;
-            this.stopPoller('start-finally');
+            this.stopPoller('run-finally');
         }
     }
 
     // 取消：先通知后端停流，再本地断开，避免后端继续生成
     cancel(): void {
-        if (!this.streaming) {
-            return;
-        }
-
         this.finished = true;
         this.stopPoller('cancel');
         this.notifyCancel();
@@ -233,6 +233,7 @@ export class ChatStreamClient {
         await new Promise<void>((resolve: () => void) => {
             const request: http.HttpRequest = http.createHttp();
             this.request = request;
+            this.openStreamResolve = resolve;
 
             // 增量到达：按行切分，末行不完整时留在缓冲里等待后续数据。
             // 每块都打日志：若真机观察到 dataReceive 只回调一次且 len=整包体量，
@@ -443,7 +444,7 @@ export class ChatStreamClient {
             return;
         }
 
-        if (!this.streaming || this.finished) {
+        if (this.finished) {
             this.stopPoller('stream-end');
             return;
         }
@@ -480,7 +481,9 @@ export class ChatStreamClient {
         }
     }
 
-    // conversation_id -> stream_id：status 端点按会话返回全部 session（含 done），优先运行中的最新一条
+    // conversation_id -> stream_id：status 端点按会话返回全部 session（含 done）。
+    // 只绑定运行中的最新一条：请求尚未被服务端注册时列表里只有上一条 done session，
+    // 若回落绑定它会重放旧帧并提前判定完成（旧问题卡重复出现、当前回复帧被 finished 守卫丢弃）
     private async resolveStreamIdViaStatus(): Promise<void> {
         const result: HttpResult = await HttpUtil.get(
             '/api/chat/stream/status?conversation_ids=' + encodeURIComponent(this.conversationId));
@@ -499,17 +502,10 @@ export class ChatStreamClient {
         const rows: Object[] = Json.array(payload, 'sessions');
         let runningRow: Record<string, Object> | null = null;
         let runningAt: number = -1;
-        let anyRow: Record<string, Object> | null = null;
-        let anyAt: number = -1;
 
         for (let i: number = 0; i < rows.length; i++) {
             const row: Record<string, Object> = rows[i] as Record<string, Object>;
             const createdAt: number = Json.number(row, 'created_at');
-
-            if (createdAt > anyAt) {
-                anyAt = createdAt;
-                anyRow = row;
-            }
 
             if (Json.string(row, 'status') === 'running' && createdAt > runningAt) {
                 runningAt = createdAt;
@@ -517,18 +513,15 @@ export class ChatStreamClient {
             }
         }
 
-        const pick: Record<string, Object> | null = runningRow !== null ? runningRow : anyRow;
-
-        if (pick === null) {
+        if (runningRow === null) {
             return;
         }
 
-        const sid: string = Json.string(pick, 'stream_id');
+        const sid: string = Json.string(runningRow, 'stream_id');
 
         if (sid.length > 0) {
             this.streamId = sid;
-            hilog.info(DOMAIN, TAG, '[poll] stream resolved sid=%{public}s status=%{public}s',
-                sid, Json.string(pick, 'status'));
+            hilog.info(DOMAIN, TAG, '[poll] stream resolved sid=%{public}s status=running', sid);
         }
     }
 
@@ -582,7 +575,9 @@ export class ChatStreamClient {
         // content/reasoning 已上面差量渲染，这里只处理工具生命周期帧，避免工具卡丢失
         this.dispatchRenderChunks(payload, listener);
 
-        // 服务端 done：触发收尾，resolve 结束本次流
+        // 服务端 done：触发收尾，resolve 结束本次流。
+        // 非 handover 情况下 openStream 仍在等 dataEnd，这里必须立即 resolve 释放 streaming，
+        // 否则用户此时发送下一条会被 start() 的 streaming 守卫静默丢弃，界面永久卡在"生成中"
         if (status === 'done' && !this.finished) {
             hilog.info(DOMAIN, TAG,
                 '[poll] server done contentLen=%{public}d reasoningLen=%{public}d, completing',
@@ -595,6 +590,10 @@ export class ChatStreamClient {
                 const resolve: () => void = this.pendingResolve;
                 this.pendingResolve = null;
                 resolve();
+            } else if (this.openStreamResolve !== null) {
+                const finishResolve: () => void = this.openStreamResolve;
+                this.openStreamResolve = null;
+                finishResolve();
             }
         }
     }
@@ -620,11 +619,22 @@ export class ChatStreamClient {
             } else if (rcType === 'function_result') {
                 const name: string = Json.string(rc, 'name');
                 const callId: string = Json.string(rc, 'call_id');
-                const resultText: string = Json.string(rc, 'result');
                 const round: number = Json.number(rc, 'round');
+                const payload: ToolResultPayload = makeToolResultPayload(
+                    Json.string(rc, 'result'),
+                    Json.string(rc, 'model_visible_result'),
+                    ChatStreamSession.readDisplayResult(rc),
+                    Json.fieldOrNull(rc, 'display_media')
+                );
 
                 hilog.info(DOMAIN, TAG, '[DBG:pollRender] function_result name=%{public}s call=%{public}s', name, callId);
-                listener.onToolResult(name, callId, resultText, round);
+                listener.onToolResult(name, callId, payload, round);
+            } else if (rcType === 'question') {
+                const callId: string = Json.string(rc, 'call_id');
+                const round: number = Json.number(rc, 'round');
+
+                hilog.info(DOMAIN, TAG, '[DBG:pollRender] question call=%{public}s', callId);
+                listener.onQuestion(callId, Json.fieldOrNull(rc, 'question'), round);
             }
         }
 
@@ -767,7 +777,11 @@ export class ChatStreamClient {
                     chunk.name ?? '', chunk.call_id ?? '');
                 return false;
             case 'function_result':
-                listener.onToolResult(chunk.name ?? '', chunk.call_id ?? '', chunk.result ?? '', chunk.round ?? 0);
+                listener.onToolResult(chunk.name ?? '', chunk.call_id ?? '', this.buildToolResultPayload(chunk), chunk.round ?? 0);
+                return false;
+            case 'question':
+                hilog.info(DOMAIN, TAG, '[DBG:dispatch] question call=%{public}s', chunk.call_id ?? '');
+                listener.onQuestion(chunk.call_id ?? '', chunk.question ?? null, chunk.round ?? 0);
                 return false;
             case 'token_usage':
                 {
@@ -852,6 +866,30 @@ export class ChatStreamClient {
         return chunk.delta ?? chunk.content ?? '';
     }
 
+    // function_result 帧 → 统一结果载荷：展示轨优先 display_model_visible_result → display_result
+    private buildToolResultPayload(chunk: StreamChunk): ToolResultPayload {
+        const displayModelVisible: string = (chunk.display_model_visible_result ?? '').trim();
+        const displayFallback: string = (chunk.display_result ?? '').trim();
+
+        return makeToolResultPayload(
+            chunk.result ?? '',
+            chunk.model_visible_result ?? '',
+            displayModelVisible.length > 0 ? displayModelVisible : displayFallback,
+            chunk.display_media ?? null
+        );
+    }
+
+    // 轮询 render_chunks 结果为字典形态，展示轨优先级与 SSE 帧一致
+    private static readDisplayResult(record: Record<string, Object>): string {
+        const displayModelVisible: string = Json.string(record, 'display_model_visible_result').trim();
+
+        if (displayModelVisible.length > 0) {
+            return displayModelVisible;
+        }
+
+        return Json.string(record, 'display_result').trim();
+    }
+
     private buildHeaders(): Record<string, string> {
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
@@ -910,5 +948,38 @@ export class ChatStreamClient {
     }
 }
 
-// 全局唯一流式客户端：同一时刻只允许一条流在运行
+// 全局唯一流式入口：同一时刻只允许一条流在运行。
+// 每次 start 创建独立的 ChatStreamSession 承载该流全部状态，
+// 旧流在早于发送完成前释放（轮询判定 done 立即 resolve）也不会污染新流
+export class ChatStreamClient {
+    private session: ChatStreamSession | null = null;
+
+    get isStreaming(): boolean {
+        return this.session !== null;
+    }
+
+    async start(options: StreamOptions, listener: StreamListener): Promise<void> {
+        if (this.session !== null) {
+            return;
+        }
+
+        const session: ChatStreamSession = new ChatStreamSession();
+        this.session = session;
+
+        try {
+            await session.run(options, listener);
+        } finally {
+            if (this.session === session) {
+                this.session = null;
+            }
+        }
+    }
+
+    cancel(): void {
+        if (this.session !== null) {
+            this.session.cancel();
+        }
+    }
+}
+
 export const chatStream: ChatStreamClient = new ChatStreamClient();

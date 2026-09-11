@@ -69,8 +69,8 @@ export struct ToolCallCard {
                         this.DetailLine('入参', this.item.argumentsText);
                     }
 
-                    if (this.item.resultText.length > 0) {
-                        this.DetailLine('结果', this.item.resultText);
+                    if (this.item.displayText.length > 0) {
+                        this.DetailLine('结果', this.item.displayText);
                     }
                 }
                 .width('100%')
