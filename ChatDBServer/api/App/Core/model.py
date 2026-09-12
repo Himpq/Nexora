@@ -4482,6 +4482,13 @@ class Model(MailMixin):
             if normalized_conversation_mode == "longterm":
                 normalized_tool_mode = "force"
 
+            # 学习会话强制 force：画像评估、章节生成等能力依赖 NexoraLearning 侧下发的
+            # 运行时工具（append_learning_memory / submit_profile_score 等），这些工具只在
+            # Force 模式才进入执行白名单。若沿用客户端的 auto_off，模型会「看得见工具名、
+            # 调不动工具」，工具调用直接被白名单拒绝。
+            if normalized_conversation_mode == "learning":
+                normalized_tool_mode = "force"
+
             # NexoraCode 项目模式强制 force：直接下发（裁剪后的）业务工具，
             # 无需 runtime_tool_enable 逃生门。
             if bool(getattr(self, "_runtime_project_force_tools", False)):
