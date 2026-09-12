@@ -73,6 +73,13 @@ export interface PathChapterResult {
     content: string;
 }
 
+// 标记章节学习完成的结果：后端会顺带把本章内容排进学习记忆队列
+export interface PathChapterCompleteResult {
+    success: boolean;
+    message: string;
+    alreadyCompleted: boolean;
+}
+
 // load-path 的请求体
 interface PathQueryBody {
     lecture_id: string;
@@ -144,6 +151,28 @@ export class LearningPathApi {
             message: '',
             cached: Json.boolean(body.payload, 'cached'),
             content: Json.string(body.payload, 'content'),
+        };
+    }
+
+    // 标记本章学习完成：POST /api/frontend/personalized-learning/chapter-complete
+    // 这是「学完」的唯一入口——后端据此更新路线进度，并把本章内容排进学习记忆队列
+    // （画像与学习记忆由学习侧异步吸收），前端不做任何本地进度推算。
+    async completeChapter(lectureId: string, chapterIndex: number): Promise<PathChapterCompleteResult> {
+        const payload: ChapterQueryBody = {
+            lecture_id: lectureId,
+            chapter_index: chapterIndex,
+        };
+        const body: LearningBody = await LearningHttp.postJson(
+            '/api/frontend/personalized-learning/chapter-complete', payload);
+
+        if (!body.ok || body.payload === null) {
+            return { success: false, message: body.message, alreadyCompleted: false };
+        }
+
+        return {
+            success: true,
+            message: '',
+            alreadyCompleted: Json.boolean(body.payload, 'already_completed'),
         };
     }
 

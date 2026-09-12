@@ -33,6 +33,8 @@ interface PathUnit {
     // 路线章节下标：>=0 表示这一单元能打开个性化素材（无路线时只有大纲，值取 -1）
     chapterIndex: number;
     contentGenerated: boolean;
+    // 本章是否已标记学完：由后端路线状态下发，章节页据此决定「完成学习」的展示
+    learningCompleted: boolean;
     title: string;
     bookTitle: string;
     status: string;
@@ -47,9 +49,11 @@ interface PathUnit {
 export struct LearningPath {
     @Prop lectureId: string = '';
     @Prop lectureTitle: string = '';
+    // 外部刷新信号：章节页标记学完后自增，本页据此重读路线状态（进度与「已学完」标记）
+    @Prop @Watch('onRefreshToken') refreshToken: number = 0;
     onBack: () => void = () => {};
     onOpenChapter: (lectureId: string, chapterIndex: number, chapterTitle: string,
-        bookTitle: string) => void = () => {};
+        bookTitle: string, learningCompleted: boolean) => void = () => {};
 
     @State private courseOutline: LearningOutline = EMPTY_OUTLINE;
     @State private advice: string = '';
@@ -60,6 +64,12 @@ export struct LearningPath {
     @State private errorMessage: string = '';
 
     aboutToAppear(): void {
+        this.load().then(() => {
+        });
+    }
+
+    // 章节页标记学完后重读路线：进度、状态标签与「已学完」标记都由后端状态决定
+    onRefreshToken(): void {
         this.load().then(() => {
         });
     }
@@ -113,6 +123,7 @@ export struct LearningPath {
                 order: i + 1,
                 chapterIndex: chapter.index,
                 contentGenerated: chapter.contentGenerated,
+                learningCompleted: chapter.learningCompleted,
                 title: chapter.name,
                 bookTitle: chapter.bookTitle,
                 status: chapter.status,
@@ -137,6 +148,7 @@ export struct LearningPath {
                 order: i + 1,
                 chapterIndex: -1,
                 contentGenerated: false,
+                learningCompleted: false,
                 title: section.title,
                 bookTitle: section.sources.length > 0 ? section.sources[0].bookTitle : '',
                 status: '',
@@ -546,7 +558,8 @@ export struct LearningPath {
                 return;
             }
 
-            this.onOpenChapter(this.lectureId, unit.chapterIndex, unit.title, unit.bookTitle);
+            this.onOpenChapter(this.lectureId, unit.chapterIndex, unit.title, unit.bookTitle,
+                unit.learningCompleted);
         });
     }
 

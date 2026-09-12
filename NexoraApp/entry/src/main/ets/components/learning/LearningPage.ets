@@ -108,6 +108,10 @@ export struct LearningPage {
     @State private chapterTitle: string = '';
     @State private chapterBookTitle: string = '';
     @State private chapterIndex: number = 0;
+    @State private chapterCompleted: boolean = false;
+
+    // 路线刷新信号：章节页标记学完后自增，路线帧据此重读进度
+    @State private pathRefreshToken: number = 0;
 
     // 阅读器浮层是否展开，以及转交给阅读器的返回请求
     @State private readerOverlayOpen: boolean = false;
@@ -210,12 +214,13 @@ export struct LearningPage {
             LearningPath({
                 lectureId: this.pathLectureId,
                 lectureTitle: this.pathLectureTitle,
+                refreshToken: this.pathRefreshToken,
                 onBack: () => {
                     this.goBack();
                 },
                 onOpenChapter: (lectureId: string, chapterIndex: number, chapterTitle: string,
-                    bookTitle: string) => {
-                    this.openPathChapter(lectureId, chapterIndex, chapterTitle, bookTitle);
+                    bookTitle: string, learningCompleted: boolean) => {
+                    this.openPathChapter(lectureId, chapterIndex, chapterTitle, bookTitle, learningCompleted);
                 }
             })
                 .width('100%')
@@ -229,8 +234,13 @@ export struct LearningPage {
                 chapterIndex: this.chapterIndex,
                 chapterTitle: this.chapterTitle,
                 bookTitle: this.chapterBookTitle,
+                learningCompleted: this.chapterCompleted,
                 onBack: () => {
                     this.goBack();
+                },
+                onCompleted: () => {
+                    this.chapterCompleted = true;
+                    this.pathRefreshToken = this.pathRefreshToken + 1;
                 }
             })
                 .width('100%')
@@ -507,11 +517,12 @@ export struct LearningPage {
     }
 
     private openPathChapter(lectureId: string, chapterIndex: number, chapterTitle: string,
-        bookTitle: string): void {
+        bookTitle: string, learningCompleted: boolean): void {
         this.chapterLectureId = lectureId;
         this.chapterIndex = chapterIndex;
         this.chapterTitle = chapterTitle;
         this.chapterBookTitle = bookTitle;
+        this.chapterCompleted = learningCompleted;
         this.navigateTo(WorkspaceLevel.PATH_CHAPTER);
     }
 }

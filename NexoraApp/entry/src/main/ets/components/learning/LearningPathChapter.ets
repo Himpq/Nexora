@@ -5,7 +5,7 @@
 // 素材未必已经生成，未生成时如实说明并提供生成入口——边生成边显示，
 // 而不是先转圈几分钟再一次性出现（生成一章要跑一次长文模型）。
 
-import { PathChapterResult, LearningPathApi } from '../../common/LearningPathApi';
+import { PathChapterCompleteResult, PathChapterResult, LearningPathApi } from '../../common/LearningPathApi';
 import { LearningChapterStream } from '../../common/LearningChapterStream';
 import { FontSize, LineHeight, Radius, Size, Space } from '../../common/DesignToken';
 import { IconButton } from '../common/IconButton';
@@ -21,7 +21,13 @@ export struct LearningPathChapter {
     @Prop chapterIndex: number = 0;
     @Prop chapterTitle: string = '';
     @Prop bookTitle: string = '';
+    // 本章是否已学完：由路线状态下发，决定底部动作区显示「完成学习」还是「已学完」
+    @Prop learningCompleted: boolean = false;
     onBack: () => void = () => {};
+    // 学完回传：宿主据此让路线页重读进度
+    onCompleted: () => void = () => {};
+    // 沉浸式布局下页面铺到物理屏底，底部动作区要自己让开手势区
+    @StorageProp('insetBottom') private insetBottom: number = 0;
 
     @State private loading: boolean = true;
     @State private cached: boolean = false;
@@ -29,6 +35,9 @@ export struct LearningPathChapter {
     @State private generating: boolean = false;
     @State private statusText: string = '';
     @State private errorMessage: string = '';
+    @State private completing: boolean = false;
+    @State private completedNow: boolean = false;
+    @State private completeError: string = '';
 
     private streamBuffer: string = '';
     private flushTimer: number = -1;
@@ -127,6 +136,33 @@ export struct LearningPathChapter {
         this.flushTimer = -1;
     }
 
+    // 标记本章学完：后端据此推进路线进度并把本章排进学习记忆队列（画像由学习侧吸收）
+    private async completeChapter(): Promise<void> {
+        if (this.completing || this.isCompleted()) {
+            return;
+        }
+
+        this.completing = true;
+        this.completeError = '';
+
+        const result: PathChapterCompleteResult = await LearningPathApi.shared
+            .completeChapter(this.lectureId, this.chapterIndex);
+
+        this.completing = false;
+
+        if (!result.success) {
+            this.completeError = result.message;
+            return;
+        }
+
+        this.completedNow = true;
+        this.onCompleted();
+    }
+
+    private isCompleted(): boolean {
+        return this.learningCompleted || this.completedNow;
+    }
+
     build() {
         Column() {
             this.TopBar()
@@ -193,6 +229,10 @@ export struct LearningPathChapter {
                     .layoutWeight(1)
                     .width('100%')
                     .scrollBar(BarState.Off);
+
+                    if (this.content.length > 0 && !this.generating) {
+                        this.CompleteBar()
+                    }
                 }
                 .width('100%')
                 .layoutWeight(1);
@@ -263,5 +303,61 @@ export struct LearningPathChapter {
             .margin({ left: Space.lg, right: Space.lg, top: Space.sm })
             .borderRadius(Radius.md)
             .backgroundColor($r('app.color.bg_sunken'));
+    }
+
+    // 底部动作区：读完一章后的唯一出口。学完状态由后端路线状态与本次操作共同决定，
+    // 已学完时只作状态展示，不再提供重复提交。
+    @Builder
+    CompleteBar() {
+        Column({ space: Space.xs }) {
+            if (this.completeError.length > 0) {
+                Text(this.completeError)
+                    .fontSize(FontSize.caption)
+                    .fontColor($r('app.color.danger'))
+                    .lineHeight(LineHeight.caption)
+                    .width('100%');
+            }
+
+            Row({ space: Space.sm }) {
+                Text(this.isCompleted() ? '已学完' : this.completing ? '正在记录…' : '完成学习')
+                    .fontSize(FontSize.body)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.isCompleted()
+                        ? $r('app.color.text_brand')
+                        : $r('app.color.text_inverse'))
+                    .layoutWeight(1)
+                    .textAlign(TextAlign.Center);
+
+                if (this.isCompleted()) {
+                    Image($r('app.media.ic_check'))
+                        .width(Size.icon)
+                        .height(Size.icon)
+                        .fillColor($r('app.color.brand_primary'))
+                        .margin({ right: Space.md });
+                }
+            }
+            .width('100%')
+            .height(48)
+            .borderRadius(Radius.md)
+            .backgroundColor(this.isCompleted() ? $r('app.color.brand_soft') : $r('app.color.brand_primary'))
+            .borderWidth(this.isCompleted() ? 1 : 0)
+            .borderColor($r('app.color.brand_primary'))
+            .alignItems(VerticalAlign.Center)
+            .onClick(() => {
+                this.completeChapter().then(() => {
+                });
+            });
+
+            Text(this.isCompleted()
+                ? '本章已计入学习路线进度，学习记忆正在后台吸收'
+                : '标记后计入学习路线进度，并把本章内容排进学习记忆')
+                .fontSize(FontSize.micro)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .textAlign(TextAlign.Center);
+        }
+        .width('100%')
+        .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.md + this.insetBottom })
+        .alignItems(HorizontalAlign.Start);
     }
 }
