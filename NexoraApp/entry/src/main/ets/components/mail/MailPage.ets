@@ -77,7 +77,9 @@ export struct MailPage {
                         .width('100%')
                         .edgeEffect(EdgeEffect.Spring)
                         .scrollBar(BarState.Off)
-                        .padding({ left: Space.md, right: Space.md, bottom: Space.lg + this.insetBottom })
+                        .padding({ left: Space.md, right: Space.md })
+                        // 手势区避让同样走 contentEndOffset：写在 padding 上就是一条永远空着的死带
+                        .contentEndOffset(Space.lg + this.insetBottom)
                         .onAppear(() => {
                             // 列表重建（详情返回）后恢复浏览位置：详情打开前保存的偏移只消费一次
                             if (this.listRestoreOffset > 0) {

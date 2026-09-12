@@ -158,7 +158,10 @@ export struct LearningCourses {
                 .layoutWeight(1)
                 .width('100%')
                 .scrollBar(BarState.Off)
-                .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md });
+                .padding({ left: Space.lg, right: Space.lg })
+                // 纵向留白走 contentStart/EndOffset：写在 padding 上会变成裁切死带（列表底部永远空一条）
+                .contentStartOffset(Space.md)
+                .contentEndOffset(Space.md);
             }
         }
         .width('100%')

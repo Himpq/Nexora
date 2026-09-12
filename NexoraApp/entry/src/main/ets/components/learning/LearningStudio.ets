@@ -112,7 +112,11 @@ export struct LearningStudio {
                 .layoutWeight(1)
                 .width('100%')
                 .scrollBar(BarState.Off)
-                .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md });
+                .padding({ left: Space.lg, right: Space.lg })
+                // 纵向留白走 contentStart/EndOffset：写在 padding 上会变成裁切死带，
+                // 表现为「最后一张卡与底部栏之间永远空一条」（底部空线）
+                .contentStartOffset(Space.md)
+                .contentEndOffset(Space.md);
             }
         }
         .width('100%')
