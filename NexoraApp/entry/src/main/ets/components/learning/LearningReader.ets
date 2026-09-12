@@ -695,79 +695,78 @@ export struct LearningReader {
         .backgroundColor(this.palette().page);
     }
 
+    // 页眉 / 页脚常驻挂载，靠位移与透明度播放呼入呼出：
+    // 条件挂载会让整条栏瞬间消失（没有退场动画），且退出沉浸后位置会空跳一下
     @Builder
     Header() {
         Row() {
-            if (this.chromeVisible) {
-                IconButton({
-                    icon: $r('app.media.ic_back'),
-                    iconSize: Size.icon,
-                    buttonSize: CONTROL_SIZE,
-                    tint: this.palette().secondary,
-                    pressedBg: this.palette().divider,
-                    onTap: () => {
-                        const item: FlatPage | undefined = this.currentPage();
+            IconButton({
+                icon: $r('app.media.ic_back'),
+                iconSize: Size.icon,
+                buttonSize: CONTROL_SIZE,
+                tint: this.palette().secondary,
+                pressedBg: this.palette().divider,
+                onTap: () => {
+                    const item: FlatPage | undefined = this.currentPage();
 
-                        this.onBack(item === undefined ? this.startChapterIndex : item.chapterIndex);
-                    }
-                })
+                    this.onBack(item === undefined ? this.startChapterIndex : item.chapterIndex);
+                }
+            })
 
-                Text(this.bookTitle)
-                    .fontSize(FontSize.small)
-                    .fontColor(this.palette().secondary)
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .layoutWeight(1)
-                    .margin({ left: Space.sm });
+            Text(this.bookTitle)
+                .fontSize(FontSize.small)
+                .fontColor(this.palette().secondary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1)
+                .margin({ left: Space.sm });
 
-                IconButton({
-                    icon: $r('app.media.ic_list'),
-                    iconSize: Size.icon,
-                    buttonSize: CONTROL_SIZE,
-                    tint: this.palette().secondary,
-                    pressedBg: this.palette().divider,
-                    onTap: () => {
-                        this.openToc();
-                    }
-                })
-            }
+            IconButton({
+                icon: $r('app.media.ic_list'),
+                iconSize: Size.icon,
+                buttonSize: CONTROL_SIZE,
+                tint: this.palette().secondary,
+                pressedBg: this.palette().divider,
+                onTap: () => {
+                    this.openToc();
+                }
+            })
 
-            Blank()
-
-            if (this.chromeVisible) {
-                Text('Aa')
-                    .fontSize(FontSize.body)
-                    .fontColor(this.palette().secondary)
-                    .width(CONTROL_SIZE)
-                    .height(CONTROL_SIZE)
-                    .textAlign(TextAlign.Center)
-                    .onClick(() => {
-                        this.openSettings();
-                    });
-            }
+            Text('Aa')
+                .fontSize(FontSize.body)
+                .fontColor(this.palette().secondary)
+                .width(CONTROL_SIZE)
+                .height(CONTROL_SIZE)
+                .textAlign(TextAlign.Center)
+                .onClick(() => {
+                    this.openSettings();
+                });
         }
         .width('100%')
         .height(HEADER_BAND)
         .padding({ left: Space.sm, right: Space.sm })
-        .alignItems(VerticalAlign.Center);
+        .alignItems(VerticalAlign.Center)
+        .translate({ y: this.chromeVisible ? 0 : -HEADER_BAND })
+        .opacity(this.chromeVisible ? 1 : 0)
+        // 收起后不能继续吃掉翻页点击：位移出视口只是看不见，命中测试仍在原位
+        .hitTestBehavior(this.chromeVisible ? HitTestMode.Default : HitTestMode.Transparent)
+        .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
     }
 
     @Builder
     Footer() {
         Column() {
             Row() {
-                if (this.chromeVisible) {
-                    Text(this.footerSection())
-                        .fontSize(FontSize.caption)
-                        .fontColor(this.palette().secondary)
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .layoutWeight(1);
+                Text(this.footerSection())
+                    .fontSize(FontSize.caption)
+                    .fontColor(this.palette().secondary)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .layoutWeight(1);
 
-                    Text(this.footerPageLabel())
-                        .fontSize(FontSize.caption)
-                        .fontColor(this.palette().secondary);
-                }
+                Text(this.footerPageLabel())
+                    .fontSize(FontSize.caption)
+                    .fontColor(this.palette().secondary);
             }
             .width('100%')
             .height(FOOTER_BAND - 6)
@@ -780,10 +779,14 @@ export struct LearningReader {
                 tint: this.palette().brand,
                 trackColor: this.palette().divider,
             })
-                .opacity(this.chromeVisible ? 1 : 0);
         }
         .width('100%')
-        .height(FOOTER_BAND);
+        .height(FOOTER_BAND)
+        .translate({ y: this.chromeVisible ? 0 : FOOTER_BAND })
+        .opacity(this.chromeVisible ? 1 : 0)
+        // 收起后让点击落到正文：否则页脚位置仍是死区，中部点击切不回功能栏
+        .hitTestBehavior(this.chromeVisible ? HitTestMode.Default : HitTestMode.Transparent)
+        .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
     }
 
     private footerSection(): string {
