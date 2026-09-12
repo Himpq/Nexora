@@ -22,9 +22,23 @@ const NO_LECTURE: LearningLecture = {
     updatedAt: 0,
 };
 
+// 教材哨兵：加载完成前不参与渲染，避免渲染层反复判空
+const NO_BOOK: LearningBook = {
+    id: '',
+    title: '',
+    description: '',
+    textStatus: '',
+    textChars: 0,
+    coverPath: '',
+    imagesCount: 0,
+};
+
 // 教材封面尺寸：后端封面图为竖版书封（宽高比约 1:1.35）
 const BOOK_COVER_WIDTH: number = 62;
 const BOOK_COVER_HEIGHT: number = 86;
+// 主视区封面：目录从属于教材，教材本体要给出足够辨识度，比书架缩略图大一档
+const BOOK_HERO_WIDTH: number = 92;
+const BOOK_HERO_HEIGHT: number = 124;
 // 书架卡片宽度 = 封面宽 + 左右内边距（各 8）。卡片宽若直接取封面宽，
 // padding 会向内挤压内容区，封面反而比内容区宽 16vp，左右各溢出卡片 8vp。
 const BOOK_CARD_WIDTH: number = BOOK_COVER_WIDTH + 16;
@@ -145,20 +159,20 @@ export struct LearningCourseDetail {
         return 0;
     }
 
-    private selectedBook(): LearningBook | null {
+    private currentBook(): LearningBook {
         for (let i: number = 0; i < this.books.length; i++) {
             if (this.books[i].id === this.selectedBookId) {
                 return this.books[i];
             }
         }
 
-        return null;
+        return NO_BOOK;
     }
 
     private startReading(): void {
-        const book: LearningBook | null = this.selectedBook();
+        const book: LearningBook = this.currentBook();
 
-        if (book === null) {
+        if (book.id.length === 0) {
             return;
         }
 
@@ -185,15 +199,18 @@ export struct LearningCourseDetail {
             } else {
                 List({ space: Space.md }) {
                     ListItem() {
-                        this.Overview()
+                        this.BookHero(this.currentBook())
+                    }
+
+                    // 书架只在有多本教材时出现：单本教材的身份已由主视区给出，再列一排是重复信息
+                    if (this.books.length > 1) {
+                        ListItem() {
+                            this.BookShelf()
+                        }
                     }
 
                     ListItem() {
                         this.ModeRow()
-                    }
-
-                    ListItem() {
-                        this.ReportEntry()
                     }
 
                     ListItem() {
@@ -218,6 +235,10 @@ export struct LearningCourseDetail {
                             this.ChapterRow(chapter)
                         }
                     }, (chapter: LearningChapterSummary) => 'ch_' + this.selectedBookId + '_' + chapter.index)
+
+                    ListItem() {
+                        this.ReportEntry()
+                    }
                 }
                 .layoutWeight(1)
                 .width('100%')
@@ -260,32 +281,80 @@ export struct LearningCourseDetail {
         .alignItems(VerticalAlign.Center);
     }
 
+    // 教材主视区：当前教材的封面 + 简介 + 规模。
+    // 目录是「这本教材的目录」，所以教材本体必须先于目录出现，用户才知道自己在读什么。
     @Builder
-    Overview() {
+    BookHero(book: LearningBook) {
         Column({ space: Space.md }) {
-            Text(this.lecture.description.length > 0 ? this.lecture.description : '暂无课程简介')
+            Row({ space: Space.md }) {
+                CoverImage({
+                    source: book.coverPath,
+                    frameWidth: BOOK_HERO_WIDTH,
+                    frameHeight: BOOK_HERO_HEIGHT,
+                    corner: Radius.md,
+                })
+
+                Column({ space: Space.xs }) {
+                    Text(book.title.length > 0 ? book.title : '未选择教材')
+                        .fontSize(FontSize.bodyLarge)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(2)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .width('100%');
+
+                    if (this.bookMeta(book).length > 0) {
+                        Text(this.bookMeta(book))
+                            .fontSize(FontSize.caption)
+                            .fontColor($r('app.color.text_tertiary'))
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .width('100%');
+                    }
+
+                    if (this.lecture.category.length > 0) {
+                        TagPill({ text: this.lecture.category })
+                            .margin({ top: Space.xxs });
+                    }
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start);
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top);
+
+            Text(book.description.length > 0 ? book.description : '这本教材还没有简介')
                 .fontSize(FontSize.small)
                 .fontColor($r('app.color.text_secondary'))
                 .lineHeight(20)
+                .maxLines(4)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%');
-
-            Row({ space: Space.sm }) {
-                if (this.lecture.category.length > 0) {
-                    TagPill({ text: this.lecture.category });
-                }
-
-                TagPill({ text: this.books.length + ' 本教材' });
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center);
-
-            this.BookShelf()
         }
         .width('100%')
         .padding(Space.lg)
         .borderRadius(Radius.lg)
         .backgroundColor($r('app.color.bg_card'))
         .alignItems(HorizontalAlign.Start);
+    }
+
+    // 教材规模：章数 > 插图数 > 正文字数，能拿到什么就列什么
+    private bookMeta(book: LearningBook): string {
+        const parts: string[] = [];
+
+        if (this.chapters.length > 0) {
+            parts.push(this.chapters.length + ' 章');
+        }
+
+        if (book.imagesCount > 0) {
+            parts.push(book.imagesCount + ' 张插图');
+        }
+
+        if (book.textChars > 0) {
+            parts.push(LearningFormat.chars(book.textChars));
+        }
+
+        return parts.join(' · ');
     }
 
     // 教材书架：横滑切换教材，切换后重新拉取该教材目录。
@@ -425,9 +494,9 @@ export struct LearningCourseDetail {
     }
 
     private bookHintOfSelected(): string {
-        const book: LearningBook | null = this.selectedBook();
+        const book: LearningBook = this.currentBook();
 
-        return book === null ? '' : ' · ' + book.title;
+        return book.id.length === 0 ? '' : ' · ' + book.title;
     }
 
     @Builder
@@ -538,9 +607,9 @@ export struct LearningCourseDetail {
         .backgroundColor($r('app.color.bg_card'))
         .alignItems(VerticalAlign.Center)
         .onClick(() => {
-            const book: LearningBook | null = this.selectedBook();
+            const book: LearningBook = this.currentBook();
 
-            if (book === null) {
+            if (book.id.length === 0) {
                 return;
             }
 

@@ -17,6 +17,18 @@ export interface LearningResource {
     publishedAt: number;
 }
 
+// 资源哨兵：文章页在资源未就绪时不参与渲染，避免渲染层反复判空
+export const NO_RESOURCE: LearningResource = {
+    id: '',
+    title: '',
+    summary: '',
+    resourceType: '',
+    lectureTitle: '',
+    status: '',
+    content: '',
+    publishedAt: 0,
+};
+
 // 首页资源推送卡（文章 / 视频两类）
 export interface LearningPush {
     id: string;

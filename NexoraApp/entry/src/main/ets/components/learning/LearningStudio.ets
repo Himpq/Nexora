@@ -7,14 +7,17 @@ import {
     LearningFeedItem,
     LearningResource,
     LearningStudioApi,
+    NO_RESOURCE,
 } from '../../common/LearningStudioApi';
-import { FontSize, LineHeight, Radius, Size, Space } from '../../common/DesignToken';
+import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { IconButton } from '../common/IconButton';
 import { LoadingBlock, Placeholder, SectionHeader, TagPill } from './LearningWidgets';
 import { MarkdownView } from './MarkdownView';
 
 const RESOURCE_LIMIT: number = 30;
 const FEED_LIMIT: number = 20;
+// 正文向下滚过这个距离后，顶栏才接手显示标题（避免与正文标题同时出现两条）
+const TITLE_REVEAL_OFFSET: number = 56;
 
 @Component
 export struct LearningStudio {
@@ -150,13 +153,16 @@ export struct LearningStudio {
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%');
 
-            Text(resource.summary.length > 0 ? resource.summary : '点击查看完整内容')
-                .fontSize(FontSize.small)
-                .fontColor($r('app.color.text_secondary'))
-                .maxLines(3)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .lineHeight(20)
-                .width('100%');
+            // 摘要可能为空：没有摘要就不占位，避免列表里出现一行「点击查看完整内容」的水词
+            if (resource.summary.length > 0) {
+                Text(resource.summary)
+                    .fontSize(FontSize.small)
+                    .fontColor($r('app.color.text_secondary'))
+                    .maxLines(3)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .lineHeight(20)
+                    .width('100%');
+            }
 
             Row({ space: Space.xs }) {
                 Image($r('app.media.ic_book'))
@@ -236,49 +242,126 @@ export struct LearningStudio {
 // 与「个性化章节」用的是同一份渲染（同一类内容不该有两套排版）。
 @Component
 export struct LearningArticle {
-    @Prop title: string = '';
-    @Prop body: string = '';
+    @Prop resource: LearningResource = NO_RESOURCE;
     onBack: () => void = () => {};
+    // 沉浸式布局下页面铺到物理屏底，正文尾部要自己让开手势区
+    @StorageProp('insetBottom') private insetBottom: number = 0;
+    // 顶栏标题随正文滚动淡入：正文标题就在顶栏正下方，一进来就重复显示是噪音
+    @State private titleInBar: boolean = false;
+    private scroller: Scroller = new Scroller();
 
     build() {
         Column() {
-            Row({ space: Space.xs }) {
-                // 尺寸由 IconButton 统一约束：直接在 Image 上挂 padding 会把图标内容区压扁
-                IconButton({
-                    icon: $r('app.media.ic_back'),
-                    iconSize: Size.iconLarge,
-                    buttonSize: Size.touchTarget,
-                    tint: $r('app.color.icon_primary'),
-                    onTap: () => {
-                        this.onBack();
-                    }
-                })
-            }
-            .width('100%')
-            .height(48)
-            .padding({ right: Space.lg })
-            .alignItems(VerticalAlign.Center);
+            this.TopBar()
 
-            Scroll() {
+            Scroll(this.scroller) {
                 Column({ space: Space.md }) {
-                    Text(this.title)
-                        .fontSize(FontSize.titleLarge)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor($r('app.color.text_primary'))
-                        .width('100%');
+                    this.ArticleHeader()
 
-                    MarkdownView({ body: this.body })
+                    MarkdownView({ body: this.resource.content })
                 }
                 .width('100%')
-                .padding({ left: Space.lg, right: Space.lg, bottom: Space.xxxl })
+                .padding({ left: Space.lg, right: Space.lg, bottom: Space.xxxl + this.insetBottom })
                 .alignItems(HorizontalAlign.Start);
             }
             .layoutWeight(1)
             .width('100%')
-            .scrollBar(BarState.Off);
+            .scrollBar(BarState.Off)
+            .onScroll((xOffset: number, yOffset: number) => {
+                this.titleInBar = yOffset > TITLE_REVEAL_OFFSET;
+            })
         }
         .width('100%')
         .height('100%')
         .backgroundColor($r('app.color.bg_page'));
+    }
+
+    @Builder
+    TopBar() {
+        Row({ space: Space.xs }) {
+            // 尺寸由 IconButton 统一约束：直接在 Image 上挂 padding 会把图标内容区压扁
+            IconButton({
+                icon: $r('app.media.ic_back'),
+                iconSize: Size.iconLarge,
+                buttonSize: Size.touchTarget,
+                tint: $r('app.color.icon_primary'),
+                onTap: () => {
+                    this.onBack();
+                }
+            })
+
+            Text(this.resource.title)
+                .fontSize(FontSize.body)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1)
+                .margin({ left: Space.xs })
+                .opacity(this.titleInBar ? 1 : 0)
+                .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+        }
+        .width('100%')
+        .height(48)
+        .padding({ left: Space.sm, right: Space.lg })
+        .alignItems(VerticalAlign.Center)
+        // 顶栏与正文之间只在滚动后划线：正文没动时这条线没有来由
+        .border({ width: { bottom: this.titleInBar ? Size.divider : 0 }, color: $r('app.color.divider') })
+        .animation({ duration: Motion.durationFast, curve: Motion.easeOut });
+    }
+
+    // 文章头：标题 + 类型 / 发布时间 / 所属课程 + 摘要。
+    // 这些是判断「要不要读下去」的依据，必须在正文之前一次给全。
+    @Builder
+    ArticleHeader() {
+        Column({ space: Space.sm }) {
+            Text(this.resource.title)
+                .fontSize(FontSize.titleLarge)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .width('100%');
+
+            Row({ space: Space.sm }) {
+                if (this.resource.resourceType.length > 0) {
+                    TagPill({
+                        text: this.resource.resourceType,
+                        tint: $r('app.color.text_brand'),
+                        bg: $r('app.color.brand_soft'),
+                    });
+                }
+
+                if (this.resource.publishedAt > 0) {
+                    Text(LearningFormat.day(this.resource.publishedAt))
+                        .fontSize(FontSize.caption)
+                        .fontColor($r('app.color.text_tertiary'));
+                }
+
+                if (this.resource.lectureTitle.length > 0) {
+                    Text(this.resource.lectureTitle)
+                        .fontSize(FontSize.caption)
+                        .fontColor($r('app.color.text_tertiary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .layoutWeight(1);
+                }
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center);
+
+            if (this.resource.summary.length > 0) {
+                Text(this.resource.summary)
+                    .fontSize(FontSize.small)
+                    .fontColor($r('app.color.text_secondary'))
+                    .lineHeight(LineHeight.body)
+                    .padding(Space.md)
+                    .borderRadius(Radius.md)
+                    .backgroundColor($r('app.color.bg_sunken'))
+                    .width('100%');
+            }
+        }
+        .width('100%')
+        .padding({ bottom: Space.lg })
+        .border({ width: { bottom: Size.divider }, color: $r('app.color.divider') })
+        .alignItems(HorizontalAlign.Start);
     }
 }

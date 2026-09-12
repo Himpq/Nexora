@@ -13,7 +13,7 @@
 
 import { AppState } from '../../common/AppState';
 import { LearningChapterSummary } from '../../common/LearningApi';
-import { LearningResource } from '../../common/LearningStudioApi';
+import { LearningResource, NO_RESOURCE } from '../../common/LearningStudioApi';
 import { FontSize, Motion, Size, Space } from '../../common/DesignToken';
 import { IconButton } from '../common/IconButton';
 import { LearningBank } from './LearningBank';
@@ -91,9 +91,8 @@ export struct LearningPage {
     @State private readerChapters: LearningChapterSummary[] = [];
     @State private readerStartChapter: number = 0;
 
-    // 文章阅读上下文
-    @State private articleTitle: string = '';
-    @State private articleBody: string = '';
+    // 文章阅读上下文：整份资源交给文章页，元信息（类型 / 发布时间 / 所属课程）由它自己取
+    @State private article: LearningResource = NO_RESOURCE;
 
     // 学习报告上下文
     @State private reportLectureId: string = '';
@@ -187,8 +186,7 @@ export struct LearningPage {
                     .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
         } else if (level === WorkspaceLevel.ARTICLE) {
             LearningArticle({
-                title: this.articleTitle,
-                body: this.articleBody,
+                resource: this.article,
                 onBack: () => {
                     this.goBack();
                 }
@@ -499,8 +497,7 @@ export struct LearningPage {
     }
 
     private openArticle(resource: LearningResource): void {
-        this.articleTitle = resource.title;
-        this.articleBody = resource.content;
+        this.article = resource;
         this.navigateTo(WorkspaceLevel.ARTICLE);
     }
 
