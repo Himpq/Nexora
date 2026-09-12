@@ -45,8 +45,8 @@ export class VoiceRecognizerService {
     private lastLevelAt: number = 0;
     private engineStartTimer: number = -1;
 
-    // 启动一次中文长语音识别：先建引擎与采集器，再立即开始采集并送入音频；
-    // 引擎 onStart 只用于解锁音频泵，绝不阻塞麦克风启动（否则引擎异常时收不到任何音频）
+    // 启动一次中文长语音识别：先建引擎并等它就绪（onStart），再开始采集并送入音频。
+    // 采集必须排在引擎之后——引擎启动阶段占用录音焦点，先起的采集器会被中断、只拿到静音。
     async start(context: common.UIAbilityContext, callbacks: VoiceRecognitionCallbacks): Promise<string> {
         if (this.active) {
             return '语音识别正在进行';
@@ -118,9 +118,9 @@ export class VoiceRecognizerService {
                 }
             });
 
-            // 立即开始采集：音频信号/波形不依赖引擎就绪，引擎未就绪前的数据先入队，onStart 后统一泵出
-            await currentCapturer.start();
-
+            // 引擎先完全就绪再开启采集：Core Speech Kit 在 startListening 阶段会占用录音焦点，
+            // 抢先启动的 AudioCapturer 会被焦点中断、之后拿到的全是静音数据
+            // （表现为波形一直是零、始终识别不出文字）。启动超时由上面的定时器兜住，不会挂死。
             const engineStartError: string = await engineStartPromise;
             this.clearEngineStartTimer();
 
@@ -134,6 +134,8 @@ export class VoiceRecognizerService {
                 this.releaseResources();
                 return engineStartError.length > 0 ? engineStartError : '语音识别启动失败';
             }
+
+            await currentCapturer.start();
 
             hilog.info(DOMAIN, TAG, 'voice recognition started, session=%{public}s', this.sessionId);
             return '';
@@ -245,8 +247,6 @@ export class VoiceRecognizerService {
                 this.engineStarted = true;
                 this.clearEngineStartTimer();
                 this.resolveEngineStart('');
-                // 引擎就绪：把等待期间缓存的音频统一泵出，避免开头语音被丢弃
-                this.startAudioPump();
                 this.notifyState(true, '正在识别…');
             },
             onEvent: (_sessionId: string, _eventCode: number, _eventMessage: string): void => {},

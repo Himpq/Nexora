@@ -519,7 +519,6 @@ export struct NotesPage {
         this.voiceDraftText = '';
         this.resetVoiceLevels();
         this.voiceListening = true;
-        this.startVoiceSilenceWatch();
 
         const message: string = await this.voiceService.start(host as common.UIAbilityContext, {
             onText: (text: string, isFinal: boolean): void => {
@@ -542,13 +541,17 @@ export struct NotesPage {
             onState: (isListening: boolean, status: string): void => {
                 this.voiceListening = isListening;
 
-                if (!isListening && status !== '识别完成') {
-                    this.voiceError = status;
+                // 计时从引擎真正就绪起算：权限弹窗与引擎启动的耗时不能算成静音
+                if (isListening) {
+                    this.startVoiceSilenceWatch();
+                    return;
                 }
 
-                if (!isListening) {
-                    this.clearVoiceSilenceTimer();
-                    this.resetVoiceLevels();
+                this.clearVoiceSilenceTimer();
+                this.resetVoiceLevels();
+
+                if (status !== '识别完成') {
+                    this.voiceError = status;
                 }
             },
             onLevel: (level: number): void => {
@@ -578,7 +581,10 @@ export struct NotesPage {
                 return;
             }
 
-            this.voiceError = '未检测到麦克风输入，请检查设备麦克风';
+            // 采集器在跑但音频能量始终贴着底噪，说明这一路没有真实声音输入
+            // （模拟器不提供麦克风音频流是最常见的原因）。识别服务不会报错，
+            // 这里只给出提示，会话继续保留，用户换到真机或说话后照常出字。
+            this.voiceError = '未采集到麦克风声音（模拟器不提供录音输入）';
         }, VOICE_SILENCE_WATCH_MS);
     }
 

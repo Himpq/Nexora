@@ -2,7 +2,7 @@
 // 与 NexoraWeb ExaImageGallery.vue 对齐：直接贴在搜索工具行下方，无标题无数量，
 // 卡片固定 4:3 比例，点击交给上层打开全屏查看器
 
-import { FontSize, Radius, Space } from '../../common/DesignToken';
+import { Radius, Space } from '../../common/DesignToken';
 import { ExaImageItem } from '../../common/ExaMedia';
 
 const CARD_WIDTH: number = 168;
@@ -14,17 +14,22 @@ export struct ImageGallery {
     @Prop items: ExaImageItem[] = [];
     onOpenImage: (url: string) => void = () => {};
 
-    // 加载失败的图片地址：保留卡片位置并显示明确状态
+    // 加载失败的图片地址：这些卡片直接从画廊移除（不可达外链不占位、不留灰色框）
     @State private failedUrls: string[] = [];
 
     private isFailed(url: string): boolean {
         return this.failedUrls.indexOf(url) >= 0;
     }
 
+    // 可见卡片：加载失败的地址不参与渲染，全部失败时画廊自然收起（内容高度归零）
+    private visibleItems(): ExaImageItem[] {
+        return this.items.filter((item: ExaImageItem) => !this.isFailed(item.imageUrl));
+    }
+
     build() {
         Scroll() {
             Row({ space: Space.sm }) {
-                ForEach(this.items, (item: ExaImageItem) => {
+                ForEach(this.visibleItems(), (item: ExaImageItem) => {
                     this.ImageCard(item);
                 }, (item: ExaImageItem) => item.imageUrl);
             }
@@ -33,41 +38,28 @@ export struct ImageGallery {
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
         .width('100%')
+        .height(this.visibleItems().length > 0 ? CARD_HEIGHT : 0)
         .align(Alignment.Start);
     }
 
     @Builder
     ImageCard(item: ExaImageItem) {
-        Stack() {
-            if (this.isFailed(item.imageUrl)) {
-                Text('图片无法加载')
-                    .fontSize(FontSize.caption)
-                    .fontColor($r('app.color.text_tertiary'));
-            } else {
-                Image(item.imageUrl)
-                    .width(CARD_WIDTH)
-                    .height(CARD_HEIGHT)
-                    .objectFit(ImageFit.Cover)
-                    .interpolation(ImageInterpolation.High)
-                    .draggable(false)
-                    .onError(() => {
-                        if (!this.isFailed(item.imageUrl)) {
-                            this.failedUrls = [...this.failedUrls, item.imageUrl];
-                        }
-                    });
-            }
-        }
-        .width(CARD_WIDTH)
-        .height(CARD_HEIGHT)
-        .borderRadius(Radius.sm)
-        .borderWidth(1)
-        .borderColor($r('app.color.border'))
-        .backgroundColor($r('app.color.bg_sunken'))
-        .clip(true)
-        .onClick(() => {
-            if (!this.isFailed(item.imageUrl)) {
+        Image(item.imageUrl)
+            .width(CARD_WIDTH)
+            .height(CARD_HEIGHT)
+            .objectFit(ImageFit.Cover)
+            .interpolation(ImageInterpolation.High)
+            .draggable(false)
+            // 不可达外链直接移出画廊：onError 后该地址不再参与渲染，不留灰色占位卡
+            .onError(() => {
+                if (!this.isFailed(item.imageUrl)) {
+                    this.failedUrls = [...this.failedUrls, item.imageUrl];
+                }
+            })
+            .borderRadius(Radius.sm)
+            .clip(true)
+            .onClick(() => {
                 this.onOpenImage(item.imageUrl);
-            }
-        });
+            });
     }
 }
