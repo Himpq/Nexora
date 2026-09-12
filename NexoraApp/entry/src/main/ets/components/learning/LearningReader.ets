@@ -11,10 +11,13 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppState } from '../../common/AppState';
 import {
     LearningApi,
+    LearningBook,
     LearningChapterContent,
     LearningChapterSummary,
     LearningSession,
+    NO_BOOK,
 } from '../../common/LearningApi';
+import { LearningFormat } from '../../common/LearningFormat';
 import {
     ReaderBlock,
     ReaderBlockKind,
@@ -46,6 +49,12 @@ const PRELOAD_AHEAD: number = 2;
 // 目录抽屉宽度，以及关闭时向左移出的距离（要大于 100%，连同阴影一起移出屏幕）
 const TOC_WIDTH: string = '82%';
 const TOC_HIDDEN_X: string = '-125%';
+// 目录头部封面（竖版书封）与教材简介的行数：ArkUI 没有「不限行」的字面量，
+// 全展开取一个足够大的值表示不截断
+const TOC_COVER_WIDTH: number = 56;
+const TOC_COVER_HEIGHT: number = 76;
+const TOC_INTRO_LINES: number = 3;
+const TOC_INTRO_EXPANDED: number = 999;
 
 export interface ReaderAnchor {
     chapterIndex: number;
@@ -131,8 +140,7 @@ class FlatPageSource implements IDataSource {
 export struct LearningReader {
     @ObjectLink app: AppState;
     @Prop lectureId: string = '';
-    @Prop bookId: string = '';
-    @Prop bookTitle: string = '';
+    @Prop book: LearningBook = NO_BOOK;
     @Prop chapters: LearningChapterSummary[] = [];
     @Prop startChapterIndex: number = 0;
     // 本层在宿主导航中的层级：消费返回请求后把 navDepth 复位，避免宿主误判为退出本层
@@ -152,6 +160,7 @@ export struct LearningReader {
     @State private chromeVisible: boolean = true;
     @State private settingsOpen: boolean = false;
     @State private tocOpen: boolean = false;
+    @State private tocIntroExpanded: boolean = false;
     @State private opening: boolean = true;
     @State private errorMessage: string = '';
     // 正文带可用尺寸（vp）：由 onBandResize 给出，是排版度量的唯一来源
@@ -298,7 +307,7 @@ export struct LearningReader {
             return { ok: true, message: '' };
         }
 
-        const result = await LearningApi.shared.getBookChapter(this.lectureId, this.bookId, chapterIndex);
+        const result = await LearningApi.shared.getBookChapter(this.lectureId, this.book.id, chapterIndex);
 
         if (!result.success || result.content === null) {
             return { ok: false, message: result.message };
@@ -523,7 +532,7 @@ export struct LearningReader {
 
     // 阅读位置持久化：内存即时生效，落盘失败不影响当前阅读
     private persistPosition(chapterIndex: number): void {
-        this.app.saveReadPosition(this.bookId, chapterIndex).then(() => {
+        this.app.saveReadPosition(this.book.id, chapterIndex).then(() => {
         });
     }
 
@@ -713,7 +722,7 @@ export struct LearningReader {
                 }
             })
 
-            Text(this.bookTitle)
+            Text(this.book.title)
                 .fontSize(FontSize.small)
                 .fontColor(this.palette().secondary)
                 .maxLines(1)
@@ -834,7 +843,7 @@ export struct LearningReader {
     Block(block: ReaderBlock) {
         if (block.kind === ReaderBlockKind.IMAGE) {
             RemoteImage({
-                source: LearningApi.shared.bookImageUrl(this.lectureId, this.bookId, block.imageId),
+                source: LearningApi.shared.bookImageUrl(this.lectureId, this.book.id, block.imageId),
                 frameWidth: this.layoutWidth,
                 frameHeight: block.height,
                 fit: ImageFit.Contain,
@@ -873,21 +882,11 @@ export struct LearningReader {
 
             Column() {
                 Row() {
-                    Column({ space: Space.xxs }) {
-                        Text('目录')
-                            .fontSize(FontSize.title)
-                            .fontWeight(FontWeight.Medium)
-                            .fontColor(this.palette().text);
-
-                        Text(this.bookTitle)
-                            .fontSize(FontSize.caption)
-                            .fontColor(this.palette().secondary)
-                            .maxLines(1)
-                            .textOverflow({ overflow: TextOverflow.Ellipsis })
-                            .width('100%');
-                    }
-                    .layoutWeight(1)
-                    .alignItems(HorizontalAlign.Start);
+                    Text('目录')
+                        .fontSize(FontSize.title)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor(this.palette().text)
+                        .layoutWeight(1);
 
                     IconButton({
                         icon: $r('app.media.ic_close'),
@@ -901,8 +900,10 @@ export struct LearningReader {
                     })
                 }
                 .width('100%')
-                .padding({ left: Space.lg, right: Space.md, top: Space.lg, bottom: Space.md })
+                .padding({ left: Space.lg, right: Space.md, top: Space.lg })
                 .alignItems(VerticalAlign.Center);
+
+                this.TocBookHeader()
 
                 Divider()
                     .strokeWidth(Size.divider)
@@ -934,6 +935,94 @@ export struct LearningReader {
         // 浮层常驻挂载时必须显式退出命中测试：全屏 Stack 默认参与触摸测试，
         // 即使内容不可见也会吃掉正文与顶栏的所有点击
         .hitTestBehavior(this.tocOpen ? HitTestMode.Default : HitTestMode.None);
+    }
+
+    // 目录头部：教材封面 + 教材简介，章节列表在其下。
+    // 目录是「这本教材的目录」，先确认教材本体，再往下找章节，顺序才是对的。
+    @Builder
+    TocBookHeader() {
+        Column({ space: Space.sm }) {
+            Row({ space: Space.md }) {
+                if (this.book.coverPath.length > 0) {
+                    RemoteImage({
+                        source: this.book.coverPath,
+                        frameWidth: TOC_COVER_WIDTH,
+                        frameHeight: TOC_COVER_HEIGHT,
+                        fit: ImageFit.Cover,
+                        corner: Radius.sm,
+                        onOpen: (path: string) => {
+                            this.onOpenImage(path);
+                        }
+                    })
+                }
+
+                Column({ space: Space.xxs }) {
+                    Text(this.book.title)
+                        .fontSize(FontSize.bodyLarge)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor(this.palette().text)
+                        .maxLines(2)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .width('100%');
+
+                    if (this.tocBookMeta().length > 0) {
+                        Text(this.tocBookMeta())
+                            .fontSize(FontSize.caption)
+                            .fontColor(this.palette().secondary)
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .width('100%');
+                    }
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start);
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top);
+
+            if (this.book.description.length > 0) {
+                Column({ space: Space.xxs }) {
+                    Text(this.book.description)
+                        .fontSize(FontSize.small)
+                        .fontColor(this.palette().secondary)
+                        .lineHeight(20)
+                        .maxLines(this.tocIntroExpanded ? TOC_INTRO_EXPANDED : TOC_INTRO_LINES)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .width('100%');
+
+                    Text(this.tocIntroExpanded ? '收起' : '展开')
+                        .fontSize(FontSize.caption)
+                        .fontColor(this.palette().brand)
+                        .onClick(() => {
+                            this.tocIntroExpanded = !this.tocIntroExpanded;
+                        });
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start);
+            }
+        }
+        .width('100%')
+        .padding({ left: Space.lg, right: Space.md, top: Space.md, bottom: Space.md })
+        .alignItems(HorizontalAlign.Start);
+    }
+
+    // 教材规模：章数 > 插图数 > 正文字数，能拿到什么列什么
+    private tocBookMeta(): string {
+        const parts: string[] = [];
+
+        if (this.chapters.length > 0) {
+            parts.push(this.chapters.length + ' 章');
+        }
+
+        if (this.book.imagesCount > 0) {
+            parts.push(this.book.imagesCount + ' 张插图');
+        }
+
+        if (this.book.textChars > 0) {
+            parts.push(LearningFormat.chars(this.book.textChars));
+        }
+
+        return parts.join(' · ');
     }
 
     @Builder

@@ -2,7 +2,7 @@
 // 从课程进入阅读的中间层：确认读哪本教材、读到哪一章，再交给阅读器。
 // 「上次读到」优先取本地阅读位置，本地无记录时退回首页概览给出的当前章节名。
 
-import { LearningApi, LearningBook, LearningChapterSummary, LearningLecture } from '../../common/LearningApi';
+import { LearningApi, LearningBook, LearningChapterSummary, LearningLecture, NO_BOOK } from '../../common/LearningApi';
 import { LearningFormat } from '../../common/LearningFormat';
 import { LearningDashboardLecture, LearningHomeApi } from '../../common/LearningHomeApi';
 import { FontSize, Radius, Size, Space } from '../../common/DesignToken';
@@ -20,17 +20,6 @@ const NO_LECTURE: LearningLecture = {
     coverPath: '',
     bookCount: 0,
     updatedAt: 0,
-};
-
-// 教材哨兵：加载完成前不参与渲染，避免渲染层反复判空
-const NO_BOOK: LearningBook = {
-    id: '',
-    title: '',
-    description: '',
-    textStatus: '',
-    textChars: 0,
-    coverPath: '',
-    imagesCount: 0,
 };
 
 // 教材封面尺寸：后端封面图为竖版书封（宽高比约 1:1.35）
@@ -55,7 +44,7 @@ export struct LearningCourseDetail {
     @Prop lectureId: string = '';
     @Prop lectureTitle: string = '';
     onBack: () => void = () => {};
-    onOpenBook: (lectureId: string, bookId: string, bookTitle: string,
+    onOpenBook: (lectureId: string, book: LearningBook,
         chapters: LearningChapterSummary[], startChapter: number) => void = () => {};
     onOpenReport: (lectureId: string, lectureTitle: string) => void = () => {};
     onOpenPath: (lectureId: string, lectureTitle: string) => void = () => {};
@@ -176,7 +165,7 @@ export struct LearningCourseDetail {
             return;
         }
 
-        this.onOpenBook(this.lectureId, book.id, book.title, this.chapters, this.startChapterIndex());
+        this.onOpenBook(this.lectureId, book, this.chapters, this.startChapterIndex());
     }
 
     build() {
@@ -613,7 +602,7 @@ export struct LearningCourseDetail {
                 return;
             }
 
-            this.onOpenBook(this.lectureId, book.id, book.title, this.chapters, chapter.index);
+            this.onOpenBook(this.lectureId, book, this.chapters, chapter.index);
         });
     }
 

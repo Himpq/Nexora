@@ -12,7 +12,7 @@
 //   阅读器内部浮层（目录、排版设置）由宿主转发一次返回请求，保证返回键行为确定。
 
 import { AppState } from '../../common/AppState';
-import { LearningChapterSummary } from '../../common/LearningApi';
+import { LearningBook, LearningChapterSummary, NO_BOOK } from '../../common/LearningApi';
 import { LearningResource, NO_RESOURCE } from '../../common/LearningStudioApi';
 import { FontSize, Motion, Size, Space } from '../../common/DesignToken';
 import { IconButton } from '../common/IconButton';
@@ -86,8 +86,7 @@ export struct LearningPage {
 
     // 阅读器上下文
     @State private readerLectureId: string = '';
-    @State private readerBookId: string = '';
-    @State private readerBookTitle: string = '';
+    @State private readerBook: LearningBook = NO_BOOK;
     @State private readerChapters: LearningChapterSummary[] = [];
     @State private readerStartChapter: number = 0;
 
@@ -145,9 +144,9 @@ export struct LearningPage {
                 onBack: () => {
                     this.goBack();
                 },
-                onOpenBook: (lectureId: string, bookId: string, bookTitle: string,
+                onOpenBook: (lectureId: string, book: LearningBook,
                     chapters: LearningChapterSummary[], startChapter: number) => {
-                    this.openBook(lectureId, bookId, bookTitle, chapters, startChapter);
+                    this.openBook(lectureId, book, chapters, startChapter);
                 },
                 onOpenReport: (lectureId: string, title: string) => {
                     this.openReport(lectureId, title);
@@ -165,8 +164,7 @@ export struct LearningPage {
             LearningReader({
                 app: this.app,
                 lectureId: this.readerLectureId,
-                bookId: this.readerBookId,
-                bookTitle: this.readerBookTitle,
+                book: this.readerBook,
                 chapters: this.readerChapters,
                 startChapterIndex: this.readerStartChapter,
                 navDepth: $navDepth,
@@ -485,11 +483,10 @@ export struct LearningPage {
         this.navigateTo(WorkspaceLevel.COURSE_DETAIL);
     }
 
-    private openBook(lectureId: string, bookId: string, bookTitle: string,
+    private openBook(lectureId: string, book: LearningBook,
         chapters: LearningChapterSummary[], startChapter: number): void {
         this.readerLectureId = lectureId;
-        this.readerBookId = bookId;
-        this.readerBookTitle = bookTitle;
+        this.readerBook = book;
         this.readerChapters = chapters;
         this.readerStartChapter = startChapter;
         this.readerOverlayOpen = false;

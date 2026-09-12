@@ -29,6 +29,17 @@ export interface LearningBook {
     imagesCount: number;
 }
 
+// 教材哨兵：阅读器与课程目录在教材未就绪时不参与渲染，避免渲染层反复判空
+export const NO_BOOK: LearningBook = {
+    id: '',
+    title: '',
+    description: '',
+    textStatus: '',
+    textChars: 0,
+    coverPath: '',
+    imagesCount: 0,
+};
+
 // 小节：章节内部的二级结构，阅读器目录与进度都以此为最小单位
 export interface LearningSession {
     index: number;
