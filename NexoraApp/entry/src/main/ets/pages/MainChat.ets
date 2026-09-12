@@ -18,6 +18,7 @@ import { chatStream, ConversationModePayload, StreamListener, StreamOptions } fr
 import { ConversationBuffer } from '../common/ConversationBuffer';
 import { LiveViewController } from '../common/LiveViewController';
 import { MapRendererConfig } from '../common/MapRendererConfig';
+import { NextFrameCallback } from '../common/NextFrame';
 import { QuestionItem, readQuestionLock, writeQuestionLock } from '../common/QuestionLocks';
 import { FontSize, Glow, Motion, PressScale, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
 import { ChatInputBar } from '../components/ChatInputBar';
@@ -529,8 +530,10 @@ export struct MainChat {
                 .height('100%')
                 .listDirection(Axis.Vertical)
                 .edgeEffect(EdgeEffect.Spring)
-
-                .padding({ top: Space.xs, bottom: Space.sm })
+                // 纵向留白走 contentStart/EndOffset：写在 padding 上会变成裁切死带，
+                // 表现为「最后一条消息与输入栏之间永远空一条」（底部空线）
+                .contentStartOffset(Space.xs)
+                .contentEndOffset(Space.sm)
                 .onScrollIndex((start: number, end: number, center: number) => {
                     // 末条可见时隐藏按钮，离开底部时显示
                     this.showScrollBottom = end < this.messages.length - 1;
@@ -1508,6 +1511,15 @@ export struct MainChat {
         this.scroller.scrollToIndex(this.messages.length - 1, smooth, ScrollAlign.END);
     }
 
+    // 独立区块（工具结果卡 / 选择题卡 / 图片画廊）贴底：这些块是本轮最后的输出时才挂载，
+    // 挂载当帧 List 还没为它排版，同步 scrollToIndex 会停在旧底部。
+    // 推迟一帧，等区块的真实高度参与排版后再滚动，视口才真正贴住消息末尾。
+    private scrollToEndAfterLayout(): void {
+        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
+            this.scrollToEnd();
+        }));
+    }
+
     // 以可见区域中心索引为基准，找到最后一个位置 ≤ center 的用户轮次索引
     private computeActiveTurn(center: number): number {
         let turn: number = -1;
@@ -1785,6 +1797,12 @@ export struct MainChat {
             onToolResult: (name: string, callId: string, payload: ToolResultPayload, round: number) => {
                 onUi(() => {
                     assistant.completeToolCall(callId, payload);
+
+                    // 工具结果卡是本轮最后输出时后面不再有正文增量，这里必须自己补一次贴底，
+                    // 否则结果块（含 Exa 图片画廊）会停在视口下方
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEndAfterLayout();
+                    }
                 });
             },
             onQuestion: (callId: string, payload: Object | null, round: number) => {
@@ -1797,8 +1815,9 @@ export struct MainChat {
                     assistant.beginQuestion(callId, payload);
                     this.applyQuestionLocks(context.conversationId, [assistant]);
 
+                    // 选择题卡通常是本轮最后一块输出：挂载当帧还没有真实高度，同步滚动会漏底
                     if (this.currentBufferKey() === context.key) {
-                        this.scrollToEnd();
+                        this.scrollToEndAfterLayout();
                     }
                 });
             },
