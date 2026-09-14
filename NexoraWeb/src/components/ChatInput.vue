@@ -549,7 +549,7 @@
         return 'fa-regular fa-file'
     }
 
-    /** TK mini 输入/输出展示(今日基数 + 流式增量,数据源 conversation store,对齐原版 applyTokenMiniDisplay) */
+    /** TK mini 输入/输出展示(当前会话累计基数 + 流式增量,数据源 conversation store) */
     const tokenMiniInput = computed(() => conversationStore.tokenMiniText.input)
     const tokenMiniOutput = computed(() => conversationStore.tokenMiniText.output)
 
@@ -671,7 +671,7 @@
         }
     }
 
-    /** 与原版一致:输入时自动调整高度 */
+    /** 与原版一致:输入时自动调整高度,超高后内部滚动 */
     function autoResize(): void {
         const el = inputRef.value
 
@@ -680,7 +680,12 @@
         }
 
         el.style.height = 'auto'
+
+        // 超过 200px 后定高并开启内部滚动,避免 overflow:hidden 裁掉超长文本
+        const overLimit = el.scrollHeight > 200
+
         el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+        el.style.overflowY = overLimit ? 'auto' : 'hidden'
 
         // 超过单行(约 1 行高 22px + 上下留白)即判定为多行,切换容器底对齐
         isMultiline.value = el.scrollHeight > 34

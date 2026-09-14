@@ -86,3 +86,12 @@ HarmonyosApp/.verify/
 # 会话调试转储文件（临时 JSON/文本，不入库）
 _*.json
 _*.txt
+temp_jar_extract
+# HarmonyOS hvigor build cache and app build logs (never version these)
+.hvigor/
+NexoraApp/build_log.txt
+
+.hf_cache
+.stale_build_backup/
+.tmp_shots/
+NexoraApp/build_log.txt

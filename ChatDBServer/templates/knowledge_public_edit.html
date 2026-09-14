@@ -30,18 +30,28 @@
             --radius: 8px;
         }
         * { box-sizing: border-box; }
+        html,
+        body {
+            /* 公开编辑器是固定视口布局,正文滚动必须由 Toast UI 内部面板承接 */
+            width: 100%;
+            height: 100%;
+            overflow: hidden !important;
+            overflow-x: hidden !important;
+        }
         body {
             font-family: var(--nc-font-sans);
             margin: 0;
-            min-height: 100vh !important;
-            height: auto !important;
+            min-height: 0 !important;
+            height: 100vh !important;
             background: var(--bg) !important;
             color: var(--text);
             padding: 16px !important;
-            overflow-y: auto !important;
         }
         .public-edit-shell {
+            width: 100%;
             max-width: 1280px;
+            min-width: 0;
+            min-height: 0;
             margin: 0 auto;
             height: calc(100vh - 32px);
             display: flex;
@@ -53,6 +63,7 @@
             align-items: center;
             justify-content: space-between;
             gap: 16px;
+            min-width: 0;
             padding: 14px 18px;
             border: 1px solid var(--border);
             border-radius: var(--radius);
@@ -98,6 +109,8 @@
         }
         .public-editor-wrap {
             flex: 1;
+            width: 100%;
+            min-width: 0;
             min-height: 0;
             border: 1px solid var(--border);
             border-radius: var(--radius);
@@ -109,6 +122,8 @@
         #knowledgeViewer {
             display: flex;
             flex: 1;
+            width: 100%;
+            min-width: 0;
             flex-direction: column;
             overflow: hidden;
             min-height: 0;
@@ -116,17 +131,60 @@
         #knowledgeViewer .public-edit-host {
             display: flex;
             flex: 1;
+            width: 100%;
+            min-width: 0;
             min-height: 0;
             flex-direction: column;
             overflow: hidden;
         }
         #knowledgeViewer .knowledge-toast-editor {
             flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
             min-height: 0;
             height: 100% !important;
             overflow: hidden;
             display: flex;
             flex-direction: column;
+        }
+
+        #knowledgeViewer #editor,
+        #knowledgeViewer .toastui-editor-defaultUI,
+        #knowledgeViewer .toastui-editor-main,
+        #knowledgeViewer .toastui-editor-main-container,
+        #knowledgeViewer .toastui-editor-md-container,
+        #knowledgeViewer .toastui-editor-md-vertical-style {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #knowledgeViewer .toastui-editor-main,
+        #knowledgeViewer .toastui-editor-main-container,
+        #knowledgeViewer .toastui-editor-md-container,
+        #knowledgeViewer .toastui-editor-md-vertical-style {
+            min-height: 0;
+        }
+
+        #knowledgeViewer .toastui-editor-md-container .toastui-editor,
+        #knowledgeViewer .toastui-editor-md-container .toastui-editor-md-preview {
+            min-width: 0;
+            max-width: 100%;
+            min-height: 0 !important;
+            box-sizing: border-box;
+        }
+
+        #knowledgeViewer .toastui-editor-md-container .toastui-editor-md-preview {
+            overflow-y: auto;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
+        }
+
+        #knowledgeViewer .toastui-editor-md-container .ProseMirror {
+            min-width: 0;
+            max-width: 100%;
+            overflow-y: auto;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
         }
         /* 隐藏 ToastUI 原生工具栏，因为我们使用上方自定义的 Nexora 风格工具栏 */
         #knowledgeViewer .toastui-editor-toolbar {
@@ -165,7 +223,7 @@
         .public-edit-shell.is-fullscreen {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            width: 100vw; height: 100vh;
+            width: auto; height: 100vh;
             margin: 0; padding: 0 !important;
             max-width: none !important;
             border-radius: 0;
@@ -451,6 +509,7 @@
         }
 
         function capturePublicEditorViewportSnapshot() {
+            // 公开编辑器的 shell 不允许外层页面滚动,这里只保存 Toast UI 内部滚动位置。
             const selectors = [
                 '#editor .toastui-editor-md-container',
                 '#editor .toastui-editor-md-preview',
@@ -476,9 +535,7 @@
 
             return {
                 cursor: getEditorLineCol(),
-                nodes,
-                windowX: Number(window.scrollX || 0),
-                windowY: Number(window.scrollY || window.pageYOffset || 0)
+                nodes
             };
         }
 
@@ -499,7 +556,6 @@
                     node.scrollLeft = Math.max(0, Number(item.left || 0));
                 });
 
-                window.scrollTo(Number(data.windowX || 0), Number(data.windowY || 0));
             };
 
             apply();

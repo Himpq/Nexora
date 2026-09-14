@@ -11,6 +11,7 @@ Nexora.basis.Model.Context — 模型上下文构建层
 
 from __future__ import annotations
 
+import hashlib
 import json
 from enum import Enum
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Set, Tuple
@@ -40,6 +41,7 @@ from basis.index_codec import (
 from .turn_injection import (
     build_profile_update_block,
     build_skill_update_block,
+    get_volatile_injection_name,
     is_volatile_injection,
 )
 
@@ -150,14 +152,28 @@ class ChatContext:
         self._stats["context_degraded"] = 1
         self._stats["context_degraded_reason"] = str(reason or "")
 
+    def update_trace_meta(self, values: Mapping[str, Any]) -> None:
+        """追加上下文诊断元数据，不将诊断内容写入模型上下文。"""
+
+        if not isinstance(values, Mapping):
+            raise ValueError("context trace metadata must be a mapping")
+
+        self._trace_meta.update(dict(values))
+
     def is_degraded(self) -> bool:
         return bool(self._trace_meta.get("context_degraded"))
 
     def diagnostics(self) -> Dict[str, Any]:
+        cache_attribution = self._trace_meta.get("cache_attribution", {})
+
+        if not isinstance(cache_attribution, dict):
+            cache_attribution = {}
+
         return {
             "degraded": self.is_degraded(),
             "reason": str(self._trace_meta.get("context_degraded_reason") or ""),
             "error": str(self._trace_meta.get("context_degraded_error") or str(self._trace_meta.get("compression_error") or "")),
+            "cache_attribution": dict(cache_attribution),
             "trace_meta": dict(self._trace_meta),
             "stats": dict(self._stats),
         }
@@ -657,6 +673,29 @@ class ChatContextManager:
                             )
                 except Exception as _e_snap:
                     print(f"[SNAPSHOT] save failed: {_e_snap}".replace("\xa0", " "))
+
+        snapshot_status = "reused" if snapshot_content and history_messages and not snapshot_stale else "rebuilt"
+
+        if snapshot_stale:
+            snapshot_status = "stale"
+
+        volatile_block_diagnostics = []
+
+        for text in volatile_injections:
+            volatile_block_diagnostics.append({
+                "name": get_volatile_injection_name(text),
+                "chars": len(str(text or "")),
+            })
+
+        context.update_trace_meta({
+            "cache_attribution": {
+                "snapshot_status": snapshot_status,
+                "stable_head_sha256": hashlib.sha256(str(merged_head or "").encode("utf-8")).hexdigest(),
+                "stable_head_chars": len(str(merged_head or "")),
+                "volatile_blocks": volatile_block_diagnostics,
+                "volatile_chars": sum(item["chars"] for item in volatile_block_diagnostics),
+            }
+        })
 
         # 摘要块固定坑位：head 之后、历史之前。压缩换代后该结构冻结为
         # [head(最新画像/技能), 摘要, 新历史...]，从重建下一轮起前缀重新稳定命中

@@ -1,30 +1,13 @@
 <!--
-    TrashModal.vue — 回收站弹窗(GDDP 窗口样式,与设置窗口视觉统一)
+    TrashModal.vue — 回收站内容面板(由 ChangesModal 统一承载)
 
     设计:
-      - 现代 GDDP Modal(去 legacy,复用 g-modal 圆角/头部/关闭按钮)
-      - head 插槽承载 刷新/清空 按钮组,右侧为 GDDP 关闭按钮
       - 列表走分隔线式条目,恢复成功后通知父级刷新会话列表
+      - 刷新/清空由 ChangesModal 的设置式页头统一承载
 -->
 
 <template>
-    <Modal
-        :open="open"
-        width="680px"
-        modal-class="trash-modal"
-        title="回收站"
-        @close="emit('close')"
-    >
-        <template #head>
-            <div class="trash-head-left">
-                <h3>回收站</h3>
-                <div class="trash-head-actions">
-                    <Button variant="quiet" size="compact" icon="fa-solid fa-rotate" title="刷新" @click="load">刷新</Button>
-                    <Button variant="danger" size="compact" icon="fa-regular fa-trash-can" title="清空回收站" @click="handleClear">清空</Button>
-                </div>
-            </div>
-        </template>
-
+    <section class="changes-trash-panel" aria-label="回收站">
         <div class="trash-cards">
             <div v-if="loading" class="trash-empty-state">加载中...</div>
             <div v-else-if="!items.length" class="trash-empty-state">暂无回收站内容</div>
@@ -57,7 +40,7 @@
                 </div>
             </article>
         </div>
-    </Modal>
+    </section>
 </template>
 
 <script setup lang="ts">
@@ -69,14 +52,12 @@
     import { showError, showToast } from '@/stores/notify'
 
     import Button from '@/ui/Button.vue'
-    import Modal from '@/ui/Modal.vue'
 
     const props = defineProps<{
         open: boolean
     }>()
 
     const emit = defineEmits<{
-        close: []
         /** 有条目被恢复:父级应刷新会话列表 */
         restored: []
     }>()
@@ -91,7 +72,8 @@
             if (opened) {
                 void load()
             }
-        }
+        },
+        { immediate: true }
     )
 
     /** 拉取回收站列表(原版 loadTrashList,limit=200) */
@@ -153,6 +135,11 @@
         }
     }
 
+    defineExpose({
+        load,
+        clear: handleClear,
+    })
+
     /** 类型中文标签(原版 formatTrashTypeLabel) */
     function typeLabel(type: string): string {
         if (type === 'conversation') {
@@ -194,16 +181,12 @@
 </script>
 
 <style scoped>
-    .trash-head-left {
+    .changes-trash-panel {
         display: flex;
-        align-items: center;
-        gap: 14px;
-    }
-
-    .trash-head-actions {
-        display: flex;
-        align-items: center;
-        gap: 6px;
+        flex: 1 1 auto;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
     }
 
     .trash-cards {
@@ -211,7 +194,9 @@
         flex-direction: column;
         gap: 10px;
         padding: 2px 0 6px;
-        max-height: min(54vh, 480px);
+        max-height: none;
+        min-height: 0;
+        flex: 1 1 auto;
         overflow-y: auto;
     }
 
@@ -227,7 +212,7 @@
         display: flex;
         gap: 12px;
         padding: 12px 14px;
-        border: 1px solid #e8eef7;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         background: var(--color-bg-elevated);
         transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -235,7 +220,7 @@
 
     .trash-card:hover {
         border-color: var(--color-border);
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
     }
 
     /* 条目图标:中性裸图标(对齐知识库管理卡片 #9ca3af 语言,不用彩色底块) */

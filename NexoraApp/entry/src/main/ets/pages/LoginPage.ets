@@ -4,7 +4,7 @@
 
 import { sanitizeDisplayName } from '../common/AppConfig';
 import { AppState } from '../common/AppState';
-import { FontSize, Glow, LineHeight, Motion, Radius, Size, Space } from '../common/DesignToken';
+import { FontSize, Glow, LineHeight, Motion, PressScale, Radius, Size, Space } from '../common/DesignToken';
 import { BrandLogo } from '../components/common/BrandLogo';
 
 @Component
@@ -17,6 +17,7 @@ export struct LoginPage {
     @State private passwordDraft: string = '';
     @State private submitting: boolean = false;
     @State private errorText: string = '';
+    @State private submitPressed: boolean = false;
 
     aboutToAppear(): void {
         this.backendDraft = this.app.backendUrl;
@@ -164,7 +165,7 @@ export struct LoginPage {
         .alignItems(HorizontalAlign.Start);
     }
 
-    // 渐变主按钮：提交中禁用并显示进度
+    // 单色主按钮：提交中禁用并显示进度，按压只保留轻微回弹
     @Builder
     SubmitButton() {
         Row() {
@@ -184,16 +185,23 @@ export struct LoginPage {
         .height(48)
         .justifyContent(FlexAlign.Center)
         .borderRadius(Radius.md)
-        .linearGradient({
-            angle: 135,
-            colors: [
-                [$r('app.color.brand_primary'), 0],
-                [$r('app.color.brand_secondary'), 1]
-            ]
+        .backgroundColor($r('app.color.brand_primary'))
+        .opacity(this.submitting ? 0.7 : this.submitPressed ? 0.88 : 1)
+        .scale({
+            x: this.submitPressed ? PressScale.pressed : PressScale.normal,
+            y: this.submitPressed ? PressScale.pressed : PressScale.normal
         })
-        .opacity(this.submitting ? 0.7 : 1)
-        .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
         .margin({ top: Space.sm })
+        .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down && !this.submitting) {
+                this.submitPressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.submitPressed = false;
+            }
+        })
         .onClick(() => {
             this.submit();
         });

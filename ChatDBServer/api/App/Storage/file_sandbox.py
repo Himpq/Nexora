@@ -42,6 +42,15 @@ class UserFileSandbox:
     }
     PARSED_BINARY_EXTS = {".docx", ".pdf", ".pptx"}
     IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    IMAGE_MIME_BY_EXT = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    IMAGE_MODEL_MAX_BYTES = 12 * 1024 * 1024
     ALLOWED_UPLOAD_EXTS = ALLOWED_TEXT_EXTS | PARSED_BINARY_EXTS | IMAGE_EXTS
     FILE_READ_MAX_LINES = 500
     FILE_READ_MAX_CHARS = 10000
@@ -610,6 +619,11 @@ class UserFileSandbox:
         alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
         return source_ext in self.IMAGE_EXTS or alias_ext in self.IMAGE_EXTS or str(entry.get("parser_mode") or "") == "image"
 
+    def _image_mime_from_entry(self, entry: Dict[str, Any]) -> str:
+        source_ext = str(entry.get("source_ext") or "").lower()
+        alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
+        return self.IMAGE_MIME_BY_EXT.get(source_ext) or self.IMAGE_MIME_BY_EXT.get(alias_ext) or "application/octet-stream"
+
     def _reject_docx_text_mutation(self, entry: Dict[str, Any], tool_name: str) -> None:
         alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
 
@@ -623,12 +637,33 @@ class UserFileSandbox:
         to_line: Optional[int] = None,
         from_pos: Optional[int] = None,
         to_pos: Optional[int] = None,
+        include_image_metadata: bool = False,
     ) -> Dict[str, Any]:
         entry = self._get_entry(file_ref)
         abs_path = self._get_abs_path(entry)
 
         if self._is_image_entry(entry):
-            raise ValueError("图片文件不支持文本读取，请使用预览或下载。")
+            if not include_image_metadata:
+                raise ValueError("图片文件不支持文本读取，请使用预览或下载。")
+
+            if any(value is not None for value in (from_line, to_line, from_pos, to_pos)):
+                raise ValueError("图片文件不支持行或字符范围读取，请不要传入范围参数。")
+
+            return {
+                "success": True,
+                "mode": "image",
+                "content_type": "image",
+                "readable_as_text": False,
+                "message": "图片文件不会转换为文本；如果当前模型支持图片输入，系统会在后续请求中附带原图。",
+                "file": {
+                    "alias": entry.get("alias"),
+                    "sandbox_path": entry.get("sandbox_path"),
+                    "original_name": entry.get("original_name"),
+                    "size": entry.get("size", 0),
+                    "mime": self._image_mime_from_entry(entry),
+                },
+                "content": "",
+            }
 
         if self._is_generated_docx_entry(entry):
             with open(abs_path, "rb") as f:
@@ -735,6 +770,36 @@ class UserFileSandbox:
             } if truncated else None,
             "truncate_notice": truncate_notice if truncated else "",
             "content": result_content,
+        }
+
+    def read_image_asset(self, file_ref: str) -> Dict[str, Any]:
+        """读取图片原始字节，供模型编排层按 Provider 协议生成图片输入。"""
+        entry = self._get_entry(file_ref)
+
+        if not self._is_image_entry(entry):
+            raise ValueError("指定文件不是支持的图片文件。")
+
+        abs_path = self._get_abs_path(entry)
+        with open(abs_path, "rb") as f:
+            image_bytes = f.read(self.IMAGE_MODEL_MAX_BYTES + 1)
+
+        if not image_bytes:
+            raise ValueError("图片文件为空。")
+
+        if len(image_bytes) > self.IMAGE_MODEL_MAX_BYTES:
+            raise ValueError(
+                f"图片文件过大，模型图片输入上限为 {self.IMAGE_MODEL_MAX_BYTES} 字节。"
+            )
+
+        return {
+            "file": {
+                "alias": entry.get("alias"),
+                "sandbox_path": entry.get("sandbox_path"),
+                "original_name": entry.get("original_name"),
+                "size": entry.get("size", len(image_bytes)),
+            },
+            "mime": self._image_mime_from_entry(entry),
+            "bytes": image_bytes,
         }
 
     def write_file(

@@ -149,7 +149,8 @@
             icon: String(source.icon || ""),
             score: positiveNumber(source.score),
             recentCalls: positiveNumber(source.recentCalls),
-            recentTokens: positiveNumber(source.recentTokens)
+            recentTokens: positiveNumber(source.recentTokens),
+            recentOutputTokens: positiveNumber(source.recentOutputTokens)
         };
     }
 
@@ -477,16 +478,16 @@
             return;
         }
 
-        const maxScore = Math.max(...rows.map((item) => positiveNumber(item.score)), 1);
+        const maxRecentTokens = Math.max(...rows.map((item) => positiveNumber(item.recentTokens)), 1);
         clearNode(root);
 
         rows.forEach((item, index) => {
             root.appendChild(createDataRow({
                 indexText: `#${index + 1}`,
                 item,
-                value: formatNumber(item.score),
-                width: positiveNumber(item.score) / maxScore * 100,
-                meta: `${item.provider} · ${formatNumber(item.recentCalls)} calls · ${formatNumber(item.recentTokens)} tokens`
+                value: formatNumber(item.recentTokens),
+                width: positiveNumber(item.recentTokens) / maxRecentTokens * 100,
+                meta: `${item.provider} · ${formatNumber(item.recentCalls)} calls · ${formatNumber(item.recentTokens)} input + output · ${formatNumber(item.recentOutputTokens)} output`
             }));
         });
     }
@@ -659,7 +660,7 @@
         }
 
         if (footnote) {
-            footnote.textContent = `说明：当前页面使用后端聚合数据。样本来源为 ${statusData.source}。当前口径：会话消息统计模型调用，token 日志统计 Token，总工具日志统计工具表现；近 ${statusData.recent24hWindowHours}h 榜单融合调用次数与 Token。`;
+            footnote.textContent = `说明：当前页面使用后端聚合数据。聊天日志的排名值为原始输入加输出，PAPI 使用上游返回的 total_tokens；近 ${statusData.recent24hWindowHours}h 榜单按输入 + 输出总量排名。`;
         }
     }
 

@@ -241,7 +241,7 @@ class ToolResultPresenter:
 
     def _is_displayable_exa_image(self, url: Any) -> bool:
         """
-        判断 Exa image 是否值得在工具展开区以 Markdown 图片展示。
+        判断 Exa image 是否值得交给前端媒体层展示。
 
         过滤 favicon/logo/小图标等无效缩略图，避免把 32x32 的 favicon 拉伸成全宽卡片。
         规则：
@@ -259,6 +259,50 @@ class ToolResultPresenter:
         if any(token in low for token in ("logo", "favicon", "disambig", "sprite", "/40px-")):
             return False
         return True
+
+    def extract_display_media(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """提取工具结果中的结构化媒体，媒体不进入模型或工具文本展示。"""
+        if str(tool_name or "").strip() != "exa_web_search":
+            return None
+
+        payload = self._load_payload(result)
+
+        if not isinstance(payload, dict) or payload.get("success", True) is False:
+            return None
+
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        items: List[Dict[str, str]] = []
+        seen_images = set()
+
+        for item in results[:20]:
+            if not isinstance(item, dict):
+                continue
+
+            image = str(item.get("image") or "").strip()
+
+            if not self._is_displayable_exa_image(image) or image in seen_images:
+                continue
+
+            seen_images.add(image)
+            items.append({
+                "image_url": image,
+                "title": str(item.get("title") or "").strip(),
+                "source_url": str(item.get("url") or "").strip(),
+            })
+
+        if not items:
+            return None
+
+        return {
+            "type": "exa_image_gallery",
+            "query": str(payload.get("query") or args.get("query") or "").strip(),
+            "items": items,
+        }
 
     def _looks_successful_text(self, result: Any) -> bool:
         text = str(result or "").strip().lower()
@@ -474,6 +518,15 @@ class ToolResultPresenter:
 
         if not success:
             lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            return "\n".join(lines).strip()
+
+        if str(payload.get("content_type") or "").strip().lower() == "image":
+            lines.extend([
+                "",
+                "### Content",
+                "",
+                str(payload.get("message") or "图片文件，未转换为文本。"),
+            ])
             return "\n".join(lines).strip()
 
         lines.extend([
@@ -3079,7 +3132,6 @@ class ToolResultPresenter:
 
             return "\n".join(lines).strip()
 
-        seen_images: set = set()
         for index, item in enumerate(results[:20], start=1):
             if not isinstance(item, dict):
                 continue
@@ -3090,11 +3142,9 @@ class ToolResultPresenter:
             published = str(item.get("published_date") or "").strip()
             score = item.get("score")
             highlights = item.get("highlights") if isinstance(item.get("highlights"), list) else []
-            image = str(item.get("image") or "").strip()
-            favicon = str(item.get("favicon") or "").strip()
             author = str(item.get("author") or "").strip()
 
-            # 标题行：带编号的可点击链接（Markdown），移动端自动换行；favicon 作为小图标可选
+            # 标题行：带编号的可点击链接（Markdown），移动端自动换行
             if url:
                 lines.extend(["", f"### {index}. [{self._escape_table_cell(title)}]({url})"])
                 # URL 仅保留一行，避免与标题重复过长；favicon/author 作为轻量元信息
@@ -3135,14 +3185,6 @@ class ToolResultPresenter:
 
                     clipped = text[:280]
                     lines.append(f"> {clipped}")
-
-            # 纯 Markdown 图片：仅渲染可信的真实配图，过滤 favicon/logo 小图标并去重；favicon 不返回给模型
-            if self._is_displayable_exa_image(image):
-                if image not in seen_images:
-                    seen_images.add(image)
-                    if len(seen_images) <= 3:
-                        alt = self._escape_table_cell(title)[:40]
-                        lines.extend(["", f"![{alt}]({image})"])
 
         # 结构化输出（outputSchema）透传提示
         if isinstance(payload.get("output"), dict) and payload.get("output"):

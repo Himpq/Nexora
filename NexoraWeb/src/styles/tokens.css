@@ -12,7 +12,7 @@
  *   --z-portal-dropdown Teleport 到 body 的下拉菜单(可跨越弹窗层)
  *   --z-sidebar-panel  右侧滑入面板(知识库 / 文件)
  *   --z-right-click    右键菜单
- *   --z-floating       浮动面板(时间线等,原版 3601,低于右键菜单 3660)
+ *   --z-floating       浮动面板(笔记等,低于右键菜单)
  *   --z-modal          弹窗(设置 / 小窗);4400 > legacy ≤980px 的 .chat-header 4200
  *                      (style.css 移动端头部规则带 !important,弹窗必须高于它,
  *                       否则手机端顶栏整条浮在设置窗之上)
@@ -67,11 +67,6 @@
  */
 .image-viewer-backdrop {
     z-index: var(--z-viewer);
-}
-
-/* 时间线浮动面板:原版 style.css 硬编码 z-index:3601,用令牌覆盖 */
-.timeline-panel {
-    z-index: var(--z-floating);
 }
 
 /* 笔记浮动面板:原版 style.css 硬编码 z-index:3600,用令牌覆盖(与时间线同层) */

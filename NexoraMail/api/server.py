@@ -6,7 +6,7 @@ import base64
 from types import SimpleNamespace
 from html import unescape
 from functools import wraps
-from email import message_from_string, policy
+from email import message_from_bytes, policy
 from email.header import decode_header, Header
 
 from flask import Flask, jsonify, request
@@ -178,7 +178,7 @@ def _decode_subject(value):
             out.append(text.decode(charset or "utf-8", errors="replace"))
         else:
             out.append(str(text))
-    return _repair_common_mojibake("".join(out).strip())
+    return _decode_literal_unicode_escapes(_repair_common_mojibake("".join(out).strip()))
 
 
 def _garbled_score_text(s):
@@ -258,16 +258,30 @@ def _decode_literal_unicode_escapes(text):
     return out
 
 
+def _normalize_mail_text(text):
+    """Normalize extracted mail text without changing the raw stored message."""
+    decoded = _decode_literal_unicode_escapes(str(text or ""))
+    return _repair_common_mojibake(decoded)
+
+
 def _extract_subject(raw_content):
     if not raw_content:
         return ""
+
+    raw_bytes = (
+        bytes(raw_content)
+        if isinstance(raw_content, (bytes, bytearray))
+        else str(raw_content).encode("utf-8", errors="surrogateescape")
+    )
+    raw_text = raw_bytes.decode("utf-8", errors="replace")
+
     try:
-        msg = message_from_string(raw_content)
+        msg = message_from_bytes(raw_bytes)
         return _decode_subject(msg.get("Subject", ""))
     except Exception:
-        for line in raw_content.splitlines()[:30]:
+        for line in raw_text.splitlines()[:30]:
             if line.lower().startswith("subject:"):
-                return _repair_common_mojibake(line.split(":", 1)[1].strip())
+                return _normalize_mail_text(line.split(":", 1)[1].strip())
         return ""
 
 
@@ -348,14 +362,21 @@ def _extract_mail_content(raw_content):
     if not raw_content:
         return result
 
+    raw_bytes = (
+        bytes(raw_content)
+        if isinstance(raw_content, (bytes, bytearray))
+        else str(raw_content).encode("utf-8", errors="surrogateescape")
+    )
+    raw_text = raw_bytes.decode("utf-8", errors="replace")
+
     plain_parts = []
     html_parts = []
     try:
-        msg = message_from_string(raw_content, policy=policy.default)
+        msg = message_from_bytes(raw_bytes, policy=policy.default)
         result["subject"] = _decode_subject(str(msg.get("Subject", "") or ""))
-        result["from"] = str(msg.get("From", "") or "").strip()
-        result["to"] = str(msg.get("To", "") or "").strip()
-        result["date"] = str(msg.get("Date", "") or "").strip()
+        result["from"] = _normalize_mail_text(str(msg.get("From", "") or "").strip())
+        result["to"] = _normalize_mail_text(str(msg.get("To", "") or "").strip())
+        result["date"] = _normalize_mail_text(str(msg.get("Date", "") or "").strip())
 
         if msg.is_multipart():
             for part in msg.walk():
@@ -382,24 +403,27 @@ def _extract_mail_content(raw_content):
         # best-effort fallback for malformed MIME
         pass
 
-    plain = "\n\n".join([p for p in plain_parts if p]).strip()
-    html = "\n\n".join([h for h in html_parts if h]).strip()
+    plain = _normalize_mail_text("\n\n".join([p for p in plain_parts if p]).strip())
+    html = _normalize_mail_text("\n\n".join([h for h in html_parts if h]).strip())
 
     # Fallback: if parser failed but raw contains html body.
     if not plain and not html:
-        split = re.split(r"\r?\n\r?\n", raw_content, maxsplit=1)
-        body = split[1] if len(split) > 1 else raw_content
+        split = re.split(r"\r?\n\r?\n", raw_text, maxsplit=1)
+        body = split[1] if len(split) > 1 else raw_text
         if re.search(r"(?is)<html[\s>]|<body[\s>]|<div[\s>]|<table[\s>]", body):
             html = body.strip()
         else:
             plain = body.strip()
 
     # Fallback for base64-only multipart fragments
-    if not plain and not html and "base64" in (raw_content or "").lower():
-        plain = _decode_base64_blocks_fallback(raw_content)
+    if not plain and not html and "base64" in raw_text.lower():
+        plain = _normalize_mail_text(_decode_base64_blocks_fallback(raw_text))
 
     if not plain and html:
-        plain = _strip_html(html)
+        plain = _normalize_mail_text(_strip_html(html))
+
+    plain = _normalize_mail_text(plain)
+    html = _normalize_mail_text(html)
 
     preview = re.sub(r"\s+", " ", (plain or "")).strip()
     if len(preview) > 180:
@@ -456,14 +480,15 @@ def _load_mail_entry(mail_dir, include_content=False):
     except Exception:
         return None
 
-    raw_content = ""
+    raw_content = b""
     try:
-        with open(content_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(content_path, "rb") as f:
             raw_content = f.read()
     except Exception:
-        raw_content = ""
+        raw_content = b""
 
     parsed = _extract_mail_content(raw_content)
+    raw_content_text = raw_content.decode("utf-8", errors="replace")
     subject = parsed.get("subject", "")
     timestamp = int(meta.get("timestamp", 0) or 0)
     payload = {
@@ -494,7 +519,7 @@ def _load_mail_entry(mail_dir, include_content=False):
         try:
             payload["size"] = os.path.getsize(content_path)
         except Exception:
-            payload["size"] = len(raw_content.encode("utf-8", errors="ignore")) if raw_content else 0
+            payload["size"] = len(raw_content) if raw_content else 0
 
     # Prefer parsed envelope fields when available.
     if parsed.get("from"):
@@ -506,7 +531,7 @@ def _load_mail_entry(mail_dir, include_content=False):
     payload["preview_text"] = parsed.get("preview_text", "")
 
     if include_content:
-        payload["content"] = raw_content
+        payload["content"] = raw_content_text
         payload["content_text"] = parsed.get("content_text", "")
         payload["content_html"] = parsed.get("content_html", "")
     else:

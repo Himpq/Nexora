@@ -3,7 +3,7 @@
  *
  * 职责:
  *   - 会话列表 / 当前会话 / 消息列表
- *   - 生成中的增量正文与思考内容、生成状态(由网络层 chatStream 驱动)
+ *   - 生成中的增量正文与思考内容(按会话 ID 路由的多流分离缓冲)
  */
 
 import { defineStore } from 'pinia'
@@ -24,8 +24,9 @@ import {
     type ConversationSummary,
     type ConversationTurn,
 } from '@/api/conversations'
-import { chatStream, type ChatStreamSnapshot } from '@/network/chatStream'
+import { chatStream, type ChatStreamSnapshot, type ChatStreamSnapshotContext } from '@/network/chatStream'
 import { parseContextCompressionStep } from '@/stream/contextCompression'
+import { readExaImageGallery } from '@/stream/exaMedia'
 import type { QuestionPayload } from '@/stream/questionCard'
 import {
     appendSegmentDelta,
@@ -34,14 +35,17 @@ import {
     rebuildSegmentsFromFlat,
     type MessageSegment,
 } from '@/stream/messageSegments'
-import { estimateStreamTokensByText, safeTokenInt } from '@/stream/tokenBudget'
+import {
+    estimateStreamTokensByText,
+    mergeTokenMiniStats,
+    safeTokenInt,
+} from '@/stream/tokenBudget'
 
 interface ConversationState {
     conversations: ConversationSummary[]
     currentId: string
     messages: ChatMessage[]
     contextEvents: ConversationContextEvent[]
-    generating: boolean
     loaded: boolean
     queue: QueuedMessage[]
     streamTokenProfile: Record<string, unknown> | null
@@ -49,13 +53,9 @@ interface ConversationState {
     hasMoreBefore: boolean
     /** 正在加载更早消息(防重入,对齐原版 loadingBefore) */
     loadingBefore: boolean
-    /** 流式更新的目标助手消息索引(重答时指向被覆盖的历史回答;null 表示最后一条) */
-    streamingTargetIndex: number | null
-    /** 当前流所属会话 ID:跨会话查看时用于隔离增量写入与指示器定位 */
-    streamingConversationId: string
     /**
-     * 进行中流的分离消息缓冲(会话 ID → 缓冲):
-     * 流式增量始终写入这里挂名的助手对象,切走期间照常累积;
+     * 进行中流的分离消息缓冲(会话 ID → 缓冲,多会话并发的唯一事实来源):
+     * 流式增量始终写入挂名会话的助手对象,无论用户当前查看哪个会话;
      * 切回该会话时把缓冲对象接回可见列表,实现零丢失的进度恢复。
      */
     pendingStreams: Record<string, PendingStream>
@@ -67,7 +67,7 @@ interface ConversationState {
     loadSeq: number
     /** 输入区「TK 输入/输出」mini 展示状态(对齐原版 tokenMiniState) */
     tokenMini: {
-        /** 今日基数:会话统计接口的 today_input/today_output */
+        /** 当前会话累计基数:会话统计接口的 input_total/output_total */
         baseInput: number
         baseOutput: number
         /** 流式 usage 增量(token_usage 块快照差分) */
@@ -118,14 +118,11 @@ export const useConversationStore = defineStore('conversation', {
         currentId: '',
         messages: [],
         contextEvents: [],
-        generating: false,
         loaded: false,
         queue: [],
         streamTokenProfile: null,
         hasMoreBefore: false,
         loadingBefore: false,
-        streamingTargetIndex: null,
-        streamingConversationId: '',
         pendingStreams: {},
         messagesLoading: false,
         turns: [],
@@ -144,8 +141,9 @@ export const useConversationStore = defineStore('conversation', {
 
     actions: {
         /**
-         * 跨刷新恢复:重建分离缓冲并复位流式状态(网络层已读取/校验快照)。
+         * 跨刷新恢复:按会话重建分离缓冲(网络层已读取/校验快照)。
          * 必须先于任何会话加载/跳转调用,否则可见列表无法合并恢复内容。
+         * 多条并行流的快照逐条调用本方法。
          */
         restorePendingStream(snapshot: ChatStreamSnapshot): void {
             this.pendingStreams[snapshot.conversationId] = {
@@ -153,57 +151,42 @@ export const useConversationStore = defineStore('conversation', {
                 assistant: { ...snapshot.assistant },
                 userMessage: snapshot.userMessage,
             }
-
-            this.generating = true
-            this.streamingConversationId = snapshot.conversationId
-            this.streamingTargetIndex = snapshot.targetIndex
-            this.streamTokenProfile = null
-
-            // 跨刷新恢复:以持久化统计重建今日基数(流式增量部分从断点重新累积)
-            void this.refreshTokenMiniBase(snapshot.conversationId)
         },
 
         /**
          * 活动流快照内容源(供网络层 persistSnapshot 序列化):
-         * 返回当前进行中流的缓冲消息上下文;无活动流返回 null。
+         * 返回全部进行中流的缓冲消息上下文;无活动流返回空数组。
          */
-        buildStreamSnapshot(): {
-            conversationId: string
-            targetIndex: number
-            assistant: ChatMessage
-            userMessage?: ChatMessage
-        } | null {
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
+        buildStreamSnapshots(): ChatStreamSnapshotContext[] {
+            const contexts: ChatStreamSnapshotContext[] = []
 
-            if (!pending || pending.finished) {
-                return null
-            }
+            Object.entries(this.pendingStreams).forEach(([conversationId, pending]) => {
+                if (pending.finished) {
+                    return
+                }
 
-            return {
-                conversationId: convId,
-                targetIndex: pending.targetIndex,
-                assistant: pending.assistant,
-                userMessage: pending.userMessage,
-            }
+                contexts.push({
+                    conversationId,
+                    targetIndex: pending.targetIndex,
+                    assistant: pending.assistant,
+                    userMessage: pending.userMessage,
+                })
+            })
+
+            return contexts
         },
 
-        /** 重连发现流已结束/不存在:把缓冲转为已完成态保留展示 */
-        finishRestoredStream(): void {
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
+        /** 重连发现指定会话的流已结束/不存在:把缓冲转为已完成态保留展示 */
+        finishRestoredStream(conversationId: string): void {
+            const pending = this.pendingStreams[conversationId]
 
             if (pending) {
                 pending.finished = true
                 pending.assistant.pending = false
             }
 
-            this.generating = false
-            this.streamingConversationId = ''
-            this.streamingTargetIndex = null
-
-            // 快照已被消费/流已结束,不再保留陈旧快照
-            chatStream.clearSnapshot()
+            // 该会话快照已消费,不再保留陈旧快照(其他并行流条目不受影响)
+            chatStream.clearSnapshot(conversationId)
         },
 
         /** 拉取会话列表 */
@@ -215,18 +198,17 @@ export const useConversationStore = defineStore('conversation', {
 
         /** 新建会话(对齐原版:本地重置进入空白会话,发送时才真正创建) */
         async newConversation(): Promise<void> {
-            // 生成中也允许新建:对齐原版 detachCurrentVisibleStreamForNavigation —
-            // 后台流保留在 pendingStreams，切到空白会话，generating/streamingConversationId 保持指向旧会话
-            // 侧栏仍显示旧会话的 streaming 指示，新会话为空白可立即输入
+            // 生成中也允许新建:后台流保留在 pendingStreams,切到空白会话后照常累积,
+            // 侧栏仍显示旧会话的 streaming 指示,新会话为空白可立即输入
             this.currentId = ''
             this.messages = []
             this.hasMoreBefore = false
             this.loadingBefore = false
-            this.streamingTargetIndex = null
             this.messagesLoading = false
             this.turns = []
+            this.streamTokenProfile = null
 
-            // 新对话无历史:清零 TK mini 今日基数与流式增量
+            // 新对话无历史:清零 TK mini 当前会话累计基数与流式增量
             void this.refreshTokenMiniBase('')
         },
 
@@ -278,7 +260,7 @@ export const useConversationStore = defineStore('conversation', {
             this.hasMoreBefore = false
             this.loadingBefore = false
             this.contextEvents = []
-            this.streamingTargetIndex = null
+            this.streamTokenProfile = null
             this.messagesLoading = true
             // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
             this.turns = []
@@ -319,19 +301,17 @@ export const useConversationStore = defineStore('conversation', {
 
                         list.sort((a, b) => Number(a.index) - Number(b.index))
 
-                        this.streamingTargetIndex = pending.targetIndex
-
                         if (pending.finished) {
                             delete this.pendingStreams[conversationId]
 
-                            // 同步清理跨刷新快照,避免下次启动误重连已结束的流
-                            chatStream.clearSnapshot()
+                            // 同步清理该会话的跨刷新快照,避免下次启动误重连已结束的流(并行流条目保留)
+                            chatStream.clearSnapshot(conversationId)
                         }
                     }
 
                     await this.loadTurns()
 
-                    // TK mini 基数随会话切换刷新(今日统计,非阻塞)
+                    // TK mini 基数随会话切换刷新(当前会话累计统计,非阻塞)
                     void this.refreshTokenMiniBase(conversationId)
 
                     console.debug(`[conv-load] ${conversationId} turns done total=${(performance.now() - t0).toFixed(0)}ms`)
@@ -362,7 +342,6 @@ export const useConversationStore = defineStore('conversation', {
                 this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
-                this.streamingTargetIndex = null
 
                 return
             }
@@ -394,7 +373,12 @@ export const useConversationStore = defineStore('conversation', {
             this.turns = await fetchTurns(this.currentId)
         },
 
-        setContextEvents(events: ConversationContextEvent[]): void {
+        /** 记录上下文知识事件;仅接受当前查看会话的事件(后台流事件不污染当前视图) */
+        setContextEvents(conversationId: string, events: ConversationContextEvent[]): void {
+            if (conversationId !== this.currentId) {
+                return
+            }
+
             this.contextEvents = events.map((event) => ({ ...event }))
         },
 
@@ -454,11 +438,13 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
-        /** 删除会话(当前会话删除后清空选择) */
+        /** 删除会话(当前会话删除后清空选择;该会话的分离缓冲与快照一并清理) */
         async removeConversation(conversationId: string): Promise<void> {
             await deleteConversation(conversationId)
 
             this.conversations = this.conversations.filter((item) => item.id !== conversationId)
+            delete this.pendingStreams[conversationId]
+            chatStream.clearSnapshot(conversationId)
 
             if (this.currentId === conversationId) {
                 this.currentId = ''
@@ -466,14 +452,18 @@ export const useConversationStore = defineStore('conversation', {
                 this.contextEvents = []
                 this.hasMoreBefore = false
                 this.loadingBefore = false
-                this.streamingTargetIndex = null
                 this.messagesLoading = false
                 this.turns = []
+                this.streamTokenProfile = null
             }
         },
 
-        /** 发送前占位:追加用户消息并创建空的助手消息(对齐原版 appendUserMessageWithAttachments) */
-        beginStream(userContent: string, attachments: AttachmentInput[] = []): void {
+        /**
+         * 发送前占位:向目标会话追加用户消息并创建空的助手消息,注册该会话的分离缓冲。
+         * conversationId 必须由发送路径显式传入(而非隐式取 currentId),保证流式
+         * 增量始终挂名到请求实际归属的会话,多会话并发时不串台。
+         */
+        beginStream(conversationId: string, userContent: string, attachments: AttachmentInput[] = []): void {
             // 新消息索引基于最后一条已有消息的后端索引递增,避免与分页加载的索引错位
             const lastIndex = this.messages.length > 0
                 ? Number(this.messages[this.messages.length - 1].index)
@@ -522,34 +512,32 @@ export const useConversationStore = defineStore('conversation', {
                 content: userContent,
             })
 
-            this.generating = true
-            this.streamingConversationId = this.currentId
-            this.streamingTargetIndex = assistantMessage.index
-
-            // 新一轮流开始:清空上一轮的流式增量估算,今日基数继续沿用
+            // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
+            tokenMiniRefreshSeq += 1
             this.resetTokenMiniStreamPart()
 
             // 注册分离缓冲:切走期间增量照常写入该对象,切回时接回列表(零丢失)
-            this.pendingStreams[this.currentId] = {
+            this.pendingStreams[conversationId] = {
                 targetIndex: assistantMessage.index,
                 assistant: assistantMessage,
                 userMessage,
             }
 
             // 乐观更新会话标题(首条消息截断),等待后端自动生成标题时保持可辨识
-            if (this.currentId) {
-                const current = this.conversations.find((item) => item.id === this.currentId)
+            const current = this.conversations.find((item) => item.id === conversationId)
 
-                if (current && (!current.title || current.title === '新对话')) {
-                    const title = userContent.replace(/\s+/g, ' ').slice(0, 20)
+            if (current && (!current.title || current.title === '新对话')) {
+                const title = userContent.replace(/\s+/g, ' ').slice(0, 20)
 
-                    current.title = title || '新对话'
-                }
+                current.title = title || '新对话'
             }
         },
 
-        /** 重答流式:清空目标助手消息并锁定流式更新目标索引(对齐原版 resetAssistantMessageForLiveStream) */
-        beginStreamAt(assistantIndex: number): void {
+        /**
+         * 重答流式:清空目标会话的目标助手消息并注册分离缓冲
+         * (对齐原版 resetAssistantMessageForLiveStream)
+         */
+        beginStreamAt(conversationId: string, assistantIndex: number): void {
             const index = Number(assistantIndex)
 
             if (!Number.isFinite(index) || index < 0) {
@@ -570,40 +558,37 @@ export const useConversationStore = defineStore('conversation', {
             assistant.pending = true
             assistant.compressionStep = null
 
-            this.streamingTargetIndex = index
-            this.streamingConversationId = this.currentId
-            this.generating = true
-
-            // 新一轮流开始:清空上一轮的流式增量估算,今日基数继续沿用
+            // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
+            tokenMiniRefreshSeq += 1
             this.resetTokenMiniStreamPart()
 
             // 注册分离缓冲(重答场景无新增用户消息)
-            this.pendingStreams[this.currentId] = {
+            this.pendingStreams[conversationId] = {
                 targetIndex: index,
                 assistant,
             }
         },
 
         /** 流式增量追加正文分段(与思考分段按输出顺序交错排列) */
-        appendStreamText(delta: string): void {
+        appendStreamText(conversationId: string, delta: string): void {
             if (!delta) {
                 return
             }
 
-            appendSegmentDelta(this._resolveStreamingAssistant(), 'content', delta)
+            appendSegmentDelta(this._resolveStreamingAssistant(conversationId), 'content', delta)
 
-            this._accumulateStreamOutputEstimate(delta)
+            this._accumulateStreamOutputEstimate(conversationId, delta)
         },
 
         /** 流式增量追加思考分段(正文已输出后再次思考会新开分段,顺序追加) */
-        appendStreamReasoning(delta: string): void {
+        appendStreamReasoning(conversationId: string, delta: string): void {
             if (!delta) {
                 return
             }
 
-            appendSegmentDelta(this._resolveStreamingAssistant(), 'reasoning', delta)
+            appendSegmentDelta(this._resolveStreamingAssistant(conversationId), 'reasoning', delta)
 
-            this._accumulateStreamOutputEstimate(delta)
+            this._accumulateStreamOutputEstimate(conversationId, delta)
         },
 
         /**
@@ -616,7 +601,7 @@ export const useConversationStore = defineStore('conversation', {
          * question 为交互卡片分段,等待用户作答;
          * 以上分段均不参与扁平字段同步(content/reasoning 不受影响)。
          */
-        appendStreamToolStep(step: Record<string, unknown>): void {
+        appendStreamToolStep(conversationId: string, step: Record<string, unknown>): void {
             const type = String(step.type || '').trim()
 
             if (type !== 'function_call_delta' && type !== 'function_call' && type !== 'function_result' && type !== 'question') {
@@ -624,13 +609,13 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             if (type === 'function_call_delta') {
-                this._mergeStreamToolDelta(step)
+                this._mergeStreamToolDelta(conversationId, step)
 
                 return
             }
 
             if (type === 'function_call') {
-                this._finalizeStreamToolCall(step)
+                this._finalizeStreamToolCall(conversationId, step)
 
                 return
             }
@@ -647,7 +632,7 @@ export const useConversationStore = defineStore('conversation', {
                     question: payload,
                 }
 
-                appendToolSegment(this._resolveStreamingAssistant(), segment)
+                appendToolSegment(this._resolveStreamingAssistant(conversationId), segment)
 
                 return
             }
@@ -667,10 +652,11 @@ export const useConversationStore = defineStore('conversation', {
                 displayResult: typeof (step as any).display_model_visible_result === 'string' && (step as any).display_model_visible_result.trim()
                     ? String((step as any).display_model_visible_result)
                     : typeof (step as any).display_result === 'string' ? String((step as any).display_result) : undefined,
+                displayMedia: readExaImageGallery(step.display_media),
                 round: Number(step.round) || undefined,
             }
 
-            appendToolSegment(this._resolveStreamingAssistant(), segment)
+            appendToolSegment(this._resolveStreamingAssistant(conversationId), segment)
         },
 
         /**
@@ -699,8 +685,8 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /** 参数流式增量:并入未闭合调用分段;无则新开一个 delta 调用分段 */
-        _mergeStreamToolDelta(step: Record<string, unknown>): void {
-            const assistant = this._resolveStreamingAssistant()
+        _mergeStreamToolDelta(conversationId: string, step: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
 
             if (!assistant) {
                 return
@@ -732,13 +718,13 @@ export const useConversationStore = defineStore('conversation', {
                 target.text += argsDelta
 
                 // 工具调用参数同样占用输出 token,计入 TK mini 估算(对齐原版 onTokenStreamToolArgsChunk)
-                this._accumulateStreamOutputEstimate(argsDelta)
+                this._accumulateStreamOutputEstimate(conversationId, argsDelta)
             }
         },
 
         /** 完整调用事件:覆盖未闭合的同调用分段(delta 拼接可能有边界误差);无则独立成段 */
-        _finalizeStreamToolCall(step: Record<string, unknown>): void {
-            const assistant = this._resolveStreamingAssistant()
+        _finalizeStreamToolCall(conversationId: string, step: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
 
             if (!assistant) {
                 return
@@ -770,11 +756,10 @@ export const useConversationStore = defineStore('conversation', {
             })
         },
 
-        /** 流结束:终帧完整正文覆盖后复位生成状态(分段结构保留流式时序,不再塌缩重建) */
-        endStream(options: { finalContent?: string } = {}): void {
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
-            const assistant = pending ? pending.assistant : this._resolveStreamingAssistant()
+        /** 流结束:终帧完整正文覆盖后标记该会话缓冲已完成(分段结构保留流式时序) */
+        endStream(conversationId: string, options: { finalContent?: string } = {}): void {
+            const pending = this.pendingStreams[conversationId]
+            const assistant = pending?.assistant
 
             // 仅当服务端全文非空且与本地增量拼接不一致(罕见漂移)时才按扁平字段重建;
             // 空 finalContent(部分后端场景)不覆盖本地累积
@@ -792,38 +777,26 @@ export const useConversationStore = defineStore('conversation', {
                 assistant.pending = false
             }
 
-            // 正在查看该会话时同步可见列表的 pending 标记
-            if (this.streamingConversationId === this.currentId && this.streamingTargetIndex !== null) {
-                const target = this.messages.find(
-                    (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
-                )
-
-                if (target) {
-                    target.pending = false
-                }
-            }
-
             // 缓冲保留(标记 finished):用户切回消费后才释放,防止后台完成时内容丢失
             if (pending) {
                 pending.finished = true
             }
 
-            this.generating = false
-            this.streamingConversationId = ''
-            this.streamingTargetIndex = null
+            // 该会话流已结束:移除陈旧快照条目(其他并行流条目保留)
+            chatStream.clearSnapshot(conversationId)
 
-            // 流结束:刷新 TK mini 今日基数(含本轮回写)并清空流式增量
-            void this.refreshTokenMiniBase(convId)
+            // 流结束:刷新 TK mini 当前会话累计基数;统计尚未落库时保留本轮流式增量
+            void this.refreshTokenMiniBase(conversationId, { preserveStreamPart: true })
         },
 
         /**
-         * 用后端 done 终帧携带的最终消息覆盖本地目标消息
+         * 用后端 done 终帧携带的最终消息覆盖目标会话的流式目标消息
          *
-         * 定位顺序:目标索引参数 > 当前流式目标索引 > 最后一条助手消息;
-         * 重答时更新被覆盖的消息,普通发送时更新最后一条,覆盖内容与
-         * metadata.versions(版本切换器数据源),避免全量重载。
+         * 目标定位:该会话的活动缓冲对象 > 目标索引对应的可见消息(仅当前查看会话,
+         * 用于版本切换等无活动流的场景);重答时更新被覆盖的消息,普通发送时更新
+         * 最后一条,覆盖内容与 metadata.versions(版本切换器数据源),避免全量重载。
          */
-        applyFinalMessage(message: Record<string, unknown> | undefined, targetIndex?: number | null): void {
+        applyFinalMessage(conversationId: string, message: Record<string, unknown> | undefined, targetIndex?: number | null): void {
             if (!message || typeof message !== 'object') {
                 return
             }
@@ -831,8 +804,7 @@ export const useConversationStore = defineStore('conversation', {
             let assistant: ChatMessage | undefined
 
             // 活动流的缓冲对象优先(跨会话场景下可见列表可能根本不是流所属会话)
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
+            const pending = this.pendingStreams[conversationId]
 
             if (pending) {
                 const explicit = Number(targetIndex)
@@ -842,21 +814,16 @@ export const useConversationStore = defineStore('conversation', {
                 }
             }
 
-            if (!assistant) {
-                const preferIndex = Number.isFinite(Number(targetIndex))
-                    ? Number(targetIndex)
-                    : this.streamingTargetIndex
-
-                if (preferIndex !== null && preferIndex !== undefined && Number.isFinite(preferIndex)) {
-                    assistant = this.messages.find(
-                        (item) => item.role === 'assistant' && Number(item.index) === preferIndex
-                    )
-                }
+            // 无活动流:仅当前查看会话允许按索引定位可见消息(版本切换场景)
+            if (!assistant && conversationId === this.currentId && Number.isFinite(Number(targetIndex))) {
+                assistant = this.messages.find(
+                    (item) => item.role === 'assistant' && Number(item.index) === Number(targetIndex)
+                )
             }
 
             if (!assistant) {
                 console.error('[conversation] final message target not found', {
-                    conversationId: convId,
+                    conversationId,
                     currentId: this.currentId,
                     targetIndex,
                 })
@@ -864,7 +831,7 @@ export const useConversationStore = defineStore('conversation', {
                 return
             }
 
-            if (!assistant || assistant.role !== 'assistant') {
+            if (assistant.role !== 'assistant') {
                 return
             }
 
@@ -999,17 +966,17 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /**
-         * 将错误文本写入当前流式目标消息
+         * 将错误文本写入指定会话的流式目标消息
          *
          * 重连失败等场景拿不到后端终帧消息时,目标消息可能被清空;
          * 用错误文本填充,保证用户能看到失败原因而非空白气泡。
          */
-        fillStreamingMessageWithError(errorText: string): void {
+        fillStreamingMessageWithError(conversationId: string, errorText: string): void {
             const text = String(errorText || '回复生成失败').trim()
 
-            const assistant = this._resolveStreamingAssistant()
+            const assistant = this._resolveStreamingAssistant(conversationId)
 
-            if (!assistant || assistant.role !== 'assistant') {
+            if (!assistant) {
                 return
             }
 
@@ -1020,96 +987,73 @@ export const useConversationStore = defineStore('conversation', {
             assistant.pending = false
         },
 
-        /** 中断流:复位生成状态;分离缓冲保留(含已落盘部分内容)至用户切回消费 */
-        abortStream(): void {
-            const convId = this.streamingConversationId
-
-            if (this.streamingConversationId === this.currentId && this.streamingTargetIndex !== null) {
-                const target = this.messages.find(
-                    (message) => message.role === 'assistant' && Number(message.index) === Number(this.streamingTargetIndex)
-                )
-
-                if (target) {
-                    target.pending = false
-                }
-            }
-
-            const pending = this.streamingConversationId
-                ? this.pendingStreams[this.streamingConversationId]
-                : undefined
+        /** 中断指定会话的流;分离缓冲保留(含已落盘部分内容)至用户切回消费 */
+        abortStream(conversationId: string): void {
+            const pending = this.pendingStreams[conversationId]
 
             if (pending) {
+                pending.assistant.pending = false
                 pending.finished = true
 
-                if (this.streamingConversationId === this.currentId) {
+                if (conversationId === this.currentId) {
                     // 正在查看:立即消费释放
-                    delete this.pendingStreams[this.streamingConversationId]
+                    delete this.pendingStreams[conversationId]
                 }
             }
 
-            this.generating = false
-            this.streamingConversationId = ''
-            this.streamingTargetIndex = null
+            // 该会话流已中断:移除陈旧快照条目(其他并行流条目保留)
+            chatStream.clearSnapshot(conversationId)
 
-            // 流结束(含中断):刷新 TK mini 今日基数并清空流式增量(对齐原版 finishTokenMiniStreaming)
-            void this.refreshTokenMiniBase(convId)
+            // 流结束(含中断):刷新 TK mini 当前会话累计基数;统计尚未落库时保留本轮流式增量
+            void this.refreshTokenMiniBase(conversationId, { preserveStreamPart: true })
         },
 
         /**
-         * 定位当前流式更新的目标助手消息:
-         * 始终返回分离缓冲对象(pendingStreams 注册的单一数据源)——
+         * 定位指定会话流式更新的目标助手消息:
+         * 始终返回该会话分离缓冲注册的助手对象(单一数据源)——
          * 无论用户当前查看哪个会话,增量都持续累积在缓冲里,切回时零丢失。
          */
-        _resolveStreamingAssistant(): ChatMessage | undefined {
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
-
-            if (pending) {
-                return pending.assistant
-            }
-
-            const targetIndex = this.streamingTargetIndex
-
-            const assistant = targetIndex !== null
-                ? this.messages.find((message) => message.role === 'assistant' && Number(message.index) === Number(targetIndex))
-                : this.messages[this.messages.length - 1]
-
-            return assistant && assistant.role === 'assistant' ? assistant : undefined
+        _resolveStreamingAssistant(conversationId: string): ChatMessage | undefined {
+            return this.pendingStreams[conversationId]?.assistant
         },
 
-        /** 更新当前正在生成的助手消息(重答时更新目标索引消息,否则更新最后一条) */
-        _updateStreamingAssistant(patch: Partial<ChatMessage>): void {
-            const assistant = this._resolveStreamingAssistant()
+        /** 更新指定会话正在生成的助手消息 */
+        _updateStreamingAssistant(conversationId: string, patch: Partial<ChatMessage>): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
 
             if (assistant) {
                 Object.assign(assistant, patch)
             }
         },
 
-        /** 流式过程中同步模型名到当前助手消息(数据源:model_info chunk) */
-        setStreamingModelName(modelName: string): void {
+        /** 流式过程中同步模型名到指定会话的助手消息(数据源:model_info chunk) */
+        setStreamingModelName(conversationId: string, modelName: string): void {
             if (!modelName) {
                 return
             }
 
-            this._updateStreamingAssistant({ model_name: modelName })
+            this._updateStreamingAssistant(conversationId, { model_name: modelName })
         },
 
-        /** 记录本次请求的 token 画像(prompt_token_profile chunk,CTX/Token 展示数据源) */
-        setStreamingTokenProfile(profile: Record<string, unknown>): void {
+        /** 记录指定会话本次请求的 token 画像(prompt_token_profile chunk,当前查看会话才采纳) */
+        setStreamingTokenProfile(conversationId: string, profile: Record<string, unknown>): void {
+            if (conversationId !== this.currentId) {
+                return
+            }
+
             this.streamTokenProfile = { ...profile }
         },
 
         /**
-         * 流式 token_usage 同步到当前助手消息的 model badge（I/O 与 E/C）：
+         * 流式 token_usage 同步到指定会话助手消息的 model badge（I/O 与 E/C）：
          * - token_usage 块在流式期间逐轮推送（累计输入/输出/缓存命中），比 final_message
          *   落盘更早到达；直接写入 pending 助理消息的 metadata.io_tokens_window，
          *   让 MessageItem 的 badge 立即显示，无需等 done 后重载（旧方案重载导致闪空）。
          * - 同时保留向后兼容：done 终帧会 via applyFinalMessage 用后端落盘的
          *   io_tokens_window / cumulative 覆盖，若终帧无 io 数据则保留流式补丁。
          */
-        patchStreamingIoTokens(chunk: Record<string, unknown>): void {
-            const assistant = this._resolveStreamingAssistant()
+        patchStreamingIoTokens(conversationId: string, chunk: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
 
             if (!assistant) {
                 return
@@ -1160,24 +1104,24 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /**
-         * 记录上下文压缩状态到当前助手消息(数据源:context_compression_status chunk)
+         * 记录上下文压缩状态到指定会话的助手消息(数据源:context_compression_status chunk)
          *
          * 只保留最新一条:后端按 start → done/skipped 顺序推送,后到者覆盖前态,
          * 与历史回放 process_steps 取最后一条的语义一致(对齐原版 upsertContextCompressionCard)。
          */
-        setStreamingContextCompression(step: Record<string, unknown>): void {
+        setStreamingContextCompression(conversationId: string, step: Record<string, unknown>): void {
             const parsed = parseContextCompressionStep(step)
 
             if (!parsed) {
                 return
             }
 
-            this._updateStreamingAssistant({ compressionStep: parsed })
+            this._updateStreamingAssistant(conversationId, { compressionStep: parsed })
         },
 
         // ── TK mini(输入区 tokenDisplay)──────────
 
-        /** 新一轮流开始:重置流式增量估算(今日基数保留,对齐原版 resetTokenMiniStreamPart) */
+        /** 新一轮流开始:重置流式增量估算(当前会话累计基数保留,对齐原版 resetTokenMiniStreamPart) */
         resetTokenMiniStreamPart(): void {
             const mini = this.tokenMini
 
@@ -1190,18 +1134,36 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /**
-         * 刷新 TK mini 今日基数(对齐原版 refreshTokenMiniForConversation):
-         * 以会话统计接口的今日输入/输出为基数;非阻塞,失败保留旧值。
+         * 刷新 TK mini 当前会话累计基数:
+         * 以会话统计接口的 input_total/output_total 为基数;统计未落库时保留流式增量。
+         * 仅服务于当前查看会话:后台流的结束/恢复不得改写当前会话的 TK mini。
          */
-        async refreshTokenMiniBase(conversationId: string): Promise<void> {
-            const seq = ++tokenMiniRefreshSeq
+        async refreshTokenMiniBase(
+            conversationId: string,
+            options: { preserveStreamPart?: boolean } = {},
+        ): Promise<void> {
             const cid = String(conversationId || '').trim()
 
-            this.resetTokenMiniStreamPart()
+            if (cid !== this.currentId) {
+                return
+            }
+
+            const seq = ++tokenMiniRefreshSeq
+            const preserveStreamPart = options.preserveStreamPart === true
+            const previousBaseInput = this.tokenMini.baseInput
+            const previousBaseOutput = this.tokenMini.baseOutput
+            const streamInput = this.tokenMini.streamInput
+            const streamOutput = this.tokenMini.streamOutput
+            const estimatedStreamOutput = this.tokenMini.estimatedStreamOutput
+
+            if (!preserveStreamPart) {
+                this.resetTokenMiniStreamPart()
+            }
 
             if (!cid) {
                 this.tokenMini.baseInput = 0
                 this.tokenMini.baseOutput = 0
+                this.resetTokenMiniStreamPart()
 
                 return
             }
@@ -1213,20 +1175,35 @@ export const useConversationStore = defineStore('conversation', {
                     return
                 }
 
-                this.tokenMini.baseInput = Number(stats.today_input || 0)
-                this.tokenMini.baseOutput = Number(stats.today_output || 0)
+                const merged = mergeTokenMiniStats({
+                    previousBaseInput,
+                    previousBaseOutput,
+                    streamInput,
+                    streamOutput,
+                    estimatedStreamOutput,
+                    inputTotal: stats.input_total,
+                    outputTotal: stats.output_total,
+                    preserveStreamPart,
+                })
+
+                this.tokenMini.baseInput = merged.baseInput
+                this.tokenMini.baseOutput = merged.baseOutput
+                this.resetTokenMiniStreamPart()
+                this.tokenMini.streamInput = merged.streamInput
+                this.tokenMini.streamOutput = merged.streamOutput
+                this.tokenMini.estimatedStreamOutput = merged.estimatedStreamOutput
             } catch {
-                // 统计拉取失败(网络/未登录等)保持旧基数,不阻塞聊天主流程
+                // 统计拉取失败(网络/未登录等)保持当前展示,不阻塞聊天主流程
             }
         },
 
         /**
          * 流式 usage 块累积(token_usage chunk):快照差分,防止同一轮 usage 重复计账;
          * 输入与输出快照独立处理,避免 output 回退时把 input 也当成整段增量。
-         * 对齐原版 onTokenStreamUsageChunk。
+         * 仅计入当前查看会话的流(TK mini 语义为当前会话),对齐原版 onTokenStreamUsageChunk。
          */
-        accumulateStreamUsage(chunk: Record<string, unknown>): void {
-            if (!this.generating) {
+        accumulateStreamUsage(conversationId: string, chunk: Record<string, unknown>): void {
+            if (conversationId !== this.currentId || !this.pendingStreams[conversationId]) {
                 return
             }
 
@@ -1260,9 +1237,9 @@ export const useConversationStore = defineStore('conversation', {
             mini.usageSnapshotOutput = outTokens
         },
 
-        /** 流式正文/思考/工具参数增量 → 输出 token 估算(对齐原版 onTokenStreamTextChunk 等) */
-        _accumulateStreamOutputEstimate(deltaText: string): void {
-            if (!this.generating) {
+        /** 流式正文/思考/工具参数增量 → 输出 token 估算(仅当前查看会话,对齐原版 onTokenStreamTextChunk 等) */
+        _accumulateStreamOutputEstimate(conversationId: string, deltaText: string): void {
+            if (conversationId !== this.currentId || !this.pendingStreams[conversationId]) {
                 return
             }
 
@@ -1316,11 +1293,10 @@ export const useConversationStore = defineStore('conversation', {
          * 仅当 pending 携带 userMessage(即新消息轮次,重答无此字段)且消息仍在
          * 可见列表中才移除;幂等,找不到目标时安全跳过。返回是否真正发生了回滚。
          */
-        rollbackFailedTurn(): boolean {
-            const convId = this.streamingConversationId
-            const pending = convId ? this.pendingStreams[convId] : undefined
+        rollbackFailedTurn(conversationId: string): boolean {
+            const pending = this.pendingStreams[conversationId]
 
-            if (!convId || !pending) {
+            if (!pending) {
                 return false
             }
 
@@ -1339,7 +1315,7 @@ export const useConversationStore = defineStore('conversation', {
 
             let removed = false
 
-            if (this.currentId === convId) {
+            if (this.currentId === conversationId) {
                 const assistantIdx = userIdx + 1
 
                 this.messages = this.messages.filter((message) => {
@@ -1366,15 +1342,20 @@ export const useConversationStore = defineStore('conversation', {
                 }
             }
 
-            // 释放分离缓冲并复位生成状态
-            delete this.pendingStreams[convId]
-            this.generating = false
-            this.streamingConversationId = ''
-            this.streamingTargetIndex = null
+            // 释放该会话的分离缓冲与快照条目
+            delete this.pendingStreams[conversationId]
+            chatStream.clearSnapshot(conversationId)
 
-            void this.refreshTokenMiniBase(convId)
+            void this.refreshTokenMiniBase(conversationId)
 
             return removed
+        },
+
+        /** 指定会话是否有未完成流(侧栏流式指示/删除拦截/停止按钮共用) */
+        isConversationGenerating(conversationId: string): boolean {
+            const pending = this.pendingStreams[conversationId]
+
+            return !!pending && !pending.finished
         },
 
         /** 本地更新会话置顶状态并重排(置顶在前,对齐后端排序) */
@@ -1419,20 +1400,16 @@ export const useConversationStore = defineStore('conversation', {
             return state.conversations.find((item) => item.id === state.currentId)
         },
 
-        /** 当前浏览会话是否有未完成流，和后台其他会话的生成状态严格分离。 */
+        /** 当前浏览会话是否有未完成流(仅读取该会话自身的缓冲,与后台流严格分离) */
         currentConversationGenerating(state): boolean {
-            if (!state.currentId || !state.generating || state.streamingConversationId !== state.currentId) {
-                return false
-            }
-
-            const pending = state.pendingStreams[state.currentId]
+            const pending = state.currentId ? state.pendingStreams[state.currentId] : undefined
 
             return !!pending && !pending.finished
         },
 
         /**
          * 输入区 「TK 输入/输出」mini 展示(对齐原版 renderTokenMiniFromState):
-         * 输入 = 今日基数 + usage 增量;输出 = 今日基数 + max(usage 输出, 估算输出)。
+         * 输入 = 当前会话累计基数 + usage 增量;输出 = 当前会话累计基数 + max(usage 输出, 估算输出)。
          */
         tokenMiniText(state): { input: string; output: string } {
             const mini = state.tokenMini

@@ -157,7 +157,7 @@
     import { computed, onMounted, reactive, ref } from 'vue'
 
     import type { AdminSystemSettings } from '@/api/admin-system'
-    import { fetchAdminSystemSettings, saveAdminSystemSettings } from '@/api/admin-system'
+    import { fetchAdminSystemSettings, saveAdminSystemSettings, testAdminServiceHealth } from '@/api/admin-system'
     import { fetchModelsConfig } from '@/api/admin-models'
     import { showError, showToast } from '@/stores/notify'
 
@@ -380,16 +380,26 @@
         }
     }
 
-    /** 健康检查:客户端直连服务 /health(对齐原版 admin-system-section-health) */
+    /**
+     * 健康检查:由 ChatDB 服务端探测上游,避免浏览器直连触发 CORS/混合内容限制。
+     * 前端只负责提交当前表单中的地址和服务专属名称,结果由统一 apiFetch 解析。
+     */
     async function runHealthTest(): Promise<void> {
         const service = form.services[activeModule.value] as Record<string, unknown>
-        const url = String(service.service_url || '').trim()
+        const configuredUrl = String(service.service_url || service.frontend_url || '').trim()
         const host = String(service.host || '').trim()
         const port = Number(service.port || 0)
+        const serviceNameMap: Record<string, string> = {
+            rag_database: 'NexoraDB',
+            nexora_search: 'NexoraSearch',
+            nexora_learning: 'NexoraLearning',
+            nexora_mail: 'NexoraMail',
+        }
+        const serviceName = serviceNameMap[activeModule.value]
 
-        const base = url || (host && port ? `http://${host}:${port}` : '')
+        const base = normalizeHealthBaseUrl(configuredUrl) || (host && port ? `http://${host}:${port}` : '')
 
-        if (!base) {
+        if (!base || !serviceName) {
             healthResult.value = { ok: false, message: '请先填写 Service URL 或 Host/Port' }
 
             return
@@ -398,19 +408,35 @@
         healthTesting.value = true
         healthResult.value = null
 
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 6000)
-
         try {
-            const res = await fetch(`${base.replace(/\/+$/, '')}/health`, { signal: controller.signal })
+            const timeoutValue = Number(service.timeout || service.request_timeout || 0)
+            const result = await testAdminServiceHealth(serviceName, {
+                service_url: base.replace(/\/+$/, ''),
+                timeout: timeoutValue > 0 ? timeoutValue : undefined,
+            })
 
-            healthResult.value = { ok: res.ok, message: res.ok ? '' : `HTTP ${res.status}` }
+            healthResult.value = {
+                ok: Boolean(result.success),
+                message: result.success ? '' : String(result.message || '服务健康检查失败'),
+            }
         } catch (error) {
             healthResult.value = { ok: false, message: error instanceof Error ? error.message : '无法连接' }
         } finally {
-            clearTimeout(timer)
             healthTesting.value = false
         }
+    }
+
+    /** 学习服务配置可能保存的是前端子路径,健康探测需要回到服务根地址。 */
+    function normalizeHealthBaseUrl(rawUrl: string): string {
+        let value = String(rawUrl || '').trim().replace(/\/+$/, '')
+
+        for (const suffix of ['/api/frontend', '/api/runtime']) {
+            if (value.endsWith(suffix)) {
+                value = value.slice(0, -suffix.length).replace(/\/+$/, '')
+            }
+        }
+
+        return value
     }
 
     defineExpose({

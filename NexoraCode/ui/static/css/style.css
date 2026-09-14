@@ -5420,7 +5420,8 @@ body.learning-workspace-active .input-dock {
 }
 
 /* 输入容器向下收起：保留右上角按钮，其余内容向下滑出并被容器裁剪 */
-#messageInput,
+/* 注意：#messageInput 自管高度与滚动（见下方专属规则），不共用本组的 overflow:hidden， */
+/* 否则文本超长时滚动条永远出不来。 */
 .input-footer,
 .file-preview-area,
 .upload-progress-chip {
@@ -5732,7 +5733,28 @@ textarea {
   display: block;
   line-height: 1.45;
   min-height: calc(15px * 1.45 + 10px);
-  overflow-y: hidden;
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #c3cbd4 transparent;
+  transition:
+      max-height 0.28s ease,
+      min-height 0.28s ease;
+}
+#messageInput::-webkit-scrollbar {
+  width: 8px;
+}
+#messageInput::-webkit-scrollbar-track {
+  background: transparent;
+}
+#messageInput::-webkit-scrollbar-thumb {
+  background: #c3cbd4;
+  border-radius: 4px;
+  border: 2px solid #fff;
+}
+#messageInput::-webkit-scrollbar-thumb:hover {
+  background: #9aa3af;
 }
 .input-footer {
   display: flex;

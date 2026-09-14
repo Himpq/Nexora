@@ -21,14 +21,19 @@ from typing import Any, Dict, Optional
 PROFILE_UPDATED_MARKER = "## User profile updated"
 SKILLS_CHANGED_MARKER = "## Skills changed"
 
+# volatile 注入块的稳定诊断名称：只记录名称和长度，不记录注入原文。
+VOLATILE_INJECTION_NAME_MARKERS = (
+    ("## Workspace Resource Index", "workspace_resource_index"),
+    ("## Sandbox Files", "sandbox_files"),
+    ("## Knowledge changed", "knowledge_diff"),
+    (PROFILE_UPDATED_MARKER, "profile_diff"),
+    (SKILLS_CHANGED_MARKER, "skill_diff"),
+)
+
 # volatile 注入块标记：命中任一子串的 system 注入块归入 tail（每轮重发），
 # 未命中的归入 head（仅 turn-1 进入快照）。Context.py 两侧分类均引用本常量。
 VOLATILE_INJECTION_MARKERS = (
-    "## Workspace Resource Index",
-    "## Sandbox Files",
-    "## Knowledge changed",
-    PROFILE_UPDATED_MARKER,
-    SKILLS_CHANGED_MARKER,
+    *(marker for marker, _ in VOLATILE_INJECTION_NAME_MARKERS),
 )
 
 
@@ -37,6 +42,18 @@ def is_volatile_injection(text: Any) -> bool:
 
     text = str(text or "")
     return any(marker in text for marker in VOLATILE_INJECTION_MARKERS)
+
+
+def get_volatile_injection_name(text: Any) -> str:
+    """返回 volatile 注入块的稳定诊断名称。"""
+
+    text = str(text or "")
+
+    for marker, name in VOLATILE_INJECTION_NAME_MARKERS:
+        if marker in text:
+            return name
+
+    return ""
 
 
 def build_profile_update_block(delta: Optional[Dict[str, Any]]) -> str:

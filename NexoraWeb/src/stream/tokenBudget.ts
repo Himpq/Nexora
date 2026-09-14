@@ -60,6 +60,55 @@ export function safeTokenInt(value: unknown): number {
     return Math.max(0, Math.floor(num))
 }
 
+/** TK mini 刷新结果:服务端累计值与尚未落库的流式增量分开保存。 */
+export interface TokenMiniRefreshResult {
+    baseInput: number
+    baseOutput: number
+    streamInput: number
+    streamOutput: number
+    estimatedStreamOutput: number
+}
+
+/**
+ * 合并当前会话累计统计与流式增量。
+ *
+ * 流结束后的统计请求可能早于本轮消息落库完成。只有服务端累计值已经前进时,
+ * 才清空对应的流式增量;否则保留它,避免刷新响应把 TK mini 短暂清成 0/0。
+ */
+export function mergeTokenMiniStats(options: {
+    previousBaseInput: unknown
+    previousBaseOutput: unknown
+    streamInput: unknown
+    streamOutput: unknown
+    estimatedStreamOutput: unknown
+    inputTotal: unknown
+    outputTotal: unknown
+    preserveStreamPart: boolean
+}): TokenMiniRefreshResult {
+    const baseInput = safeTokenInt(options.inputTotal)
+    const baseOutput = safeTokenInt(options.outputTotal)
+    const previousBaseInput = safeTokenInt(options.previousBaseInput)
+    const previousBaseOutput = safeTokenInt(options.previousBaseOutput)
+    const streamInput = safeTokenInt(options.streamInput)
+    const streamOutput = safeTokenInt(options.streamOutput)
+    const estimatedStreamOutput = safeTokenInt(options.estimatedStreamOutput)
+
+    const keepInputStream = options.preserveStreamPart
+        && streamInput > 0
+        && baseInput <= previousBaseInput
+    const keepOutputStream = options.preserveStreamPart
+        && (streamOutput > 0 || estimatedStreamOutput > 0)
+        && baseOutput <= previousBaseOutput
+
+    return {
+        baseInput,
+        baseOutput,
+        streamInput: keepInputStream ? streamInput : 0,
+        streamOutput: keepOutputStream ? streamOutput : 0,
+        estimatedStreamOutput: keepOutputStream ? estimatedStreamOutput : 0,
+    }
+}
+
 /**
  * 文本 → token 估算(对齐原版 estimateStreamTokensByText):
  * 非 ASCII 按 1.25 字符/token,ASCII 按 4 字符/token;空文本计 0,非空至少 1。

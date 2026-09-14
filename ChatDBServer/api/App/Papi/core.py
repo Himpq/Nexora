@@ -12,6 +12,9 @@ from functools import wraps
 from App.Utils import append_log_text, log_event
 from basis.Permission import PERMISSION_DEFAULTS as _PAPI_PERMISSION_DEFAULTS
 
+from .admin_keys import resolve_public_api_key_auth
+from basis.Model.Provider.base import append_stream_delta, reconcile_stream_snapshot
+
 
 def _resolve_server_module():
     for module_name in ('__main__', 'server'):
@@ -64,20 +67,12 @@ def require_papi_key(f):
             or _extract_bearer_token(request.headers.get('Authorization'))
             or request.args.get('api_key')
         )
-        module = _resolve_server_module()
-        resolver = getattr(module, 'resolve_public_api_key_auth', None)
-        if callable(resolver):
-            auth = resolver(auth_key, request_path=request.path, method=request.method)
-            if not isinstance(auth, dict) or not bool(auth.get('ok')):
-                status_code = int((auth or {}).get('status') or 401)
-                message = str((auth or {}).get('message') or 'Invalid or missing API Key: authentication failed')
-                return jsonify({'success': False, 'message': message}), status_code
-            request.environ['papi.auth'] = auth
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'PAPI authentication resolver is unavailable',
-            }), 500
+        auth = resolve_public_api_key_auth(auth_key, request_path=request.path, method=request.method)
+        if not isinstance(auth, dict) or not bool(auth.get('ok')):
+            status_code = int((auth or {}).get('status') or 401)
+            message = str((auth or {}).get('message') or 'Invalid or missing API Key: authentication failed')
+            return jsonify({'success': False, 'message': message}), status_code
+        request.environ['papi.auth'] = auth
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1161,35 +1156,6 @@ def _papi_extract_response_id(response_obj: Any) -> str:
     except Exception:
         pass
     return f'chatcmpl-{uuid.uuid4().hex}'
-
-
-def _papi_merge_stream_text_delta(current: Any, incoming: Any) -> Tuple[str, str]:
-    """返回合并后的完整文本，以及本次真正需要下发的增量片段。"""
-    current_text = str(current or '')
-    incoming_text = str(incoming or '')
-
-    if not incoming_text:
-        return current_text, ''
-
-    if not current_text:
-        return incoming_text, incoming_text
-
-    if incoming_text == current_text:
-        return current_text, ''
-
-    if incoming_text.startswith(current_text):
-        return incoming_text, incoming_text[len(current_text):]
-
-    if current_text.startswith(incoming_text):
-        return current_text, ''
-
-    if current_text.endswith(incoming_text):
-        return current_text, ''
-
-    if len(incoming_text) >= 16 and incoming_text in current_text:
-        return current_text, ''
-
-    return current_text + incoming_text, incoming_text
 
 
 def _papi_debug_text(value: Any) -> str:
@@ -2605,7 +2571,7 @@ def _papi_stream_openai_responses(
                     if full_name:
                         entry['name'] = full_name
                     elif name_delta:
-                        entry['name'], _ = _papi_merge_stream_text_delta(entry.get('name'), name_delta)
+                        entry['name'], _ = append_stream_delta(entry.get('name'), name_delta)
                     if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
                         yield _emit({
                             'type': 'response.output_item.added',
@@ -2622,7 +2588,7 @@ def _papi_stream_openai_responses(
                         })
                         entry['emitted'] = True
                     if ev.get('arguments_delta'):
-                        entry['arguments'], emit_arguments_delta = _papi_merge_stream_text_delta(
+                        entry['arguments'], emit_arguments_delta = append_stream_delta(
                             entry.get('arguments'),
                             ev.get('arguments_delta'),
                         )
@@ -2652,9 +2618,10 @@ def _papi_stream_openai_responses(
                         entry['name'] = full_name
                     emit_arguments_delta = ''
                     if full_arguments:
-                        entry['arguments'], emit_arguments_delta = _papi_merge_stream_text_delta(
+                        entry['arguments'], emit_arguments_delta = reconcile_stream_snapshot(
                             entry.get('arguments'),
                             full_arguments,
+                            'PAPI tool arguments',
                         )
                     if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
                         yield _emit({
@@ -2970,5 +2937,4 @@ def _papi_create_openai_responses_payload(
         request_username=request_username,
         quota_status=quota_status,
     )
-
 

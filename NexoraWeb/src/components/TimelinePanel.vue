@@ -1,34 +1,13 @@
 <!--
-    TimelinePanel.vue — 时间线浮动面板(对齐原版 chat_notes.js timelinePanel)
+    TimelinePanel.vue — 时间线内容面板(对齐原版 chat_notes.js timelinePanel)
 
     设计:
-      - 复用原版全局样式类(.timeline-panel / -track / -item / -rail / -content / -diff 等)
-      - 交互复刻原版:头部拖拽移动、右下角缩放手柄、12s 轮询、位置/尺寸持久化(localStorage)
-      - 打开/关闭由父级控制;点面板外部不自动关闭(浮动面板,非下拉)
+      - 复用时间线内容样式类(.timeline-track / -item / -rail / -content / -diff 等)
+      - 保留 12s 轮询,由 ChangesModal 统一管理窗口与关闭行为
 -->
 
 <template>
-    <div
-        ref="panelEl"
-        class="timeline-panel"
-        :class="{ active: open, dragging, resizing }"
-        role="dialog"
-        aria-label="时间线"
-        :aria-hidden="!open"
-        :style="panelStyle"
-    >
-        <div class="timeline-panel-head" @pointerdown="startDrag">
-            <div class="timeline-panel-head-main">
-                <h3>时间线</h3>
-                <span class="timeline-panel-hint">知识库 / 笔记</span>
-            </div>
-            <div class="timeline-panel-head-actions">
-                <button class="timeline-panel-close" type="button" title="关闭" @click="emit('close')">
-                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                </button>
-            </div>
-        </div>
-
+    <section class="changes-timeline-panel" aria-label="时间线">
         <div class="timeline-list">
             <div v-if="!items.length" class="timeline-empty">暂无时间线记录</div>
             <div v-else class="timeline-track">
@@ -65,8 +44,7 @@
             </div>
         </div>
 
-        <div class="timeline-resize-handle" @pointerdown="startResize"></div>
-    </div>
+    </section>
 </template>
 
 <script setup lang="ts">
@@ -75,14 +53,9 @@
     import type { TimelineEntry } from '@/api/timeline'
     import { fetchTimelineEntries } from '@/api/timeline'
     import { showError } from '@/stores/notify'
-    import { usePanelDrag } from '@/ui/usePanelDrag'
 
     const props = defineProps<{
         open: boolean
-    }>()
-
-    const emit = defineEmits<{
-        close: []
     }>()
 
     /** 轮询间隔(对齐原版常量) */
@@ -90,53 +63,25 @@
 
     const items = ref<TimelineEntry[]>([])
 
-    /** 面板根元素(模板 ref 绑定;拖拽中由 usePanelDrag 直写 style) */
-    const panelEl = ref<HTMLElement | null>(null)
-
-    /**
-     * 面板拖拽/缩放(抽象自 GDDP usePanelDrag)
-     * 默认对齐原版 right:20px top:78px width:420px height:min(68vh,620px)
-     */
-    const {
-        dragging,
-        resizing,
-        panelStyle,
-        restoreLayout,
-        startDrag,
-        startResize,
-        resetDragState,
-    } = usePanelDrag(
-        'nexora_timeline_panel_layout_v1',
-        {
-            left: 0,
-            top: 78,
-            width: 420,
-            height: Math.min(Math.round(window.innerHeight * 0.68), 620),
-        },
-        panelEl
-    )
-
     let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
-    /** 打开时:恢复位置 + 立即加载 + 启动轮询(对齐原版 openTimelinePanel) */
+    /** 打开时立即加载并启动轮询(对齐原版 openTimelinePanel) */
     watch(
         () => props.open,
         (opened) => {
             if (opened) {
-                restoreLayout()
                 void refresh()
 
                 startPolling()
             } else {
                 stopPolling()
-                resetDragState()
             }
-        }
+        },
+        { immediate: true }
     )
 
     onBeforeUnmount(() => {
         stopPolling()
-        resetDragState()
     })
 
     /** 拉取时间线(对齐原版 refreshTimelinePanel) */

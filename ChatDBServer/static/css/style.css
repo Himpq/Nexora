@@ -5403,7 +5403,9 @@ body.learning-workspace-active .input-dock {
 .input-container {
     width: 100%;
     max-width: var(--input-container-max-width, 800px);
-    max-height: 320px;
+    /* 输入框顶满 220px 时：选项约 47 + 输入 220 + 底栏约 36 + 内边距 24 ≈ 327， */
+    /* 上限必须大于此值，否则发送按钮会被裁掉且容器 overflow:hidden 无法滚动。 */
+    max-height: 360px;
     margin: 0 auto;
     border: 1px solid var(--border-input);
     border-radius: 12px;
@@ -5463,7 +5465,8 @@ body.learning-workspace-active .input-dock {
 }
 
 /* 输入容器向下收起：保留右上角按钮，其余内容向下滑出并被容器裁剪 */
-#messageInput,
+/* 注意：#messageInput 自管高度与滚动（见下方专属规则），不共用本组的 overflow:hidden， */
+/* 否则文本超长时滚动条永远出不来。 */
 .input-footer,
 .file-preview-area,
 .upload-progress-chip {
@@ -5794,7 +5797,28 @@ textarea {
   display: block;
   line-height: 1.45;
   min-height: calc(15px * 1.45 + 10px);
-  overflow-y: hidden;
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #c3cbd4 transparent;
+  transition:
+      max-height 0.32s ease-in-out,
+      min-height 0.32s ease-in-out;
+}
+#messageInput::-webkit-scrollbar {
+  width: 8px;
+}
+#messageInput::-webkit-scrollbar-track {
+  background: transparent;
+}
+#messageInput::-webkit-scrollbar-thumb {
+  background: #c3cbd4;
+  border-radius: 4px;
+  border: 2px solid #fff;
+}
+#messageInput::-webkit-scrollbar-thumb:hover {
+  background: #9aa3af;
 }
 .input-footer {
   display: flex;

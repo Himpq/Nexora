@@ -369,13 +369,13 @@
                             ></textarea>
                             <button
                                 class="learning-sidebar-chat-send"
-                                :class="{ 'is-stop': store.generating }"
+                                :class="{ 'is-stop': store.currentConversationGenerating }"
                                 type="button"
-                                :aria-label="store.generating ? '中断' : '发送'"
-                                :title="store.generating ? '中断' : '发送'"
+                                :aria-label="store.currentConversationGenerating ? '中断' : '发送'"
+                                :title="store.currentConversationGenerating ? '中断' : '发送'"
                                 @click="handleLearningChatSubmit()"
                             >
-                                <svg v-if="store.generating" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
+                                <svg v-if="store.currentConversationGenerating" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
                                 <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                             </button>
                         </div>
@@ -446,13 +446,9 @@
                         <i class="fa-solid fa-gear" aria-hidden="true"></i>
                         <span>设置</span>
                     </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('timeline')">
-                        <i class="fa-solid fa-timeline" aria-hidden="true"></i>
-                        <span>时间线</span>
-                    </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('trash')">
-                        <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
-                        <span>回收站</span>
+                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('changes')">
+                        <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
+                        <span>变更</span>
                     </a>
                     <div class="menu-divider"></div>
                     <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
@@ -489,8 +485,7 @@
         'open-workspaces': []
         'open-files': []
         'open-knowledge-mgmt': []
-        'open-trash': []
-        'open-timeline': []
+        'open-changes': []
         'open-learning': []
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
         'learning-new': []
@@ -551,7 +546,7 @@
 
     /** 会话是否正在生成(原版 is-streaming 类) */
     function isStreamingItem(conversationId: string): boolean {
-        return store.generating && conversationId === store.streamingConversationId
+        return store.isConversationGenerating(conversationId)
     }
 
     /** 是否为可见分支会话(有分支信息且非孤儿;对齐原版 visibleBranch) */
@@ -626,7 +621,7 @@
 
     /** 删除会话(经自建确认小窗;由 hover 删除按钮触发) */
     async function handleDelete(item: ConversationSummary): Promise<void> {
-        if (store.generating) {
+        if (store.isConversationGenerating(item.id)) {
             showToast('回复生成中,请先停止再操作', 'warning')
 
             return
@@ -806,7 +801,7 @@
      * 生成中点击=中断,否则发送;Enter 发送 / Escape 中断
      */
     function handleLearningChatSubmit(): void {
-        if (store.generating) {
+        if (store.currentConversationGenerating) {
             emit('learning-stop')
             return
         }
@@ -826,7 +821,7 @@
             return
         }
 
-        if (event.key === 'Escape' && store.generating) {
+        if (event.key === 'Escape' && store.currentConversationGenerating) {
             event.preventDefault()
             emit('learning-stop')
         }
@@ -915,7 +910,7 @@
     }
 
     /** 用户菜单动作(原版 userMenu 的菜单项) */
-    function handleMenuAction(action: 'rank' | 'settings' | 'timeline' | 'trash' | 'logout'): void {
+    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'logout'): void {
         closePopover('user-menu')
 
         if (action === 'rank') {
@@ -931,14 +926,8 @@
             return
         }
 
-        if (action === 'timeline') {
-            emit('open-timeline')
-
-            return
-        }
-
-        if (action === 'trash') {
-            emit('open-trash')
+        if (action === 'changes') {
+            emit('open-changes')
 
             return
         }

@@ -1,0 +1,572 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Nexora Map</title>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #f1f2f6;
+            font-family: -apple-system, "HarmonyOS Sans SC", sans-serif;
+        }
+
+        .nexora-map-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .nexora-map-canvas img {
+            max-width: none;
+        }
+
+        .nexora-map-error {
+            display: none;
+            width: 100%;
+            height: 100%;
+            align-items: center;
+            justify-content: center;
+            padding: 0 16px;
+            box-sizing: border-box;
+            color: #676e7d;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .nexora-map-label {
+            display: inline-block;
+            padding: 2px 6px;
+            border: 1px solid #d3d7e0;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.94);
+            color: #16181d;
+            font-size: 12px;
+            line-height: 16px;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <div id="nexora-map-canvas" class="nexora-map-canvas"></div>
+    <div id="nexora-map-error" class="nexora-map-error"></div>
+    <script>
+        (function () {
+            'use strict';
+
+            var BAIDU_PROVIDER = 'baidu';
+            var TIANDITU_PROVIDER = 'tianditu';
+            var SUPPORTED_PROVIDERS = { baidu: true, tianditu: true };
+            var MIN_ZOOM = 3;
+            var MAX_ZOOM = 19;
+
+            var baiduLoadPromise = null;
+            var tiandituLoadPromise = null;
+            function escapeHtml(value) {
+                return String(value || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function readFiniteNumber(value, fieldName) {
+                var num = Number(value);
+
+                if (!Number.isFinite(num)) {
+                    throw new Error(fieldName + ' 必须是有效数字');
+                }
+
+                return num;
+            }
+
+            function normalizeCoordinate(value, fieldName) {
+                if (Array.isArray(value)) {
+                    if (value.length < 2) {
+                        throw new Error(fieldName + ' 必须包含经度和纬度');
+                    }
+
+                    return {
+                        lng: readFiniteNumber(value[0], fieldName + '.lng'),
+                        lat: readFiniteNumber(value[1], fieldName + '.lat')
+                    };
+                }
+
+                if (!value || typeof value !== 'object') {
+                    throw new Error(fieldName + ' 必须是坐标对象或坐标数组');
+                }
+
+                var lngValue = value.lng !== undefined ? value.lng : (value.lon !== undefined ? value.lon : value.longitude);
+                var latValue = value.lat !== undefined ? value.lat : value.latitude;
+
+                return {
+                    lng: readFiniteNumber(lngValue, fieldName + '.lng'),
+                    lat: readFiniteNumber(latValue, fieldName + '.lat')
+                };
+            }
+
+            function normalizeZoom(value) {
+                if (value === undefined || value === null || value === '') {
+                    return 11;
+                }
+
+                var zoom = readFiniteNumber(value, 'zoom');
+
+                if (zoom < MIN_ZOOM || zoom > MAX_ZOOM) {
+                    throw new Error('zoom 必须在 ' + MIN_ZOOM + '-' + MAX_ZOOM + ' 之间');
+                }
+
+                return zoom;
+            }
+
+            function normalizeMarkerLayer(item, fieldName, index) {
+                if (!item || typeof item !== 'object') {
+                    throw new Error(fieldName + ' 必须是对象');
+                }
+
+                var point = normalizeCoordinate(item.point || item.position || item, fieldName);
+                var label = String(item.label || item.name || item.title || ('标记 ' + (index + 1))).trim();
+
+                return {
+                    id: String(item.id || ('marker-' + (index + 1))).trim(),
+                    point: point,
+                    label: label
+                };
+            }
+
+            function collectMarkerLayers(payload) {
+                var markers = [];
+
+                if (Array.isArray(payload.markers)) {
+                    markers = markers.concat(payload.markers);
+                }
+
+                if (Array.isArray(payload.layers)) {
+                    payload.layers.forEach(function (layer) {
+                        var type = String((layer && layer.type) || '').trim().toLowerCase();
+
+                        if (type === 'marker') {
+                            markers.push(layer);
+                        }
+                    });
+                }
+
+                return markers;
+            }
+
+            function normalizeMarkers(payload) {
+                return collectMarkerLayers(payload).map(function (item, index) {
+                    return normalizeMarkerLayer(item, 'markers[' + index + ']', index);
+                });
+            }
+
+            function normalizePolylinePoints(points, fieldName) {
+                if (!Array.isArray(points)) {
+                    throw new Error(fieldName + '.points 必须是坐标数组');
+                }
+
+                if (points.length < 2) {
+                    throw new Error(fieldName + '.points 至少需要两个坐标');
+                }
+
+                return points.map(function (item, index) {
+                    return normalizeCoordinate(item, fieldName + '.points[' + index + ']');
+                });
+            }
+
+            function collectPolylineLayers(payload) {
+                var rawPolylines = [];
+
+                if (Array.isArray(payload.polylines)) {
+                    rawPolylines = rawPolylines.concat(payload.polylines);
+                }
+
+                if (Array.isArray(payload.routes)) {
+                    rawPolylines = rawPolylines.concat(payload.routes);
+                }
+
+                if (Array.isArray(payload.layers)) {
+                    payload.layers.forEach(function (layer) {
+                        var type = String((layer && layer.type) || '').trim().toLowerCase();
+
+                        if (type === 'route' || type === 'polyline' || type === 'line') {
+                            rawPolylines.push(layer);
+                        }
+                    });
+                }
+
+                return rawPolylines;
+            }
+
+            function readLayerStyle(item) {
+                var style = item && typeof item.style === 'object' ? item.style : {};
+
+                return {
+                    color: String(style.color || item.color || item.strokeColor || '#2563eb').trim(),
+                    weight: Number(style.width || style.weight || item.width || item.weight || item.strokeWeight || 5),
+                    opacity: Number(style.opacity || item.opacity || item.strokeOpacity || 0.82),
+                    outlineColor: String(style.outlineColor || item.outlineColor || '').trim(),
+                    outlineWeight: Number(style.outlineWidth || style.outlineWeight || item.outlineWidth || item.outlineWeight || 0)
+                };
+            }
+
+            function normalizePolylines(payload) {
+                return collectPolylineLayers(payload).map(function (item, index) {
+                    if (!item || typeof item !== 'object') {
+                        throw new Error('polylines[' + index + '] 必须是对象');
+                    }
+
+                    var geometry = item.geometry && typeof item.geometry === 'object' ? item.geometry : {};
+                    var rawPoints = geometry.points || item.points || item.path || item.coordinates;
+                    var points = normalizePolylinePoints(rawPoints, 'polylines[' + index + ']');
+                    var label = String(item.label || item.name || item.title || ('路线 ' + (index + 1))).trim();
+                    var style = readLayerStyle(item);
+
+                    if (!Number.isFinite(style.weight) || style.weight <= 0) {
+                        throw new Error('polylines[' + index + '].weight 必须是正数');
+                    }
+
+                    if (!Number.isFinite(style.opacity) || style.opacity <= 0 || style.opacity > 1) {
+                        throw new Error('polylines[' + index + '].opacity 必须在 0-1 之间');
+                    }
+
+                    return {
+                        id: String(item.id || ('polyline-' + (index + 1))).trim(),
+                        points: points,
+                        label: label,
+                        color: style.color,
+                        weight: style.weight,
+                        opacity: style.opacity,
+                        outlineColor: style.outlineColor,
+                        outlineWeight: style.outlineWeight
+                    };
+                });
+            }
+
+            function normalizePayload(payload) {
+                if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+                    throw new Error('地图 payload 必须是 JSON 对象');
+                }
+
+                var provider = String(payload.provider || BAIDU_PROVIDER).trim().toLowerCase();
+
+                if (!SUPPORTED_PROVIDERS[provider]) {
+                    throw new Error('当前地图渲染器不支持 ' + provider);
+                }
+
+                var markers = normalizeMarkers(payload);
+                var polylines = normalizePolylines(payload);
+                var viewportPoints = [];
+
+                markers.forEach(function (marker) {
+                    viewportPoints.push(marker.point);
+                });
+                polylines.forEach(function (polyline) {
+                    viewportPoints = viewportPoints.concat(polyline.points);
+                });
+
+                var center = payload.center ? normalizeCoordinate(payload.center, 'center') : viewportPoints[0];
+
+                if (!center) {
+                    throw new Error('地图 payload 缺少 center 或可渲染坐标');
+                }
+
+                return {
+                    provider: provider,
+                    title: String(payload.title || payload.name || '地图').trim(),
+                    center: center,
+                    zoom: normalizeZoom(payload.zoom),
+                    markers: markers,
+                    polylines: polylines,
+                    viewportPoints: viewportPoints,
+                    fitViewport: payload.fitViewport !== false && (!payload.viewport || payload.viewport.fitBounds !== false)
+                };
+            }
+
+            function loadBaiduMapGl(config) {
+                if (window.BMapGL) {
+                    return Promise.resolve(window.BMapGL);
+                }
+
+                if (baiduLoadPromise) {
+                    return baiduLoadPromise;
+                }
+
+                baiduLoadPromise = new Promise(function (resolve, reject) {
+                    var ak = String((config && config.baiduMapAk) || '').trim();
+
+                    if (!ak) {
+                        reject(new Error('baiduMapAk 未配置'));
+                        return;
+                    }
+
+                    var version = String((config && config.baiduMapVersion) || '1.0').trim() || '1.0';
+                    var callbackName = '__nexoraBaiduMapCallback_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+                    var script = document.createElement('script');
+
+                    window[callbackName] = function () {
+                        delete window[callbackName];
+
+                        if (window.BMapGL) {
+                            resolve(window.BMapGL);
+                            return;
+                        }
+
+                        reject(new Error('百度地图脚本已加载，但 BMapGL 不存在'));
+                    };
+
+                    script.src = 'https://api.map.baidu.com/api?type=webgl&v=' + encodeURIComponent(version)
+                        + '&ak=' + encodeURIComponent(ak) + '&callback=' + encodeURIComponent(callbackName);
+                    script.async = true;
+                    script.onerror = function () {
+                        delete window[callbackName];
+                        baiduLoadPromise = null;
+                        reject(new Error('百度地图 JSAPI 脚本加载失败'));
+                    };
+
+                    document.head.appendChild(script);
+                });
+
+                return baiduLoadPromise;
+            }
+
+            function loadTiandituMap(config) {
+                if (window.T && window.T.Map && window.T.LngLat && window.T.Label) {
+                    return Promise.resolve(window.T);
+                }
+
+                if (tiandituLoadPromise) {
+                    return tiandituLoadPromise;
+                }
+
+                tiandituLoadPromise = new Promise(function (resolve, reject) {
+                    var tk = String((config && config.tiandituMapTk) || '').trim();
+
+                    if (!tk) {
+                        reject(new Error('tiandituMapTk 未配置'));
+                        return;
+                    }
+
+                    var version = String((config && config.tiandituMapVersion) || '4.0').trim() || '4.0';
+                    var script = document.createElement('script');
+
+                    script.src = 'https://api.tianditu.gov.cn/api?v=' + encodeURIComponent(version) + '&tk=' + encodeURIComponent(tk);
+                    script.async = true;
+                    script.onload = function () {
+                        if (!window.T || !window.T.Map || !window.T.LngLat) {
+                            tiandituLoadPromise = null;
+                            reject(new Error('天地图脚本已加载，但 window.T 不存在'));
+                            return;
+                        }
+
+                        // T.Label 由主脚本异步注入的 components.js 提供，标注类就绪前渲染必抛
+                        // "labelCls is not a constructor"，必须等它可用再放行
+                        waitForTiandituLabel(resolve, reject, Date.now());
+                    };
+                    script.onerror = function () {
+                        tiandituLoadPromise = null;
+                        reject(new Error('天地图 JSAPI 脚本加载失败'));
+                    };
+
+                    document.head.appendChild(script);
+                });
+
+                return tiandituLoadPromise;
+            }
+
+            // 轮询等待 T.Label 就绪：components.js 异步加载，超时视为失败
+            function waitForTiandituLabel(resolve, reject, startedAt) {
+                if (window.T && window.T.Label) {
+                    resolve(window.T);
+                    return;
+                }
+
+                if (Date.now() - startedAt > 15000) {
+                    tiandituLoadPromise = null;
+                    reject(new Error('天地图标注模块加载超时'));
+                    return;
+                }
+
+                window.setTimeout(function () {
+                    waitForTiandituLabel(resolve, reject, startedAt);
+                }, 50);
+            }
+
+            function toBaiduPoint(BMapGL, point) {
+                return new BMapGL.Point(point.lng, point.lat);
+            }
+
+            function addBaiduMarker(BMapGL, map, markerConfig) {
+                var point = toBaiduPoint(BMapGL, markerConfig.point);
+                var marker = new BMapGL.Marker(point);
+                var label = new BMapGL.Label('<span class="nexora-map-label">' + escapeHtml(markerConfig.label) + '</span>', {
+                    offset: new BMapGL.Size(14, -14)
+                });
+
+                marker.setLabel(label);
+                map.addOverlay(marker);
+            }
+
+            function addBaiduPolyline(BMapGL, map, polylineConfig) {
+                var points = polylineConfig.points.map(function (point) {
+                    return toBaiduPoint(BMapGL, point);
+                });
+
+                if (polylineConfig.outlineColor && Number.isFinite(polylineConfig.outlineWeight)
+                    && polylineConfig.outlineWeight > polylineConfig.weight) {
+                    map.addOverlay(new BMapGL.Polyline(points, {
+                        strokeColor: polylineConfig.outlineColor,
+                        strokeWeight: polylineConfig.outlineWeight,
+                        strokeOpacity: 0.86
+                    }));
+                }
+
+                map.addOverlay(new BMapGL.Polyline(points, {
+                    strokeColor: polylineConfig.color,
+                    strokeWeight: polylineConfig.weight,
+                    strokeOpacity: polylineConfig.opacity
+                }));
+            }
+
+            function renderBaiduMap(BMapGL, config) {
+                var center = toBaiduPoint(BMapGL, config.center);
+                var map = new BMapGL.Map('nexora-map-canvas');
+
+                map.centerAndZoom(center, config.zoom);
+                map.enableScrollWheelZoom(true);
+                map.addControl(new BMapGL.ScaleControl());
+                map.addControl(new BMapGL.ZoomControl());
+
+                config.markers.forEach(function (marker) {
+                    addBaiduMarker(BMapGL, map, marker);
+                });
+                config.polylines.forEach(function (polyline) {
+                    addBaiduPolyline(BMapGL, map, polyline);
+                });
+
+                if (config.fitViewport && config.viewportPoints.length > 1) {
+                    map.setViewport(config.viewportPoints.map(function (point) {
+                        return toBaiduPoint(BMapGL, point);
+                    }));
+                }
+
+            }
+
+            function toTiandituPoint(T, point) {
+                return new T.LngLat(point.lng, point.lat);
+            }
+
+            function addTiandituMarker(T, map, markerConfig) {
+                var point = toTiandituPoint(T, markerConfig.point);
+                var marker = new T.Marker(point);
+                var labelCls = T.Label || T.DOMLabel;
+
+                map.addOverLay(marker);
+                map.addOverLay(new labelCls({
+                    text: '<span class="nexora-map-label">' + escapeHtml(markerConfig.label) + '</span>',
+                    position: point,
+                    offset: new T.Point(14, -14)
+                }));
+            }
+
+            function addTiandituPolyline(T, map, polylineConfig) {
+                var points = polylineConfig.points.map(function (point) {
+                    return toTiandituPoint(T, point);
+                });
+
+                if (polylineConfig.outlineColor && Number.isFinite(polylineConfig.outlineWeight)
+                    && polylineConfig.outlineWeight > polylineConfig.weight) {
+                    map.addOverLay(new T.Polyline(points, {
+                        color: polylineConfig.outlineColor,
+                        weight: polylineConfig.outlineWeight,
+                        opacity: 0.86
+                    }));
+                }
+
+                map.addOverLay(new T.Polyline(points, {
+                    color: polylineConfig.color,
+                    weight: polylineConfig.weight,
+                    opacity: polylineConfig.opacity
+                }));
+            }
+
+            function renderTiandituMap(T, config) {
+                var center = toTiandituPoint(T, config.center);
+                var map = new T.Map('nexora-map-canvas');
+
+                map.centerAndZoom(center, config.zoom);
+                map.enableScrollWheelZoom();
+                map.addControl(new T.Control.Zoom());
+                map.addControl(new T.Control.Scale());
+
+                config.markers.forEach(function (marker) {
+                    addTiandituMarker(T, map, marker);
+                });
+                config.polylines.forEach(function (polyline) {
+                    addTiandituPolyline(T, map, polyline);
+                });
+
+                if (config.fitViewport && config.viewportPoints.length > 1) {
+                    map.setViewport(config.viewportPoints.map(function (point) {
+                        return toTiandituPoint(T, point);
+                    }));
+                }
+
+            }
+
+            function showError(message) {
+                var canvas = document.getElementById('nexora-map-canvas');
+                var errorEl = document.getElementById('nexora-map-error');
+
+                canvas.style.display = 'none';
+                errorEl.style.display = 'flex';
+                errorEl.textContent = message;
+            }
+
+            function renderMap(payload, config) {
+                // ArkTS 侧轮询 __nexoraMapStatus 获取渲染结果（不依赖 javaScriptProxy 反向调用）
+                window.__nexoraMapStatus = 'loading';
+                window.__nexoraMapError = '';
+
+                try {
+                    var normalized = normalizePayload(payload);
+
+                    if (normalized.provider === TIANDITU_PROVIDER) {
+                        loadTiandituMap(config).then(function (T) {
+                            renderTiandituMap(T, normalized);
+                            window.__nexoraMapStatus = 'ready';
+                        }).catch(function (error) {
+                            showError(error && error.message ? error.message : String(error));
+                            window.__nexoraMapError = error && error.message ? error.message : String(error);
+                            window.__nexoraMapStatus = 'error';
+                        });
+
+                        return;
+                    }
+
+                    loadBaiduMapGl(config).then(function (BMapGL) {
+                        renderBaiduMap(BMapGL, normalized);
+                        window.__nexoraMapStatus = 'ready';
+                    }).catch(function (error) {
+                        showError(error && error.message ? error.message : String(error));
+                        window.__nexoraMapError = error && error.message ? error.message : String(error);
+                        window.__nexoraMapStatus = 'error';
+                    });
+                } catch (error) {
+                    showError(error && error.message ? error.message : String(error));
+                    window.__nexoraMapError = error && error.message ? error.message : String(error);
+                    window.__nexoraMapStatus = 'error';
+                }
+            }
+
+            window.NexoraMapBridge = {
+                render: renderMap
+            };
+        })();
+    </script>
+</body>
+</html>

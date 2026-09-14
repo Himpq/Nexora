@@ -12,6 +12,15 @@ class OllamaProvider(OpenAIProvider):
     def api_type(self) -> str:
         return "ollama"
 
+    def supports_vision_input(self, model_name: str) -> bool:
+        """识别 Ollama 本地模型的图片输入能力。"""
+        if super().supports_vision_input(model_name):
+            return True
+
+        value = str(model_name or "").strip().lower()
+        markers = ("llava", "vision", "minicpm-v", "qwen2.5vl", "qwen3-vl")
+        return any(marker in value for marker in markers)
+
     def _ollama_base_url(self) -> str:
         url = str(self.provider_config.get("base_url", "") or "").strip()
         if url.endswith("/v1"):

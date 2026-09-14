@@ -1597,7 +1597,7 @@ class User:
         return self.path + "notes_store.json"
 
     def _default_notes_store(self):
-        now_ts = int(time.time())
+        now_ts = int(time.time() * 1000)
         return {
             "activeNotebookId": "nb_default",
             "notebooks": [
@@ -1609,6 +1609,126 @@ class User:
             ],
             "notes": [],
             "updatedAt": 0
+        }
+
+    @staticmethod
+    def _normalize_notes_timestamp_ms(raw_value, fallback_ms):
+        """把秒、毫秒、微秒和纳秒时间戳统一为毫秒，避免跨端日期漂移。"""
+        try:
+            numeric = int(float(raw_value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return int(fallback_ms)
+
+        if numeric <= 0:
+            return int(fallback_ms)
+
+        if numeric < 100_000_000_000:
+            return numeric * 1000
+
+        if numeric < 100_000_000_000_000:
+            return numeric
+
+        if numeric < 100_000_000_000_000_000:
+            return numeric // 1000
+
+        return numeric // 1_000_000
+
+    @staticmethod
+    def _note_fingerprint(note):
+        if not isinstance(note, dict):
+            return ""
+
+        return json.dumps({
+            "id": str(note.get("id", "")),
+            "notebookId": str(note.get("notebookId", "")),
+            "text": str(note.get("text", "")),
+            "source": str(note.get("source", "")),
+            "sourceTitle": str(note.get("sourceTitle", "")),
+            "anchor": note.get("anchor"),
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _note_timestamp(note):
+        try:
+            return int(note.get("ts", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def _merge_notes_store(self, current_store, incoming_store, base_store):
+        """按客户端最后一次已知云端快照做三方合并，禁止旧端全量覆盖新端内容。"""
+        current = self._normalize_notes_store(current_store)
+        incoming = self._normalize_notes_store(incoming_store)
+        base = self._normalize_notes_store(base_store)
+
+        current_notes = {item["id"]: item for item in current["notes"]}
+        incoming_notes = {item["id"]: item for item in incoming["notes"]}
+        base_notes = {item["id"]: item for item in base["notes"]}
+        note_ids = list(current_notes.keys())
+
+        for note_id in incoming_notes:
+            if note_id not in current_notes:
+                note_ids.append(note_id)
+
+        merged_notes = []
+        for note_id in note_ids:
+            current_note = current_notes.get(note_id)
+            incoming_note = incoming_notes.get(note_id)
+            base_note = base_notes.get(note_id)
+
+            if base_note is None:
+                if current_note is None:
+                    chosen = incoming_note
+                elif incoming_note is None:
+                    chosen = current_note
+                elif self._note_fingerprint(current_note) == self._note_fingerprint(incoming_note):
+                    chosen = current_note
+                else:
+                    chosen = incoming_note if self._note_timestamp(incoming_note) > self._note_timestamp(current_note) else current_note
+            else:
+                current_changed = current_note is None or self._note_fingerprint(current_note) != self._note_fingerprint(base_note)
+                incoming_changed = incoming_note is None or self._note_fingerprint(incoming_note) != self._note_fingerprint(base_note)
+
+                if current_changed and not incoming_changed:
+                    chosen = current_note
+                elif incoming_changed and not current_changed:
+                    chosen = incoming_note
+                elif not current_changed and not incoming_changed:
+                    chosen = current_note or incoming_note
+                elif current_note is None:
+                    chosen = incoming_note
+                elif incoming_note is None:
+                    chosen = current_note
+                else:
+                    chosen = incoming_note if self._note_timestamp(incoming_note) > self._note_timestamp(current_note) else current_note
+
+            if chosen is not None:
+                merged_notes.append(chosen)
+
+        current_notebooks = {item["id"]: item for item in current["notebooks"]}
+        for notebook in incoming["notebooks"]:
+            notebook_id = notebook["id"]
+            if notebook_id not in current_notebooks:
+                current_notebooks[notebook_id] = notebook
+                continue
+
+            if self._note_timestamp(notebook) > self._note_timestamp(current_notebooks[notebook_id]):
+                current_notebooks[notebook_id] = notebook
+
+        notebooks = list(current_notebooks.values())
+        notebook_ids = {item["id"] for item in notebooks}
+        active_notebook_id = current["activeNotebookId"]
+        if (
+            incoming["activeNotebookId"] != base["activeNotebookId"]
+            and current["activeNotebookId"] == base["activeNotebookId"]
+            and incoming["activeNotebookId"] in notebook_ids
+        ):
+            active_notebook_id = incoming["activeNotebookId"]
+
+        return {
+            "activeNotebookId": active_notebook_id if active_notebook_id in notebook_ids else notebooks[0]["id"],
+            "notebooks": notebooks,
+            "notes": merged_notes,
+            "updatedAt": int(time.time() * 1000),
         }
 
     def _normalize_note_anchor(self, raw):
@@ -1660,7 +1780,7 @@ class User:
 
         notebooks = []
         notebook_ids = set()
-        now_ts = int(time.time())
+        now_ts = int(time.time() * 1000)
         for idx, item in enumerate(notebooks_raw):
             if not isinstance(item, dict):
                 continue
@@ -1668,10 +1788,7 @@ class User:
             if notebook_id in notebook_ids:
                 continue
             notebook_name = str(item.get("name", "")).strip() or "未命名笔记本"
-            try:
-                notebook_ts = int(item.get("ts", now_ts) or now_ts)
-            except Exception:
-                notebook_ts = now_ts
+            notebook_ts = self._normalize_notes_timestamp_ms(item.get("ts", now_ts), now_ts)
             notebooks.append({
                 "id": notebook_id,
                 "name": notebook_name[:64],
@@ -1692,6 +1809,7 @@ class User:
             notes_raw = []
 
         normalized_notes = []
+        note_ids = set()
         for idx, item in enumerate(notes_raw):
             if not isinstance(item, dict):
                 continue
@@ -1704,13 +1822,13 @@ class User:
                 note_notebook_id = active_notebook_id
 
             note_id = str(item.get("id", "")).strip() or f"note_{now_ts}_{idx}"
+            if note_id in note_ids:
+                continue
+
             source = str(item.get("source", "聊天")).strip() or "聊天"
             source_title = str(item.get("sourceTitle", "")).strip()
             anchor = self._normalize_note_anchor(item.get("anchor"))
-            try:
-                note_ts = int(item.get("ts", now_ts) or now_ts)
-            except Exception:
-                note_ts = now_ts
+            note_ts = self._normalize_notes_timestamp_ms(item.get("ts", now_ts), now_ts)
 
             normalized_notes.append({
                 "id": note_id,
@@ -1721,15 +1839,14 @@ class User:
                 "anchor": anchor,
                 "ts": note_ts
             })
+            note_ids.add(note_id)
 
         # 防止单用户笔记无限增长
         if len(normalized_notes) > 6000:
             normalized_notes = normalized_notes[:6000]
 
         try:
-            updated_at = int(src.get("updatedAt", 0) or 0)
-            if updated_at < 0:
-                updated_at = 0
+            updated_at = self._normalize_notes_timestamp_ms(src.get("updatedAt", 0), 0)
         except Exception:
             updated_at = 0
 
@@ -1759,14 +1876,15 @@ class User:
                 pass
             return normalized
 
-    def save_notes_store(self, store):
-        """保存用户笔记云存储，返回归一化后的结果。"""
-        normalized = self._normalize_notes_store(store)
+    def save_notes_store(self, store, base_store):
+        """基于客户端基线合并用户笔记云存储，返回合并后的完整快照。"""
         lock = get_user_lock(self.user)
         with lock:
             fpath = self._notes_store_path()
+            current = safe_read_json(fpath, default=self._default_notes_store())
+            normalized = self._merge_notes_store(current, store, base_store)
             safe_write_json(fpath, normalized, indent=2)
-        return normalized
+            return normalized
 
     # ==================== 知识图谱管理 ====================
     

@@ -4,6 +4,7 @@ Nexora.basis.Conversation.telemetry — token / trace 调试数据
 v4 中调试数据与可见消息分离：
 - assistant.usage 仅保留精简 token 统计（input/output/raw_input/cached_input/effective_input）
 - assistant.trace 保留结构化 tool_calls/tool_results/content_segments/errors
+- assistant.trace.extensions 保留 token 关联与缓存归因诊断
 - 旧字段 reasoning_content / request_debug / io_tokens_cumulative / io_tokens_window 等
   在迁移时被有意丢弃，不进入 sidecar 存储（若需完整回放，可基于 trace 重建）
   迁移保证：可见消息 content 完全不丢失，调试数据仅保留精简后的 usage/trace
@@ -92,6 +93,7 @@ def extract_process_steps_from_trace(trace: Dict[str, Any]) -> List[Dict[str, An
             "model_visible_result": result.get("model_visible_result", ""),
             "display_result": result.get("display_result", result.get("display_model_visible_result", "")),
             "display_model_visible_result": result.get("display_model_visible_result", result.get("display_result", "")),
+            "display_media": copy.deepcopy(result.get("display_media")),
             "call_id": str(result.get("call_id") or ""),
             "success": bool(result.get("success", True)),
             "round": result.get("round"),

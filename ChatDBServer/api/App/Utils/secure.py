@@ -94,3 +94,13 @@ def resolve_configured_path(root: str, raw_path: Any, *, fallback: Optional[str]
         return fallback_path
 
     return candidate
+
+
+def mask_public_api_key(key: Any) -> str:
+    """将密钥脱敏为可预览形式：短密钥全掩码，长密钥保留首尾片段。"""
+    text = str(key or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 10:
+        return "*" * len(text)
+    return f"{text[:8]}...{text[-4:]}"

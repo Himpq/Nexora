@@ -71,9 +71,10 @@ export class Shadow {
 
 // 动效：统一时长与插值曲线，消除硬出现硬消失
 export class Motion {
-    static readonly durationFast: number = 160;
-    static readonly durationBase: number = 240;
-    static readonly durationSlow: number = 400;
+    static readonly durationFast: number = 140;
+    static readonly durationPress: number = 100;
+    static readonly durationBase: number = 220;
+    static readonly durationSlow: number = 320;
 
     // 弹性曲线：用于弹层、按压回弹、列表插入
     static readonly spring: ICurve = curves.springMotion(0.42, 0.86);
@@ -81,13 +82,15 @@ export class Motion {
     // 缓出曲线：用于透明度淡入淡出
     static readonly easeOut: ICurve = curves.cubicBezierCurve(0.22, 1, 0.36, 1);
     static readonly easeInOut: ICurve = curves.cubicBezierCurve(0.4, 0, 0.2, 1);
+    // 按压曲线：快速到位，松手立即回到原位，不产生网页式弹跳
+    static readonly press: ICurve = curves.cubicBezierCurve(0.2, 0, 0, 1);
 }
 
-// 按压态缩放：配合 scale 与 spring 使用
+// 按压态缩放：只做轻微压下，避免手机端控件像网页卡片一样跳动
 export class PressScale {
     static readonly normal: number = 1;
-    static readonly pressed: number = 0.96;
-    static readonly pressedDeep: number = 0.92;
+    static readonly pressed: number = 0.98;
+    static readonly pressedDeep: number = 0.96;
 }
 
 // 入场动画延迟：用于首页各区域交错出现
@@ -97,15 +100,15 @@ export class StaggerDelay {
     static readonly actions: number = 160;
     static readonly recent: number = 240;
     static readonly actionCardBase: number = 40;
-    static readonly actionCardStep: number = 60;
+    static readonly actionCardStep: number = 28;
 }
 
 // 发光效果：用于装饰背景球和聚焦态
 export class Glow {
     static readonly brandRadius: number = 120;
-    static readonly brandOpacity: number = 0.12;
+    static readonly brandOpacity: number = 0.08;
     static readonly secondaryRadius: number = 80;
-    static readonly secondaryOpacity: number = 0.08;
+    static readonly secondaryOpacity: number = 0.05;
     static readonly focusRadius: number = 20;
     static readonly focusOpacity: number = 0.15;
 }
@@ -124,4 +127,76 @@ export class Breathe {
     static readonly minScale: number = 0.95;
     static readonly maxScale: number = 1.05;
     static readonly duration: number = 2000;
+}
+
+// ---------- 阅读器主题 ----------
+// 固定色板（不跟随系统深色模式，保证纸张质感在各模式下稳定）
+export interface ReaderPalette {
+    page: string;
+    card: string;
+    text: string;
+    secondary: string;
+    divider: string;
+    brand: string;
+    // 卡片内的控件底色：比 card 沉一档，保证按钮在深色面板上依然可辨
+    sunken: string;
+    // 品牌色之上的前景色：夜间品牌色偏亮，白字对比度不够
+    onBrand: string;
+}
+
+export class ReaderTheme {
+    static readonly DAY: ReaderPalette = {
+        page: '#F4F5F9',
+        card: '#FFFFFF',
+        text: '#16181D',
+        secondary: '#676E7D',
+        divider: '#E4E7ED',
+        brand: '#4C6FFF',
+        sunken: '#F1F2F6',
+        onBrand: '#FFFFFF',
+    };
+    static readonly NIGHT: ReaderPalette = {
+        page: '#0D0F14',
+        card: '#171B23',
+        text: '#E8EAF0',
+        secondary: '#9AA1B0',
+        divider: '#262B36',
+        brand: '#7A8CFF',
+        sunken: '#232833',
+        onBrand: '#0D0F14',
+    };
+    static readonly SEPIA: ReaderPalette = {
+        page: '#F1E8D3',
+        card: '#FAF3E2',
+        text: '#4A3F30',
+        secondary: '#8A7A63',
+        divider: '#E0D3B6',
+        brand: '#4C6FFF',
+        sunken: '#F0E6CF',
+        onBrand: '#FFFFFF',
+    };
+
+    static label(name: string): string {
+        if (name === 'night') {
+            return '夜间';
+        }
+
+        if (name === 'sepia') {
+            return '护眼';
+        }
+
+        return '白天';
+    }
+
+    static byName(name: string): ReaderPalette {
+        if (name === 'night') {
+            return ReaderTheme.NIGHT;
+        }
+
+        if (name === 'sepia') {
+            return ReaderTheme.SEPIA;
+        }
+
+        return ReaderTheme.DAY;
+    }
 }

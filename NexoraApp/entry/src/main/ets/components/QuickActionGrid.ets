@@ -1,9 +1,9 @@
 // QuickActionGrid.ets - 首页快捷能力宫格
 // 两列卡片，点击后把对应提示词写入输入框，用户接着补充具体内容即可发送
-// 每张卡片有独立的按压态（缩放+阴影+边框联动）和交错入场动画
+// 每张卡片有独立的按压态（轻微缩放+浅色按压底）和交错入场动画
 
 import { QuickAction } from '../common/AppConfig';
-import { FontSize, LineHeight, Motion, PressScale, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
+import { FontSize, LineHeight, Motion, PressScale, Radius, Size, Space, StaggerDelay } from '../common/DesignToken';
 
 @Component
 export struct QuickActionGrid {
@@ -74,26 +74,25 @@ export struct QuickActionGrid {
         .alignItems(HorizontalAlign.Start)
         .padding(Space.md)
         .borderRadius(Radius.lg)
-        .backgroundColor($r('app.color.bg_card'))
+        .backgroundColor(action.id === this.activatedId
+            ? $r('app.color.brand_soft')
+            : this.isPressed(action.id)
+                ? $r('app.color.bg_pressed')
+                : $r('app.color.bg_card'))
         .border({
-            width: action.id === this.activatedId ? 1.5 : 0,
+            width: action.id === this.activatedId ? 1 : 0,
             color: $r('app.color.brand_primary')
         })
-        .shadow(this.isPressed(action.id)
-            ? Shadow.raised
-            : action.id === this.activatedId
-                ? Shadow.card
-                : Shadow.none)
         .scale({
             x: this.isPressed(action.id) ? PressScale.pressedDeep : PressScale.normal,
             y: this.isPressed(action.id) ? PressScale.pressedDeep : PressScale.normal
         })
-        .animation({ duration: Motion.durationFast, curve: Motion.spring })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
         // 交错入场：每张卡片延迟出现
         .opacity(this.visible ? 1 : 0)
-        .translate({ y: this.visible ? 0 : 20 })
+        .translate({ y: this.visible ? 0 : 8 })
         .animation({
-            duration: Motion.durationBase,
+            duration: Motion.durationFast,
             curve: Motion.easeOut,
             delay: index * StaggerDelay.actionCardStep
         })

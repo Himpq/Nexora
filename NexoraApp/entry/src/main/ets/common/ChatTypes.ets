@@ -2,9 +2,48 @@
 // 与 Web 端 messageSegments 协议对齐，消息整体作为一个可观察对象，
 // 流式增量只更新自己的字段，依赖它的气泡 / 思考块 / 工具卡片各自精确刷新
 
+import { ExaImageGallery, isExaWebSearchToolName, readExaImageGallery, readExaImageGalleryFromResult, stripExaImageMarkdown } from './ExaMedia';
+import { isMapToolName, stripMapSceneSection } from './MapTool';
+import { parseQuestionPayload, QuestionItem, QuestionPayload } from './QuestionLocks';
+
 export type SegmentType = 'reasoning' | 'content' | 'function_call' | 'function_result' | 'question' | 'error';
 export type MessageRole = 'user' | 'assistant';
 export type ToolStatus = 'running' | 'done' | 'error';
+
+// 工具结果载荷：SSE function_result 帧与历史 trace 共用的双轨字段
+// - result: 原始结果（模型上下文同源）
+// - modelVisibleResult: 模型可见结果（展示与上下文分离的旧轨）
+// - displayResult: 前端优先展示结果（display_model_visible_result / display_result）
+// - displayMedia: 结构化媒体（Exa 图片画廊）
+export interface ToolResultPayload {
+    result: string;
+    modelVisibleResult: string;
+    displayResult: string;
+    displayMedia: Object | null;
+}
+
+export function makeToolResultPayload(
+    result: string,
+    modelVisibleResult: string,
+    displayResult: string,
+    displayMedia: Object | null
+): ToolResultPayload {
+    return {
+        result: result,
+        modelVisibleResult: modelVisibleResult,
+        displayResult: displayResult,
+        displayMedia: displayMedia
+    };
+}
+
+// Token 用量：流式 token_usage 帧与历史消息 usage 字段统一映射到此
+export interface TokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    rawInputTokens: number;
+    cachedInputTokens: number;
+}
 
 // 流式分片：与后端 SSE 的 segment 一一对应
 export interface MessageSegment {
@@ -14,6 +53,32 @@ export interface MessageSegment {
     callId?: string;
     modelVisibleResult?: string;
     round?: number;
+    // question 分段专用：交互问题载荷（渲染等待/已回答卡片）
+    question?: QuestionPayload;
+}
+
+// 用户消息附件（与 Web attachments 协议对齐）：
+// 图片经带会话的下载缓存后展示（见 RemoteImageCache），非图片渲染为文件胶囊
+export interface MessageAttachment {
+    type: string;
+    name: string;
+    mime: string;
+    // 服务端下载地址（相对 /api/... 或绝对 URL），由历史数据归一化得到
+    url: string;
+    size: number;
+}
+
+// 是否图片附件（对齐 Web imageAttachments：type/mime/扩展名三选一命中即可）
+export function isImageAttachment(att: MessageAttachment): boolean {
+    if (att.type === 'image' || att.type === 'image_url') {
+        return true;
+    }
+
+    if (att.mime.startsWith('image/')) {
+        return true;
+    }
+
+    return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(att.name.toLowerCase());
 }
 
 // 工具调用卡片：一条调用从发起(running)到回结果(done/error)的完整生命周期
@@ -23,18 +88,26 @@ export class ToolCallItem {
     name: string;
     argumentsText: string;
     resultText: string;
+    displayText: string;
     round: number;
     status: ToolStatus;
     expanded: boolean;
+    // Exa Web Search：搜索行下方独立图片画廊（null 表示非 Exa 或无图）
+    exaGallery: ExaImageGallery | null;
+    // 地图工具：原始结果 JSON，MessageBubble 交给 MapCard 解析并渲染
+    mapResultJson: string;
 
     constructor(callId: string, name: string, argumentsText: string, round: number) {
         this.callId = callId;
         this.name = name;
         this.argumentsText = argumentsText;
         this.resultText = '';
+        this.displayText = '';
         this.round = round;
         this.status = 'running';
         this.expanded = false;
+        this.exaGallery = null;
+        this.mapResultJson = '';
     }
 
     // 工具名称转成可读中文，方便演示时一眼看懂调用链
@@ -42,20 +115,52 @@ export class ToolCallItem {
         return ToolNames.toDisplay(this.name);
     }
 
-    completeWith(resultText: string): void {
-        this.resultText = resultText;
+    // 完成时统一落展示轨：displayResult → modelVisibleResult → result，
+    // Exa 剥离独立图片行、地图剔除 Scene 原始段并按需生成画廊/地图数据
+    completeWith(payload: ToolResultPayload): void {
+        this.resultText = payload.result;
+        this.displayText = this.composeDisplayText(payload);
+        this.exaGallery = isExaWebSearchToolName(this.name) ? this.composeExaGallery(payload) : null;
+        this.mapResultJson = isMapToolName(this.name) ? payload.result : '';
         this.status = 'done';
         this.expanded = false;
     }
 
     failWith(errorText: string): void {
         this.resultText = errorText;
+        this.displayText = errorText;
         this.status = 'error';
         this.expanded = true;
     }
 
     toggleExpanded(): void {
         this.expanded = !this.expanded;
+    }
+
+    private composeDisplayText(payload: ToolResultPayload): string {
+        let text: string = payload.displayResult.length > 0
+            ? payload.displayResult
+            : (payload.modelVisibleResult.length > 0 ? payload.modelVisibleResult : payload.result);
+
+        if (isExaWebSearchToolName(this.name)) {
+            text = stripExaImageMarkdown(text);
+        }
+
+        if (isMapToolName(this.name)) {
+            text = stripMapSceneSection(text);
+        }
+
+        return text;
+    }
+
+    private composeExaGallery(payload: ToolResultPayload): ExaImageGallery | null {
+        const structured: ExaImageGallery | null = readExaImageGallery(payload.displayMedia);
+
+        if (structured !== null) {
+            return structured;
+        }
+
+        return readExaImageGalleryFromResult(payload.result);
     }
 }
 
@@ -83,6 +188,12 @@ export class ToolNames {
 // 一条消息：既是渲染数据源，也是流式写入的目标
 @Observed
 export class ChatMessage {
+    // 消息实例唯一标识（进程内自增）：消息列表 ForEach 的键值只能取自它。
+    // ForEach 非首次渲染时按键值匹配，键值已存在则复用旧节点、不更新入参，
+    // 与子组件 @ObjectLink 的绑定仍是旧对象；若键值取 index+role，跨会话切换时
+    // （各会话本地索引都从 0 起）键值必然撞车，切回正在生成的会话后节点仍绑在
+    // 上一个会话的消息对象上——界面停在旧内容、后续流式增量写进了没人订阅的对象
+    uid: string;
     index: number;
     role: MessageRole;
     content: string;
@@ -93,9 +204,13 @@ export class ChatMessage {
     errorMessage: string;
     thinkingExpanded: boolean;
     toolCalls: ToolCallItem[];
+    questions: QuestionItem[];
     segments: MessageSegment[];
+    usage: TokenUsage | null;
+    attachments: MessageAttachment[];
 
     constructor(index: number, role: MessageRole, content: string) {
+        this.uid = ChatMessage.nextUid();
         this.index = index;
         this.role = role;
         this.content = content;
@@ -106,11 +221,22 @@ export class ChatMessage {
         this.errorMessage = '';
         this.thinkingExpanded = false;
         this.toolCalls = [];
+        this.questions = [];
         this.segments = [];
+        this.usage = null;
+        this.attachments = [];
     }
 
     static createUser(text: string): ChatMessage {
         return new ChatMessage(0, 'user', text);
+    }
+
+    // uid 发号器：每次 new 出一条消息即取一个新号，保证键值恒随对象实例变化
+    private static uidSequence: number = 0;
+
+    private static nextUid(): string {
+        ChatMessage.uidSequence += 1;
+        return 'msg_' + ChatMessage.uidSequence;
     }
 
     static createAssistant(): ChatMessage {
@@ -133,8 +259,15 @@ export class ChatMessage {
         return this.toolCalls.length > 0;
     }
 
+    get hasQuestions(): boolean {
+        return this.questions.length > 0;
+    }
+
     get isEmpty(): boolean {
-        return this.content.length === 0 && this.reasoning.length === 0 && this.toolCalls.length === 0;
+        return this.content.length === 0
+            && this.reasoning.length === 0
+            && this.toolCalls.length === 0
+            && this.questions.length === 0;
     }
 
     // 流式分片追加：同类型续写在末段，类型切换新开一段。
@@ -185,17 +318,18 @@ export class ChatMessage {
         this.segments = [...this.segments, { type: 'function_call', text: argumentsText, name: name, callId: callId, round: round }];
     }
 
-    // 工具结果回填，按 callId 精确匹配：同步写入 segments 占位，确保后续正文新开段
-    completeToolCall(callId: string, resultText: string): void {
+    // 工具结果回填，按 callId 精确匹配：同步写入 segments 占位，确保后续正文新开段。
+    // 已有结果（轮询与 SSE 补发同一帧）直接忽略，避免同一次调用重复追加 function_result 段
+    completeToolCall(callId: string, payload: ToolResultPayload): void {
         const target: ToolCallItem | undefined = this.findToolCall(callId);
 
-        if (target === undefined) {
+        if (target === undefined || target.status !== 'running') {
             return;
         }
 
-        target.completeWith(resultText);
+        target.completeWith(payload);
         this.toolCalls = [...this.toolCalls];
-        this.segments = [...this.segments, { type: 'function_result', text: resultText, name: target.name, callId: callId, round: target.round }];
+        this.segments = [...this.segments, { type: 'function_result', text: payload.result, name: target.name, callId: callId, round: target.round }];
     }
 
     failToolCall(callId: string, errorText: string): void {
@@ -209,9 +343,67 @@ export class ChatMessage {
         this.toolCalls = [...this.toolCalls];
     }
 
+    // 流式 question 帧：注册卡片 + 写入 segments 时序，
+    // 并闭合同 callId 的运行中工具卡（服务端 question 工具只发 question 帧，
+    // 不发 function_result 帧；不闭合会一直转圈，历史回放却显示完成，两态必须一致）。
+    // 同一 callId 只允许一个 question 分段（轮询与 SSE 补发同一帧时不重复渲染卡片）
+    beginQuestion(callId: string, payloadSource: Object | null): QuestionItem {
+        const item: QuestionItem = this.registerQuestion(callId, payloadSource);
+
+        if (!this.hasQuestionSegment(callId)) {
+            this.segments = [...this.segments, {
+                type: 'question',
+                text: '',
+                name: 'question',
+                callId: callId,
+                question: item.payload
+            }];
+        }
+
+        const running: ToolCallItem | undefined = this.findToolCall(callId);
+
+        if (running !== undefined && running.status === 'running') {
+            running.completeWith(makeToolResultPayload('', '', '', null));
+            this.toolCalls = [...this.toolCalls];
+        }
+
+        return item;
+    }
+
+    // 注册 question 卡片（历史回放与流式共用）：同 callId 只保留一个实例
+    registerQuestion(callId: string, payloadSource: Object | null): QuestionItem {
+        const payload: QuestionPayload = parseQuestionPayload(payloadSource);
+        const existing: QuestionItem | undefined = this.findQuestion(callId);
+
+        if (existing !== undefined) {
+            existing.applyPayload(payload);
+            this.questions = [...this.questions];
+            return existing;
+        }
+
+        const item: QuestionItem = new QuestionItem(callId, payload);
+        this.questions = [...this.questions, item];
+        return item;
+    }
+
+    markQuestionAnswered(callId: string, answerText: string): void {
+        const item: QuestionItem | undefined = this.findQuestion(callId);
+
+        if (item === undefined) {
+            return;
+        }
+
+        item.markAnswered(answerText);
+        this.questions = [...this.questions];
+    }
+
     setError(text: string): void {
         this.errorMessage = text;
         this.streaming = false;
+    }
+
+    setUsage(usage: TokenUsage): void {
+        this.usage = usage;
     }
 
     finish(): void {
@@ -227,6 +419,28 @@ export class ChatMessage {
 
         return undefined;
     }
+
+    private findQuestion(callId: string): QuestionItem | undefined {
+        for (let i: number = 0; i < this.questions.length; i++) {
+            if (this.questions[i].callId === callId) {
+                return this.questions[i];
+            }
+        }
+
+        return undefined;
+    }
+
+    private hasQuestionSegment(callId: string): boolean {
+        for (let i: number = 0; i < this.segments.length; i++) {
+            const segment: MessageSegment = this.segments[i];
+
+            if (segment.type === 'question' && segment.callId === callId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 // ---------- 历史消息还原 ----------
@@ -239,6 +453,13 @@ export interface RawProcessStep {
     arguments?: string;
     result?: string;
     round?: number;
+    // function_result 双轨展示字段（v3 老会话可能只有 result + model_visible_result）
+    model_visible_result?: string;
+    display_result?: string;
+    display_model_visible_result?: string;
+    display_media?: Object | null;
+    // question 步骤：question 载荷（v3/v4 均在 events/process_steps 中保留）
+    question?: Object | null;
 }
 
 // v4 存储：assistant 消息的调试数据与可见正文分离——可见正文在顶层 content，
@@ -261,8 +482,11 @@ export interface RawHistoryMessage {
     reasoning?: string;
     model_name?: string;
     created_at?: number;
+    // v4 用户消息附件（顶层）；旧会话可能只落在 metadata.attachments
+    attachments?: Object[];
     metadata?: Record<string, Object>;
     trace?: RawTrace;
+    usage?: Record<string, Object>;
 }
 
 // 从历史响应还原一条可渲染消息：优先按 process_steps / trace 还原完整链路，否则退化为正文+思考
@@ -272,6 +496,8 @@ export function messageFromHistory(raw: RawHistoryMessage, index: number): ChatM
     message.modelName = raw.model_name ?? '';
     message.reasoning = raw.reasoning ?? '';
     message.createdAt = raw.created_at ?? Date.now();
+    message.usage = readUsageFromHistory(raw);
+    message.attachments = role === 'user' ? readAttachments(raw) : [];
 
     // 步骤源优先级：v3 metadata.process_steps → v4 trace(events 或四桶)。trace 里的
     // reasoning_content 步骤让思考链可还原；tool_calls/tool_results 重建工具卡生命周期
@@ -476,10 +702,39 @@ function applyOneStep(message: ChatMessage, step: RawProcessStep, segments: Mess
     }
 
     if (type === 'function_result') {
-        const result: string = step.result ?? '';
-        segments.push({ type: 'function_result', text: result, name: name, callId: callId, round: round });
-        message.completeToolCall(callId, result);
+        const payload: ToolResultPayload = makeToolResultPayload(
+            step.result ?? '',
+            step.model_visible_result ?? '',
+            readStepDisplayResult(step),
+            step.display_media ?? null
+        );
+        segments.push({ type: 'function_result', text: payload.result, name: name, callId: callId, round: round });
+        message.completeToolCall(callId, payload);
+        return;
     }
+
+    if (type === 'question') {
+        const item: QuestionItem = message.registerQuestion(callId, step.question ?? null);
+        segments.push({ type: 'question', text: '', name: 'question', callId: callId, question: item.payload });
+
+        // 历史载荷带 resolved/answer 时直接呈现已回答态（线上作答态另由本地回答锁补齐）
+        if (item.payload.resolved) {
+            item.markAnswered(item.payload.answer);
+        }
+
+        return;
+    }
+}
+
+// 展示轨优先级：display_model_visible_result → display_result（与 Web stepToSegment 一致）
+function readStepDisplayResult(step: RawProcessStep): string {
+    const displayModelVisible: string = (step.display_model_visible_result ?? '').trim();
+
+    if (displayModelVisible.length > 0) {
+        return displayModelVisible;
+    }
+
+    return (step.display_result ?? '').trim();
 }
 
 function rebuildFlatFromSegments(message: ChatMessage): void {
@@ -501,4 +756,138 @@ function rebuildFlatFromSegments(message: ChatMessage): void {
 
     message.reasoning = reasoning;
     message.content = content;
+}
+
+// 从历史消息还原 Token 用量：v4 顶层 usage → v3 metadata.io_tokens
+function readUsageFromHistory(raw: RawHistoryMessage): TokenUsage | null {
+    const fromTop: TokenUsage | null = readUsageDict(raw.usage);
+
+    if (fromTop !== null) {
+        return fromTop;
+    }
+
+    if (raw.metadata !== undefined) {
+        const ioRaw: Object | undefined = raw.metadata['io_tokens'];
+
+        if (ioRaw !== undefined && typeof ioRaw === 'object') {
+            return readUsageDict(ioRaw as Record<string, Object>);
+        }
+    }
+
+    return null;
+}
+
+function readUsageDict(dict: Record<string, Object> | undefined): TokenUsage | null {
+    if (dict === undefined) {
+        return null;
+    }
+
+    const input: number = readNum(dict, 'input', 'input_tokens');
+    const output: number = readNum(dict, 'output', 'output_tokens');
+
+    if (input === 0 && output === 0) {
+        return null;
+    }
+
+    return {
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: readNum(dict, 'total', 'total_tokens'),
+        rawInputTokens: readNum(dict, 'raw_input', 'raw_input_tokens'),
+        cachedInputTokens: readNum(dict, 'cached_input', 'cached_input_tokens')
+    };
+}
+
+function readNum(dict: Record<string, Object>, key1: string, key2: string): number {
+    const v1: Object | undefined = dict[key1];
+
+    if (typeof v1 === 'number') {
+        return v1;
+    }
+
+    const v2: Object | undefined = dict[key2];
+
+    if (typeof v2 === 'number') {
+        return v2;
+    }
+
+    return 0;
+}
+
+// ---------- 用户消息附件还原 ----------
+// 顶层 attachments 与 metadata.attachments 双源合并（旧后端图片只写 metadata），
+// 双源同时落库时按身份键去重；缺下载地址时用 sandbox/stored 路径合成 inline 下载链接
+function readAttachments(raw: RawHistoryMessage): MessageAttachment[] {
+    const legacy: Object | undefined = raw.metadata !== undefined ? raw.metadata['attachments'] : undefined;
+    const top: Object[] = Array.isArray(raw.attachments) ? raw.attachments as Object[] : [];
+    const nested: Object[] = Array.isArray(legacy) ? legacy as Object[] : [];
+    const merged: MessageAttachment[] = [];
+    const seen: Set<string> = new Set<string>();
+
+    appendAttachments(merged, seen, top);
+    appendAttachments(merged, seen, nested);
+
+    return merged;
+}
+
+function appendAttachments(out: MessageAttachment[], seen: Set<string>, source: Object[]): void {
+    for (let i: number = 0; i < source.length; i++) {
+        const item: Object = source[i];
+
+        if (typeof item !== 'object' || item === null) {
+            continue;
+        }
+
+        const record: Record<string, Object> = item as Record<string, Object>;
+        const sandbox: string = readString(record, 'sandbox_path').length > 0
+            ? readString(record, 'sandbox_path')
+            : readString(record, 'stored_path');
+        const assetUrl: string = readString(record, 'asset_url');
+        const plainUrl: string = readString(record, 'url');
+        let url: string = assetUrl.length > 0 ? assetUrl : plainUrl;
+
+        if (url.length === 0 && sandbox.length > 0) {
+            url = '/api/files/download?file_ref=' + encodeURIComponent(sandbox) + '&inline=1';
+        }
+
+        if (url.length === 0) {
+            continue;
+        }
+
+        const name: string = readString(record, 'name');
+        const identity: string = [
+            readString(record, 'asset_id'),
+            assetUrl,
+            plainUrl,
+            readString(record, 'sandbox_path'),
+            readString(record, 'stored_path'),
+            name,
+            String(readAttachmentSize(record))
+        ].join('|');
+
+        if (seen.has(identity)) {
+            continue;
+        }
+
+        seen.add(identity);
+        out.push({
+            type: readString(record, 'type').toLowerCase(),
+            name: name.length > 0 ? name : 'attachment',
+            mime: readString(record, 'mime').toLowerCase(),
+            url: url,
+            size: readAttachmentSize(record)
+        });
+    }
+}
+
+function readString(dict: Record<string, Object>, key: string): string {
+    const value: Object | undefined = dict[key];
+
+    return typeof value === 'string' ? (value as string).trim() : '';
+}
+
+function readAttachmentSize(record: Record<string, Object>): number {
+    const value: Object | undefined = record['size'];
+
+    return typeof value === 'number' ? (value as number) : 0;
 }

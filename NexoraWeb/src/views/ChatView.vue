@@ -33,8 +33,7 @@
             @learning-nav="handleLearningNav"
             @learning-new="handleLearningNew"
             @open-learning-conversation="handleOpenLearningConversation"
-            @open-trash="trashOpen = true"
-            @open-timeline="timelineOpen = true"
+            @open-changes="changesOpen = true"
             @view-branch-source="handleViewBranchSource"
         />
 
@@ -243,7 +242,7 @@
             @saved="handleKnowledgeSettingsSaved"
         />
 
-        <TrashModal :open="trashOpen" @close="trashOpen = false" @restored="handleTrashRestored" />
+        <ChangesModal :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
 
         <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
@@ -252,8 +251,6 @@
             :url="imageViewerUrl"
             @close="imageViewerUrl = ''"
         />
-
-        <TimelinePanel :open="timelineOpen" @close="timelineOpen = false" />
 
         <NotesPanel
             ref="notesPanelRef"
@@ -284,7 +281,7 @@
     import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
     import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
-    import { chatStream, type ChatStreamChunk } from '@/network/chatStream'
+    import { chatStream, type ChatStreamChunk, type ChatStreamHandlers } from '@/network/chatStream'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
     import { useModelStore } from '@/stores/model'
@@ -302,6 +299,7 @@
 
     import ChatHeader from '@/components/ChatHeader.vue'
     import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
+    import ChangesModal from '@/components/ChangesModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -319,9 +317,7 @@
     import LearningFrameView from '@/components/LearningFrameView.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
-    import TimelinePanel from '@/components/TimelinePanel.vue'
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
-    import TrashModal from '@/components/TrashModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
     import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
 
@@ -339,18 +335,14 @@
     const userStore = useUserStore()
 
     // 网络层快照内容源:进行中流的缓冲消息上下文由 store 提供(层只负责序列化/存储)
-    chatStream.attachSnapshotSource(() => conversationStore.buildStreamSnapshot())
+    chatStream.attachSnapshotSource(() => conversationStore.buildStreamSnapshots())
 
     const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
     const settingsOpen = ref(false)
-    const trashOpen = ref(false)
-    const timelineOpen = ref(false)
+    const changesOpen = ref(false)
     const notesOpen = ref(false)
     const sidebarCollapsed = ref(false)
     const tokenDetailOpen = ref(false)
-
-    /** 当前流是否已通过 error chunk 弹过错误提示,避免终帧/断线重复弹(每次发送前重置) */
-    let streamErrorToastShown = false
 
     /** 知识点设置弹窗(接入原版 knowledgeSettingsModal;具体功能待接入) */
     const knowledgeSettingsOpen = ref(false)
@@ -1203,20 +1195,19 @@
         }, 3000)
     }
 
-    /** 助手消息在生成中时标记打字指示(重答时锁定目标索引消息) */
+    /** 助手消息在生成中时标记打字指示(仅当前查看会话的活动缓冲) */
     function isStreamingMessage(message: ChatMessage): boolean {
         if (!conversationStore.currentConversationGenerating) {
             return false
         }
 
         const pending = conversationStore.pendingStreams[conversationStore.currentId]
-        const targetIndex = pending?.targetIndex ?? conversationStore.streamingTargetIndex
 
-        if (targetIndex === null || targetIndex === undefined) {
+        if (!pending) {
             return false
         }
 
-        return message.role === 'assistant' && Number(message.index) === Number(targetIndex)
+        return message.role === 'assistant' && Number(message.index) === Number(pending.targetIndex)
     }
 
     /** 发送:唯一入口,经网络层同步锁防重入;生成中消息自动入队 */
@@ -1277,11 +1268,6 @@
         enableTools: boolean
         toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
-        // 新消息轮次:失败回滚语义定位为 send;任何业务帧到达前视为 connecting
-        streamSendKind = 'send'
-        streamPhase = 'connecting'
-        staleIndexPending = false
-
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
@@ -1322,7 +1308,7 @@
         // 发送即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
         resumeBottomFollow()
 
-        conversationStore.beginStream(content, attachments)
+        conversationStore.beginStream(conversationId, content, attachments)
 
         const accepted = await chatStream.send({
             message: content,
@@ -1336,16 +1322,13 @@
             attachments,
             conversationMode: learningComposerDocked.value ? 'learning' : undefined,
             workspaceId: sendWorkspaceId || undefined,
-        }, {
-            onChunk: handleStreamChunk,
-            onEnd: handleStreamEnd,
-        })
+        }, createStreamHandlers(conversationId, 'send'))
 
         // 发送被接受:附件随消息持久化,清空待发送附件(对齐原版 uploadedFileIds = [])
         if (accepted) {
             pendingAttachments.value = []
         } else {
-            conversationStore.abortStream()
+            conversationStore.abortStream(conversationId)
 
             showToast('发送冲突,请重试', 'warning')
         }
@@ -1353,7 +1336,7 @@
 
     /** 生成状态变化:结束后自动发送队列下一条(消息队列核心状态机,会话级) */
     watch(
-        () => [conversationStore.generating, conversationStore.currentId] as const,
+        () => [conversationStore.currentConversationGenerating, conversationStore.currentId] as const,
         ([generating]) => {
             if (generating) {
                 return
@@ -1377,27 +1360,45 @@
         }
     )
 
-    /** 当前流类型:发送新消息(send)或重答(regenerate)。决定失败时回滚语义。 */
-    let streamSendKind: 'send' | 'regenerate' = 'send'
+    /** 单条流的本地状态:所有回调闭包持有它,多会话并发时各自独立、互不串台 */
+    interface LiveStreamState {
+        /** 流实际归属的会话 ID(请求发出前已确定,后续回调全部按它路由) */
+        conversationId: string
+        /** send = 新消息(连接期失败可回滚);regenerate = 重答(失败不撤销已有消息) */
+        sendKind: 'send' | 'regenerate'
+        /** connecting = 尚未收到任何业务帧(后端可能未落盘 user);streaming = 已建流 */
+        phase: 'connecting' | 'streaming'
+        /** 本轮流是否收到服务端 conversation_index_stale(本地序号过期,收尾时按刷新会话处理) */
+        staleIndexPending: boolean
+        /** 本轮流是否已通过 error chunk 弹过错误提示,避免终帧/断线重复弹 */
+        errorToastShown: boolean
+    }
 
-    /** 当前流阶段:connecting = 尚未收到任何业务帧(后端可能未落盘 user);streaming = 已建流 */
-    let streamPhase: 'connecting' | 'streaming' = 'connecting'
+    /** 为一条流创建回调集合:闭包隔离状态,并让每个 store 调用都携带会话 ID */
+    function createStreamHandlers(conversationId: string, sendKind: 'send' | 'regenerate'): ChatStreamHandlers {
+        const state: LiveStreamState = {
+            conversationId,
+            sendKind,
+            phase: 'connecting',
+            staleIndexPending: false,
+            errorToastShown: false,
+        }
 
-    /** 本轮流是否收到服务端 conversation_index_stale(本地序号过期,收尾时按刷新会话处理) */
-    let staleIndexPending = false
+        return {
+            onChunk: (chunk) => handleStreamChunk(chunk, state),
+            onEnd: (reason, info) => handleStreamEnd(reason, info, state),
+        }
+    }
 
     /**
-     * 索引过期统一处理:以后端数据为准重载当前会话。
+     * 索引过期统一处理:以后端数据为准重载该会话。
      * 本地乐观消息与服务端脱锚后,唯一安全出路是回到权威数据源,而非继续局部修补。
+     * 后台会话发生过期时不做重载(切回时会全量拉取),只释放其流状态。
      */
-    async function handleIndexStale(): Promise<void> {
-        streamSendKind = 'send'
-        streamPhase = 'connecting'
-        staleIndexPending = false
+    async function handleIndexStale(conversationId: string): Promise<void> {
+        conversationStore.abortStream(conversationId)
 
-        conversationStore.abortStream()
-
-        if (!conversationStore.currentId) {
+        if (conversationStore.currentId !== conversationId) {
             return
         }
 
@@ -1416,48 +1417,44 @@
         }
     }
 
-    /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误 */
-    function handleStreamChunk(chunk: ChatStreamChunk): void {
+    /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误;state 决定归属会话 */
+    function handleStreamChunk(chunk: ChatStreamChunk, state: LiveStreamState): void {
         // 任何业务帧到达即视为流已建立(后端已过 begin_user_turn 落盘点)
         if (chunk && chunk.type && chunk.type !== 'error') {
-            streamPhase = 'streaming'
+            state.phase = 'streaming'
         }
-        // 会话 ID 同步(后端懒创建会话时通过 conversation_id chunk 返回)
+        // 会话 ID 帧:目标会话在发送前已确定(ensureConversationId),此处仅确认归属,不改动当前视图
         if (chunk.type === 'conversation_id' && chunk.conversation_id) {
-            if (!conversationStore.currentId) {
-                conversationStore.currentId = String(chunk.conversation_id)
-            }
-
             return
         }
 
-        // 模型信息:同步到当前助手消息(model-badge 数据源)
+        // 模型信息:同步到该流归属会话的助手消息(model-badge 数据源)
         if (chunk.type === 'model_info') {
             if (chunk.model_name) {
-                conversationStore.setStreamingModelName(String(chunk.model_name))
+                conversationStore.setStreamingModelName(state.conversationId, String(chunk.model_name))
             }
 
             return
         }
 
-        // token 画像:记录本次请求的 token 构成(CTX/Token 显示数据源)
+        // token 画像:记录本次请求的 token 构成(仅当前查看会话采纳,CTX/Token 显示数据源)
         if (chunk.type === 'prompt_token_profile') {
-            conversationStore.setStreamingTokenProfile(chunk)
+            conversationStore.setStreamingTokenProfile(state.conversationId, chunk)
 
             return
         }
 
         // 流式 usage:驱动输入区 TK mini 增量展示 + 同步到消息 model badge（I/O / E/C 立即显示，无需刷新）
         if (chunk.type === 'token_usage') {
-            conversationStore.accumulateStreamUsage(chunk as unknown as Record<string, unknown>)
-            conversationStore.patchStreamingIoTokens(chunk as unknown as Record<string, unknown>)
+            conversationStore.accumulateStreamUsage(state.conversationId, chunk as unknown as Record<string, unknown>)
+            conversationStore.patchStreamingIoTokens(state.conversationId, chunk as unknown as Record<string, unknown>)
 
             return
         }
 
-        // 上下文压缩状态:更新当前助手消息的压缩卡片(对齐原版 updateMessageDivTools 的 context_compression_status 分支)
+        // 上下文压缩状态:更新该会话助手消息的压缩卡片(对齐原版 updateMessageDivTools 的 context_compression_status 分支)
         if (chunk.type === 'context_compression_status') {
-            conversationStore.setStreamingContextCompression(chunk)
+            conversationStore.setStreamingContextCompression(state.conversationId, chunk)
 
             return
         }
@@ -1473,25 +1470,25 @@
             // 索引过期:本地序号与服务端脱锚(通常由先前发送失败/服务端裁剪引起)。
             // 不弹错误——错误展示无意义,收尾阶段将自动重载会话回到权威数据。
             if (chunkCode === 'conversation_index_stale') {
-                staleIndexPending = true
+                state.staleIndexPending = true
 
                 return
             }
 
-            streamErrorToastShown = true
+            state.errorToastShown = true
 
             showError(String(chunk.content || chunk.message || '回复生成失败'))
 
             return
         }
 
-        // stream_session 携带后端会话 ID 与早期 context_events（首帧即带，避免结束后突然出现在开头）
+        // stream_session 携带早期 context_events（首帧即带，避免结束后突然出现在开头）
         if (chunk.type === 'stream_session' && chunk.conversation_id) {
-            if (!conversationStore.currentId) {
-                conversationStore.currentId = String(chunk.conversation_id)
-            }
             if (Array.isArray((chunk as Record<string, unknown>).context_events)) {
-                conversationStore.setContextEvents((chunk as Record<string, unknown>).context_events as ConversationContextEvent[])
+                conversationStore.setContextEvents(
+                    state.conversationId,
+                    (chunk as Record<string, unknown>).context_events as ConversationContextEvent[]
+                )
             }
             return
         }
@@ -1500,7 +1497,7 @@
         if (chunk.type === 'content' || chunk.type === 'content_delta' || chunk.type === 'message') {
             const delta = String(chunk.content || chunk.delta || '')
 
-            conversationStore.appendStreamText(delta)
+            conversationStore.appendStreamText(state.conversationId, delta)
 
             return
         }
@@ -1509,7 +1506,7 @@
         if (chunk.type === 'reasoning_content' || chunk.type === 'reasoning_delta') {
             const delta = String(chunk.content || chunk.delta || '')
 
-            conversationStore.appendStreamReasoning(delta)
+            conversationStore.appendStreamReasoning(state.conversationId, delta)
 
             return
         }
@@ -1522,7 +1519,7 @@
             || chunk.type === 'function_result'
             || chunk.type === 'question'
         ) {
-            conversationStore.appendStreamToolStep(chunk as unknown as Record<string, unknown>)
+            conversationStore.appendStreamToolStep(state.conversationId, chunk as unknown as Record<string, unknown>)
         }
 
         // 草稿写入完成:广播 Workspace 变更,打开中的草稿面板立即原位刷新(无需手动切换 tab)
@@ -1544,8 +1541,12 @@
         }
     }
 
-    /** 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新(对齐原版流结束即时收尾) */
-    function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info?: unknown): void {
+    /**
+     * 流结束:按原因收尾;done 终帧携带后端落盘的最终消息,本地轻量更新
+     * (对齐原版流结束即时收尾)。所有收尾操作按 state.conversationId 路由,
+     * 后台流完成只收敛自己的缓冲,绝不触碰当前查看的其他会话。
+     */
+    function handleStreamEnd(reason: 'done' | 'aborted' | 'error', info: unknown, state: LiveStreamState): void {
         const detail = info as {
             error?: string
             errorCode?: string
@@ -1557,15 +1558,15 @@
         } | undefined
 
         if (Array.isArray(detail?.contextEvents)) {
-            conversationStore.setContextEvents(detail.contextEvents)
+            conversationStore.setContextEvents(state.conversationId, detail.contextEvents)
         }
 
         // 跨刷新重连发现服务端流已结束/不存在:
         // 快照内容按"已完成部分"保留展示,静默收尾(不弹错误、不写错误文本)
         if (reason === 'error' && typeof detail?.error === 'string' && detail.error.startsWith('STREAM_GONE')) {
-            conversationStore.finishRestoredStream()
+            conversationStore.finishRestoredStream(state.conversationId)
 
-            streamErrorToastShown = false
+            state.errorToastShown = false
 
             return
         }
@@ -1574,10 +1575,10 @@
             const errorCode = String(detail?.errorCode || '')
 
             // 索引过期:本地序号与服务端脱锚,重载会话回到权威数据(幽灵消息随之消失)
-            if (staleIndexPending || errorCode === 'conversation_index_stale') {
-                staleIndexPending = false
+            if (state.staleIndexPending || errorCode === 'conversation_index_stale') {
+                state.staleIndexPending = false
 
-                void handleIndexStale()
+                void handleIndexStale(state.conversationId)
 
                 return
             }
@@ -1585,13 +1586,11 @@
             // 发送新消息在流建立前失败(HTTP 非 2xx / 网络错误 / 空响应):
             // 后端从未落盘 user,本地 user+assistant 是幽灵占位。必须回滚,
             // 否则本地序号比服务端真实数据多 1,后续重答/删除全部错位。
-            if (streamSendKind === 'send' && streamPhase === 'connecting' && !detail?.finalMessage) {
-                const rolledBack = conversationStore.rollbackFailedTurn()
+            if (state.sendKind === 'send' && state.phase === 'connecting' && !detail?.finalMessage) {
+                const rolledBack = conversationStore.rollbackFailedTurn(state.conversationId)
 
                 if (rolledBack) {
-                    streamSendKind = 'send'
-                    streamPhase = 'connecting'
-                    streamErrorToastShown = false
+                    state.errorToastShown = false
 
                     showToast('发送失败,已撤销未发送的消息', 'warning')
 
@@ -1601,21 +1600,21 @@
 
             // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标，显式传参确保重答定位准确
             const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
-            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
+            conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, targetIdx as number | null)
 
             // 重连失败等场景拿不到终帧消息时,把错误文本写入目标消息,避免消息留空
             if (!detail?.finalMessage) {
-                conversationStore.fillStreamingMessageWithError(detail?.error || '回复生成失败,请重试')
+                conversationStore.fillStreamingMessageWithError(state.conversationId, detail?.error || '回复生成失败,请重试')
             }
 
-            conversationStore.abortStream()
+            conversationStore.abortStream(state.conversationId)
 
             // 流过程中 error chunk 已弹过提示时,终帧/断线收尾不再重复弹
-            if (!streamErrorToastShown) {
+            if (!state.errorToastShown) {
                 showError(detail?.error || '回复生成失败,请重试')
             }
 
-            streamErrorToastShown = false
+            state.errorToastShown = false
 
             return
         }
@@ -1624,28 +1623,28 @@
         // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
         if (reason === 'aborted') {
             const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
-            conversationStore.applyFinalMessage(detail?.finalMessage, targetIdx as number | null)
+            conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, targetIdx as number | null)
 
-            conversationStore.abortStream()
+            conversationStore.abortStream(state.conversationId)
 
-            streamErrorToastShown = false
+            state.errorToastShown = false
 
             return
         }
 
-        // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再复位生成状态
-        // 重答时必须显式指定 targetIndex，否则 pending 已在流中被 endStream 清理导致定位漂移，版本切换器需刷新才出现
+        // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再标记缓冲完成
+        // 重答时必须显式指定 targetIndex，避免收尾阶段定位漂移到其他助手消息
         const doneTargetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
-        conversationStore.applyFinalMessage(detail?.finalMessage, doneTargetIdx as number | null)
+        conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, doneTargetIdx as number | null)
 
-        conversationStore.endStream({ finalContent: detail?.finalContent })
+        conversationStore.endStream(state.conversationId, { finalContent: detail?.finalContent })
 
         // 移除“终帧后全量 loadMessages”导致的闪空刷新：
         // applyFinalMessage 已用终帧 finalMessage 完成轻量覆盖（含 usage/trace/versions），
         // 全量窗口重载会瞬间替换 messages 数组，造成“内容变空再重现”的视觉刷新。
         // usage 若因竞态未落盘，由 endStream 内的 refreshTokenMiniBase 负责徽标数据，
 
-        streamErrorToastShown = false
+        state.errorToastShown = false
     }
 
     /** 停止生成:中断当前会话流并清空待发送队列 */
@@ -1658,7 +1657,7 @@
         } else if (chatStream.isSending) {
             chatStream.cancel(conversationStore.currentId)
         } else {
-            conversationStore.abortStream()
+            conversationStore.abortStream(conversationStore.currentId)
         }
 
         conversationStore.clearQueue()
@@ -1777,10 +1776,7 @@
 
     /** 重答:通过后端 is_regenerate 机制覆盖目标回答并自动保存旧版本(对齐原版 startRegenerate) */
     async function handleRegenerate(assistantMessage: ChatMessage): Promise<void> {
-        // 重答轮次:失败不撤销已有消息;任何业务帧到达前视为 connecting
-        streamSendKind = 'regenerate'
-        streamPhase = 'connecting'
-        staleIndexPending = false
+        // 重答轮次:失败不撤销已有消息;任何业务帧到达前视为 connecting(状态由回调闭包持有)
 
         const userMessage = conversationStore.messages.find(
             (item) => item.role === 'user' && item.index === assistantMessage.index - 1
@@ -1807,7 +1803,7 @@
         }
 
         // 本地清空目标回答,锁定流式更新该消息(后端将按 regenerate_index 截断上下文并覆盖)
-        conversationStore.beginStreamAt(assistantMessage.index)
+        conversationStore.beginStreamAt(conversationId, assistantMessage.index)
 
         // 重答即回到最新消息:恢复跟随底部,由消息变化监听执行滚动
         resumeBottomFollow()
@@ -1824,13 +1820,10 @@
             isRegenerate: true,
             regenerateIndex: assistantMessage.index,
             workspaceId: getConversationWorkspace(conversationId) || undefined,
-        }, {
-            onChunk: handleStreamChunk,
-            onEnd: handleStreamEnd,
-        })
+        }, createStreamHandlers(conversationId, 'regenerate'))
 
         if (!accepted) {
-            conversationStore.abortStream()
+            conversationStore.abortStream(conversationId)
 
             showToast('发送冲突,请重试', 'warning')
 
@@ -1881,8 +1874,9 @@
     function handleOpenKnowledgeDocument(title: string): void {
         knowledgeTitle.value = title
 
-        // 保留知识库面板:从右侧栏打开正文后仍可继续浏览文档列表
-        openView('knowledge', { keepPanel: true })
+        // 仅保留知识库面板:从知识库侧栏打开正文后仍可继续浏览文档列表;
+        // 若当前是文件面板,必须关闭它,不能把任意面板带进知识库正文。
+        openView('knowledge', { keepPanel: 'knowledge' })
     }
 
     /** 知识库被删除:若当前正文正打开该文档则返回聊天主视图 */
@@ -2035,7 +2029,7 @@
             const switched = await switchMessageVersion(conversationId, message.index, versionIndex)
 
             if (switched) {
-                conversationStore.applyFinalMessage(switched, message.index)
+                conversationStore.applyFinalMessage(conversationId, switched, message.index)
             }
         } catch (error) {
             showError(error instanceof Error ? error.message : '切换版本失败')
@@ -2287,14 +2281,14 @@
         document.addEventListener('click', handleDocumentClick)
         window.addEventListener('nexora:preferences-updated', handlePreferencesUpdated)
 
-        // 跨刷新恢复:必须先重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
+        // 跨刷新恢复:必须先逐条重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
         // 缓冲还不存在,恢复内容既不上屏也不接续;顺序颠倒即"刷新后只有 Stop Generation")。
-        const snapshot = chatStream.takeSnapshot()
+        const snapshots = chatStream.takeSnapshot()
 
-        if (snapshot) {
+        snapshots.forEach((snapshot) => {
             conversationStore.restorePendingStream(snapshot)
             console.debug(`[conv-load] restored stream registered conv=${snapshot.conversationId} seq=${snapshot.lastSeq}`)
-        }
+        })
 
         // URL 直达:?cid= 指向的会话优先加载(对齐原前端"URL 目标 > 流恢复目标"的导航优先级);
         // 与恢复会话相同时,openConversation 内部会把缓冲助理消息合并进可见列表
@@ -2308,24 +2302,26 @@
             }
         }
 
-        if (snapshot) {
-            // 无 URL 直达目标(或目标即恢复会话)时才自动回到恢复中的会话;
-            // URL 指向其他会话时流在后台续播并进入分离缓冲,切回时零丢失接回
-            if (!urlConversationId || urlConversationId === snapshot.conversationId) {
-                void conversationStore.openConversation(snapshot.conversationId).catch(() => {})
+        if (snapshots.length > 0) {
+            // 无 URL 直达目标(或目标即主恢复会话)时才自动回到最近发起的那条流所属会话;
+            // URL 指向其他会话时所有流都在后台续播并进入各自分离缓冲,切回时零丢失接回
+            const primaryConversationId = snapshots[snapshots.length - 1].conversationId
+
+            if (!urlConversationId || urlConversationId === primaryConversationId) {
+                void conversationStore.openConversation(primaryConversationId).catch(() => {})
             }
 
-            void chatStream.resume(
-                {
-                    streamId: snapshot.streamId,
-                    fromSeq: snapshot.lastSeq,
-                    conversationId: snapshot.conversationId,
-                },
-                {
-                    onChunk: handleStreamChunk,
-                    onEnd: handleStreamEnd,
-                },
-            )
+            // 并行流逐条续播:每条流独立回调集合,按各自会话路由增量
+            snapshots.forEach((snapshot) => {
+                void chatStream.resume(
+                    {
+                        streamId: snapshot.streamId,
+                        fromSeq: snapshot.lastSeq,
+                        conversationId: snapshot.conversationId,
+                    },
+                    createStreamHandlers(snapshot.conversationId, 'send'),
+                )
+            })
         }
 
         // 临时诊断钩子(复现完成后移除)
@@ -2333,10 +2329,14 @@
             currentId: conversationStore.currentId,
             loading: conversationStore.messagesLoading,
             count: conversationStore.messages.length,
-            generating: conversationStore.generating,
-            streamingConv: conversationStore.streamingConversationId,
-            target: conversationStore.streamingTargetIndex,
-            pendingKeys: Object.keys(conversationStore.pendingStreams),
+            pending: Object.fromEntries(Object.entries(conversationStore.pendingStreams).map(([id, entry]) => [
+                id,
+                {
+                    target: entry.targetIndex,
+                    finished: !!entry.finished,
+                    tail: String(entry.assistant.content || '').slice(-80),
+                },
+            ])),
             lastContent: conversationStore.messages.length
                 ? String(conversationStore.messages[conversationStore.messages.length - 1].content || '').slice(0, 80)
                 : '',

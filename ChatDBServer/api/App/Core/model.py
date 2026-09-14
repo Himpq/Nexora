@@ -1,6 +1,7 @@
 """`r`nNexora 多供应商模型编排层`r`n- 对话上下文与工具编排`r`n- Provider 适配器分发`r`n- Token/日志/会话持久化`r`n"""
 import os
 import json
+import hashlib
 import time
 import re
 import base64
@@ -40,6 +41,12 @@ from basis.Permission import build_permission_hint_by_role, get_user_role_by_use
 from App.Storage import TempContextStore
 from basis.TokenUsage import get_generation_quota_gate
 from .stream_runtime import is_stream_cancelled_error
+from .tool_protocol import (
+    ToolLoopRoundCounter,
+    build_tool_json_error_message,
+    canonical_tool_call_signature,
+    sanitize_tool_calls_in_messages,
+)
 from basis.TokenUsage import append_usage_log_record
 from longterm.longterm_api import (
     build_longterm_hook_payload,
@@ -215,6 +222,7 @@ class Model(MailMixin):
         self.username = username
         self.user = User(username)
         self._last_context_diagnostics = {}
+        self._cache_attribution = {}
         self._context_degraded = False
         self._telemetry = {}
         self.persist_conversation = bool(persist_conversation)
@@ -403,8 +411,12 @@ class Model(MailMixin):
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
-        # 双轨显示：缓存生效时保留完整展示用 markdown，供前端优先渲染
+        # 工具结果展示：文本与媒体分轨保存，供前端分别渲染
         self._pending_display_results: Dict[str, str] = {}
+        self._pending_display_media: Dict[str, Dict[str, Any]] = {}
+        # 工具图片只在当前回复的下一轮请求中使用，不进入工具结果字符串或会话历史。
+        self._pending_tool_image_inputs: Dict[str, List[Dict[str, Any]]] = {}
+        self._model_vision_input_capability: Optional[bool] = None
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -2249,6 +2261,12 @@ class Model(MailMixin):
             
             # 执行函数
             raw_result = self._execute_function_impl(function_name, args)
+            raw_result = self._prepare_tool_image_attachment(
+                function_name,
+                args,
+                raw_result,
+                call_id,
+            )
 
             # 双轨：先基于原始结果生成完整展示用 markdown（不受缓存/截断影响），供前端优先渲染
             try:
@@ -2263,6 +2281,18 @@ class Model(MailMixin):
                         # 同时以 call_id 为键再存一份，兼容调用方以 call_id 取
                         if call_id:
                             self._pending_display_results[str(call_id).strip()] = display_md
+
+                    display_media = self.tool_result_presenter.extract_display_media(
+                        function_name,
+                        full_args,
+                        raw_result,
+                    )
+
+                    if isinstance(display_media, dict) and display_media.get("items"):
+                        self._pending_display_media[pending_key] = display_media
+
+                        if call_id:
+                            self._pending_display_media[str(call_id).strip()] = display_media
             except Exception:
                 pass
 
@@ -2273,7 +2303,7 @@ class Model(MailMixin):
             return result
             
         except json.JSONDecodeError as e:
-            msg = f"错误：参数JSON解析失败 - {str(e)}"
+            msg = build_tool_json_error_message(function_name, arguments, e)
             self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
         except Exception as e:
@@ -2991,6 +3021,95 @@ class Model(MailMixin):
         """函数执行实现（委托给统一工具执行器）"""
         return self.tool_executor.execute(function_name, args)
 
+    def _current_model_supports_vision_input(self) -> bool:
+        """通过 Provider Adapter 判断当前模型是否支持图片输入。"""
+        if self._model_vision_input_capability is not None:
+            return bool(self._model_vision_input_capability)
+
+        checker = getattr(self.provider_adapter, "supports_vision_input", None)
+        supported = False
+
+        if callable(checker):
+            supported = bool(checker(self.model_name))
+
+        self._model_vision_input_capability = supported
+        print(
+            f"[VISION_GATE] provider={self.provider} model={self.model_name} "
+            f"supported={supported}"
+        )
+        return supported
+
+    def _prepare_tool_image_attachment(
+        self,
+        function_name: str,
+        args: Dict[str, Any],
+        raw_result: str,
+        call_id: str,
+    ) -> str:
+        """把 cloud_file_read 的图片结果转换为当前请求的内部图片附件。"""
+        if canonicalize_tool_name(function_name) != "cloud_file_read":
+            return raw_result
+
+        try:
+            payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except Exception:
+            return raw_result
+
+        if not isinstance(payload, dict) or str(payload.get("content_type") or "").strip().lower() != "image":
+            return raw_result
+
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+
+        if not file_ref:
+            return raw_result
+
+        if not self._current_model_supports_vision_input():
+            payload["image_input"] = {
+                "attached": False,
+                "reason": "current_model_does_not_support_vision",
+            }
+            payload["message"] = "图片文件已找到，但当前模型不支持图片输入，无法读取图像内容；请勿根据文件名或元数据推测图片内容。"
+            return json.dumps(payload, ensure_ascii=False)
+
+        try:
+            prepared = self.tool_executor.prepare_cloud_file_image_input(str(file_ref))
+            image_url = str(prepared.get("url") or "").strip()
+
+            if not image_url:
+                raise ValueError("未生成有效的图片输入。")
+
+            safe_call_id = str(call_id or "").strip()
+
+            if safe_call_id:
+                self._pending_tool_image_inputs[safe_call_id] = [prepared]
+
+            payload["image_input"] = {
+                "attached": True,
+                "mime": str(prepared.get("mime") or "").strip(),
+                "size": int(prepared.get("size") or 0),
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as error:
+            print(
+                f"[VISION_INPUT] prepare failed provider={self.provider} "
+                f"model={self.model_name} file={str(file_ref)} error={error}"
+            )
+            payload["image_input"] = {
+                "attached": False,
+                "reason": "image_prepare_failed",
+            }
+            payload["message"] = f"图片文件已找到，但原图未能传入当前模型：{error}"
+            return json.dumps(payload, ensure_ascii=False)
+
+    def _consume_tool_image_inputs(self, call_id: str) -> List[Dict[str, Any]]:
+        """取出工具调用准备好的图片附件，确保每个附件只发送一次。"""
+        safe_call_id = str(call_id or "").strip()
+
+        if not safe_call_id:
+            return []
+
+        return self._pending_tool_image_inputs.pop(safe_call_id, [])
+
     def _model_visible_function_result(self, function_name: str, result: Any, args: Optional[Dict[str, Any]] = None) -> str:
         """Extract the short result text that is sent back to the model."""
         raw_name = str(function_name or "").strip()
@@ -3494,6 +3613,8 @@ class Model(MailMixin):
             return
 
         response_trace_id = uuid.uuid4().hex
+        self._cache_attribution = {}
+        self._pending_tool_image_inputs = {}
 
         try:
             quota_gate = get_generation_quota_gate(provider_name=self.provider, model_name=self.model_name)
@@ -4361,6 +4482,13 @@ class Model(MailMixin):
             if normalized_conversation_mode == "longterm":
                 normalized_tool_mode = "force"
 
+            # 学习会话强制 force：画像评估、章节生成等能力依赖 NexoraLearning 侧下发的
+            # 运行时工具（append_learning_memory / submit_profile_score 等），这些工具只在
+            # Force 模式才进入执行白名单。若沿用客户端的 auto_off，模型会「看得见工具名、
+            # 调不动工具」，工具调用直接被白名单拒绝。
+            if normalized_conversation_mode == "learning":
+                normalized_tool_mode = "force"
+
             # NexoraCode 项目模式强制 force：直接下发（裁剪后的）业务工具，
             # 无需 runtime_tool_enable 逃生门。
             if bool(getattr(self, "_runtime_project_force_tools", False)):
@@ -4803,6 +4931,11 @@ class Model(MailMixin):
                 print(f"[CACHE] Miss. Building full context.")
                 messages = list(full_context_messages)
                 messages_has_full_context = True
+
+            self._update_cache_attribution({
+                "cache_path": "resume" if last_response_id else "full_context",
+            })
+
             # ---- 硬限流兜底（最后一道闸）：全量历史视角，若已超窗则滑动裁剪 ----
             # 口径说明：此处按 json 序列化 + provider tokenizer 估算 tokens，与 service 层
             # 写前的 chars 滑动裁剪（window*4 chars）是两套不同单位、相互独立的有界闸；
@@ -5202,10 +5335,12 @@ class Model(MailMixin):
             
             # 网络半包重试预算（架构层统一处理，避免散落 patch）
             network_retry_budget = 1
-            round_num = 0
+            round_counter = ToolLoopRoundCounter(max_rounds)
+            round_num = round_counter.current_index
 
             try:
-                while round_num < max_rounds:
+                while round_counter.has_budget():
+                    round_num = round_counter.current_index
                     # Keep follow-up rounds immediate to avoid perceptible stream stalls.
                     round_enable_thinking = bool(
                         enable_thinking
@@ -6749,6 +6884,7 @@ class Model(MailMixin):
                         ])
                         
                         function_outputs = []
+                        round_tool_image_inputs: List[Dict[str, Any]] = []
                         
                         for func_call in function_calls:
                             func_name = func_call["name"]
@@ -6850,6 +6986,7 @@ class Model(MailMixin):
                             # 记录结果步骤（双轨：前端优先 display_model_visible_result，上下文仍用 model_visible_result）
                             display_key = str(call_id or "").strip()
                             display_result = self._pending_display_results.pop(display_key, None) if display_key else None
+                            display_media = self._pending_display_media.pop(display_key, None) if display_key else None
                             # 兼容兜底：若未按 call_id 缓存，尝试按任意 pending 键取一次（单轮单工具场景）
                             if not display_result and self._pending_display_results:
                                 # 取最早一条与当前 func_name 相关的展示
@@ -6859,6 +6996,10 @@ class Model(MailMixin):
                                     cand = self._pending_display_results.get(k)
                                     if isinstance(cand, str) and cand.strip():
                                         display_result = self._pending_display_results.pop(k, None)
+
+                                        if display_media is None:
+                                            display_media = self._pending_display_media.pop(k, None)
+
                                         break
 
                             step_result = {
@@ -6872,6 +7013,9 @@ class Model(MailMixin):
                             if display_result and isinstance(display_result, str) and display_result.strip() and display_result.strip() != model_visible_result.strip():
                                 step_result["display_result"] = display_result
                                 step_result["display_model_visible_result"] = display_result
+
+                            if isinstance(display_media, dict) and display_media.get("items"):
+                                step_result["display_media"] = display_media
                             if "index" in func_call:
                                 step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)
@@ -6935,6 +7079,7 @@ class Model(MailMixin):
                             yield step_result
                             
                             # 收集函数输出（provider adapter 统一构建）
+                            tool_image_inputs = self._consume_tool_image_inputs(call_id)
                             current_function_outputs.append(
                                 self.provider_adapter.build_function_output_message(
                                     call_id=call_id,
@@ -6942,9 +7087,17 @@ class Model(MailMixin):
                                     use_responses_api=use_responses_api
                                 )
                             )
+                            round_tool_image_inputs.extend(tool_image_inputs)
 
                         if process_steps and process_steps[-1].get("type") in {"question", "puzzle"}:
                             break
+
+                        current_function_outputs.extend(
+                            self.provider_adapter.build_image_input_messages(
+                                image_inputs=round_tool_image_inputs,
+                                use_responses_api=use_responses_api,
+                            )
+                        )
 
                         # [FIX] 工具调用结束后的过渡提示（由 provider adapter 决定是否需要）
                         if self.provider_adapter.should_append_tool_completion_hint(use_responses_api=use_responses_api):
@@ -6966,25 +7119,7 @@ class Model(MailMixin):
                             messages = list(full_context_messages)
 
                         tool_round_elapsed_seconds = time.time() - float(tool_loop_started_at)
-                        try:
-                            tool_signature = json.dumps(
-                                [
-                                    {
-                                        "name": str(fc.get("name", "") or ""),
-                                        "arguments": str(fc.get("arguments", "") or ""),
-                                        "call_id": str(fc.get("call_id", "") or "")
-                                    }
-                                    for fc in function_calls
-                                ],
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                default=str
-                            )
-                        except Exception:
-                            tool_signature = "|".join([
-                                f"{str(fc.get('name', '') or '')}:{str(fc.get('arguments', '') or '')}:{str(fc.get('call_id', '') or '')}"
-                                for fc in function_calls
-                            ])
+                        tool_signature = canonical_tool_call_signature(function_calls)
 
                         if function_calls and (not has_text_output):
                             tool_loop_consecutive_tool_rounds += 1
@@ -7038,6 +7173,11 @@ class Model(MailMixin):
                             process_steps.append(dict(guard_step))
                             yield guard_step
 
+                    # 本次模型响应和工具执行已经结束。先推进轮次，再进入任何 continue，
+                    # 保证 max_rounds 与 trace.round 都反映真实的模型请求次数。
+                    completed_round_number = round_counter.complete_round()
+                    round_num = round_counter.current_index
+
                     if tool_loop_guard_triggered:
                         # 工具循环保护触发后必须优先退出，避免恢复分支继续续跑工具轮。
                         break
@@ -7065,12 +7205,12 @@ class Model(MailMixin):
                             full_context_messages.append(dict(learning_nudge))
                             learning_no_tool_nudge_injected = True
                             print(
-                                f"[RECOVERY] learning round produced reasoning only without tool call; injected minimal tool nudge and continue round={round_num + 1} "
+                                f"[RECOVERY] learning round produced reasoning only without tool call; injected minimal tool nudge and continue round={completed_round_number} "
                                 f"recovery_rounds={reasoning_only_recovery_rounds}"
                             )
                         else:
                             print(
-                                f"[RECOVERY] reasoning only without visible output; continue with existing context round={round_num + 1} "
+                                f"[RECOVERY] reasoning only without visible output; continue with existing context round={completed_round_number} "
                                 f"recovery_rounds={reasoning_only_recovery_rounds}"
                             )
                         continue
@@ -7093,7 +7233,7 @@ class Model(MailMixin):
                             tool_loop_repeat_signature_count = 0
                             tool_loop_last_signature = ""
                         print(
-                            f"[RECOVERY] missing post-tool text; continue with existing tool context round={round_num + 1} "
+                            f"[RECOVERY] missing post-tool text; continue with existing tool context round={completed_round_number} "
                             f"recovery_rounds={empty_output_recovery_rounds}"
                         )
                         continue
@@ -7111,7 +7251,7 @@ class Model(MailMixin):
                             tool_loop_repeat_signature_count = 0
                             tool_loop_last_signature = ""
                         print(
-                            f"[RECOVERY] empty output after tool activity; continue with existing tool context round={round_num + 1} "
+                            f"[RECOVERY] empty output after tool activity; continue with existing tool context round={completed_round_number} "
                             f"recovery_rounds={empty_output_recovery_rounds}"
                         )
                         continue
@@ -7148,9 +7288,6 @@ class Model(MailMixin):
                     }
                     yield {"type": "done", "content": accumulated_content}
                     return
-
-                    # 正常轮次完成，递增轮次计数
-                    round_num += 1
 
                 # 达到最大轮次
                 print(f"[WARNING] 达到最大轮次 {max_rounds}")
@@ -7205,6 +7342,24 @@ class Model(MailMixin):
                             done_indices=normalized_conversation_mode_payload.get("done_indices", []),
                             prompt_fragment=self._runtime_longterm_prompt_block
                         )
+
+                    context_cache_attribution = {}
+                    context_diagnostics = getattr(self, "_last_context_diagnostics", {})
+
+                    if isinstance(context_diagnostics, dict):
+                        context_cache_attribution = context_diagnostics.get("cache_attribution", {})
+
+                        if not isinstance(context_cache_attribution, dict):
+                            context_cache_attribution = {}
+
+                    cache_attribution = dict(context_cache_attribution)
+                    cache_attribution.update(dict(getattr(self, "_cache_attribution", {}) or {}))
+                    cache_attribution["cache_path"] = (
+                        "resume"
+                        if request_started_with_resume_id and not request_promoted_to_full_context
+                        else "full_context"
+                    )
+
                     metadata = {
                         "process_steps": process_steps,
                         "model_name": self.model_name,
@@ -7242,7 +7397,8 @@ class Model(MailMixin):
                             "context_compression_post_raw_input": int(max(0, context_compression_post_raw_input)),
                             "context_compression_saved_tokens": int(max(0, context_compression_saved_tokens)),
                             "context_compression_saved_ratio": float(max(0.0, context_compression_saved_ratio)),
-                            "context_compression_forced": bool(force_context_compression)
+                            "context_compression_forced": bool(force_context_compression),
+                            "cache_attribution": cache_attribution,
                         },
                         "io_tokens": {
                             "input": int(max(0, request_last_round_input_tokens)),
@@ -7430,6 +7586,8 @@ class Model(MailMixin):
                             extensions = trace.get("extensions", {}) if isinstance(trace.get("extensions"), dict) else {}
                             if str(response_trace_id or "").strip():
                                 extensions["token_response_trace_id"] = str(response_trace_id or "").strip()
+                            if cache_attribution:
+                                extensions["cache_attribution"] = dict(cache_attribution)
                             if extensions:
                                 trace["extensions"] = extensions
                             v4_payload["trace"] = trace
@@ -8043,6 +8201,45 @@ class Model(MailMixin):
         self._telemetry["context"] = dict(diagnostics)
         self._telemetry["context_degraded"] = self._context_degraded
 
+    def _update_cache_attribution(self, values: Dict[str, Any]) -> None:
+        """更新本次请求的缓存归因诊断，不携带 prompt 或工具描述原文。"""
+
+        if not isinstance(values, dict):
+            raise ValueError("cache attribution must be a dict")
+
+        current = getattr(self, "_cache_attribution", {})
+
+        if not isinstance(current, dict):
+            current = {}
+
+        current.update(values)
+        self._cache_attribution = current
+
+        diagnostics = getattr(self, "_last_context_diagnostics", {})
+
+        if not isinstance(diagnostics, dict):
+            return
+
+        diagnostics = dict(diagnostics)
+        diagnostic_cache = diagnostics.get("cache_attribution", {})
+
+        if not isinstance(diagnostic_cache, dict):
+            diagnostic_cache = {}
+
+        diagnostic_cache.update(values)
+        diagnostics["cache_attribution"] = dict(diagnostic_cache)
+
+        trace_meta = diagnostics.get("trace_meta", {})
+
+        if not isinstance(trace_meta, dict):
+            trace_meta = {}
+
+        trace_meta = dict(trace_meta)
+        trace_meta["cache_attribution"] = dict(diagnostic_cache)
+        diagnostics["trace_meta"] = trace_meta
+        self._last_context_diagnostics = diagnostics
+        self._telemetry["context"] = dict(diagnostics)
+
     def _build_initial_messages(
         self,
         user_msg: str,
@@ -8069,65 +8266,8 @@ class Model(MailMixin):
         )
 
     def _sanitize_tool_calls_in_messages(self, messages: List[Dict]) -> List[Dict]:
-        """清洗历史中的 tool_calls 非法 JSON，避免 provider 400 Format Error。
-
-        模型偶发会生成 `arguments` 非 JSON（如 ` [action": ...` 缺少 `{`），
-        若直接透传给 volcengine/dashscope 等 provider，會触发 Format Error 400
-        并污染整段对话历史（后续所有请求均 400）。此处将非法 arguments 替换为 "{}"，
-        保留 tool_call 结构与 tool_result 配对，避免历史丢失导致上下文断裂。
-        """
-        import json as _json
-
-        sanitized: List[Dict] = []
-        for msg in messages or []:
-            if not isinstance(msg, dict):
-                sanitized.append(msg)
-                continue
-            m = dict(msg)
-            tcs = m.get("tool_calls")
-            if isinstance(tcs, list) and tcs:
-                new_tcs = []
-                for tc in tcs:
-                    if not isinstance(tc, dict):
-                        continue
-                    func = tc.get("function")
-                    if not isinstance(func, dict):
-                        new_tcs.append(tc)
-                        continue
-                    args = func.get("arguments")
-                    # arguments 必须是 JSON 字符串；非字符串或非法 JSON 统一修复为 "{}"
-                    if args is None:
-                        new_func = dict(func)
-                        new_func["arguments"] = "{}"
-                        new_tc = dict(tc)
-                        new_tc["function"] = new_func
-                        new_tcs.append(new_tc)
-                        continue
-                    if not isinstance(args, str):
-                        try:
-                            args = _json.dumps(args, ensure_ascii=False)
-                        except Exception:
-                            args = "{}"
-                    args_str = str(args).strip()
-                    if not args_str:
-                        args_str = "{}"
-                    try:
-                        _json.loads(args_str)
-                        new_tcs.append(tc)
-                    except Exception:
-                        # 修复为 "{}"，并在日志中提示
-                        try:
-                            print(f"[SANITIZE] invalid tool_call arguments fixed: name={func.get('name')} raw={args_str[:120]}")
-                        except Exception:
-                            pass
-                        new_func = dict(func)
-                        new_func["arguments"] = "{}"
-                        new_tc = dict(tc)
-                        new_tc["function"] = new_func
-                        new_tcs.append(new_tc)
-                m["tool_calls"] = new_tcs
-            sanitized.append(m)
-        return sanitized
+        """把历史工具参数规范为合法 JSON，并显式保留非法原文。"""
+        return sanitize_tool_calls_in_messages(messages, logger=print)
 
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""
@@ -8427,6 +8567,53 @@ class Model(MailMixin):
                 print(f"[CHAT_THINK] normalize failed: {_think_e}")
             except Exception:
                 pass
+
+        tools_for_cache = params.get("tools", [])
+
+        if not isinstance(tools_for_cache, list):
+            tools_for_cache = []
+
+        tools_for_cache_text = json.dumps(
+            tools_for_cache,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        tool_payload_sha256 = hashlib.sha256(tools_for_cache_text.encode("utf-8")).hexdigest()
+        tool_names = []
+
+        for tool in tools_for_cache:
+            spec = self._extract_function_tool_spec(tool)
+
+            if spec and spec.get("name"):
+                tool_names.append(str(spec["name"]).strip())
+                continue
+
+            tool_type = str(tool.get("type") or "").strip() if isinstance(tool, dict) else ""
+
+            if tool_type:
+                tool_names.append(f"native:{tool_type}")
+
+        current_attribution = getattr(self, "_cache_attribution", {})
+
+        if not isinstance(current_attribution, dict):
+            current_attribution = {}
+
+        tool_payload_hashes = current_attribution.get("tool_payload_hashes", [])
+
+        if not isinstance(tool_payload_hashes, list):
+            tool_payload_hashes = []
+
+        if tool_payload_sha256 not in tool_payload_hashes:
+            tool_payload_hashes.append(tool_payload_sha256)
+
+        self._update_cache_attribution({
+            "tool_payload_sha256": tool_payload_sha256,
+            "tool_payload_hashes": tool_payload_hashes,
+            "tool_count": len(tools_for_cache),
+            "tool_names": tool_names,
+        })
 
         return params
     

@@ -131,6 +131,78 @@ export class PreferencesUtil {
         await PreferencesUtil.saveBoolean(context, StorageKey.forceTools, enabled);
     }
 
+    // 随笔按登录账号隔离：同一台设备切换账号时不会串出上一位用户的私密内容
+    static async loadNotes(context: common.UIAbilityContext, username: string): Promise<string> {
+        return PreferencesUtil.loadString(context, StorageKey.notesPrefix + username, '');
+    }
+
+    static async saveNotes(context: common.UIAbilityContext, username: string, value: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.notesPrefix + username, value);
+    }
+
+    // question 回答锁：跨会话共用一个 JSON 字典，键含 conversationId 天然隔离
+    static async loadQuestionLocks(context: common.UIAbilityContext): Promise<string> {
+        return PreferencesUtil.loadString(context, StorageKey.questionLocks, '{}');
+    }
+
+    static async saveQuestionLocks(context: common.UIAbilityContext, value: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.questionLocks, value);
+    }
+
+    // 阅读器偏好：字号（14~22，非法值回退默认 16）
+    static async loadReaderFontSize(context: common.UIAbilityContext): Promise<number> {
+        const size: number = parseInt(await PreferencesUtil.loadString(context, StorageKey.readerFontSize, '16'));
+
+        if (!Number.isInteger(size) || size < 14 || size > 22) {
+            return 16;
+        }
+
+        return size;
+    }
+
+    static async saveReaderFontSize(context: common.UIAbilityContext, size: number): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.readerFontSize, String(size));
+    }
+
+    // 阅读器偏好：行距档（0 紧凑 / 1 适中 / 2 疏松，非法值回退 1）
+    static async loadReaderLineSpacing(context: common.UIAbilityContext): Promise<number> {
+        const index: number = parseInt(await PreferencesUtil.loadString(context, StorageKey.readerLineSpacing, '1'));
+
+        if (!Number.isInteger(index) || index < 0 || index > 2) {
+            return 1;
+        }
+
+        return index;
+    }
+
+    static async saveReaderLineSpacing(context: common.UIAbilityContext, index: number): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.readerLineSpacing, String(index));
+    }
+
+    // 阅读器偏好：主题（day/night/sepia，非法值回退 day）
+    static async loadReaderTheme(context: common.UIAbilityContext): Promise<string> {
+        const theme: string = await PreferencesUtil.loadString(context, StorageKey.readerTheme, 'day');
+
+        if (theme !== 'day' && theme !== 'night' && theme !== 'sepia') {
+            return 'day';
+        }
+
+        return theme;
+    }
+
+    static async saveReaderTheme(context: common.UIAbilityContext, theme: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.readerTheme, theme);
+    }
+
+    // 各书上次阅读章节（JSON 字典 { bookId: chapterIndex }）
+    static async loadReaderPositions(context: common.UIAbilityContext): Promise<string> {
+        return PreferencesUtil.loadString(context, StorageKey.readerPositions, '{}');
+    }
+
+    static async saveReaderPositions(context: common.UIAbilityContext, value: string): Promise<void> {
+        await PreferencesUtil.saveString(context, StorageKey.readerPositions, value);
+    }
+
     // 退出登录：清掉会话与身份，保留后端地址与偏好
     static async clearSession(context: common.UIAbilityContext): Promise<void> {
         const prefs: preferences.Preferences = await holder.open(context);

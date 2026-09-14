@@ -15,13 +15,12 @@
           </template>
       </Modal>
 
-      自定义头部(如回收站的 清空/刷新 按钮组):head 插槽替换默认标题
-      <Modal :open="visible" @close="visible = false">
-          <template #head>
-              <h3>回收站</h3>
-              <div class="trash-head-actions">…</div>
-          </template>
-      </Modal>
+       自定义头部:head 插槽替换默认标题,适合需要自定义操作区的窗口
+       <Modal :open="visible" @close="visible = false">
+           <template #head>
+               <h3>自定义标题</h3>
+           </template>
+       </Modal>
 -->
 
 <template>

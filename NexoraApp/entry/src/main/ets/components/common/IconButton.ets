@@ -10,6 +10,8 @@ export struct IconButton {
     @Prop buttonSize: number = Size.touchTarget;
     @Prop tint: ResourceColor = $r('app.color.icon_secondary');
     @Prop bg: ResourceColor = Color.Transparent;
+    // 按压底色默认走系统色；阅读器等固定色板场景需传入自己的下沉色
+    @Prop pressedBg: ResourceColor = $r('app.color.bg_pressed');
     @Prop isEnabled: boolean = true;
     onTap: () => void = () => {};
 
@@ -26,16 +28,22 @@ export struct IconButton {
         .height(this.buttonSize)
         .justifyContent(FlexAlign.Center)
         .borderRadius(this.buttonSize / 2)
-        .backgroundColor(this.bg)
+        .backgroundColor(this.pressed ? this.pressedBg : this.bg)
         .opacity(this.isEnabled ? 1 : 0.35)
         .scale({ x: this.pressed ? PressScale.pressed : PressScale.normal, y: this.pressed ? PressScale.pressed : PressScale.normal })
-        .animation({ duration: Motion.durationFast, curve: Motion.spring })
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
         .onTouch((event: TouchEvent) => {
             if (!this.isEnabled) {
                 return;
             }
 
-            this.pressed = event.type === TouchType.Down;
+            if (event.type === TouchType.Down) {
+                this.pressed = true;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressed = false;
+            }
         })
         .onClick(() => {
             if (this.isEnabled) {

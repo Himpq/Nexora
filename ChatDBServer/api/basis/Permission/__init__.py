@@ -4,6 +4,8 @@ Nexora.basis.Permission — 权限与鉴权基础层
 职责：
 1. 用户角色 → 权限提示文本 的纯映射，以及角色判定工具。
 2. AuthKey 鉴权：Public API（PAPI）密钥生成/存储/校验（见 AuthKey 子模块）。
+3. session_auth：Flask session 登录态校验装饰器（require_login / require_admin）。
+4. model_permissions：用户级模型黑名单读取（见 model_permissions 子模块）。
 
 数据源由调用方注入，避免与 server.py 的存储实现耦合。
 """
@@ -35,6 +37,12 @@ from .AuthKey import (
     select_primary,
     utc_now_iso,
 )
+
+# 会话鉴权装饰器：供 server 与各域路由模块复用
+from .session_auth import get_request_users_meta, require_admin, require_login
+
+# 用户级模型黑名单
+from .model_permissions import get_user_model_blacklist
 
 ROLE_ADMIN = "admin"
 ROLE_MEMBER = "member"
