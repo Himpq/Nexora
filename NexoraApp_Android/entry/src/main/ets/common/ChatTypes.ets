@@ -57,6 +57,30 @@ export interface MessageSegment {
     question?: QuestionPayload;
 }
 
+// 用户消息附件（与 Web attachments 协议对齐）：
+// 图片经带会话的下载缓存后展示（见 RemoteImageCache），非图片渲染为文件胶囊
+export interface MessageAttachment {
+    type: string;
+    name: string;
+    mime: string;
+    // 服务端下载地址（相对 /api/... 或绝对 URL），由历史数据归一化得到
+    url: string;
+    size: number;
+}
+
+// 是否图片附件（对齐 Web imageAttachments：type/mime/扩展名三选一命中即可）
+export function isImageAttachment(att: MessageAttachment): boolean {
+    if (att.type === 'image' || att.type === 'image_url') {
+        return true;
+    }
+
+    if (att.mime.startsWith('image/')) {
+        return true;
+    }
+
+    return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(att.name.toLowerCase());
+}
+
 // 工具调用卡片：一条调用从发起(running)到回结果(done/error)的完整生命周期
 @Observed
 export class ToolCallItem {
@@ -164,6 +188,12 @@ export class ToolNames {
 // 一条消息：既是渲染数据源，也是流式写入的目标
 @Observed
 export class ChatMessage {
+    // 消息实例唯一标识（进程内自增）：消息列表 ForEach 的键值只能取自它。
+    // ForEach 非首次渲染时按键值匹配，键值已存在则复用旧节点、不更新入参，
+    // 与子组件 @ObjectLink 的绑定仍是旧对象；若键值取 index+role，跨会话切换时
+    // （各会话本地索引都从 0 起）键值必然撞车，切回正在生成的会话后节点仍绑在
+    // 上一个会话的消息对象上——界面停在旧内容、后续流式增量写进了没人订阅的对象
+    uid: string;
     index: number;
     role: MessageRole;
     content: string;
@@ -177,8 +207,10 @@ export class ChatMessage {
     questions: QuestionItem[];
     segments: MessageSegment[];
     usage: TokenUsage | null;
+    attachments: MessageAttachment[];
 
     constructor(index: number, role: MessageRole, content: string) {
+        this.uid = ChatMessage.nextUid();
         this.index = index;
         this.role = role;
         this.content = content;
@@ -192,10 +224,19 @@ export class ChatMessage {
         this.questions = [];
         this.segments = [];
         this.usage = null;
+        this.attachments = [];
     }
 
     static createUser(text: string): ChatMessage {
         return new ChatMessage(0, 'user', text);
+    }
+
+    // uid 发号器：每次 new 出一条消息即取一个新号，保证键值恒随对象实例变化
+    private static uidSequence: number = 0;
+
+    private static nextUid(): string {
+        ChatMessage.uidSequence += 1;
+        return 'msg_' + ChatMessage.uidSequence;
     }
 
     static createAssistant(): ChatMessage {
@@ -441,6 +482,8 @@ export interface RawHistoryMessage {
     reasoning?: string;
     model_name?: string;
     created_at?: number;
+    // v4 用户消息附件（顶层）；旧会话可能只落在 metadata.attachments
+    attachments?: Object[];
     metadata?: Record<string, Object>;
     trace?: RawTrace;
     usage?: Record<string, Object>;
@@ -454,6 +497,7 @@ export function messageFromHistory(raw: RawHistoryMessage, index: number): ChatM
     message.reasoning = raw.reasoning ?? '';
     message.createdAt = raw.created_at ?? Date.now();
     message.usage = readUsageFromHistory(raw);
+    message.attachments = role === 'user' ? readAttachments(raw) : [];
 
     // 步骤源优先级：v3 metadata.process_steps → v4 trace(events 或四桶)。trace 里的
     // reasoning_content 步骤让思考链可还原；tool_calls/tool_results 重建工具卡生命周期
@@ -768,4 +812,82 @@ function readNum(dict: Record<string, Object>, key1: string, key2: string): numb
     }
 
     return 0;
+}
+
+// ---------- 用户消息附件还原 ----------
+// 顶层 attachments 与 metadata.attachments 双源合并（旧后端图片只写 metadata），
+// 双源同时落库时按身份键去重；缺下载地址时用 sandbox/stored 路径合成 inline 下载链接
+function readAttachments(raw: RawHistoryMessage): MessageAttachment[] {
+    const legacy: Object | undefined = raw.metadata !== undefined ? raw.metadata['attachments'] : undefined;
+    const top: Object[] = Array.isArray(raw.attachments) ? raw.attachments as Object[] : [];
+    const nested: Object[] = Array.isArray(legacy) ? legacy as Object[] : [];
+    const merged: MessageAttachment[] = [];
+    const seen: Set<string> = new Set<string>();
+
+    appendAttachments(merged, seen, top);
+    appendAttachments(merged, seen, nested);
+
+    return merged;
+}
+
+function appendAttachments(out: MessageAttachment[], seen: Set<string>, source: Object[]): void {
+    for (let i: number = 0; i < source.length; i++) {
+        const item: Object = source[i];
+
+        if (typeof item !== 'object' || item === null) {
+            continue;
+        }
+
+        const record: Record<string, Object> = item as Record<string, Object>;
+        const sandbox: string = readString(record, 'sandbox_path').length > 0
+            ? readString(record, 'sandbox_path')
+            : readString(record, 'stored_path');
+        const assetUrl: string = readString(record, 'asset_url');
+        const plainUrl: string = readString(record, 'url');
+        let url: string = assetUrl.length > 0 ? assetUrl : plainUrl;
+
+        if (url.length === 0 && sandbox.length > 0) {
+            url = '/api/files/download?file_ref=' + encodeURIComponent(sandbox) + '&inline=1';
+        }
+
+        if (url.length === 0) {
+            continue;
+        }
+
+        const name: string = readString(record, 'name');
+        const identity: string = [
+            readString(record, 'asset_id'),
+            assetUrl,
+            plainUrl,
+            readString(record, 'sandbox_path'),
+            readString(record, 'stored_path'),
+            name,
+            String(readAttachmentSize(record))
+        ].join('|');
+
+        if (seen.has(identity)) {
+            continue;
+        }
+
+        seen.add(identity);
+        out.push({
+            type: readString(record, 'type').toLowerCase(),
+            name: name.length > 0 ? name : 'attachment',
+            mime: readString(record, 'mime').toLowerCase(),
+            url: url,
+            size: readAttachmentSize(record)
+        });
+    }
+}
+
+function readString(dict: Record<string, Object>, key: string): string {
+    const value: Object | undefined = dict[key];
+
+    return typeof value === 'string' ? (value as string).trim() : '';
+}
+
+function readAttachmentSize(record: Record<string, Object>): number {
+    const value: Object | undefined = record['size'];
+
+    return typeof value === 'number' ? (value as number) : 0;
 }

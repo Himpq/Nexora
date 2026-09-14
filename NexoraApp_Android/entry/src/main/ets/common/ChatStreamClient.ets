@@ -77,6 +77,13 @@ export interface StreamListener {
     onAborted: () => void;
 }
 
+// 学习运行时载荷：learning 打开 NexoraLearning 运行时，interview 在其内部切到六维画像访谈链路
+// （ArkTS 下字面量必须对应显式声明的 interface，不能直接赋给 Record）
+export interface ConversationModePayload {
+    learning?: boolean;
+    interview?: boolean;
+}
+
 export interface StreamOptions {
     message: string;
     conversationId?: string;
@@ -87,6 +94,9 @@ export interface StreamOptions {
     toolMode?: string;
     isRegenerate?: boolean;
     regenerateIndex?: number;
+    // 会话模式：'learning' 时后端挂载 NexoraLearning 运行时（学习工具 + 画像访谈指令）
+    conversationMode?: string;
+    conversationModePayload?: ConversationModePayload;
 }
 
 // 流式请求体：conversation_id / model_name 可选，后端在缺省时新建会话 / 使用默认模型
@@ -100,16 +110,50 @@ export interface StreamRequestBody {
     tool_mode?: string;
     is_regenerate?: boolean;
     regenerate_index?: number;
+    conversation_mode?: string;
+    conversation_mode_payload?: ConversationModePayload;
 }
 
 // 单条流的会话状态：每条流独立持有，旧流的传输/轮询回调只影响自己，
 // 不会再触碰新流的 finished / buffer 等共享标志（曾导致新流帧被旧回调丢弃）
 class ChatStreamSession {
+    // 本流在 ChatStreamClient.sessions 中的键（会话 ID 或本地临时键）：流结束时按此键释放
+    sessionKey: string = '';
     private request: http.HttpRequest | null = null;
     private streamId: string = '';
     private conversationId: string = '';
     private buffer: string = '';
     private finished: boolean = false;
+    private terminalNotified: boolean = false;
+    private terminalCallback: (() => void) | null = null;
+
+    setTerminalCallback(callback: () => void): void {
+        this.terminalCallback = callback;
+    }
+
+    // 逻辑流已经收到 done / abort 时立即释放客户端会话锁。
+    // 传输层回调可能还要晚于 SSE 终止帧到达，不能把 UI 可重试时机绑定到传输层收尾。
+    private notifyTerminal(): void {
+        if (this.terminalNotified) {
+            return;
+        }
+
+        this.terminalNotified = true;
+
+        if (this.terminalCallback !== null) {
+            this.terminalCallback();
+        }
+    }
+
+    private notifyComplete(listener: StreamListener, content: string): void {
+        this.notifyTerminal();
+        listener.onComplete(content);
+    }
+
+    private notifyAborted(listener: StreamListener): void {
+        this.notifyTerminal();
+        listener.onAborted();
+    }
 
     // 接收诊断统计：判断 ArkUI http 栈是「逐块到达」还是「整包聚合」
     // （真机反馈"网页逐字、设备整包"，怀疑 dataReceive 分块粒度被聚合，需日志二分定位）
@@ -168,6 +212,7 @@ class ChatStreamSession {
         this.conversationId = options.conversationId ?? '';
         this.buffer = '';
         this.finished = false;
+        this.terminalNotified = false;
         this.recvBlocks = 0;
         this.recvBytes = 0;
         this.firstRecvAt = 0;
@@ -205,6 +250,12 @@ class ChatStreamSession {
         this.stopPoller('cancel');
         this.notifyCancel();
 
+        // 普通 SSE 流没有 pendingResolve，但页面仍需要收到中止事件来清掉
+        // MainChat.streaming；否则传输层已经停止，输入栏却会永久停在停止按钮。
+        if (this.currentListener !== null) {
+            this.notifyAborted(this.currentListener);
+        }
+
         if (this.request !== null) {
             this.request.destroy();
             this.request = null;
@@ -212,10 +263,6 @@ class ChatStreamSession {
 
         // handover 状态下需触发 onAborted 并 resolve，否则 openStream Promise 永远 pending
         if (this.pendingResolve !== null) {
-            if (this.currentListener !== null) {
-                this.currentListener.onAborted();
-            }
-
             const resolve: () => void = this.pendingResolve;
             this.pendingResolve = null;
             resolve();
@@ -333,7 +380,7 @@ class ChatStreamSession {
     private handoverToPoller(resolve: () => void, listener: StreamListener, reason: string): void {
         if (this.conversationId.length === 0) {
             // 无会话 id 无法轮询，直接结束
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
             this.finished = true;
             this.logRecvSummary(reason);
             resolve();
@@ -362,7 +409,7 @@ class ChatStreamSession {
                 err.code, aborted, this.conversationId, this.pollContentLen, this.contentFrames);
 
             if (aborted) {
-                listener.onAborted();
+                this.notifyAborted(listener);
                 this.finished = true;
                 this.stopPoller('transport-abort');
                 resolve();
@@ -584,7 +631,7 @@ class ChatStreamSession {
                 this.renderedContentLen, this.renderedReasoningLen);
             this.finished = true;
             this.stopPoller('poll-done');
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
 
             if (this.pendingResolve !== null) {
                 const resolve: () => void = this.pendingResolve;
@@ -673,7 +720,7 @@ class ChatStreamSession {
         }
 
         if (trimmed === '[DONE]' || trimmed === 'data: [DONE]') {
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
             return true;
         }
 
@@ -799,7 +846,7 @@ class ChatStreamSession {
                 listener.onError(chunk.message ?? chunk.error ?? '生成过程出错');
                 return false;
             case 'done':
-                listener.onComplete(chunk.content ?? '');
+                this.notifyComplete(listener, chunk.content ?? '');
                 return true;
             default:
                 this.otherFrames = this.otherFrames + 1;
@@ -843,11 +890,11 @@ class ChatStreamSession {
         }
 
         if (chunk.cancel_requested === true) {
-            listener.onAborted();
+            this.notifyAborted(listener);
             return true;
         }
 
-        listener.onComplete(chunk.content ?? '');
+        this.notifyComplete(listener, chunk.content ?? '');
         return true;
     }
 
@@ -916,7 +963,9 @@ class ChatStreamSession {
             enable_tools: options.enableTools,
             tool_mode: options.toolMode,
             is_regenerate: options.isRegenerate,
-            regenerate_index: options.regenerateIndex
+            regenerate_index: options.regenerateIndex,
+            conversation_mode: options.conversationMode,
+            conversation_mode_payload: options.conversationModePayload
         };
 
         return body;
@@ -948,37 +997,83 @@ class ChatStreamSession {
     }
 }
 
-// 全局唯一流式入口：同一时刻只允许一条流在运行。
-// 每次 start 创建独立的 ChatStreamSession 承载该流全部状态，
-// 旧流在早于发送完成前释放（轮询判定 done 立即 resolve）也不会污染新流
+// 全局唯一流式入口：按会话键隔离，多会话可并行。
+// 每次 start 创建独立的 ChatStreamSession 承载该流全部状态与传输锁；
+// 同会话重复发送在 start 入口拒绝，跨会话互不影响。
+// 会话键约定：已创建会话用真实会话 ID；新会话预创建失败时用调用方生成的本地临时键，
+// 流内首次拿到 conversation_id 后由调用方调 rekey 迁移到真实 ID
 export class ChatStreamClient {
-    private session: ChatStreamSession | null = null;
+    // 会话键 → 活动流
+    private sessions: Map<string, ChatStreamSession> = new Map<string, ChatStreamSession>();
 
     get isStreaming(): boolean {
-        return this.session !== null;
+        return this.sessions.size > 0;
     }
 
-    async start(options: StreamOptions, listener: StreamListener): Promise<void> {
-        if (this.session !== null) {
-            return;
+    // 当前活动流数量：实况窗收尾据此判断是否还有别的会话在生成
+    get streamingCount(): number {
+        return this.sessions.size;
+    }
+
+    isStreamingFor(sessionKey: string): boolean {
+        return this.sessions.has(sessionKey);
+    }
+
+    start(sessionKey: string, options: StreamOptions, listener: StreamListener): boolean {
+        if (this.sessions.has(sessionKey)) {
+            hilog.warn(DOMAIN, TAG, '[start] rejected duplicate active session key=%{public}s', sessionKey);
+            return false;
         }
 
         const session: ChatStreamSession = new ChatStreamSession();
-        this.session = session;
-
-        try {
-            await session.run(options, listener);
-        } finally {
-            if (this.session === session) {
-                this.session = null;
+        session.sessionKey = sessionKey;
+        this.sessions.set(sessionKey, session);
+        session.setTerminalCallback(() => {
+            if (this.sessions.get(session.sessionKey) !== session) {
+                return;
             }
-        }
+
+            this.sessions.delete(session.sessionKey);
+            hilog.info(DOMAIN, TAG, '[start] released terminal session key=%{public}s', session.sessionKey);
+        });
+
+        session.run(options, listener).finally(() => {
+            if (this.sessions.get(session.sessionKey) === session) {
+                this.sessions.delete(session.sessionKey);
+            }
+        });
+
+        return true;
     }
 
-    cancel(): void {
-        if (this.session !== null) {
-            this.session.cancel();
+    // 新会话流拿到服务端 ID 后迁移锁键：活动流集合继续以真实会话 ID 指认同一条流
+    rekey(fromKey: string, toKey: string): void {
+        const session: ChatStreamSession | undefined = this.sessions.get(fromKey);
+
+        if (session === undefined) {
+            return;
         }
+
+        this.sessions.delete(fromKey);
+        session.sessionKey = toKey;
+        this.sessions.set(toKey, session);
+    }
+
+    // 取消：不传键取消全部（登出）；传键只停该会话的流，后台其他会话不受影响
+    cancel(sessionKey?: string): void {
+        if (sessionKey !== undefined) {
+            const session: ChatStreamSession | undefined = this.sessions.get(sessionKey);
+
+            if (session !== undefined) {
+                session.cancel();
+            }
+
+            return;
+        }
+
+        this.sessions.forEach((session: ChatStreamSession): void => {
+            session.cancel();
+        });
     }
 }
 
