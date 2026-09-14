@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <defs>
+    <linearGradient id="nxAvatarBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4A7DFF"/>
+      <stop offset="1" stop-color="#7AA5FF"/>
+    </linearGradient>
+  </defs>
+  <circle cx="24" cy="24" r="24" fill="url(#nxAvatarBg)"/>
+  <!-- 摊开的书：左页实、右页略透，暗示「它在读」 -->
+  <path d="M10.5 19.6c4.3-1.7 8.2-1.4 11.6 1v14.8c-3.4-2.4-7.3-2.7-11.6-1z" fill="#FFFFFF"/>
+  <path d="M37.5 19.6c-4.3-1.7-8.2-1.4-11.6 1v14.8c3.4-2.4 7.3-2.7 11.6-1z" fill="#FFFFFF" opacity="0.68"/>
+  <!-- 上方的点：注意力，暗示「它在看着你的进度」 -->
+  <circle cx="24" cy="12.4" r="3.3" fill="#FFFFFF"/>
+</svg>

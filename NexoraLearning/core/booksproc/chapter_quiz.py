@@ -39,6 +39,21 @@ from core.user import (
 
 _QUIZ_LOCK = threading.Lock()
 _QUESTION_BLOCK_RE = re.compile(r"<QUESTION>\s*(.*?)\s*</QUESTION>", flags=re.IGNORECASE | re.DOTALL)
+_PLACEHOLDER_OPTIONS = {
+    "",
+    "-",
+    "/",
+    "—",
+    "——",
+    "无",
+    "暂无",
+    "略",
+    "选项",
+    "none",
+    "n/a",
+    "null",
+    "nil",
+}
 
 
 def _safe_text(value: Any) -> str:
@@ -83,10 +98,68 @@ def _normalize_options(value: Any) -> List[str]:
 
         text = re.sub(r"^[A-Da-d][.、)\s]+", "", text).strip()
 
-        if text:
-            rows.append(text[:160])
+        if not text or text.lower() in _PLACEHOLDER_OPTIONS:
+            continue
+
+        rows.append(text[:160])
 
     return rows[:4]
+
+
+def _as_choice_letter(text: str) -> str:
+    token = str(text or "").strip()
+    if len(token) == 1 and "A" <= token.upper() <= "D":
+        return token.upper()
+    return ""
+
+
+def grade_question(question: Mapping[str, Any], user_answer: str) -> bool:
+    """选择题按字母/选项原文判；简答题按归一化包含关系判。"""
+    expected = _strip_markdown_answer(question.get("answer") if isinstance(question, Mapping) else "")
+    user = _strip_markdown_answer(user_answer)
+    if not user or not expected:
+        return False
+
+    options = _normalize_options(question.get("options") if isinstance(question, Mapping) else [])
+    qtype = _normalize_question_type(question.get("type") if isinstance(question, Mapping) else "", options)
+    user_letter = _as_choice_letter(user)
+    expected_letter = _as_choice_letter(expected)
+
+    if qtype == "choice" and options:
+        if user_letter and expected_letter:
+            return user_letter == expected_letter
+        if user_letter:
+            index = ord(user_letter) - 65
+            if 0 <= index < len(options):
+                choice = options[index]
+                return choice == expected or expected_letter == user_letter or expected in {choice, user_letter}
+        if expected_letter:
+            index = ord(expected_letter) - 65
+            if 0 <= index < len(options) and user == options[index]:
+                return True
+        if user == expected:
+            return True
+        if user in options and expected in options:
+            return user == expected
+        return False
+
+    if user == expected:
+        return True
+    user_compact = re.sub(r"\s+", "", user).lower()
+    expected_compact = re.sub(r"\s+", "", expected).lower()
+    if user_compact == expected_compact:
+        return True
+    if len(expected_compact) >= 2 and expected_compact in user_compact:
+        return True
+    if len(user_compact) >= 4 and user_compact in expected_compact:
+        return True
+    return False
+
+
+def load_quiz_by_id(cfg: Mapping[str, Any], user_id: str, quiz_id: str) -> Dict[str, Any]:
+    path = _chapter_quiz_path(cfg, user_id, quiz_id)
+    data = _read_json(path)
+    return data if isinstance(data, dict) else {}
 
 
 def _normalize_question_type(value: Any, options: List[str]) -> str:
@@ -521,7 +594,17 @@ def _generate_profile_question_bank_questions(
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
 
     settings = dict(get_profile_question_settings(cfg) or {})
-    concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)
+    # 概念目录只是出题提示的增强：课程还没生成知识图谱时（例如刚挂上的整本 EPUB）
+    # 不应让整次出题失败，退化为只按章节正文出题。
+    try:
+        concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)
+    except Exception as exc:  # noqa: BLE001 - 图谱缺失属于可降级情况
+        log_event(
+            "chapter_quiz_concepts_unavailable",
+            "章节概念目录不可用，改为仅按正文出题",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "chapter_name": chapter_name, "error": str(exc)},
+        )
+        concept_candidates = []
     concept_catalog = serialize_concept_candidates(concept_candidates)
     runner = build_profile_question_runner(cfg, _safe_text(settings.get("model_name")))
     loaded_chapter_context = _safe_text(chapter_context)
@@ -649,7 +732,9 @@ def _generate_profile_question_bank_questions(
         )
         raise ValueError(f"章节小测题目未通过结构校验：{validation_error}")
 
-    concept_validation_error = validate_question_concept_bindings(rows, concept_candidates)
+    # 没有概念目录（课程尚无知识图谱）时，题目不可能绑定 concept_id，跳过绑定校验；
+    # 题目仍按正文生成，只是不进入认知状态统计。
+    concept_validation_error = validate_question_concept_bindings(rows, concept_candidates) if concept_candidates else ""
 
     if concept_validation_error:
         log_event(

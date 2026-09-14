@@ -1,0 +1,63 @@
+{
+  "agentCards": [
+    {
+      "agentId": "nexora_learning_agent",
+      "name": "Nexora",
+      "description": "住在手机里的学习智能体：夜里替学生读完明天的章节、划重点、出题；白天只在对的时刻出现；能依据学生自己的教材讲解概念，并按掌握度出题。",
+      "provider": {
+        "organization": "彳亍 · Nexora Learning",
+        "url": "https://chat.himpqblog.cn:5002"
+      },
+      "version": "1.0.0",
+      "documentationUrl": "",
+      "capabilities": {
+        "streaming": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "extendedAgentCard": false,
+        "extension": "{\"protocol\":\"nexora-a2a-json\",\"version\":\"1\"}"
+      },
+      "defaultInputModes": ["text/plain", "application/json"],
+      "defaultOutputModes": ["application/json", "text/plain"],
+      "skills": [
+        {
+          "id": "prepare_chapter",
+          "name": "备好下一章",
+          "description": "告诉调用方学生下一步该学哪一章，并说明 Nexora 会在夜里替他读完、划重点、出题。",
+          "tags": ["学习", "备课", "章节", "计划"],
+          "examples": ["Nexora 明天要学什么", "帮我看看下一章是什么"],
+          "inputModes": ["application/json"],
+          "outputModes": ["application/json"],
+          "extension": "{\"request\":{\"skill\":\"prepare_chapter\"}}"
+        },
+        {
+          "id": "explain_confusion",
+          "name": "讲解困惑",
+          "description": "依据学生自己的教材讲解一个概念或一道题；支持把拍照识别出的文字一并传入。讲解会留痕为对话上下文，影响 Nexora 当晚的备课重点。",
+          "tags": ["讲解", "教材", "概念", "拍照"],
+          "examples": ["让 Nexora 讲一下卷积", "这道题怎么做"],
+          "inputModes": ["application/json", "text/plain"],
+          "outputModes": ["application/json"],
+          "extension": "{\"request\":{\"skill\":\"explain_confusion\",\"input\":\"卷积\",\"photoText\":\"\"}}"
+        },
+        {
+          "id": "quiz_me",
+          "name": "考考我",
+          "description": "按学生最近学的章节与掌握度排一组复习题。",
+          "tags": ["测验", "复习", "出题"],
+          "examples": ["Nexora 考考我", "出几道题"],
+          "inputModes": ["application/json"],
+          "outputModes": ["application/json"],
+          "extension": "{\"request\":{\"skill\":\"quiz_me\"}}"
+        }
+      ],
+      "iconUrl": "resources/base/media/nx_agent_avatar.png",
+      "category": "education",
+      "extension": "{\"greeting\":\"我是 Nexora。你不在的时候我在替你读书。\"}",
+      "appInfo": {
+        "deviceTypes": ["phone", "tablet"],
+        "minAppVersion": "1.0.0"
+      }
+    }
+  ]
+}
