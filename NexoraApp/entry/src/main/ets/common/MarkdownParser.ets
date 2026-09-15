@@ -28,6 +28,11 @@ export interface TableData {
     headers: InlinePiece[][];
     rows: InlinePiece[][][];
     aligns: string[];
+    // 表格被展开器按数据行切成多片时的位置标记（见 common/ChatItemBuilder.ets）：
+    // 圆角与边框按位置补，连起来才是一张完整的表。
+    // 不设这两项表示整张表就是一个单元（既是首片也是末片），行为与拆分前一致
+    sliceFirst?: boolean;
+    sliceLast?: boolean;
 }
 
 export interface MarkdownBlock {

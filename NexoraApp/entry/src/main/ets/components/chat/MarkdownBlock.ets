@@ -1,19 +1,21 @@
-// MarkdownBlock.ets - Markdown 渲染组件
+// MarkdownBlock.ets - 单个 Markdown 块的渲染组件
 // 只做「结构 -> 组件」的翻译，解析逻辑全部在 common/MarkdownParser.ets
 // 关键约束：同一个 Text 内所有 Span 必须同字号，避免行盒高度不一致造成的文本偏移
+//
+// 只渲染一个块：列表已按 Markdown AST 把消息拆成块级单元（见 common/ChatItemBuilder.ets），
+// 每个块自己就是一个列表行，因此这里不再需要遍历整段文本，也不需要一次性渲染上限。
 
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
 import { FontSize, LineHeight, Radius, Space } from '../../common/DesignToken';
 import { InlinePiece, ListItem, MarkdownBlock as MdBlock, MarkdownParser, TableData } from '../../common/MarkdownParser';
+import { MarkdownBlockHolder } from '../../common/ChatRenderItem';
+import { TableScrollSync } from '../../common/TableScrollSync';
 
 const MONO_FONT: string = 'monospace';
 
 // 标题字号梯度：等级越大越弱
 const HEADING_SIZES: number[] = [FontSize.display, FontSize.titleLarge, FontSize.title, FontSize.bodyLarge, FontSize.body, FontSize.body];
-
-// 单条消息渲染 block 上限：死循环已修复，153 block 解析仅 3ms，这里留硬上限防极端超长内容
-const MAX_RENDER_BLOCKS: number = 300;
 
 // 行内文本的块级差异样式：@Builder 调用返回 void，不允许链式挂属性，
 // 因此标题 / 引用 / 列表的差异一律作为参数传入渲染内核，字段缺省时走正文默认值
@@ -28,52 +30,77 @@ interface InlineStyle {
     paddingRight?: number;
 }
 
+// 整段 Markdown 渲染：把源文本解析成块后用块视图逐个渲染。
+// 聊天列表不用它（那里每个块自己就是一行），知识库编辑器的预览区用它
 @Component
 export struct MarkdownView {
     @Prop @Watch('onSourceChange') source: string;
-    // 行内代码与链接的强调色，助手消息用品牌色，用户气泡内用反色
-    @Prop accentColor: ResourceColor = $r('app.color.text_brand');
-    @Prop codeBackgroundColor: ResourceColor = $r('app.color.code_bg');
-    @Prop codeTextColor: ResourceColor = $r('app.color.code_text');
-    @State private blocks: MdBlock[] = [];
-    @State private truncatedCount: number = 0;
+    @State private holders: MarkdownBlockHolder[] = [];
 
     aboutToAppear(): void {
-        this.applyBlocks(MarkdownParser.parse(this.source));
+        this.rebuild();
     }
 
     onSourceChange(): void {
-        this.applyBlocks(MarkdownParser.parse(this.source));
+        this.rebuild();
     }
 
-    // 解析后截断：超过上限的 block 丢弃并记录数量，渲染层用提示行告知用户内容被省略
-    private applyBlocks(all: MdBlock[]): void {
-        if (all.length > MAX_RENDER_BLOCKS) {
-            this.blocks = all.slice(0, MAX_RENDER_BLOCKS);
-            this.truncatedCount = all.length - MAX_RENDER_BLOCKS;
-        } else {
-            this.blocks = all;
-            this.truncatedCount = 0;
+    private rebuild(): void {
+        const blocks: MdBlock[] = MarkdownParser.parse(this.source);
+        const holders: MarkdownBlockHolder[] = [];
+
+        for (let i: number = 0; i < blocks.length; i++) {
+            holders.push(new MarkdownBlockHolder(blocks[i]));
         }
+
+        this.holders = holders;
     }
 
     build() {
         Column({ space: Space.md }) {
-            ForEach(this.blocks, (block: MdBlock, index: number) => {
-                this.renderBlock(block);
-            }, (block: MdBlock, index: number) => index + '_' + block.type + '_' + block.inline.length);
-
-            if (this.truncatedCount > 0) {
-                Text(`内容过长，已省略 ${this.truncatedCount} 个段落`)
-                    .fontSize(FontSize.caption)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .width('100%')
-                    .textAlign(TextAlign.Center)
-                    .padding({ top: Space.sm, bottom: Space.sm });
-            }
+            ForEach(this.holders, (holder: MarkdownBlockHolder) => {
+                MarkdownBlockView({ holder: holder });
+            }, (holder: MarkdownBlockHolder, index: number) => index.toString());
         }
         .width('100%')
-        .alignItems(HorizontalAlign.Start)
+        .alignItems(HorizontalAlign.Start);
+    }
+}
+
+@Component
+export struct MarkdownBlockView {
+    // 块持有者是 @Observed：流式期间块被替换时只有这一行重渲染
+    @ObjectLink holder: MarkdownBlockHolder;
+    // 表格的横向滚动区：表格被切成多片后，每片各有自己的 Scroll
+    private tableScroller: Scroller = new Scroller();
+    // 该表格各片共用的横向偏移（懒创建，见 tableSync）
+    private sharedTableSync: TableScrollSync | null = null;
+
+    aboutToDisappear(): void {
+        if (this.sharedTableSync !== null) {
+            this.sharedTableSync.unregister(this.tableScroller);
+        }
+    }
+
+    // 同一张表各片共用的横向偏移。
+    // 表被切成多片后横拖只会落在其中一片上，共享偏移才能让整张表一起移动；
+    // 整张表就是一个单元时（知识库预览）用本组件自己的实例，行为与拆分前一致
+    private tableSync(): TableScrollSync {
+        if (this.sharedTableSync === null) {
+            this.sharedTableSync = this.holder.tableSyncKey.length > 0
+                ? TableScrollSync.forKey(this.holder.tableSyncKey)
+                : new TableScrollSync();
+        }
+
+        return this.sharedTableSync;
+    }
+
+    build() {
+        Column() {
+            this.renderBlock(this.holder.block);
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start);
     }
 
     @Builder
@@ -147,7 +174,7 @@ export struct MarkdownView {
             .padding({ left: Space.md, right: Space.md, bottom: Space.md });
         }
         .width('100%')
-        .backgroundColor(this.codeBackgroundColor)
+        .backgroundColor($r('app.color.code_bg'))
         .borderRadius(Radius.md)
     }
 
@@ -182,7 +209,7 @@ export struct MarkdownView {
                 }
                 .width('100%')
                 .alignItems(VerticalAlign.Top);
-            }, (item: ListItem, index: number) => index + '_' + item.marker + '_' + item.inline.length);
+            }, (item: ListItem, index: number) => index + '_' + item.marker);
         }
         .width('100%')
     }
@@ -197,24 +224,27 @@ export struct MarkdownView {
 
     @Builder
     TableContent(table: TableData) {
-        Scroll() {
+        Scroll(this.tableScroller) {
             Column() {
-                Row() {
-                    ForEach(table.headers, (cell: InlinePiece[], index: number) => {
-                        this.InlineText(cell, FontSize.body, LineHeight.body, {
-                            bold: true,
-                            fill: true,
-                            align: this.tableAlign(table.aligns, index),
-                            paddingLeft: Space.sm,
-                            paddingRight: Space.sm
-                        });
-                    }, (cell: InlinePiece[], index: number) => 'h_' + index);
+                // 表头只画在首片：表格被切开后表头重复出现会误导阅读
+                if (this.tableSliceFirst(table)) {
+                    Row() {
+                        ForEach(table.headers, (cell: InlinePiece[], index: number) => {
+                            this.InlineText(cell, FontSize.body, LineHeight.body, {
+                                bold: true,
+                                fill: true,
+                                align: this.tableAlign(table.aligns, index),
+                                paddingLeft: Space.sm,
+                                paddingRight: Space.sm
+                            });
+                        }, (cell: InlinePiece[], index: number) => 'h_' + index);
+                    }
+                    .width('100%')
+                    .backgroundColor($r('app.color.bg_sunken'))
+                    .padding({ top: Space.sm, bottom: Space.sm })
+                    .borderWidth({ bottom: 1 })
+                    .borderColor({ bottom: $r('app.color.border_strong') });
                 }
-                .width('100%')
-                .backgroundColor($r('app.color.bg_sunken'))
-                .padding({ top: Space.sm, bottom: Space.sm })
-                .borderWidth({ bottom: 1 })
-                .borderColor({ bottom: $r('app.color.border_strong') });
 
                 ForEach(table.rows, (row: InlinePiece[][], rowIndex: number) => {
                     Row() {
@@ -234,16 +264,78 @@ export struct MarkdownView {
                 }, (row: InlinePiece[][], rowIndex: number) => 'r_' + rowIndex);
             }
             .width('100%')
-            .constraintSize({ minWidth: this.tableMinWidth(table.headers.length) })
-            .borderRadius(Radius.sm)
+            .constraintSize({ minWidth: this.tableMinWidth(this.tableColCount(table)) })
+            // 圆角与外框按分片位置补：首片画上边与左右、末片画下边与左右、中间只画左右，
+            // 于是多片拼起来在视觉上仍是一张完整的表（各片之间无间隙，见 gapBelow 的取值）
+            .borderRadius(this.tableRadius(table))
             .backgroundColor($r('app.color.bg_card'))
-            .borderWidth(0.5)
+            .borderWidth(this.tableBorderWidth(table))
             .borderColor($r('app.color.border'))
             .clip(true);
         }
         .scrollable(ScrollDirection.Horizontal)
-        .scrollBar(BarState.Auto)
-        .width('100%');
+        // 横向滚动条按片出现会变成好几条，统一关掉（表格仍可横向拖动，各片同步移动）
+        .scrollBar(BarState.Off)
+        .width('100%')
+        // 横拖任意一片都把偏移广播给同一张表的其余片，整张表一起移动
+        .onDidScroll((xOffset: number) => {
+            this.tableSync().onRowScroll(this.tableScroller, xOffset);
+        })
+        // 该片布局完成（内容宽度已知）时对齐到共享偏移，否则新出现的片会停在最左侧
+        .onAreaChange((oldArea: Area, newArea: Area) => {
+            this.tableSync().align(this.tableScroller);
+        });
+    }
+
+    // 表格分片位置：未设标记表示整张表就是一个单元（既是首片也是末片）
+    private tableSliceFirst(table: TableData): boolean {
+        return table.sliceFirst !== false;
+    }
+
+    private tableSliceLast(table: TableData): boolean {
+        return table.sliceLast !== false;
+    }
+
+    // 表格列数：aligns 每列一项，分片后非首片的表头为空，不能再用表头长度推算
+    private tableColCount(table: TableData): number {
+        if (table.aligns.length > 0) {
+            return table.aligns.length;
+        }
+
+        if (table.headers.length > 0) {
+            return table.headers.length;
+        }
+
+        if (table.rows.length > 0) {
+            return table.rows[0].length;
+        }
+
+        return 1;
+    }
+
+    private tableRadius(table: TableData): BorderRadiuses {
+        const first: boolean = this.tableSliceFirst(table);
+        const last: boolean = this.tableSliceLast(table);
+
+        return {
+            topLeft: first ? Radius.sm : 0,
+            topRight: first ? Radius.sm : 0,
+            bottomLeft: last ? Radius.sm : 0,
+            bottomRight: last ? Radius.sm : 0
+        };
+    }
+
+    private tableBorderWidth(table: TableData): EdgeWidths {
+        const first: boolean = this.tableSliceFirst(table);
+        const last: boolean = this.tableSliceLast(table);
+        const side: number = 0.5;
+
+        return {
+            top: first ? side : 0,
+            bottom: last ? side : 0,
+            left: side,
+            right: side
+        };
     }
 
     // 行内文本：整段一个 Text，Span 只改变颜色 / 字重 / 字体，绝不改字号
@@ -257,9 +349,9 @@ export struct MarkdownView {
                         Span(piece.text)
                             .fontSize(fontSize)
                             .fontFamily(MONO_FONT)
-                            .fontColor(this.codeTextColor);
+                            .fontColor($r('app.color.code_text'));
                     }
-                    .textBackgroundStyle({ color: this.codeBackgroundColor, radius: Radius.xs });
+                    .textBackgroundStyle({ color: $r('app.color.code_bg'), radius: Radius.xs });
                 } else {
                     Span(this.renderLinkPrefix(piece) + piece.text)
                         .fontSize(fontSize)
@@ -267,10 +359,10 @@ export struct MarkdownView {
                         .fontStyle(piece.italic ? FontStyle.Italic : FontStyle.Normal)
                         .fontColor(this.spanColor(piece))
                         .decoration(piece.href.length > 0
-                            ? { type: TextDecorationType.Underline, color: this.accentColor }
+                            ? { type: TextDecorationType.Underline, color: $r('app.color.text_brand') }
                             : { type: TextDecorationType.None });
                 }
-            }, (piece: InlinePiece, index: number) => index + '_' + piece.text);
+            }, (piece: InlinePiece, index: number) => index + '_' + piece.href + '_' + (piece.code ? 'code' : 'text'));
         }
         .fontSize(fontSize)
         .lineHeight(lineHeight)
@@ -296,7 +388,7 @@ export struct MarkdownView {
     }
 
     private spanColor(piece: InlinePiece): ResourceColor {
-        return piece.href.length > 0 ? this.accentColor : $r('app.color.text_primary');
+        return piece.href.length > 0 ? $r('app.color.text_brand') : $r('app.color.text_primary');
     }
 
     // 表格列对齐：按分隔行解析的 aligns 取值，越界默认左对齐
