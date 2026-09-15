@@ -9,13 +9,11 @@
 // 行不使用 @Reusable：不同 Markdown 块的内部 Text / Span 树不能跨列表键复用，
 // 否则行换绑时可能出现「数据已换、屏幕仍显示上一行某一段」的串台。
 
-import { pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
 import { ChatMessage, TokenUsage } from '../../common/ChatTypes';
-import { ChatItemKind, ChatRenderItem, MarkdownBlockHolder } from '../../common/ChatRenderItem';
-import { ChatItemBuilder } from '../../common/ChatItemBuilder';
-import { MarkdownBlock as MdBlock } from '../../common/MarkdownParser';
+import { ChatItemKind, ChatRenderItem } from '../../common/ChatRenderItem';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { QuestionItem } from '../../common/QuestionLocks';
 import { BrandLogo } from '../common/BrandLogo';
@@ -23,13 +21,12 @@ import { MarkdownBlockView } from './MarkdownBlock';
 import { QuestionCard } from './QuestionCard';
 import { StreamingDots } from './StreamingDots';
 import { ThinkingBlock } from './ThinkingBlock';
+import { ToolGallerySegment } from './ToolGallerySegment';
 import { ToolSegment } from './ToolSegment';
 import { UserAttachments } from './UserAttachments';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraRow';
-// 行高变化的最小记录幅度（vp）：更小的变化肉眼不可见，记下来只会淹没日志
-const ROW_HEIGHT_EPSILON: number = 4;
 // 行最小高度（vp）：引擎对未测量行按已测均值（实测 34~44vp）估算，矮行首次测量时
 // 会产生 |行高 − 均值| 的可见位移。18vp 的用量条 / 分隔线在带外（带 = 均值 ± 24vp），
 // 抬到 30vp 后落回带内。高行不受此约束影响
@@ -43,17 +40,6 @@ export struct ChatItemRow {
     onOpenImage: (url: string) => void = () => {};
     onQuestionAnswer: (item: QuestionItem, answer: string) => void = () => {};
     @State private pressedActionLabel: string = '';
-    // 行高观测用：上一次记录到的高度（0 表示尚未测过）
-    private lastRowHeight: number = 0;
-    // 建行成本探针起点：aboutToAppear 的时刻（0 表示已上报过）
-    private appearAt: number = 0;
-
-    // 建行成本探针起点。由于行不参与复用，每个列表键都会走一次创建路径，
-    // 所以「首次布局时刻 − 这里」= 创建 + 布局这一行的耗时
-    aboutToAppear(): void {
-        this.appearAt = Date.now();
-    }
-
     build() {
         Column() {
             if (this.item.kind === ChatItemKind.USER_MESSAGE) {
@@ -75,6 +61,13 @@ export struct ChatItemRow {
                         onOpenImage: this.onOpenImage
                     });
                 }
+            } else if (this.item.kind === ChatItemKind.TOOL_GALLERY) {
+                if (this.item.toolCall !== null) {
+                    ToolGallerySegment({
+                        item: this.item.toolCall,
+                        onOpenImage: this.onOpenImage
+                    });
+                }
             } else if (this.item.kind === ChatItemKind.QUESTION) {
                 if (this.item.question !== null) {
                     QuestionCard({
@@ -88,8 +81,7 @@ export struct ChatItemRow {
             } else if (this.item.kind === ChatItemKind.CONTENT_BLOCK) {
                 if (this.item.blockHolder !== null) {
                     MarkdownBlockView({
-                        holder: this.item.blockHolder,
-                        rowKey: this.item.key()
+                        holder: this.item.blockHolder
                     });
                 }
             } else if (this.item.kind === ChatItemKind.SEGMENT_ERROR) {
@@ -119,76 +111,19 @@ export struct ChatItemRow {
             width: 1,
             color: this.item.highlighted ? $r('app.color.brand_primary') : Color.Transparent
         })
-        // 行高观测：**只记录，不把高度回喂给列表**。
-        // 纯滚动中出现位置跳变的机制是「某行首次布局之后高度又变了」——
-        // 它会把该行下方所有内容整体推移。打出来用于指认是哪一类行在变
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-            this.observeRowHeight(newArea.height as number);
-        });
-    }
+        // 只记录真正的尺寸变化；滚动引起的位置变化不会触发 onSizeChange。
+        // 该日志用于把 List 注入的异常 offset 对齐到具体渲染单元，不参与任何布局修正。
+        .onSizeChange((oldValue: SizeOptions, newValue: SizeOptions) => {
+            const oldHeight: number = oldValue.height as number;
+            const newHeight: number = newValue.height as number;
 
-    // 记录行的首次高度与后续变化。只做观测：不触发任何滚动或布局补偿
-    private observeRowHeight(height: number): void {
-        if (height <= 0) {
-            return;
-        }
-
-        // 切片宽度**不在这里下发**。这里曾经把「行自己的测量宽度」写回 ChatItemBuilder，
-        // 形成一条「行测量 → 切片宽度 → 行内容 → 行测量」的回路：不同行在不同帧上报的宽度
-        // 并不一致（首次布局期间存在中间态宽度），切片宽度随之来回摆动，
-        // 同一个键先后切出不同文本 —— 这正是「对话串台」的直接来源。
-        // 可用宽度只认「列表容器实测」这一个来源（MainChat 首帧播种 + onAreaChange 校准），
-        // 且一旦有单元定型就冻结，不再改写
-
-        if (this.lastRowHeight === 0) {
-            this.lastRowHeight = height;
-
-            if (this.appearAt > 0) {
-                ChatItemBuilder.noteRowCost(this.item.kind, height, Date.now() - this.appearAt);
-                this.appearAt = 0;
+            if (Math.abs(newHeight - oldHeight) >= 1) {
+                hilog.info(DOMAIN, TAG,
+                    '[row-size] key=%{public}s kind=%{public}d old=%{public}d new=%{public}d fp=%{public}s',
+                    this.item.key(), this.item.kind, Math.round(oldHeight), Math.round(newHeight), this.item.fingerprint());
             }
-
-            // 指纹与高度一起打：用于确认列表键、块持有者与屏幕行始终一一对应
-            hilog.info(DOMAIN, TAG,
-                '[row] first type=%{public}s h=%{public}d key=%{public}s hid=%{public}d fp=%{public}s txt=%{public}s',
-                this.rowTypeLabel(), Math.round(height), this.item.key(),
-                this.item.blockHolder === null ? -1 : this.item.blockHolder.id,
-                this.item.fingerprint(),
-                this.item.renderText().split('\n').join(' ').substring(0, 26));
-            return;
-        }
-
-        if (Math.abs(height - this.lastRowHeight) < ROW_HEIGHT_EPSILON) {
-            return;
-        }
-
-        hilog.info(DOMAIN, TAG,
-            '[row] change kind=%{public}d h=%{public}d was=%{public}d delta=%{public}d key=%{public}s',
-            this.item.kind, Math.round(height), Math.round(this.lastRowHeight),
-            Math.round(height - this.lastRowHeight), this.item.key());
-        this.lastRowHeight = height;
-    }
-
-    // 行类型标签：块单元打 markdown 块类型，表格分片附「位置 + 本片数据行数」；
-    // 其余单元打类别号。用于把行高分布直接归因到具体的块类型 —— 高行才是滚动位移的来源
-    private rowTypeLabel(): string {
-        const holder: MarkdownBlockHolder | null = this.item.blockHolder;
-
-        if (holder === null) {
-            return 'kind' + this.item.kind;
-        }
-
-        const block: MdBlock = holder.block;
-
-        if (block.table === null) {
-            return block.type;
-        }
-
-        // f/m/l = 首片 / 中间片 / 末片；分片后首末同片（整表一个单元）会打成 fl
-        const first: string = block.table.sliceFirst === false ? 'm' : 'f';
-        const last: string = block.table.sliceLast === false ? 'm' : 'l';
-
-        return 'table-' + first + last + block.table.rows.length;
+        })
+        // 行高由列表一次测量完成后保持稳定，不在滚动路径挂载逐行 onAreaChange 回调。
     }
 
     private topMargin(): number {

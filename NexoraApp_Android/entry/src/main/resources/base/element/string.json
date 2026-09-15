@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "label"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "用于将语音转换为随笔文字"
     }
   ]
 }

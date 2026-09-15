@@ -92,3 +92,9 @@ NexoraApp/build_log.txt
 .stale_build_backup/
 .tmp_shots/
 NexoraApp/build_log.txt
+
+# Android local tool state and diagnostic output; keep NexoraApp_Android source tracked.
+NexoraApp_Android/.gradle-home/
+NexoraApp_Android/.ace-config/
+NexoraApp_Android/.ace-stub/
+NexoraApp_Android/tmp/

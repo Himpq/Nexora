@@ -26,6 +26,7 @@ export enum ChatItemKind {
     ASSISTANT_AVATAR = 1,
     REASONING = 2,
     TOOL_CALL = 3,
+    TOOL_GALLERY = 11,
     QUESTION = 4,
     CONTENT_BLOCK = 5,
     SEGMENT_ERROR = 6,
@@ -117,7 +118,7 @@ export class ChatRenderItem {
     reasoningText: string = '';
     reasoningStreaming: boolean = false;
     reasoningExpanded: boolean = false;
-    // 仅 TOOL_CALL / QUESTION 使用
+    // TOOL_CALL / TOOL_GALLERY / QUESTION 使用
     toolCall: ToolCallItem | null = null;
     question: QuestionItem | null = null;
     // 仅 SEGMENT_ERROR / ERROR_LINE 使用

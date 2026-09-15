@@ -528,21 +528,16 @@
             }
 
             function renderMap(payload, config) {
-                // ArkTS 侧轮询 __nexoraMapStatus 获取渲染结果（不依赖 javaScriptProxy 反向调用）
-                window.__nexoraMapStatus = 'loading';
-                window.__nexoraMapError = '';
-
                 try {
                     var normalized = normalizePayload(payload);
 
                     if (normalized.provider === TIANDITU_PROVIDER) {
                         loadTiandituMap(config).then(function (T) {
                             renderTiandituMap(T, normalized);
-                            window.__nexoraMapStatus = 'ready';
+                            window.nexoraMapBridge.markReady();
                         }).catch(function (error) {
                             showError(error && error.message ? error.message : String(error));
-                            window.__nexoraMapError = error && error.message ? error.message : String(error);
-                            window.__nexoraMapStatus = 'error';
+                            window.nexoraMapBridge.markError(error && error.message ? error.message : String(error));
                         });
 
                         return;
@@ -550,16 +545,14 @@
 
                     loadBaiduMapGl(config).then(function (BMapGL) {
                         renderBaiduMap(BMapGL, normalized);
-                        window.__nexoraMapStatus = 'ready';
+                        window.nexoraMapBridge.markReady();
                     }).catch(function (error) {
                         showError(error && error.message ? error.message : String(error));
-                        window.__nexoraMapError = error && error.message ? error.message : String(error);
-                        window.__nexoraMapStatus = 'error';
+                        window.nexoraMapBridge.markError(error && error.message ? error.message : String(error));
                     });
                 } catch (error) {
                     showError(error && error.message ? error.message : String(error));
-                    window.__nexoraMapError = error && error.message ? error.message : String(error);
-                    window.__nexoraMapStatus = 'error';
+                    window.nexoraMapBridge.markError(error && error.message ? error.message : String(error));
                 }
             }
 

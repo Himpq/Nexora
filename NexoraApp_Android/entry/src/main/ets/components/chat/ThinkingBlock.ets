@@ -15,11 +15,15 @@ export struct ThinkingBlock {
     // 否则本行会沿用上一行留下的展开/折叠状态
     @Prop @Watch('onIdentityChanged') rowIdentity: string = '';
 
-    @State private expanded: boolean = true;
+    // 历史思考块默认折叠；流式块的首帧由 rowIdentity 决定是否绘制正文，
+    // 避免先按 true 渲染一帧完整正文、aboutToAppear 再折叠而改变 ListItem 高度。
+    @State private expanded: boolean = false;
+    @State private mounted: boolean = false;
 
     aboutToAppear(): void {
         // 流式中的思考段默认展开，历史消息的思考段默认折叠
         this.expanded = this.streaming;
+        this.mounted = true;
     }
 
     // 身份变化 = 换了行：按新行的默认态重置。
@@ -34,6 +38,16 @@ export struct ThinkingBlock {
         if (this.autoCollapse) {
             this.expanded = false;
         }
+    }
+
+    // 首次 build 发生在 aboutToAppear 之前：用稳定的行身份直接决定首帧，
+    // 挂载完成后再读取用户可交互的 expanded 状态。
+    private shouldRenderBody(): boolean {
+        if (!this.mounted) {
+            return this.rowIdentity.endsWith(ROW_STREAMING_MARK);
+        }
+
+        return this.expanded;
     }
 
     private headerText(): string {
@@ -71,7 +85,7 @@ export struct ThinkingBlock {
                 this.expanded = !this.expanded;
             });
 
-            if (this.expanded) {
+            if (this.shouldRenderBody()) {
                 Text(this.text)
                     .fontSize(FontSize.small)
                     .lineHeight(LineHeight.caption)

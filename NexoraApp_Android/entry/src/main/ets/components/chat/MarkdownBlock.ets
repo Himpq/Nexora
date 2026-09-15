@@ -11,11 +11,6 @@ import { FontSize, LineHeight, Radius, Space } from '../../common/DesignToken';
 import { InlinePiece, ListItem, MarkdownBlock as MdBlock, MarkdownParser, TableData } from '../../common/MarkdownParser';
 import { MarkdownBlockHolder } from '../../common/ChatRenderItem';
 import { TableScrollSync } from '../../common/TableScrollSync';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-
-const DOMAIN: number = 0x0001;
-const TAG: string = 'NexoraMdBlock';
-
 const MONO_FONT: string = 'monospace';
 
 // @Builder 按引用传参的载体：形参必须写成 $$（ArkUI 约定），调用处传对象字面量，
@@ -82,18 +77,17 @@ export struct MarkdownView {
 export struct MarkdownBlockView {
     // 块持有者是 @Observed：流式期间块被替换时只有这一行重渲染
     @ObjectLink holder: MarkdownBlockHolder;
-    // 诊断探针：行身份串。由父组件在 build 中传入，
-    // 父组件重跑 build 才会变化 —— 它变化即证明参数确实重新下发过
-    @Prop @Watch('onRowKeyChanged') rowKey: string = '';
     // 切片块（表格 / 代码块）的横向滚动区：切片后每片各有自己的 Scroll
     private sliceScroller: Scroller = new Scroller();
     // 该块各片共用的横向偏移（懒创建，见 sliceSync）
     private sharedSliceSync: TableScrollSync | null = null;
-    // 诊断探针：上一次打印过的块文本
-    private tracedText: string = '';
 
+    // 只在分片节点挂载时恢复共享横向偏移。不能把对齐绑定到 onAreaChange：
+    // 该回调还会因外层聊天 List 的纵向滚动而触发，进而让每一帧都检查甚至执行横向 scrollTo。
     aboutToAppear(): void {
-        hilog.info(DOMAIN, TAG, '[mbv] appear hid=%{public}d', this.holder.id);
+        if (this.holder.sliceSyncKey.length > 0) {
+            this.sliceSync().align(this.sliceScroller);
+        }
     }
 
     aboutToDisappear(): void {
@@ -121,37 +115,6 @@ export struct MarkdownBlockView {
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start);
-    }
-
-    // ==== 诊断探针（定位「子组件拿到的是上一行的块」，完成即删）====
-    private onRowKeyChanged(): void {
-        this.traceHolder();
-    }
-
-    private traceHolder(): void {
-        let t: string = '';
-
-        if (this.holder.block.type === 'code') {
-            t = this.holder.block.codeText;
-        } else if (this.holder.block.type === 'table') {
-            t = 'TBL';
-        } else {
-            for (let i: number = 0; i < this.holder.block.inline.length; i++) {
-                t += this.holder.block.inline[i].text;
-            }
-        }
-
-        t = t.split('\n').join(' ');
-
-        if (t.length > 12) {
-            t = t.substring(0, 12);
-        }
-
-        if (t !== this.tracedText) {
-            this.tracedText = t;
-            hilog.info(DOMAIN, TAG, '[mbv] watch key=%{public}s hid=%{public}d txt=%{public}s',
-                this.rowKey, this.holder.id, t);
-        }
     }
 
     @Builder
@@ -236,9 +199,6 @@ export struct MarkdownBlockView {
             .padding({ left: Space.md, right: Space.md, bottom: this.codeSliceLast(block) ? Space.md : 0 })
             .onDidScroll((xOffset: number) => {
                 this.sliceSync().onRowScroll(this.sliceScroller, xOffset);
-            })
-            .onAreaChange((oldArea: Area, newArea: Area) => {
-                this.sliceSync().align(this.sliceScroller);
             });
         }
         .width('100%')
@@ -373,10 +333,6 @@ export struct MarkdownBlockView {
         // 横拖任意一片都把偏移广播给同一张表的其余片，整张表一起移动
         .onDidScroll((xOffset: number) => {
             this.sliceSync().onRowScroll(this.sliceScroller, xOffset);
-        })
-        // 该片布局完成（内容宽度已知）时对齐到共享偏移，否则新出现的片会停在最左侧
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-            this.sliceSync().align(this.sliceScroller);
         });
     }
 
@@ -433,9 +389,7 @@ export struct MarkdownBlockView {
 
     // 行内文本：始终使用同一棵 Text -> ForEach -> Span 子树，Span 只改变颜色 / 字重 / 字体，绝不改字号。
     // 不能在这里根据片段数量切换「Text(string)」和「Text + 多个 Span」：
-    // ChatItemRow 是 @Reusable，行复用时 ArkUI 可能保留前一行的 Text 子树，
-    // 于是一个 Markdown 回复的单行会显示成另一条回复的文字。结构固定后只更新片段内容，
-    // 再用 holder id 隔离换块后的节点身份，避免单栏串台。
+  // Markdown 块的节点身份由 holder id 隔离；块内容更新时只改这一块，避免单栏串台。
     @Builder
     InlineText(pieces: InlinePiece[], fontSize: number, lineHeight: number, style: InlineStyle) {
         Text() {

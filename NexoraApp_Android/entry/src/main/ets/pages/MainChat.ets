@@ -25,7 +25,7 @@ import { ChatItemDataSource } from '../common/ChatItemDataSource';
 import { ChatRenderItem } from '../common/ChatRenderItem';
 import { QuestionItem } from '../common/QuestionLocks';
 import { ChatItemRow } from '../components/chat/ChatItemRow';
-import { TurnIndicatorPanel } from '../components/chat/TurnIndicatorPanel';
+import { ChatScrollOverlay, ChatScrollOverlayState } from '../components/chat/ChatScrollOverlay';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
@@ -33,6 +33,8 @@ import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
 import { MailPage } from '../components/mail/MailPage';
+import { NotesPage } from '../components/notes/NotesPage';
+import { LearningPage } from '../components/learning/LearningPage';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
@@ -52,13 +54,10 @@ const JUMP_PAGINATION_HOLD: number = 240;
 const TOP_TRIGGER_STREAK: number = 3;
 // 前插落地后的分页静默期（ms）：给列表留出修正估算的时间，静默期内不再前插
 const PREPEND_PAGINATION_HOLD: number = 2000;
-// 帧间隔采样上限（条）：单次手势的样本量封顶，超出丢最旧的，避免长手势把内存撑起来
-const SCROLL_GAP_SAMPLE_CAP: number = 8192;
+// 滚动来源追踪只保留一次手势末尾的少量样本，在停止时汇总输出，不在滚动帧里打印日志。
+const SCROLL_SOURCE_TRACE_CAP: number = 64;
 // 轮次跳转高亮的保持时长（ms）
 const HIGHLIGHT_DURATION: number = 3000;
-// 位置跳变探针：单帧「实际位移 - 要求位移」的绝对值超过它就记一次（vp）。
-// 24vp 约等于两行正文的高度 —— 比这小的补偿肉眼分不出来，记下来只会淹没日志
-const JUMP_MIN_VP: number = 24;
 // 预取窗口（行）。maxCount 既是销毁线、也是空闲时向上/下预加载的行数。
 //
 // 曾经把窗口放大到 48/192，想「用静态期把行建好、别在滚动期建」——方向错了：
@@ -66,12 +65,10 @@ const JUMP_MIN_VP: number = 24;
 // 每行约 470 KB 原生堆（冷启动实测：61 MB → 159 MB，线性），
 // ArkTS 堆到 171 MB 后老年代并发标记变成每秒一轮，标记/压实 STW 300~500 ms。
 // 于是「每秒冻一次」——滚动期任何编排都碰不到这条路径。
-// 现在按「只留视口附近」配置：视口约 15~25 行（行高 30~56vp）+ 两侧少量预取。
-const CACHE_MIN_ROWS: number = 4;
-const CACHE_MAX_ROWS: number = 12;
-// 跳变日志限流（ms）：跳变会成串出现，限流只保留代表性样本；计数仍全量累加
-const JUMP_LOG_INTERVAL: number = 120;
-
+// 现在按「只留视口附近」配置：视口约 15~25 行（行高 30~56vp）+ 两侧半屏预取。
+// min=8 / max=16 给惯性滚动留出已完成创建与测量的跑道，减少视口边缘首次布局。
+const CACHE_MIN_ROWS: number = 8;
+const CACHE_MAX_ROWS: number = 16;
 @Component
 export struct MainChat {
     // 页面级统一用 @State 本地持有进程单例（@Observed 加持，字段级变化驱动本页刷新）
@@ -125,11 +122,17 @@ export struct MainChat {
     @State private mailOpen: boolean = false;
     @State private mailDetailOpen: boolean = false;
 
-    // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
-    @State private showScrollBottom: boolean = false;
+    // 随笔页：页面层持有编辑器状态，保证返回键可以先退出编辑器再退出随笔页
+    @State private notesOpen: boolean = false;
+    @State private noteEditorOpen: boolean = false;
+    @State private noteLaunchEditor: boolean = false;
 
-    // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
-    @State private activeTurnIndex: number = -1;
+    // Learning 页：页面层持有导航深度，返回键按页面内层级逐级返回
+    @State private learningOpen: boolean = false;
+    @State private learningNavDepth: number = 0;
+
+    // 滚动反馈状态独立于页面状态：索引变化只更新覆盖层，不触发整页 build。
+    @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
 
 
     // 会话列表代次：每次刷新/置顶/删除后 +1，随 @Prop 下发侧栏并进 ForEach key，
@@ -149,46 +152,35 @@ export struct MainChat {
     // 流式贴底只允许由当前帧合并执行；用户开始滚动后不再抢占手势
     private streamFollowPending: boolean = false;
     private streamUserScrolled: boolean = false;
+    // 滑动期间只保留滚动反馈的普通字段，停止后再提交到覆盖层，避免覆盖层与 List 同帧重绘。
+    private scrollGestureActive: boolean = false;
+    private pendingOverlayShowBottom: boolean = false;
+    private pendingOverlayActiveTurn: number = -1;
+    private pendingOverlayActiveValid: boolean = false;
     // 滚动索引回调可能在同一帧触发多次，只保留最后一次结果，避免反复驱动指示器重排
     private scrollIndexFramePending: boolean = false;
     private pendingScrollStart: number = -1;
     private pendingScrollEnd: number = -1;
     private pendingScrollCenter: number = -1;
-    // 帧间隔探针：记录超过一帧预算的间隔（60fps = 16.7ms），限流后打日志
-    private lastScrollFrameAt: number = 0;
-    // 帧间隔全量采样：滑动期间只累加不打印。
-    // 原先只留「>=17ms 且距上次日志 >120ms」的样本，在高刷设备上等于只剩尾部还被限流 ——
-    // 实测 120Hz 屏上 90% 的帧本是满帧（中位 8.0ms），却据此把满帧误读成持续掉帧。
-    private frameGaps: number[] = [];
-    // 位置跳变探针。onDidScroll 的第一个入参是「本帧滚动量」而不是绝对偏移
-    // （SDK：OnScrollCallback 的 scrollOffset 为 offset this frame did scroll），
-    // 所以本帧实际位移直接取它，绝不能再拿两帧的它相减。
-    //   applied  = 本帧实际位移
-    //   intended = 本帧要求位移（onScrollFrameBegin 累加，语义同为本帧滚动量）
-    //   corr     = applied - intended，即引擎为修正行高估算注入的补偿量
-    private pendingIntendedOffset: number = 0;
-    // 本帧是否真收到过 onScrollFrameBegin：惯性帧该回调可能不触发，
-    // 此时 intended 恒为 0，corr 会退化成整个位移，必须按「无样本」剔除
-    private intendedFrameSeen: boolean = false;
-    // 上一帧实际位移，用于算速度突变
-    private lastFrameDelta: number = 0;
-    // 首次回调只用来建立基准：此时没有上一帧可比，直接跳过
-    private scrollOffsetPrimed: boolean = false;
-    private jumpFrames: number = 0;
-    private jumpTotal: number = 0;
-    private jumpMaxAbs: number = 0;
-    // 速度突变计数。帧间隔正常（不掉帧）但相邻帧位移差很大 = 跟手性被破坏，体感就是「跳」。
-    // 与 corr 是两回事：corr 是引擎主动修正的位移，jerk 是位移本身的忽快忽慢
-    private jerkTotal: number = 0;
-    private jerkMaxAbs: number = 0;
-    private lastJumpLogAt: number = 0;
+    // 滚动来源诊断：will 是引擎准备执行的本帧位移，did 是实际执行的本帧位移。
+    // 两路都只写入固定环形缓冲，停止后一次性输出，用来区分业务滚动和 List 自身修正。
+    private scrollTraceWillOffsets: number[] = [];
+    private scrollTraceWillStates: number[] = [];
+    private scrollTraceWillSources: number[] = [];
+    private scrollTraceWillWrite: number = 0;
+    private scrollTraceWillCount: number = 0;
+    private scrollTraceDidOffsets: number[] = [];
+    private scrollTraceDidStates: number[] = [];
+    private scrollTraceDidWrite: number = 0;
+    private scrollTraceDidCount: number = 0;
+    private scrollTraceDidPrevious: number = 0;
+    private scrollTraceDidPrimed: boolean = false;
+    private scrollTraceDidMaxJerk: number = 0;
     // 列表实测宽度派生出的「可用文本宽度」：切片器靠它推算一行能排多少字，
     // 猜错了每片会白吃一行，行数上升就是滚动期单帧成本的直接来源
     private measuredContentWidth: number = 0;
     // 宽度冻结后若实测值与冻结值不符，只报一次警：用来确认播种是对的
     private widthLockWarned: boolean = false;
-    // 滚动索引处理（JS 侧）单帧最大耗时：用于区分掉帧来自 JS 还是渲染引擎
-    private maxScrollIndexCost: number = 0;
     // 触底收敛状态：在途标记 + 已尝试次数
     private bottomLoopActive: boolean = false;
     private bottomAttempts: number = 0;
@@ -200,8 +192,6 @@ export struct MainChat {
     // 最近一次 List 上报的可视区间：触底收敛与帧间隔探针都读它
     private visibleStartIndex: number = 0;
     private visibleEndIndex: number = 0;
-    // 诊断：可见区键序列的限流时间戳（定位"屏幕顺序 vs 数据源顺序"）
-    private lastVisibleDumpAt: number = 0;
     // 轮次高亮代次：连续跳转时，旧的清除定时器据此失效
     private highlightToken: number = 0;
 
@@ -213,7 +203,6 @@ export struct MainChat {
     private turnIndexByItem: number[] = [];
     // 每条消息的首个单元下标：轮次跳转以「该消息的第一行」为目标
     private messageStartByMessage: number[] = [];
-
     // 替换消息数组的唯一入口：同步响应式页面状态与 LazyForEach 数据源
     private replaceMessages(messages: ChatMessage[]): void {
         this.messages = messages;
@@ -261,19 +250,9 @@ export struct MainChat {
             return this.handleBackPress();
         };
 
-        // 建行成本探针的定时汇报：静止期的预建（cachedCount）同样产生建行成本，
-        // 只在手势结束时汇总会把静止期的账并进下一次手势，看不出归属。
-        // 每 3 秒独立汇报一次，是为了让「手不碰屏幕也能看到建行成本」
-        setInterval((): void => {
-            const cost: string = ChatItemBuilder.takeRowCost();
-
-            if (cost.length > 0) {
-                hilog.info(DOMAIN, TAG, '[row] cost %{public}s', cost);
-            }
-        }, 3000);
     }
 
-    // 系统返回键处理：优先级 邮件页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
+    // 系统返回键处理：优先级 邮件页(详情→页面) > 随笔编辑器/页面 > Learning 子页/页面 > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
         if (this.mailOpen) {
             if (this.mailDetailOpen) {
@@ -282,6 +261,26 @@ export struct MainChat {
             }
 
             this.closeMail();
+            return true;
+        }
+
+        if (this.notesOpen) {
+            if (this.noteEditorOpen) {
+                this.noteEditorOpen = false;
+                return true;
+            }
+
+            this.closeNotes();
+            return true;
+        }
+
+        if (this.learningOpen) {
+            if (this.learningNavDepth > 0) {
+                this.learningNavDepth = this.learningNavDepth - 1;
+                return true;
+            }
+
+            this.learningOpen = false;
             return true;
         }
 
@@ -344,6 +343,37 @@ export struct MainChat {
                     mailDetailOpen: $mailDetailOpen,
                     onBack: () => {
                         this.closeMail();
+                    }
+                })
+                    .width('100%')
+                    .height('100%')
+                    .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
+
+            // 随笔页层：由 MainChat 统一持有返回键和编辑器状态，避免侧栏点击后只关闭抽屉而没有目标页面
+            if (this.notesOpen) {
+                NotesPage({
+                    app: this.app,
+                    noteEditorOpen: $noteEditorOpen,
+                    launchEditor: this.noteLaunchEditor,
+                    onBack: () => {
+                        this.closeNotes();
+                    }
+                })
+                    .width('100%')
+                    .height('100%')
+                    .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
+                        .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
+
+            // Learning 页层：页面内部通过 navDepth 管理子页，宿主只负责最外层挂载与退出
+            if (this.learningOpen) {
+                LearningPage({
+                    app: this.app,
+                    navDepth: $learningNavDepth,
+                    onBack: () => {
+                        this.learningOpen = false;
                     }
                 })
                     .width('100%')
@@ -499,8 +529,8 @@ export struct MainChat {
                 .scrollBar(BarState.Off)
                 // 预取窗口双值：低于 minCount 就趁空闲预加载，超过 maxCount 才销毁/复用，
                 // 空闲时按 maxCount 把上下的行先建好。惯性滑动一屏约 13~16 行，
-                // maxCount=64 给一次滑动留出约 4 屏的「已建好」跑道，
-                // 滑动期间就不必再建行 —— 建行必然带来一次测量，测量就要重锚偏移
+                // maxCount=16 给一次滑动留出约一屏的「已建好」跑道，
+                // 又不会把整份历史预建出来；滑动期间新建行越少，首次测量引起的重锚越少
                 .cachedCount({ minCount: CACHE_MIN_ROWS, maxCount: CACHE_MAX_ROWS }, false)
                 // 切片点必须贴着真实折行位置。可用宽度写死成 360vp 屏的 328 时，
                 // 在 392.7vp 的屏上预算偏小，每片都白吃一行。只认实测算出的宽度，不再猜屏宽
@@ -520,22 +550,24 @@ export struct MainChat {
                 .onScrollIndex((start: number, end: number, center: number) => {
                     this.scheduleScrollIndexUpdate(start, end, center);
                 })
-                // 该回调只在用户/惯性滚动的每帧开始前触发，scrollToIndex 不会触发它。
-                // 一旦用户开始阅读历史内容，流式更新不得再把手势拉回末条
-                .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => {
-                    this.probeScrollFrame(offset);
-                    this.streamUserScrolled = true;
-                    return { offsetRemain: offset };
+                .onWillScroll((offset: number, state: ScrollState, source: ScrollSource) => {
+                    this.recordScrollWill(offset, state, source);
                 })
-                // 每帧的实际滚动偏移。与 onScrollFrameBegin 记录的「手势要求位移」作差，
-                // 即可量化引擎注入的补偿量 —— 也就是肉眼看到的跳变
                 .onDidScroll((offset: number, state: ScrollState) => {
-                    this.probeScrollOffset(offset, state);
+                    this.recordScrollDid(offset, state);
+                })
+                // 只在手势开始时声明用户已接管滚动；不把业务回调挂到每一帧 offset 上。
+                // 一旦用户开始阅读历史内容，流式更新不得再把手势拉回末条。
+                .onScrollStart(() => {
+                    this.resetScrollTrace();
+                    this.streamUserScrolled = true;
+                    this.scrollGestureActive = true;
+                    this.pendingOverlayActiveValid = false;
                 })
                 .onScrollStop(() => {
-                    this.lastScrollFrameAt = 0;
-                    this.reportScrollStats();
-                    this.reportJumpStats();
+                    this.scrollGestureActive = false;
+                    this.commitScrollOverlay();
+                    this.reportScrollTrace();
                 });
 
                 // 已打开会话但无消息（如空历史 / 加载失败后）：居中轻提示
@@ -563,61 +595,23 @@ export struct MainChat {
                     .color($r('app.color.brand_primary'));
             }
 
-            // 回到底部按钮：滚动离开底部时浮现，定位在内容区右下角（输入框正上方）
-            if (this.showScrollBottom && this.messages.length > 0) {
-                Stack() {
-                    this.ScrollBottomButton();
+            ChatScrollOverlay({
+                state: this.scrollOverlayState,
+                turnCount: this.userTurnCount,
+                messagesExist: this.messages.length > 0,
+                onJump: (turnIndex: number) => {
+                    this.jumpToTurn(turnIndex);
+                },
+                onRequirePreviews: (): string[] => {
+                    return this.buildTurnPreviews();
+                },
+                onScrollToEnd: () => {
+                    this.scrollToEnd('button', true);
                 }
-                .alignContent(Alignment.BottomEnd)
-                .width('100%')
-                .height('100%')
-                .padding({ right: Space.lg, bottom: Space.lg })
-                .hitTestBehavior(HitTestMode.Transparent);
-            }
-
-            // 轮次指示器：右侧垂直居中，仅在有多轮对话时显示
-            if (this.userTurnCount >= 2) {
-                Stack() {
-                    TurnIndicatorPanel({
-                        turnCount: this.userTurnCount,
-                        activeIndex: this.activeTurnIndex,
-                        onJump: (turnIndex: number) => {
-                            this.jumpToTurn(turnIndex);
-                        },
-                        onRequirePreviews: (): string[] => {
-                            return this.buildTurnPreviews();
-                        }
-                    });
-                }
-                .alignContent(Alignment.End)
-                .width('100%')
-                .height('100%')
-                .padding({ right: Space.sm })
-                .hitTestBehavior(HitTestMode.Transparent);
-            }
+            });
         }
         .layoutWeight(1)
         .width('100%');
-    }
-
-    // 回到底部浮动按钮：圆形带阴影，点击平滑滚到最后一条消息
-    @Builder
-    ScrollBottomButton() {
-        Column() {
-            Image($r('app.media.ic_chevron_down'))
-                .width(Size.icon)
-                .height(Size.icon)
-                .fillColor($r('app.color.icon_secondary'));
-        }
-        .width(Size.touchTarget)
-        .height(Size.touchTarget)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(Size.touchTarget / 2)
-        .backgroundColor($r('app.color.bg_card'))
-        .shadow(Shadow.raised)
-        .onClick(() => {
-            this.scrollToEnd('button', true);
-        });
     }
 
     // 装饰背景：品牌色渐变光球，垫在问候区背后，仅空态出现
@@ -744,6 +738,13 @@ export struct MainChat {
                     onOpenMail: () => {
                         this.closeSidebar();
                         this.openMail();
+                    },
+                    onOpenNotes: () => {
+                        this.closeSidebar();
+                        this.openNotes(false);
+                    },
+                    onOpenLearning: () => {
+                        void this.openLearning();
                     },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
@@ -895,6 +896,38 @@ export struct MainChat {
         this.mailOpen = false;
     }
 
+    // 打开随笔页；launchEditor 由快捷入口决定，侧栏入口默认打开列表
+    private openNotes(launchEditor: boolean): void {
+        this.noteLaunchEditor = launchEditor;
+        this.noteEditorOpen = launchEditor;
+        this.notesOpen = true;
+    }
+
+    private closeNotes(): void {
+        this.noteEditorOpen = false;
+        this.noteLaunchEditor = false;
+        this.notesOpen = false;
+    }
+
+    // Learning 入口需要先刷新运行时配置，避免打开页面后才发现功能未启用或地址为空
+    private async openLearning(): Promise<void> {
+        await this.app.refreshLearningRuntime();
+
+        if (!this.app.learningEnabled) {
+            this.notify('Learning 未启用', 1600);
+            return;
+        }
+
+        if (this.app.learningFrontendUrl.trim().length === 0) {
+            this.notify('Learning 未配置前端地址', 1600);
+            return;
+        }
+
+        this.closeSidebar();
+        this.learningNavDepth = 0;
+        this.learningOpen = true;
+    }
+
     // ---------- 侧栏开关 ----------
     // 打开/关闭用 animateTo 驱动 translate+opacity 属性动画（始终挂载，无 if 卸载退场动画问题）
     private openSidebar(): void {
@@ -1015,8 +1048,9 @@ export struct MainChat {
             this.streamUserScrolled = false;
             this.scrollToEnd('load-history');
             // scrollToEnd 的 scrollEdge 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
-            this.activeTurnIndex = this.computeActiveTurnOfLastMessage();
-            hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.activeTurnIndex);
+            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+            hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length,
+                this.scrollOverlayState.activeTurnIndex);
         });
     }
 
@@ -1065,7 +1099,7 @@ export struct MainChat {
             const preservedCenter: number = centerBeforeLoad + insertedItems.length;
 
             if (centerBeforeLoad >= 0 && preservedCenter < this.turnIndexByItem.length) {
-                this.activeTurnIndex = this.computeActiveTurn(preservedCenter);
+                this.scrollOverlayState.activeTurnIndex = this.computeActiveTurn(preservedCenter);
             }
 
             hilog.info(DOMAIN, TAG, '[history] prepend add=%{public}d size=%{public}d',
@@ -1371,6 +1405,8 @@ export struct MainChat {
 
         this.bottomAttempts++;
         this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
+        hilog.info(DOMAIN, TAG, '[bottom] edge attempt=%{public}d visible=%{public}d-%{public}d',
+            this.bottomAttempts, this.visibleStartIndex, this.visibleEndIndex);
         this.scroller.scrollEdge(Edge.Bottom);
         const attempt: number = this.bottomAttempts;
 
@@ -1717,6 +1753,7 @@ export struct MainChat {
                 // 胶囊滚动窗口：截取正文末尾 5 字更新灵动岛胶囊（仅退后台活跃时生效）
                 LiveViewController.shared.updateContent(assistant.content);
             }
+
         };
 
         const scheduleDeltaFlush = (): void => {
@@ -1860,6 +1897,13 @@ export struct MainChat {
         this.pendingScrollEnd = end;
         this.pendingScrollCenter = center;
 
+        // 手势/惯性滚动期间不需要再把普通索引处理推到下一帧：
+        // 当前调用只更新可见范围、分页计数和待提交反馈，不触发页面状态写入。
+        if (this.scrollGestureActive) {
+            this.applyScrollIndex(start, end, center);
+            return;
+        }
+
         if (this.scrollIndexFramePending) {
             return;
         }
@@ -1871,52 +1915,142 @@ export struct MainChat {
         }));
     }
 
-    // 诊断探针：打印列表当前可见的单元键（每秒最多一次）。完成即删
-    private dumpVisibleKeys(start: number, end: number): void {
-        const now: number = Date.now();
-
-        if (now - this.lastVisibleDumpAt < 1000) {
-            return;
-        }
-
-        this.lastVisibleDumpAt = now;
-
-        const snap: ChatRenderItem[] = this.itemSource.snapshot();
-        const keys: string[] = [];
-
-        for (let i: number = start; i <= end && i < snap.length; i++) {
-            let t: string = snap[i].renderText().split('\n').join(' ');
-
-            if (t.length > 12) {
-                t = t.substring(0, 12);
-            }
-
-            keys.push(i + '=' + snap[i].key() + '"' + t + '"');
-        }
-
-        hilog.info(DOMAIN, TAG, '[vis] n=%{public}d start=%{public}d end=%{public}d %{public}s',
-            snap.length, start, end, keys.join(' '));
+    // 清空一次手势的滚动来源样本。样本只在手势开始时分配，滚动帧内只改固定数组槽位。
+    private resetScrollTrace(): void {
+        this.scrollTraceWillOffsets = [];
+        this.scrollTraceWillStates = [];
+        this.scrollTraceWillSources = [];
+        this.scrollTraceWillWrite = 0;
+        this.scrollTraceWillCount = 0;
+        this.scrollTraceDidOffsets = [];
+        this.scrollTraceDidStates = [];
+        this.scrollTraceDidWrite = 0;
+        this.scrollTraceDidCount = 0;
+        this.scrollTraceDidPrevious = 0;
+        this.scrollTraceDidPrimed = false;
+        this.scrollTraceDidMaxJerk = 0;
     }
 
-    // 应用一帧内最后一次滚动索引：底部按钮看 end，轮次指示器看 center（查表 O(1)）。
-    // 两个 @State 都只在值真正变化时才写
+    // 记录引擎本帧准备执行的位移和来源；不会返回 ScrollResult，也不改变滚动行为。
+    private recordScrollWill(offset: number, state: ScrollState, source: ScrollSource): void {
+        const slot: number = this.scrollTraceWillWrite;
+        this.scrollTraceWillOffsets[slot] = offset;
+        this.scrollTraceWillStates[slot] = state;
+        this.scrollTraceWillSources[slot] = source;
+        this.scrollTraceWillWrite = (slot + 1) % SCROLL_SOURCE_TRACE_CAP;
+
+        if (this.scrollTraceWillCount < SCROLL_SOURCE_TRACE_CAP) {
+            this.scrollTraceWillCount++;
+        }
+    }
+
+    // 记录引擎本帧实际执行的位移；相邻位移差用于确认是否出现单帧异常 offset。
+    private recordScrollDid(offset: number, state: ScrollState): void {
+        const slot: number = this.scrollTraceDidWrite;
+        this.scrollTraceDidOffsets[slot] = offset;
+        this.scrollTraceDidStates[slot] = state;
+        this.scrollTraceDidWrite = (slot + 1) % SCROLL_SOURCE_TRACE_CAP;
+
+        if (this.scrollTraceDidCount < SCROLL_SOURCE_TRACE_CAP) {
+            this.scrollTraceDidCount++;
+        }
+
+        if (this.scrollTraceDidPrimed) {
+            const jerk: number = Math.abs(offset - this.scrollTraceDidPrevious);
+
+            if (jerk > this.scrollTraceDidMaxJerk) {
+                this.scrollTraceDidMaxJerk = jerk;
+            }
+        }
+
+        this.scrollTraceDidPrevious = offset;
+        this.scrollTraceDidPrimed = true;
+    }
+
+    // 使用固定顺序还原环形缓冲，输出 source/delta/state，方便把异常帧和具体来源对齐。
+    private scrollSourceName(source: ScrollSource): string {
+        switch (source) {
+            case ScrollSource.DRAG:
+                return 'drag';
+            case ScrollSource.FLING:
+                return 'fling';
+            case ScrollSource.EDGE_EFFECT:
+                return 'edge';
+            case ScrollSource.OTHER_USER_INPUT:
+                return 'input';
+            case ScrollSource.SCROLL_BAR:
+                return 'bar';
+            case ScrollSource.SCROLL_BAR_FLING:
+                return 'bar-fling';
+            case ScrollSource.SCROLLER:
+                return 'scroller';
+            case ScrollSource.SCROLLER_ANIMATION:
+                return 'scroller-animation';
+            default:
+                return 'source-' + source;
+        }
+    }
+
+    private scrollTraceWillText(): string {
+        const values: string[] = [];
+        const first: number = this.scrollTraceWillCount >= SCROLL_SOURCE_TRACE_CAP
+            ? this.scrollTraceWillWrite : 0;
+
+        for (let i: number = 0; i < this.scrollTraceWillCount; i++) {
+            const slot: number = (first + i) % SCROLL_SOURCE_TRACE_CAP;
+            values.push(this.scrollSourceName(this.scrollTraceWillSources[slot])
+                + '/' + Math.round(this.scrollTraceWillOffsets[slot])
+                + '/' + this.scrollTraceWillStates[slot]);
+        }
+
+        return values.join(',');
+    }
+
+    private scrollTraceDidText(): string {
+        const values: string[] = [];
+        const first: number = this.scrollTraceDidCount >= SCROLL_SOURCE_TRACE_CAP
+            ? this.scrollTraceDidWrite : 0;
+
+        for (let i: number = 0; i < this.scrollTraceDidCount; i++) {
+            const slot: number = (first + i) % SCROLL_SOURCE_TRACE_CAP;
+            values.push(Math.round(this.scrollTraceDidOffsets[slot])
+                + '/' + this.scrollTraceDidStates[slot]);
+        }
+
+        return values.join(',');
+    }
+
+    // 一次滚动结束只输出一条诊断日志：will 证明谁要求了 offset，did 证明实际是否出现异常位移。
+    private reportScrollTrace(): void {
+        hilog.info(DOMAIN, TAG,
+            '[scrollsrc] will=%{public}d did=%{public}d maxJerk=%{public}d visible=%{public}d-%{public}d willSeq=%{public}s didSeq=%{public}s',
+            this.scrollTraceWillCount, this.scrollTraceDidCount, Math.round(this.scrollTraceDidMaxJerk),
+            this.visibleStartIndex, this.visibleEndIndex, this.scrollTraceWillText(), this.scrollTraceDidText());
+        this.resetScrollTrace();
+    }
+
+    // 应用滚动索引：底部按钮看 end，轮次指示器看 center（查表 O(1)）。
+    // 手势期间只暂存覆盖层结果，避免滚动反馈和 List 在同一帧竞争布局/绘制。
     private applyScrollIndex(start: number, end: number, center: number): void {
-        const startedAt: number = Date.now();
         this.visibleStartIndex = start;
         this.visibleEndIndex = end;
-        this.dumpVisibleKeys(start, end);
 
         const nextShowScrollBottom: boolean = end < this.itemSource.totalCount() - 1;
 
-        if (this.showScrollBottom !== nextShowScrollBottom) {
-            this.showScrollBottom = nextShowScrollBottom;
+        if (this.scrollGestureActive) {
+            this.pendingOverlayShowBottom = nextShowScrollBottom;
+        } else if (this.scrollOverlayState.showScrollBottom !== nextShowScrollBottom) {
+            this.scrollOverlayState.showScrollBottom = nextShowScrollBottom;
         }
 
         if (center >= 0 && center < this.turnIndexByItem.length) {
             const nextActiveTurn: number = this.turnIndexByItem[center];
 
-            if (this.activeTurnIndex !== nextActiveTurn) {
-                this.activeTurnIndex = nextActiveTurn;
+            if (this.scrollGestureActive) {
+                this.pendingOverlayActiveTurn = nextActiveTurn;
+                this.pendingOverlayActiveValid = true;
+            } else if (this.scrollOverlayState.activeTurnIndex !== nextActiveTurn) {
+                this.scrollOverlayState.activeTurnIndex = nextActiveTurn;
                 hilog.info(DOMAIN, TAG,
                     '[scroll] active turn=%{public}d center=%{public}d start=%{public}d end=%{public}d',
                     nextActiveTurn, center, start, end);
@@ -1939,11 +2073,23 @@ export struct MainChat {
             this.loadMoreMessages();
         }
 
-        const cost: number = Date.now() - startedAt;
+    }
 
-        if (cost > this.maxScrollIndexCost) {
-            this.maxScrollIndexCost = cost;
+    // 在滚动停止后一次性提交按钮和轮次指示器状态，避免它们参与滚动中的逐帧更新。
+    private commitScrollOverlay(): void {
+        if (this.scrollOverlayState.showScrollBottom !== this.pendingOverlayShowBottom) {
+            this.scrollOverlayState.showScrollBottom = this.pendingOverlayShowBottom;
         }
+
+        if (this.pendingOverlayActiveValid
+            && this.scrollOverlayState.activeTurnIndex !== this.pendingOverlayActiveTurn) {
+            this.scrollOverlayState.activeTurnIndex = this.pendingOverlayActiveTurn;
+            hilog.info(DOMAIN, TAG,
+                '[scroll] active turn=%{public}d center=stop start=%{public}d end=%{public}d',
+                this.pendingOverlayActiveTurn, this.visibleStartIndex, this.visibleEndIndex);
+        }
+
+        this.pendingOverlayActiveValid = false;
     }
 
     // 帧间隔探针：滑动期间只累加，不在帧内打印（日志本身会成为滚动开销）。
@@ -1999,185 +2145,10 @@ export struct MainChat {
         }
     }
 
-    private probeScrollFrame(offset: number): void {
-        const now: number = Date.now();
-        const gap: number = this.lastScrollFrameAt > 0 ? now - this.lastScrollFrameAt : 0;
-
-        if (gap > 0) {
-            if (this.frameGaps.length >= SCROLL_GAP_SAMPLE_CAP) {
-                this.frameGaps.shift();
-            }
-
-            this.frameGaps.push(gap);
-        }
-
-        this.lastScrollFrameAt = now;
-        // 本帧要求位移：交给 probeScrollOffset 算补偿量。
-        // 累加而非覆盖 —— 同一帧内该回调可能触发多次
-        this.pendingIntendedOffset += offset;
-        this.intendedFrameSeen = true;
-    }
-
-    // 位置跳变探针：本帧实际位移 - 本帧要求位移 = 引擎为修正行高估算注入的补偿量，
-    // 也就是手指底下感觉到的「跳变」。索引级 telemetry 看不见它 ——
-    // center 单调推进时，内容照样能在视口内整体瞬移。
-    // jerk（本帧位移 - 上帧位移）另记一路：它衡量位移本身忽快忽慢，与引擎修正无关
-    private probeScrollOffset(offset: number, state: ScrollState): void {
-        const applied: number = offset;
-        const intended: number = this.pendingIntendedOffset;
-        const hasIntended: boolean = this.intendedFrameSeen;
-        const jerk: number = this.scrollOffsetPrimed ? applied - this.lastFrameDelta : 0;
-
-        this.pendingIntendedOffset = 0;
-        this.intendedFrameSeen = false;
-        this.lastFrameDelta = applied;
-
-        if (!this.scrollOffsetPrimed) {
-            this.scrollOffsetPrimed = true;
-            return;
-        }
-
-        this.jumpFrames++;
-
-        if (Math.abs(jerk) > this.jerkMaxAbs) {
-            this.jerkMaxAbs = Math.abs(jerk);
-        }
-
-        if (Math.abs(jerk) >= JUMP_MIN_VP) {
-            this.jerkTotal++;
-        }
-
-        if (!hasIntended) {
-            return;
-        }
-
-        const correction: number = applied - intended;
-
-        if (Math.abs(correction) < JUMP_MIN_VP) {
-            return;
-        }
-
-        this.jumpTotal++;
-
-        if (Math.abs(correction) > this.jumpMaxAbs) {
-            this.jumpMaxAbs = Math.abs(correction);
-        }
-
-        const now: number = Date.now();
-
-        if (now - this.lastJumpLogAt < JUMP_LOG_INTERVAL) {
-            return;
-        }
-
-        this.lastJumpLogAt = now;
-
-        // prog=1 表示此刻有程序滚动在途（贴底收敛循环），它的位移本就没有手势对应，属预期噪声
-        hilog.info(DOMAIN, TAG,
-            '[scroll] jump corr=%{public}d applied=%{public}d intended=%{public}d jerk=%{public}d state=%{public}d vis=%{public}d-%{public}d prog=%{public}d',
-            Math.round(correction), Math.round(applied), Math.round(intended),
-            Math.round(jerk), state, this.visibleStartIndex, this.visibleEndIndex,
-            this.bottomLoopActive ? 1 : 0);
-    }
-
-    // 跳变汇总：frames 为样本数，用于确认 onDidScroll 真的在回调（为 0 说明跨平台未实现）
-    private reportJumpStats(): void {
-        if (this.jumpFrames === 0) {
-            return;
-        }
-
-        hilog.info(DOMAIN, TAG,
-            '[scroll] jumpstat frames=%{public}d jumps=%{public}d maxAbs=%{public}d vjit=%{public}d vjitMax=%{public}d',
-            this.jumpFrames, this.jumpTotal, Math.round(this.jumpMaxAbs),
-            this.jerkTotal, Math.round(this.jerkMaxAbs));
-
-        this.jumpFrames = 0;
-        this.jumpTotal = 0;
-        this.jumpMaxAbs = 0;
-        this.jerkTotal = 0;
-        this.jerkMaxAbs = 0;
-    }
-
-    // 手势结束汇总帧间隔分布。判读方式：
-    // p50 ≈ 8ms（120Hz）或 ≈17ms（60Hz）说明帧率本身是够的，掉帧只是分布尾部的少量顿挫；
-    // p50 明显高于该值才是真的帧率不足。gt* 是各档累计条数，用于区分「偶发长帧」与「普遍偏慢」
-    private reportScrollStats(): void {
-        const samples: number[] = this.frameGaps;
-        this.frameGaps = [];
-
-        if (samples.length < 2) {
-            return;
-        }
-
-        samples.sort((a: number, b: number): number => a - b);
-
-        let sum: number = 0;
-        let gt9: number = 0;
-        let gt13: number = 0;
-        let gt17: number = 0;
-        let gt25: number = 0;
-        let gt40: number = 0;
-
-        for (let i: number = 0; i < samples.length; i++) {
-            const gap: number = samples[i];
-            sum += gap;
-
-            if (gap > 9) {
-                gt9++;
-            }
-
-            if (gap > 13) {
-                gt13++;
-            }
-
-            if (gap > 17) {
-                gt17++;
-            }
-
-            if (gap > 25) {
-                gt25++;
-            }
-
-            if (gap > 40) {
-                gt40++;
-            }
-        }
-
-        hilog.info(DOMAIN, TAG,
-            '[scroll] stat n=%{public}d avg=%{public}d p50=%{public}d p95=%{public}d max=%{public}d gt9=%{public}d gt13=%{public}d gt17=%{public}d gt25=%{public}d gt40=%{public}d',
-            samples.length,
-            Math.round(sum / samples.length),
-            samples[Math.floor(samples.length / 2)],
-            samples[Math.floor(samples.length * 95 / 100)],
-            samples[samples.length - 1],
-            gt9, gt13, gt17, gt25, gt40);
-
-        const rowCost: string = ChatItemBuilder.takeRowCost();
-
-        if (rowCost.length > 0) {
-            hilog.info(DOMAIN, TAG, '[row] cost %{public}s', rowCost);
-        }
-    }
-
-    // 当前可见行的正文长度之和：作为该帧渲染子树规模的代理指标（长回答 = 每帧成本高）
-    private visibleContentChars(): number {
-        const items: ChatRenderItem[] = this.itemSource.snapshot();
-        let total: number = 0;
-
-        for (let i: number = this.visibleStartIndex; i <= this.visibleEndIndex && i < items.length; i++) {
-            const item: ChatRenderItem = items[i];
-
-            if (item.firstOfMessage) {
-                total += item.message.content.length;
-            }
-        }
-
-        return total;
-    }
-
     // 把同一帧内到达的多个正文增量合并为一次贴底，避免滚动控制 API 与手势连续竞争。
     // 用户已接管滚动（或已离开底部）时直接放弃跟手，绝不把视口拽回末条
     private scheduleStreamFollowToBottom(): void {
-        if (this.streamUserScrolled || this.showScrollBottom || this.streamFollowPending) {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom || this.streamFollowPending) {
             return;
         }
 
@@ -2185,7 +2156,7 @@ export struct MainChat {
         this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
             this.streamFollowPending = false;
 
-            if (!this.streamUserScrolled && !this.showScrollBottom && this.messages.length > 0) {
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom && this.messages.length > 0) {
                 this.scrollToEnd('stream-follow');
             }
         }));
@@ -2194,12 +2165,12 @@ export struct MainChat {
     // 独立区块（工具结果卡 / 选择题卡 / 图片画廊）贴底：这些块挂载当帧 List 还没为它排版，
     // 同步滚动会停在旧底部。推迟一帧，等真实高度参与排版后再滚
     private scrollToEndAfterLayout(): void {
-        if (this.streamUserScrolled || this.showScrollBottom) {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom) {
             return;
         }
 
         this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
-            if (!this.streamUserScrolled && !this.showScrollBottom) {
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom) {
                 this.scrollToEnd('after-layout');
             }
         }));

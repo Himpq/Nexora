@@ -21,6 +21,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "ArkTS compile failed with exit code $LASTEXITCODE"
 }
 
+# ace_tools/Gradle keeps a stale release asset directory after CompileArkTS.
+# Remove only this generated release staging directory so the APK contains the
+# modules.abc produced by the compile above instead of an older chat bundle.
+$releaseAssetsPath = "F:\Code\AI\ChatDB\NexoraApp_Android\.arkui-x\android\app\build\intermediates\assets\release"
+if (Test-Path -LiteralPath $releaseAssetsPath) {
+    Remove-Item -LiteralPath $releaseAssetsPath -Recurse -Force
+}
+
 node "G:\Temp\Huawei\SDK\ArkUI_X_SDK\26.0.0\arkui-x\toolchains\ace_tools\lib\ace_tools.js" build apk --release
 
 if ($LASTEXITCODE -ne 0) {

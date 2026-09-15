@@ -1,0 +1,189 @@
+// RemoteImageCache.ets - 需登录图片的本地缓存
+// 附件下载接口 /api/files/download 要求登录态：ArkUI Image 组件直接加载网络 URL
+// 不会携带会话 Cookie，必然 401。统一经 HttpUtil(自动带 Cookie、跳过自签证书) 下载
+// 二进制并落本地缓存，再由 Image 以 file:// 加载；同一 URL 的并发请求合并为一次下载
+
+import common from '@ohos.app.ability.common';
+import fs from '@ohos.file.fs';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { HttpUtil } from './HttpUtil';
+
+const DOMAIN: number = 0x0001;
+const TAG: string = 'NexoraImageCache';
+
+// 缓存目录名（位于应用 cacheDir 下，系统可随时回收，不做持久化保证）
+const CACHE_DIR_NAME: string = 'attachments';
+
+export class RemoteImageCache {
+    static readonly shared: RemoteImageCache = new RemoteImageCache();
+
+    private context: common.UIAbilityContext | null = null;
+    // url → 本地 file:// 路径（已下载完成的）
+    private resolved: Map<string, string> = new Map<string, string>();
+    // url → 进行中的下载 Promise（并发去重）
+    private inflight: Map<string, Promise<string>> = new Map<string, Promise<string>>();
+
+    // 宿主启动时注入 UIAbilityContext（AppState.restore 调用）
+    attach(context: common.UIAbilityContext): void {
+        this.context = context;
+    }
+
+    // 把服务端下载路径解析为本地可加载路径：命中缓存直接返回，否则下载后落缓存。
+    // 失败返回空串，由调用方展示失败占位
+    async resolve(source: string): Promise<string> {
+        const raw: string = source.trim();
+
+        if (raw.startsWith('data:')) {
+            const route: string = HttpUtil.pathForLog(raw);
+            const asset: string = RemoteImageCache.hashKey(raw);
+
+            if (!raw.startsWith('data:image/')) {
+                hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=unsupported data type', asset, route);
+                return '';
+            }
+
+            hilog.info(DOMAIN, TAG, 'resolve direct asset=%{public}s route=%{public}s', asset, route);
+            return raw;
+        }
+
+        const url: string = this.toAbsoluteUrl(source);
+        const route: string = HttpUtil.pathForLog(url.length > 0 ? url : source);
+        const asset: string = url.length > 0 ? RemoteImageCache.hashKey(url) : 'none';
+
+        if (url.length === 0) {
+            hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=empty url', asset, route);
+            return '';
+        }
+
+        if (this.context === null) {
+            hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=no context', asset, route);
+            return '';
+        }
+
+        const cached: string | undefined = this.resolved.get(url);
+
+        if (cached !== undefined) {
+            hilog.info(DOMAIN, TAG, 'cache hit asset=%{public}s route=%{public}s', asset, route);
+            return cached;
+        }
+
+        const running: Promise<string> | undefined = this.inflight.get(url);
+
+        if (running !== undefined) {
+            hilog.info(DOMAIN, TAG, 'join inflight asset=%{public}s route=%{public}s', asset, route);
+            return running;
+        }
+
+        hilog.info(DOMAIN, TAG, 'resolve start asset=%{public}s route=%{public}s', asset, route);
+        const startedAt: number = Date.now();
+        const task: Promise<string> = this.download(url);
+        this.inflight.set(url, task);
+
+        try {
+            const local: string = await task;
+
+            if (local.length > 0) {
+                this.resolved.set(url, local);
+                hilog.info(DOMAIN, TAG, 'resolve success asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                    asset, route, Date.now() - startedAt);
+            } else {
+                hilog.warn(DOMAIN, TAG, 'resolve failed asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                    asset, route, Date.now() - startedAt);
+            }
+
+            return local;
+        } finally {
+            this.inflight.delete(url);
+            hilog.info(DOMAIN, TAG, 'resolve end asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                asset, route, Date.now() - startedAt);
+        }
+    }
+
+    // 相对路径补齐后端地址；绝对 URL 原样使用
+    private toAbsoluteUrl(source: string): string {
+        const raw: string = source.trim();
+
+        if (raw.length === 0) {
+            return '';
+        }
+
+        if (raw.startsWith('http://') || raw.startsWith('https://')) {
+            return raw;
+        }
+
+        const base: string = HttpUtil.getBackendUrl();
+
+        if (base.length === 0) {
+            return '';
+        }
+
+        return raw.startsWith('/') ? base + raw : base + '/' + raw;
+    }
+
+    private async download(url: string): Promise<string> {
+        const asset: string = RemoteImageCache.hashKey(url);
+        const route: string = HttpUtil.pathForLog(url);
+        const startedAt: number = Date.now();
+        hilog.info(DOMAIN, TAG, 'download start asset=%{public}s route=%{public}s', asset, route);
+        const buffer: ArrayBuffer | null = await HttpUtil.downloadBinary(url);
+
+        if (buffer === null || buffer.byteLength === 0) {
+            hilog.warn(DOMAIN, TAG, 'download empty asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                asset, route, Date.now() - startedAt);
+            return '';
+        }
+
+        try {
+            const dir: string = (this.context as common.UIAbilityContext).cacheDir + '/' + CACHE_DIR_NAME;
+
+            if (!fs.accessSync(dir)) {
+                fs.mkdirSync(dir);
+            }
+
+            const filePath: string = dir + '/' + RemoteImageCache.hashKey(url) + RemoteImageCache.extensionOf(url);
+            const file: fs.File = fs.openSync(filePath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+            fs.writeSync(file.fd, buffer);
+            fs.closeSync(file);
+
+            hilog.info(DOMAIN, TAG, 'download cached asset=%{public}s route=%{public}s bytes=%{public}d elapsedMs=%{public}d',
+                asset, route, buffer.byteLength, Date.now() - startedAt);
+            return 'file://' + filePath;
+        } catch (err) {
+            hilog.error(DOMAIN, TAG, 'cache write failed asset=%{public}s route=%{public}s error=%{public}s elapsedMs=%{public}d',
+                asset, route, JSON.stringify(err), Date.now() - startedAt);
+            return '';
+        }
+    }
+
+    // 下载地址的文件扩展名（file_ref 在查询串里，取解码后的首个图片扩展名；未知按 .img）
+    private static extensionOf(url: string): string {
+        let decoded: string = url;
+
+        try {
+            decoded = decodeURIComponent(url).toLowerCase();
+        } catch (err) {
+            decoded = url.toLowerCase();
+        }
+
+        const extensions: string[] = ['.jpeg', '.jpg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+
+        for (let i: number = 0; i < extensions.length; i++) {
+            if (decoded.indexOf(extensions[i]) >= 0) {
+                return extensions[i];
+            }
+        }
+
+        return '.img';
+    }
+
+    // 简单字符串哈希（djb2）：缓存文件名稳定且不暴露原始路径
+    private static hashKey(url: string): string {
+        let hash: number = 5381;
+
+        for (let i: number = 0; i < url.length; i++) {
+            hash = ((hash << 5) + hash + url.charCodeAt(i)) >>> 0;
+        }
+
+        return hash.toString(36);
+    }
+}

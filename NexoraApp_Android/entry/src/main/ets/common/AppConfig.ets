@@ -12,8 +12,15 @@ export class StorageKey {
     static readonly enableThinking: string = 'enable_thinking';
     static readonly enableWebSearch: string = 'enable_web_search';
     static readonly forceTools: string = 'force_tools';
+    static readonly notesPrefix: string = 'notes_';
     // question 回答锁：JSON 字典 { "conversationId::cardId": "answer" }，与 Web localStorage 同构
     static readonly questionLocks: string = 'question_locks';
+    // 阅读器偏好：字号（数字字符串）/ 行距档（0 紧凑 / 1 适中 / 2 疏松）/ 主题（day/night/sepia）
+    static readonly readerFontSize: string = 'reader_font_size';
+    static readonly readerLineSpacing: string = 'reader_line_spacing';
+    static readonly readerTheme: string = 'reader_theme';
+    // 各书上次阅读章节：JSON 字典 { bookId: chapterIndex }
+    static readonly readerPositions: string = 'reader_positions';
 }
 
 // ---------- 领域模型 ----------
@@ -102,6 +109,32 @@ export interface MailDetail {
     time: string;
     content: string;
     contentHtml: string;
+}
+
+// 随笔条目：只保存正文与更新时间，标题和日期分组由界面从正文与时间派生
+export interface NoteItem {
+    id: string;
+    content: string;
+    updatedAt: number;
+    notebookId: string;
+    source: string;
+    sourceTitle: string;
+    anchor: Record<string, Object> | null;
+}
+
+// 后端笔记本元数据：第一版 UI 不展示切换器，但保存时必须原样保留
+export interface NoteNotebook {
+    id: string;
+    name: string;
+    ts: number;
+}
+
+// /api/notes/store 的完整快照；保存时同时提交 baseStore，由服务端做三方合并
+export interface NotesStore {
+    activeNotebookId: string;
+    notebooks: NoteNotebook[];
+    notes: NoteItem[];
+    updatedAt: number;
 }
 
 // ---------- 展示名清洗 ----------

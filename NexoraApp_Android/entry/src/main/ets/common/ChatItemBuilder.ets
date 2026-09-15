@@ -12,6 +12,7 @@ import { InlinePiece, MarkdownBlock, MarkdownParser, ListItem as MdListItem, Tab
 import { QuestionItem } from './QuestionLocks';
 import { FontSize, Space } from './DesignToken';
 import { ChatItemKind, ChatRenderItem, MarkdownBlockHolder } from './ChatRenderItem';
+import { isExaWebSearchToolName } from './ExaMedia';
 
 // 内容缓存条目：流式增量解析时复用已解析的块，只重新解析最后一个块
 interface ContentCacheEntry {
@@ -299,6 +300,15 @@ export class ChatItemBuilder {
                     const item: ChatRenderItem = new ChatRenderItem(message, ChatItemKind.TOOL_CALL, order++);
                     item.toolCall = call;
                     items.push(item);
+
+                    // Exa 画廊在工具结果到达后才有图片，但它的列表行必须从工具调用出现时就存在。
+                    // 这样后续 Markdown 的 index/key 不会因画廊异步插入而改变，且列表从一开始就为画廊保留高度。
+                    if (isExaWebSearchToolName(call.name)) {
+                        const gallery: ChatRenderItem = new ChatRenderItem(
+                            message, ChatItemKind.TOOL_GALLERY, order++);
+                        gallery.toolCall = call;
+                        items.push(gallery);
+                    }
                 }
 
                 continue;
