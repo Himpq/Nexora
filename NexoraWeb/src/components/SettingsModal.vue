@@ -140,8 +140,8 @@
 <script setup lang="ts">
     import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-    import { apiFetch } from '@/api/client'
     import { fetchMailGroups } from '@/api/admin-mail'
+    import { updateUserProfile } from '@/api/auth'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import Modal from '@/ui/Modal.vue'
@@ -451,7 +451,7 @@
         }
     }
 
-    /** 保存资料(显示名 + 暂存头像;对齐原版 saveUserProfile → PUT /api/user/profile) */
+    /** 保存资料(显示名 + 暂存头像;走统一入口 updateUserProfile + applyProfileUpdate) */
     async function saveProfile(): Promise<void> {
         const name = profileName.value.trim()
 
@@ -460,23 +460,14 @@
         }
 
         try {
-            const data = await apiFetch<{ success: boolean; user?: { username?: string } }>('/api/user/profile', {
-                method: 'PUT',
-                body: JSON.stringify({
-                    display_name: name,
-                    avatar_base64: pendingAvatarBase64.value || null,
-                }),
+            const updated = await updateUserProfile({
+                displayName: name,
+                avatarBase64: pendingAvatarBase64.value || undefined,
             })
 
-            if (data.user?.username) {
-                userStore.user = {
-                    ...userStore.user,
-                    username: data.user.username,
-                } as typeof userStore.user
-            }
+            userStore.applyProfileUpdate(updated)
 
             pendingAvatarBase64.value = ''
-            userStore.refreshAvatar()
             showToast('资料已保存', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '保存失败')
@@ -544,9 +535,9 @@
                 profileName.value = userStore.username
                 pendingAvatarBase64.value = ''
 
-                // 打开时刷新用户信息 + 头像(带版本号防缓存;对齐原版 loadUserSettings)
+                // 打开时刷新用户信息即可;头像 URL 由后端 avatar_updated_at 版本号保证稳定,
+                // 未变更时不会触发侧栏头像与设置页头像重新下载(对齐原版 loadUserSettings)
                 void userStore.init()
-                userStore.refreshAvatar()
             }
         }
     )

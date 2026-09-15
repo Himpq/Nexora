@@ -14,7 +14,7 @@ import { getUserInfo, login as apiLogin, logout as apiLogout, updateUserProfile,
 interface UserState {
     user: UserInfo | null
     initialized: boolean
-    /** 头像 URL(带版本号防缓存);由 refreshAvatar 统一刷新 */
+    /** 头像 URL(取自后端 avatar_url,自带 avatar_updated_at 版本号);由 syncAvatarUrl 统一同步 */
     avatarUrl: string
 }
 
@@ -51,38 +51,43 @@ export const useUserStore = defineStore('user', {
                 this.initialized = true
             }
 
-            this.refreshAvatar()
+            this.syncAvatarUrl()
         },
 
-        /** 刷新头像 URL(基于 user_id + 时间戳版本号,避免浏览器缓存旧头像) */
-        refreshAvatar(): void {
-            const userId = this.userId
+        /**
+         * 同步头像 URL 为后端下发的 avatar_url。
+         *
+         * 后端版本号取 avatar_updated_at(仅头像真正变更时才变),因此:
+         *   - 头像未变更时 URL 稳定,浏览器直接命中缓存,侧栏头像和设置页头像不会重复下载;
+         *   - 严禁再用前端 Date.now() 之类的时间戳拼 URL,那会让每次同步都变成强制全量重新下载。
+         */
+        syncAvatarUrl(): void {
+            this.avatarUrl = String(this.user?.avatar_url || '')
+        },
 
-            if (!userId) {
-                this.avatarUrl = ''
-
+        /** 应用资料更新结果(用户名/头像变更统一入口,避免各调用方重复合并逻辑) */
+        applyProfileUpdate(updated: { username?: string; avatar_url?: string }): void {
+            if (!this.user) {
                 return
             }
 
-            this.avatarUrl = `/api/user/avatar/${encodeURIComponent(userId)}?v=${Date.now()}`
+            this.user = {
+                ...this.user,
+                username: updated.username || this.user.username,
+                avatar_url: updated.avatar_url as string | undefined,
+            }
+
+            this.syncAvatarUrl()
         },
 
-        /** 上传新头像(base64 data URL),成功后刷新用户信息与头像 */
+        /** 上传新头像(base64 data URL),成功后同步用户信息与头像 */
         async uploadAvatar(avatarBase64: string): Promise<void> {
             const updated = await updateUserProfile({
                 displayName: this.username,
                 avatarBase64,
             })
 
-            if (this.user) {
-                this.user = {
-                    ...this.user,
-                    username: updated.username || this.user.username,
-                    avatar_url: updated.avatar_url as string | undefined,
-                }
-            }
-
-            this.refreshAvatar()
+            this.applyProfileUpdate(updated)
         },
 
         /** 登录:成功后刷新用户信息 */
