@@ -20,24 +20,31 @@ export interface LearningBody {
 
 export class LearningHttp {
     private static userName: string = '';
+    private static serviceRoot: string = '';
 
-    // AppState 在登录就绪后注入用户标识
-    static configure(username: string): void {
+    // AppState 在登录就绪后注入用户标识与 Learning 独立服务地址。
+    static configure(username: string, frontendUrl: string = ''): void {
         LearningHttp.userName = username.trim();
+        LearningHttp.serviceRoot = LearningHttp.userName.length > 0
+            ? LearningHttp.normalizeServiceRoot(frontendUrl)
+            : '';
+
+        hilog.info(
+            DOMAIN,
+            TAG,
+            'configured learning user=%{public}s service=%{public}s',
+            LearningHttp.userName.length > 0 ? 'set' : 'empty',
+            LearningHttp.serviceRoot.length > 0 ? LearningHttp.serviceRoot : 'empty'
+        );
     }
 
     static get configured(): boolean {
-        return LearningHttp.userName.length > 0 && HttpUtil.getBackendUrl().length > 0;
+        return LearningHttp.userName.length > 0 && LearningHttp.serviceRoot.length > 0;
     }
 
-    // 服务根地址 = 本应用后端根地址。
-    // 学习内容接口(/api/frontend/*)与应用其余接口同根挂载，本就由后端自己提供。
-    // 早期实现改用运行时下发的 frontend_url 推导服务根，该值可能为空，此时 absolute() 返回
-    // 相对路径：普通 JSON 请求会被 HttpUtil.resolveUrl 悄悄补上后端主机而看不出异常，
-    // 但流式请求(requestInStream)直接吃这个相对路径，curl 判为 URL 非法 → 2300003。
-    // 服务根只认后端地址，杜绝相对地址流到传输层。
+    // Learning 服务独立监听在 5002，不能复用 ChatDB 主站的 443/5000 地址。
     static get serviceBase(): string {
-        return HttpUtil.getBackendUrl();
+        return LearningHttp.serviceRoot;
     }
 
     // 身份头：流式请求（http.requestInStream）绕不开 HttpUtil，需要自行带上同一份头
@@ -53,12 +60,16 @@ export class LearningHttp {
     // ---------- 请求 ----------
     static async getJson(path: string): Promise<LearningBody> {
         const result: HttpResult = await HttpUtil.get(LearningHttp.absolute(path), LearningHttp.headers());
+        hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
+            HttpUtil.pathForLog(path), result.code, result.body.length);
 
         return LearningHttp.readBody(result);
     }
 
     static async postJson(path: string, payload: Object): Promise<LearningBody> {
         const result: HttpResult = await HttpUtil.post(LearningHttp.absolute(path), payload, LearningHttp.headers());
+        hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
+            HttpUtil.pathForLog(path), result.code, result.body.length);
 
         return LearningHttp.readBody(result);
     }
@@ -82,6 +93,8 @@ export class LearningHttp {
         }
 
         const payload: Record<string, Object> | null = Json.parseObject(result.body);
+        hilog.info(DOMAIN, TAG, 'learning body parsed=%{public}s code=%{public}d',
+            payload === null ? 'false' : 'true', result.code);
 
         // 非 2xx 时后端同样会给出结构化错误（如 404「大纲尚未生成」），优先上报它；
         // 否则这些有意义的说明会被统一盖成「请求失败(404)」，调用方无从区分「没生成」与「网络坏了」
@@ -89,15 +102,18 @@ export class LearningHttp {
             const failure: string = LearningHttp.failureMessage(payload);
 
             if (failure.length > 0) {
+                hilog.warn(DOMAIN, TAG, 'learning business failure message=%{public}s', failure);
                 return { ok: false, message: failure, payload: null };
             }
         }
 
         if (!result.ok) {
+            hilog.warn(DOMAIN, TAG, 'learning http failure code=%{public}d', result.code);
             return { ok: false, message: '请求失败(' + result.code + ')', payload: null };
         }
 
         if (payload === null) {
+            hilog.error(DOMAIN, TAG, 'learning body parse failure chars=%{public}d', result.body.length);
             return { ok: false, message: '响应解析失败', payload: null };
         }
 
@@ -169,5 +185,31 @@ export class LearningHttp {
     // 是否满足「非空对象」条件（各域解析器的统一入口守卫）
     static isRecord(raw: Object | null): boolean {
         return raw !== null && typeof raw === 'object' && !Array.isArray(raw);
+    }
+
+    // 将管理端下发的页面地址规范化为 Learning API 服务根地址。
+    // 例如 https://chat.himpqblog.cn:5002/api/frontend/ -> https://chat.himpqblog.cn:5002。
+    private static normalizeServiceRoot(frontendUrl: string): string {
+        let base: string = frontendUrl.trim();
+
+        while (base.length > 0 && base.endsWith('/')) {
+            base = base.substring(0, base.length - 1);
+        }
+
+        const frontendSuffix: string = '/api/frontend';
+
+        if (base.endsWith(frontendSuffix)) {
+            base = base.substring(0, base.length - frontendSuffix.length);
+        }
+
+        while (base.length > 0 && base.endsWith('/')) {
+            base = base.substring(0, base.length - 1);
+        }
+
+        if (!base.startsWith('http://') && !base.startsWith('https://')) {
+            return '';
+        }
+
+        return base;
     }
 }

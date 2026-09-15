@@ -576,19 +576,21 @@ export class AppState {
     }
 
     // ---------- Learning ----------
-    // 拉取 Learning 运行时配置（管理端开关 + 前端工作区页面地址）。
-    // 内容接口自身只需要用户标识：服务根恒为本应用后端（见 LearningHttp）。
+    // 拉取 Learning 运行时配置，并把独立服务地址交给 Learning API 客户端。
     async refreshLearningRuntime(): Promise<void> {
         const result: LearningRuntimeResult = await ApiService.fetchLearningRuntime();
 
         if (!result.success) {
+            this.learningEnabled = false;
+            this.learningFrontendUrl = '';
+            LearningApi.shared.configure(this.username, '');
             hilog.warn(DOMAIN, TAG, 'load learning runtime failed: %{public}s', result.message);
             return;
         }
 
         this.learningEnabled = result.enabled;
         this.learningFrontendUrl = result.frontendUrl;
-        LearningApi.shared.configure(this.username);
+        LearningApi.shared.configure(this.username, result.frontendUrl);
     }
 
     // ---------- 邮件 ----------

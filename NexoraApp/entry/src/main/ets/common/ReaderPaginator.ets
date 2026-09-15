@@ -9,7 +9,11 @@
 //  3. 高度来自真实文本测量（UI 层注入 ReaderMeasureText），不是字数估算，
 //     超长段落按「能放下的最长前缀」二分切分，续段流入下一页。
 
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LearningParagraph } from './LearningApi';
+
+const DOMAIN: number = 0x0001;
+const TAG: string = 'NexoraPaginator';
 
 // 测量回调：返回文本在给定约束宽度下的排版高度（与 ReaderLayout 使用同一长度单位）
 export type ReaderMeasureText = (text: string, fontSize: number, lineHeight: number, width: number) => number;
@@ -119,10 +123,22 @@ export class ReaderPaginator {
         const flow: ReaderPageFlow = new ReaderPageFlow(layout, measure);
 
         for (let i: number = 0; i < paragraphs.length; i++) {
-            flow.push(paragraphs[i]);
+            try {
+                flow.push(paragraphs[i]);
+            } catch (err) {
+                hilog.error(DOMAIN, TAG, 'paginate paragraph failed index=%{public}d kind=%{public}s textChars=%{public}d imageChars=%{public}d error=%{public}s',
+                    i, paragraphs[i].kind, paragraphs[i].text.length, paragraphs[i].imageId.length, JSON.stringify(err));
+                throw new Error(JSON.stringify(err));
+            }
         }
 
-        return flow.finish();
+        try {
+            return flow.finish();
+        } catch (err) {
+            hilog.error(DOMAIN, TAG, 'paginate finish failed paragraphs=%{public}d error=%{public}s',
+                paragraphs.length, JSON.stringify(err));
+            throw new Error(JSON.stringify(err));
+        }
     }
 
     static imageHeight(layout: ReaderLayout): number {

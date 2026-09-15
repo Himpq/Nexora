@@ -4,6 +4,7 @@
 
 import { Json } from './JsonUtil';
 import { LearningBody, LearningHttp } from './LearningHttp';
+import { LearningApi } from './LearningApi';
 
 // 已选课程快照（dashboard.lectures[].lecture）
 export interface LearningDashboardLecture {
@@ -205,7 +206,7 @@ export class LearningHomeApi {
             description: Json.string(lecture, 'description'),
             category: Json.string(lecture, 'category'),
             status: Json.string(lecture, 'status'),
-            coverPath: Json.string(lecture, 'cover_path'),
+            coverPath: LearningApi.shared.assetUrl(Json.string(lecture, 'cover_path')),
             bookCount: Json.number(row, 'books_count'),
             progress: Json.number(lecture, 'progress'),
             currentChapter: Json.string(lecture, 'current_chapter'),

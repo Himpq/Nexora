@@ -8,6 +8,7 @@
 //  3. 读到章末自动续载下一章、读到章首自动补载上一章，阅读不被章节边界打断。
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import MeasureText from '@ohos.measure';
 import { AppState } from '../../common/AppState';
 import {
     LearningApi,
@@ -180,19 +181,26 @@ export struct LearningReader {
     private fetching: number = -1;
     // 上次写入持久化的章号
     private savedChapter: number = -1;
+    private openSequence: number = 0;
 
     // 文本测量：输入按 vp，测量结果按 px 返回，换算回 vp 后参与排版
     private measure: ReaderMeasureText = (text: string, fontSize: number, lineHeight: number, width: number): number => {
-        const size: SizeOptions = this.getUIContext().getMeasureUtils().measureTextSize({
-            textContent: text,
-            fontSize: fontSize,
-            constraintWidth: width,
-            lineHeight: lineHeight,
-        });
-        // 返回值宽度与高度按 px 下发的（字段声明为 Length，实际为 number），换算成 vp 后参与排版
-        const height: Length | undefined = size.height;
+        try {
+            const size: SizeOptions = MeasureText.measureTextSize({
+                textContent: text,
+                fontSize: fontSize,
+                constraintWidth: width,
+                lineHeight: lineHeight,
+            });
+            // 返回值宽度与高度按 px 下发的（字段声明为 Length，实际为 number），换算成 vp 后参与排版
+            const height: Length | undefined = size.height;
 
-        return typeof height === 'number' ? px2vp(height) : 0;
+            return typeof height === 'number' ? px2vp(height) : 0;
+        } catch (err) {
+            hilog.error(DOMAIN, TAG, 'measure failed textChars=%{public}d font=%{public}d lineHeight=%{public}d width=%{public}d error=%{public}s',
+                text.length, fontSize, lineHeight, width, JSON.stringify(err));
+            throw new Error(JSON.stringify(err));
+        }
     };
 
     aboutToAppear(): void {
@@ -280,39 +288,84 @@ export struct LearningReader {
     // ---------- 章节装载 ----------
     // 打开指定章节：清空当前阅读链，以该章为起点重新建链
     private async openChapter(chapterIndex: number): Promise<void> {
+        this.openSequence += 1;
+        const openId: number = this.openSequence;
+        const startedAt: number = Date.now();
         this.opening = true;
         this.errorMessage = '';
         this.contents.clear();
         this.order = [];
 
-        const fetched: ChapterFetch = await this.fetchChapter(chapterIndex);
+        hilog.info(DOMAIN, TAG, 'open start id=%{public}d chapter=%{public}d chapters=%{public}d width=%{public}d height=%{public}d',
+            openId, chapterIndex, this.chapters.length, this.layoutWidth, this.layoutHeight);
 
-        this.opening = false;
+        let fetched: ChapterFetch;
 
-        if (!fetched.ok) {
-            this.errorMessage = fetched.message;
+        try {
+            fetched = await this.fetchChapter(chapterIndex);
+        } catch (err) {
+            this.errorMessage = '章节请求异常，请重试';
+            hilog.error(DOMAIN, TAG, 'open request threw id=%{public}d chapter=%{public}d elapsedMs=%{public}d error=%{public}s',
+                openId, chapterIndex, Date.now() - startedAt, JSON.stringify(err));
+            this.opening = false;
             return;
         }
 
-        this.rebuild(null);
-        this.preloadNext();
+        if (!fetched.ok) {
+            this.errorMessage = fetched.message;
+            hilog.error(DOMAIN, TAG, 'open request failed id=%{public}d chapter=%{public}d message=%{public}s elapsedMs=%{public}d',
+                openId, chapterIndex, fetched.message, Date.now() - startedAt);
+            this.opening = false;
+            return;
+        }
+
+        try {
+            hilog.info(DOMAIN, TAG, 'open layout start id=%{public}d chapter=%{public}d contents=%{public}d',
+                openId, chapterIndex, this.contents.size);
+            this.rebuild(null);
+            this.preloadNext();
+            hilog.info(DOMAIN, TAG, 'open success id=%{public}d chapter=%{public}d pages=%{public}d elapsedMs=%{public}d',
+                openId, chapterIndex, this.pages.length, Date.now() - startedAt);
+        } catch (err) {
+            this.errorMessage = '章节排版异常，请重试';
+            hilog.error(DOMAIN, TAG, 'open layout threw id=%{public}d chapter=%{public}d elapsedMs=%{public}d error=%{public}s',
+                openId, chapterIndex, Date.now() - startedAt, JSON.stringify(err));
+        } finally {
+            this.opening = false;
+        }
     }
 
     private async fetchChapter(chapterIndex: number): Promise<ChapterFetch> {
         if (chapterIndex < 0 || chapterIndex >= this.chapters.length) {
+            hilog.error(DOMAIN, TAG, 'fetch rejected chapter=%{public}d chapters=%{public}d reason=out of range',
+                chapterIndex, this.chapters.length);
             return { ok: false, message: '章节超出范围' };
         }
 
         if (this.contents.has(chapterIndex)) {
+            hilog.info(DOMAIN, TAG, 'fetch cache hit chapter=%{public}d', chapterIndex);
             return { ok: true, message: '' };
         }
 
+        const startedAt: number = Date.now();
+        hilog.info(DOMAIN, TAG, 'fetch chapter index=%{public}d', chapterIndex);
         const result = await LearningApi.shared.getBookChapter(this.lectureId, this.book.id, chapterIndex);
+        hilog.info(DOMAIN, TAG, 'fetch chapter index=%{public}d success=%{public}s content=%{public}s message=%{public}s elapsedMs=%{public}d',
+            chapterIndex, result.success ? 'true' : 'false', result.content === null ? 'null' : 'present', result.message, Date.now() - startedAt);
 
         if (!result.success || result.content === null) {
             return { ok: false, message: result.message };
         }
 
+        let textChars: number = 0;
+
+        for (let i: number = 0; i < result.content.paragraphs.length; i++) {
+            textChars += result.content.paragraphs[i].text.length;
+        }
+
+        hilog.info(DOMAIN, TAG, 'chapter content chapter=%{public}d paragraphs=%{public}d titleChars=%{public}d chars=%{public}d total=%{public}d start=%{public}d',
+            chapterIndex, result.content.paragraphs.length, result.content.chapterTitle.length,
+            textChars, result.content.bookTotalChars, result.content.chapterStart);
         this.contents.set(chapterIndex, result.content);
         this.order.push(chapterIndex);
         this.order.sort((left: number, right: number) => left - right);
@@ -343,6 +396,9 @@ export struct LearningReader {
             }
 
             this.rebuild(this.captureAnchor());
+        }).catch((err: Object) => {
+            this.fetching = -1;
+            hilog.error(DOMAIN, TAG, 'preload next chapter threw chapter=%{public}d error=%{public}s', next, JSON.stringify(err));
         });
     }
 
@@ -369,6 +425,9 @@ export struct LearningReader {
 
             // 锚点按「章 + 段」定位，前置新章后当前页自然后移，读者不会看到跳变
             this.rebuild(this.captureAnchor());
+        }).catch((err: Object) => {
+            this.fetching = -1;
+            hilog.error(DOMAIN, TAG, 'preload previous chapter threw chapter=%{public}d error=%{public}s', previous, JSON.stringify(err));
         });
     }
 
@@ -386,7 +445,13 @@ export struct LearningReader {
     }
 
     private rebuild(anchor: ReaderAnchor | null): void {
+        const startedAt: number = Date.now();
+        hilog.info(DOMAIN, TAG, 'layout rebuild start chapters=%{public}d pages=%{public}d width=%{public}d height=%{public}d',
+            this.order.length, this.pages.length, this.layoutWidth, this.layoutHeight);
+
         if (this.layoutWidth <= 0 || this.layoutHeight <= 0) {
+            hilog.warn(DOMAIN, TAG, 'layout skipped width=%{public}d height=%{public}d order=%{public}d',
+                this.layoutWidth, this.layoutHeight, this.order.length);
             return;
         }
 
@@ -401,16 +466,28 @@ export struct LearningReader {
                 continue;
             }
 
-            const chapterPages: ReaderPage[] = ReaderPaginator.paginate(content.paragraphs, layout, this.measure);
-            const progress: number = content.bookTotalChars <= 0
+            const chapterContent: LearningChapterContent = content;
+            let chapterPages: ReaderPage[];
+
+            try {
+                chapterPages = ReaderPaginator.paginate(chapterContent.paragraphs, layout, this.measure);
+            } catch (err) {
+                hilog.error(DOMAIN, TAG, 'layout paginate failed chapter=%{public}d paragraphs=%{public}d error=%{public}s',
+                    chapterIndex, chapterContent.paragraphs.length, JSON.stringify(err));
+                throw new Error(JSON.stringify(err));
+            }
+
+            hilog.info(DOMAIN, TAG, 'layout chapter done chapter=%{public}d paragraphs=%{public}d pages=%{public}d',
+                chapterIndex, chapterContent.paragraphs.length, chapterPages.length);
+            const progress: number = chapterContent.bookTotalChars <= 0
                 ? 0
-                : content.chapterStart / content.bookTotalChars;
+                : chapterContent.chapterStart / chapterContent.bookTotalChars;
 
             for (let p: number = 0; p < chapterPages.length; p++) {
                 pages.push({
                     key: chapterIndex + '_' + p,
                     chapterIndex: chapterIndex,
-                    chapterTitle: content.chapterTitle,
+                    chapterTitle: chapterContent.chapterTitle,
                     pageInChapter: p + 1,
                     pageCountInChapter: chapterPages.length,
                     bookProgress: progress,
@@ -420,12 +497,29 @@ export struct LearningReader {
         }
 
         this.pages = pages;
-        this.pageSource.replace(pages);
+
+        try {
+            this.pageSource.replace(pages);
+        } catch (err) {
+            hilog.error(DOMAIN, TAG, 'layout source replace failed pages=%{public}d error=%{public}s',
+                pages.length, JSON.stringify(err));
+            throw new Error(JSON.stringify(err));
+        }
 
         const target: number = this.anchorIndex(pages, anchor);
 
         this.currentIndex = target;
-        this.swiper.changeIndex(target, false);
+
+        try {
+            this.swiper.changeIndex(target, false);
+        } catch (err) {
+            hilog.error(DOMAIN, TAG, 'layout swiper change failed target=%{public}d pages=%{public}d error=%{public}s',
+                target, pages.length, JSON.stringify(err));
+            throw new Error(JSON.stringify(err));
+        }
+
+        hilog.info(DOMAIN, TAG, 'layout rebuild end chapters=%{public}d pages=%{public}d width=%{public}d height=%{public}d elapsedMs=%{public}d',
+            this.order.length, pages.length, this.layoutWidth, this.layoutHeight, Date.now() - startedAt);
     }
 
     // 锚点定位：同章内找首个「起始段落不早于锚点」的页；找不到则退回该章最后一页

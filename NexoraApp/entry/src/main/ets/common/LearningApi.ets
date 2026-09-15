@@ -111,9 +111,9 @@ const IMAGE_PLACEHOLDER: RegExp = /\{\{nxl_image:([^:}]+):([^:}]+):([^:}]+):([^}
 export class LearningApi {
     static readonly shared: LearningApi = new LearningApi();
 
-    // 用户标识由 AppState 注入，服务根地址取自应用后端（见 LearningHttp）
-    configure(username: string): void {
-        LearningHttp.configure(username);
+    // 用户标识与 Learning 独立服务地址由 AppState 注入。
+    configure(username: string, frontendUrl: string = ''): void {
+        LearningHttp.configure(username, frontendUrl);
     }
 
     get configured(): boolean {
@@ -281,7 +281,7 @@ export class LearningApi {
             description: Json.string(source, 'description'),
             category: Json.string(source, 'category'),
             status: Json.string(source, 'status'),
-            coverPath: Json.string(source, 'cover_path'),
+            coverPath: LearningApi.shared.assetUrl(Json.string(source, 'cover_path')),
             bookCount: Json.number(source, 'book_count'),
             updatedAt: Json.number(source, 'updated_at'),
         };
@@ -305,7 +305,7 @@ export class LearningApi {
             description: Json.string(source, 'description'),
             textStatus: Json.string(source, 'text_status'),
             textChars: Json.number(source, 'text_chars'),
-            coverPath: Json.string(source, 'cover_path'),
+            coverPath: LearningApi.shared.assetUrl(Json.string(source, 'cover_path')),
             imagesCount: Json.number(source, 'images_count'),
         };
     }

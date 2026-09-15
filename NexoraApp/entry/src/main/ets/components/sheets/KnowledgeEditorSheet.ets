@@ -157,10 +157,7 @@ export struct KnowledgeEditorSheet {
         } else if (this.preview) {
             Scroll() {
                 Column() {
-                    MarkdownView({
-                        source: this.contentDraft,
-                        accentColor: $r('app.color.text_brand')
-                    });
+                    MarkdownView({ source: this.contentDraft });
                 }
                 .width('100%')
                 .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.xl });
