@@ -233,6 +233,28 @@ export async function updateMessageContent(conversationId: string, messageIndex:
     )
 }
 
+/**
+ * question 工具作答登记(POST .../question/resolve):
+ * 服务端把 resolved/answer 回写进会话文件,历史加载时据此锁定作答卡片,
+ * 使回答锁跨设备生效(本地 localStorage 锁仅覆盖当前设备会话内状态)。
+ */
+export async function resolveConversationQuestion(
+    conversationId: string,
+    questionId: string,
+    answer: string,
+): Promise<void> {
+    await apiFetch<{ success: boolean }>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/question/resolve`,
+        {
+            method: 'POST',
+            body: JSON.stringify({
+                question_id: String(questionId || '').trim(),
+                answer: String(answer || '').trim(),
+            }),
+        }
+    )
+}
+
 /** 切换助手消息到指定历史版本(POST /api/switch_version,对齐原版 switchVersion) */
 export async function switchMessageVersion(
     conversationId: string,

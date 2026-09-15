@@ -793,6 +793,14 @@
         return buildQuestionCardId(item.payload)
     }
 
+    /**
+     * 服务端作答登记 ID:会话文件中 question 事件的权威标识是 question_id,
+     * 权限卡的 question_card_id 是随机 uuid(仅用于本地锁与 DOM 定位),不能作为登记键。
+     */
+    function trackedQuestionIdOf(item: QuestionRenderItem): string {
+        return String(item.payload.question_id || '').trim() || questionCardIdOf(item)
+    }
+
     /** 已回答判定:载荷 resolved 标记优先,其次本地锁定存储 */
     function isQuestionAnswered(item: QuestionRenderItem): boolean {
         if (item.payload.resolved === true) {
@@ -834,7 +842,7 @@
 
             questionLockVersion.value += 1
 
-            emit('question-answer', props.message, qid, answer)
+            emit('question-answer', props.message, trackedQuestionIdOf(item), answer)
         } finally {
             questionSubmitting.value[item.sourceIndex] = false
         }

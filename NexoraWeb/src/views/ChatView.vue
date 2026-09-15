@@ -280,7 +280,7 @@
 
     import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
-    import { deleteMessage, forkConversation, switchMessageVersion, updateMessageContent } from '@/api/conversations'
+    import { deleteMessage, forkConversation, resolveConversationQuestion, switchMessageVersion, updateMessageContent } from '@/api/conversations'
     import { chatStream, type ChatStreamChunk, type ChatStreamHandlers } from '@/network/chatStream'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
@@ -1753,7 +1753,7 @@
      * question 卡片作答:回答作为普通用户消息进入会话
      * (上一条助手消息以 await 收尾,模型自然把该消息当作问题的回答继续执行)
      */
-    async function handleQuestionAnswer(_message: ChatMessage, _questionId: string, answer: string): Promise<void> {
+    async function handleQuestionAnswer(_message: ChatMessage, questionId: string, answer: string): Promise<void> {
         const content = String(answer || '').trim()
 
         if (!content) {
@@ -1764,6 +1764,17 @@
             showToast('已有回复生成中,请稍候', 'warning')
 
             return
+        }
+
+        // 服务端作答登记:跨设备回答锁的权威状态,登记失败不阻塞本次回答发送
+        const conversationId = conversationStore.currentId
+
+        if (conversationId && questionId) {
+            try {
+                await resolveConversationQuestion(conversationId, questionId, content)
+            } catch {
+                showToast('回答登记失败,其他设备可能仍可作答该问题', 'warning')
+            }
         }
 
         await doSend(content, {
