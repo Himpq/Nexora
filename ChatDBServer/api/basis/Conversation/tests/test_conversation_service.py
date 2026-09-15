@@ -513,5 +513,85 @@ class TestConcurrency(BaseServiceTest):
         self.assertEqual(raw.get("schema_version"), 4)
 
 
+def _question_trace_event(question_id: str, call_id: str = "call_q1") -> dict:
+    """构造与 model.py 落盘形态一致的 question trace 事件。"""
+    return {
+        "type": "question",
+        "question": {
+            "track_answer": True,
+            "question_id": question_id,
+            "question_title": "选择方案",
+            "question_content": "A 还是 B",
+            "choices": ["A", "B"],
+            "allow_other": True,
+        },
+        "call_id": call_id,
+        "await": True,
+    }
+
+
+class TestQuestionResolve(BaseServiceTest):
+    def _append_question_turn(self, cid: str, question_id: str) -> int:
+        """追加一轮 user + 带 question 事件的 assistant，返回 assistant 索引。"""
+        turn = self.service.begin_user_turn(cid, "请继续")
+        assistant_index = int(turn.get("assistant_index"))
+
+        self.service.finish_assistant_turn(cid, assistant_index, {
+            "content": "",
+            "model": {"name": "m", "provider": "p"},
+            "trace": {
+                "events": [_question_trace_event(question_id)],
+                "tool_calls": [],
+                "tool_results": [],
+                "content_segments": [],
+                "errors": [],
+            },
+        })
+
+        return assistant_index
+
+    def test_resolve_writes_payload_and_persists(self):
+        cid = self.service.create_conversation(title="q1")
+        assistant_index = self._append_question_turn(cid, "call_q1")
+
+        result = self.service.resolve_question(cid, "call_q1", "方案 A")
+
+        self.assertEqual(result.get("message_index"), assistant_index)
+        self.assertFalse(result.get("already_resolved"))
+        self.assertTrue(result.get("question", {}).get("resolved"))
+        self.assertEqual(result.get("question", {}).get("answer"), "方案 A")
+
+        # 落盘后历史加载（v4 权威读取）必须带 resolved/answer，跨端据此锁定卡片
+        data = self.service.get_conversation(cid)
+        event = data["messages"][assistant_index]["trace"]["events"][0]
+        self.assertTrue(event["question"]["resolved"])
+        self.assertEqual(event["question"]["answer"], "方案 A")
+
+    def test_resolve_idempotent_and_latest_match_wins(self):
+        cid = self.service.create_conversation(title="q2")
+        self._append_question_turn(cid, "call_dup")
+        self._append_question_turn(cid, "call_dup")
+
+        self.service.resolve_question(cid, "call_dup", "第一次")
+        result = self.service.resolve_question(cid, "call_dup", "第一次")
+
+        self.assertTrue(result.get("already_resolved"))
+
+        # 最新一条 question 事件被登记，前一条保持未答
+        data = self.service.get_conversation(cid)
+        events = [m for m in data["messages"] if m.get("role") == "assistant"]
+        self.assertFalse(events[0]["trace"]["events"][0]["question"].get("resolved", False))
+        self.assertTrue(events[1]["trace"]["events"][0]["question"]["resolved"])
+
+    def test_resolve_unknown_question_raises(self):
+        from basis.Conversation.errors import ConversationQuestionNotFoundError
+
+        cid = self.service.create_conversation(title="q3")
+        self._append_question_turn(cid, "call_q1")
+
+        with self.assertRaises(ConversationQuestionNotFoundError):
+            self.service.resolve_question(cid, "call_missing", "答案")
+
+
 if __name__ == "__main__":
     unittest.main()

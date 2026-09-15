@@ -21,6 +21,10 @@ class ConversationNotFoundError(ConversationError):
     """会话不存在。"""
 
 
+class ConversationQuestionNotFoundError(ConversationNotFoundError):
+    """回答登记目标 question 事件不存在。"""
+
+
 class ConversationValidationError(ConversationError):
     """参数校验失败。"""
 

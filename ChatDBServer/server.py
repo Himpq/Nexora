@@ -12059,6 +12059,8 @@ import basis.User.admin_routes
 app.register_blueprint(user_bp)
 app.register_blueprint(papi_bp)
 app.register_blueprint(user_papi_keys_bp)
+from basis.Conversation import conversation_bp
+app.register_blueprint(conversation_bp)
 from App.Files import files_bp
 app.register_blueprint(files_bp)
 from App.Workspace import workspace_bp

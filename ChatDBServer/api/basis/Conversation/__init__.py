@@ -15,6 +15,7 @@ from .service import ConversationService
 from .trash import ConversationTrashService
 from .context_reader import ConversationContextReader
 from .repair import recover_conversation_bytes
+from .routes import conversation_bp
 from .asset_store import (
     cleanup_conversation_assets,
     clone_referenced_assets,
@@ -38,6 +39,7 @@ __all__ = [
     "ConversationService",
     "ConversationTrashService",
     "ConversationContextReader",
+    "conversation_bp",
     "recover_conversation_bytes",
     "persist_conversation_image_bytes",
     "asset_store",

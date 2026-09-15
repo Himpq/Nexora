@@ -15,7 +15,12 @@ from typing import Any, Dict, List, Tuple
 
 from App.Utils import sanitize_assistant_visible_content
 
-from .errors import ConversationIndexError, ConversationTargetRoleError, ConversationValidationError
+from .errors import (
+    ConversationIndexError,
+    ConversationQuestionNotFoundError,
+    ConversationTargetRoleError,
+    ConversationValidationError,
+)
 from .schema import normalize_assistant_message, normalize_user_message
 
 
@@ -181,6 +186,66 @@ def resolve_regenerate_target(
             (target.get("model") or {}).get("name") if isinstance(target.get("model"), dict) else ""
         ).strip(),
     }
+
+
+def resolve_question_payload(
+    conversation_data: Dict[str, Any],
+    question_id: str,
+    answer: str,
+) -> Dict[str, Any]:
+    """
+    question 工具作答登记：从最新 assistant 消息向前查找 trace.events 中
+    question_id 匹配的 question 事件，把 resolved/answer 回写进其载荷。
+
+    这是跨端回答锁的权威状态来源：各客户端加载历史时按 payload.resolved
+    锁定作答卡片，不再依赖设备本地存储。重复登记幂等（同一回答覆盖同值）。
+    """
+    clean_id = str(question_id or "").strip()
+    clean_answer = str(answer or "").strip()
+
+    if not clean_id:
+        raise ConversationValidationError("question_id 不能为空")
+
+    if not clean_answer:
+        raise ConversationValidationError("answer 不能为空")
+
+    messages = conversation_data.get("messages", [])
+
+    if not isinstance(messages, list):
+        raise ConversationValidationError("对话内容格式无效")
+
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx] if isinstance(messages[idx], dict) else {}
+
+        if str(msg.get("role") or "").strip() != "assistant":
+            continue
+
+        trace = msg.get("trace") if isinstance(msg.get("trace"), dict) else {}
+        events = trace.get("events") if isinstance(trace.get("events"), list) else []
+
+        for event in reversed(events):
+            if not isinstance(event, dict) or str(event.get("type") or "").strip() != "question":
+                continue
+
+            payload = event.get("question") if isinstance(event.get("question"), dict) else None
+
+            if payload is None or str(payload.get("question_id") or "").strip() != clean_id:
+                continue
+
+            already_resolved = bool(payload.get("resolved"))
+            payload["resolved"] = True
+            payload["answer"] = clean_answer
+
+            return {
+                "message_index": idx,
+                "already_resolved": already_resolved,
+                "question": payload,
+            }
+
+    raise ConversationQuestionNotFoundError(
+        f"未找到匹配的提问: question_id={clean_id}",
+        details={"question_id": clean_id},
+    )
 
 
 def replace_assistant_message(

@@ -598,6 +598,12 @@
       ]
     ],
     [
+      "/api/conversations/<conv_id>/question/resolve",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/conversations/<conv_id>/title",
       [
         "PUT"
