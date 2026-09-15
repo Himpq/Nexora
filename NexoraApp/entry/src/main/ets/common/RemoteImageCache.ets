@@ -31,24 +31,51 @@ export class RemoteImageCache {
     // 把服务端下载路径解析为本地可加载路径：命中缓存直接返回，否则下载后落缓存。
     // 失败返回空串，由调用方展示失败占位
     async resolve(source: string): Promise<string> {
-        const url: string = this.toAbsoluteUrl(source);
+        const raw: string = source.trim();
 
-        if (url.length === 0 || this.context === null) {
+        if (raw.startsWith('data:')) {
+            const route: string = HttpUtil.pathForLog(raw);
+            const asset: string = RemoteImageCache.hashKey(raw);
+
+            if (!raw.startsWith('data:image/')) {
+                hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=unsupported data type', asset, route);
+                return '';
+            }
+
+            hilog.info(DOMAIN, TAG, 'resolve direct asset=%{public}s route=%{public}s', asset, route);
+            return raw;
+        }
+
+        const url: string = this.toAbsoluteUrl(source);
+        const route: string = HttpUtil.pathForLog(url.length > 0 ? url : source);
+        const asset: string = url.length > 0 ? RemoteImageCache.hashKey(url) : 'none';
+
+        if (url.length === 0) {
+            hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=empty url', asset, route);
+            return '';
+        }
+
+        if (this.context === null) {
+            hilog.error(DOMAIN, TAG, 'resolve rejected asset=%{public}s route=%{public}s reason=no context', asset, route);
             return '';
         }
 
         const cached: string | undefined = this.resolved.get(url);
 
         if (cached !== undefined) {
+            hilog.info(DOMAIN, TAG, 'cache hit asset=%{public}s route=%{public}s', asset, route);
             return cached;
         }
 
         const running: Promise<string> | undefined = this.inflight.get(url);
 
         if (running !== undefined) {
+            hilog.info(DOMAIN, TAG, 'join inflight asset=%{public}s route=%{public}s', asset, route);
             return running;
         }
 
+        hilog.info(DOMAIN, TAG, 'resolve start asset=%{public}s route=%{public}s', asset, route);
+        const startedAt: number = Date.now();
         const task: Promise<string> = this.download(url);
         this.inflight.set(url, task);
 
@@ -57,11 +84,18 @@ export class RemoteImageCache {
 
             if (local.length > 0) {
                 this.resolved.set(url, local);
+                hilog.info(DOMAIN, TAG, 'resolve success asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                    asset, route, Date.now() - startedAt);
+            } else {
+                hilog.warn(DOMAIN, TAG, 'resolve failed asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                    asset, route, Date.now() - startedAt);
             }
 
             return local;
         } finally {
             this.inflight.delete(url);
+            hilog.info(DOMAIN, TAG, 'resolve end asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                asset, route, Date.now() - startedAt);
         }
     }
 
@@ -87,10 +121,15 @@ export class RemoteImageCache {
     }
 
     private async download(url: string): Promise<string> {
+        const asset: string = RemoteImageCache.hashKey(url);
+        const route: string = HttpUtil.pathForLog(url);
+        const startedAt: number = Date.now();
+        hilog.info(DOMAIN, TAG, 'download start asset=%{public}s route=%{public}s', asset, route);
         const buffer: ArrayBuffer | null = await HttpUtil.downloadBinary(url);
 
         if (buffer === null || buffer.byteLength === 0) {
-            hilog.warn(DOMAIN, TAG, 'download empty url=%{public}s', url);
+            hilog.warn(DOMAIN, TAG, 'download empty asset=%{public}s route=%{public}s elapsedMs=%{public}d',
+                asset, route, Date.now() - startedAt);
             return '';
         }
 
@@ -106,9 +145,12 @@ export class RemoteImageCache {
             fs.writeSync(file.fd, buffer);
             fs.closeSync(file);
 
+            hilog.info(DOMAIN, TAG, 'download cached asset=%{public}s route=%{public}s bytes=%{public}d elapsedMs=%{public}d',
+                asset, route, buffer.byteLength, Date.now() - startedAt);
             return 'file://' + filePath;
         } catch (err) {
-            hilog.error(DOMAIN, TAG, 'write cache failed: %{public}s', JSON.stringify(err));
+            hilog.error(DOMAIN, TAG, 'cache write failed asset=%{public}s route=%{public}s error=%{public}s elapsedMs=%{public}d',
+                asset, route, JSON.stringify(err), Date.now() - startedAt);
             return '';
         }
     }

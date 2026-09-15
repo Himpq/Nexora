@@ -22,6 +22,7 @@ export struct UserAttachments {
                         source: att.url,
                         frameWidth: this.thumbSize,
                         frameHeight: this.thumbSize,
+                        interpolation: ImageInterpolation.Low,
                         onOpen: (localPath: string) => {
                             this.onOpenImage(localPath);
                         }

@@ -33,6 +33,18 @@ interface LoginRequestBody {
 export class HttpUtil {
     private static backendUrl: string = '';
     private static sessionCookie: string = '';
+    private static requestSequence: number = 0;
+
+    private static nextRequestId(): number {
+        HttpUtil.requestSequence += 1;
+        return HttpUtil.requestSequence;
+    }
+
+    private static describeError(error: Object): string {
+        const serialized: string = JSON.stringify(error);
+
+        return serialized.length > 2 ? serialized : String(error);
+    }
 
     // ---------- 后端地址 ----------
     static setBackendUrl(url: string): void {
@@ -142,90 +154,153 @@ export class HttpUtil {
     // 下载二进制资源（如头像）：自签 https 证书下 Image 组件无法直接加载网络图片，
     // 需通过此处跳过证书校验拉取字节流，由调用方写入本地后再喂给 Image
     static async downloadBinary(url: string): Promise<ArrayBuffer | null> {
-        if (url.length === 0) {
+        const resolvedUrl: string = HttpUtil.resolveUrl(url);
+        const requestId: number = HttpUtil.nextRequestId();
+        const startedAt: number = Date.now();
+        const route: string = HttpUtil.pathForLog(resolvedUrl.length > 0 ? resolvedUrl : url);
+
+        if (resolvedUrl.length === 0) {
+            hilog.error(DOMAIN, TAG, 'binary start id=%{public}d route=%{public}s rejected: empty url', requestId, route);
             return null;
         }
+
+        hilog.info(DOMAIN, TAG, 'binary start id=%{public}d route=%{public}s', requestId, route);
 
         return new Promise<ArrayBuffer | null>((resolve: (value: ArrayBuffer | null) => void) => {
             const request: http.HttpRequest = http.createHttp();
 
-            request.request(url, {
-                method: http.RequestMethod.GET,
-                header: HttpUtil.buildHeaders(),
-                expectDataType: http.HttpDataType.ARRAY_BUFFER,
-                connectTimeout: CONNECT_TIMEOUT,
-                readTimeout: READ_TIMEOUT,
-                remoteValidation: 'skip'
-            }, (err: BusinessError, data: http.HttpResponse) => {
+            try {
+                request.request(resolvedUrl, {
+                    method: http.RequestMethod.GET,
+                    header: HttpUtil.buildHeaders(),
+                    expectDataType: http.HttpDataType.ARRAY_BUFFER,
+                    connectTimeout: CONNECT_TIMEOUT,
+                    readTimeout: READ_TIMEOUT,
+                    remoteValidation: 'skip'
+                }, (err: BusinessError, data: http.HttpResponse) => {
+                    try {
+                        if (err) {
+                            hilog.error(DOMAIN, TAG, 'binary failed id=%{public}d route=%{public}s error=%{public}s',
+                                requestId, route, HttpUtil.describeError(err));
+                            resolve(null);
+                            return;
+                        }
+
+                        if (data.responseCode !== 200) {
+                            hilog.error(DOMAIN, TAG, 'binary status id=%{public}d route=%{public}s code=%{public}d',
+                                requestId, route, data.responseCode);
+                            resolve(null);
+                            return;
+                        }
+
+                        const result: Object = data.result;
+
+                        if (result instanceof ArrayBuffer) {
+                            hilog.info(DOMAIN, TAG, 'binary body id=%{public}d route=%{public}s bytes=%{public}d',
+                                requestId, route, (result as ArrayBuffer).byteLength);
+                            resolve(result);
+                            return;
+                        }
+
+                        if (result instanceof Uint8Array) {
+                            const view: Uint8Array = result as Uint8Array;
+                            const copy: Uint8Array = new Uint8Array(view.byteLength);
+                            copy.set(view);
+                            hilog.info(DOMAIN, TAG, 'binary body converted id=%{public}d route=%{public}s bytes=%{public}d',
+                                requestId, route, copy.byteLength);
+                            resolve(copy.buffer as ArrayBuffer);
+                            return;
+                        }
+
+                        hilog.error(DOMAIN, TAG, 'binary body invalid id=%{public}d route=%{public}s type=%{public}s',
+                            requestId, route, typeof result);
+                        resolve(null);
+                    } catch (callbackErr) {
+                        hilog.error(DOMAIN, TAG, 'binary callback threw id=%{public}d route=%{public}s error=%{public}s',
+                            requestId, route, HttpUtil.describeError(callbackErr));
+                        resolve(null);
+                    } finally {
+                        hilog.info(DOMAIN, TAG, 'binary end id=%{public}d route=%{public}s elapsedMs=%{public}d',
+                            requestId, route, Date.now() - startedAt);
+                        request.destroy();
+                    }
+                });
+            } catch (err) {
                 request.destroy();
-
-                if (err) {
-                    hilog.error(DOMAIN, TAG, 'download %{public}s failed: %{public}s', url, JSON.stringify(err));
-                    resolve(null);
-                    return;
-                }
-
-                if (data.responseCode !== 200) {
-                    hilog.error(DOMAIN, TAG, 'download %{public}s non-200: %{public}d', url, data.responseCode);
-                    resolve(null);
-                    return;
-                }
-
-                const result: Object = data.result;
-
-                if (result instanceof ArrayBuffer) {
-                    hilog.info(DOMAIN, TAG, 'download %{public}s ok, bytes=%{public}d', url, (result as ArrayBuffer).byteLength);
-                    resolve(result);
-                    return;
-                }
-
-                hilog.error(DOMAIN, TAG, 'download %{public}s unexpected result type', url);
+                hilog.error(DOMAIN, TAG, 'binary setup threw id=%{public}d route=%{public}s error=%{public}s elapsedMs=%{public}d',
+                    requestId, route, HttpUtil.describeError(err), Date.now() - startedAt);
                 resolve(null);
-            });
+            }
         });
     }
 
     // ---------- 内部实现 ----------
     private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object, headers?: Record<string, string>): Promise<HttpResult> {
         const url: string = HttpUtil.resolveUrl(pathOrUrl);
+        const requestId: number = HttpUtil.nextRequestId();
+        const startedAt: number = Date.now();
+        const route: string = HttpUtil.pathForLog(url.length > 0 ? url : pathOrUrl);
 
         if (url.length === 0) {
-            hilog.error(DOMAIN, TAG, 'request url is empty, path=%{public}s', pathOrUrl);
+            hilog.error(DOMAIN, TAG, 'request start id=%{public}d method=%{public}s route=%{public}s rejected: empty url',
+                requestId, method, route);
             return { ok: false, code: 0, body: '' };
         }
+
+        hilog.info(DOMAIN, TAG, 'request start id=%{public}d method=%{public}s route=%{public}s',
+            requestId, method, route);
 
         return new Promise<HttpResult>((resolve: (value: HttpResult) => void) => {
             const request: http.HttpRequest = http.createHttp();
 
-            request.request(url, {
-                method: method,
-                header: HttpUtil.buildHeaders(headers),
-                extraData: payload === undefined ? undefined : JSON.stringify(payload),
-                expectDataType: http.HttpDataType.STRING,
-                connectTimeout: CONNECT_TIMEOUT,
-                readTimeout: READ_TIMEOUT,
-                remoteValidation: 'skip'
-            }, (err: BusinessError, data: http.HttpResponse) => {
-                request.destroy();
+            try {
+                request.request(url, {
+                    method: method,
+                    header: HttpUtil.buildHeaders(headers),
+                    extraData: payload === undefined ? undefined : JSON.stringify(payload),
+                    expectDataType: http.HttpDataType.STRING,
+                    connectTimeout: CONNECT_TIMEOUT,
+                    readTimeout: READ_TIMEOUT,
+                    remoteValidation: 'skip'
+                }, (err: BusinessError, data: http.HttpResponse) => {
+                    try {
+                        if (err) {
+                            hilog.error(DOMAIN, TAG, 'request failed id=%{public}d route=%{public}s error=%{public}s',
+                                requestId, route, HttpUtil.describeError(err));
+                            resolve({ ok: false, code: 0, body: '' });
+                            return;
+                        }
 
-                if (err) {
-                    hilog.error(DOMAIN, TAG, 'request %{public}s failed: %{public}s', pathOrUrl, JSON.stringify(err));
-                    resolve({ ok: false, code: 0, body: '' });
-                    return;
-                }
+                        const cookie: string = HttpUtil.extractSessionCookie(data.header);
 
-                const cookie: string = HttpUtil.extractSessionCookie(data.header);
+                        if (cookie.length > 0) {
+                            HttpUtil.sessionCookie = cookie;
+                        }
 
-                if (cookie.length > 0) {
-                    HttpUtil.sessionCookie = cookie;
-                }
-
-                resolve({
-                    ok: data.responseCode === 200,
-                    code: data.responseCode,
-                    body: typeof data.result === 'string' ? data.result as string : ''
+                        const body: string = typeof data.result === 'string' ? data.result as string : '';
+                        hilog.info(DOMAIN, TAG, 'request body id=%{public}d route=%{public}s code=%{public}d chars=%{public}d',
+                            requestId, route, data.responseCode, body.length);
+                        resolve({
+                            ok: data.responseCode === 200,
+                            code: data.responseCode,
+                            body: body
+                        });
+                    } catch (callbackErr) {
+                        hilog.error(DOMAIN, TAG, 'request callback threw id=%{public}d route=%{public}s error=%{public}s',
+                            requestId, route, HttpUtil.describeError(callbackErr));
+                        resolve({ ok: false, code: 0, body: '' });
+                    } finally {
+                        hilog.info(DOMAIN, TAG, 'request end id=%{public}d route=%{public}s elapsedMs=%{public}d',
+                            requestId, route, Date.now() - startedAt);
+                        request.destroy();
+                    }
                 });
-            });
+            } catch (err) {
+                request.destroy();
+                hilog.error(DOMAIN, TAG, 'request setup threw id=%{public}d route=%{public}s error=%{public}s elapsedMs=%{public}d',
+                    requestId, route, HttpUtil.describeError(err), Date.now() - startedAt);
+                resolve({ ok: false, code: 0, body: '' });
+            }
         });
     }
 
@@ -239,6 +314,26 @@ export class HttpUtil {
         }
 
         return HttpUtil.backendUrl + pathOrUrl;
+    }
+
+    // 日志只保留路由，不记录域名、查询参数或会话标识，避免把用户文件引用写进设备日志。
+    static pathForLog(pathOrUrl: string): string {
+        let value: string = pathOrUrl.trim();
+
+        if (value.startsWith('data:')) {
+            const dataStart: number = value.indexOf(',');
+
+            return dataStart >= 0 ? value.substring(0, dataStart) + ',<redacted>' : value.substring(0, 64);
+        }
+
+        if (value.startsWith('http://') || value.startsWith('https://')) {
+            const schemeEnd: number = value.indexOf('://') + 3;
+            const pathStart: number = value.indexOf('/', schemeEnd);
+            value = pathStart >= 0 ? value.substring(pathStart) : '/';
+        }
+
+        const queryStart: number = value.indexOf('?');
+        return queryStart >= 0 ? value.substring(0, queryStart) : value;
     }
 
     private static buildHeaders(extra?: Record<string, string>): Record<string, string> {
