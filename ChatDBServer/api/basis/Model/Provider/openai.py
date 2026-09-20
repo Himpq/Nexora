@@ -1,9 +1,11 @@
 import json
 import re
+import ssl
 from typing import Any, Dict, List, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+import certifi
 from openai import OpenAI
 
 from .base import ProviderInterface
@@ -24,6 +26,10 @@ OPENAI_CONTEXT_WINDOW_MAX = 4_000_000
 
 
 class OpenAIProvider(ProviderInterface):
+    def _build_ssl_context(self):
+        """Build a verified SSL context from the bundled CA certificate set."""
+        return ssl.create_default_context(cafile=certifi.where())
+
     @property
     def api_type(self) -> str:
         return "openai"
@@ -246,7 +252,11 @@ class OpenAIProvider(ProviderInterface):
         )
 
         try:
-            with urllib_request.urlopen(req, timeout=float(timeout or 120.0)) as resp:
+            with urllib_request.urlopen(
+                req,
+                timeout=float(timeout or 120.0),
+                context=self._build_ssl_context(),
+            ) as resp:
                 payload_text = resp.read().decode("utf-8")
         except urllib_error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
@@ -340,7 +350,11 @@ class OpenAIProvider(ProviderInterface):
         )
 
         try:
-            with urllib_request.urlopen(req, timeout=float(timeout or 20.0)) as resp:
+            with urllib_request.urlopen(
+                req,
+                timeout=float(timeout or 20.0),
+                context=self._build_ssl_context(),
+            ) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 payload = json.loads(raw) if raw.strip() else {}
                 return True, payload, ""
