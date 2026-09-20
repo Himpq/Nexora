@@ -515,6 +515,90 @@
     cursor: pointer;
 }
 
+/* GDDP 权限开关:我的 API Key 与认证管理共用同一套卡片/滑轨状态。 */
+.gddp-permission-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.gddp-permission-toggle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 7px;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    box-sizing: border-box;
+    font: inherit;
+    text-align: left;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.gddp-permission-toggle:hover,
+.gddp-permission-toggle:focus-visible {
+    border-color: var(--color-border-strong);
+}
+
+.gddp-permission-toggle.active {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+.gddp-permission-toggle input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.gddp-permission-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+    font-weight: 500;
+}
+
+.gddp-permission-track {
+    position: relative;
+    flex: none;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--color-control-track);
+    transition: background 0.2s ease;
+}
+
+.gddp-permission-toggle.active .gddp-permission-track {
+    background: var(--color-text-primary);
+}
+
+.gddp-permission-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    transition: transform 0.2s ease;
+}
+
+.gddp-permission-toggle.active .gddp-permission-thumb {
+    transform: translateX(14px);
+}
+
 /* 分段切换视觉已并入上方"胶囊分段"统一规则组(settings-mode-toggle 与 setting-segmented 共用) */
 
 /* ==================== 管理面板(左列表 + 右详情,撑满高度) ==================== */
@@ -581,7 +665,26 @@
 }
 
 /* 列表项(div,非 button——对齐原版) */
+.settings-modal-shell .settings-management-item {
+    position: relative;
+}
+
+.settings-modal-shell .settings-management-item.active {
+    background: var(--color-bg-hover);
+    box-shadow: inset 3px 0 0 var(--color-text-primary);
+}
+
+.settings-modal-shell .settings-management-item.active .settings-management-item-icon {
+    background: var(--color-text-primary);
+    color: var(--color-bg-elevated);
+}
+
+.settings-modal-shell .settings-management-item.active .settings-management-item-icon i {
+    color: var(--color-bg-elevated);
+}
+
 .settings-modal-shell .admin-user-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -632,6 +735,91 @@
     flex: none;
     font-size: 11.5px;
     color: var(--color-text-secondary);
+}
+
+.settings-modal-shell .admin-user-list-meta {
+    display: flex;
+    align-items: center;
+    min-height: 16px;
+}
+
+.settings-modal-shell .admin-user-detail-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-modal-shell .admin-user-role-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 1px 7px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.settings-modal-shell .admin-user-role-badge.admin {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+.settings-modal-shell .admin-user-stats-card {
+    margin-top: 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: var(--color-bg-sunken);
+}
+
+.settings-modal-shell .admin-user-stats-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.settings-modal-shell .admin-user-stats-head h4 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--color-text-primary);
+}
+
+.settings-modal-shell .admin-user-stats-status {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+}
+
+.settings-modal-shell .admin-user-stats-status.error,
+.settings-modal-shell .admin-user-stats-loading.error {
+    color: var(--color-danger-text);
+}
+
+.settings-modal-shell .admin-user-stats-loading {
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 7px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+.settings-modal-shell .admin-user-stats-grid {
+    gap: 8px 20px;
+}
+
+.settings-modal-shell .admin-user-stats-grid .admin-info-text {
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    font-weight: 600;
 }
 
 /* 头像(列表):圆形 + 背景裁剪,杜绝 img 溢出 */
@@ -2128,12 +2316,53 @@
 }
 
 .model-perm-row {
-    padding: 8px 14px;
+    padding: 6px 8px;
     border-bottom: 1px solid var(--color-border);
 }
 
 .model-perm-row:last-child {
     border-bottom: none;
+}
+
+.model-perm-toggle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 7px;
+    background: var(--color-bg-sunken);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    box-sizing: border-box;
+}
+
+.model-perm-toggle:hover {
+    border-color: var(--color-border-strong);
+}
+
+.model-perm-toggle.active {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-hover);
+}
+
+.model-perm-toggle input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.model-perm-content {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 4px 8px;
 }
 
 .model-perm-name {
@@ -2143,14 +2372,14 @@
 }
 
 .model-perm-id {
-    margin-left: 8px;
+    margin-left: 0;
     font-size: 11.5px;
     color: var(--color-text-secondary);
 }
 
 .model-perm-badge {
     display: inline-block;
-    margin-left: 8px;
+    margin-left: 0;
     padding: 1px 8px;
     border-radius: 999px;
     font-size: 11px;
@@ -2172,6 +2401,36 @@
 .model-perm-badge.status-disabled {
     background: var(--color-bg-hover);
     color: var(--color-text-secondary);
+}
+
+.model-perm-track {
+    position: relative;
+    flex: none;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--color-control-track);
+    transition: background 0.2s ease;
+}
+
+.model-perm-toggle.active .model-perm-track {
+    background: var(--color-text-primary);
+}
+
+.model-perm-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-bg-elevated);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    transition: transform 0.2s ease;
+}
+
+.model-perm-toggle.active .model-perm-thumb {
+    transform: translateX(14px);
 }
 
 /* ==================== 窄宽响应式规则(手机端两级导航) ==================== */

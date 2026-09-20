@@ -13,23 +13,23 @@
         <!-- 主体:左列表 + 右详情(手机端两级钻取由 CSS 类驱动,与 AdminPanel 一致) -->
         <div class="settings-management-layout" :class="{ 'show-detail': authDetailOpen }">
             <!-- 左列表 -->
-            <div class="settings-management-list auth-key-list" @click="authDetailOpen = true">
+            <div class="settings-management-list" @click="authDetailOpen = true">
                 <div v-if="loading" class="auth-empty">加载中...</div>
                 <div v-else-if="!filteredKeys.length" class="auth-empty">暂无 Public API Key</div>
                 <button
                     v-for="key in filteredKeys"
                     :key="key.id"
-                    class="auth-key-item"
+                    class="admin-user-item settings-management-item"
                     :class="{ active: selectedId === key.id }"
                     type="button"
                     @click="selectKey(key)"
                 >
-                    <span class="auth-key-avatar">
+                    <span class="admin-user-avatar settings-management-item-icon">
                         <i class="fa-solid fa-key" aria-hidden="true"></i>
                     </span>
-                    <span class="auth-key-main">
+                    <span class="admin-user-main">
                         <span class="auth-key-name-row">
-                            <span class="auth-key-name">{{ key.name || key.id }}</span>
+                            <span class="admin-user-name">{{ key.name || key.id }}</span>
                             <span class="auth-scope-text">
                                 {{ key.scope === 'global' ? '全局' : '私有' }}
                             </span>
@@ -122,18 +122,18 @@
                     <!-- 权限开关 -->
                     <div class="auth-card">
                         <div class="auth-card-title">权限配置</div>
-                        <div class="auth-perm-grid">
+                        <div class="gddp-permission-grid">
                             <button
                                 v-for="perm in permissionOptions"
                                 :key="perm.key"
                                 type="button"
-                                class="auth-perm-toggle"
+                                class="gddp-permission-toggle"
                                 :class="{ active: detailPermissions[perm.key] }"
                                 @click="detailPermissions[perm.key] = !detailPermissions[perm.key]"
                             >
-                                <span class="auth-perm-label">{{ perm.label }}</span>
-                                <span class="auth-perm-track">
-                                    <span class="auth-perm-thumb"></span>
+                                <span class="gddp-permission-label">{{ perm.label }}</span>
+                                <span class="gddp-permission-track">
+                                    <span class="gddp-permission-thumb"></span>
                                 </span>
                             </button>
                         </div>
@@ -567,78 +567,10 @@
 
     /* ==================== 列表项(范围文字 + 过期状态) ==================== */
 
-    .auth-key-list {
-        /* 使用框架 .settings-management-list 基础样式 */
-    }
-
-    .auth-key-item {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        width: 100%;
-        padding: 9px 12px;
-        border: none;
-        border-bottom: 1px solid var(--color-border);
-        background: var(--color-bg-elevated);
-        text-align: left;
-        cursor: pointer;
-        box-sizing: border-box;
-        transition: background 0.15s ease;
-    }
-
-    .auth-key-item:hover {
-        background: var(--color-bg-sunken);
-    }
-
-    .auth-key-item.active {
-        background: var(--color-bg-hover);
-    }
-
-    .auth-key-avatar {
-        flex: none;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 34px;
-        height: 34px;
-        border-radius: 50%;
-        background: var(--color-bg-sunken);
-        color: var(--color-text-secondary);
-        font-size: 13px;
-    }
-
-    .auth-key-item.active .auth-key-avatar {
-        background: var(--color-text-primary);
-        color: var(--color-bg-elevated);
-    }
-
-    .auth-key-main {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-    }
-
     .auth-key-name-row {
         display: flex;
         align-items: center;
         gap: 6px;
-    }
-
-    .auth-key-name {
-        flex: 1;
-        min-width: 0;
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--color-text-primary);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .auth-key-item.active .auth-key-name {
-        color: var(--color-text-primary);
     }
 
     /* 范围信息使用普通灰色文字,不再使用 owner/global 彩色胶囊。 */
@@ -773,77 +705,6 @@
         color: var(--color-danger-text);
         background: var(--color-danger-surface);
         border-color: var(--color-danger-border);
-    }
-
-    /* ==================== 权限 toggle 开关 ==================== */
-
-    .auth-perm-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-    }
-
-    .auth-perm-toggle {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 9px 12px;
-        border: 1px solid var(--color-border);
-        border-radius: 7px;
-        background: var(--color-bg-sunken);
-        cursor: pointer;
-        transition: border-color 0.15s ease, background 0.15s ease;
-    }
-
-    .auth-perm-toggle:hover {
-        border-color: var(--color-border);
-    }
-
-    .auth-perm-toggle.active {
-        border-color: var(--color-border-strong);
-        background: var(--color-bg-hover);
-    }
-
-    .auth-perm-label {
-        font-size: 12.5px;
-        color: var(--color-text-secondary);
-        font-weight: 500;
-    }
-
-    .auth-perm-toggle.active .auth-perm-label {
-        color: var(--color-text-primary);
-    }
-
-    /* toggle 滑轨(关态用控制件轨道令牌,随主题生效) */
-    .auth-perm-track {
-        position: relative;
-        flex: none;
-        width: 32px;
-        height: 18px;
-        border-radius: 9px;
-        background: var(--color-control-track);
-        transition: background 0.2s ease;
-    }
-
-    .auth-perm-toggle.active .auth-perm-track {
-        background: var(--color-text-primary);
-    }
-
-    .auth-perm-thumb {
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        background: var(--color-bg-elevated);
-        transition: transform 0.2s ease;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-    }
-
-    .auth-perm-toggle.active .auth-perm-thumb {
-        transform: translateX(14px);
     }
 
     /* ==================== 明文 Key 展示 ==================== */

@@ -15,14 +15,14 @@
                 <div
                     v-for="module in modules"
                     :key="module.key"
-                    class="admin-user-item admin-system-module-item"
+                    class="admin-user-item settings-management-item admin-system-module-item"
                     :class="{ active: activeModule === module.key }"
                     role="button"
                     tabindex="0"
                     @click="selectModule(module.key)"
                     @keydown.enter="selectModule(module.key)"
                 >
-                    <span class="admin-user-avatar admin-system-module-icon"><i :class="module.icon" aria-hidden="true"></i></span>
+                    <span class="admin-user-avatar settings-management-item-icon admin-system-module-icon"><i :class="module.icon" aria-hidden="true"></i></span>
                     <span class="admin-system-module-main">
                         <span class="admin-user-name">{{ module.name }}</span>
                         <span class="admin-user-meta">{{ module.meta }}</span>

@@ -15,12 +15,12 @@
             <button
                 v-for="key in keys"
                 :key="key.id"
-                class="admin-user-item papi-key-list-item"
+                class="admin-user-item settings-management-item papi-key-list-item"
                 :class="{ active: selectedId === key.id }"
                 type="button"
                 @click="selectKey(key.id)"
             >
-                <span class="admin-user-avatar admin-public-api-key-icon"><i class="fa-solid fa-key" aria-hidden="true"></i></span>
+                <span class="admin-user-avatar settings-management-item-icon admin-public-api-key-icon"><i class="fa-solid fa-key" aria-hidden="true"></i></span>
                 <span class="papi-key-list-main">
                     <span class="admin-user-name">{{ key.name || key.id }}</span>
                     <span class="admin-user-meta mono">{{ key.key_preview || '-' }}</span>
@@ -55,10 +55,18 @@
                 </div>
                 <div class="gddp-form-field">
                     <label>权限</label>
-                    <div class="settings-toggle-grid">
-                        <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">
+                    <div class="gddp-permission-grid">
+                        <label
+                            v-for="(label, key) in permissionLabels"
+                            :key="key"
+                            class="gddp-permission-toggle"
+                            :class="{ active: detailPermissions[key] }"
+                        >
                             <input v-model="detailPermissions[key]" type="checkbox">
-                            <span>{{ label }}</span>
+                            <span class="gddp-permission-label">{{ label }}</span>
+                            <span class="gddp-permission-track">
+                                <span class="gddp-permission-thumb"></span>
+                            </span>
                         </label>
                         <span v-if="!Object.keys(permissionLabels).length" class="admin-user-meta">无可用权限</span>
                     </div>
@@ -100,10 +108,18 @@
         </div>
         <div class="gddp-form-field">
             <label>权限</label>
-            <div class="settings-toggle-grid">
-                <label v-for="(label, key) in permissionLabels" :key="key" class="settings-toggle-row">
+            <div class="gddp-permission-grid">
+                <label
+                    v-for="(label, key) in permissionLabels"
+                    :key="key"
+                    class="gddp-permission-toggle"
+                    :class="{ active: createPermissions[key] }"
+                >
                     <input v-model="createPermissions[key]" type="checkbox">
-                    <span>{{ label }}</span>
+                    <span class="gddp-permission-label">{{ label }}</span>
+                    <span class="gddp-permission-track">
+                        <span class="gddp-permission-thumb"></span>
+                    </span>
                 </label>
                 <span v-if="!Object.keys(permissionLabels).length" class="admin-user-meta">无可用权限</span>
             </div>

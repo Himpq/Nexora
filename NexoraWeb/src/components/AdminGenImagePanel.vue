@@ -15,7 +15,7 @@
             <div
                 v-for="api in filteredApis"
                 :key="api.id"
-                class="admin-user-item"
+                class="admin-user-item settings-management-item"
                 :class="{ active: selectedId === api.id }"
                 role="button"
                 tabindex="0"

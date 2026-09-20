@@ -17,7 +17,7 @@
                 <div
                     v-for="provider in filteredProviders"
                     :key="provider"
-                    class="admin-user-item model-provider-item"
+                    class="admin-user-item settings-management-item model-provider-item"
                     :class="{ active: selectedProvider === provider }"
                     data-role="model-provider-item"
                     role="button"
@@ -25,7 +25,7 @@
                     @click="selectProvider(provider)"
                     @keydown.enter="selectProvider(provider)"
                 >
-                    <span class="provider-icon">
+                    <span class="provider-icon settings-management-item-icon">
                         <img v-if="providerIconUrl(provider)" :src="providerIconUrl(provider)" alt="">
                         <template v-else>{{ providerIconFallback(provider) }}</template>
                     </span>

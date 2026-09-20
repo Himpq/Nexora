@@ -15,14 +15,14 @@
             <div
                 v-for="[provider, info] in providerEntries"
                 :key="provider"
-                class="admin-user-item"
+                class="admin-user-item settings-management-item"
                 :class="{ active: selectedProvider === provider }"
                 role="button"
                 tabindex="0"
                 @click="selectedProvider = provider"
                 @keydown.enter="selectedProvider = provider"
             >
-                <span class="provider-icon">
+                <span class="provider-icon settings-management-item-icon">
                     <i :class="providerIcon(provider)" aria-hidden="true"></i>
                 </span>
                 <span class="admin-user-main">

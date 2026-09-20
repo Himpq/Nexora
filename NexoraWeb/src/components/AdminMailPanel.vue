@@ -16,12 +16,12 @@
                 <button
                     v-for="user in filteredUsers"
                     :key="user.username"
-                    class="admin-user-item"
+                    class="admin-user-item settings-management-item"
                     :class="{ active: selectedName === user.username }"
                     type="button"
                     @click="selectUser(user.username)"
                 >
-                    <span class="admin-user-avatar">
+                    <span class="admin-user-avatar settings-management-item-icon">
                         <i class="fa-regular fa-envelope" aria-hidden="true"></i>
                     </span>
                     <span class="admin-user-main">
