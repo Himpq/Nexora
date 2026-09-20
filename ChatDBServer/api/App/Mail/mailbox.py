@@ -56,6 +56,11 @@ def configure_mail_client(get_config_all, publish_mail_event_for_users, mail_cal
     _nexora_mail_call = mail_call
 
 
+def call_nexora_mail(*args, **kwargs):
+    """调用当前已装配的 NexoraMail HTTP 客户端。"""
+    return _nexora_mail_call(*args, **kwargs)
+
+
 # ==================== NexoraMail 配置 ====================
 
 def _get_nexora_mail_config():

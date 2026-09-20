@@ -1496,6 +1496,11 @@
         modelFormOpen.value = true
     }
 
+    /** 统一归一化价格输入,兼容 number 类型的 input v-model 值。 */
+    function normalizePricingInput(value: unknown): string {
+        return String(value ?? '').trim()
+    }
+
     /** 提交新增/编辑模型(对齐原版 admin_upsert_model) */
     async function submitModel(): Promise<void> {
         const modelId = modelForm.model_id.trim()
@@ -1507,9 +1512,9 @@
         }
 
         const pricingValues = [
-            modelForm.input_per_million.trim(),
-            modelForm.output_per_million.trim(),
-            modelForm.cache_hit_per_million.trim(),
+            normalizePricingInput(modelForm.input_per_million),
+            normalizePricingInput(modelForm.output_per_million),
+            normalizePricingInput(modelForm.cache_hit_per_million),
         ]
         const hasPricing = pricingValues.some(Boolean)
 

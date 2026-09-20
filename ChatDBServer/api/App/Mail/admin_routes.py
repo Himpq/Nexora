@@ -8,7 +8,7 @@ Nexora.App.Mail.admin_routes — 管理端 NexoraMail 路由（自 server.py 分
 - /api/admin/nexora-mail/users/delete (DELETE/POST)
 
 复用 mailbox.py 的 mail_bp 蓝图与注入依赖（_get_nexora_mail_config、
-_nexora_mail_call），本模块不引入新的组装契约。
+call_nexora_mail），本模块不引入新的组装契约。
 """
 
 import time
@@ -21,7 +21,7 @@ from basis.Permission import require_admin
 from basis.User import load_users, save_users
 from basis.User.routes import get_local_mail_profile
 
-from .mailbox import _get_nexora_mail_config, _nexora_mail_call, mail_bp
+from .mailbox import _get_nexora_mail_config, call_nexora_mail, mail_bp
 
 
 @mail_bp.route('/api/admin/nexora-mail/status', methods=['GET'])
@@ -29,7 +29,7 @@ from .mailbox import _get_nexora_mail_config, _nexora_mail_call, mail_bp
 def admin_nexora_mail_status():
     """查询 NexoraMail 连接状态及基础配置"""
     cfg = _get_nexora_mail_config()
-    ok, status, data = _nexora_mail_call('/api/health', method='GET')
+    ok, status, data = call_nexora_mail('/api/health', method='GET')
     return jsonify({
         'success': True,
         'enabled': cfg.get('enabled', False),
@@ -45,7 +45,7 @@ def admin_nexora_mail_status():
 @require_admin
 def admin_nexora_mail_groups():
     """读取 NexoraMail 用户组列表"""
-    ok, status, data = _nexora_mail_call('/api/groups', method='GET')
+    ok, status, data = call_nexora_mail('/api/groups', method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取组列表失败'), 'upstream': data}), status
     return jsonify({'success': True, 'groups': data.get('groups', [])})
@@ -57,7 +57,7 @@ def admin_nexora_mail_users():
     """读取 NexoraMail 用户列表"""
     cfg = _get_nexora_mail_config()
     group = normalize_text(request.args.get('group') or cfg.get('default_group') or 'default', default='default') or 'default'
-    ok, status, data = _nexora_mail_call('/api/users', method='GET', query={'group': group})
+    ok, status, data = call_nexora_mail('/api/users', method='GET', query={'group': group})
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取邮箱用户失败'), 'upstream': data}), status
     return jsonify({
@@ -91,7 +91,7 @@ def admin_nexora_mail_create_user():
     if isinstance(permissions, list):
         body['permissions'] = permissions
 
-    ok, status, data = _nexora_mail_call('/api/users', method='POST', payload=body)
+    ok, status, data = call_nexora_mail('/api/users', method='POST', payload=body)
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '创建邮箱用户失败'), 'upstream': data}), status
 
@@ -144,7 +144,7 @@ def admin_nexora_mail_bind(user_id=None):
         return jsonify({'success': False, 'message': 'Nexora 用户不存在'}), 404
 
     # 绑定前先验证邮箱用户存在
-    ok, status, data = _nexora_mail_call(f"/api/users/{urllib_parse.quote(group)}/{urllib_parse.quote(mail_username)}", method='GET')
+    ok, status, data = call_nexora_mail(f"/api/users/{urllib_parse.quote(group)}/{urllib_parse.quote(mail_username)}", method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '邮箱用户不存在或不可访问'), 'upstream': data}), status
 
@@ -205,7 +205,7 @@ def admin_nexora_mail_set_password(group=None, mail_username=None):
     if not mail_username or not password:
         return jsonify({'success': False, 'message': 'mail_username 和 password 不能为空'}), 400
 
-    ok, status, data = _nexora_mail_call(
+    ok, status, data = call_nexora_mail(
         f"/api/users/{urllib_parse.quote(group)}/{urllib_parse.quote(mail_username)}",
         method='PATCH',
         payload={'password': password}
@@ -228,7 +228,7 @@ def admin_nexora_mail_delete_user(group=None, mail_username=None):
     if not mail_username:
         return jsonify({'success': False, 'message': 'mail_username 不能为空'}), 400
 
-    ok, status, data = _nexora_mail_call(
+    ok, status, data = call_nexora_mail(
         f"/api/users/{urllib_parse.quote(group)}/{urllib_parse.quote(mail_username)}",
         method='DELETE'
     )

@@ -43,13 +43,13 @@ export async function fetchMailStatus(): Promise<MailStatusResponse> {
     return apiFetch<MailStatusResponse>('/api/admin/nexora-mail/status')
 }
 
-/** 拉取邮箱域名/分组列表(后端返回 domains) */
+/** 拉取邮箱分组列表(兼容旧接口的 domains 字段) */
 export async function fetchMailGroups(): Promise<string[]> {
-    const data = await apiFetch<{ success: boolean; domains?: string[]; group?: string }>('/api/admin/nexora-mail/groups')
+    const data = await apiFetch<{ success: boolean; groups?: string[]; domains?: string[]; group?: string }>('/api/admin/nexora-mail/groups')
 
-    const domains = Array.isArray(data.domains) ? data.domains : []
+    const groups = Array.isArray(data.groups) ? data.groups : data.domains
 
-    return domains.length ? domains : ['default']
+    return Array.isArray(groups) && groups.length ? groups : ['default']
 }
 
 interface MutationResponse {
