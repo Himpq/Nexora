@@ -124,6 +124,36 @@ class ChatStreamSession {
     private conversationId: string = '';
     private buffer: string = '';
     private finished: boolean = false;
+    private terminalNotified: boolean = false;
+    private terminalCallback: (() => void) | null = null;
+
+    setTerminalCallback(callback: () => void): void {
+        this.terminalCallback = callback;
+    }
+
+    // 逻辑流已经收到 done / abort 时立即释放客户端会话锁。
+    // 传输层回调可能还要晚于 SSE 终止帧到达，不能把 UI 可重试时机绑定到传输层收尾。
+    private notifyTerminal(): void {
+        if (this.terminalNotified) {
+            return;
+        }
+
+        this.terminalNotified = true;
+
+        if (this.terminalCallback !== null) {
+            this.terminalCallback();
+        }
+    }
+
+    private notifyComplete(listener: StreamListener, content: string): void {
+        this.notifyTerminal();
+        listener.onComplete(content);
+    }
+
+    private notifyAborted(listener: StreamListener): void {
+        this.notifyTerminal();
+        listener.onAborted();
+    }
 
     // 接收诊断统计：判断 ArkUI http 栈是「逐块到达」还是「整包聚合」
     // （真机反馈"网页逐字、设备整包"，怀疑 dataReceive 分块粒度被聚合，需日志二分定位）
@@ -182,6 +212,7 @@ class ChatStreamSession {
         this.conversationId = options.conversationId ?? '';
         this.buffer = '';
         this.finished = false;
+        this.terminalNotified = false;
         this.recvBlocks = 0;
         this.recvBytes = 0;
         this.firstRecvAt = 0;
@@ -219,6 +250,12 @@ class ChatStreamSession {
         this.stopPoller('cancel');
         this.notifyCancel();
 
+        // 普通 SSE 流没有 pendingResolve，但页面仍需要收到中止事件来清掉
+        // MainChat.streaming；否则传输层已经停止，输入栏却会永久停在停止按钮。
+        if (this.currentListener !== null) {
+            this.notifyAborted(this.currentListener);
+        }
+
         if (this.request !== null) {
             this.request.destroy();
             this.request = null;
@@ -226,10 +263,6 @@ class ChatStreamSession {
 
         // handover 状态下需触发 onAborted 并 resolve，否则 openStream Promise 永远 pending
         if (this.pendingResolve !== null) {
-            if (this.currentListener !== null) {
-                this.currentListener.onAborted();
-            }
-
             const resolve: () => void = this.pendingResolve;
             this.pendingResolve = null;
             resolve();
@@ -347,7 +380,7 @@ class ChatStreamSession {
     private handoverToPoller(resolve: () => void, listener: StreamListener, reason: string): void {
         if (this.conversationId.length === 0) {
             // 无会话 id 无法轮询，直接结束
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
             this.finished = true;
             this.logRecvSummary(reason);
             resolve();
@@ -376,7 +409,7 @@ class ChatStreamSession {
                 err.code, aborted, this.conversationId, this.pollContentLen, this.contentFrames);
 
             if (aborted) {
-                listener.onAborted();
+                this.notifyAborted(listener);
                 this.finished = true;
                 this.stopPoller('transport-abort');
                 resolve();
@@ -598,7 +631,7 @@ class ChatStreamSession {
                 this.renderedContentLen, this.renderedReasoningLen);
             this.finished = true;
             this.stopPoller('poll-done');
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
 
             if (this.pendingResolve !== null) {
                 const resolve: () => void = this.pendingResolve;
@@ -687,7 +720,7 @@ class ChatStreamSession {
         }
 
         if (trimmed === '[DONE]' || trimmed === 'data: [DONE]') {
-            listener.onComplete('');
+            this.notifyComplete(listener, '');
             return true;
         }
 
@@ -813,7 +846,7 @@ class ChatStreamSession {
                 listener.onError(chunk.message ?? chunk.error ?? '生成过程出错');
                 return false;
             case 'done':
-                listener.onComplete(chunk.content ?? '');
+                this.notifyComplete(listener, chunk.content ?? '');
                 return true;
             default:
                 this.otherFrames = this.otherFrames + 1;
@@ -857,11 +890,11 @@ class ChatStreamSession {
         }
 
         if (chunk.cancel_requested === true) {
-            listener.onAborted();
+            this.notifyAborted(listener);
             return true;
         }
 
-        listener.onComplete(chunk.content ?? '');
+        this.notifyComplete(listener, chunk.content ?? '');
         return true;
     }
 
@@ -986,20 +1019,31 @@ export class ChatStreamClient {
         return this.sessions.has(sessionKey);
     }
 
-    async start(sessionKey: string, options: StreamOptions, listener: StreamListener): Promise<void> {
+    start(sessionKey: string, options: StreamOptions, listener: StreamListener): boolean {
         if (this.sessions.has(sessionKey)) {
-            return;
+            hilog.warn(DOMAIN, TAG, '[start] rejected duplicate active session key=%{public}s', sessionKey);
+            return false;
         }
 
         const session: ChatStreamSession = new ChatStreamSession();
         session.sessionKey = sessionKey;
         this.sessions.set(sessionKey, session);
+        session.setTerminalCallback(() => {
+            if (this.sessions.get(session.sessionKey) !== session) {
+                return;
+            }
 
-        try {
-            await session.run(options, listener);
-        } finally {
             this.sessions.delete(session.sessionKey);
-        }
+            hilog.info(DOMAIN, TAG, '[start] released terminal session key=%{public}s', session.sessionKey);
+        });
+
+        session.run(options, listener).finally(() => {
+            if (this.sessions.get(session.sessionKey) === session) {
+                this.sessions.delete(session.sessionKey);
+            }
+        });
+
+        return true;
     }
 
     // 新会话流拿到服务端 ID 后迁移锁键：活动流集合继续以真实会话 ID 指认同一条流

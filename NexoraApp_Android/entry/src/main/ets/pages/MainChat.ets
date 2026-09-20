@@ -23,9 +23,10 @@ import { QuickActionGrid } from '../components/QuickActionGrid';
 import { ChatItemBuilder } from '../common/ChatItemBuilder';
 import { ChatItemDataSource } from '../common/ChatItemDataSource';
 import { ChatRenderItem } from '../common/ChatRenderItem';
-import { QuestionItem } from '../common/QuestionLocks';
+import { QuestionItem, readQuestionLock, writeQuestionLock } from '../common/QuestionLocks';
 import { ChatItemRow } from '../components/chat/ChatItemRow';
 import { ChatScrollOverlay, ChatScrollOverlayState } from '../components/chat/ChatScrollOverlay';
+import { ImageViewer } from '../components/chat/ImageViewer';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
@@ -130,6 +131,9 @@ export struct MainChat {
     // Learning 页：页面层持有导航深度，返回键按页面内层级逐级返回
     @State private learningOpen: boolean = false;
     @State private learningNavDepth: number = 0;
+
+    // 全屏图片查看器当前图片地址（空串表示关闭）
+    @State private viewerUrl: string = '';
 
     // 滚动反馈状态独立于页面状态：索引变化只更新覆盖层，不触发整页 build。
     @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
@@ -254,6 +258,11 @@ export struct MainChat {
 
     // 系统返回键处理：优先级 邮件页(详情→页面) > 随笔编辑器/页面 > Learning 子页/页面 > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
+        if (this.viewerUrl.length > 0) {
+            this.viewerUrl = '';
+            return true;
+        }
+
         if (this.mailOpen) {
             if (this.mailDetailOpen) {
                 this.mailDetailOpen = false;
@@ -380,6 +389,17 @@ export struct MainChat {
                     .height('100%')
                     .transition(TransitionEffect.translate({ x: '100%' }).combine(TransitionEffect.OPACITY)
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
+            }
+
+            if (this.viewerUrl.length > 0) {
+                ImageViewer({
+                    url: this.viewerUrl,
+                    onClose: () => {
+                        this.viewerUrl = '';
+                    }
+                })
+                    .width('100%')
+                    .height('100%');
             }
         }
         .width('100%')
@@ -510,8 +530,10 @@ export struct MainChat {
                                     this.regenerate(message);
                                 },
                                 onOpenImage: (url: string) => {
+                                    this.viewerUrl = url;
                                 },
                                 onQuestionAnswer: (target: QuestionItem, answer: string) => {
+                                    this.answerQuestion(target, answer);
                                 }
                             });
                         }
@@ -1043,6 +1065,7 @@ export struct MainChat {
             }
 
             this.replaceMessages(result.messages);
+            this.applyQuestionLocks(this.conversationId, result.messages);
             this.hasMoreMessages = result.hasMoreBefore;
             this.oldestLoadedIndex = result.startIndex;
             this.streamUserScrolled = false;
@@ -1090,6 +1113,7 @@ export struct MainChat {
             const insertedItems: ChatRenderItem[] = this.buildItems(dedupedMessages);
             this.messages = [...dedupedMessages, ...this.messages];
             this.itemSource.prependItems(insertedItems);
+            this.applyQuestionLocks(this.conversationId, dedupedMessages);
             this.rebuildItemIndex();
             this.hasMoreMessages = result.hasMoreBefore;
             this.oldestLoadedIndex = result.startIndex;
@@ -1112,6 +1136,65 @@ export struct MainChat {
 
             // 释放加载锁：可见位置由 List 属性保持，不再需要等定位回调
             this.loadingMoreMessages = false;
+        });
+    }
+
+    // question 作答：服务端登记成功后写本地锁，再把回答作为普通用户消息送入当前会话。
+    // 服务端登记是跨设备恢复卡片状态的权威步骤，本地状态不能先于它落地。
+    private answerQuestion(item: QuestionItem, answer: string): void {
+        const text: string = answer.trim();
+
+        if (text.length === 0 || item.answered || item.submitting) {
+            return;
+        }
+
+        if (this.streaming || chatStream.isStreamingFor(this.conversationId)) {
+            this.notify('当前对话已有回复生成中,请稍候', 1200);
+            return;
+        }
+
+        item.submitting = true;
+        this.app.loadQuestionLocks().then((store: string) => {
+            const updated: string = writeQuestionLock(store, this.conversationId, item.cardId, text);
+
+            return ApiService.resolveConversationQuestion(this.conversationId, item.payload.questionId, text).then((result) => {
+                if (!result.success) {
+                    item.submitting = false;
+                    this.notify(result.message, 1600);
+                    return;
+                }
+
+                this.app.saveQuestionLocks(updated);
+                item.markAnswered(text);
+                this.sendMessage(text);
+            });
+        });
+    }
+
+    // 本地回答锁恢复：历史加载、分页和 question 帧到达时复原已答卡片。
+    private applyQuestionLocks(conversationId: string, messages: ChatMessage[]): void {
+        if (conversationId.length === 0 || messages.length === 0) {
+            return;
+        }
+
+        this.app.loadQuestionLocks().then((store: string) => {
+            for (let m: number = 0; m < messages.length; m++) {
+                const message: ChatMessage = messages[m];
+
+                for (let q: number = 0; q < message.questions.length; q++) {
+                    const item: QuestionItem = message.questions[q];
+
+                    if (item.answered) {
+                        continue;
+                    }
+
+                    const locked: string = readQuestionLock(store, conversationId, item.cardId);
+
+                    if (locked.length > 0) {
+                        message.markQuestionAnswered(item.callId, locked);
+                    }
+                }
+            }
         });
     }
 
@@ -1829,6 +1912,7 @@ export struct MainChat {
                 onUi(() => {
                     flushDeltaNow();
                     assistant.beginQuestion(callId, payload);
+                    this.applyQuestionLocks(this.conversationId, [assistant]);
 
                     // 选择题卡通常是本轮最后一块输出：挂载当帧还没有真实高度，同步滚动会漏底
                     this.scrollToEndAfterLayout();

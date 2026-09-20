@@ -9,7 +9,7 @@
 // 页面级统一 @State 持有进程单例（见工程约定），弹层收敛到单个 bindSheet
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { promptAction } from '@kit.ArkUI';
+import { display, promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
@@ -72,6 +72,9 @@ const JUMP_ANIMATE_SETTLE_DELAY: number = 360;
 const SCROLL_GAP_WARN_MS: number = 17;
 // 帧间隔告警的最小间隔（ms）：限流，避免日志本身成为滚动开销
 const SCROLL_GAP_LOG_INTERVAL: number = 120;
+// 列表预取窗口：给惯性滑动留出已完成创建与测量的跑道，同时避免整份历史被预建。
+const CACHE_MIN_ROWS: number = 8;
+const CACHE_MAX_ROWS: number = 16;
 
 // 单条流的绑定上下文：本地临时键的流在服务端返回会话 ID 后迁移，
 // context.key 始终指向当前缓冲/传输锁键，回调据此路由事件与视图更新
@@ -237,8 +240,12 @@ export struct MainChat {
     private turnIndexByItem: number[] = [];
     // 每条消息的首个单元下标：轮次跳转与重答定位都以「该消息的第一行」为目标
     private messageStartByMessage: number[] = [];
+    // 列表实测宽度派生出的可用文本宽度：切片器在首次展开前据此确定稳定切点。
+    private measuredContentWidth: number = 0;
+    private widthLockWarned: boolean = false;
 
     aboutToAppear(): void {
+        this.seedContentWidth();
         this.greeting = greetingOfHour(new Date().getHours());
         this.labelForModel(this.app.selectedModelId);
         this.app.refreshModels().then(() => {
@@ -589,8 +596,14 @@ export struct MainChat {
                 .height('100%')
                 .listDirection(Axis.Vertical)
                 .edgeEffect(EdgeEffect.Spring)
-                // 视口外各预加载 2 行：新行提前完成创建与测量，减少滚动时的反复销毁重建
-                .cachedCount(2)
+                // 预取窗口双值：低于 minCount 就趁空闲预加载，超过 maxCount 才销毁/复用，
+                // 减少惯性滚动时的首次创建与测量，同时避免长历史被整份预建。
+                .cachedCount({ minCount: CACHE_MIN_ROWS, maxCount: CACHE_MAX_ROWS }, false)
+                // 切片点必须贴着真实折行位置：首次展开前允许用列表实测宽度校正预算，
+                // 首个渲染单元建立后宽度会冻结，避免同一个 LazyForEach key 对应不同文本。
+                .onAreaChange((oldArea: Area, newArea: Area) => {
+                    this.applyContentWidth(newArea.width as number);
+                })
                 // 关闭「同步加载全部子组件」：默认 true 时，无动画跳转/首屏会把沿途尚未布局的行
                 // 在同一帧里全部布局完（实测一次跨 19 行的跳转 → 主线程卡死 68 帧 ≈ 1.1s）。
                 // 置 false 后单帧布局超时会把这部分工作顺延到后续帧，视口不再整帧卡死
@@ -2196,6 +2209,52 @@ export struct MainChat {
         });
     }
 
+    // 列表首次布局前把实测可用宽度交给切片器；宽度冻结后只核对，不再改写切点。
+    private applyContentWidth(listWidth: number): void {
+        if (listWidth <= 0) {
+            return;
+        }
+
+        const contentWidth: number = listWidth - Space.lg * 2;
+
+        if (ChatItemBuilder.isContentWidthLocked()) {
+            if (!this.widthLockWarned && Math.abs(contentWidth - ChatItemBuilder.currentContentWidth()) > 1) {
+                this.widthLockWarned = true;
+                hilog.warn(DOMAIN, TAG, '[width] locked slice=%{public}d list=%{public}d delta=%{public}d',
+                    Math.round(ChatItemBuilder.currentContentWidth()), Math.round(contentWidth),
+                    Math.round(contentWidth - ChatItemBuilder.currentContentWidth()));
+            }
+
+            return;
+        }
+
+        if (Math.abs(contentWidth - this.measuredContentWidth) < 1) {
+            return;
+        }
+
+        this.measuredContentWidth = contentWidth;
+        ChatItemBuilder.setContentWidth(contentWidth);
+        hilog.info(DOMAIN, TAG, '[width] list=%{public}d content=%{public}d',
+            Math.round(listWidth), Math.round(contentWidth));
+    }
+
+    // 构建前播种切片宽度，保证首批消息也使用与列表一致的文本宽度。
+    private seedContentWidth(): void {
+        try {
+            const screenVp: number = px2vp(display.getDefaultDisplaySync().width);
+            const contentWidth: number = screenVp - Space.lg * 2;
+
+            if (contentWidth > 200 && contentWidth < 600) {
+                this.measuredContentWidth = contentWidth;
+                ChatItemBuilder.setContentWidth(contentWidth);
+                hilog.info(DOMAIN, TAG, '[width] seed screen=%{public}d content=%{public}d',
+                    Math.round(screenVp), Math.round(contentWidth));
+            }
+        } catch (err) {
+            hilog.warn(DOMAIN, TAG, '[width] seed failed: %{public}s', JSON.stringify(err));
+        }
+    }
+
     // Toast 统一出口：getPromptAction 版 showToast（非 deprecated），声明可能抛异常，在此集中 try/catch 消化
     private notify(message: string, duration?: number): void {
         try {
@@ -2262,14 +2321,18 @@ export struct MainChat {
             conversationId: streamKey.startsWith(PENDING_STREAM_PREFIX) ? '' : streamKey
         };
 
-        const onUi = (action: () => void): void => {
+        const onUi = (action: () => void, reloadMessage: boolean = false): void => {
             setTimeout(() => {
                 action();
 
                 // 本帧改动的消息字段（正文块 / 工具卡 / 用量 / 状态）同步给列表数据源：
                 // 原地改写受影响的单元，列表不重建，只有真正变化的那一行重渲染
                 if (this.currentBufferKey() === context.key) {
-                    this.itemSource.refreshMessage(assistant);
+                    if (reloadMessage) {
+                        this.itemSource.reloadMessage(assistant);
+                    } else {
+                        this.itemSource.refreshMessage(assistant);
+                    }
                 }
             }, 0);
         };
@@ -2412,7 +2475,7 @@ export struct MainChat {
                     if (chatStream.streamingCount <= 1) {
                         LiveViewController.shared.stop();
                     }
-                });
+                }, true);
             },
             onComplete: (finalContent: string) => {
                 onUi(() => {
@@ -2431,7 +2494,7 @@ export struct MainChat {
                     if (chatStream.streamingCount <= 1) {
                         LiveViewController.shared.finishGenerating();
                     }
-                });
+                }, true);
             },
             onAborted: () => {
                 onUi(() => {
@@ -2443,7 +2506,7 @@ export struct MainChat {
                     if (chatStream.streamingCount <= 1) {
                         LiveViewController.shared.stop();
                     }
-                });
+                }, true);
             }
         };
     }

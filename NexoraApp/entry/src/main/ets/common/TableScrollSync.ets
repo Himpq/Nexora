@@ -1,13 +1,15 @@
-// TableScrollSync.ets - 同一张表格各分片之间的横向滚动同步
+// TableScrollSync.ets - 同一块（表格 / 代码块）各分片之间的横向滚动同步
 //
-// 表格按数据行切成多片渲染后（见 ChatItemBuilder.pushTableSlices），每一片都是独立的
-// 列表行，各自带一个横向 Scroll。用户横拖时手指只落在其中一片上，若不共享偏移，
-// 其余片会停在原处 —— 一张表被切成几截、列错位。
+// 表格按数据行、代码块按源码行切成多片渲染后（见 ChatItemBuilder.pushTableSlices /
+// pushCodeSlices），每一片都是独立的列表行，各自带一个横向 Scroll。用户横拖时手指
+// 只落在其中一片上，若不共享偏移，其余片会停在原处 —— 一块被切成几截、列错位。
 //
-// 这里让同一张表的所有分片共用一个横向偏移量：任意一片真实滚动时把偏移广播给其余片，
+// 这里让同一块的所有分片共用一个横向偏移量：任意一片真实滚动时把偏移广播给其余片，
 // 而程序性滚动（由本类发起的 scrollTo）产生的回调被忽略，避免来回互相触发。
 
-const MAX_TABLES: number = 64;
+// 注册上限：键按「会话内块数」增长（表格 + 代码块），长会话下 64 会被逐出，
+// 逐出后该块各片拿到新实例，横向偏移会归零。上限放宽到 512，实例本身极小
+const MAX_SYNC_KEYS: number = 512;
 
 export class TableScrollSync {
     // 按表身份注册：分片会被列表反复销毁重建，偏移量不能随行消失
@@ -30,7 +32,7 @@ export class TableScrollSync {
         TableScrollSync.registry.set(key, created);
         TableScrollSync.keys.push(key);
 
-        if (TableScrollSync.keys.length > MAX_TABLES) {
+        if (TableScrollSync.keys.length > MAX_SYNC_KEYS) {
             const oldest: string | undefined = TableScrollSync.keys.shift();
 
             if (oldest !== undefined) {

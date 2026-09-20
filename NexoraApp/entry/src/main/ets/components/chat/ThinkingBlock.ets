@@ -2,6 +2,7 @@
 // 流式进行中显示「正在思考」，输出正文/工具后由 autoCollapse 信号触发自动折叠
 // 每个思考段独立管理展开/折叠状态，支持 Thinking1 → Tool → Thinking2 多段按序展示
 
+import { ROW_STREAMING_MARK } from '../../common/ChatRenderItem';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 
 @Component
@@ -10,12 +11,26 @@ export struct ThinkingBlock {
     @Prop streaming: boolean = false;
     // autoCollapse 由父组件驱动：当输出正文/工具时变为 true，触发本块自动折叠
     @Prop @Watch('onAutoCollapse') autoCollapse: boolean = false;
+    // 展开态身份（见 ChatRenderItem.expansionIdentity）：复用取回时必须靠它重置展开态，
+    // 否则本行会沿用上一行留下的展开/折叠状态
+    @Prop @Watch('onIdentityChanged') rowIdentity: string = '';
 
-    @State private expanded: boolean = true;
+    // 历史思考块默认折叠；流式块的首帧由 rowIdentity 决定是否绘制正文，
+    // 避免先按 true 渲染一帧完整正文、aboutToAppear 再折叠而改变 ListItem 高度。
+    @State private expanded: boolean = false;
+    @State private mounted: boolean = false;
 
     aboutToAppear(): void {
         // 流式中的思考段默认展开，历史消息的思考段默认折叠
         this.expanded = this.streaming;
+        this.mounted = true;
+    }
+
+    // 身份变化 = 换了行：按新行的默认态重置。
+    // 只读 rowIdentity 自身 —— 复用取回时各 @Prop 的刷新顺序没有契约，
+    // 在这里读 streaming 可能拿到的仍是上一行的值
+    private onIdentityChanged(): void {
+        this.expanded = this.rowIdentity.endsWith(ROW_STREAMING_MARK);
     }
 
     // autoCollapse 从 false 变为 true 时自动折叠
@@ -23,6 +38,16 @@ export struct ThinkingBlock {
         if (this.autoCollapse) {
             this.expanded = false;
         }
+    }
+
+    // 首次 build 发生在 aboutToAppear 之前：用稳定的行身份直接决定首帧，
+    // 挂载完成后再读取用户可交互的 expanded 状态。
+    private shouldRenderBody(): boolean {
+        if (!this.mounted) {
+            return this.rowIdentity.endsWith(ROW_STREAMING_MARK);
+        }
+
+        return this.expanded;
     }
 
     private headerText(): string {
@@ -60,7 +85,7 @@ export struct ThinkingBlock {
                 this.expanded = !this.expanded;
             });
 
-            if (this.expanded) {
+            if (this.shouldRenderBody()) {
                 Text(this.text)
                     .fontSize(FontSize.small)
                     .lineHeight(LineHeight.caption)

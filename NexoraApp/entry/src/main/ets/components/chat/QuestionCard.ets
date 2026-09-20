@@ -9,10 +9,19 @@ import { QuestionItem } from '../../common/QuestionLocks';
 export struct QuestionCard {
     @ObjectLink item: QuestionItem;
     onAnswer: (item: QuestionItem, answer: string) => void = () => {};
+    // 行身份（见 ChatRenderItem.key）：复用取回时 aboutToAppear 不会重跑，
+    // 不重置就会把上一行的输入草稿带到这一行的「其他」选项里
+    @Prop @Watch('onRowIdentityChanged') rowIdentity: string = '';
 
     // 其他选项输入草稿
     @State private otherDraft: string = '';
     @State private pressedChoice: string = '';
+
+    // 身份变化 = 换了行：丢弃上一行遗留的瞬时输入态
+    private onRowIdentityChanged(): void {
+        this.otherDraft = '';
+        this.pressedChoice = '';
+    }
 
     private submit(answer: string): void {
         const text: string = answer.trim();

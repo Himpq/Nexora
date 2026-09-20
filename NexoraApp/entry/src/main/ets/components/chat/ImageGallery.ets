@@ -11,11 +11,18 @@ const CARD_HEIGHT: number = 126;
 @Component
 export struct ImageGallery {
     // @Prop 保证工具结果二次更新（重答/历史替换）时画廊同步重建
-    @Prop items: ExaImageItem[] = [];
+    @Prop @Watch('onItemsChanged') items: ExaImageItem[] = [];
     onOpenImage: (url: string) => void = () => {};
 
     // 加载失败的图片地址：这些卡片直接从画廊移除（不可达外链不占位、不留灰色框）
     @State private failedUrls: string[] = [];
+
+    // 画廊内容换了就丢弃失败清单：复用取回时 aboutToAppear 不会重跑，
+    // 上一行的失败地址会连坐隐藏新行的图片，而画廊高度按可见卡片数计算，
+    // 全部被隐藏时高度直接归零 —— 表现为行高塌陷
+    private onItemsChanged(): void {
+        this.failedUrls = [];
+    }
 
     private isFailed(url: string): boolean {
         return this.failedUrls.indexOf(url) >= 0;

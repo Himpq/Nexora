@@ -1,12 +1,7 @@
 // MarkdownParser.ets - Markdown 结构化解析（纯逻辑，不含任何 UI）
 // 输出「块 + 行内片段」两级结构，渲染层只负责把结构翻译成组件，不再在 UI 里做字符串判断
 
-import { hilog } from '@kit.PerformanceAnalysisKit';
 
-const DOMAIN: number = 0x0001;
-const TAG: string = 'NexoraMd';
-
-// 行内片段：用布尔位表达样式叠加，渲染层据此选择字体与颜色
 export interface InlinePiece {
     text: string;
     bold: boolean;
@@ -20,6 +15,9 @@ export type BlockType = 'heading' | 'paragraph' | 'code' | 'quote' | 'list' | 'd
 export interface ListItem {
     marker: string;
     inline: InlinePiece[];
+    // 条目被展开器按行继续切开时的「续片」标记。续片的 marker 为空，
+    // 渲染层据此不画符号、但保留同等缩进 —— 与文本自然折行（续行不带符号）完全一致
+    continuation?: boolean;
 }
 
 // 表格数据：表头 + 数据行 + 每列对齐方式（'left'|'center'|'right'|''）
@@ -44,6 +42,27 @@ export interface MarkdownBlock {
     inline: InlinePiece[];
     items: ListItem[];
     table: TableData | null;
+
+    // 代码块被展开器按行切成多片时的位置标记（见 common/ChatItemBuilder.ets）：
+    // 语言栏只在首片、底 padding 只在末片，圆角按位置补，连起来才是一个完整的代码块。
+    // 不设表示整块就是一个单元（既是首片也是末片），行为与拆分前一致
+    codeSliceFirst?: boolean;
+    codeSliceLast?: boolean;
+
+    // 首片额外携带的完整源码：复制按钮挂在首片上，切片后首片的 codeText 只是第一段，
+    // 复制必须给整段。非首片不携带，流式比对时中段片才能逐帧跳过重渲染
+    codeFullText?: string;
+
+    // 该块在源文本中的起始字符偏移。增量解析时据此确定从哪里开始重新解析：
+    // 流式追加只改变末尾块，从末尾块的 sourceStart 处重新解析即可，前面的块直接复用
+    sourceStart?: number;
+
+    // 文本块（段落 / 标题）被展开器按估算行数切成多片时的位置标记：
+    // 只有首片带标题的上留白、只有末片带下留白，接缝处两片紧贴 ——
+    // InlineText 的行盒自带宽高，紧贴后的行距与片内一致，视觉完全连续。
+    // 不设表示整块就是一个单元（既是首片也是末片），行为与拆分前一致
+    textSliceFirst?: boolean;
+    textSliceLast?: boolean;
 }
 
 // 行内扫描器：顺序扫描源串，命中标记就切出一个片段
@@ -197,15 +216,25 @@ class InlineScanner {
 // 块级解析器：按行推进，负责识别围栏代码块、标题、引用、列表、分割线与段落
 class BlockScanner {
     private readonly lines: string[];
+    private readonly lineStartOffsets: number[];
     private index: number = 0;
+    private blockStartLine: number = 0;
     private readonly blocks: MarkdownBlock[] = [];
 
     constructor(source: string) {
-        this.lines = source.replace(/\r\n/g, '\n').split('\n');
+        const normalized: string = source.replace(/\r\n/g, '\n');
+        this.lines = normalized.split('\n');
+
+        this.lineStartOffsets = new Array(this.lines.length);
+        let offset: number = 0;
+
+        for (let i: number = 0; i < this.lines.length; i++) {
+            this.lineStartOffsets[i] = offset;
+            offset += this.lines[i].length + 1;
+        }
     }
 
     scan(): MarkdownBlock[] {
-        hilog.info(DOMAIN, TAG, '[scan] lineCount=%{public}d', this.lines.length);
 
         while (this.index < this.lines.length) {
             const line: string = this.lines[this.index];
@@ -215,13 +244,15 @@ class BlockScanner {
                 continue;
             }
 
+            this.blockStartLine = this.index;
+
             if (BlockScanner.isFence(line)) {
                 this.readCodeBlock();
                 continue;
             }
 
             if (BlockScanner.isDivider(line)) {
-                this.blocks.push(BlockScanner.emptyBlock('divider'));
+                this.blocks.push(this.emptyBlock('divider'));
                 this.index += 1;
                 continue;
             }
@@ -237,7 +268,8 @@ class BlockScanner {
                     ordered: false,
                     inline: InlineScanner.parse(line.substring(headingLevel + 1).trim()),
                     items: [],
-                    table: null
+                    table: null,
+                    sourceStart: this.lineStartOffsets[this.blockStartLine]
                 });
                 this.index += 1;
                 continue;
@@ -295,7 +327,8 @@ class BlockScanner {
             ordered: false,
             inline: [],
             items: [],
-            table: null
+            table: null,
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
@@ -322,7 +355,8 @@ class BlockScanner {
             ordered: false,
             inline: InlineScanner.parse(body.join('\n')),
             items: [],
-            table: null
+            table: null,
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
@@ -364,7 +398,8 @@ class BlockScanner {
             ordered: ordered,
             inline: [],
             items: items,
-            table: null
+            table: null,
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
@@ -387,7 +422,6 @@ class BlockScanner {
             this.index += 1;
         }
 
-        hilog.info(DOMAIN, TAG, '[readTable] cols=%{public}d rows=%{public}d', headers.length, rows.length);
 
         this.blocks.push({
             type: 'table',
@@ -397,7 +431,8 @@ class BlockScanner {
             ordered: false,
             inline: [],
             items: [],
-            table: { headers: headers, rows: rows, aligns: aligns }
+            table: { headers: headers, rows: rows, aligns: aligns },
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
@@ -424,7 +459,6 @@ class BlockScanner {
             aligns.push('');
         }
 
-        hilog.info(DOMAIN, TAG, '[readLooseTable] cols=%{public}d rows=%{public}d', colCount, rows.length);
 
         this.blocks.push({
             type: 'table',
@@ -434,7 +468,8 @@ class BlockScanner {
             ordered: false,
             inline: [],
             items: [],
-            table: { headers: headers, rows: rows, aligns: aligns }
+            table: { headers: headers, rows: rows, aligns: aligns },
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
@@ -461,12 +496,23 @@ class BlockScanner {
             ordered: false,
             inline: InlineScanner.parse(body.join('')),
             items: [],
-            table: null
+            table: null,
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
         });
     }
 
-    private static emptyBlock(type: BlockType): MarkdownBlock {
-        return { type: type, level: 0, language: '', codeText: '', ordered: false, inline: [], items: [], table: null };
+    private emptyBlock(type: BlockType): MarkdownBlock {
+        return {
+            type: type,
+            level: 0,
+            language: '',
+            codeText: '',
+            ordered: false,
+            inline: [],
+            items: [],
+            table: null,
+            sourceStart: this.lineStartOffsets[this.blockStartLine]
+        };
     }
 
     // 有序列表标记形如 "1."，无序为 "-" / "*" / "+"
@@ -693,14 +739,10 @@ class BlockScanner {
 export class MarkdownParser {
     // 把 Markdown 原文解析为块列表；空文本返回空列表，由调用方决定是否展示占位
     static parse(source: string): MarkdownBlock[] {
-        hilog.info(DOMAIN, TAG, '[parse] sourceLen=%{public}d', source.length);
-
         if (source.trim().length === 0) {
             return [];
         }
 
-        const blocks: MarkdownBlock[] = new BlockScanner(source).scan();
-        hilog.info(DOMAIN, TAG, '[parse] done blockCount=%{public}d', blocks.length);
-        return blocks;
+        return new BlockScanner(source).scan();
     }
 }

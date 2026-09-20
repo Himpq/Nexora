@@ -148,6 +148,11 @@ interface NotesStoreRequestBody {
     baseStore: NotesStorePayload;
 }
 
+interface QuestionResolveRequestBody {
+    question_id: string;
+    answer: string;
+}
+
 interface NotesStorePayload {
     activeNotebookId: string;
     notebooks: NoteNotebookPayload[];
@@ -397,6 +402,32 @@ export class ApiService {
             conversationId: Json.string(payload, 'conversation_id'),
             existed: Json.boolean(payload, 'existed')
         };
+    }
+
+    // question 工具作答登记：POST /api/conversations/<id>/question/resolve
+    // 服务端把 resolved/answer 回写进会话文件，跨设备加载历史时据此锁定作答卡片
+    // questionId 传载荷 question_id（会话文件中 question 事件的权威标识），answer 为本次回答文本
+    static async resolveConversationQuestion(conversationId: string, questionId: string, answer: string): Promise<MutateResult> {
+        const safeConversationId: string = conversationId.trim();
+        const safeQuestionId: string = questionId.trim();
+        const safeAnswer: string = answer.trim();
+
+        if (safeConversationId.length === 0 || safeQuestionId.length === 0 || safeAnswer.length === 0) {
+            return { success: false, message: '作答登记参数不完整' };
+        }
+
+        const body: QuestionResolveRequestBody = { question_id: safeQuestionId, answer: safeAnswer };
+        const result: HttpResult = await HttpUtil.post(
+            '/api/conversations/' + encodeURIComponent(safeConversationId) + '/question/resolve',
+            body
+        );
+        const payload: Record<string, Object> | null = ApiService.readPayload(result, '作答登记');
+
+        if (payload === null) {
+            return { success: false, message: ApiService.describeFailure(result) };
+        }
+
+        return { success: true, message: '' };
     }
 
     // ---------- 知识库 ----------

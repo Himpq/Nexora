@@ -6,13 +6,14 @@
 // 反复布局绘制整棵子树。
 //
 // 行内只观察 @ObjectLink item：流式增量由数据源原地改写单元字段触发单行重渲染。
+// 行不使用 @Reusable：不同 Markdown 块的内部 Text / Span 树不能跨列表键复用，
+// 否则行换绑时可能出现「数据已换、屏幕仍显示上一行某一段」的串台。
 
-import { pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
 import { ChatMessage, TokenUsage } from '../../common/ChatTypes';
-import { ChatItemKind, ChatRenderItem, MarkdownBlockHolder } from '../../common/ChatRenderItem';
-import { MarkdownBlock as MdBlock } from '../../common/MarkdownParser';
+import { ChatItemKind, ChatRenderItem } from '../../common/ChatRenderItem';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { QuestionItem } from '../../common/QuestionLocks';
 import { BrandLogo } from '../common/BrandLogo';
@@ -20,13 +21,16 @@ import { MarkdownBlockView } from './MarkdownBlock';
 import { QuestionCard } from './QuestionCard';
 import { StreamingDots } from './StreamingDots';
 import { ThinkingBlock } from './ThinkingBlock';
+import { ToolGallerySegment } from './ToolGallerySegment';
 import { ToolSegment } from './ToolSegment';
 import { UserAttachments } from './UserAttachments';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraRow';
-// 行高变化的最小记录幅度（vp）：更小的变化肉眼不可见，记下来只会淹没日志
-const ROW_HEIGHT_EPSILON: number = 4;
+// 行最小高度（vp）：引擎对未测量行按已测均值（实测 34~44vp）估算，矮行首次测量时
+// 会产生 |行高 − 均值| 的可见位移。18vp 的用量条 / 分隔线在带外（带 = 均值 ± 24vp），
+// 抬到 30vp 后落回带内。高行不受此约束影响
+const ROW_MIN_HEIGHT: number = 30;
 
 @Component
 export struct ChatItemRow {
@@ -36,9 +40,6 @@ export struct ChatItemRow {
     onOpenImage: (url: string) => void = () => {};
     onQuestionAnswer: (item: QuestionItem, answer: string) => void = () => {};
     @State private pressedActionLabel: string = '';
-    // 行高观测用：上一次记录到的高度（0 表示尚未测过）
-    private lastRowHeight: number = 0;
-
     build() {
         Column() {
             if (this.item.kind === ChatItemKind.USER_MESSAGE) {
@@ -49,7 +50,8 @@ export struct ChatItemRow {
                 ThinkingBlock({
                     text: this.item.reasoningText,
                     streaming: this.item.reasoningStreaming,
-                    autoCollapse: !this.item.reasoningExpanded
+                    autoCollapse: !this.item.reasoningExpanded,
+                    rowIdentity: this.item.expansionIdentity()
                 });
             } else if (this.item.kind === ChatItemKind.TOOL_CALL) {
                 if (this.item.toolCall !== null) {
@@ -59,10 +61,18 @@ export struct ChatItemRow {
                         onOpenImage: this.onOpenImage
                     });
                 }
+            } else if (this.item.kind === ChatItemKind.TOOL_GALLERY) {
+                if (this.item.toolCall !== null) {
+                    ToolGallerySegment({
+                        item: this.item.toolCall,
+                        onOpenImage: this.onOpenImage
+                    });
+                }
             } else if (this.item.kind === ChatItemKind.QUESTION) {
                 if (this.item.question !== null) {
                     QuestionCard({
                         item: this.item.question,
+                        rowIdentity: this.item.key(),
                         onAnswer: (target: QuestionItem, answer: string) => {
                             this.onQuestionAnswer(target, answer);
                         }
@@ -70,7 +80,9 @@ export struct ChatItemRow {
                 }
             } else if (this.item.kind === ChatItemKind.CONTENT_BLOCK) {
                 if (this.item.blockHolder !== null) {
-                    MarkdownBlockView({ holder: this.item.blockHolder });
+                    MarkdownBlockView({
+                        holder: this.item.blockHolder
+                    });
                 }
             } else if (this.item.kind === ChatItemKind.SEGMENT_ERROR) {
                 this.ErrorLine(this.item.text);
@@ -87,6 +99,7 @@ export struct ChatItemRow {
         .width('100%')
         .alignItems(HorizontalAlign.Start)
         .padding({ left: Space.lg, right: Space.lg })
+        .constraintSize({ minHeight: ROW_MIN_HEIGHT })
         // 上下留白：消息之间只由首个单元出手（每行都留白会把间距叠成两倍）；
         // markdown 块之间的间距原本由 MarkdownView 的 Column space 提供，
         // 拆成独立行后由块自身补上，维持段落间原有的呼吸感
@@ -98,58 +111,19 @@ export struct ChatItemRow {
             width: 1,
             color: this.item.highlighted ? $r('app.color.brand_primary') : Color.Transparent
         })
-        // 行高观测：**只记录，不把高度回喂给列表**。
-        // 纯滚动中出现位置跳变的唯一机制是「某行首次布局之后高度又变了」——
-        // 它会把该行下方所有内容整体推移。打出来用于指认是哪一类行在变
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-            this.observeRowHeight(newArea.height as number);
-        });
-    }
+        // 只记录真正的尺寸变化；滚动引起的位置变化不会触发 onSizeChange。
+        // 该日志用于把 List 注入的异常 offset 对齐到具体渲染单元，不参与任何布局修正。
+        .onSizeChange((oldValue: SizeOptions, newValue: SizeOptions) => {
+            const oldHeight: number = oldValue.height as number;
+            const newHeight: number = newValue.height as number;
 
-    // 记录行的首次高度与后续变化。只做观测：不触发任何滚动或布局补偿
-    private observeRowHeight(height: number): void {
-        if (height <= 0) {
-            return;
-        }
-
-        if (this.lastRowHeight === 0) {
-            this.lastRowHeight = height;
-            hilog.info(DOMAIN, TAG, '[row] first type=%{public}s h=%{public}d key=%{public}s',
-                this.rowTypeLabel(), Math.round(height), this.item.key());
-            return;
-        }
-
-        if (Math.abs(height - this.lastRowHeight) < ROW_HEIGHT_EPSILON) {
-            return;
-        }
-
-        hilog.info(DOMAIN, TAG,
-            '[row] change kind=%{public}d h=%{public}d was=%{public}d delta=%{public}d key=%{public}s',
-            this.item.kind, Math.round(height), Math.round(this.lastRowHeight),
-            Math.round(height - this.lastRowHeight), this.item.key());
-        this.lastRowHeight = height;
-    }
-
-    // 行类型标签：块单元打 markdown 块类型，表格分片附「位置 + 本片数据行数」；
-    // 其余单元打类别号。用于把行高分布直接归因到具体的块类型 —— 高行才是滚动位移的来源
-    private rowTypeLabel(): string {
-        const holder: MarkdownBlockHolder | null = this.item.blockHolder;
-
-        if (holder === null) {
-            return 'kind' + this.item.kind;
-        }
-
-        const block: MdBlock = holder.block;
-
-        if (block.table === null) {
-            return block.type;
-        }
-
-        // f/m/l = 首片 / 中间片 / 末片；分片后首末同片（整表一个单元）会打成 fl
-        const first: string = block.table.sliceFirst === false ? 'm' : 'f';
-        const last: string = block.table.sliceLast === false ? 'm' : 'l';
-
-        return 'table-' + first + last + block.table.rows.length;
+            if (Math.abs(newHeight - oldHeight) >= 1) {
+                hilog.info(DOMAIN, TAG,
+                    '[row-size] key=%{public}s kind=%{public}d old=%{public}d new=%{public}d fp=%{public}s',
+                    this.item.key(), this.item.kind, Math.round(oldHeight), Math.round(newHeight), this.item.fingerprint());
+            }
+        })
+        // 行高由列表一次测量完成后保持稳定，不在滚动路径挂载逐行 onAreaChange 回调。
     }
 
     private topMargin(): number {
@@ -170,11 +144,15 @@ export struct ChatItemRow {
         return this.item.kind === ChatItemKind.CONTENT_BLOCK ? Space.sm : Space.xs;
     }
 
-    // 用户消息：气泡（有正文时）+ 附件区（图片缩略图 / 文件胶囊），同侧右对齐
+    // 用户消息：气泡（有正文时）+ 附件区（图片缩略图 / 文件胶囊），同侧右对齐。
+    // 长提问被展开器按行切片（userSliceTotal > 1），每个切片自成一行的整幅气泡；
+    // 切片只对无附件的提问生效，因此切片行不渲染附件区
     @Builder
     UserMessage() {
         Column({ space: Space.xs }) {
-            if (this.item.message.content.length > 0) {
+            if (this.item.userSliceTotal > 1) {
+                this.UserBubbleSlice();
+            } else if (this.item.message.content.length > 0) {
                 Row() {
                     Blank();
                     this.UserBubble();
@@ -188,6 +166,37 @@ export struct ChatItemRow {
                     onOpenImage: this.onOpenImage
                 });
             }
+        }
+        .width('100%');
+    }
+
+    // 长提问的气泡切片：各片固定 78% 宽（与自适应气泡换行后的最大宽度一致），
+    // 圆角与上下 padding 按片位补、接缝 gap 为 0（见 ChatItemBuilder），拼起来与整条气泡视觉一致
+    @Builder
+    UserBubbleSlice() {
+        Row() {
+            Blank();
+
+            Text(this.item.text)
+                .fontSize(FontSize.body)
+                .lineHeight(LineHeight.body)
+                .fontColor($r('app.color.text_inverse'))
+                .textAlign(TextAlign.Start)
+                .width('78%')
+                .padding({
+                    left: Space.md,
+                    right: Space.md,
+                    top: this.item.order === 0 ? Space.md : 0,
+                    bottom: this.item.order === this.item.userSliceTotal - 1 ? Space.md : 0
+                })
+                .backgroundColor($r('app.color.bubble_user'))
+                .borderRadius({
+                    topLeft: this.item.order === 0 ? Radius.lg : 0,
+                    topRight: this.item.order === 0 ? Radius.lg : 0,
+                    bottomLeft: this.item.order === this.item.userSliceTotal - 1 ? Radius.lg : 0,
+                    bottomRight: this.item.order === this.item.userSliceTotal - 1 ? Radius.sm : 0
+                })
+                .copyOption(CopyOptions.LocalDevice);
         }
         .width('100%');
     }
