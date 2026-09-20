@@ -31,6 +31,13 @@ from .usage_logs import (
     replace_usage_log_records,
     usage_jsonl_path,
 )
+from .billing import (
+    build_billing_snapshot,
+    build_log_billing,
+    merge_billing_totals,
+    normalize_model_pricing,
+    resolve_model_pricing,
+)
 from .details import TokenUsageDetailPresenter
 from .token_logger import (
     build_image_generation_log_context,

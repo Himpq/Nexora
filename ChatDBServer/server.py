@@ -7198,72 +7198,6 @@ def admin_delete_provider(target_provider=None):
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/admin/models', methods=['POST'])
-@app.route('/api/admin/models/<path:target_model_id>', methods=['PUT'])
-@app.route('/api/admin/models/model/upsert', methods=['POST'])
-@require_admin
-def admin_upsert_model(target_model_id=None):
-    """新增或更新模型"""
-    data = request.get_json(silent=True) or {}
-    model_id = (data.get('model_id') or '').strip()
-    original_model_id = (target_model_id or data.get('original_model_id') or '').strip()
-    name = (data.get('name') or '').strip()
-    provider = (data.get('provider') or '').strip()
-    status = _normalize_model_status_text(data.get('status') or 'normal')
-    has_context_window_input = 'context_window' in data
-
-    try:
-        context_window = _parse_model_context_window_for_save(data.get('context_window'))
-    except ValueError as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
-
-    if not model_id:
-        return jsonify({'success': False, 'message': 'model_id 不能为空'}), 400
-    if not provider:
-        return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
-
-    try:
-        cfg = load_models_config()
-        providers = cfg.setdefault('providers', {})
-        models = cfg.setdefault('models', {})
-
-        if provider not in providers:
-            return jsonify({'success': False, 'message': f'Provider 不存在: {provider}'}), 400
-
-        is_rename = bool(original_model_id and original_model_id != model_id)
-        existing_key = original_model_id if is_rename else model_id
-        existing_model = models.get(existing_key, {})
-        if not isinstance(existing_model, dict):
-            existing_model = {}
-
-        if is_rename:
-            if original_model_id not in models:
-                return jsonify({'success': False, 'message': f'原模型不存在: {original_model_id}'}), 404
-            if model_id in models:
-                return jsonify({'success': False, 'message': f'目标模型ID已存在: {model_id}'}), 400
-            del models[original_model_id]
-
-        model_record = dict(existing_model)
-        model_record['name'] = name or model_id
-        model_record['provider'] = provider
-        model_record['status'] = status or 'normal'
-
-        if has_context_window_input:
-            if context_window > 0:
-                model_record['context_window'] = context_window
-            else:
-                for key in MODEL_CONTEXT_WINDOW_KEYS:
-                    model_record.pop(key, None)
-
-        models[model_id] = model_record
-        save_models_config(cfg, sync_source='admin_model_upsert')
-        if is_rename:
-            return jsonify({'success': True, 'message': f'模型 {original_model_id} 已重命名为 {model_id}'})
-        return jsonify({'success': True, 'message': f'模型 {model_id} 已保存'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
 @app.route('/api/admin/models/<path:target_model_id>', methods=['DELETE'])
 @app.route('/api/admin/models/model/delete', methods=['POST'])
 @require_admin
@@ -12027,9 +11961,11 @@ def agent_tunnel_socket(ws):
 
 from App.Papi import papi_bp
 from App.Papi import user_papi_keys_bp
+from basis.Model.admin_routes import configure_model_admin_routes, model_admin_bp
 # 用户域路由装配：注入依赖后挂载自 basis.User 迁出的蓝图
 configure_user_routes(BASE_DIR, get_config_all, get_public_base_url)
 configure_user_admin_routes(get_config_all)
+configure_model_admin_routes(load_models_config, save_models_config)
 from basis.TokenUsage.routes import _normalize_quota_on_exhausted_action, configure_quota_admin_routes, quota_admin_bp
 from App.Storage.routes import configure_storage_admin_routes, storage_admin_bp
 from App.Search.admin_routes import configure_search_admin_routes, search_admin_bp
@@ -12037,8 +11973,6 @@ from App.GenImage import configure_gen_image_admin_routes, gen_image_admin_bp
 from App.Core.context_window import (
     _normalize_provider_api_type,
     _normalize_keep_alive_value,
-    MODEL_CONTEXT_WINDOW_KEYS,
-    _parse_model_context_window_for_save,
     _normalize_model_id_for_ctx,
     _extract_context_window_from_provider_row,
     _build_provider_models_context_diagnostics,
@@ -12057,6 +11991,7 @@ import App.Mail.admin_routes
 import basis.User.admin_routes
 
 app.register_blueprint(user_bp)
+app.register_blueprint(model_admin_bp)
 app.register_blueprint(papi_bp)
 app.register_blueprint(user_papi_keys_bp)
 from basis.Conversation import conversation_bp

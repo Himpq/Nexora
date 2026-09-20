@@ -142,13 +142,13 @@
     [
       "/api/admin/models/<path:target_model_id>",
       [
-        "PUT"
+        "DELETE"
       ]
     ],
     [
       "/api/admin/models/<path:target_model_id>",
       [
-        "DELETE"
+        "PUT"
       ]
     ],
     [

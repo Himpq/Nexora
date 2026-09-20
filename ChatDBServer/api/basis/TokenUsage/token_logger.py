@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterator, Optional
 
+from .billing import build_billing_snapshot, resolve_model_pricing
+
 from basis.Database import safe_append_jsonl
 
 
@@ -65,10 +67,27 @@ def normalize_papi_usage(raw_usage: Any) -> Dict[str, int]:
     if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
         total_tokens = input_tokens + output_tokens
 
+    prompt_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    input_details = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
+    cached_tokens = _safe_int(
+        prompt_details.get("cached_tokens")
+        or prompt_details.get("cache_read_input_tokens")
+        or input_details.get("cached_tokens")
+        or input_details.get("cache_read_input_tokens")
+        or usage.get("prompt_cache_hit_tokens")
+        or usage.get("cached_tokens")
+        or usage.get("input_cached_tokens")
+        or usage.get("cache_read_input_tokens")
+        or usage.get("cache_read_tokens")
+    )
+    cached_tokens = min(cached_tokens, input_tokens)
+
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
+        "raw_input_tokens": input_tokens,
+        "cached_tokens": cached_tokens,
     }
 
 
@@ -253,11 +272,23 @@ def record_papi_token_usage(
         "input_tokens": normalized_usage["input_tokens"],
         "output_tokens": normalized_usage["output_tokens"],
         "total_tokens": normalized_usage["total_tokens"],
+        "raw_input_tokens": normalized_usage["raw_input_tokens"],
+        "cached_tokens": normalized_usage["cached_tokens"],
         "duration_ms": _safe_int(duration_ms),
         "remote_addr": str(ctx.get("remote_addr") or "").strip(),
         "user_agent": str(ctx.get("user_agent") or "").strip(),
         "required_permission": str(ctx.get("required_permission") or "").strip(),
     }
+
+    pricing = resolve_model_pricing(model, provider)
+    payload["billing"] = build_billing_snapshot(
+        input_tokens=normalized_usage["input_tokens"],
+        output_tokens=normalized_usage["output_tokens"],
+        pricing=pricing,
+        raw_input_tokens=normalized_usage["raw_input_tokens"],
+        cached_tokens=normalized_usage["cached_tokens"],
+        source="snapshot",
+    )
     if isinstance(extra, dict) and extra:
         payload["extra"] = extra
 

@@ -80,7 +80,7 @@ from basis.Database import (
     safe_read_text,
     safe_write_text,
 )
-from basis.TokenUsage import append_usage_log_record, read_usage_log_records
+from basis.TokenUsage import append_usage_log_record, build_billing_snapshot, read_usage_log_records, resolve_model_pricing
 from App.Utils import (
     apply_range_replacements,
     apply_text_patch,
@@ -1366,6 +1366,18 @@ class User:
             "source_assistant_index": parse_message_index(metadata.get("source_assistant_index"), default=-1),
             "response_trace_id": str(metadata.get("response_trace_id") or "")
         }
+
+        pricing = resolve_model_pricing(
+            log_entry["model"],
+            log_entry["provider"],
+        )
+        log_entry["billing"] = build_billing_snapshot(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            pricing=pricing,
+            token_details=log_entry["token_details"],
+            source="snapshot",
+        )
 
         append_usage_log_record(log_file, log_entry)
 

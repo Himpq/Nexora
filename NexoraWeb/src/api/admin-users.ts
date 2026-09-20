@@ -21,6 +21,9 @@ export interface AdminUser {
     last_login?: number
     created_at?: number
     total_token_usage: number
+    total_billing_cost: number
+    billing_currency?: string
+    unpriced_billing_records?: number
     avatar_url?: string
     /** 本地邮箱绑定(对齐原版 get_local_mail_profile) */
     local_mail?: {

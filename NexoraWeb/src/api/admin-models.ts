@@ -16,7 +16,15 @@ export interface ModelInfo {
     provider?: string
     status?: string
     context_window?: number
+    pricing?: ModelPricing | null
     [key: string]: unknown
+}
+
+export interface ModelPricing {
+    currency: string
+    input_per_million: number
+    output_per_million: number
+    cache_hit_per_million: number
 }
 
 export interface ModelsConfig {
@@ -53,6 +61,7 @@ export async function upsertModel(options: {
     provider: string
     status?: string
     context_window?: number
+    pricing?: ModelPricing | null
 }): Promise<void> {
     const data = await apiFetch<MutationResponse>('/api/admin/models/model/upsert', {
         method: 'POST',

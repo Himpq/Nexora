@@ -73,6 +73,7 @@ MODEL_CONTEXT_WINDOW_KEYS = (
     'max_input_tokens',
     'max_prompt_tokens',
 )
+MODEL_CONTEXT_WINDOW_DEFAULT = 128_000
 MODEL_CONTEXT_WINDOW_MAX = 4_000_000
 
 

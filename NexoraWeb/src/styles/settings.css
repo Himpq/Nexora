@@ -378,6 +378,52 @@
     line-height: 1.6;
 }
 
+/* 模型编辑弹窗:基础配置与价格配置左右分栏,窄屏时由同一表单纵向排列 */
+.admin-model-form-modal > .g-modal-body {
+    padding: 4px 20px 16px;
+}
+
+.admin-model-form-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
+    gap: 24px;
+}
+
+.admin-model-form-section {
+    min-width: 0;
+}
+
+.admin-model-pricing-section {
+    padding-left: 24px;
+    border-left: 1px solid var(--color-border);
+}
+
+.admin-model-form-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.admin-model-form-section-head h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--color-text-primary);
+}
+
+.admin-model-form-section-head > span,
+.admin-model-pricing-note {
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--color-text-secondary);
+}
+
+.admin-model-pricing-note {
+    margin: -4px 0 14px;
+}
+
 /* ==================== 按钮:已上收 GDDP 全局层 buttons.css(白底描边,禁止黑底) ==================== */
 /* 全应用统一按钮语言,设置壳不再单独定义;操作行布局见下方 .setting-action-row */
 
@@ -685,6 +731,10 @@
     margin-bottom: 14px;
 }
 
+.settings-modal-shell .admin-stats-panel > .admin-stats-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .settings-modal-shell .stat-card,
 .settings-modal-shell .settings-stat-card {
     display: flex;
@@ -848,6 +898,43 @@
     color: var(--color-text-secondary);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+}
+
+.settings-modal-shell .admin-model-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+}
+
+.settings-modal-shell .admin-model-pricing {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    color: var(--color-success-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.settings-modal-shell .admin-model-pricing.is-unpriced {
+    color: var(--color-text-secondary);
+}
+
+.settings-modal-shell .admin-billing-note,
+.admin-billing-note {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--color-text-secondary);
+}
+
+.settings-modal-shell .admin-billing-estimated,
+.admin-billing-estimated {
+    display: block;
+    margin-top: 2px;
+    font-size: 10px;
+    color: var(--color-text-secondary);
 }
 
 .settings-modal-shell .admin-model-status.model-status-normal {
@@ -2231,6 +2318,31 @@
     .settings-modal-shell .settings-management-layout,
     .settings-modal-shell .admin-users-layout {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-model-form-modal {
+        max-width: calc(100vw - 20px);
+    }
+
+    .admin-model-form-modal > .g-modal-body {
+        max-height: calc(100vh - 150px);
+        overflow-y: auto;
+    }
+
+    .admin-model-form-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 18px;
+    }
+
+    .admin-model-pricing-section {
+        padding-top: 18px;
+        padding-left: 0;
+        border-top: 1px solid var(--color-border);
+        border-left: none;
+    }
+
+    .settings-modal-shell .admin-stats-panel > .admin-stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     /* 列表/详情两级钻取(AdminPanel):默认只显示列表,点选后整页切到详情 */

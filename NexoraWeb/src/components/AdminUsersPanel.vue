@@ -28,7 +28,7 @@
                 </span>
                 <span class="admin-user-main">
                     <span class="admin-user-name">{{ user.username || user.user_id }}</span>
-                    <span class="admin-user-meta">{{ user.user_id }} · {{ roleLabel(user.role) }}</span>
+                    <span class="admin-user-meta">{{ user.user_id }} · {{ roleLabel(user.role) }} · ¥{{ formatMoney(user.total_billing_cost) }}</span>
                 </span>
             </div>
         </template>
@@ -68,6 +68,13 @@
                     <div class="gddp-form-field">
                         <label>Token 消耗</label>
                         <div class="admin-info-text mono">{{ Number(selected.total_token_usage || 0).toLocaleString() }}</div>
+                    </div>
+                    <div class="gddp-form-field">
+                        <label>模型费用</label>
+                        <div class="admin-info-text mono">
+                            ¥{{ formatMoney(selected.total_billing_cost) }}
+                            <span v-if="selected.unpriced_billing_records" class="admin-billing-note">· {{ selected.unpriced_billing_records }} 条未计价</span>
+                        </div>
                     </div>
                     <div class="gddp-form-field">
                         <label>最近 IP</label>
@@ -503,6 +510,14 @@
         } catch {
             return '-'
         }
+    }
+
+    function formatMoney(value: number | undefined): string {
+        const num = Number(value || 0)
+
+        return Number.isFinite(num)
+            ? num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
+            : '-'
     }
 
     defineExpose({

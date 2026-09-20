@@ -10,16 +10,40 @@
 
 import { apiFetch } from './client'
 
+export interface AdminTokenStats {
+    total_tokens: number
+    total_cost: number
+    input_cost: number
+    output_cost: number
+    cache_hit_cost: number
+    unpriced_records: number
+    currency: string
+}
+
 interface TokenStatsResponse {
     success: boolean
     total?: number
+    total_cost?: number
+    input_cost?: number
+    output_cost?: number
+    cache_hit_cost?: number
+    unpriced_records?: number
+    currency?: string
 }
 
-/** 获取全站总 token 消耗 */
-export async function fetchAdminTokenStats(): Promise<number> {
+/** 获取全站 Token 与模型费用汇总 */
+export async function fetchAdminTokenStats(): Promise<AdminTokenStats> {
     const data = await apiFetch<TokenStatsResponse>('/api/admin/tokens/stats')
 
-    return Number(data.total || 0)
+    return {
+        total_tokens: Number(data.total || 0),
+        total_cost: Number(data.total_cost || 0),
+        input_cost: Number(data.input_cost || 0),
+        output_cost: Number(data.output_cost || 0),
+        cache_hit_cost: Number(data.cache_hit_cost || 0),
+        unpriced_records: Number(data.unpriced_records || 0),
+        currency: String(data.currency || 'CNY'),
+    }
 }
 
 /** Token 按天趋势(对齐原版 adminTokenTrendChart) */
@@ -30,9 +54,11 @@ export interface TokenTimeseries {
         output_tokens: number[]
         total_tokens: number[]
         requests: number[]
+        cost: number[]
+        unpriced_records: number[]
     }
-    top_providers: Array<{ name: string; tokens: number; requests: number }>
-    top_models: Array<{ name: string; tokens: number; requests: number }>
+    top_providers: Array<{ name: string; tokens: number; requests: number; cost: number }>
+    top_models: Array<{ name: string; tokens: number; requests: number; cost: number }>
 }
 
 interface TimeseriesResponse {
@@ -53,9 +79,25 @@ export async function fetchTokenTimeseries(days = 30): Promise<TokenTimeseries> 
             output_tokens: Array.isArray(data.series?.output_tokens) ? data.series.output_tokens : [],
             total_tokens: Array.isArray(data.series?.total_tokens) ? data.series.total_tokens : [],
             requests: Array.isArray(data.series?.requests) ? data.series.requests : [],
+            cost: Array.isArray(data.series?.cost) ? data.series.cost : [],
+            unpriced_records: Array.isArray(data.series?.unpriced_records) ? data.series.unpriced_records : [],
         },
-        top_providers: Array.isArray(data.top_providers) ? data.top_providers : [],
-        top_models: Array.isArray(data.top_models) ? data.top_models : [],
+        top_providers: Array.isArray(data.top_providers)
+            ? data.top_providers.map((row) => ({
+                name: String(row.name || ''),
+                tokens: Number(row.tokens || 0),
+                requests: Number(row.requests || 0),
+                cost: Number(row.cost || 0),
+            }))
+            : [],
+        top_models: Array.isArray(data.top_models)
+            ? data.top_models.map((row) => ({
+                name: String(row.name || ''),
+                tokens: Number(row.tokens || 0),
+                requests: Number(row.requests || 0),
+                cost: Number(row.cost || 0),
+            }))
+            : [],
     }
 }
 
@@ -73,10 +115,16 @@ export interface UserTokenStats {
         papi_input_tokens: number
         papi_output_tokens: number
         papi_total_tokens: number
+        cost: number
+        input_cost: number
+        output_cost: number
+        cache_hit_cost: number
+        unpriced_records: number
+        currency: string
     }
-    top_providers: Array<{ name: string; tokens: number; requests: number }>
-    top_models: Array<{ name: string; tokens: number; requests: number }>
-    sources: Array<{ name: string; tokens: number; requests: number }>
+    top_providers: Array<{ name: string; tokens: number; requests: number; cost: number }>
+    top_models: Array<{ name: string; tokens: number; requests: number; cost: number }>
+    sources: Array<{ name: string; tokens: number; requests: number; cost: number }>
     recent: Array<{
         timestamp: string
         source: string
@@ -87,6 +135,8 @@ export interface UserTokenStats {
         output_tokens: number
         total_tokens: number
         duration_ms: number
+        cost?: number | null
+        billing_estimated?: boolean
     }>
 }
 
@@ -124,12 +174,37 @@ export async function fetchUserTokenStats(username: string, range = '30d'): Prom
             papi_input_tokens: Number(data.summary?.papi_input_tokens || 0),
             papi_output_tokens: Number(data.summary?.papi_output_tokens || 0),
             papi_total_tokens: Number(data.summary?.papi_total_tokens || 0),
+            cost: Number(data.summary?.cost || 0),
+            input_cost: Number(data.summary?.input_cost || 0),
+            output_cost: Number(data.summary?.output_cost || 0),
+            cache_hit_cost: Number(data.summary?.cache_hit_cost || 0),
+            unpriced_records: Number(data.summary?.unpriced_records || 0),
+            currency: String(data.summary?.currency || 'CNY'),
         },
-        top_providers: Array.isArray(data.top_providers) ? data.top_providers : [],
-        top_models: Array.isArray(data.top_models) ? data.top_models : [],
-        sources: Array.isArray(data.sources) ? data.sources : [],
-        recent: Array.isArray(data.recent) ? data.recent : [],
+        top_providers: normalizeUsageRows(data.top_providers),
+        top_models: normalizeUsageRows(data.top_models),
+        sources: normalizeUsageRows(data.sources),
+        recent: Array.isArray(data.recent)
+            ? data.recent.map((row) => ({
+                ...row,
+                cost: row.cost === null || row.cost === undefined ? null : Number(row.cost || 0),
+                billing_estimated: Boolean(row.billing_estimated),
+            }))
+            : [],
     }
+}
+
+function normalizeUsageRows(
+    rows: Array<{ name: string; tokens: number; requests: number; cost?: number }> | undefined,
+): Array<{ name: string; tokens: number; requests: number; cost: number }> {
+    return Array.isArray(rows)
+        ? rows.map((row) => ({
+            name: String(row.name || ''),
+            tokens: Number(row.tokens || 0),
+            requests: Number(row.requests || 0),
+            cost: Number(row.cost || 0),
+        }))
+        : []
 }
 
 /** 工具调用观测(对齐原版 Tool Observability) */
