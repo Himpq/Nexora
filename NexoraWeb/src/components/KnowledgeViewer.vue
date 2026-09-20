@@ -6,7 +6,7 @@
       - 图片上传(知识库 API:allocate → upload → 占位替换)
       - 在线协作(迁移路线第 3 阶段):metadata 满足 public+collaborative 时
         通过 src/stream/knowledge-collab.ts 建立 ws 连接,渲染成员条 + 远程光标 + 离线遮罩
-      - 保存:工具栏「保存」按钮 + Ctrl/Cmd+S(无自动保存,需显式提交);向量化经 expose 供后续接入
+      - 保存:工具栏「保存」按钮 + Ctrl/Cmd+S(无自动保存,需显式提交);捕获阶段拦截 Toast UI 的冲突删除线快捷键
     编辑器内核、工具栏、视图模式、全屏、布局修正均由 MarkdownEditor 自包含管理
 -->
 
@@ -136,7 +136,7 @@
     )
 
     onBeforeUnmount(() => {
-        window.removeEventListener('keydown', handleGlobalKeydown)
+        window.removeEventListener('keydown', handleGlobalKeydown, true)
         stopCollab()
         viewerCleanupFns.forEach((cleanup) => cleanup())
         viewerCleanupFns = []
@@ -147,7 +147,12 @@
         void save()
     }
 
-    /** Ctrl/Cmd+S 保存(仅知识库视图打开且有目标标题时拦截浏览器的"另存为") */
+    /**
+     * Ctrl/Cmd+S 保存。
+     *
+     * Toast UI Editor 默认把 Mod-S 注册为删除线命令,冒泡阶段拦截已经晚于编辑器内部 keymap。
+     * 捕获阶段先阻止事件继续进入编辑器,保留知识库保存动作并消除 `~~` 插入。
+     */
     function handleGlobalKeydown(event: KeyboardEvent): void {
         if (!props.open || !props.title) {
             return
@@ -155,13 +160,14 @@
 
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
             event.preventDefault()
+            event.stopPropagation()
 
             void save()
         }
     }
 
     onMounted(() => {
-        window.addEventListener('keydown', handleGlobalKeydown)
+        window.addEventListener('keydown', handleGlobalKeydown, true)
     })
 
     /** 加载知识正文(就绪后渲染编辑器,再按 metadata 决定是否启动协作) */
