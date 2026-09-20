@@ -1,4 +1,70 @@
 /* PAPI Key owner/global management surfaces. */
+#settingsModal .settings-management-panel.papi-feature-disabled {
+    position: relative;
+}
+
+#settingsModal .settings-management-panel.papi-feature-disabled > :not(.papi-disabled-state) {
+    filter: blur(6px);
+    opacity: 0.42;
+    pointer-events: none;
+    user-select: none;
+}
+
+#settingsModal .papi-disabled-state {
+    align-items: center;
+    background: rgba(248, 250, 252, 0.78);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    min-height: 360px;
+    position: absolute;
+    z-index: 10;
+}
+
+#settingsModal .papi-disabled-state[hidden] {
+    display: none;
+}
+
+#settingsModal .papi-disabled-card {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+    display: flex;
+    flex-direction: column;
+    max-width: 320px;
+    padding: 28px 32px;
+    text-align: center;
+    width: min(320px, calc(100% - 32px));
+}
+
+#settingsModal .papi-disabled-icon {
+    align-items: center;
+    background: #f1f5f9;
+    border-radius: 50%;
+    color: #64748b;
+    display: inline-flex;
+    font-size: 22px;
+    height: 52px;
+    justify-content: center;
+    margin-bottom: 14px;
+    width: 52px;
+}
+
+#settingsModal .papi-disabled-card h3 {
+    color: #1e293b;
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+}
+
+#settingsModal .papi-disabled-card p {
+    color: #64748b;
+    font-size: 13px;
+    margin: 8px 0 0;
+}
+
 #settingsModal .papi-owner-filter-selector {
     width: min(260px, 100%);
     position: relative;

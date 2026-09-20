@@ -5,15 +5,14 @@ from typing import Any, Dict, Optional
 
 from flask import Blueprint, jsonify, request, session
 
+from basis.Permission.AuthKey import EXPIRE_PRESETS, PERMISSION_LABELS, normalize_permissions
+
 from .admin_keys import (
-    PUBLIC_API_EXPIRE_PRESETS,
-    PUBLIC_API_PERMISSION_LABELS,
     _build_public_api_key_state,
     _create_public_api_key,
     _delete_public_api_key,
     _find_papi_key_by_id,
     _list_papi_key_records,
-    _normalize_public_api_permissions,
     _regenerate_public_api_key,
     _update_public_api_key,
 )
@@ -102,9 +101,9 @@ def _user_keys_payload() -> Dict[str, Any]:
         "keys": _owned_key_states(),
         "expire_options": [
             {"id": option_id, "label": str(meta.get("label") or option_id)}
-            for option_id, meta in PUBLIC_API_EXPIRE_PRESETS.items()
+            for option_id, meta in EXPIRE_PRESETS.items()
         ],
-        "permission_labels": dict(PUBLIC_API_PERMISSION_LABELS),
+        "permission_labels": dict(PERMISSION_LABELS),
         "public_api_enabled": bool(api_cfg.get("public_api_enabled")),
     }
 
@@ -132,7 +131,7 @@ def create_user_papi_key():
         username = _current_username()
         record, plain_key = _create_public_api_key(
             expire_option=expire,
-            permissions=_normalize_public_api_permissions(data.get("permissions")),
+            permissions=normalize_permissions(data.get("permissions")),
             scope="owner",
             owner=username,
             name=str(data.get("name") or "").strip(),
@@ -199,7 +198,7 @@ def update_user_papi_key(key_id: str):
         permissions = None
 
         if "permissions" in data:
-            permissions = _normalize_public_api_permissions(data.get("permissions"))
+            permissions = normalize_permissions(data.get("permissions"))
 
         updated = _update_public_api_key(
             key_id=str(record.get("id") or ""),

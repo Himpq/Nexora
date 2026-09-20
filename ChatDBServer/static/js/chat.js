@@ -19084,6 +19084,20 @@ function getAdminPapiScopeModule() {
     return module;
 }
 
+function setAdminPublicApiDisabledState(disabled) {
+    const panel = document.getElementById('settings-admin-auth-tab');
+    const overlay = document.getElementById('adminPublicApiDisabledState');
+
+    if (panel) {
+        panel.classList.toggle('papi-feature-disabled', !!disabled);
+    }
+
+    if (overlay) {
+        overlay.hidden = !disabled;
+        overlay.setAttribute('aria-hidden', disabled ? 'false' : 'true');
+    }
+}
+
 function ensureAdminPublicApiLayout() {
     const tab = document.getElementById('settings-admin-auth-tab');
     if (!tab) return;
@@ -19301,8 +19315,11 @@ function renderAdminPublicApiKeyList(payload) {
 }
 
 function renderAdminPublicApiAuth(auth, options = {}) {
-    const payload = (auth && typeof auth === 'object') ? auth : {};
+    const rawPayload = (auth && typeof auth === 'object') ? auth : {};
+    const publicApiEnabled = rawPayload.public_api_enabled === true;
+    const payload = publicApiEnabled ? rawPayload : { ...rawPayload, keys: [] };
     adminPublicApiAuthState = payload;
+    setAdminPublicApiDisabledState(!publicApiEnabled);
     ensureAdminPublicApiLayout();
     const keys = Array.isArray(payload.keys) ? payload.keys : [];
     getAdminPapiScopeModule().setKeys(keys);

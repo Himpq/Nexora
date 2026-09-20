@@ -10,8 +10,6 @@ from flask import request, jsonify, Response, stream_with_context, current_app
 from functools import wraps
 
 from App.Utils import append_log_text, log_event
-from basis.Permission import PERMISSION_DEFAULTS as _PAPI_PERMISSION_DEFAULTS
-
 from .admin_keys import resolve_public_api_key_auth
 from basis.Model.Provider.base import append_stream_delta, reconcile_stream_snapshot
 
@@ -27,34 +25,6 @@ def _resolve_server_module():
 def _load_config() -> Dict[str, Any]:
     module = _resolve_server_module()
     return getattr(module, 'get_config_all')()
-
-
-_PAPI_PERMISSION_DEFAULTS: Dict[str, bool] = {
-    'model_inference': True,
-    'image_generation': True,
-    'knowledge_read': True,
-    'conversations_read': True,
-    'conversations_write': True,
-    'token_stats_read': True,
-    'user_read': True,
-}
-
-
-def _papi_coerce_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-def _papi_normalize_permissions(raw_permissions: Any) -> Dict[str, bool]:
-    normalized = dict(_PAPI_PERMISSION_DEFAULTS)
-    if isinstance(raw_permissions, dict):
-        for key in _PAPI_PERMISSION_DEFAULTS.keys():
-            if key in raw_permissions:
-                normalized[key] = _papi_coerce_bool(raw_permissions.get(key), normalized[key])
-    return normalized
 
 
 def require_papi_key(f):
@@ -2937,4 +2907,3 @@ def _papi_create_openai_responses_payload(
         request_username=request_username,
         quota_status=quota_status,
     )
-

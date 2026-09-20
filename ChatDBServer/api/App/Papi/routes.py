@@ -37,6 +37,7 @@ from basis.TokenUsage import (
     iter_papi_token_log_entries,
     record_papi_image_generation,
     record_papi_token_usage,
+    usage_record_total_tokens,
 )
 from .scope import (
     deny_papi_owner_scope,
@@ -78,11 +79,7 @@ def _papi_normalize_stats_log(log, source):
     src = log if isinstance(log, dict) else {}
     input_tokens = _papi_safe_int(src.get('input_tokens', src.get('prompt_tokens', 0)))
     output_tokens = _papi_safe_int(src.get('output_tokens', src.get('completion_tokens', 0)))
-    total_value = src.get('total_tokens')
-    total_tokens = _papi_safe_int(total_value, input_tokens + output_tokens) if total_value is not None else input_tokens + output_tokens
-
-    if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
-        total_tokens = input_tokens + output_tokens
+    total_tokens = usage_record_total_tokens(src)
 
     item = dict(src)
     item['source'] = str(source or src.get('source') or 'chat').strip() or 'chat'
@@ -1456,6 +1453,4 @@ def papi_v1_root():
             'images_generations': '/api/papi/v1/images/generations',
         },
     })
-
-
 

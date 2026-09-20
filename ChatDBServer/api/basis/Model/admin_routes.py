@@ -174,3 +174,42 @@ def admin_upsert_model(target_model_id=None):
         return jsonify({"success": True, "message": f"模型 {model_id} 已保存"})
     except Exception as error:
         return jsonify({"success": False, "message": str(error)})
+
+
+@model_admin_bp.route("/api/admin/models/<path:target_model_id>", methods=["DELETE"])
+@model_admin_bp.route("/api/admin/models/model/delete", methods=["POST"])
+@require_admin
+def admin_delete_model(target_model_id=None):
+    """归档模型但保留完整配置，尤其是历史计费所需的 pricing。"""
+    if _load_models_config is None or _save_models_config is None:
+        raise RuntimeError("model admin routes are not configured")
+
+    data = request.get_json(silent=True) or {}
+    model_id = (target_model_id or data.get("model_id") or "").strip()
+    confirm_text = data.get("confirm_text")
+
+    if not model_id:
+        return jsonify({"success": False, "message": "model_id 不能为空"}), 400
+
+    if confirm_text != "确认修改":
+        return jsonify({"success": False, "message": "确认文本错误"}), 400
+
+    try:
+        config = _load_models_config()
+        models = config.setdefault("models", {})
+        model_record = models.get(model_id)
+
+        if not isinstance(model_record, dict):
+            return jsonify({"success": False, "message": "模型不存在"}), 404
+
+        archived_record = dict(model_record)
+        archived_record["status"] = "archived"
+        models[model_id] = archived_record
+        _save_models_config(config, sync_source="admin_model_archive")
+
+        return jsonify({
+            "success": True,
+            "message": f"模型 {model_id} 已归档，计费信息已保留",
+        })
+    except Exception as error:
+        return jsonify({"success": False, "message": str(error)})

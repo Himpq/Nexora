@@ -6,6 +6,7 @@
         selectedKeyId: '',
         expireOptions: [],
         permissionLabels: {},
+        publicApiEnabled: false,
         modalCompleted: false,
         dialogController: null,
     };
@@ -36,6 +37,25 @@
         }
 
         return module;
+    }
+
+    function setUserPapiDisabledState(disabled) {
+        const panel = document.getElementById('settings-user-api-keys-tab');
+        const overlay = document.getElementById('userPapiDisabledState');
+        const createButton = document.getElementById('userPapiKeyCreateBtn');
+
+        if (panel) {
+            panel.classList.toggle('papi-feature-disabled', !!disabled);
+        }
+
+        if (overlay) {
+            overlay.hidden = !disabled;
+            overlay.setAttribute('aria-hidden', disabled ? 'false' : 'true');
+        }
+
+        if (createButton) {
+            createButton.disabled = !!disabled;
+        }
     }
 
     function getSettingsDialog() {
@@ -237,7 +257,9 @@
 
     function applyPayload(payload) {
         // 服务端只返回当前会话用户的 owner Key，前端不保留跨用户缓存。
-        state.keys = Array.isArray(payload?.keys) ? payload.keys : [];
+        state.publicApiEnabled = payload?.public_api_enabled === true;
+        setUserPapiDisabledState(!state.publicApiEnabled);
+        state.keys = state.publicApiEnabled && Array.isArray(payload?.keys) ? payload.keys : [];
         state.expireOptions = Array.isArray(payload?.expire_options) ? payload.expire_options : [];
         state.permissionLabels = payload?.permission_labels && typeof payload.permission_labels === 'object'
             ? payload.permission_labels
@@ -279,7 +301,7 @@
             applyPayload(payload);
 
             if (createButton) {
-                createButton.disabled = false;
+                createButton.disabled = !state.publicApiEnabled;
             }
         } catch (error) {
             showMessage(error.message || '加载 API Key 失败');

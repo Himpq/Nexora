@@ -21,8 +21,8 @@ from flask import current_app, jsonify, request, session
 from App.Utils import resolve_configured_path, safe_join_path
 from basis.Permission import require_admin
 from basis.Permission.model_permissions import get_user_model_blacklist
-from basis.TokenUsage import build_log_billing, dedupe_token_log_records, iter_papi_token_log_entries, read_usage_log_records
-from basis.Config import load_models_config
+from basis.TokenUsage import build_log_billing, dedupe_token_log_records, iter_papi_token_log_entries, read_usage_log_records, usage_record_total_tokens
+from basis.Config import filter_archived_models, load_models_config
 from basis.User import load_users, save_users
 
 from .routes import build_user_avatar_url, get_local_mail_profile, user_bp
@@ -54,18 +54,7 @@ def _resolve_user_data_path(user_id, info):
 
 
 def _safe_token_total(log):
-    if not isinstance(log, dict):
-        return 0
-
-    total = log.get('total_tokens', None)
-
-    if total is None:
-        total = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-
-    try:
-        return max(0, int(total or 0))
-    except Exception:
-        return 0
+    return usage_record_total_tokens(log)
 
 
 def _is_safe_username(username) -> bool:
@@ -344,7 +333,7 @@ def admin_get_user_models(target_username=None):
 
     try:
         config = _get_config_all()
-        all_models = config.get('models', {})
+        all_models = filter_archived_models(config.get('models', {}))
         blacklist = get_user_model_blacklist(target_username)
 
         models = []

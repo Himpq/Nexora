@@ -22,7 +22,7 @@ from basis.Config import load_models_config
 from basis.Permission import require_login
 from basis.Permission.model_permissions import get_user_model_blacklist
 from basis.Timeline import record_notes_snapshot_change
-from basis.TokenUsage import build_log_billing, dedupe_token_log_records, read_usage_log_records
+from basis.TokenUsage import build_log_billing, dedupe_token_log_records, read_usage_log_records, round_billing_amount, usage_record_total_tokens
 from basis.User import User, load_users, save_users
 
 user_bp = Blueprint('user', __name__)
@@ -124,19 +124,8 @@ def get_local_mail_profile(user_data):
 
 
 def _safe_usage_token_total(log):
-    """读取日志总 Token；旧日志缺少 total_tokens 时按输入和输出相加。"""
-    if not isinstance(log, dict):
-        return 0
-
-    total = log.get('total_tokens')
-
-    if total is None:
-        total = (log.get('input_tokens') or 0) + (log.get('output_tokens') or 0)
-
-    try:
-        return max(0, int(float(total or 0)))
-    except (TypeError, ValueError, OverflowError):
-        return 0
+    """读取完整日志总 Token，不扣除缓存命中输入。"""
+    return usage_record_total_tokens(log)
 
 
 def _new_user_token_stats():
@@ -219,10 +208,10 @@ def _build_user_token_stats(token_records, models_config):
     elif len(currency_names) > 1:
         stats['billing_currency'] = 'MULTI'
 
-    stats['total_billing_cost'] = round(stats['total_billing_cost'], 8)
+    stats['total_billing_cost'] = round_billing_amount(stats['total_billing_cost'])
 
     for model_item in stats['billing_model_usage'].values():
-        model_item['cost'] = round(model_item['cost'], 8)
+        model_item['cost'] = round_billing_amount(model_item['cost'])
 
     return stats
 
@@ -303,7 +292,7 @@ def get_user_info():
                 'role': user_data.get('role', 'member'),
                 'created_at': user_data.get('created_at'),  # 如果有创建时间
                 'last_login': user_data.get('last_login'),  # 如果有最后登录时间
-                'total_tokens': user_data.get('token_usage', 0),
+                'total_tokens': stats.get('total_tokens', user_data.get('token_usage', 0)),
                 'avatar_url': build_user_avatar_url(username, user_data),
                 'local_mail': get_local_mail_profile(user_data),
                 'stats': stats

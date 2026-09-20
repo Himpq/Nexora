@@ -35,7 +35,7 @@
     <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260730_style_unify_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
     <link rel="stylesheet" href="/static/css/chat_files.css?v=20260729_multi_transfer_01">
-    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260728_papi_list_08">
+    <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260920_papi_disabled_state_01">
     <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07">
     <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260728_settings_management_06">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
@@ -830,7 +830,7 @@
     <script type="module" src="/static/js/chat_markdown.js?v=20260815_table_fix_01"></script>
     <script type="module" src="/static/js/chat_files.js?v=20260729_multi_transfer_02"></script>
     <script type="module" src="/static/js/chat_settings_dialog.js?v=20260728_modal_stack_01"></script>
-    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>
+    <script type="module" src="/static/js/chat_user_api_keys.js?v=20260920_papi_disabled_state_01"></script>
     <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260809_learning_tab_hide_01"></script>
     <script type="module" src="/static/js/chat_input.js?v=20260810_chatjs_split_01"></script>
@@ -843,7 +843,7 @@
     <script type="module" src="/static/js/chat_wss_sync.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_lifecycle.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_app.js?v=20260810_chatjs_split_01"></script>
-    <script type="module" src="/static/js/chat.js?v=20260819_toast_unify_01"></script>
+    <script type="module" src="/static/js/chat.js?v=20260920_papi_disabled_state_01"></script>
     <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/workspace.js?v=20260726_esm_01"></script>
@@ -1441,6 +1441,15 @@
                                     <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
                                 </button>
                             </div>
+                            <div id="userPapiDisabledState" class="papi-disabled-state" hidden aria-hidden="true" role="status">
+                                <div class="papi-disabled-card">
+                                    <div class="papi-disabled-icon" aria-hidden="true">
+                                        <i class="fa-solid fa-lock"></i>
+                                    </div>
+                                    <h3>Public-API 未启用</h3>
+                                    <p>请先启用</p>
+                                </div>
+                            </div>
                             <div class="admin-users-layout settings-management-layout">
                                 <div id="userPapiKeyList" class="admin-users-list settings-management-list">
                                     <div class="admin-user-detail-empty settings-management-list-state" role="status">正在加载 API Key...</div>
@@ -2025,6 +2034,15 @@
                                     启用 Public API（总开关）
                                 </label>
                                 <button id="adminPublicApiSaveGlobalBtn" class="btn-primary admin-public-api-global-save" type="button" hidden style="display:none !important;">保存总开关</button>
+                            </div>
+                            <div id="adminPublicApiDisabledState" class="papi-disabled-state" hidden aria-hidden="true" role="status">
+                                <div class="papi-disabled-card">
+                                    <div class="papi-disabled-icon" aria-hidden="true">
+                                        <i class="fa-solid fa-lock"></i>
+                                    </div>
+                                    <h3>Public-API 未启用</h3>
+                                    <p>请先启用</p>
+                                </div>
                             </div>
                             <div class="admin-users-layout settings-management-layout">
                                 <div id="adminPublicApiKeyList" class="admin-users-list settings-management-list">

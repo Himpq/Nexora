@@ -2,16 +2,16 @@
 Nexora.basis.Config — 配置基础层
 
 职责：主配置（config.json）与模型配置（models.json）的读写、默认值合并、
-      缓存读取、模型配置同步载荷构建。从 server.py 迁移，与 Flask / 业务迁移
-      逻辑解耦（迁移逻辑由调用方通过回调注入）。
+      缓存读取、模型配置同步载荷构建。从 server.py 迁移，与 Flask / 业务逻辑解耦。
 
 对外提供：
 - DEFAULT_MAIN_CONFIG / DEFAULT_MODELS_CONFIG: 默认值
 - merge_defaults / coerce_bool_flag: 基础工具
-- ensure_main_config_defaults: 主配置默认值合并（支持迁移回调）
+- ensure_main_config_defaults: 主配置默认值合并
 - get_config_all: 带 mtime 缓存读取
 - save_main_config / load_models_config / save_models_config
 - models_config_sync_file_payload / extract_ollama_provider_names
+- is_archived_model_entry / filter_archived_models
 - set_config_paths: 注入配置文件路径（由 server 层调用）
 """
 from __future__ import annotations
@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import os
 import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from Map.config import DEFAULT_MAP_SERVICE_CONFIG
 
 # 配置文件路径（由 server 层通过 set_config_paths 注入，避免硬编码）
 CONFIG_PATH = ""
@@ -28,6 +30,15 @@ MODELS_PATH = ""
 _CONFIG_CACHE: Optional[Dict[str, Any]] = None
 _CONFIG_CACHE_MTIME: Optional[Tuple[float, float]] = None
 _CONFIG_LOCK = threading.Lock()
+
+_RETIRED_API_FIELDS = {
+    "public_api_key",
+    "public_api_keys_file",
+    "public_api_key_created_at",
+    "public_api_key_expires_at",
+    "public_api_key_last_regenerated_at",
+    "public_api_key_permissions",
+}
 
 
 def set_config_paths(config_path: str, models_path: str) -> None:
@@ -54,19 +65,7 @@ DEFAULT_MAIN_CONFIG: Dict[str, Any] = {
     "user_knowledge_prompt_max_items": 24,
     "user_knowledge_prompt_max_chars": 6000,
     "api": {
-        "public_api_key": "",
         "public_api_enabled": False,
-        "public_api_keys_file": "./data/papikey.jsonl",
-        "public_api_key_created_at": "",
-        "public_api_key_expires_at": "",
-        "public_api_key_last_regenerated_at": "",
-        "public_api_key_permissions": {
-            "model_inference": True,
-            "image_generation": True,
-            "knowledge_read": True,
-            "conversations_read": True,
-            "token_stats_read": True,
-        },
     },
     "rag_database": {
         "host": "127.0.0.1",
@@ -75,36 +74,53 @@ DEFAULT_MAIN_CONFIG: Dict[str, Any] = {
         "rag_database_enabled": False,
         "mode": "service",
         "path": "./data/chroma",
+        "collection_prefix": "knowledge",
+        "distance": "cosine",
+        "service_url": "http://127.0.0.1:8100",
+        "chunk_size": 200,
+        "chunk_overlap": 40,
     },
-    "nexora_mail": {},
-    "nexora_learning": {},
-    "map_service": {},
-    "gen_image": {},
-    "temp_context_cache": {},
-    "nexora_search": {},
-    "web_search": {
-        "active_provider": "duckduckgo",
-        "default_num_results": 8,
-        "providers": {
-            "duckduckgo": {
-                "backend": "html",
-                "region": "wt-wt",
-                "safesearch": "moderate",
-                "timelimit": "w",
-                "fetch_content": False,
-                "timeout": 15,
-            },
-            "exa": {
-                "api_key": "",
-                "base_url": "https://api.exa.ai",
-                "type": "auto",
-                "num_results": 10,
-                "contents": {
-                    "highlights": True
-                },
-                "timeout": 20,
-            },
-        },
+    "nexora_mail": {
+        "host": "127.0.0.1",
+        "port": 17171,
+        "api_key": "",
+        "nexora_mail_enabled": False,
+        "service_url": "http://127.0.0.1:17171",
+        "timeout": 10,
+        "send_timeout": 120,
+        "cache_enabled": True,
+        "cache_list_ttl": 180,
+        "cache_detail_ttl": 3600,
+        "cache_max_entries": 800,
+        "default_group": "default",
+    },
+    "nexora_search": {
+        "host": "127.0.0.1",
+        "port": 45678,
+        "api_key": "",
+        "nexora_search_enabled": False,
+        "service_url": "http://127.0.0.1:45678",
+        "timeout": 15,
+    },
+    "map_service": DEFAULT_MAP_SERVICE_CONFIG,
+    "gen_image": {
+        "enabled_api": "",
+        "apis": {},
+    },
+    "temp_context_cache": {
+        "enabled": True,
+        "trigger_chars": 1000,
+        "expire_seconds": 0,
+        "storage": "memory",
+        "file_path": "./data/temp/ContextTemp.tmp",
+    },
+    "nexora_learning": {
+        "enabled": True,
+        "host": "127.0.0.1",
+        "port": 5001,
+        "frontend_url": "http://127.0.0.1:5001",
+        "api_key": "",
+        "request_timeout": 30,
     },
 }
 
@@ -144,8 +160,17 @@ def load_main_config() -> Dict[str, Any]:
 
 
 def apply_defaults(cfg: Dict[str, Any]) -> bool:
-    """将 DEFAULT_MAIN_CONFIG 深合并进 cfg，返回是否有变更。"""
-    return merge_defaults(cfg, json.loads(json.dumps(DEFAULT_MAIN_CONFIG, ensure_ascii=False)))
+    """合并唯一默认值，并删除已退役的配置字段。"""
+    changed = merge_defaults(cfg, json.loads(json.dumps(DEFAULT_MAIN_CONFIG, ensure_ascii=False)))
+    api_cfg = cfg.get("api")
+
+    if isinstance(api_cfg, dict):
+        for field_name in _RETIRED_API_FIELDS:
+            if field_name in api_cfg:
+                del api_cfg[field_name]
+                changed = True
+
+    return changed
 
 
 def persist_main_config(cfg: Dict[str, Any]) -> None:
@@ -155,24 +180,10 @@ def persist_main_config(cfg: Dict[str, Any]) -> None:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
 
-def ensure_main_config_defaults(
-    *migration_hooks: Callable[[Dict[str, Any]], bool],
-) -> Dict[str, Any]:
-    """
-    读取主配置并合并默认值，可选执行迁移回调。
-    迁移回调返回是否变更；若有变更或文件缺失，将结果写回。
-    """
+def ensure_main_config_defaults() -> Dict[str, Any]:
+    """读取主配置并合并唯一的基础默认值。"""
     cfg = load_main_config()
     changed = apply_defaults(cfg)
-
-    for hook in migration_hooks:
-        if not callable(hook):
-            continue
-        try:
-            if hook(cfg):
-                changed = True
-        except Exception:
-            pass
 
     if changed or not (CONFIG_PATH and os.path.exists(CONFIG_PATH)):
         persist_main_config(cfg)
@@ -180,7 +191,7 @@ def ensure_main_config_defaults(
     return cfg
 
 
-def get_config_all(*migration_hooks: Callable[[Dict[str, Any]], bool]) -> Dict[str, Any]:
+def get_config_all() -> Dict[str, Any]:
     """
     获取配置（带 mtime 缓存，文件未变时直接返回内存副本）。
     """
@@ -194,7 +205,7 @@ def get_config_all(*migration_hooks: Callable[[Dict[str, Any]], bool]) -> Dict[s
         pass
 
     try:
-        config = ensure_main_config_defaults(*migration_hooks)
+        config = ensure_main_config_defaults()
     except Exception as e:
         print(f"Error loading/ensuring config defaults: {e}")
         config = {}
@@ -248,6 +259,26 @@ def load_models_config() -> Dict[str, Any]:
     if not isinstance(providers, dict):
         providers = {}
     return {"models": models, "providers": providers}
+
+
+def is_archived_model_entry(model_info: Any) -> bool:
+    """判断模型是否已归档；归档模型仍保留在配置中供历史计费读取。"""
+    if not isinstance(model_info, dict):
+        return False
+
+    return str(model_info.get("status") or "").strip().lower() == "archived"
+
+
+def filter_archived_models(models: Any) -> Dict[str, Any]:
+    """过滤对外展示的归档模型，不影响内部配置和历史计费解析。"""
+    if not isinstance(models, dict):
+        return {}
+
+    return {
+        model_id: model_info
+        for model_id, model_info in models.items()
+        if not is_archived_model_entry(model_info)
+    }
 
 
 def save_models_config(models_cfg: Dict[str, Any], sync_hook: Optional[Callable[[str], None]] = None, sync_source: str = "models_config_save") -> None:

@@ -4,9 +4,9 @@ Nexora.Map.routes — 地图 provider 配置路由（自 server.py 分批迁移�
 - /api/map/provider (GET)：登录用户读取渲染摘要
 - /api/admin/map/provider (GET/POST/PUT)：管理员读取与保存配置
 
-组装契约：配置读写（ensure_main_config_defaults / save_main_config，含迁移
-钩子的 server 侧包装）与默认 map_service 配置经 configure_map_config_routes()
-注入；未装配即处理请求视为组装顺序错误。
+组装契约：配置读写（ensure_main_config_defaults / save_main_config）与默认
+map_service 配置经 configure_map_config_routes() 注入；未装配即处理请求视为
+组装顺序错误。
 """
 
 from typing import Any, Dict
@@ -61,9 +61,9 @@ def configure_map_config_routes(ensure_main_config_defaults, save_main_config, d
     """
     server 组装期注入依赖（仅允许调用一次）。
 
-    ensure_main_config_defaults: 读取主配置并合并默认值 + 迁移逻辑
+    ensure_main_config_defaults: 读取主配置并合并默认值
     save_main_config:            保存主配置
-    default_map_service_config:  DEFAULT_MAIN_CONFIG 中的 map_service 默认值
+    default_map_service_config:  Map.config 中的 map_service 默认值
     """
     global _ensure_main_config_defaults, _save_main_config, _default_map_service_config
 

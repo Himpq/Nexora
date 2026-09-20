@@ -2,13 +2,11 @@
 Nexora.App.Papi.admin_keys — PAPI 密钥存储层与管理端路由（自 server.py 分批迁移）
 
 - 密钥记录读写（data/papikey.jsonl，读改写 + 路径锁）
-- 密钥状态构建、scope/owner 校验、迁移逻辑
+- 密钥状态构建、scope/owner 校验
 - /api/admin/auth/public-api 管理路由
 
 组装契约：PAPI_KEYS_PATH 与主配置读写（ensure_main_config_defaults /
-save_main_config，含迁移钩子的 server 侧包装）经 configure_papi_admin_keys()
-注入。server 组装层经本模块 import-back 保持旧名称可用（迁移钩子与
-user_keys.py 的旧式 _server_attr 通路依赖这些名字）。
+save_main_config）经 configure_papi_admin_keys() 注入。
 """
 
 import hashlib
@@ -23,6 +21,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import Blueprint, jsonify, request, session
 
 from App.Utils import mask_public_api_key as _mask_public_api_key
+from basis.Permission.AuthKey import (
+    EXPIRE_PRESETS,
+    PERMISSION_LABELS,
+    SCOPES,
+    normalize_permissions,
+)
 import basis.Permission.AuthKey as _authkey
 from basis.Database import get_path_lock
 from basis.Permission import coerce_bool_flag as _coerce_bool_flag
@@ -32,29 +36,8 @@ from basis.User import load_users
 
 papi_admin_bp = Blueprint('papi_admin', __name__)
 
-# 以下名字在迁移前定义于 server.py，经注入或别名保持函数体逐字节不变
+# PAPI 文件路径与配置读写由 server 组装层注入。
 PAPI_KEYS_PATH = ""
-
-PUBLIC_API_PERMISSION_DEFAULTS = {
-    "read": True,
-    "write": False,
-}
-
-PUBLIC_API_PERMISSION_LABELS = {
-    "read": "读取",
-    "write": "写入",
-}
-
-PUBLIC_API_EXPIRE_PRESETS = {
-    "1d": {"seconds": 24 * 60 * 60, "label": "1 day"},
-    "7d": {"seconds": 7 * 24 * 60 * 60, "label": "7 days"},
-    "1m": {"seconds": 30 * 24 * 60 * 60, "label": "1 month"},
-    "3m": {"seconds": 90 * 24 * 60 * 60, "label": "3 months"},
-    "forever": {"seconds": None, "label": "Forever"},
-}
-
-# owner: Key 仅可访问 owner 本人数据; global: 跨用户访问(平台组件用)
-PUBLIC_API_KEY_SCOPES = {"owner", "global"}
 
 _ensure_main_config_defaults = None
 _save_main_config = None
@@ -66,7 +49,7 @@ def configure_papi_admin_keys(papi_keys_path, ensure_main_config_defaults, save_
 
     papi_keys_path:              PAPI 密钥文件路径（data/papikey.jsonl），
                                  注入时统一规范化为绝对路径
-    ensure_main_config_defaults: 读取主配置并合并默认值 + 迁移逻辑
+    ensure_main_config_defaults: 读取主配置并合并默认值
     save_main_config:            保存主配置
     """
     global PAPI_KEYS_PATH, _ensure_main_config_defaults, _save_main_config
@@ -102,20 +85,11 @@ def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
         return None
 
 
-def _normalize_public_api_permissions(raw_permissions: Any) -> Dict[str, bool]:
-    normalized = dict(PUBLIC_API_PERMISSION_DEFAULTS)
-    if isinstance(raw_permissions, dict):
-        for key in PUBLIC_API_PERMISSION_DEFAULTS.keys():
-            if key in raw_permissions:
-                normalized[key] = _coerce_bool_flag(raw_permissions.get(key), normalized[key])
-    return normalized
-
-
 def _resolve_public_api_expire_option(raw_option: Any) -> Tuple[str, str, Optional[datetime], Optional[str]]:
     option = str(raw_option or "").strip().lower() or "forever"
-    if option not in PUBLIC_API_EXPIRE_PRESETS:
+    if option not in EXPIRE_PRESETS:
         return option, "", None, "Invalid expire option. Use one of: 1d, 7d, 1m, 3m, forever."
-    preset = PUBLIC_API_EXPIRE_PRESETS[option]
+    preset = EXPIRE_PRESETS[option]
     seconds = preset.get("seconds")
     if seconds is None:
         return option, "", None, None
@@ -205,12 +179,9 @@ def _normalize_papi_key_record(raw: Any) -> Optional[Dict[str, Any]]:
     if not key_hash:
         return None
     scope = str(raw.get("scope") or "").strip().lower()
-    if scope not in PUBLIC_API_KEY_SCOPES:
-        # 存量记录迁移:无 scope 的旧数据一律视为全局 Key,owner 继承 created_by
-        scope = "global"
-        owner = str(raw.get("owner") or raw.get("created_by") or "").strip()
-    else:
-        owner = str(raw.get("owner") or "").strip()
+    if scope not in SCOPES:
+        return None
+    owner = str(raw.get("owner") or "").strip()
     record: Dict[str, Any] = {
         "id": key_id,
         "name": name,
@@ -222,7 +193,7 @@ def _normalize_papi_key_record(raw: Any) -> Optional[Dict[str, Any]]:
         "expires_at": expires_at,
         "expire_option": str(raw.get("expire_option") or "forever").strip().lower() or "forever",
         "last_regenerated_at": last_regenerated_at,
-        "permissions": _normalize_public_api_permissions(raw.get("permissions")),
+        "permissions": normalize_permissions(raw.get("permissions")),
         "scope": scope,
         "owner": owner,
         "last_used_at": str(raw.get("last_used_at") or "").strip(),
@@ -299,7 +270,7 @@ def _build_public_api_key_state(record: Dict[str, Any]) -> Dict[str, Any]:
         "last_regenerated_at": str(record.get("last_regenerated_at") or "").strip(),
         "is_expired": bool(is_expired),
         "expires_in_seconds": expires_in_seconds,
-        "permissions": _normalize_public_api_permissions(record.get("permissions")),
+        "permissions": normalize_permissions(record.get("permissions")),
         "scope": str(record.get("scope") or "").strip().lower(),
         "owner": str(record.get("owner") or "").strip(),
         "last_used_at": str(record.get("last_used_at") or "").strip(),
@@ -348,11 +319,11 @@ def _build_public_api_auth_state(
         "last_regenerated_at": str(primary.get("last_regenerated_at") or "").strip() if isinstance(primary, dict) else "",
         "is_expired": bool(primary.get("is_expired")) if isinstance(primary, dict) else False,
         "expires_in_seconds": (primary.get("expires_in_seconds") if isinstance(primary, dict) else None),
-        "permissions": _normalize_public_api_permissions((primary or {}).get("permissions") if isinstance(primary, dict) else {}),
-        "permission_labels": dict(PUBLIC_API_PERMISSION_LABELS),
+        "permissions": normalize_permissions((primary or {}).get("permissions") if isinstance(primary, dict) else {}),
+        "permission_labels": dict(PERMISSION_LABELS),
         "expire_options": [
             {"id": key, "label": str(meta.get("label") or key)}
-            for key, meta in PUBLIC_API_EXPIRE_PRESETS.items()
+            for key, meta in EXPIRE_PRESETS.items()
         ],
     }
     if include_plain_key:
@@ -368,19 +339,9 @@ def _find_papi_key_by_id(key_id: Any, *, include_revoked: bool = True) -> Option
     return index.get(lookup)
 
 
-def _find_active_papi_key_by_hash(key_hash: str) -> Optional[Dict[str, Any]]:
-    lookup = str(key_hash or "").strip()
-    if not lookup:
-        return None
-    for row in _list_papi_key_records(include_revoked=False):
-        if str(row.get("key_hash") or "").strip() == lookup:
-            return row
-    return None
-
-
 def _validate_papi_key_scope_owner(record: Dict[str, Any]) -> None:
     scope = str(record.get("scope") or "").strip().lower()
-    if scope not in PUBLIC_API_KEY_SCOPES:
+    if scope not in SCOPES:
         raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope!r}")
     if scope == "owner" and not str(record.get("owner") or "").strip():
         raise ValueError("PAPI key with scope='owner' requires a non-empty owner")
@@ -421,7 +382,7 @@ def _create_public_api_key(
     actor: str = "",
 ) -> Tuple[Dict[str, Any], str]:
     scope_value = str(scope or "").strip().lower()
-    if scope_value not in PUBLIC_API_KEY_SCOPES:
+    if scope_value not in SCOPES:
         raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope_value!r}")
     owner_value = str(owner or "").strip()
     actor_name = str(actor or "").strip() or "admin"
@@ -457,7 +418,7 @@ def _create_public_api_key(
             "expires_at": expires_at,
             "expire_option": option,
             "last_regenerated_at": "",
-            "permissions": _normalize_public_api_permissions(permissions),
+            "permissions": normalize_permissions(permissions),
             "scope": scope_value,
             "owner": owner_value,
             "last_used_at": "",
@@ -503,7 +464,7 @@ def _regenerate_public_api_key(
             normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
             record["name"] = normalized_name
         if permissions is not None:
-            record["permissions"] = _normalize_public_api_permissions(permissions)
+            record["permissions"] = normalize_permissions(permissions)
         _write_papi_key_record(record)
     return record, plain_key
 
@@ -524,10 +485,10 @@ def _update_public_api_key(
     record = dict(old)
     now_iso = _utc_now_iso()
     if permissions is not None:
-        record["permissions"] = _normalize_public_api_permissions(permissions)
+        record["permissions"] = normalize_permissions(permissions)
     if scope is not None:
         scope_value = str(scope or "").strip().lower()
-        if scope_value not in PUBLIC_API_KEY_SCOPES:
+        if scope_value not in SCOPES:
             raise ValueError(f"PAPI key scope must be 'owner' or 'global', got: {scope_value!r}")
         record["scope"] = scope_value
     if owner is not None:
@@ -563,71 +524,6 @@ def _delete_public_api_key(*, key_id: str) -> Dict[str, Any]:
     return old
 
 
-def _migrate_legacy_public_api_key(api_cfg: Dict[str, Any]) -> bool:
-    cfg = api_cfg if isinstance(api_cfg, dict) else {}
-    legacy_key = str(cfg.get("public_api_key") or "").strip()
-    if not legacy_key:
-        return False
-    if legacy_key == "public-1234567890abcdef":
-        return False
-
-    legacy_hash = _hash_public_api_key(legacy_key)
-    exists = _find_active_papi_key_by_hash(legacy_hash) is not None
-    if not exists:
-        created_at = str(cfg.get("public_api_key_created_at") or "").strip() or _utc_now_iso()
-        migrated = {
-            "id": f"pak_legacy_{uuid.uuid4().hex}",
-            "name": "Migrated Legacy Key",
-            "status": "active",
-            "key_hash": legacy_hash,
-            "key_preview": _mask_public_api_key(legacy_key),
-            "created_at": created_at,
-            "updated_at": _utc_now_iso(),
-            "expires_at": str(cfg.get("public_api_key_expires_at") or "").strip(),
-            "expire_option": "forever",
-            "last_regenerated_at": str(cfg.get("public_api_key_last_regenerated_at") or "").strip(),
-            "permissions": _normalize_public_api_permissions(cfg.get("public_api_key_permissions")),
-            "scope": "global",
-            "owner": "system:migration",
-            "last_used_at": "",
-            "created_by": "system:migration",
-            "updated_by": "system:migration",
-            "last_regenerated_by": "",
-        }
-        _write_papi_key_record(migrated)
-
-    cfg["public_api_key"] = ""
-    cfg["public_api_key_created_at"] = ""
-    cfg["public_api_key_expires_at"] = ""
-    cfg["public_api_key_last_regenerated_at"] = ""
-    cfg["public_api_key_permissions"] = _normalize_public_api_permissions({})
-    return True
-
-
-def _migrate_papi_key_scope_schema() -> bool:
-    """将旧 PAPI Key 记录一次性重写为显式 scope/owner 结构。"""
-    raw_rows = _read_papi_key_rows()
-    needs_migration = any(
-        isinstance(row, dict)
-        and str(row.get("scope") or "").strip().lower() not in PUBLIC_API_KEY_SCOPES
-        for row in raw_rows
-    )
-
-    if not needs_migration:
-        return False
-
-    normalized_rows = []
-
-    for row in raw_rows:
-        normalized = _normalize_papi_key_record(row)
-
-        if normalized:
-            normalized_rows.append(normalized)
-
-    _write_papi_key_rows(normalized_rows)
-    return True
-
-
 def _issue_public_api_key(
     expire_option: str,
     permissions: Dict[str, bool],
@@ -640,7 +536,7 @@ def _issue_public_api_key(
 ) -> Dict[str, Any]:
     cfg = _ensure_main_config_defaults()
     api_cfg = cfg.setdefault("api", {})
-    normalized_permissions = _normalize_public_api_permissions(permissions)
+    normalized_permissions = normalize_permissions(permissions)
 
     if regenerate:
         target_id = str(key_id or "").strip()
@@ -731,7 +627,7 @@ def admin_update_public_api_auth_settings():
             api_cfg['public_api_enabled'] = enable_requested
         key_id = str(data.get('key_id') or '').strip()
         if key_id:
-            permissions = _normalize_public_api_permissions(data.get('permissions')) if ('permissions' in data) else None
+            permissions = normalize_permissions(data.get('permissions')) if ('permissions' in data) else None
             expire = str(data.get('expire') or '').strip().lower() if ('expire' in data) else None
             key_name = str(data.get('name') or '').strip() if ('name' in data) else None
             key_scope = str(data.get('scope') or '').strip().lower() if ('scope' in data) else None
@@ -761,7 +657,7 @@ def admin_generate_public_api_key():
     expire = str(data.get('expire') or '').strip().lower()
     if not expire:
         return jsonify({'success': False, 'message': 'expire is required. Use one of: 1d, 7d, 1m, 3m, forever.'}), 400
-    permissions = _normalize_public_api_permissions(data.get('permissions'))
+    permissions = normalize_permissions(data.get('permissions'))
     key_name = str(data.get('name') or '').strip()
     key_scope = str(data.get('scope') or '').strip().lower()
     key_owner = str(data.get('owner') or '').strip()
@@ -799,7 +695,7 @@ def admin_regenerate_public_api_key():
     expire = str(data.get('expire') or '').strip().lower()
     if not expire:
         return jsonify({'success': False, 'message': 'expire is required. Use one of: 1d, 7d, 1m, 3m, forever.'}), 400
-    permissions = _normalize_public_api_permissions(data.get('permissions'))
+    permissions = normalize_permissions(data.get('permissions'))
     key_id = str(data.get('key_id') or '').strip()
     key_name = str(data.get('name') or '').strip()
     try:

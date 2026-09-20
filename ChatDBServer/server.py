@@ -47,16 +47,13 @@ from App.Utils import add_request_listener, pull_pending_request, submit_request
 from App.Agent import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from App.Core.context_window import configure_context_window_fetchers
 from App.Papi.admin_keys import (
-    _list_papi_key_records,
-    _migrate_legacy_public_api_key,
-    _migrate_papi_key_scope_schema,
-    _normalize_public_api_permissions,
     configure_papi_admin_keys,
     papi_admin_bp,
 )
 from App.Core import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from basis.Tool import canonicalize_tool_name
 from Map.baidu import load_map_scene_for_map_id
+from Map.config import DEFAULT_MAP_SERVICE_CONFIG
 from App.Utils import as_bool as _as_bool, mask_public_api_key as _mask_public_api_key, normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from basis.Timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from basis.Database import safe_read_json, safe_write_json, get_path_lock
@@ -75,7 +72,6 @@ from basis.Permission import (
     require_admin,
     require_login,
 )
-import basis.Permission.AuthKey as _authkey
 import basis.Config as _config_basis
 import basis.User as _user_basis
 from basis.User.routes import build_user_avatar_url, configure_user_routes, get_local_mail_profile, user_bp
@@ -358,126 +354,6 @@ def apply_auth_response_cache_policy(resp: Response):
     return resp
 
 
-DEFAULT_MAIN_CONFIG = {
-    "port": 5000,
-    "debug": False,
-    "public_base_url": "",
-    # Empty by default: forwarded client-IP headers are untrusted unless the
-    # direct peer is explicitly listed as a reverse proxy.
-    "trusted_proxy_cidrs": [],
-    "default_model": "doubao-seed-1-6-250615",
-    "conclusion_model": "doubao-seed-1-6-flash-250828",
-    "organization_model": "doubao-seed-1-6-flash-250828",
-    "websearch_model": "doubao-seed-1-6-flash-250828",
-    "continuous_summary": False,
-    "log_status": "silent",
-    "log_retention_count": 5,
-    "recent_dialogue_memory_count": 3,
-    "recent_dialogue_item_max_chars": 12000,
-    "user_knowledge_prompt_max_items": 24,
-    "user_knowledge_prompt_max_chars": 6000,
-    "api": {
-        "public_api_key": "",
-        "public_api_enabled": False,
-        "public_api_keys_file": "./data/papikey.jsonl",
-        "public_api_key_created_at": "",
-        "public_api_key_expires_at": "",
-        "public_api_key_last_regenerated_at": "",
-        "public_api_key_permissions": {
-            "model_inference": True,
-            "image_generation": True,
-            "knowledge_read": True,
-            "conversations_read": True,
-            "token_stats_read": True
-        }
-    },
-    "rag_database": {
-        "host": "127.0.0.1",
-        "port": 8100,
-        "api_key": "nexoradb-123456",
-        "rag_database_enabled": False,
-        "mode": "service",
-        "path": "./data/chroma",
-        "collection_prefix": "knowledge",
-        "distance": "cosine",
-        "service_url": "http://127.0.0.1:8100",
-        "chunk_size": 200,
-        "chunk_overlap": 40
-    },
-    "nexora_mail": {
-        "host": "127.0.0.1",
-        "port": 17171,
-        "api_key": "",
-        "nexora_mail_enabled": False,
-        "service_url": "http://127.0.0.1:17171",
-        "timeout": 10,
-        "send_timeout": 120,
-        "cache_enabled": True,
-        "cache_list_ttl": 180,
-        "cache_detail_ttl": 3600,
-        "cache_max_entries": 800,
-        "default_group": "default"
-    },
-    "nexora_search": {
-        "host": "127.0.0.1",
-        "port": 45678,
-        "api_key": "",
-        "nexora_search_enabled": False,
-        "service_url": "http://127.0.0.1:45678",
-        "timeout": 15
-    },
-    "map_service": {
-        "provider": "baidu",
-        "record_ttl_seconds": 21600,
-        "record_max_items": 200,
-        "baidu": {
-            "browser_ak": "",
-            "browser_version": "1.0",
-            "server_ak": "",
-            "server_sk": "",
-            "auth_mode": "ak",
-            "timeout": 12,
-            "coord_type": "bd09ll",
-            "ret_coordtype": "bd09ll",
-            "direction_base_url": "https://api.map.baidu.com/direction/v2",
-            "geocoding_url": "https://api.map.baidu.com/geocoding/v3/",
-            "place_search_url": "https://api.map.baidu.com/place/v2/search"
-        },
-        "tianditu": {
-            "browser_tk": "",
-            "server_tk": "",
-            "browser_version": "4.0",
-            "timeout": 12,
-            "coord_type": "cgcs2000",
-            "driving_style": "0",
-            "transit_linetype": "7",
-            "drive_url": "https://api.tianditu.gov.cn/drive",
-            "transit_url": "https://api.tianditu.gov.cn/transit",
-            "geocoding_url": "https://api.tianditu.gov.cn/geocoder",
-            "place_search_url": "https://api.tianditu.gov.cn/v2/search"
-        }
-    },
-    "gen_image": {
-        "enabled_api": "",
-        "apis": {}
-    },
-    "temp_context_cache": {
-        "enabled": True,
-        "trigger_chars": 1000,
-        "expire_seconds": 0,
-        "storage": "memory",
-        "file_path": "./data/temp/ContextTemp.tmp"
-    },
-    "nexora_learning": {
-        "enabled": True,
-        "host": "127.0.0.1",
-        "port": 5001,
-        "frontend_url": "http://127.0.0.1:5001",
-        "api_key": "",
-        "request_timeout": 30
-    }
-}
-
 DEFAULT_MODELS_CONFIG = {
     "models": {},
     "providers": {}
@@ -495,19 +371,8 @@ DISABLED_MODEL_STATUSES = {
     'stopped',
     'quota_disabled',
     'quota_exhausted',
+    'archived',
 }
-
-
-def _merge_defaults(dst, src):
-    changed = False
-    for k, v in src.items():
-        if k not in dst:
-            dst[k] = v
-            changed = True
-        elif isinstance(v, dict) and isinstance(dst.get(k), dict):
-            if _merge_defaults(dst[k], v):
-                changed = True
-    return changed
 
 
 def _parse_ip_literal(value: Any) -> str:
@@ -556,107 +421,11 @@ def _resolve_recent_login_ip(request_obj: Any) -> str:
     return forwarded_ip or direct_ip
 
 
-def _main_config_migration_hook(cfg: Dict[str, Any]) -> bool:
-    """
-    server 层主配置迁移逻辑（作为 basis.Config 的迁移回调）。
-    返回是否有变更。
-    """
-    changed = False
-
-    def _normalize_learning_base_url(value: Any) -> str:
-        text = str(value or '').strip().rstrip('/')
-        if text.endswith('/api/frontend'):
-            text = text[:-len('/api/frontend')]
-        elif text.endswith('/api/runtime'):
-            text = text[:-len('/api/runtime')]
-        return text.rstrip('/')
-
-    api_cfg = cfg.get('api')
-    if not isinstance(api_cfg, dict):
-        api_cfg = {}
-        cfg['api'] = api_cfg
-        changed = True
-    # Security migration: retire historical placeholder key automatically.
-    default_placeholder_key = "public-1234567890abcdef"
-    if str(api_cfg.get('public_api_key') or '').strip() == default_placeholder_key:
-        api_cfg['public_api_key'] = ''
-        api_cfg['public_api_enabled'] = False
-        api_cfg['public_api_key_created_at'] = ''
-        api_cfg['public_api_key_expires_at'] = ''
-        api_cfg['public_api_key_last_regenerated_at'] = ''
-        changed = True
-    if _migrate_legacy_public_api_key(api_cfg):
-        changed = True
-    if _migrate_papi_key_scope_schema():
-        changed = True
-    normalized_api_perms = _normalize_public_api_permissions(api_cfg.get('public_api_key_permissions'))
-    if api_cfg.get('public_api_key_permissions') != normalized_api_perms:
-        api_cfg['public_api_key_permissions'] = normalized_api_perms
-        changed = True
-    active_keys = _list_papi_key_records(include_revoked=False)
-    if (not active_keys) and _coerce_bool_flag(api_cfg.get('public_api_enabled'), False):
-        api_cfg['public_api_enabled'] = False
-        changed = True
-    temp_cache = cfg.get('temp_context_cache')
-    if isinstance(temp_cache, dict):
-        old_temp_path = str(temp_cache.get('file_path', '') or '').strip()
-        if old_temp_path in {'./temp/ContextTemp.tmp', 'temp/ContextTemp.tmp'}:
-            temp_cache['file_path'] = './data/temp/ContextTemp.tmp'
-            changed = True
-    learning_cfg = cfg.get('nexora_learning')
-    if not isinstance(learning_cfg, dict):
-        learning_cfg = {}
-        cfg['nexora_learning'] = learning_cfg
-        changed = True
-    if isinstance(learning_cfg, dict):
-        current_frontend_url = _normalize_learning_base_url(learning_cfg.get('frontend_url'))
-        legacy_service_url = _normalize_learning_base_url(learning_cfg.get('service_url'))
-        legacy_host = str(learning_cfg.get('host') or '').strip()
-        legacy_port = learning_cfg.get('port')
-        if not current_frontend_url:
-            if legacy_service_url:
-                current_frontend_url = legacy_service_url
-            elif legacy_host:
-                scheme = 'https'
-                public_base_url = str(cfg.get('public_base_url') or '').strip()
-                if public_base_url.lower().startswith('http://'):
-                    scheme = 'http'
-                try:
-                    port_value = int(legacy_port or 5001)
-                except Exception:
-                    port_value = 5001
-                default_port = 443 if scheme == 'https' else 80
-                host_part = legacy_host
-                if port_value != default_port:
-                    host_part = f'{host_part}:{port_value}'
-                current_frontend_url = f'{scheme}://{host_part}'
-        normalized_frontend_url = _normalize_learning_base_url(current_frontend_url)
-        if normalized_frontend_url and learning_cfg.get('frontend_url') != normalized_frontend_url:
-            learning_cfg['frontend_url'] = normalized_frontend_url
-            changed = True
-        if not legacy_host:
-            learning_cfg['host'] = '127.0.0.1'
-            changed = True
-        try:
-            normalized_port = int(legacy_port or learning_cfg.get('port') or 5001)
-        except Exception:
-            normalized_port = 5001
-        if int(learning_cfg.get('port') or 0) != normalized_port:
-            learning_cfg['port'] = normalized_port
-            changed = True
-        for legacy_key in ('service_url', 'runtime_base_path'):
-            if legacy_key in learning_cfg:
-                learning_cfg.pop(legacy_key, None)
-                changed = True
-    return changed
-
-
 def ensure_main_config_defaults():
     """
-    读取主配置并合并默认值 + server 迁移逻辑。
-    核心能力由 Nexora.basis.Config 提供，迁移逻辑作为回调注入。
+    读取主配置并合并唯一的基础默认值。
     """
-    return _config_basis.ensure_main_config_defaults(_main_config_migration_hook)
+    return _config_basis.ensure_main_config_defaults()
 
 
 
@@ -728,13 +497,13 @@ def _system_settings_branch(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 
 def _build_admin_system_model_options(cfg: Dict[str, Any], models_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    models = models_cfg.get('models', {}) if isinstance(models_cfg.get('models'), dict) else {}
+    models = _config_basis.filter_archived_models(models_cfg.get('models', {}))
     option_ids = set(str(model_id or '').strip() for model_id in models.keys())
 
     for key in SYSTEM_DEFAULT_MODEL_KEYS:
         current_model = str(cfg.get(key) or '').strip()
 
-        if current_model:
+        if current_model and not _config_basis.is_archived_model_entry(models_cfg.get('models', {}).get(current_model)):
             option_ids.add(current_model)
 
     options: List[Dict[str, Any]] = []
@@ -824,7 +593,7 @@ def _apply_admin_system_default_models(
     if not isinstance(default_models, dict):
         return
 
-    models = models_cfg.get('models', {}) if isinstance(models_cfg.get('models'), dict) else {}
+    models = _config_basis.filter_archived_models(models_cfg.get('models', {}))
 
     for key in SYSTEM_DEFAULT_MODEL_KEYS:
         if key not in default_models:
@@ -833,7 +602,12 @@ def _apply_admin_system_default_models(
         model_id = _system_settings_text(default_models.get(key), 200)
         current_model_id = str(cfg.get(key) or '').strip()
 
-        if model_id and model_id not in models and model_id != current_model_id:
+        if (
+            model_id
+            and model_id not in models
+            and model_id != current_model_id
+            and not _config_basis.is_archived_model_entry(models.get(model_id))
+        ):
             raise ValueError(f'{key} 指向的模型不存在: {model_id}')
 
         cfg[key] = model_id
@@ -969,7 +743,7 @@ def _ensure_server_bootstrap_files():
         pass
 
 
-# PAPI migration helpers are needed by the config migration hook during bootstrap.
+# PAPI 密钥存储与主配置读写在启动阶段完成依赖装配。
 configure_papi_admin_keys(PAPI_KEYS_PATH, ensure_main_config_defaults, save_main_config)
 _ensure_server_bootstrap_files()
 
@@ -1709,7 +1483,7 @@ def get_user_permission_hint_by_username(username: str) -> str:
 
 def get_config_all():
     """获取配置（带 mtime 缓存，文件未变时直接返回内存副本）。核心由 Nexora.basis.Config 提供。"""
-    return _config_basis.get_config_all(_main_config_migration_hook)
+    return _config_basis.get_config_all()
 
 
 # 进程级服务健康监控单例装配：依赖（配置访问、历史路径）由本组装层注入，
@@ -6215,7 +5989,8 @@ def get_config():
             }
 
         models_info = []
-        for model_id, info in config.get('models', {}).items():
+        visible_models = _config_basis.filter_archived_models(config.get('models', {}))
+        for model_id, info in visible_models.items():
             if model_id in blacklist:
                 continue
             provider_label = str(info.get('provider', 'volcengine') or 'volcengine').strip()
@@ -6241,7 +6016,8 @@ def get_config():
             models_info.append(item)
 
         default_model = config.get('default_model')
-        if default_model in blacklist:
+        visible_model_ids = {item['id'] for item in models_info}
+        if default_model in blacklist or default_model not in visible_model_ids:
             default_model = models_info[0]['id'] if models_info else None
 
         models_sync_state = build_models_config_sync_state()
@@ -6314,7 +6090,7 @@ def admin_get_models_config():
     """管理员读取模型/Provider配置"""
     try:
         cfg = load_models_config()
-        models = deepcopy(cfg.get('models', {}))
+        models = deepcopy(_config_basis.filter_archived_models(cfg.get('models', {})))
         providers = cfg.get('providers', {})
         has_volcengine_model = any(
             isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
@@ -7198,31 +6974,6 @@ def admin_delete_provider(target_provider=None):
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/admin/models/<path:target_model_id>', methods=['DELETE'])
-@app.route('/api/admin/models/model/delete', methods=['POST'])
-@require_admin
-def admin_delete_model(target_model_id=None):
-    """删除模型，需要输入确认文本"""
-    data = request.get_json(silent=True) or {}
-    model_id = (target_model_id or data.get('model_id') or '').strip()
-    confirm_text = data.get('confirm_text')
-
-    if not model_id:
-        return jsonify({'success': False, 'message': 'model_id 不能为空'}), 400
-    if confirm_text != '确认修改':
-        return jsonify({'success': False, 'message': '确认文本错误'}), 400
-
-    try:
-        cfg = load_models_config()
-        models = cfg.setdefault('models', {})
-        if model_id not in models:
-            return jsonify({'success': False, 'message': '模型不存在'}), 404
-        del models[model_id]
-        save_models_config(cfg, sync_source='admin_model_delete')
-        return jsonify({'success': True, 'message': f'模型 {model_id} 已删除'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
 def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int = 0):
     try:
         safe_from_seq = int(from_seq or 0)
@@ -7994,10 +7745,20 @@ def chat_stream():
         
         # 如果 model_name 为空（用户没选），则自动分配第一个可用模型（不屏蔽停用态，后续门禁统一报错）。
         if not model_name:
-            if default_sys_model and default_sys_model not in blacklist and default_sys_model in all_models:
+            if (
+                default_sys_model
+                and default_sys_model not in blacklist
+                and default_sys_model in all_models
+                and not _config_basis.is_archived_model_entry(all_models_cfg.get(default_sys_model))
+            ):
                 model_name = default_sys_model
             else:
-                available_models = [m for m in all_models if m not in blacklist]
+                available_models = [
+                    m
+                    for m in all_models
+                    if m not in blacklist
+                    and not _config_basis.is_archived_model_entry(all_models_cfg.get(m))
+                ]
                 if not available_models:
                     return jsonify({'success': False, 'message': '当前账号无可用模型，请联系管理员'}), 403
                 model_name = available_models[0]
@@ -12014,7 +11775,7 @@ app.register_blueprint(mail_bp)
 # 配额与地图配置装配：模型恢复逻辑与主配置读写由本组装层注入
 configure_quota_admin_routes(_recover_quota_disabled_models)
 app.register_blueprint(quota_admin_bp)
-configure_map_config_routes(ensure_main_config_defaults, save_main_config, DEFAULT_MAIN_CONFIG.get('map_service', {}))
+configure_map_config_routes(ensure_main_config_defaults, save_main_config, DEFAULT_MAP_SERVICE_CONFIG)
 app.register_blueprint(map_config_bp)
 
 # 向量库 / 搜索 / 生图配置装配：主配置读写与向量库单例由本组装层注入
