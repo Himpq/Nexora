@@ -231,7 +231,7 @@
 
         loading.value = true
 
-                try {
+        try {
             const groupList = await fetchMailGroups()
 
             groups.value = groupList.length ? groupList : ['default']

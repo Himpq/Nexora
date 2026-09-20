@@ -24,6 +24,22 @@ from basis.User.routes import get_local_mail_profile
 from .mailbox import _get_nexora_mail_config, call_nexora_mail, mail_bp
 
 
+def _normalize_mail_group_names(raw_groups):
+    """将 NexoraMail 分组响应统一为管理端使用的字符串名称列表。"""
+    if not isinstance(raw_groups, list):
+        return []
+
+    group_names = []
+    for item in raw_groups:
+        value = item.get('group') if isinstance(item, dict) else item
+        group_name = normalize_text(value, default='')
+
+        if group_name and group_name not in group_names:
+            group_names.append(group_name)
+
+    return group_names
+
+
 @mail_bp.route('/api/admin/nexora-mail/status', methods=['GET'])
 @require_admin
 def admin_nexora_mail_status():
@@ -48,7 +64,7 @@ def admin_nexora_mail_groups():
     ok, status, data = call_nexora_mail('/api/groups', method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取组列表失败'), 'upstream': data}), status
-    return jsonify({'success': True, 'groups': data.get('groups', [])})
+    return jsonify({'success': True, 'groups': _normalize_mail_group_names(data.get('groups'))})
 
 
 @mail_bp.route('/api/admin/nexora-mail/users', methods=['GET'])

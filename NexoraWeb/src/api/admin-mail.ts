@@ -30,6 +30,19 @@ interface MailStatusResponse {
     [key: string]: unknown
 }
 
+interface MailGroup {
+    group?: string
+    domains?: string[]
+    users?: number
+}
+
+interface MailGroupsResponse {
+    success: boolean
+    groups?: Array<string | MailGroup>
+    domains?: string[]
+    group?: string
+}
+
 /** 拉取邮箱用户列表(支持分组) */
 export async function fetchMailUsers(group = ''): Promise<MailUser[]> {
     const params = group ? `?group=${encodeURIComponent(group)}` : ''
@@ -45,11 +58,17 @@ export async function fetchMailStatus(): Promise<MailStatusResponse> {
 
 /** 拉取邮箱分组列表(兼容旧接口的 domains 字段) */
 export async function fetchMailGroups(): Promise<string[]> {
-    const data = await apiFetch<{ success: boolean; groups?: string[]; domains?: string[]; group?: string }>('/api/admin/nexora-mail/groups')
+    const data = await apiFetch<MailGroupsResponse>('/api/admin/nexora-mail/groups')
 
-    const groups = Array.isArray(data.groups) ? data.groups : data.domains
+    const rawGroups = Array.isArray(data.groups) ? data.groups : data.domains
+    const groups = Array.isArray(rawGroups)
+        ? rawGroups
+            .map((item) => typeof item === 'string' ? item : item.group)
+            .filter((group): group is string => Boolean(group && group.trim()))
+            .map((group) => group.trim())
+        : []
 
-    return Array.isArray(groups) && groups.length ? groups : ['default']
+    return Array.from(new Set(groups))
 }
 
 interface MutationResponse {
