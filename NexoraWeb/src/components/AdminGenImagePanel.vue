@@ -66,7 +66,7 @@
                             class="gddp-input"
                             type="password"
                             autocomplete="off"
-                            :placeholder="selectedApi?.api_key_masked || 'api key'"
+                            :placeholder="selectedApi?.api_key_masked || '留空保持原值'"
                         >
                     </div>
                     <div class="gddp-form-field" style="grid-column: 1 / -1;">

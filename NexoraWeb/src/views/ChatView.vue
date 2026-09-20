@@ -1477,7 +1477,13 @@
 
             state.errorToastShown = true
 
-            showError(String(chunk.content || chunk.message || '回复生成失败'))
+            const errorText = String(chunk.content || chunk.message || '回复生成失败')
+
+            // error 帧已经代表本轮 assistant 的终态。必须先写入当前流式占位，
+            // 让错误在不刷新页面的情况下进入消息气泡；终帧随后只负责补齐服务端字段。
+            conversationStore.fillStreamingMessageWithError(state.conversationId, errorText)
+
+            showError(errorText)
 
             return
         }
@@ -1590,9 +1596,26 @@
                 const rolledBack = conversationStore.rollbackFailedTurn(state.conversationId)
 
                 if (rolledBack) {
+                    const failureReason = String(detail?.error || '').trim()
+                    const failureCode = String(detail?.errorCode || '').trim()
+
+                    console.error('[ChatView] send failed before server persistence', {
+                        conversationId: state.conversationId,
+                        error: failureReason || null,
+                        errorCode: failureCode || null,
+                    })
+
+                    // 回滚本地幽灵消息时不能丢弃 HTTP/SSE 返回的真实错误,
+                    // 否则余额不足、模型无权限等问题只会显示为“发送失败”。
                     state.errorToastShown = false
 
-                    showToast('发送失败,已撤销未发送的消息', 'warning')
+                    if (failureReason) {
+                        showError(`发送失败：${failureReason}；已撤销未发送的消息`)
+                    } else if (failureCode) {
+                        showError(`发送失败（${failureCode}）；已撤销未发送的消息`)
+                    } else {
+                        showToast('发送失败，已撤销未发送的消息', 'warning')
+                    }
 
                     return
                 }

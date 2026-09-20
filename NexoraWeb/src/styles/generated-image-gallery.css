@@ -1,0 +1,71 @@
+/**
+ * generated-image-gallery.css — 生图结果媒体区域
+ */
+
+.message-content .generated-image-gallery {
+    width: calc(100% - 18px);
+    max-width: 100%;
+    min-width: 0;
+    margin: 8px 0 14px 18px;
+    box-sizing: border-box;
+}
+
+.message-content .generated-image-gallery-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.message-content .generated-image-card {
+    display: block;
+    width: min(100%, 560px);
+    max-width: 100%;
+    min-height: 120px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-elevated);
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.message-content .generated-image-card:hover:not(:disabled),
+.message-content .generated-image-card:focus-visible:not(:disabled) {
+    border-color: var(--color-border-strong);
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.12);
+    outline: none;
+}
+
+.message-content .generated-image-card img {
+    display: block;
+    width: 100%;
+    max-height: 70vh;
+    object-fit: contain;
+}
+
+.message-content .generated-image-card.is-failed {
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    cursor: default;
+}
+
+.message-content .generated-image-card-error {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+@media (max-width: 640px) {
+    .message-content .generated-image-gallery {
+        width: calc(100% - 8px);
+        margin-left: 8px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-content .generated-image-card {
+        transition: none;
+    }
+}

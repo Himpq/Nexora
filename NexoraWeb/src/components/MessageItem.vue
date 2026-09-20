@@ -286,6 +286,12 @@
                             @open-image="emit('open-image', $event)"
                         />
 
+                        <GeneratedImageGallery
+                            v-if="item.generatedImageGallery"
+                            :gallery="item.generatedImageGallery"
+                            @open-image="emit('open-image', $event)"
+                        />
+
                         <!-- 地图工具:独立渲染交互地图卡片(渲染器自动扫描 ```nexora-map* 围栏) -->
                         <div
                             v-if="item.mapMarkdown"
@@ -379,6 +385,10 @@
         stripExaImageMarkdown,
         type ExaImageGalleryData,
     } from '@/stream/exaMedia'
+    import {
+        readGeneratedImageGallery,
+        type GeneratedImageGalleryData,
+    } from '@/stream/generatedImage'
     import type { QuestionPayload } from '@/stream/questionCard'
     import { buildQuestionCardId, readQuestionLock, writeQuestionLock } from '@/stream/questionCard'
     import { ensureNexoraMapRendererAssets } from '@/stream/mapRenderer'
@@ -390,6 +400,7 @@
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
     import ExaImageGallery from './ExaImageGallery.vue'
+    import GeneratedImageGallery from './GeneratedImageGallery.vue'
 
     import type { ConversationContextEvent } from '@/api/conversations'
 
@@ -484,6 +495,8 @@
         mapMarkdown?: string
         /** Exa 工具:搜索行下方的独立图片画廊 */
         exaImageGallery?: ExaImageGalleryData
+        /** 生图工具:生成行下方的独立图片画廊 */
+        generatedImageGallery?: GeneratedImageGalleryData
         /** Workspace 草稿工具:内联小卡片视图(参数流式呈现,替代折叠工具行) */
         draft?: DraftCallView
     }
@@ -592,6 +605,7 @@
                 const markdownMode = displaySource !== ''
                 const rawDisplay = markdownMode ? displaySource : String(segment.text || '')
                 const isExaSearch = isExaWebSearchToolName(rawName)
+                const generatedImageGallery = readGeneratedImageGallery(rawName, String(segment.text || ''))
                 const display = isExaSearch ? stripExaImageMarkdown(rawDisplay) : rawDisplay
                 const exaImageGallery = isExaSearch
                     ? (readExaImageGallery(segment.displayMedia) || readExaImageGalleryFromResult(String(segment.text || '')))
@@ -610,7 +624,7 @@
                         continue
                     }
 
-                    applyToolResult(candidate, display, markdownMode, String(segment.text || ''), exaImageGallery)
+                    applyToolResult(candidate, display, markdownMode, String(segment.text || ''), exaImageGallery, generatedImageGallery)
 
                     return
                 }
@@ -629,9 +643,10 @@
                     outputText: '',
                     markdownMode: false,
                     exaImageGallery,
+                    generatedImageGallery,
                 }
 
-                applyToolResult(orphan, display, markdownMode, String(segment.text || ''), exaImageGallery)
+                applyToolResult(orphan, display, markdownMode, String(segment.text || ''), exaImageGallery, generatedImageGallery)
                 items.push(orphan)
 
                 return
@@ -687,6 +702,7 @@
         markdownMode: boolean,
         rawResult: string,
         exaImageGallery?: ExaImageGalleryData,
+        generatedImageGallery?: GeneratedImageGalleryData,
     ): void {
         item.running = false
         item.status = '完成'
@@ -699,6 +715,7 @@
         item.title = buildChineseToolAction(item.rawName, item.args, display, rawResult)
         item.markdownMode = markdownMode
         item.exaImageGallery = exaImageGallery
+        item.generatedImageGallery = generatedImageGallery
 
         if (isFileReadToolName(item.rawName)) {
             item.outputText = ''
@@ -1293,14 +1310,24 @@
             : {}
     }
 
-    /** 本次轮次 I/O token(优先 window 口径,回退 cumulative) */
+    /** 整次 assistant 回复累计 I/O token;最后一轮 window 仅供 CTX 卡片使用 */
     const ioTokens = computed(() => {
-        const tokens = readMessageIoTokens({
+        const messagePayload: Record<string, unknown> = {
             ...messageMetadata(),
             usage: props.message.usage,
-        })
+        }
 
-        return hasAnyIo(tokens.round) ? tokens.round : tokens.cumulative
+        if (props.message.io_tokens_window !== undefined) {
+            messagePayload.io_tokens_window = props.message.io_tokens_window
+        }
+
+        if (props.message.io_tokens_cumulative !== undefined) {
+            messagePayload.io_tokens_cumulative = props.message.io_tokens_cumulative
+        }
+
+        const tokens = readMessageIoTokens(messagePayload)
+
+        return hasAnyIo(tokens.cumulative) ? tokens.cumulative : tokens.round
     })
 
     async function handleCopy(): Promise<void> {

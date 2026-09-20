@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 import ssl
 import uuid
+import certifi
 
 from App.Storage import ChromaStore
 from App.Storage import UserFileSandbox
@@ -2197,6 +2198,99 @@ class ToolExecutor:
         except (ValueError, binascii.Error) as e:
             raise ValueError(f"图片 base64 无法解析: {str(e)}")
 
+    def _download_generated_image(self, image_url: str, timeout: float) -> tuple:
+        """Download a provider image before storing it as a conversation asset."""
+        target_url = str(image_url or "").strip()
+        parsed_url = urlsplit(target_url)
+
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError("生图返回了不支持的图片地址")
+
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError) as error:
+            raise ValueError("生图图片下载超时配置无效") from error
+
+        if timeout_value <= 0:
+            raise ValueError("生图图片下载超时配置无效")
+
+        request = urllib_request.Request(
+            target_url,
+            headers={
+                "Accept": "image/*",
+                "User-Agent": "Nexora-Generated-Image/1.0",
+            },
+            method="GET",
+        )
+        max_bytes = 12 * 1024 * 1024
+        chunks = []
+        total_size = 0
+
+        try:
+            with urllib_request.urlopen(
+                request,
+                timeout=timeout_value,
+                context=ssl.create_default_context(cafile=certifi.where()),
+            ) as response:
+                content_length = str(response.headers.get("Content-Length") or "").strip()
+
+                if content_length:
+                    try:
+                        content_length_value = int(content_length)
+                    except ValueError as error:
+                        raise ValueError("下载生图失败：响应长度无效") from error
+
+                    if content_length_value > max_bytes:
+                        raise ValueError("生图图片过大（超过 12MB）")
+
+                while True:
+                    chunk = response.read(min(64 * 1024, max_bytes - total_size + 1))
+
+                    if not chunk:
+                        break
+
+                    total_size += len(chunk)
+
+                    if total_size > max_bytes:
+                        raise ValueError("生图图片过大（超过 12MB）")
+
+                    chunks.append(chunk)
+        except urllib_error.HTTPError as error:
+            raise ValueError(f"下载生图失败，HTTP {error.code}") from error
+        except urllib_error.URLError as error:
+            raise ValueError(f"下载生图失败：{error.reason}") from error
+
+        raw = b"".join(chunks)
+
+        if not raw:
+            raise ValueError("下载生图失败：响应内容为空")
+
+        signatures = (
+            ("image/png", b"\x89PNG\r\n\x1a\n"),
+            ("image/jpeg", b"\xff\xd8\xff"),
+            ("image/gif", b"GIF87a"),
+            ("image/gif", b"GIF89a"),
+            ("image/bmp", b"BM"),
+            ("image/webp", b"RIFF"),
+            ("image/tiff", b"II*\x00"),
+            ("image/tiff", b"MM\x00*"),
+        )
+        detected_mime = ""
+
+        for mime, signature in signatures:
+
+            if raw.startswith(signature):
+                detected_mime = mime
+                break
+
+        if detected_mime == "image/webp" and raw[8:12] != b"WEBP":
+            detected_mime = ""
+
+        if not detected_mime:
+            raise ValueError("下载生图失败：响应内容不是受支持的图片")
+
+        return raw, detected_mime
+
     def _generated_image_markdown(self, images: list) -> str:
         lines = []
 
@@ -2372,6 +2466,7 @@ class ToolExecutor:
                     )
                     image_item = {
                         "index": idx,
+                        "url": asset.get("asset_url"),
                         "asset_id": asset.get("asset_id"),
                         "asset_url": asset.get("asset_url"),
                         "mime": asset.get("mime"),
@@ -2386,9 +2481,28 @@ class ToolExecutor:
                     continue
 
                 if image_url:
+                    raw, mime = self._download_generated_image(image_url, timeout)
+                    asset = persist_conversation_image_bytes(
+                        username=self.model.username,
+                        conversation_id=self.model.conversation_id,
+                        image_bytes=raw,
+                        mime=mime,
+                        name=f"generated_image_{idx}",
+                        metadata={
+                            "source": "generate_image",
+                            "source_url": image_url,
+                            "prompt": prompt,
+                            "model": model_id,
+                            "api": api_name,
+                        },
+                    )
                     image_item = {
                         "index": idx,
-                        "url": image_url,
+                        "url": asset.get("asset_url"),
+                        "asset_id": asset.get("asset_id"),
+                        "asset_url": asset.get("asset_url"),
+                        "mime": asset.get("mime"),
+                        "size": asset.get("size"),
                         "revised_prompt": revised_prompt,
                     }
 

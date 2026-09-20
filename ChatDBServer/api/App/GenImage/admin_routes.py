@@ -226,7 +226,6 @@ def admin_upsert_gen_image_api(api_id=None):
             'api_id': api_id,
             'name': str(data.get('name') or api_id).strip(),
             'api_type': data.get('api_type'),
-            'api_key': data.get('api_key'),
             'base_url': data.get('base_url'),
             'model': data.get('model'),
             'size': data.get('size'),
@@ -236,6 +235,13 @@ def admin_upsert_gen_image_api(api_id=None):
             'created_at': int(merged.get('created_at') or now_ts),
             'updated_at': now_ts,
         })
+
+        submitted_api_key = str(data.get('api_key') or '').strip()
+
+        if submitted_api_key:
+            merged['api_key'] = submitted_api_key
+        elif not str(merged.get('api_key') or '').strip():
+            merged['api_key'] = ''
 
         record = _normalize_gen_image_record(api_id, merged, gen_cfg.get('enabled_api', ''))
         enable_requested = coerce_bool_flag(data.get('enabled'), False)

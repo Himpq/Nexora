@@ -858,6 +858,8 @@ export const useConversationStore = defineStore('conversation', {
                 'model',
                 'summary',
                 'usage',
+                'io_tokens_window',
+                'io_tokens_cumulative',
                 'trace',
                 'error',
                 'versions',
@@ -980,10 +982,24 @@ export const useConversationStore = defineStore('conversation', {
                 return
             }
 
+            const segments = Array.isArray(assistant.segments) ? assistant.segments : []
+            const lastSegment = segments[segments.length - 1]
+
+            // error 帧可能先到，随后终帧没有 final_message 时会再次进入收尾逻辑。
+            // 同一条错误只更新一次，避免同一 assistant 气泡内重复拼接错误文本。
+            if (lastSegment?.type === 'error' && lastSegment.text === text) {
+                assistant.status = 'error'
+                assistant.pending = false
+
+                return
+            }
+
             // 错误文本追加为 error 分段(渲染为消息内红色错误行,对齐原版 appendErrorEvent);
             // 保留既有分段时序,不塌缩重建
             appendSegmentDelta(assistant, 'error', text)
 
+            assistant.status = 'error'
+            assistant.error = { message: text }
             assistant.pending = false
         },
 
@@ -1046,8 +1062,8 @@ export const useConversationStore = defineStore('conversation', {
 
         /**
          * 流式 token_usage 同步到指定会话助手消息的 model badge（I/O 与 E/C）：
-         * - token_usage 块在流式期间逐轮推送（累计输入/输出/缓存命中），比 final_message
-         *   落盘更早到达；直接写入 pending 助理消息的 metadata.io_tokens_window，
+         * - token_usage 块在流式期间按 provider round 推送，比 final_message 落盘更早到达；
+         *   window 记录当前轮,cumulative 在前端按轮累加，
          *   让 MessageItem 的 badge 立即显示，无需等 done 后重载（旧方案重载导致闪空）。
          * - 同时保留向后兼容：done 终帧会 via applyFinalMessage 用后端落盘的
          *   io_tokens_window / cumulative 覆盖，若终帧无 io 数据则保留流式补丁。
@@ -1075,13 +1091,24 @@ export const useConversationStore = defineStore('conversation', {
             const prevWindow = (meta.io_tokens_window && typeof meta.io_tokens_window === 'object')
                 ? meta.io_tokens_window as Record<string, unknown>
                 : {}
+            const prevCumulative = (meta.io_tokens_cumulative && typeof meta.io_tokens_cumulative === 'object')
+                ? meta.io_tokens_cumulative as Record<string, unknown>
+                : {}
 
-            // 取最新非零值，流式期间多轮 token_usage 叠加时取最后一次的全量快照
+            // 每个 token_usage 块代表一轮 provider usage:window 只保留当前轮。
             const nextWindow: Record<string, number> = {
                 input: input || safeTokenInt(prevWindow.input),
                 output: output || safeTokenInt(prevWindow.output),
                 raw_input: raw || safeTokenInt(prevWindow.raw_input),
                 cached_input: cached || safeTokenInt(prevWindow.cached_input),
+            }
+
+            // badge 需要整次 assistant 回复口径,所以按 provider round 累加四项。
+            const nextCumulative: Record<string, number> = {
+                input: safeTokenInt(prevCumulative.input) + input,
+                output: safeTokenInt(prevCumulative.output) + output,
+                raw_input: safeTokenInt(prevCumulative.raw_input) + raw,
+                cached_input: safeTokenInt(prevCumulative.cached_input) + cached,
             }
 
             // 至少一项非零才写入，避免空块污染 metadata
@@ -1093,11 +1120,7 @@ export const useConversationStore = defineStore('conversation', {
                 ...meta,
                 io_tokens_window: nextWindow,
                 io_tokens: { ...nextWindow },
-            }
-
-            // 累计口径若尚未建立，用窗口值兜底（使 badge 的 fallback 累计亦有数）
-            if (!meta.io_tokens_cumulative || typeof meta.io_tokens_cumulative !== 'object') {
-                nextMeta.io_tokens_cumulative = { ...nextWindow }
+                io_tokens_cumulative: nextCumulative,
             }
 
             assistant.metadata = nextMeta
