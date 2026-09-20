@@ -14,11 +14,12 @@
                 <span class="value">{{ stats.total_knowledge ?? '-' }}</span>
             </div>
             <div class="settings-stat-card user-stats-billing-card">
-                <span class="label">累计计费</span>
+                <span class="label">累计消费</span>
                 <span class="value">{{ formatBillingCost(stats.total_billing_cost, stats.billing_currency) }}</span>
                 <span v-if="stats.unpriced_billing_records" class="user-stats-card-hint">
                     {{ stats.unpriced_billing_records }} 条未计价记录
                 </span>
+                <span v-else class="user-stats-card-hint">按已计价日志累计</span>
             </div>
         </div>
 
@@ -36,17 +37,30 @@
             </SettingRow>
         </SettingCard>
 
-        <SettingCard title="模型计费统计" description="按模型汇总调用次数、Token 与累计费用">
-            <div v-if="!billingModelRows.length" class="settings-stat-empty">暂无数据</div>
-            <SettingRow v-for="row in billingModelRows" v-else :key="row.model" :label="row.model">
-                <div class="user-stats-model-control">
+        <SettingCard title="模型消费明细" description="按模型汇总调用次数、Token 与消费金额">
+            <GddpSortableTable
+                :rows="billingModelRows"
+                :columns="billingTableColumns"
+                row-key="model"
+                class="user-stats-billing-table"
+                empty-text="暂无数据"
+            >
+                <template #cell-model="{ row }">
+                    <span class="user-stats-model-name" :title="row.model">{{ row.model }}</span>
+                </template>
+                <template #cell-requests="{ row }">
+                    {{ formatNumber(row.requests) }} 次
+                </template>
+                <template #cell-tokens="{ row }">
+                    {{ formatNumber(row.tokens) }}
+                </template>
+                <template #cell-cost="{ row }">
                     <span class="user-stats-model-cost">{{ formatBillingCost(row.cost, row.currency) }}</span>
-                    <span class="settings-stat-count">{{ row.requests }} 次 · {{ formatNumber(row.tokens) }} tokens</span>
-                    <span v-if="row.unpricedRecords" class="user-stats-unpriced">
-                        未计价 {{ row.unpricedRecords }} 条
-                    </span>
-                </div>
-            </SettingRow>
+                </template>
+                <template #cell-unpricedRecords="{ row }">
+                    {{ row.unpricedRecords ? `${row.unpricedRecords} 条` : '-' }}
+                </template>
+            </GddpSortableTable>
         </SettingCard>
     </div>
 </template>
@@ -62,6 +76,7 @@
     import SettingCard from '@/ui/settings/SettingCard.vue'
     import SettingRow from '@/ui/settings/SettingRow.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
+    import GddpSortableTable from '@/ui/GddpSortableTable.vue'
 
     interface BillingModelUsage {
         requests?: number
@@ -96,6 +111,14 @@
         { value: 'papi', label: 'API Key' },
     ]
 
+    const billingTableColumns = [
+        { key: 'model', label: '模型', sortValue: (row: { model: string }) => row.model },
+        { key: 'requests', label: '调用次数', align: 'right' as const, sortValue: (row: { requests: number }) => row.requests },
+        { key: 'tokens', label: 'Token', align: 'right' as const, sortValue: (row: { tokens: number }) => row.tokens },
+        { key: 'cost', label: '消费金额', align: 'right' as const, sortValue: (row: { cost: number }) => row.cost },
+        { key: 'unpricedRecords', label: '未计价', align: 'right' as const, sortValue: (row: { unpricedRecords: number }) => row.unpricedRecords },
+    ]
+
     const filteredTotal = computed(() => {
         const sourceUsage = stats.value.source_usage || {}
 
@@ -118,8 +141,7 @@
             cost: Number(usage?.cost || 0),
             unpricedRecords: Number(usage?.unpriced_records || 0),
             currency: usage?.currency || stats.value.billing_currency || 'CNY',
-        }))
-        .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || b.requests - a.requests))
+        })))
 
     /*
      * 主题切换时重建图表(echarts canvas 不继承 CSS 令牌)。
@@ -204,7 +226,7 @@
         const currencySymbol = currencySymbols[currencyCode]
         const amount = number.toLocaleString('zh-CN', {
             minimumFractionDigits: 2,
-            maximumFractionDigits: 8,
+            maximumFractionDigits: 2,
         })
 
         return currencyCode === 'MULTI'
@@ -236,18 +258,29 @@
         font-size: 11px;
     }
 
-    .user-stats-model-control {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        flex-wrap: wrap;
-        gap: 4px 10px;
-        text-align: right;
-    }
-
     .user-stats-model-cost {
         font-size: 13px;
         font-weight: 650;
+        white-space: nowrap;
+    }
+
+    .user-stats-model-name {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .user-stats-billing-table :deep(.gddp-table) {
+        min-width: 660px;
+    }
+
+    .user-stats-billing-table :deep(.gddp-table td) {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .user-stats-billing-table :deep(.gddp-table td:first-child) {
+        max-width: 340px;
     }
 
     @media (max-width: 820px) {
@@ -255,10 +288,8 @@
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
-        .user-stats-model-control {
-            align-items: flex-end;
-            flex-direction: column;
-            gap: 2px;
+        .user-stats-billing-table :deep(.gddp-table) {
+            min-width: 600px;
         }
     }
 

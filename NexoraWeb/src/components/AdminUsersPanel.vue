@@ -593,7 +593,7 @@
         const num = Number(value || 0)
 
         return Number.isFinite(num)
-            ? num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
+            ? num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : '-'
     }
 

@@ -122,7 +122,7 @@
                                     <button
                                         class="model-icon-btn model-icon-btn-danger"
                                         type="button"
-                                        title="删除模型"
+                                        title="归档模型"
                                         @click.stop="requestDeleteModel(model.id, model.name)"
                                     >
                                         <i class="fa-solid fa-trash" aria-hidden="true"></i>
@@ -140,7 +140,7 @@
                                 :data-model="model.id"
                                 :data-total-tokens="quotaTotal(model)"
                                 :data-used-tokens="modelTokens(model)"
-                                title="点击编辑额度"
+                                title="点击编辑额度；已用按原始输入加输出统计，包含缓存命中"
                                 @click.stop="openQuotaAdjustAt($event, model)"
                             >
                                 <div class="quota-meter-shell">
@@ -182,7 +182,7 @@
                                             data-role="quota-meter-label-used"
                                             :data-visible="!meterHasDebt(model) && meterUsed(model) > 0 ? '1' : '0'"
                                             :style="{ display: !meterHasDebt(model) && meterUsed(model) > 0 ? '' : 'none' }"
-                                        >已用{{ fmtQuota(modelTokens(model)) }}</div>
+                                        >已用（全量）{{ fmtQuota(modelTokens(model)) }}</div>
                                         <div class="quota-meter-label-item total" data-role="quota-meter-label-total">
                                             共{{ fmtQuota(quotaTotal(model)) }}
                                         </div>
@@ -1567,9 +1567,9 @@
         })
     }
 
-    /** 删除模型(需确认文本) */
+    /** 归档模型(需确认文本,保留计费信息) */
     async function requestDeleteModel(modelId: string, modelName: string): Promise<void> {
-        const ok = await confirmWithText('删除模型', `确定删除模型「${modelName}」?请输入 确认修改 完成删除。`)
+        const ok = await confirmWithText('归档模型', `确定归档模型「${modelName}」?请输入 确认修改。归档后会隐藏模型，但保留计费信息。`)
 
         if (!ok) {
             return
@@ -1578,10 +1578,10 @@
         try {
             await deleteModel(modelId, '确认修改')
 
-            showToast('模型已删除', 'success')
+            showToast('模型已归档，计费信息已保留', 'success')
             await load()
         } catch (error) {
-            showError(error instanceof Error ? error.message : '删除失败')
+            showError(error instanceof Error ? error.message : '归档失败')
         }
     }
 

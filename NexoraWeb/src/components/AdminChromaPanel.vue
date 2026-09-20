@@ -3,7 +3,7 @@
 
     结构:
       - 状态卡(ChromaDB 状态 / 向量总数 / 集合数)
-      - 搜索框 + admin-table(Collection / 向量数)
+      - 搜索框 + GDDP 表格(Collection / 向量数)
 -->
 
 <template>
@@ -34,25 +34,20 @@
             </div>
             <div v-if="searchHint" class="chroma-search-hint">{{ searchHint }}</div>
 
-            <div class="admin-table-wrapper">
-                <table class="admin-table">
-                    <thead>
-                        <tr>
-                            <th>Collection</th>
-                            <th>向量数</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-if="!filteredCollections.length">
-                            <td colspan="2">暂无集合</td>
-                        </tr>
-                        <tr v-for="collection in filteredCollections" :key="String(collection.name || collection.id || '')">
-                            <td>{{ String(collection.name || collection.id || '未命名') }}</td>
-                            <td class="mono">{{ formatVectorCount(collection) }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+            <GddpSortableTable
+                :rows="filteredCollections"
+                :columns="collectionTableColumns"
+                row-key="name"
+                class="admin-chroma-table"
+                empty-text="暂无集合"
+            >
+                <template #cell-name="{ row }">
+                    {{ String(row.name || row.id || '未命名') }}
+                </template>
+                <template #cell-count="{ row }">
+                    {{ formatVectorCount(row) }}
+                </template>
+            </GddpSortableTable>
         </div>
     </div>
 </template>
@@ -63,6 +58,7 @@
     import type { ChromaStats } from '@/api/admin-chroma'
     import { fetchChromaStats } from '@/api/admin-chroma'
     import { showError } from '@/stores/notify'
+    import GddpSortableTable from '@/ui/GddpSortableTable.vue'
 
     const loading = ref(false)
     const query = ref('')
@@ -90,6 +86,20 @@
     })
 
     const totalVectors = computed(() => Number(stats.value.total_vectors || 0))
+
+    const collectionTableColumns = [
+        {
+            key: 'name',
+            label: 'Collection',
+            sortValue: (row: Record<string, unknown>) => String(row.name || row.id || ''),
+        },
+        {
+            key: 'count',
+            label: '向量数',
+            align: 'right' as const,
+            sortValue: (row: Record<string, unknown>) => vectorCount(row),
+        },
+    ]
 
     onMounted(() => {
         void load()
@@ -121,9 +131,13 @@
 
     /** 集合向量数显示 */
     function formatVectorCount(collection: Record<string, unknown>): string {
-        const count = Number(collection.count || collection.vector_count || 0)
+        const count = vectorCount(collection)
 
         return Number.isFinite(count) && count > 0 ? `${count.toLocaleString()}` : '0'
+    }
+
+    function vectorCount(collection: Record<string, unknown>): number {
+        return Number(collection.count || collection.vector_count || 0)
     }
 </script>
 
@@ -146,33 +160,7 @@
         margin-bottom: 8px;
     }
 
-    .admin-table-wrapper {
-        border: 1px solid var(--color-border);
-        border-radius: 10px;
-        overflow: hidden;
-    }
-
-    .admin-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-    }
-
-    .admin-table th,
-    .admin-table td {
-        padding: 10px 14px;
-        text-align: left;
-        border-bottom: 1px solid var(--color-border);
-    }
-
-    .admin-table th {
-        background: var(--color-bg-sunken);
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--color-text-secondary);
-    }
-
-    .admin-table tr:last-child td {
-        border-bottom: none;
+    .admin-chroma-table :deep(.gddp-table) {
+        min-width: 420px;
     }
 </style>
