@@ -48,6 +48,9 @@ def _normalize_gen_image_api_id(raw: Any) -> str:
 def _normalize_gen_image_api_type(raw: Any) -> str:
     text = str(raw or '').strip().lower()
 
+    if text in {'dashscope', 'dashscope-native', 'dashscope_native'}:
+        return 'dashscope'
+
     if text in {'openai-compatible', 'openai compatible', 'openai_compatible'}:
         return 'openai_compatible'
 

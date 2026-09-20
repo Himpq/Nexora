@@ -1,7 +1,9 @@
 import json
 import re
+import ssl
 from typing import Any, Dict, List
 
+import certifi
 import httpx
 from openai import OpenAI
 
@@ -32,6 +34,205 @@ class DashScopeProvider(ProviderInterface):
             base_url=base_url,
             timeout=timeout,
         )
+
+    def _resolve_native_image_endpoint(self, base_url: str) -> str:
+        """Resolve the DashScope native image-generation endpoint from /api/v1."""
+        normalized = str(base_url or "").strip().rstrip("/")
+
+        if not normalized.endswith("/api/v1"):
+            raise ValueError(
+                "DashScope 原生生图 Base URL 必须以 /api/v1 结尾，例如 https://dashscope.aliyuncs.com/api/v1"
+            )
+
+        return f"{normalized}/services/aigc/multimodal-generation/generation"
+
+    def _normalize_native_image_size(self, size: str) -> str:
+        """Convert the UI width x height format to DashScope's width * height format."""
+        value = str(size).strip().lower()
+
+        if value == "auto":
+            return "2048*2048"
+
+        if re.fullmatch(r"\d{2,5}x\d{2,5}", value):
+            return value.replace("x", "*")
+
+        if re.fullmatch(r"\d{2,5}\*\d{2,5}", value):
+            return value
+
+        raise ValueError("DashScope 生图尺寸必须是 1024x1024 或 1024*1024 格式")
+
+    def _build_native_image_payload(
+        self,
+        *,
+        model_id: str,
+        prompt: str,
+        size: str,
+        image_count: int,
+        extra_body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the documented DashScope multimodal image-generation payload."""
+        content = []
+        raw_images = extra_body.get("image")
+
+        if isinstance(raw_images, list):
+            image_values = raw_images
+        elif raw_images:
+            image_values = [raw_images]
+        else:
+            image_values = []
+
+        for image_value in image_values:
+            image_text = str(image_value or "").strip()
+
+            if image_text:
+                content.append({"image": image_text})
+
+        content.append({"text": prompt})
+        parameters = {
+            "size": self._normalize_native_image_size(size),
+            "n": image_count,
+        }
+
+        for key, value in extra_body.items():
+            key_text = str(key or "").strip()
+
+            if key_text and key_text != "image":
+                parameters[key_text] = value
+
+        return {
+            "model": model_id,
+            "input": {
+                "messages": [{
+                    "role": "user",
+                    "content": content,
+                }],
+            },
+            "parameters": parameters,
+        }
+
+    def generate_image(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        prompt: str,
+        size: str = "1024x1024",
+        n: int = 1,
+        quality: str = "",
+        response_format: str = "b64_json",
+        timeout: float = 120.0,
+        extra_body=None,
+    ) -> Dict[str, Any]:
+        """Generate Qwen images through DashScope's native synchronous API."""
+        _ = quality
+        _ = response_format
+        key = str(api_key or "").strip()
+        model = str(model_id or "").strip()
+        text = str(prompt or "").strip()
+
+        if not key:
+            raise ValueError("生图 API Key 不能为空")
+
+        if not model:
+            raise ValueError("生图模型不能为空")
+
+        if not text:
+            raise ValueError("生图提示词不能为空")
+
+        try:
+            image_count = int(n)
+        except (TypeError, ValueError) as error:
+            raise ValueError("DashScope 生图数量 n 必须是 1-6 的整数") from error
+
+        if not 1 <= image_count <= 6:
+            raise ValueError("DashScope 生图数量 n 必须是 1-6 的整数")
+
+        if extra_body is None:
+            normalized_extra_body = {}
+        elif isinstance(extra_body, dict):
+            normalized_extra_body = extra_body
+        else:
+            raise ValueError("DashScope 生图 extra_body 必须是 JSON 对象")
+
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError) as error:
+            raise ValueError("DashScope 生图请求超时必须是正数") from error
+
+        if timeout_value <= 0:
+            raise ValueError("DashScope 生图请求超时必须是正数")
+
+        endpoint = self._resolve_native_image_endpoint(base_url)
+        payload = self._build_native_image_payload(
+            model_id=model,
+            prompt=text,
+            size=size,
+            image_count=image_count,
+            extra_body=normalized_extra_body,
+        )
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+        try:
+            with httpx.Client(
+                timeout=timeout_value,
+                verify=ssl_context,
+            ) as client:
+                response = client.post(endpoint, headers=headers, json=payload)
+        except Exception as error:
+            raise ValueError(f"生图接口请求失败: {str(error)}")
+
+        if response.status_code >= 400:
+            detail = response.text[:1000] if response.text else response.reason_phrase
+            raise ValueError(f"生图接口 HTTP {response.status_code}: {detail}")
+
+        try:
+            response_payload = response.json()
+        except Exception as error:
+            raise ValueError(f"生图接口返回的不是 JSON: {str(error)}")
+
+        output = response_payload.get("output", {}) if isinstance(response_payload, dict) else {}
+        choices = output.get("choices", []) if isinstance(output, dict) else []
+        images = []
+
+        for choice in choices if isinstance(choices, list) else []:
+            if not isinstance(choice, dict):
+                continue
+
+            message = choice.get("message", {})
+            content = message.get("content", []) if isinstance(message, dict) else []
+
+            for item in content if isinstance(content, list) else []:
+                if not isinstance(item, dict):
+                    continue
+
+                image_url = str(item.get("image") or item.get("url") or "").strip()
+
+                if image_url:
+                    images.append({
+                        "b64_json": "",
+                        "url": image_url,
+                        "revised_prompt": "",
+                        "progress": [],
+                        "raw": item,
+                    })
+
+        if not images:
+            raise ValueError("生图接口返回成功，但没有找到图片地址")
+
+        return {
+            "ok": True,
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "model": model,
+            "images": images,
+            "progress": [],
+            "raw_response": response_payload,
+        }
 
     def list_models(
         self,

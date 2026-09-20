@@ -71,7 +71,13 @@
                     </div>
                     <div class="gddp-form-field" style="grid-column: 1 / -1;">
                         <label for="genDetailBaseUrl">Base URL</label>
-                        <input id="genDetailBaseUrl" v-model="form.base_url" class="gddp-input" type="text" placeholder="https://api.openai.com/v1">
+                        <input
+                            id="genDetailBaseUrl"
+                            v-model="form.base_url"
+                            class="gddp-input"
+                            type="text"
+                            :placeholder="form.api_type === 'dashscope' ? 'https://dashscope.aliyuncs.com/api/v1' : 'https://api.openai.com/v1'"
+                        >
                     </div>
                     <div class="gddp-form-field">
                         <label for="genDetailModel">模型 ID</label>
@@ -135,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, reactive, ref, watch } from 'vue'
+    import { computed, onMounted, reactive, ref, watch } from 'vue'
 
     import type { GenImageApi, GenImageApiForm } from '@/api/admin-gen-image'
     import { deleteGenImageApi, disableGenImageApi, enableGenImageApi, fetchGenImageApis, upsertGenImageApi } from '@/api/admin-gen-image'
@@ -146,10 +152,11 @@
     import SettingActionRow from '@/ui/settings/SettingActionRow.vue'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
 
-    /** API 类型(对齐原版 openai / openai_compatible 二选一) */
+    /** API 类型: OpenAI 兼容协议或 DashScope 原生生图协议 */
     const genApiTypeOptions = [
         { value: 'openai', label: 'openai' },
         { value: 'openai_compatible', label: 'openai_compatible' },
+        { value: 'dashscope', label: 'dashscope' },
     ]
 
     const apis = ref<GenImageApi[]>([])
@@ -208,7 +215,9 @@
 
         form.api_id = api.api_id || api.id || ''
         form.name = api.name || ''
-        form.api_type = api.api_type === 'openai_compatible' ? 'openai_compatible' : 'openai'
+        form.api_type = api.api_type === 'dashscope'
+            ? 'dashscope'
+            : (api.api_type === 'openai_compatible' ? 'openai_compatible' : 'openai')
         form.api_key = ''
         form.base_url = api.base_url || ''
         form.model = api.model || ''
@@ -259,6 +268,10 @@
             loading.value = false
         }
     }
+
+    onMounted(() => {
+        void load()
+    })
 
     function selectApi(apiId: string): void {
         selectedId.value = apiId
