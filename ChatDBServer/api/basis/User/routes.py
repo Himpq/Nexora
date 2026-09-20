@@ -18,10 +18,11 @@ from flask import Blueprint, g, jsonify, request, send_file, session
 
 from App.Components import get_learning_runtime_local_config
 from App.Utils import as_bool, safe_join_path
+from basis.Config import load_models_config
 from basis.Permission import require_login
 from basis.Permission.model_permissions import get_user_model_blacklist
 from basis.Timeline import record_notes_snapshot_change
-from basis.TokenUsage import read_usage_log_records
+from basis.TokenUsage import build_log_billing, dedupe_token_log_records, read_usage_log_records
 from basis.User import User, load_users, save_users
 
 user_bp = Blueprint('user', __name__)
@@ -122,35 +123,130 @@ def get_local_mail_profile(user_data):
     return profile
 
 
-def get_user_stats(username, user_path):
-    """获取用户统计信息"""
-    stats = {
-        'total_conversations': 0,
+def _safe_usage_token_total(log):
+    """读取日志总 Token；旧日志缺少 total_tokens 时按输入和输出相加。"""
+    if not isinstance(log, dict):
+        return 0
+
+    total = log.get('total_tokens')
+
+    if total is None:
+        total = (log.get('input_tokens') or 0) + (log.get('output_tokens') or 0)
+
+    try:
+        return max(0, int(float(total or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _new_user_token_stats():
+    """创建 Token 统计的统一返回结构。"""
+    return {
         'total_tokens': 0,
-        'total_knowledge': 0,
         'model_usage': {},
+        'billing_model_usage': {},
+        'total_billing_cost': 0.0,
+        'billing_currency': 'CNY',
+        'unpriced_billing_records': 0,
         'source_usage': {},
         'api_key_usage': {},
         'daily_usage': {},
     }
 
+
+def _new_user_stats():
+    """创建用户统计的统一返回结构。"""
+    stats = _new_user_token_stats()
+    stats.update({
+        'total_conversations': 0,
+        'total_knowledge': 0,
+    })
+    return stats
+
+
+def _build_user_token_stats(token_records, models_config):
+    """将用户的 Token 日志聚合为概览、来源、趋势与模型计费明细。"""
+    stats = _new_user_token_stats()
+
+    currency_names = set()
+
+    for record in token_records:
+        total_tokens = _safe_usage_token_total(record)
+        stats['total_tokens'] += total_tokens
+
+        model_name = str(record.get('model') or '未记录模型').strip() or '未记录模型'
+        stats['model_usage'][model_name] = stats['model_usage'].get(model_name, 0) + 1
+
+        model_item = stats['billing_model_usage'].setdefault(model_name, {
+            'requests': 0,
+            'tokens': 0,
+            'cost': 0.0,
+            'unpriced_records': 0,
+            'currency': 'CNY',
+        })
+        model_item['requests'] += 1
+        model_item['tokens'] += total_tokens
+
+        billing = build_log_billing(record, models_config=models_config)
+        currency = str(billing.get('currency') or 'CNY').strip().upper() or 'CNY'
+        currency_names.add(currency)
+        model_item['currency'] = currency
+
+        if billing.get('cost') is None:
+            model_item['unpriced_records'] += 1
+            stats['unpriced_billing_records'] += 1
+        else:
+            cost = float(billing.get('cost', 0.0) or 0.0)
+            model_item['cost'] += cost
+            stats['total_billing_cost'] += cost
+
+        source = str(record.get('source') or 'chat').strip() or 'chat'
+        stats['source_usage'][source] = stats['source_usage'].get(source, 0) + total_tokens
+
+        api_key = str(record.get('api_key_name') or record.get('api_key_id') or '').strip()
+
+        if api_key:
+            stats['api_key_usage'][api_key] = stats['api_key_usage'].get(api_key, 0) + total_tokens
+
+        day = str(record.get('timestamp') or '')[:10]
+
+        if day:
+            day_item = stats['daily_usage'].setdefault(day, {})
+            day_item[source] = day_item.get(source, 0) + total_tokens
+
+    if len(currency_names) == 1:
+        stats['billing_currency'] = next(iter(currency_names))
+    elif len(currency_names) > 1:
+        stats['billing_currency'] = 'MULTI'
+
+    stats['total_billing_cost'] = round(stats['total_billing_cost'], 8)
+
+    for model_item in stats['billing_model_usage'].values():
+        model_item['cost'] = round(model_item['cost'], 8)
+
+    return stats
+
+
+def get_user_stats(username, user_path):
+    """获取用户统计信息。"""
+    stats = _new_user_stats()
+
     try:
-        # 计算对话数量
         conversations_path = safe_join_path(user_path, 'conversations')
+
         if os.path.exists(conversations_path):
             conversation_files = [f for f in os.listdir(conversations_path) if f.endswith('.json')]
             stats['total_conversations'] = len(conversation_files)
 
-        # 计算知识点数量
         knowledge_path = safe_join_path(user_path, 'database')
+
         if os.path.exists(knowledge_path):
             knowledge_files = [f for f in os.listdir(knowledge_path) if f.endswith('.json')]
             stats['total_knowledge'] = len(knowledge_files)
 
-        # 从token_usage.json获取统计信息
         token_usage_path = safe_join_path(user_path, 'token_usage.json')
-        token_records = read_usage_log_records(token_usage_path)
-
+        chat_records = dedupe_token_log_records(read_usage_log_records(token_usage_path), 'chat')
+        papi_records = []
         papi_root = safe_join_path(_server_root, 'data', 'papi')
 
         if os.path.isdir(papi_root):
@@ -162,45 +258,10 @@ def get_user_stats(username, user_path):
 
                 for record in read_usage_log_records(token_log):
                     if str(record.get('username') or '').strip() == str(username or '').strip():
-                        token_records.append(record)
+                        papi_records.append(record)
 
-        if token_records:
-            total_tokens = 0
-            model_usage = {}
-            source_usage = {}
-            api_key_usage = {}
-            daily_usage = {}
-
-            for record in token_records:
-                total_tokens += record.get('total_tokens', 0)
-
-                # 统计模型使用情况（这里简化处理，实际可能需要从对话记录中提取）
-                # 暂时用action字段作为模型标识
-                action = record.get('action', 'unknown')
-                if action not in model_usage:
-                    model_usage[action] = 0
-                model_usage[action] += 1
-
-                source = str(record.get('source') or 'chat').strip() or 'chat'
-                source_usage[source] = source_usage.get(source, 0) + record.get('total_tokens', 0)
-
-                api_key = str(record.get('api_key_name') or record.get('api_key_id') or '').strip()
-
-                if api_key:
-                    api_key_usage[api_key] = api_key_usage.get(api_key, 0) + record.get('total_tokens', 0)
-
-                day = str(record.get('timestamp') or '')[:10]
-
-                if day:
-                    day_item = daily_usage.setdefault(day, {})
-                    day_item[source] = day_item.get(source, 0) + record.get('total_tokens', 0)
-
-            stats['total_tokens'] = total_tokens
-            stats['model_usage'] = model_usage
-            stats['source_usage'] = source_usage
-            stats['api_key_usage'] = api_key_usage
-            stats['daily_usage'] = daily_usage
-
+        token_records = chat_records + dedupe_token_log_records(papi_records, 'papi')
+        stats.update(_build_user_token_stats(token_records, load_models_config()))
     except Exception as e:
         print(f"Error getting user stats for {username}: {e}")
 

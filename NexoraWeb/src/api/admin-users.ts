@@ -20,8 +20,9 @@ export interface AdminUser {
     last_ip: string
     last_login?: number
     created_at?: number
-    total_token_usage: number
-    total_billing_cost: number
+    /** 用户列表可按需不加载统计;完整统计由详情接口返回。 */
+    total_token_usage?: number
+    total_billing_cost?: number
     billing_currency?: string
     unpriced_billing_records?: number
     avatar_url?: string
@@ -41,9 +42,11 @@ interface AdminUserListResponse {
     users?: AdminUser[]
 }
 
-/** 拉取全部用户(管理员) */
-export async function listAdminUsers(): Promise<AdminUser[]> {
-    const data = await apiFetch<AdminUserListResponse>('/api/admin/users')
+/** 拉取全部用户(管理员);默认只读取元数据,避免列表请求扫描历史用量日志。 */
+export async function listAdminUsers(options: { includeUsage?: boolean } = {}): Promise<AdminUser[]> {
+    const includeUsage = options.includeUsage === true
+    const query = includeUsage ? '' : '?include_usage=0'
+    const data = await apiFetch<AdminUserListResponse>(`/api/admin/users${query}`)
 
     return Array.isArray(data.users) ? data.users : []
 }

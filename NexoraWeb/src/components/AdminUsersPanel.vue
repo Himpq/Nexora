@@ -15,20 +15,24 @@
             <div
                 v-for="user in filteredUsers"
                 :key="user.user_id"
-                class="admin-user-item"
+                class="admin-user-item settings-management-item"
                 :class="{ active: selectedId === user.user_id }"
                 role="button"
                 tabindex="0"
                 @click="selectUser(user)"
                 @keydown.enter="selectUser(user)"
             >
-                <span class="admin-user-avatar">
+                <span class="admin-user-avatar settings-management-item-icon">
                     <img v-if="user.avatar_url" :src="user.avatar_url" alt="">
                     <i v-else class="fa-solid fa-user" aria-hidden="true"></i>
                 </span>
                 <span class="admin-user-main">
                     <span class="admin-user-name">{{ user.username || user.user_id }}</span>
-                    <span class="admin-user-meta">{{ user.user_id }} · {{ roleLabel(user.role) }} · ¥{{ formatMoney(user.total_billing_cost) }}</span>
+                    <span class="admin-user-meta admin-user-list-meta">
+                        <span class="admin-user-role-badge" :class="{ admin: user.role === 'admin' }">
+                            {{ roleLabel(user.role) }}
+                        </span>
+                    </span>
                 </span>
             </div>
         </template>
@@ -43,7 +47,12 @@
                     </span>
                     <div>
                         <div class="admin-user-name">{{ selected.username || selected.user_id }}</div>
-                        <div class="admin-user-meta">UserID: {{ selected.user_id }}</div>
+                        <div class="admin-user-meta admin-user-detail-meta">
+                            <span class="mono">ID: {{ selected.user_id }}</span>
+                            <span class="admin-user-role-badge" :class="{ admin: selected.role === 'admin' }">
+                                {{ roleLabel(selected.role) }}
+                            </span>
+                        </div>
                     </div>
                 </div>
 
@@ -66,17 +75,6 @@
                         <div class="admin-info-text">{{ formatTime(selected.created_at) }}</div>
                     </div>
                     <div class="gddp-form-field">
-                        <label>Token 消耗</label>
-                        <div class="admin-info-text mono">{{ Number(selected.total_token_usage || 0).toLocaleString() }}</div>
-                    </div>
-                    <div class="gddp-form-field">
-                        <label>模型费用</label>
-                        <div class="admin-info-text mono">
-                            ¥{{ formatMoney(selected.total_billing_cost) }}
-                            <span v-if="selected.unpriced_billing_records" class="admin-billing-note">· {{ selected.unpriced_billing_records }} 条未计价</span>
-                        </div>
-                    </div>
-                    <div class="gddp-form-field">
                         <label>最近 IP</label>
                         <div class="admin-info-text">{{ selected.last_ip || '未知' }}</div>
                     </div>
@@ -85,6 +83,35 @@
                         <div class="admin-info-text">{{ selected.has_password ? '已设置' : '未设置' }}</div>
                     </div>
                 </div>
+
+                <section class="admin-user-stats-card" aria-live="polite">
+                    <div class="admin-user-stats-head">
+                        <h4>使用统计</h4>
+                        <span v-if="statsLoading" class="admin-user-stats-status">正在读取...</span>
+                        <span v-else-if="statsError" class="admin-user-stats-status error">读取失败</span>
+                        <span v-else class="admin-user-stats-status">全部时间</span>
+                    </div>
+                    <div v-if="statsLoading" class="admin-user-stats-loading">正在加载该用户的 Token 与计费统计...</div>
+                    <div v-else-if="statsError" class="admin-user-stats-loading error">统计加载失败,请点击刷新重试。</div>
+                    <div v-else class="admin-user-detail-grid admin-user-stats-grid">
+                        <div class="gddp-form-field">
+                            <label>Token 消耗</label>
+                            <div class="admin-info-text mono">{{ formatNumber(selectedStats?.summary.total_tokens) }}</div>
+                        </div>
+                        <div class="gddp-form-field">
+                            <label>请求次数</label>
+                            <div class="admin-info-text mono">{{ formatNumber(selectedStats?.summary.requests) }}</div>
+                        </div>
+                        <div class="gddp-form-field">
+                            <label>模型费用</label>
+                            <div class="admin-info-text mono">¥{{ formatMoney(selectedStats?.summary.cost) }}</div>
+                        </div>
+                        <div class="gddp-form-field">
+                            <label>未计价记录</label>
+                            <div class="admin-info-text mono">{{ formatNumber(selectedStats?.summary.unpriced_records) }}</div>
+                        </div>
+                    </div>
+                </section>
 
                 <SettingActionRow>
                     <button class="btn-primary" type="button" @click="saveProfile">
@@ -116,13 +143,16 @@
         <div v-if="permLoading" class="admin-user-detail-empty">加载中...</div>
         <div v-else class="model-perm-list">
             <div v-for="model in permModels" :key="model.id" class="model-perm-row">
-                <label class="settings-toggle-row">
+                <label class="model-perm-toggle" :class="{ active: model.allowed }">
                     <input v-model="model.allowed" type="checkbox">
-                    <span>
+                    <span class="model-perm-content">
                         <span class="model-perm-name">{{ model.name }}</span>
                         <span class="model-perm-id mono">{{ model.id }}</span>
                         <span class="model-perm-badge" :class="`provider-${String(model.provider || '').toLowerCase()}`">{{ model.provider }}</span>
                         <span class="model-perm-badge" :class="`status-${String(model.status || 'normal').toLowerCase()}`">{{ model.status }}</span>
+                    </span>
+                    <span class="model-perm-track" aria-hidden="true">
+                        <span class="model-perm-thumb"></span>
                     </span>
                 </label>
             </div>
@@ -202,6 +232,8 @@
         updateAdminUserProfile,
         updateUserModelBlacklist,
     } from '@/api/admin-users'
+    import type { UserTokenStats } from '@/api/admin-stats'
+    import { fetchUserTokenStats } from '@/api/admin-stats'
     import { showConfirm } from '@/stores/confirm'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
@@ -233,6 +265,10 @@
 
     const detailRole = ref('member')
     const detailDisplayName = ref('')
+    const selectedStats = ref<UserTokenStats | null>(null)
+    const statsLoading = ref(false)
+    const statsError = ref(false)
+    let statsRequestSerial = 0
 
     /** 模型权限弹窗状态(对齐原版 modelPermModal) */
     const modelPermOpen = ref(false)
@@ -285,7 +321,7 @@
         loading.value = true
 
         try {
-            users.value = await listAdminUsers()
+            users.value = await listAdminUsers({ includeUsage: false })
 
             const selectionExists = users.value.some((user) => user.user_id === selectedId.value)
 
@@ -312,6 +348,37 @@
         selectedId.value = user.user_id
         detailRole.value = String(user.role || 'member')
         detailDisplayName.value = String(user.username || user.user_id)
+        void loadSelectedStats(user.user_id)
+    }
+
+    /** 仅在用户进入详情时加载全量统计,不阻塞用户列表和其他管理页。 */
+    async function loadSelectedStats(userId: string): Promise<void> {
+        const serial = ++statsRequestSerial
+
+        selectedStats.value = null
+        statsError.value = false
+        statsLoading.value = true
+
+        try {
+            const stats = await fetchUserTokenStats(userId, 'all')
+
+            if (serial !== statsRequestSerial) {
+                return
+            }
+
+            selectedStats.value = stats
+        } catch (error) {
+            if (serial !== statsRequestSerial) {
+                return
+            }
+
+            statsError.value = true
+            showError(error instanceof Error ? error.message : '加载用户统计失败')
+        } finally {
+            if (serial === statsRequestSerial) {
+                statsLoading.value = false
+            }
+        }
     }
 
     /** 保存资料(显示名 + 非本人角色,对齐原版 saveAdminUserProfile) */
@@ -512,7 +579,17 @@
         }
     }
 
+    function formatNumber(value: number | undefined): string {
+        const num = Number(value)
+
+        return Number.isFinite(num) ? num.toLocaleString('zh-CN') : '-'
+    }
+
     function formatMoney(value: number | undefined): string {
+        if (value === undefined) {
+            return '-'
+        }
+
         const num = Number(value || 0)
 
         return Number.isFinite(num)
