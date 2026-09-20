@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from basis.Database import safe_append_jsonl, safe_read_json, safe_read_jsonl_tail
-from .usage_logs import read_usage_log_records
+from .usage_logs import read_usage_log_records, usage_record_total_tokens
 
 try:
     from .token_logger import iter_papi_token_log_entries
@@ -455,12 +455,7 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
             for log in logs:
                 if not isinstance(log, dict):
                     continue
-                input_tokens = _int_value(log.get('input_tokens', 0))
-                output_tokens = _int_value(log.get('output_tokens', 0))
-                total = log.get('total_tokens')
-                if total is None:
-                    total = input_tokens + output_tokens
-                total = _int_value(total)
+                total = usage_record_total_tokens(log)
 
                 model = _normalize_model_name(log.get('model'))
                 provider = _resolve_active_provider(model, log.get('provider'))
@@ -504,12 +499,7 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
     for log in iter_papi_token_log_entries():
         if not isinstance(log, dict):
             continue
-        input_tokens = _int_value(log.get('input_tokens', 0))
-        output_tokens = _int_value(log.get('output_tokens', 0))
-        total = log.get('total_tokens')
-        if total is None:
-            total = input_tokens + output_tokens
-        total = _int_value(total)
+        total = usage_record_total_tokens(log)
 
         model = _normalize_model_name(log.get('model'))
         provider = _resolve_active_provider(model, log.get('provider'))

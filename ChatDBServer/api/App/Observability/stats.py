@@ -31,6 +31,8 @@ from basis.TokenUsage import (
     merge_billing_totals,
     read_usage_log_records,
     replace_usage_log_records,
+    round_billing_amount,
+    usage_record_total_tokens,
 )
 from basis.User import load_users, save_users
 
@@ -103,11 +105,7 @@ def _status_normalize_token_log_entry(raw: Dict[str, Any]) -> Dict[str, Any]:
     log = dict(src)
     input_tokens = _safe_int_status(log.get('input_tokens', 0))
     output_tokens = _safe_int_status(log.get('output_tokens', 0))
-    total_raw = log.get('total_tokens', None)
-    if total_raw is None:
-        total_tokens = input_tokens + output_tokens
-    else:
-        total_tokens = _safe_int_status(total_raw, input_tokens + output_tokens)
+    total_tokens = usage_record_total_tokens(log)
     log['input_tokens'] = input_tokens
     log['output_tokens'] = output_tokens
     log['total_tokens'] = total_tokens
@@ -794,15 +792,7 @@ def build_status_overview() -> Dict[str, Any]:
             input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
             output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
             token_details = log.get('token_details') if isinstance(log.get('token_details'), dict) else {}
-            raw_input_tokens = _safe_int_status(
-                token_details.get('raw_input_tokens', input_tokens),
-                input_tokens
-            )
-            recorded_total = _safe_int_status(log.get('total_tokens', 0), 0)
-            if raw_input_tokens > 0 or output_tokens > 0:
-                total = raw_input_tokens + output_tokens
-            else:
-                total = recorded_total
+            total = usage_record_total_tokens(log)
             ts_dt = _status_parse_timestamp(timestamp)
             prev = deduped_token_logs.get(key)
             if prev is None or total >= _safe_int_status(prev.get('total_tokens', 0)):
@@ -979,10 +969,7 @@ def build_status_overview() -> Dict[str, Any]:
 
         input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
         output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
-        total = log.get('total_tokens', None)
-        if total is None:
-            total = input_tokens + output_tokens
-        total = _safe_int_status(total, 0)
+        total = usage_record_total_tokens(log)
         total_tokens += total
 
         model_raw = str(log.get('model') or 'unknown').strip() or 'unknown'
@@ -1347,32 +1334,22 @@ def admin_token_stats():
                 logs = _status_dedupe_token_logs(read_usage_log_records(token_file), 'chat')
 
                 for log in logs:
-                    t = log.get('total_tokens', None)
-
-                    if t is None:
-                        t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-
-                    total_tokens += int(t or 0)
+                    total_tokens += usage_record_total_tokens(log)
                     merge_billing_totals(billing_totals, build_log_billing(log, models_config=models_config))
             except Exception as e:
                 current_app.logger.warning('admin token stats load failed for %s: %s', username, e)
 
         for log in _status_dedupe_token_logs(list(iter_papi_token_log_entries()), 'papi'):
-            t = log.get('total_tokens', None)
-
-            if t is None:
-                t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-
-            total_tokens += int(t or 0)
+            total_tokens += usage_record_total_tokens(log)
             merge_billing_totals(billing_totals, build_log_billing(log, models_config=models_config))
 
         return jsonify({
             'success': True,
             'total': total_tokens,
-            'total_cost': round(float(billing_totals.get('cost', 0.0) or 0.0), 8),
-            'input_cost': round(float(billing_totals.get('input_cost', 0.0) or 0.0), 8),
-            'output_cost': round(float(billing_totals.get('output_cost', 0.0) or 0.0), 8),
-            'cache_hit_cost': round(float(billing_totals.get('cache_hit_cost', 0.0) or 0.0), 8),
+            'total_cost': round_billing_amount(billing_totals.get('cost', 0.0)),
+            'input_cost': round_billing_amount(billing_totals.get('input_cost', 0.0)),
+            'output_cost': round_billing_amount(billing_totals.get('output_cost', 0.0)),
+            'cache_hit_cost': round_billing_amount(billing_totals.get('cache_hit_cost', 0.0)),
             'unpriced_records': int(billing_totals.get('unpriced_records', 0) or 0),
             'currency': 'CNY',
         })
@@ -1407,15 +1384,7 @@ def _admin_normalize_token_log_for_user(
     src = log if isinstance(log, dict) else {}
     input_tokens = _safe_int_status(src.get('input_tokens', 0), 0)
     output_tokens = _safe_int_status(src.get('output_tokens', 0), 0)
-    total_tokens = src.get('total_tokens')
-
-    if total_tokens is None:
-        total_tokens = input_tokens + output_tokens
-
-    total_tokens = _safe_int_status(total_tokens, input_tokens + output_tokens)
-
-    if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
-        total_tokens = input_tokens + output_tokens
+    total_tokens = usage_record_total_tokens(src)
 
     timestamp = str(src.get('timestamp') or '').strip()
 
@@ -1505,7 +1474,7 @@ def _admin_build_user_token_stats(username: str, range_name: str) -> Dict[str, A
     for log in filtered_logs:
         input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
         output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
-        tokens = _safe_int_status(log.get('total_tokens', 0), input_tokens + output_tokens)
+        tokens = usage_record_total_tokens(log)
         provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
         model = str(log.get('model') or 'unknown').strip() or 'unknown'
         source = str(log.get('source') or 'chat').strip() or 'chat'
@@ -1545,7 +1514,7 @@ def _admin_build_user_token_stats(username: str, range_name: str) -> Dict[str, A
                 'name': key,
                 'tokens': value.get('tokens', 0),
                 'requests': value.get('requests', 0),
-                'cost': round(float(value.get('cost', 0.0) or 0.0), 8),
+                'cost': round_billing_amount(value.get('cost', 0.0)),
             }
             for key, value in bucket.items()
         ]
@@ -1565,10 +1534,10 @@ def _admin_build_user_token_stats(username: str, range_name: str) -> Dict[str, A
             'papi_input_tokens': papi_input_tokens,
             'papi_output_tokens': papi_output_tokens,
             'papi_total_tokens': papi_total_tokens,
-            'cost': round(float(billing_totals.get('cost', 0.0) or 0.0), 8),
-            'input_cost': round(float(billing_totals.get('input_cost', 0.0) or 0.0), 8),
-            'output_cost': round(float(billing_totals.get('output_cost', 0.0) or 0.0), 8),
-            'cache_hit_cost': round(float(billing_totals.get('cache_hit_cost', 0.0) or 0.0), 8),
+            'cost': round_billing_amount(billing_totals.get('cost', 0.0)),
+            'input_cost': round_billing_amount(billing_totals.get('input_cost', 0.0)),
+            'output_cost': round_billing_amount(billing_totals.get('output_cost', 0.0)),
+            'cache_hit_cost': round_billing_amount(billing_totals.get('cache_hit_cost', 0.0)),
             'unpriced_records': int(billing_totals.get('unpriced_records', 0) or 0),
             'currency': 'CNY',
         },
@@ -2006,12 +1975,7 @@ def admin_token_timeseries():
 
         in_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
         out_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
-        total = log.get('total_tokens', None)
-
-        if total is None:
-            total = in_tokens + out_tokens
-
-        total = _safe_int_status(total, in_tokens + out_tokens)
+        total = usage_record_total_tokens(log)
         buckets[day]['input_tokens'] += in_tokens
         buckets[day]['output_tokens'] += out_tokens
         buckets[day]['total_tokens'] += total
@@ -2059,7 +2023,7 @@ def admin_token_timeseries():
         'output_tokens': [buckets[d]['output_tokens'] for d in labels],
         'total_tokens': [buckets[d]['total_tokens'] for d in labels],
         'requests': [buckets[d]['requests'] for d in labels],
-        'cost': [round(float(buckets[d]['cost'] or 0.0), 8) for d in labels],
+        'cost': [round_billing_amount(buckets[d]['cost']) for d in labels],
         'unpriced_records': [buckets[d]['unpriced_records'] for d in labels],
     }
 
@@ -2069,7 +2033,7 @@ def admin_token_timeseries():
                 'name': k,
                 'tokens': v['tokens'],
                 'requests': v['requests'],
-                'cost': round(float(v.get('cost', 0.0) or 0.0), 8),
+                'cost': round_billing_amount(v.get('cost', 0.0)),
             }
             for k, v in provider_totals.items()
         ],
@@ -2082,7 +2046,7 @@ def admin_token_timeseries():
                 'name': k,
                 'tokens': v['tokens'],
                 'requests': v['requests'],
-                'cost': round(float(v.get('cost', 0.0) or 0.0), 8),
+                'cost': round_billing_amount(v.get('cost', 0.0)),
             }
             for k, v in model_totals.items()
         ],

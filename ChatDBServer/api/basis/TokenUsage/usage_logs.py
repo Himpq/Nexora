@@ -139,6 +139,41 @@ def read_usage_log_records(json_path: str, limit: int = 0) -> List[Dict[str, Any
     return rows
 
 
+def usage_record_total_tokens(record: Any) -> int:
+    """按完整用量计算日志总 Token，不扣除缓存命中输入。"""
+    item = record if isinstance(record, dict) else {}
+    token_details = item.get("token_details") if isinstance(item.get("token_details"), dict) else {}
+
+    input_fallback = item.get("input_tokens", item.get("prompt_tokens", 0))
+    raw_input_value = item.get("raw_input_tokens")
+    if raw_input_value is None:
+        raw_input_value = token_details.get("raw_input_tokens")
+    if raw_input_value is None:
+        raw_input_value = input_fallback
+
+    output_value = item.get("output_tokens", item.get("completion_tokens", 0))
+
+    try:
+        raw_input_tokens = max(0, int(float(raw_input_value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        raw_input_tokens = 0
+
+    try:
+        input_fallback_tokens = max(0, int(float(input_fallback or 0)))
+    except (TypeError, ValueError, OverflowError):
+        input_fallback_tokens = 0
+
+    if raw_input_tokens <= 0 and input_fallback_tokens > 0:
+        raw_input_tokens = input_fallback_tokens
+
+    try:
+        output_tokens = max(0, int(float(output_value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        output_tokens = 0
+
+    return raw_input_tokens + output_tokens
+
+
 def dedupe_token_log_records(records: Any, source: str = "token") -> List[Dict[str, Any]]:
     """按持久化日志 ID 去重,保留没有 ID 的历史记录。"""
     result: List[Dict[str, Any]] = []

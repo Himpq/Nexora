@@ -29,6 +29,7 @@ from .usage_logs import (
     maybe_compact_usage_log_async,
     read_usage_log_records,
     replace_usage_log_records,
+    usage_record_total_tokens,
     usage_jsonl_path,
 )
 from .billing import (
@@ -36,6 +37,7 @@ from .billing import (
     build_log_billing,
     merge_billing_totals,
     normalize_model_pricing,
+    round_billing_amount,
     resolve_model_pricing,
 )
 from .details import TokenUsageDetailPresenter

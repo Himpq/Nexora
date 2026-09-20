@@ -47,6 +47,15 @@ function testReadMessageIoTokens() {
     assert.equal(tokens.round.cachedInput, 30, 'round 按 snake_case 协议读取 cached_input')
     assert.equal(tokens.cumulative.input, 999, 'cumulative 取 io_tokens_cumulative.input')
 
+    const persisted = readMessageIoTokens({
+        usage: { input: 120, output: 60 },
+        io_tokens_window: { input: 120, output: 60 },
+        io_tokens_cumulative: { input: 999, output: 888 },
+    })
+
+    assert.equal(persisted.round.input, 120, 'v4 window 字段优先于 usage')
+    assert.equal(persisted.cumulative.input, 999, 'v4 cumulative 字段优先于 usage')
+
     const fallback = readMessageIoTokens({ io_tokens: { input: 50, output: 20 } })
 
     assert.equal(fallback.round.input, 0, '无 window 口径 round 为空')

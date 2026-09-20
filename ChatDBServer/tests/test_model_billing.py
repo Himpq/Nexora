@@ -35,6 +35,14 @@ def test_billing_snapshot_separates_cached_input_costs():
     assert billing["cost"] == 0.0021
 
 
+def test_billing_amount_rounds_half_up_for_statistics():
+    from basis.TokenUsage.billing import round_billing_amount
+
+    assert round_billing_amount(2.675) == 2.68
+    assert round_billing_amount(0.005) == 0.01
+    assert round_billing_amount(0.0049) == 0.0
+
+
 def test_new_model_uses_default_context_window_when_input_is_blank(monkeypatch):
     session_auth = importlib.import_module("basis.Permission.session_auth")
     model_routes = importlib.import_module("basis.Model.admin_routes")

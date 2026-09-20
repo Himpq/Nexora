@@ -6069,7 +6069,7 @@ class Model(MailMixin):
                         if estimated_input <= 0:
                             return None
 
-                        already_consumed_input = int(max(0, _safe_int_local(request_input_tokens_total, 0)))
+                        already_consumed_input = int(max(0, _safe_int_local(request_input_tokens_raw_total, 0)))
 
                         if quota_model_set_seed and quota_model_disable_action_seed and quota_model_remaining_seed is not None:
                             model_remaining_now = int(quota_model_remaining_seed - already_consumed_input)
@@ -6581,12 +6581,7 @@ class Model(MailMixin):
                                 raw_input_tokens = int(max(0, sanitized_stream_usage["raw_input"]))
                                 cached_input_tokens = int(max(0, sanitized_stream_usage["cached_input"]))
                                 input_tokens = int(max(0, sanitized_stream_usage["effective_input"]))
-                                total_tokens = int(
-                                    event.get(
-                                        "total_tokens",
-                                        getattr(round_usage, "total_tokens", 0)
-                                    ) or 0
-                                )
+                                total_tokens = raw_input_tokens + output_tokens
                                 yield {
                                     "type": "token_usage",
                                     "input_tokens": input_tokens,
@@ -6664,9 +6659,7 @@ class Model(MailMixin):
                             prompt_tokens_dbg_cached = int(max(0, usage_guarded["cached_input"]))
                             prompt_tokens_dbg = int(max(0, usage_guarded["effective_input"]))
                             output_tokens_dbg = int(usage_io_dbg["output"] or 0)
-                            total_tokens_dbg = int(
-                                _usage_get(round_usage, "total_tokens", 0) or 0
-                            )
+                            total_tokens_dbg = prompt_tokens_dbg_raw + output_tokens_dbg
                         except Exception:
                             prompt_tokens_dbg_raw = 0
                             prompt_tokens_dbg_cached = 0
@@ -7574,6 +7567,22 @@ class Model(MailMixin):
                                     "cached_input": int(io.get("cached_input") or 0),
                                     "effective_input": int(io.get("effective_input") or 0),
                                 }
+                            # assistant 消息同时保存累计与窗口口径:
+                            # usage 保持最后一轮,供 CTX 卡片读取;累计口径供 badge 展示与历史回放。
+                            if isinstance(metadata, dict):
+                                for io_key in ("io_tokens_cumulative", "io_tokens_window"):
+                                    io_value = metadata.get(io_key)
+
+                                    if not isinstance(io_value, dict):
+                                        continue
+
+                                    v4_payload[io_key] = {
+                                        "input": int(io_value.get("input") or 0),
+                                        "output": int(io_value.get("output") or 0),
+                                        "raw_input": int(io_value.get("raw_input") or 0),
+                                        "cached_input": int(io_value.get("cached_input") or 0),
+                                        "effective_input": int(io_value.get("effective_input") or 0),
+                                    }
                             # trace
                             trace = None
                             if isinstance(metadata, dict) and isinstance(metadata.get("process_steps"), list):
@@ -7792,6 +7801,12 @@ class Model(MailMixin):
                     return
 
                 target_index = saved_assistant_message_index
+
+                # provider 异常可能发生在正常终帧持久化之前,此时 saved_assistant_message_index
+                # 仍为空,但 begin_user_turn 已经创建了 assistant 占位。必须复用该索引覆盖占位,
+                # 不能让兼容 add_message 在无 index 时追加第二条 assistant 错误消息。
+                if target_index is None and assistant_index_for_stream is not None:
+                    target_index = int(assistant_index_for_stream)
 
                 if target_index is None and is_regenerate:
                     target_index = regenerate_index
@@ -8106,8 +8121,6 @@ class Model(MailMixin):
 
             input_tokens = _uv(usage, 'input_tokens', _uv(usage, 'prompt_tokens', 0))
             output_tokens = _uv(usage, 'output_tokens', _uv(usage, 'completion_tokens', 0))
-            usage_total = _uv(usage, 'total_tokens', 0)
-            usage_total_int = _safe_int(usage_total, 0)
             input_tokens_int_raw = _safe_int(input_tokens, 0)
             output_tokens_int = _safe_int(output_tokens, 0)
 
@@ -8124,10 +8137,7 @@ class Model(MailMixin):
             if cached_tokens_int < 0:
                 cached_tokens_int = 0
             input_tokens_int = max(0, input_tokens_int_raw - max(0, cached_tokens_int))
-            if usage_total_int > 0:
-                total_tokens = input_tokens_int + output_tokens_int
-            else:
-                total_tokens = input_tokens_int + output_tokens_int
+            total_tokens = input_tokens_int_raw + output_tokens_int
 
             token_details = {
                 "cached_tokens": cached_tokens_int,
@@ -8675,6 +8685,3 @@ class Model(MailMixin):
     def analyzeConnections(self, title: str) -> str:
         """分析知识连接（简化实现）"""
         return f"知识 '{title}' 的连接分析功能尚未完整实现"
-
-
-

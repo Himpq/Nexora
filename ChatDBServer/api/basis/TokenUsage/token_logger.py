@@ -62,10 +62,8 @@ def normalize_papi_usage(raw_usage: Any) -> Dict[str, int]:
     output_tokens = _safe_int(
         usage.get("output_tokens", usage.get("completion_tokens", 0))
     )
-    total_raw = usage.get("total_tokens")
-    total_tokens = _safe_int(total_raw) if total_raw is not None else input_tokens + output_tokens
-    if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
-        total_tokens = input_tokens + output_tokens
+    # 用量统计按原始输入加输出计数，缓存命中只用于费用快照，不从总量中扣除。
+    total_tokens = input_tokens + output_tokens
 
     prompt_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
     input_details = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}

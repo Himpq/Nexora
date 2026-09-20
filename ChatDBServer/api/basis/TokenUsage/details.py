@@ -3,6 +3,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from basis.Conversation import ConversationService
+from .usage_logs import usage_record_total_tokens
 
 
 class TokenUsageDetailPresenter:
@@ -85,10 +86,7 @@ class TokenUsageDetailPresenter:
     def _base_detail(self, log: Dict[str, Any]) -> Dict[str, Any]:
         input_tokens = self._safe_int(log.get("input_tokens"))
         output_tokens = self._safe_int(log.get("output_tokens"))
-        total_tokens = self._safe_int(log.get("total_tokens"))
-
-        if total_tokens <= 0:
-            total_tokens = input_tokens + output_tokens
+        total_tokens = usage_record_total_tokens(log)
 
         action = str(log.get("action") or "chat").strip() or "chat"
 

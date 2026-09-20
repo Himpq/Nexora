@@ -48,6 +48,9 @@ export interface ChatMessage {
     model?: { name?: string; provider?: string }
     summary?: string
     usage?: Record<string, number>
+    /** 最后一轮与整次 assistant 回复累计 I/O token */
+    io_tokens_window?: Record<string, number>
+    io_tokens_cumulative?: Record<string, number>
     trace?: {
         events?: Array<Record<string, unknown>>
         tool_calls?: Array<Record<string, unknown>>

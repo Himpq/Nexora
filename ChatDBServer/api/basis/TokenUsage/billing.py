@@ -7,7 +7,7 @@ Nexora.basis.TokenUsage.billing — 模型费用计算与价格快照。
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
 
@@ -36,6 +36,16 @@ def _parse_decimal(value: Any) -> Optional[Decimal]:
         return None
 
     return number
+
+
+def round_billing_amount(value: Any) -> float:
+    """将统计累计金额按展示口径四舍五入到两位小数。"""
+    number = _parse_decimal(value)
+
+    if number is None:
+        return 0.0
+
+    return float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def normalize_model_pricing(raw_pricing: Any) -> Optional[Dict[str, Any]]:
@@ -181,15 +191,8 @@ def build_log_billing(
     *,
     models_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """为新旧日志统一生成费用结果；旧日志按当前配置标记为历史估算。"""
+    """按 models.json 当前计费配置重新计算日志费用。"""
     row = log if isinstance(log, dict) else {}
-    snapshot = row.get("billing")
-
-    if isinstance(snapshot, dict) and snapshot.get("cost") is not None:
-        result = dict(snapshot)
-        result["estimated"] = bool(snapshot.get("estimated", False))
-        result["source"] = str(snapshot.get("source") or "snapshot")
-        return result
 
     pricing = resolve_model_pricing(
         row.get("model"),
@@ -197,7 +200,7 @@ def build_log_billing(
         models_config=models_config,
     )
     token_details = row.get("token_details") if isinstance(row.get("token_details"), dict) else {}
-    return build_billing_snapshot(
+    result = build_billing_snapshot(
         input_tokens=row.get("input_tokens", 0),
         output_tokens=row.get("output_tokens", 0),
         pricing=pricing,
@@ -206,6 +209,11 @@ def build_log_billing(
         cached_tokens=row.get("cached_tokens"),
         source="current_config" if pricing is not None else "unpriced",
     )
+
+    if pricing is not None:
+        result["estimated"] = False
+
+    return result
 
 
 def merge_billing_totals(target: Dict[str, Any], billing: Dict[str, Any]) -> None:

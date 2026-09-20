@@ -1460,7 +1460,7 @@ class ConversationService:
             if not isinstance(usage, dict):
                 continue
             try:
-                in_tok = int(usage.get("input") or 0)
+                in_tok = int(usage.get("raw_input") or usage.get("input") or 0)
                 out_tok = int(usage.get("output") or 0)
             except Exception:
                 continue

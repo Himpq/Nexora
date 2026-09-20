@@ -9,13 +9,13 @@
  * 数据源(对齐原版 tokenBudgetState):
  *   - contextWindow: 模型配置的上下文窗口
  *   - profile: prompt_token_profile 块(system_tokens / tools_tokens)
- *   - io payload: 最后一条助手消息 metadata.io_tokens_window / io_tokens_cumulative
+ *   - io payload: 助手消息级 io_tokens_window / io_tokens_cumulative
  *   - roundInput: 本轮真实 usage 缺失时用消息文本估算
  *
  * 全部为纯函数,无 DOM / Vue 依赖,供 ChatInput 卡片与测试复用。
  */
 
-/** io_tokens 消息 metadata(对齐原版 normalizeIoTokensPayload 结构) */
+/** assistant 回复级 io_tokens 结构;window 用于 CTX,cumulative 用于整次回复统计 */
 export interface IoTokenPayload {
     input: number
     rawInput: number
@@ -23,7 +23,7 @@ export interface IoTokenPayload {
     output: number
 }
 
-/** 单条消息的 io_tokens:round 为本轮(io_tokens_window 优先),cumulative 为累计(io_tokens_cumulative 优先) */
+/** 单条消息的 io_tokens:round 为最后一轮,cumulative 为整次 assistant 回复累计 */
 export interface MessageIoTokens {
     round: IoTokenPayload
     cumulative: IoTokenPayload
@@ -141,8 +141,10 @@ export function normalizeContextWindow(value: unknown): number {
 }
 
 /**
- * 读取单条消息的 io_tokens metadata(round 优先 io_tokens_window,cumulative 优先 io_tokens_cumulative,
- * 对齐原版 normalizeIoTokensPayload)
+ * 读取单条 assistant 消息的 token 口径。
+ *
+ * 新 v4 字段优先于 usage:usage 保留最后一轮,两个显式字段分别承载窗口与累计。
+ * 旧消息只有 usage 时无法重建历史累计,因此两个口径都按 usage 读取。
  */
 export function readMessageIoTokens(metadata: unknown): MessageIoTokens {
     if (!metadata || typeof metadata !== 'object') {
@@ -150,6 +152,13 @@ export function readMessageIoTokens(metadata: unknown): MessageIoTokens {
     }
 
     const record = metadata as Record<string, unknown>
+    const round = readIoPayloadRecord(record.io_tokens_window)
+    const cumulative = readIoPayloadRecord(record.io_tokens_cumulative || record.io_tokens)
+
+    if (hasAnyIo(round) || hasAnyIo(cumulative)) {
+        return { round, cumulative }
+    }
+
     const usage = record.usage && typeof record.usage === 'object'
         ? record.usage as Record<string, unknown>
         : null
@@ -167,16 +176,32 @@ export function readMessageIoTokens(metadata: unknown): MessageIoTokens {
     }
 }
 
-/** 读取最后一条带 io_tokens metadata 的助手消息(无则返回空 payload) */
-export function readLastAssistantIoTokens(messages: Array<{ role?: string; metadata?: unknown; usage?: unknown }>): MessageIoTokens {
+/** 读取最后一条带 io_tokens 的助手消息(无则返回空 payload) */
+export function readLastAssistantIoTokens(messages: Array<{
+    role?: string
+    metadata?: unknown
+    usage?: unknown
+    io_tokens_window?: unknown
+    io_tokens_cumulative?: unknown
+}>): MessageIoTokens {
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
 
         if (message && message.role === 'assistant') {
-            const tokens = readMessageIoTokens({
+            const messagePayload: Record<string, unknown> = {
                 ...(message.metadata && typeof message.metadata === 'object' ? message.metadata as Record<string, unknown> : {}),
                 usage: message.usage,
-            })
+            }
+
+            if (message.io_tokens_window !== undefined) {
+                messagePayload.io_tokens_window = message.io_tokens_window
+            }
+
+            if (message.io_tokens_cumulative !== undefined) {
+                messagePayload.io_tokens_cumulative = message.io_tokens_cumulative
+            }
+
+            const tokens = readMessageIoTokens(messagePayload)
 
             if (hasAnyIo(tokens.round) || hasAnyIo(tokens.cumulative)) {
                 return tokens

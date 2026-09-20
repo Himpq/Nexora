@@ -37,6 +37,9 @@ ALLOWED_ASSISTANT_FIELDS = {
     "attachments",
     "memory_analysis",
     "memory_io_tokens",
+    # assistant 回复级 token 口径:累计用于 badge/统计,窗口用于上下文占用
+    "io_tokens_cumulative",
+    "io_tokens_window",
 }
 
 ASSISTANT_STATUS_VALUES = {"completed", "partial", "error", "streaming"}
@@ -128,6 +131,17 @@ def normalize_usage(raw: Any) -> Dict[str, int]:
         "cached_input": _int("cached_input"),
         "effective_input": _int("effective_input"),
     }
+
+
+def _has_usage_tokens(payload: Dict[str, int]) -> bool:
+    """判断 token payload 是否包含至少一个有效的非零口径。"""
+    return any(int(payload.get(key) or 0) > 0 for key in (
+        "input",
+        "output",
+        "raw_input",
+        "cached_input",
+        "effective_input",
+    ))
 
 
 def normalize_trace(raw: Any) -> Dict[str, Any]:
@@ -330,6 +344,8 @@ def normalize_assistant_message(raw: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(meta, dict) and isinstance(meta.get("io_tokens"), dict):
             io = meta.get("io_tokens", {})
             usage = {"input": int(io.get("input") or 0), "output": int(io.get("output") or 0), "raw_input": int(io.get("raw_input") or 0), "cached_input": int(io.get("cached_input") or 0), "effective_input": int(io.get("effective_input") or 0)}
+    cumulative_usage = normalize_usage(raw.get("io_tokens_cumulative"))
+    window_usage = normalize_usage(raw.get("io_tokens_window"))
     trace = normalize_trace(raw.get("trace"))
     if not trace.get("events") and any(trace.get(key) for key in ("tool_calls", "tool_results", "content_segments", "errors")):
         trace = build_trace_from_process_steps(extract_process_steps_from_trace(trace))
@@ -378,6 +394,10 @@ def normalize_assistant_message(raw: Dict[str, Any]) -> Dict[str, Any]:
     attachments = raw.get("attachments") if isinstance(raw.get("attachments"), list) else None
     if attachments is not None:
         msg["attachments"] = list(attachments)
+    if _has_usage_tokens(cumulative_usage):
+        msg["io_tokens_cumulative"] = cumulative_usage
+    if _has_usage_tokens(window_usage):
+        msg["io_tokens_window"] = window_usage
     # Memory 分析扩展（v4 明确字段，避免 normalize 丢失）
     mem_analysis = raw.get("memory_analysis")
     if isinstance(mem_analysis, dict) and mem_analysis:
