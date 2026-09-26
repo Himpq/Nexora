@@ -2,9 +2,10 @@
     RemoteConnectionModal.vue — 远程连接
 
     只做「电脑连上这台服务器」这一件事，不承载任务下发：
+      - 顶部状态条：一眼回答「现在有没有电脑连着」，不必逐行扫列表；
       - 服务器地址：填进电脑端 NexoraCode 设置的「服务器地址」完成配对；
       - 配对码：一次性、五分钟有效，电脑端输入后即换设备凭据；
-      - 已绑定电脑：在线状态与解除绑定。
+      - 已绑定电脑：每台一行带状态点，解除绑定是次要操作。
 
     电脑主动向云端发起 WebSocket，云端拿不到电脑的 IP，因此这里不展示电脑地址。
 -->
@@ -14,65 +15,75 @@
         :open="open"
         title="远程连接"
         modal-class="remote-connection-modal"
-        width="520px"
+        width="720px"
         @close="emit('close')"
     >
         <div class="remote-connection">
+            <!-- 状态条：最主要的信息，视觉权重高于下面所有操作 -->
+            <div class="remote-connection-status" :class="statusTone">
+                <span class="remote-connection-status-dot" aria-hidden="true"></span>
+                <span class="remote-connection-status-main">
+                    <strong>{{ statusHeadline }}</strong>
+                    <span class="remote-connection-status-detail">{{ statusDetail }}</span>
+                </span>
+                <Button size="compact" icon="fa-solid fa-rotate" :disabled="busy" @click="run(loadDevices)">刷新</Button>
+            </div>
+
             <p class="remote-connection-lead">
                 电脑端 NexoraCode 主动连接本服务器，任务与历史留在电脑本地，服务器只做转发。
             </p>
 
-            <div class="gddp-form-field">
-                <label>服务器地址</label>
-                <div class="remote-connection-value">
-                    <code class="remote-connection-code">{{ serverUrl }}</code>
-                    <Button size="compact" icon="fa-regular fa-copy" :disabled="busy" @click="copyServerUrl">复制</Button>
-                </div>
+            <div class="remote-connection-grid">
+                <section class="remote-connection-card">
+                    <h3 class="remote-connection-card-title">服务器地址</h3>
+                    <p class="remote-connection-card-hint">填入电脑端 NexoraCode 设置 → 远程连接</p>
+                    <div class="remote-connection-value">
+                        <code class="remote-connection-code">{{ serverUrl }}</code>
+                        <Button size="compact" icon="fa-regular fa-copy" :disabled="busy" @click="copyServerUrl">复制</Button>
+                    </div>
+                </section>
+
+                <section class="remote-connection-card">
+                    <h3 class="remote-connection-card-title">配对码</h3>
+                    <p class="remote-connection-card-hint">
+                        {{ pairCode ? pairCountdown : '一次性，五分钟内有效' }}
+                    </p>
+                    <div v-if="pairCode" class="remote-connection-value">
+                        <code class="remote-connection-code is-emphasis">{{ pairCode }}</code>
+                    </div>
+                    <div v-else class="remote-connection-value">
+                        <Button variant="primary" :disabled="busy" @click="run(createPair)">生成配对码</Button>
+                    </div>
+                </section>
             </div>
 
-            <div class="gddp-form-field">
-                <label>配对码</label>
-                <div v-if="pairCode" class="remote-connection-value">
-                    <code class="remote-connection-code is-emphasis">{{ pairCode }}</code>
-                    <span class="remote-connection-countdown">{{ pairCountdown }}</span>
-                </div>
-                <div v-else class="remote-connection-hint">
-                    在电脑端 NexoraCode 设置 → 远程连接中填入上方地址与配对码。
-                </div>
-                <div class="remote-connection-actions">
-                    <Button size="compact" :disabled="busy" @click="run(createPair)">生成配对码</Button>
-                </div>
-            </div>
-
-            <div class="remote-connection-devices">
-                <div class="remote-connection-devices-head">
-                    <span>已绑定电脑</span>
-                    <Button size="compact" icon="fa-solid fa-rotate" :disabled="busy" @click="run(loadDevices)">刷新</Button>
-                </div>
+            <section class="remote-connection-devices">
+                <h3 class="remote-connection-card-title">已绑定电脑</h3>
 
                 <p v-if="loading" class="remote-connection-hint">正在读取设备状态…</p>
-                <p v-else-if="!devices.length" class="remote-connection-hint">尚未绑定电脑。生成配对码后在电脑端完成配对。</p>
+                <p v-else-if="!devices.length" class="remote-connection-hint">
+                    还没有电脑绑定。生成配对码后，在电脑端 NexoraCode 设置 → 远程连接中填入地址与配对码。
+                </p>
                 <ul v-else class="remote-connection-list">
                     <li v-for="device in devices" :key="device.device_id" class="remote-connection-device">
-                        <span class="remote-connection-device-icon">
-                            <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
-                        </span>
+                        <span
+                            class="remote-connection-device-dot"
+                            :class="device.online ? 'is-online' : 'is-offline'"
+                            aria-hidden="true"
+                        ></span>
                         <span class="remote-connection-device-main">
                             <span class="remote-connection-device-name">{{ device.name || '未命名电脑' }}</span>
-                            <span class="remote-connection-device-meta mono">{{ device.device_id }}</span>
+                            <span class="remote-connection-device-meta">
+                                {{ device.online ? '已连接，可下发任务' : '未连接，任务与历史不可用' }}
+                                <code class="remote-connection-device-id">{{ shortId(device.device_id) }}</code>
+                            </span>
                         </span>
-                        <span class="remote-connection-device-state" :class="device.online ? 'is-online' : 'is-offline'">
-                            {{ device.online ? '在线' : '离线' }}
-                        </span>
-                        <Button
-                            size="compact"
-                            variant="danger"
-                            :disabled="busy"
-                            @click="run(() => revoke(device.device_id))"
-                        >解除绑定</Button>
+                        <Button size="compact" variant="quiet" :disabled="busy" @click="run(() => revoke(device.device_id))">
+                            解除绑定
+                        </Button>
                     </li>
                 </ul>
-            </div>
+            </section>
 
             <p v-if="error" role="alert" class="remote-connection-error">{{ error }}</p>
         </div>
@@ -103,15 +114,53 @@
     let ticker: number | null = null
 
     const serverUrl = window.location.origin
+
+    const onlineCount = computed(() => devices.value.filter(device => device.online).length)
+    const totalCount = computed(() => devices.value.length)
+    const statusTone = computed(() => {
+        if (!totalCount.value) {
+            return 'is-empty'
+        }
+
+        return onlineCount.value > 0 ? 'is-online' : 'is-offline'
+    })
+    const statusHeadline = computed(() => {
+        if (!totalCount.value) {
+            return '尚未绑定电脑'
+        }
+
+        if (!onlineCount.value) {
+            return '电脑未连接'
+        }
+
+        return onlineCount.value === 1 ? '1 台电脑在线' : `${onlineCount.value} 台电脑在线`
+    })
+    const statusDetail = computed(() => {
+        if (!totalCount.value) {
+            return '生成配对码，在电脑端完成绑定'
+        }
+
+        if (onlineCount.value < totalCount.value) {
+            return `共 ${totalCount.value} 台，${totalCount.value - onlineCount.value} 台离线`
+        }
+
+        return '可下发任务并读取该电脑的会话'
+    })
     const pairCountdown = computed(() => {
         const seconds = Math.max(0, Math.floor((pairExpiresAt.value - now.value) / 1000))
 
         if (seconds <= 0) {
-            return '已过期'
+            return '已过期，请重新生成'
         }
 
         return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒后失效`
     })
+
+    function shortId(value: string): string {
+        const text = String(value || '')
+
+        return text.length > 12 ? `${text.slice(0, 6)}…${text.slice(-4)}` : text
+    }
 
     async function run(action: () => Promise<void>): Promise<void> {
         if (busy.value) {
