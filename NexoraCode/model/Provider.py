@@ -144,6 +144,29 @@ def load_providers() -> List[ProviderConfig]:
         return [ProviderConfig.from_dict(item) for item in raw_list if isinstance(item, dict)]
 
 
+def validate_context_budget(providers: List[ProviderConfig]) -> None:
+    """窗口必须为正数且大于单次输出上限，否则任何请求都无法在窗口内构建。
+
+    上下文压缩按 window - max_tokens 预留输入预算，非法窗口只能让全部对话失败，
+    因此在设置保存入口拒绝，而不是等到运行期报错。只校验用户输入，不放在
+    save_providers：旧版配置迁移在读取路径上调用它，校验会让读取整体失败。
+    """
+    for provider in providers:
+        label = provider.name or provider.model
+
+        if provider.context_window <= 0:
+            raise ValueError(f"模型「{label}」的上下文窗口必须大于 0")
+
+        if provider.max_tokens <= 0:
+            raise ValueError(f"模型「{label}」的单次输出上限必须大于 0")
+
+        if provider.max_tokens >= provider.context_window:
+            raise ValueError(
+                f"模型「{label}」的单次输出上限 {provider.max_tokens} "
+                f"必须小于上下文窗口 {provider.context_window}"
+            )
+
+
 def save_providers(providers: List[ProviderConfig], default_id: str = "") -> None:
     _PROVIDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
     default_id = str(default_id or "").strip()
@@ -388,6 +411,7 @@ class ProviderClient:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         tool_choice: Any = "auto",
+        max_tokens: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         if not self.config.is_configured():
             raise ProviderError("Provider 未配置：请先在设置中填写 base_url / model")
@@ -397,14 +421,14 @@ class ProviderClient:
             "messages": messages,
             "stream": True,
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": self.config.max_tokens if max_tokens is None else max_tokens,
             "stream_options": {"include_usage": True},
         }
 
         if tools:
             payload["tools"] = tools
 
-        if tool_choice is not None:
+        if tools and tool_choice is not None:
             payload["tool_choice"] = tool_choice
 
         try:

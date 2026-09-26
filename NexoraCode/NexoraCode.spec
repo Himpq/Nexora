@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('config.json', '.'), ('asset_manifest.json', '.'), ('..\\ChatDBServer\\static\\vendor', 'ChatDBServer\\static\\vendor')]
+datas = [('config.json', '.'), ('asset_manifest.json', '.'), ('ui', 'ui'), ('..\\ChatDBServer\\static\\vendor', 'ChatDBServer\\static\\vendor')]
 binaries = []
 hiddenimports = ['webview.platforms.winforms', 'webview.platforms.edgechromium', 'local.tools.ShellTool', 'local.tools.FileTool', 'local.tools.BrowserCore', 'local.tools.BrowserTool', 'local.tools.ImageSearchTool', 'tools.imgspd', 'tools.imgspd.bing', 'tools.imgspd.bing_common', 'tools.imgspd.crawlee_bing', 'tools.imgspd.mediawiki', 'tools.imgspd.models', 'tools.imgspd.anti_spider']
 tmp_ret = collect_all('webview')

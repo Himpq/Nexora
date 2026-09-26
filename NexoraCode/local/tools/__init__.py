@@ -22,6 +22,7 @@ from .TerminalTool import TerminalTool
 from .ProcessTool import ProcessManagerTool
 from .SearchTool import FileSearchTreeTool, TextSearchTool
 from .CodeScanTool import CodeScanTool
+from .ContextTool import ContextLengthTool, ContextReadTool, ContextSearchTool
 from .PermissionTool import PermissionGrantTool, PermissionListTool
 from .ImageSearchTool import ImageSearchTool
 from .BrowserTool import (
@@ -48,6 +49,9 @@ TOOLS = [
     TextSearchTool(),
     FileSearchTreeTool(),
     CodeScanTool(),
+    ContextLengthTool(),
+    ContextReadTool(),
+    ContextSearchTool(),
     PermissionGrantTool(),
     PermissionListTool(),
     # ImageSearchTool(),

@@ -58,6 +58,8 @@ def _api_global_no_store(resp):
 from model.Routes import register_local_routes
 
 register_local_routes(app, executor=registry)
+from core.remote_connection import install_remote
+_REMOTE_CONNECTION = install_remote(app)
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""
@@ -873,6 +875,7 @@ def _local_agent_enabled_value() -> bool:
 
 @app.route("/settings.css")
 @app.route("/settings.js")
+@app.route("/remote-settings.js")
 def local_settings_asset():
     """本地设置页静态资源。"""
     name = str(request.path or "").lstrip("/")
@@ -925,7 +928,7 @@ def local_settings_get():
 @app.route("/api/local/settings", methods=["POST"])
 def local_settings_save():
     """保存本地设置。api_key 留空表示保留原 key。"""
-    from model.Provider import ProviderConfig, load_providers, save_providers
+    from model.Provider import ProviderConfig, load_providers, save_providers, validate_context_budget
 
     body = request.get_json(silent=True) or {}
     provider_payload = body.get("provider") if isinstance(body.get("provider"), dict) else {}
@@ -975,6 +978,12 @@ def local_settings_save():
             ))
 
         default_id = str(provider_payload.get("default_id") or "").strip()
+
+        try:
+            validate_context_budget(new_list)
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+
         save_providers(new_list, default_id)
 
     if "username" in general_payload and str(general_payload.get("username") or "").strip():
@@ -990,6 +999,7 @@ def proxy_all(path: str):
 
 
 def start_local_server():
+    _REMOTE_CONNECTION.start()
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
     app.run(host="127.0.0.1", port=LOCAL_PORT, threaded=True)

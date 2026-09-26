@@ -20,6 +20,7 @@ import copy
 import threading
 import time
 import uuid
+from .SessionJournal import SessionJournal
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 
@@ -28,7 +29,6 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 _MAX_CHUNKS_PER_SESSION = 12000
 _DONE_TTL_SEC = 900
-_STALE_RUNNING_TTL_SEC = 7200
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 _ACCUMULATED_RENDER_CHUNK_TYPES = {
     "content",
@@ -63,6 +63,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "stream_id": uuid.uuid4().hex,
         "conversation_id": str(conversation_id or "").strip(),
         "is_regenerate": bool(meta.get("is_regenerate", False)),
+        "history_user_count": meta.get("history_user_count"),
         "assistant_index": meta.get("assistant_index"),
         "regenerate_index": meta.get("regenerate_index"),
         "created_at": time.time(),
@@ -93,10 +94,9 @@ def cleanup_sessions() -> None:
             updated_at = float(s.get("updated_at") or 0)
             age = max(0.0, now - updated_at)
 
-            if status == "running":
-                if age > _STALE_RUNNING_TTL_SEC:
-                    remove_ids.append(sid)
-            else:
+            # running / cancelling 一律不回收：长任务超过任何 TTL 仍在执行，
+            # 强制清理会让仍在跑的 worker 失去可续读的 session。worker 结束必经 _finish。
+            if status not in {"running", "cancelling"}:
                 if age > _DONE_TTL_SEC:
                     remove_ids.append(sid)
 
@@ -116,10 +116,17 @@ def start_session(
         None,
     ],
     metadata: Optional[Dict[str, Any]] = None,
+    stream_id: Optional[str] = None,
 ) -> str:
     cleanup_sessions()
     session = _new_session(conversation_id=conversation_id, metadata=metadata)
+
+    if stream_id:
+        session["stream_id"] = stream_id
+
     stream_id = session["stream_id"]
+    journal = SessionJournal()
+    journal.save_meta(session)
 
     with _SESSIONS_LOCK:
         _SESSIONS[stream_id] = session
@@ -135,6 +142,7 @@ def start_session(
         with cond:
             session["conversation_id"] = val
             session["updated_at"] = time.time()
+            journal.save_meta(session)
             cond.notify_all()
 
     def _set_stage(stage: str, detail: str = "") -> None:
@@ -191,6 +199,7 @@ def start_session(
 
             session["last_seq"] = int(session["last_seq"]) + 1
             payload["_stream_seq"] = int(session["last_seq"])
+            journal.append(stream_id, payload)
             session["chunks"].append(payload)
 
             if len(session["chunks"]) > _MAX_CHUNKS_PER_SESSION:
@@ -211,6 +220,7 @@ def start_session(
                 session["stage_detail"] = str(session.get("cancel_reason") or "user_abort")
                 session["stage_updated_at"] = time.time()
                 session["updated_at"] = time.time()
+                journal.save_meta(session)
                 cond.notify_all()
                 return
 
@@ -220,7 +230,23 @@ def start_session(
             session["stage_detail"] = str(error or "")
             session["stage_updated_at"] = time.time()
             session["updated_at"] = time.time()
+            journal.save_meta(session)
             cond.notify_all()
+
+    def _report_worker_error(error: BaseException) -> None:
+        """业务 worker 已推送 error 事件时不再重复上报，只补记失败状态。"""
+        cond = session["cond"]
+
+        with cond:
+            already_reported = session["last_chunk_type"] == "error"
+
+        if not already_reported:
+            try:
+                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(error)}"})
+            except Exception:
+                pass
+
+        _finish("done", str(error))
 
     def _run() -> None:
         try:
@@ -232,19 +258,9 @@ def start_session(
                 _finish("done", "cancelled")
                 return
 
-            try:
-                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(e)}"})
-            except Exception:
-                pass
-
-            _finish("done", str(e))
+            _report_worker_error(e)
         except Exception as e:
-            try:
-                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(e)}"})
-            except Exception:
-                pass
-
-            _finish("done", str(e))
+            _report_worker_error(e)
 
     thread = threading.Thread(target=_run, name=f"nc-stream-{stream_id[:8]}", daemon=True)
     thread.start()
@@ -270,6 +286,7 @@ def get_session_meta(stream_id: str) -> Optional[Dict[str, Any]]:
             "stream_id": sid,
             "conversation_id": str(s.get("conversation_id") or "").strip(),
             "is_regenerate": bool(s.get("is_regenerate", False)),
+            "history_user_count": s.get("history_user_count"),
             "assistant_index": s.get("assistant_index"),
             "regenerate_index": s.get("regenerate_index"),
             "status": str(s.get("status") or "done"),

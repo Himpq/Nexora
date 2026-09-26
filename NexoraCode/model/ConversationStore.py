@@ -12,6 +12,7 @@ NexoraCode.model.ConversationStore — 本地会话存储
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -19,6 +20,10 @@ import uuid
 from typing import Any, Optional
 
 from core.config import get_app_root
+
+
+# 多个本地/远程请求创建不同 Store 实例，共享锁才能避免文件读改写互相覆盖。
+_STORE_LOCK = threading.RLock()
 
 
 def _sanitize_filename(value: str) -> str:
@@ -33,7 +38,7 @@ class ConversationStore:
     def __init__(self):
         self._root = get_app_root() / "data" / "conversations"
         self._root.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._lock = _STORE_LOCK
 
     def _index_path(self):
         return self._root / "index.json"
@@ -52,8 +57,7 @@ class ConversationStore:
             return {}
 
     def _save_index(self, index: dict) -> None:
-        with open(self._index_path(), "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
+        self._write_json(self._index_path(), index)
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -173,9 +177,61 @@ class ConversationStore:
 
     def _save_conversation(self, conversation: dict) -> None:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
+        self._write_json(path, conversation)
 
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+    @staticmethod
+    def _write_json(path, data: dict) -> None:
+        """同目录临时文件原子替换，读取方不会看到写到一半的 JSON。"""
+        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+
+        try:
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def save_context(self, conversation_id: str, record: dict, expected_prefix: list) -> None:
+        """摘要只移动请求边界，保留所有消息；历史被改写时拒绝提交旧摘要。"""
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None or conversation.get("messages", [])[:len(expected_prefix)] != expected_prefix:
+                raise ValueError("摘要生成期间历史已变化，未保存旧摘要")
+
+            conversation["context_state"] = {
+                "summary": record["summary"],
+                "history_cut_index": record["history_cut_index"],
+            }
+            conversation.setdefault("context_compressions", []).append(record)
+            self._save_conversation(conversation)
+
+    def record_context_usage(self, conversation_id: str, input_tokens: int, estimated_tokens: int) -> None:
+        """实测输入校准下一轮估算，摘要更新后不沿用旧窗口占用。"""
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            state = conversation.setdefault("context_state", {})
+            state["last_input_tokens"] = input_tokens
+            state["last_estimated_tokens"] = estimated_tokens
+            self._save_conversation(conversation)
+
+    def record_compression_call(self, conversation_id: str, record: dict) -> None:
+        """压缩请求用量独立保存，即使摘要最终未提交也不能漏计该调用。"""
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            conversation.setdefault("context_compression_calls", []).append(record)
+            self._save_conversation(conversation)
 
     def _guess_title(self, message: dict) -> str:
         content = message.get("content") if isinstance(message, dict) else ""

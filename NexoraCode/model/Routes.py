@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+import threading
 from typing import Any, Generator
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
@@ -283,6 +284,22 @@ def _build_token_history(store: ConversationStore, conversation_id: str = "", li
                 "cached_input_tokens": _safe_tokens(io.get("cached_input")),
             })
 
+        for index, call in enumerate(conversation.get("context_compression_calls", [])):
+            io = call["usage"]
+            rows.append({
+                "detail_ref": f"{cid}:compression-{index}",
+                "conversation_id": cid,
+                "conversation_title": title,
+                "action": "context_compression",
+                "timestamp": call["timestamp"],
+                "model": call["model_name"],
+                "input_tokens": _safe_tokens(io.get("effective_input")),
+                "output_tokens": _safe_tokens(io.get("output")),
+                "total_tokens": _safe_tokens(io.get("effective_input")) + _safe_tokens(io.get("output")),
+                "raw_input_tokens": _safe_tokens(io.get("raw_input")),
+                "cached_input_tokens": _safe_tokens(io.get("cached_input")),
+            })
+
     rows.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
 
     if limit is None:
@@ -388,6 +405,15 @@ def _stream_worker_factory(body: dict):
             return
 
         loop = _build_agent_loop(ProviderClient(target_config) if target_config is not None else None)
+        finished = threading.Event()
+
+        def _watch_cancel():
+            while not finished.wait(0.2):
+                if is_cancel_requested():
+                    loop.cancel()
+                    return
+
+        threading.Thread(target=_watch_cancel, daemon=True).start()
 
         try:
             for event in loop.stream_send(
@@ -395,6 +421,7 @@ def _stream_worker_factory(body: dict):
                 message,
                 system_prompt=system_prompt,
                 cancel_checker=is_cancel_requested,
+                force_context_compression=body.get("force_context_compression") is True,
             ):
                 event_type = str(event.get("type") or "")
                 print(f"[LocalAgent] sse event: {event_type}")
@@ -406,6 +433,9 @@ def _stream_worker_factory(body: dict):
         except Exception as exc:
             print(f"[LocalAgent] stream error: {exc}")
             push_chunk({"type": "error", "message": f"本地对话失败: {exc}"})
+            raise
+        finally:
+            finished.set()
 
         print("[LocalAgent] worker loop finished")
 
@@ -494,15 +524,15 @@ def local_agent_chat_stream():
         return jsonify({"success": False, "message": "消息不能为空"}), 400
 
     # 视图函数内先启动 session 拿到 stream_id，才能写进响应头 X-Stream-Id（前端 detach 依赖）。
-    stream_id = start_session(
-        conversation_id=conversation_id,
-        worker=_stream_worker_factory(body),
-        metadata={
-            "is_regenerate": bool(body.get("is_regenerate", False)),
-            "assistant_index": body.get("assistant_index"),
-            "regenerate_index": body.get("regenerate_index") if body.get("is_regenerate") else None,
-        },
-    )
+    from .TaskService import start_task
+    import uuid
+
+    body.setdefault("request_id", uuid.uuid4().hex)
+
+    try:
+        stream_id = start_task(body)["stream_id"]
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 409
 
     resp = Response(
         stream_with_context(_stream_chat_generator(stream_id)),
@@ -884,6 +914,9 @@ def local_agent_token_detail():
 
     conversation_id, _, index_text = ref.partition(":")
 
+    if index_text.startswith("compression-"):
+        return _compression_token_detail(conversation_id, index_text)
+
     try:
         message_index = int(index_text)
     except (TypeError, ValueError):
@@ -953,3 +986,35 @@ def register_local_routes(app, executor=None) -> None:
         set_default_executor(executor)
 
     app.register_blueprint(_local_bp)
+    from .TaskService import task_bp, set_worker_factory
+
+    set_worker_factory(_stream_worker_factory)
+    app.register_blueprint(task_bp)
+
+
+def _compression_token_detail(conversation_id: str, index_text: str):
+    conversation = ConversationStore().get(conversation_id)
+
+    if conversation is None:
+        return jsonify({"message": "会话不存在"}), 404
+
+    try:
+        index = int(index_text.removeprefix("compression-"))
+
+        if index < 0:
+            raise IndexError()
+
+        call = conversation.get("context_compression_calls", [])[index]
+    except (ValueError, IndexError):
+        return jsonify({"message": "压缩调用记录不存在"}), 404
+
+    io = call["usage"]
+    return jsonify({"success": True, "detail": {
+        "title": "上下文压缩调用", "action": "context_compression", "available": True,
+        "timestamp": call["timestamp"], "model": call["model_name"],
+        "conversation_title": conversation["title"], "provider": "",
+        "input_tokens": io["effective_input"], "output_tokens": io["output"],
+        "total_tokens": io["effective_input"] + io["output"], "raw_input_tokens": io["raw_input"],
+        "cached_input_tokens": io["cached_input"], "effective_input_tokens": io["effective_input"], "cost": io.get("cost", 0),
+        "user_markdown": "上下文摘要请求", "response_markdown": call["summary"],
+    }})

@@ -20,6 +20,7 @@ from core.config import config
 from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
 from .ConversationStore import ConversationStore
+from .ContextManager import ContextManager
 
 
 # 本地 agent 单次请求的工具轮次硬上限（一轮可含多个并行工具调用），
@@ -61,8 +62,9 @@ class AgentLoop:
         self.provider = provider
         self.executor = executor
         self.store = store
+        self.context_manager = ContextManager(provider, store)
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None) -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -148,15 +150,28 @@ class AgentLoop:
 
                 break
 
-            messages = self._build_messages(conversation_id, effective_system)
+            tools = self.executor.list_tools_llm_format()
+
+            try:
+                messages = yield from self.context_manager.prepare(
+                    conversation_id,
+                    effective_system,
+                    tools,
+                    force=force_context_compression,
+                    cancel_checker=cancel_checker,
+                )
+                force_context_compression = False
+            except Exception as exc:
+                print(f"[LocalContext] prepare_failed conversation={conversation_id} error={type(exc).__name__}: {exc}")
+                raise
+
+            input_estimate = self.context_manager.estimate_tokens({"messages": messages, "tools": tools})
 
             if request_first_round_chars <= 0:
                 try:
                     request_first_round_chars = len(json.dumps(messages, ensure_ascii=False, default=str))
                 except Exception:
                     request_first_round_chars = 0
-
-            tools = self.executor.list_tools_llm_format()
 
             assistant_parts = []
             assistant_reasoning_parts = []
@@ -227,6 +242,9 @@ class AgentLoop:
             grouped_tool_calls = self._group_tool_calls(assistant_tool_calls)
 
             last_round_io = self._accumulate_usage(round_usage, totals)
+
+            if last_round_io:
+                self.store.record_context_usage(conversation_id, int(last_round_io.get("raw_input") or 0), input_estimate)
             last_round_had_tool_calls = bool(grouped_tool_calls)
             badge_timing["cachedInput"] = int(totals.get("cached_input") or 0)
             badge_timing["rawInput"] = int(totals.get("raw_input") or 0)
@@ -282,6 +300,15 @@ class AgentLoop:
 
             for tool_index, tool_call in enumerate(grouped_tool_calls):
                 if self._is_cancelled(cancel_checker):
+                    # 未执行的调用也必须有明确结果，才能在下次请求维持工具协议完整。
+                    for remaining in grouped_tool_calls[tool_index:]:
+                        self.store.append_message(conversation_id, {
+                            "role": "tool",
+                            "tool_call_id": str(remaining.get("id") or ""),
+                            "content": "已取消：用户停止任务，该工具未执行。",
+                            "timestamp": _now(),
+                        })
+
                     break
 
                 call_id = str(tool_call.get("id") or "")
@@ -290,7 +317,7 @@ class AgentLoop:
 
                 yield {"type": "function_call", "name": tool_name, "call_id": call_id, "arguments": arguments}
 
-                result = self._execute_tool(tool_name, arguments, conversation_id, project_path)
+                result = self._execute_tool(tool_name, arguments, conversation_id, project_path, cancel_checker)
                 tool_content = result.get("content")
                 success = result.get("success")
 
@@ -522,45 +549,14 @@ class AgentLoop:
         }
 
     def _build_messages(self, conversation_id: str, system_prompt: str) -> list[dict]:
-        conversation = self.store.get(conversation_id) or {}
-        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        conversation = self.store.get(conversation_id)
 
-        for message in conversation.get("messages", []):
-            role = str(message.get("role") or "").strip()
-            content = message.get("content")
+        if conversation is None:
+            raise ValueError("本地会话不存在")
 
-            if role == "user":
-                messages.append({"role": "user", "content": self._stringify_content(content)})
+        return self.context_manager.build_messages(conversation, system_prompt)
 
-            elif role == "assistant":
-                item: dict[str, Any] = {"role": "assistant", "content": self._stringify_content(content)}
-                tool_calls = message.get("tool_calls")
-
-                if isinstance(tool_calls, list) and tool_calls:
-                    item["tool_calls"] = [
-                        {
-                            "id": str(tc.get("id") or ""),
-                            "type": "function",
-                            "function": {
-                                "name": str(tc.get("name") or ""),
-                                "arguments": json.dumps(tc.get("arguments") or {}, ensure_ascii=False),
-                            },
-                        }
-                        for tc in tool_calls
-                    ]
-
-                messages.append(item)
-
-            elif role == "tool":
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": str(message.get("tool_call_id") or ""),
-                    "content": self._stringify_content(content),
-                })
-
-        return messages
-
-    def _execute_tool(self, tool_name: str, arguments: Any, conversation_id: str, project_root: str = "") -> dict:
+    def _execute_tool(self, tool_name: str, arguments: Any, conversation_id: str, project_root: str = "", cancel_checker=None) -> dict:
         args = arguments if isinstance(arguments, dict) else {}
 
         if isinstance(arguments, str):
@@ -578,6 +574,7 @@ class AgentLoop:
             context={
                 "conversation_id": conversation_id,
                 "project_root": project_root,
+                "is_cancelled": cancel_checker,
             },
         )
 
