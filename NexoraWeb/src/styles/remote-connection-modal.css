@@ -5,6 +5,9 @@
  * 与 Button 组件，不重复定义按钮与表单基元。
  *
  * 层级：状态条 > 信息卡片 > 设备行 > 次要操作。解绑是次要操作，不能比状态更抢眼。
+ *
+ * 配色一律走语义令牌（--color-success-* / --color-warning-*），暗色主题下
+ * 由 tokens-color.css 提供深底提亮前景，不要在这里写死浅色。
  */
 
 .remote-connection-modal .remote-connection {
@@ -27,14 +30,16 @@
     background: var(--color-bg-sunken);
 }
 
+/* 有电脑在线：成功语义 */
 .remote-connection-status.is-online {
-    border-color: #bbf7d0;
-    background: #f0fdf4;
+    border-color: var(--color-success-border);
+    background: var(--color-success-surface);
 }
 
+/* 绑了但都没连上：警告语义。空态保持中性，不该 alarming。 */
 .remote-connection-status.is-offline {
-    border-color: #fde68a;
-    background: #fffbeb;
+    border-color: var(--color-warning-border);
+    background: var(--color-warning-surface);
 }
 
 .remote-connection-status-dot {
@@ -46,13 +51,13 @@
 }
 
 .remote-connection-status.is-online .remote-connection-status-dot {
-    background: #16a34a;
-    box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.16);
+    background: var(--color-success-text);
+    box-shadow: 0 0 0 4px var(--color-success-border);
 }
 
 .remote-connection-status.is-offline .remote-connection-status-dot {
-    background: #d97706;
-    box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.16);
+    background: var(--color-warning-text);
+    box-shadow: 0 0 0 4px var(--color-warning-border);
 }
 
 .remote-connection-status-main {
@@ -61,6 +66,15 @@
     flex: 1;
     flex-direction: column;
     gap: 2px;
+}
+
+/* 在线时标题取语义前景色，暗色下自动变亮；离线同理 */
+.remote-connection-status.is-online .remote-connection-status-main strong {
+    color: var(--color-success-text);
+}
+
+.remote-connection-status.is-offline .remote-connection-status-main strong {
+    color: var(--color-warning-text);
 }
 
 .remote-connection-status-main strong {
@@ -136,7 +150,7 @@
 
 /* 配对码需要一眼可读，用强调色与字重区别于只读的服务器地址 */
 .remote-connection-code.is-emphasis {
-    color: var(--color-accent, #0369a1);
+    color: var(--color-accent-text);
     font-size: 20px;
     font-weight: 700;
     letter-spacing: 0.14em;
@@ -185,12 +199,12 @@
 }
 
 .remote-connection-device-dot.is-online {
-    background: #16a34a;
-    box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.16);
+    background: var(--color-success-text);
+    box-shadow: 0 0 0 3px var(--color-success-border);
 }
 
 .remote-connection-device-dot.is-offline {
-    background: #94a3b8;
+    background: var(--color-text-secondary);
 }
 
 .remote-connection-device-main {
@@ -224,10 +238,10 @@
 .remote-connection-error {
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid var(--color-danger-border, #fecaca);
+    border: 1px solid var(--color-danger-border);
     border-radius: 6px;
-    background: var(--color-danger-bg, #fef2f2);
-    color: var(--color-danger-text, #b91c1c);
+    background: var(--color-danger-surface);
+    color: var(--color-danger-text);
     font-size: 12.5px;
     line-height: 1.6;
 }
