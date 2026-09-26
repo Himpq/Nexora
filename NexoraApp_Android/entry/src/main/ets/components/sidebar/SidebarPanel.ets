@@ -30,6 +30,7 @@ export struct SidebarPanel {
     onOpenMail: () => void = () => {};
     // 打开轻量随笔页：由宿主关闭抽屉后全屏挂载
     onOpenNotes: () => void = () => {};
+    onOpenProjects: () => void = () => {};
     // 打开 Learning 工作区：由宿主关闭抽屉后全屏挂载（ArkWeb 薄挂载）
     onOpenLearning: () => void = () => {};
     onOpenConversation: (conversationId: string, title: string) => void = () => {};
@@ -156,6 +157,10 @@ export struct SidebarPanel {
 
             this.ActionRow('mail', $r('app.media.ic_mail'), '邮件', (): void => {
                 this.onOpenMail();
+            });
+
+            this.ActionRow('projects', $r('app.media.ic_computer'), '电脑项目', (): void => {
+                this.onOpenProjects();
             });
 
             this.ActionRow('notes', $r('app.media.ic_edit'), '随笔', (): void => {

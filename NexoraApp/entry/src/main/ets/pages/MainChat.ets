@@ -94,6 +94,8 @@ interface SendMode {
 const LEARNING_MODE: string = 'learning';
 // 画像快速评估会话标题
 const PROFILE_INTERVIEW_TITLE: string = '学习画像评估';
+// 评估类型写入 Nexora 会话 scope.tags，切换设备或重开应用后仍能恢复子模式
+const PROFILE_INTERVIEW_TAG: string = 'learning_profile_interview';
 // 画像评估开场消息：真正的评估指令由后端画像访谈链路注入系统提示，客户端只负责发起这一轮
 const PROFILE_INTERVIEW_KICKOFF: string = '开始我的六维学习画像快速评估';
 
@@ -107,6 +109,8 @@ export struct MainChat {
     // ---------- 会话状态 ----------
     // conversationId 需要驱动侧栏激活态高亮，故用 @State（history 载入由方法显式触发）
     @State private conversationId: string = '';
+    // 新评估会话刚创建后，等侧栏列表刷新前先用此 ID 保持首轮后的子模式
+    private profileInterviewConversationId: string = '';
     @State private messages: ChatMessage[] = [];
     @State private draft: string = '';
     @State private streaming: boolean = false;
@@ -1075,12 +1079,13 @@ export struct MainChat {
             return;
         }
 
-        ApiService.createConversation(PROFILE_INTERVIEW_TITLE, LEARNING_MODE).then((created) => {
+        ApiService.createConversation(PROFILE_INTERVIEW_TITLE, LEARNING_MODE, [PROFILE_INTERVIEW_TAG]).then((created) => {
             if (!created.success || created.conversationId.length === 0) {
                 this.notify('评估会话创建失败：' + created.message, 2400);
                 return;
             }
 
+            this.profileInterviewConversationId = created.conversationId;
             this.openConversation(created.conversationId, PROFILE_INTERVIEW_TITLE);
             this.app.refreshConversations().then(() => {
                 this.bumpList();
@@ -1432,13 +1437,32 @@ export struct MainChat {
             toolMode: this.app.forceTools ? 'force' : 'auto_off'
         };
 
-        // 学习会话首问要显式带上模式与运行时载荷：后端据此挂载 NexoraLearning 工具集与画像访谈指令
-        if (mode !== undefined) {
-            streamOptions.conversationMode = mode.conversationMode;
-            streamOptions.conversationModePayload = mode.payload;
+        let effectiveMode: SendMode | undefined = mode;
+
+        if (effectiveMode === undefined && this.isProfileInterviewConversation(targetKey)) {
+            effectiveMode = {
+                conversationMode: LEARNING_MODE,
+                payload: { learning: true, interview: true }
+            };
+        }
+
+        // Nexora 会话标签恢复评估子模式；每轮使用相同工具集，动态评分状态走上下文尾部注入。
+        if (effectiveMode !== undefined) {
+            streamOptions.conversationMode = effectiveMode.conversationMode;
+            streamOptions.conversationModePayload = effectiveMode.payload;
         }
 
         chatStream.start(targetKey, streamOptions, this.listenerFor(assistantMessage, targetKey));
+    }
+
+    private isProfileInterviewConversation(conversationId: string): boolean {
+        if (conversationId === this.profileInterviewConversationId) {
+            return true;
+        }
+
+        return this.app.conversations.some((item: ConversationItem): boolean =>
+            item.id === conversationId && item.profileInterview === true
+        );
     }
 
     // 重新生成：通过后端 is_regenerate 机制覆盖目标回答（自动保存旧版本）。

@@ -33,6 +33,7 @@ import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
 import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
+import { RemoteProjectsPage } from '../components/nexoracode/RemoteProjectsPage';
 import { MailPage } from '../components/mail/MailPage';
 import { NotesPage } from '../components/notes/NotesPage';
 import { LearningPage } from '../components/learning/LearningPage';
@@ -121,6 +122,7 @@ export struct MainChat {
     // ---------- 邮件页（全屏覆盖层） ----------
     // 条件挂载 + 右滑转场；mailDetailOpen 以 @Link 下发 MailPage，返回键先退详情再退页面
     @State private mailOpen: boolean = false;
+    @State private projectsOpen: boolean = false;
     @State private mailDetailOpen: boolean = false;
 
     // 随笔页：页面层持有编辑器状态，保证返回键可以先退出编辑器再退出随笔页
@@ -258,6 +260,10 @@ export struct MainChat {
 
     // 系统返回键处理：优先级 邮件页(详情→页面) > 随笔编辑器/页面 > Learning 子页/页面 > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
+        if (this.projectsOpen) {
+            this.projectsOpen = false;
+            return true;
+        }
         if (this.viewerUrl.length > 0) {
             this.viewerUrl = '';
             return true;
@@ -346,6 +352,10 @@ export struct MainChat {
             this.SidebarLayer();
 
             // 邮件页层：条件挂载，整页右滑进出（进入即拉取当前箱列表）
+            if (this.projectsOpen) {
+                RemoteProjectsPage({ onBack: (): void => { this.projectsOpen = false; } });
+            }
+
             if (this.mailOpen) {
                 MailPage({
                     app: this.app,
@@ -764,6 +774,10 @@ export struct MainChat {
                     onOpenNotes: () => {
                         this.closeSidebar();
                         this.openNotes(false);
+                    },
+                    onOpenProjects: () => {
+                        this.closeSidebar();
+                        this.projectsOpen = true;
                     },
                     onOpenLearning: () => {
                         void this.openLearning();

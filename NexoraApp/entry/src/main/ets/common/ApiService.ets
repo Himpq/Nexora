@@ -37,6 +37,7 @@ export interface ConversationCreateResult {
 interface CreateConversationRequestBody {
     title: string;
     conversation_mode?: string;
+    tags?: string[];
 }
 
 // 置顶请求体（ArkTS 限制：字面量须对应显式声明的 interface，不能赋给 Record）
@@ -380,13 +381,17 @@ export class ApiService {
     // 预创建空会话：新对话首问在发流前先建会话，让 conversation_id 在流开始前已知
     // -> 侧栏可即时占位（回复途中即可见/高亮），且 ChatStreamClient 轮询兜底可凭 conversation_id 取流
     // mode 用于把会话固化在某个模式上（'learning' 的学习会话由后端持久化，后续消息自动沿用该模式）
-    static async createConversation(title: string, mode: string = ''): Promise<ConversationCreateResult> {
+    static async createConversation(title: string, mode: string = '', tags: string[] = []): Promise<ConversationCreateResult> {
         const safeTitle: string = title.trim();
         const body: CreateConversationRequestBody = { title: safeTitle.length > 0 ? safeTitle : '新对话' };
         const safeMode: string = mode.trim();
 
         if (safeMode.length > 0) {
             body.conversation_mode = safeMode;
+        }
+
+        if (tags.length > 0) {
+            body.tags = tags;
         }
 
         const result: HttpResult = await HttpUtil.post('/api/conversations', body);
@@ -724,6 +729,17 @@ export class ApiService {
 
         const title: string = Json.string(source, 'title');
         const updatedAt: number = Json.number(source, 'updated_at');
+        const tags: Object[] = Json.array(source, 'tags');
+        let profileInterview: boolean = false;
+
+        for (let i: number = 0; i < tags.length; i++) {
+            const tag: Object = tags[i];
+
+            if (typeof tag === 'string' && (tag as string).toLowerCase() === 'learning_profile_interview') {
+                profileInterview = true;
+                break;
+            }
+        }
 
         return {
             id: id,
@@ -731,7 +747,8 @@ export class ApiService {
             preview: title,
             time: TimeUtil.short(updatedAt),
             mode: Json.string(source, 'conversation_mode'),
-            pin: Json.boolean(source, 'pin')
+            pin: Json.boolean(source, 'pin'),
+            profileInterview: profileInterview
         };
     }
 
