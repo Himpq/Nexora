@@ -71,6 +71,18 @@ export interface RemoteChatMessage {
     metadata?: Record<string, unknown>
 }
 
+/** 电脑上可用的模型，id 形如 provider_id/model，下发任务时原样传给电脑。 */
+export interface RemoteModelOption {
+    id: string
+    name: string
+    provider: string
+    context_window: number
+}
+
+export function listRemoteModels(deviceId: string) {
+    return remoteCall<{ success: boolean; models: RemoteModelOption[] }>(deviceId, '/api/config')
+}
+
 export interface RemoteTurn {
     message_index: number
     id: string

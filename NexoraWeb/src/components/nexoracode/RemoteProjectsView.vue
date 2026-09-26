@@ -50,12 +50,14 @@
                 :stage-detail="stageDetail"
                 :online="online"
                 :busy="busy"
+                :conversation-id="conversationId"
                 :messages="messages"
                 :notices="notices"
-                :permission="permission"
+                :models="models"
                 @send="send"
                 @stop="stopTask"
-                @answer-permission="answerPermission"
+                @answer-question="handleQuestionAnswer"
+                @open-image="(url) => emit('open-image', url)"
             />
         </div>
 
@@ -68,16 +70,16 @@
 
     import type { ChatMessage } from '@/api/conversations'
     import {
-        cancelRemoteTask,
         createRemoteConversation,
         fetchDevices,
         grantRemotePermission,
         listRemoteMessages,
+        listRemoteModels,
         listRemoteProjects,
         type RemoteDevice,
+        type RemoteModelOption,
         type RemoteProject,
         type RemoteProjectRef,
-        type RemoteQuestion,
     } from '@/api/nexoracode'
     import {
         RemoteTaskStream,
@@ -101,7 +103,9 @@
     /** 设备在线状态轮询间隔(ms)：电脑端掉线/上线只能靠轮询发现。 */
     const DEVICE_POLL_MS = 5000
 
-    defineProps<{ open: boolean }>()
+    const props = defineProps<{ open: boolean }>()
+
+    const emit = defineEmits<{ 'open-image': [url: string] }>()
 
     const devices = ref<RemoteDevice[]>([])
     const deviceId = ref('')
@@ -109,7 +113,7 @@
     const conversationId = ref('')
     const messages = ref<ChatMessage[]>([])
     const notices = ref<RemoteTaskNotice[]>([])
-    const permission = ref<RemoteQuestion | null>(null)
+    const models = ref<RemoteModelOption[]>([])
     const loadingDevices = ref(false)
     const loadingProjects = ref(false)
     const busy = ref(false)
@@ -134,7 +138,6 @@
         state.value = 'idle'
         stageDetail.value = ''
         notices.value = []
-        permission.value = null
     }
 
     async function guarded(action: () => Promise<void>): Promise<void> {
@@ -183,6 +186,7 @@
     async function loadProjects(): Promise<void> {
         if (!deviceId.value) {
             projects.value = []
+            models.value = []
 
             return
         }
@@ -190,7 +194,14 @@
         loadingProjects.value = true
 
         try {
-            projects.value = await listRemoteProjects(deviceId.value)
+            // 模型与项目都来自这台电脑，换设备必须一起刷新。
+            const [projectRows, config] = await Promise.all([
+                listRemoteProjects(deviceId.value),
+                listRemoteModels(deviceId.value).catch(() => ({ models: [] as RemoteModelOption[] })),
+            ])
+
+            projects.value = projectRows
+            models.value = config.models || []
         } finally {
             loadingProjects.value = false
         }
@@ -247,10 +258,6 @@
 
         stream = new RemoteTaskStream(deviceId.value, {
             onEvent: (event) => {
-                if (event.type === 'question') {
-                    permission.value = event.question || null
-                }
-
                 const target = messages.value[messages.value.length - 1]
 
                 if (!target || target.status !== 'streaming') {
@@ -275,7 +282,7 @@
         return stream
     }
 
-    async function send(text: string, options: { forceContextCompression: boolean }): Promise<void> {
+    async function send(text: string, options: { forceContextCompression: boolean; modelName: string }): Promise<void> {
         await guarded(async () => {
             const client = ensureStream()
             const target = createStreamingAssistant(messages.value.length)
@@ -284,6 +291,7 @@
                 message: text,
                 conversationId: conversationId.value,
                 forceContextCompression: options.forceContextCompression,
+                modelName: options.modelName,
             })
         }).then(() => {
             if (state.value === 'idle') {
@@ -293,33 +301,67 @@
     }
 
     async function stopTask(): Promise<void> {
-        await guarded(async () => {
-            await cancelRemoteTask(deviceId.value, stream?.getStreamId() || '')
-        })
+        const client = stream
+
+        if (!client) {
+            return
+        }
+
+        await guarded(() => client.stop())
     }
 
-    async function answerPermission(allow: boolean): Promise<void> {
-        const request = permission.value?.permission_request
+    /**
+     * 权限问卡作答。
+     *
+     * 电脑端遇到未授权路径时，已经把工具结果落盘、补完剩余调用的占位结果并结束任务
+     * （AgentLoop 里 permission_blocked 后直接 break），所以不存在「拒绝后让电脑继续」的通道：
+     * 拒绝只是本地记录，只有允许才需要写临时授权。两种情况都要提示用户重新下发任务。
+     */
+    async function handleQuestionAnswer(message: ChatMessage, questionId: string, answer: string): Promise<void> {
+        const content = String(answer || '').trim()
 
-        if (!request || typeof request !== 'object') {
+        if (!content) {
+            return
+        }
+
+        const segment = (message.segments || []).find(item => item.type === 'question'
+            && (item.question?.question_id === questionId || item.question?.question_card_id === questionId))
+        const request = segment?.question?.permission_request as Record<string, unknown> | undefined
+        const allow = content.includes('允许')
+        const deny = content.includes('拒绝')
+
+        if (!allow && !deny) {
+            showToast('请选择允许或拒绝访问', 'warning')
+
             return
         }
 
         await guarded(async () => {
             if (allow) {
+                if (!request) {
+                    throw new Error('该问卡没有可授权的路径信息')
+                }
+
                 await grantRemotePermission(deviceId.value, {
-                    conversationId: String((request as Record<string, unknown>).conversation_id || conversationId.value),
-                    path: String((request as Record<string, unknown>).path || ''),
-                    scope: String((request as Record<string, unknown>).scope || 'file'),
-                    access: String((request as Record<string, unknown>).access || 'read'),
+                    conversationId: String(request.conversation_id || conversationId.value),
+                    path: String(request.path || ''),
+                    scope: String(request.scope || 'file'),
+                    access: String(request.access || request.operation || 'read'),
                 })
-                showToast('已允许本次对话访问该路径', 'success')
-            } else {
-                // 拒绝只需回一条占位事件让电脑侧结束等待，无需再授权。
-                showToast('已拒绝本次授权', 'info')
             }
 
-            permission.value = null
+            // 标记已作答，卡片转为只读视图，不再重复弹锁。
+            if (segment?.question) {
+                segment.question.resolved = true
+
+                if (allow) {
+                    segment.question.answer = `已允许本次对话临时访问：${String(request?.path || '')}`
+                } else {
+                    segment.question.answer = '已拒绝本次访问权限。'
+                }
+            }
+
+            showToast(allow ? '已授权，重新下发任务即可继续' : '已拒绝，重新下发任务时不会再询问', 'success')
         })
     }
 
@@ -344,7 +386,6 @@
         }
 
         notices.value = []
-        permission.value = null
     })
 
     void loadDevices()

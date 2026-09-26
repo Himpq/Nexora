@@ -40,8 +40,9 @@
                 :key="message.index"
                 :message="message"
                 :streaming="message.status === 'streaming'"
+                :conversation-id="conversationId"
                 readonly
-                @question-answer="(payload) => $emit('answer-question', payload)"
+                @question-answer="(item, questionId, answer) => $emit('answer-question', item, questionId, answer)"
                 @open-knowledge="(reference) => $emit('open-knowledge', reference)"
                 @open-image="(url) => $emit('open-image', url)"
             />
@@ -54,17 +55,18 @@
             </li>
         </ul>
 
-        <div v-if="permission" class="remote-task-permission">
-            <p class="remote-task-permission-text">{{ permission.question_content }}</p>
-            <div class="remote-task-permission-actions">
-                <Button size="compact" variant="primary" :disabled="busy" @click="$emit('answer-permission', true)">
-                    允许本次对话
-                </Button>
-                <Button size="compact" :disabled="busy" @click="$emit('answer-permission', false)">拒绝</Button>
-            </div>
-        </div>
-
         <div class="remote-task-composer">
+            <div class="remote-task-composer-head">
+                <label class="remote-task-model">
+                    <span>模型</span>
+                    <select v-model="modelName" :disabled="!online || running" class="remote-task-select">
+                        <option value="">电脑默认模型</option>
+                        <option v-for="model in models" :key="model.id" :value="model.id">
+                            {{ model.name }} · {{ model.provider }}
+                        </option>
+                    </select>
+                </label>
+            </div>
             <textarea
                 v-model="draft"
                 class="remote-task-input"
@@ -97,7 +99,7 @@
     import { computed, nextTick, ref, watch } from 'vue'
 
     import type { ChatMessage } from '@/api/conversations'
-    import type { RemoteQuestion } from '@/api/nexoracode'
+    import type { RemoteModelOption } from '@/api/nexoracode'
     import type { RemoteTaskState } from '@/network/remoteTaskStream'
     import type { RemoteTaskNotice } from '@/stream/remoteSegments'
     import MessageItem from '@/components/MessageItem.vue'
@@ -111,22 +113,24 @@
         stageDetail: string
         online: boolean
         busy: boolean
+        conversationId: string
         messages: ChatMessage[]
         notices: RemoteTaskNotice[]
-        permission: RemoteQuestion | null
+        /** 电脑上可用的模型，id 形如 provider_id/model，留空表示用电脑默认。 */
+        models: RemoteModelOption[]
     }>()
 
     const emit = defineEmits<{
-        send: [text: string, options: { forceContextCompression: boolean }]
+        send: [text: string, options: { forceContextCompression: boolean; modelName: string }]
         stop: []
-        'answer-permission': [allow: boolean]
-        'answer-question': [payload: Record<string, unknown>]
+        'answer-question': [message: ChatMessage, questionId: string, answer: string]
         'open-knowledge': [reference: unknown]
         'open-image': [url: string]
     }>()
 
     const draft = ref('')
     const forceCompression = ref(false)
+    const modelName = ref('')
     const scrollerRef = ref<HTMLElement | null>(null)
 
     const stateLabel = computed(() => {
@@ -154,7 +158,7 @@
             return
         }
 
-        emit('send', text, { forceContextCompression: forceCompression.value })
+        emit('send', text, { forceContextCompression: forceCompression.value, modelName: modelName.value })
         draft.value = ''
     }
 
