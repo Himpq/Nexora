@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import requests
 from flask import Blueprint, jsonify, request
 from core.config import get_app_root
-from model.ConversationStore import ConversationStore
+from model.ConversationStore import ConversationStore, write_json_atomic
 
 
 remote_bp = Blueprint("local_remote", __name__)
@@ -81,7 +81,7 @@ class RemoteConnection:
         self.pause()
         credentials.update(server_url=url, name=body.get("name") or socket.gethostname(), enabled=True)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        ConversationStore._write_json(self.path, credentials)
+        write_json_atomic(self.path, credentials)
         self.start()
 
     def pause(self):
@@ -107,7 +107,7 @@ class RemoteConnection:
         self.pause()
         settings["enabled"] = enabled
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        ConversationStore._write_json(self.path, settings)
+        write_json_atomic(self.path, settings)
 
         if enabled:
             self.start()

@@ -3,11 +3,12 @@ import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 
 from flask import Blueprint, jsonify, request
 from core.config import get_app_root
-from .ConversationStore import ConversationStore
+from .ConversationStore import ConversationStore, write_json_atomic
 from .StreamRuntime import get_session_meta, list_sessions, start_session, request_cancel
 
 
@@ -15,10 +16,45 @@ task_bp = Blueprint("local_tasks", __name__)
 _LOCK = threading.RLock()
 _WORKER_FACTORY = None
 
+# 任务列表最多回看多少个已落盘任务（含运行中的）。
+HISTORY_SCAN_LIMIT = 100
+# 任务去重记录的保留策略，与事件日志一致：按天过期 + 条数封顶。
+REQUEST_RETENTION_DAYS = 7
+MAX_REQUEST_RECORDS = 500
+
 
 def set_worker_factory(factory):
     global _WORKER_FACTORY
     _WORKER_FACTORY = factory
+
+
+def _purge_request_records(retention_days=REQUEST_RETENTION_DAYS, max_files=MAX_REQUEST_RECORDS):
+    """删除过期或超出上限的任务去重记录。
+
+    去重记录与事件日志同生共死：事件被清理后同一个 request_id 的重试本来也拿不
+    回结果（会报「执行状态缺失」），留着这条记录只会让目录无界增长。
+    必须在 _LOCK 内调用。
+    """
+    root = get_app_root() / "data" / "task_requests"
+
+    if not root.exists():
+        return
+
+    deadline = time.time() - max(0, int(retention_days)) * 86400
+    records = list(root.glob("*.json"))
+
+    for path in records:
+        if path.stat().st_mtime < deadline:
+            path.unlink(missing_ok=True)
+
+    survivors = sorted(
+        (path for path in root.glob("*.json") if path.stat().st_mtime >= deadline),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    for path in survivors[max(0, int(max_files)):]:
+        path.unlink(missing_ok=True)
 
 
 def start_task(body):
@@ -35,9 +71,10 @@ def start_task(body):
     digest = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
     with _LOCK:
-        if path.exists():
-            prior = json.loads(path.read_text(encoding="utf-8"))
+        _purge_request_records()
+        prior = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
+        if prior is not None:
             if prior["digest"] != digest:
                 raise ValueError("request_id 已被不同请求使用")
 
@@ -61,7 +98,7 @@ def start_task(body):
         worker = _WORKER_FACTORY(body)
         record = {"stream_id": sid, "conversation_id": cid, "digest": digest}
         path.parent.mkdir(parents=True, exist_ok=True)
-        ConversationStore._write_json(path, record)
+        write_json_atomic(path, record)
         metadata = dict(body)
         conversation = ConversationStore().get(cid) if cid else None
         metadata["history_user_count"] = sum(message.get("role") == "user" for message in conversation["messages"]) if conversation else 0
@@ -83,12 +120,14 @@ def tasks():
     from .SessionJournal import SessionJournal
     journal = SessionJournal()
     live = {row["stream_id"]: row for row in list_sessions()}
+    # 只回看最近的落盘任务：电脑连开数月后事件目录会积累上万文件，
+    # 全量扫描会让这个列表接口越来越慢，而近期任务之外的历史没有查询价值。
+    archived = max(0, HISTORY_SCAN_LIMIT - len(live))
 
-    if journal.root.exists():
-        for path in journal.root.glob("*.json"):
-            if path.stem not in live:
-                _, metadata = journal.read(path.stem, 0, 0)
-                live[path.stem] = metadata
+    for path in journal.recent_files(archived):
+        if path.stem not in live:
+            _, metadata = journal.read(path.stem, 0, 0)
+            live[path.stem] = metadata
 
     return jsonify({"sessions": sorted(live.values(), key=lambda row: row.get("updated_at", 0), reverse=True)})
 

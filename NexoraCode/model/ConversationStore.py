@@ -17,6 +17,7 @@ import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from core.config import get_app_root
@@ -24,6 +25,25 @@ from core.config import get_app_root
 
 # 多个本地/远程请求创建不同 Store 实例，共享锁才能避免文件读改写互相覆盖。
 _STORE_LOCK = threading.RLock()
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """同目录临时文件 + os.replace 原子写入，读取方不会看到写到一半的 JSON。
+
+    会话、任务请求去重记录与远程连接凭据都要用到，放在这里供各模块直接调用，
+    避免跨模块去调 ConversationStore 的私有方法。
+    """
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sanitize_filename(value: str) -> str:
@@ -57,7 +77,7 @@ class ConversationStore:
             return {}
 
     def _save_index(self, index: dict) -> None:
-        self._write_json(self._index_path(), index)
+        write_json_atomic(self._index_path(), index)
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -177,22 +197,7 @@ class ConversationStore:
 
     def _save_conversation(self, conversation: dict) -> None:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
-        self._write_json(path, conversation)
-
-    @staticmethod
-    def _write_json(path, data: dict) -> None:
-        """同目录临时文件原子替换，读取方不会看到写到一半的 JSON。"""
-        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-
-        try:
-            with open(temporary, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_json_atomic(path, conversation)
 
     def save_context(self, conversation_id: str, record: dict, expected_prefix: list) -> None:
         """摘要只移动请求边界，保留所有消息；历史被改写时拒绝提交旧摘要。"""

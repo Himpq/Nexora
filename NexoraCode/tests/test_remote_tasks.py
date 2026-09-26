@@ -360,6 +360,135 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(detail["round_index"], 1)
         self.assertEqual(detail["response_trace_id"], "b" * 32)
 
+    def test_journal_writes_are_batched_and_flushed_on_finish(self):
+        """事件攒批落盘：数量阈值与收尾帧都要触发写盘。"""
+        # 必须用 StreamRuntime 实际持有的类：重新执行模块会换成一个新类对象。
+        journal_class = self.runtime.SessionJournal
+        journal = journal_class()
+        appended = []
+        original = journal_class.append
+
+        def counting_append(self, sid, chunks):
+            appended.append(len(chunks))
+            return original(self, sid, chunks)
+
+        journal_class.append = counting_append
+
+        try:
+            def factory(body):
+                def worker(push, set_cid, stage, cancelled):
+                    for index in range(5):
+                        push({"type": "content", "content": f"片段 {index}"})
+
+                return worker
+
+            self.tasks.set_worker_factory(factory)
+            record = self.tasks.start_task({"request_id": "batch-flush-1", "conversation_id": self.cid, "message": "t"})
+
+            for _ in range(300):
+                if self.runtime.get_session_meta(record["stream_id"])["status"] != "running":
+                    break
+                time.sleep(0.01)
+        finally:
+            journal_class.append = original
+
+        chunks, _ = journal.read(record["stream_id"], 0, 200)
+        self.assertEqual(len(chunks), 5, "收尾必须把攒下的事件全部落盘")
+        # 5 条事件未达 64 阈值，只应在收尾时触发一次批量写盘。
+        self.assertEqual(appended, [5])
+
+    def test_purge_expired_keeps_recent_and_running_sessions(self):
+        journal_module = module("test_model.SessionJournal", ROOT / "model/SessionJournal.py")
+        journal = journal_module.SessionJournal()
+        old_sid, new_sid, running_sid = "1" * 32, "2" * 32, "3" * 32
+
+        for sid in (old_sid, new_sid, running_sid):
+            journal.save_meta({"stream_id": sid, "status": "done"})
+            journal.append(sid, [{"type": "content", "content": sid, "_stream_seq": 1}])
+
+        stale = time.time() - 30 * 86400
+        journal.path(old_sid, ".json").touch()
+        journal.path(old_sid, ".jsonl").touch()
+        os.utime(journal.path(old_sid, ".json"), (stale, stale))
+        os.utime(journal.path(old_sid, ".jsonl"), (stale, stale))
+        # 运行中的任务即使过期也不删，否则续读会直接 404。
+        os.utime(journal.path(running_sid, ".json"), (stale, stale))
+        os.utime(journal.path(running_sid, ".jsonl"), (stale, stale))
+        # save_meta 会把 id 登记为「本进程持有」，清掉后只有 running_sid 仍受保护。
+        journal_module._PROCESS_SESSIONS.clear()
+        journal_module._PROCESS_SESSIONS.add(running_sid)
+
+        removed = journal.purge_expired(retention_days=7, max_files=100)
+        self.assertIn(old_sid, removed)
+        self.assertNotIn(running_sid, removed)
+        self.assertFalse(journal.path(old_sid, ".json").exists())
+        self.assertFalse(journal.path(old_sid, ".jsonl").exists())
+        self.assertTrue(journal.path(running_sid, ".json").exists())
+        self.assertTrue(journal.path(new_sid, ".json").exists())
+
+    def test_purge_expired_enforces_file_count_cap(self):
+        journal_module = module("test_model.SessionJournal", ROOT / "model/SessionJournal.py")
+        journal = journal_module.SessionJournal()
+        sids = [f"{index:032x}" for index in range(6)]
+
+        for index, sid in enumerate(sids):
+            journal.save_meta({"stream_id": sid, "status": "done"})
+            journal.path(sid, ".jsonl").touch()
+            # 越新的 mtime 越靠后，保留策略应保留最新的 2 个。
+            stamp = time.time() - (len(sids) - index) * 60
+            os.utime(journal.path(sid, ".json"), (stamp, stamp))
+
+        journal_module._PROCESS_SESSIONS.clear()
+        removed = journal.purge_expired(retention_days=3650, max_files=2)
+        self.assertEqual(removed, set(sids[:4]))
+        self.assertTrue(journal.path(sids[4], ".json").exists())
+        self.assertTrue(journal.path(sids[5], ".json").exists())
+
+    def test_request_records_are_purged_by_age_and_count(self):
+        root = Path(self.temp.name) / "data" / "task_requests"
+        root.mkdir(parents=True, exist_ok=True)
+        stale = time.time() - 30 * 86400
+        (root / "old.json").write_text("{}", encoding="utf-8")
+        os.utime(root / "old.json", (stale, stale))
+
+        for index in range(4):
+            (root / f"new{index}.json").write_text("{}", encoding="utf-8")
+            stamp = time.time() - (4 - index) * 60
+            os.utime(root / f"new{index}.json", (stamp, stamp))
+
+        self.tasks._purge_request_records(retention_days=7, max_files=2)
+        self.assertFalse((root / "old.json").exists())
+        self.assertEqual(sorted(p.name for p in root.glob("*.json")), ["new2.json", "new3.json"])
+
+    def test_task_list_only_scans_recent_journal_files(self):
+        from flask import Flask
+
+        journal_module = module("test_model.SessionJournal", ROOT / "model/SessionJournal.py")
+        journal = journal_module.SessionJournal()
+        total = self.tasks.HISTORY_SCAN_LIMIT + 20
+
+        for index in range(total):
+            journal.save_meta({"stream_id": f"{index:032x}", "status": "done", "updated_at": float(index)})
+
+        scanned = []
+        original = journal_module.SessionJournal.read
+
+        def counting_read(self, sid, after, limit):
+            scanned.append(sid)
+            return original(self, sid, after, limit)
+
+        journal_module.SessionJournal.read = counting_read
+
+        try:
+            app = Flask("isolated_task_list", root_path=self.temp.name)
+            app.register_blueprint(self.tasks.task_bp)
+            payload = app.test_client().get("/api/local/tasks").get_json()
+        finally:
+            journal_module.SessionJournal.read = original
+
+        self.assertEqual(len(scanned), self.tasks.HISTORY_SCAN_LIMIT, "落盘任务回看数量必须受上限约束")
+        self.assertEqual(len(payload["sessions"]), self.tasks.HISTORY_SCAN_LIMIT)
+
     def test_isolated_route_update_preserves_separate_methods(self):
         updater = module("test_route_updater", ROOT.parent / "ChatDBServer/tests/update_route_baseline.py")
         directory = Path(self.temp.name) / "route_update"

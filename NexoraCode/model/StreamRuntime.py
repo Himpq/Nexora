@@ -28,6 +28,8 @@ _SESSIONS_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 _MAX_CHUNKS_PER_SESSION = 12000
+# 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
+_JOURNAL_FLUSH_CHUNKS = 64
 _DONE_TTL_SEC = 900
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 _ACCUMULATED_RENDER_CHUNK_TYPES = {
@@ -72,6 +74,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "head_seq": 1,
         "last_seq": 0,
         "chunks": [],
+        "journal_pending": [],
         "error": "",
         "stage": "created",
         "stage_detail": "",
@@ -126,6 +129,8 @@ def start_session(
 
     stream_id = session["stream_id"]
     journal = SessionJournal()
+    # 每次开新任务顺带清一次过期事件日志：电脑长时间不关时目录会一直涨。
+    journal.purge_expired()
     journal.save_meta(session)
 
     with _SESSIONS_LOCK:
@@ -166,6 +171,25 @@ def start_session(
         with cond:
             return bool(session.get("cancel_requested", False))
 
+    def _flush_journal(force: bool = False) -> None:
+        """把攒下的事件批量落盘。
+
+        逐条开文件写会在持有 session 条件锁时做文件 I/O，长回复几千个 chunk
+        就是几千次 open/write/close。攒到阈值或任务收尾时一次写完，
+        代价是进程异常退出最多丢最后未落盘的那一批（该任务本就会标记 interrupted）。
+        """
+        lock = session["cond"]
+
+        with lock:
+            pending = session["journal_pending"]
+            should_flush = bool(pending) and (force or len(pending) >= _JOURNAL_FLUSH_CHUNKS)
+
+            if should_flush:
+                session["journal_pending"] = []
+
+        if should_flush:
+            journal.append(stream_id, pending)
+
     def _push_chunk(chunk: Dict[str, Any]) -> None:
         payload = copy.deepcopy(chunk) if isinstance(chunk, dict) else {"type": "message", "content": str(chunk)}
         cid = str(payload.get("conversation_id") or "").strip()
@@ -199,7 +223,6 @@ def start_session(
 
             session["last_seq"] = int(session["last_seq"]) + 1
             payload["_stream_seq"] = int(session["last_seq"])
-            journal.append(stream_id, payload)
             session["chunks"].append(payload)
 
             if len(session["chunks"]) > _MAX_CHUNKS_PER_SESSION:
@@ -207,10 +230,18 @@ def start_session(
                 session["head_seq"] = int(session["head_seq"]) + 1
 
             session["updated_at"] = time.time()
+            # 收尾帧先落盘，保证「完成」这件事不会因为攒批而延后到下一个 chunk。
+            session["journal_pending"].append(payload)
             cond.notify_all()
+
+        _flush_journal(force=chunk_type == "finish")
 
     def _finish(status: str = "done", error: str = "") -> None:
         cond = session["cond"]
+
+        # 事件先落盘，元数据后标记：读者看到 status=finished/done 时，
+        # 事件日志一定已经完整，否则回放会得到一个「已完成但没有事件」的任务。
+        _flush_journal(force=True)
 
         with cond:
             if bool(session.get("cancel_requested", False)):
@@ -218,16 +249,12 @@ def start_session(
                 session["error"] = str(session.get("error") or "cancelled")
                 session["stage"] = "cancelled"
                 session["stage_detail"] = str(session.get("cancel_reason") or "user_abort")
-                session["stage_updated_at"] = time.time()
-                session["updated_at"] = time.time()
-                journal.save_meta(session)
-                cond.notify_all()
-                return
+            else:
+                session["status"] = str(status or "done")
+                session["error"] = str(error or "")
+                session["stage"] = "finished"
+                session["stage_detail"] = str(error or "")
 
-            session["status"] = str(status or "done")
-            session["error"] = str(error or "")
-            session["stage"] = "finished"
-            session["stage_detail"] = str(error or "")
             session["stage_updated_at"] = time.time()
             session["updated_at"] = time.time()
             journal.save_meta(session)

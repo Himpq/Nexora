@@ -2,13 +2,20 @@
 import json
 import re
 import threading
+import time
 
 from core.config import get_app_root
-from .ConversationStore import ConversationStore
+from .ConversationStore import write_json_atomic
 
 
 _LOCK = threading.RLock()
 _PROCESS_SESSIONS = set()
+
+# 事件与任务去重记录的保留策略：按天过期 + 条数封顶，两者都触发才清理。
+# 事件日志的用途是断线后续读与重启后回放，一周足够；任务去重记录删除后，
+# 同一个 request_id 的重试会被当成新任务，所以保留期与事件一致。
+RETENTION_DAYS = 7
+MAX_JOURNAL_FILES = 500
 
 
 class SessionJournal:
@@ -27,14 +34,19 @@ class SessionJournal:
         with _LOCK:
             self.root.mkdir(parents=True, exist_ok=True)
             _PROCESS_SESSIONS.add(metadata["stream_id"])
-            ConversationStore._write_json(self.path(metadata["stream_id"], ".json"), metadata)
+            write_json_atomic(self.path(metadata["stream_id"], ".json"), metadata)
 
-    def append(self, sid, chunk):
+    def append(self, sid, chunks):
+        """批量追加事件。调用方负责攒批，这里只做一次打开与写盘。"""
+        if not chunks:
+            return
+
         with _LOCK:
             self.root.mkdir(parents=True, exist_ok=True)
+            payload = "".join(json.dumps(chunk, ensure_ascii=False) + "\n" for chunk in chunks)
 
             with self.path(sid, ".jsonl").open("a", encoding="utf-8") as output:
-                output.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+                output.write(payload)
 
     def read(self, sid, after, limit):
         with _LOCK:
@@ -62,3 +74,47 @@ class SessionJournal:
                             chunks.append(chunk)
 
             return chunks, metadata
+
+    def recent_files(self, limit):
+        """按修改时间倒序返回事件元数据文件，条数受 limit 约束。
+
+        任务列表不能无界扫描整个目录：电脑连续运行数月后目录里会积累上万文件。
+        """
+        if not self.root.exists():
+            return []
+
+        with _LOCK:
+            metas = [path for path in self.root.glob("*.json")]
+
+        if len(metas) <= limit:
+            return metas
+
+        return sorted(metas, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+    def purge_expired(self, retention_days=RETENTION_DAYS, max_files=MAX_JOURNAL_FILES):
+        """删除过期或超出上限的事件日志，返回被删除的任务 id 集合。"""
+        if not self.root.exists():
+            return set()
+
+        removed = set()
+        deadline = time.time() - max(0, int(retention_days)) * 86400
+
+        with _LOCK:
+            metas = [path for path in self.root.glob("*.json")
+                     if path.stem not in _PROCESS_SESSIONS]
+            # 运行中的任务永远不删，否则续读会直接 404。
+            survivors = sorted(
+                (path for path in metas if path.stat().st_mtime >= deadline),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            expired = {path.stem for path in metas if path.stat().st_mtime < deadline}
+            overflow = {path.stem for path in survivors[max(0, int(max_files)):]}
+
+            for sid in expired | overflow:
+                for suffix in (".json", ".jsonl"):
+                    self.path(sid, suffix).unlink(missing_ok=True)
+
+                removed.add(sid)
+
+        return removed
