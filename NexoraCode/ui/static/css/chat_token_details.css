@@ -26,9 +26,73 @@
     font-size: 10px;
 }
 
+.token-log-row .token-log-cache-rate {
+    color: #0369a1;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    font-weight: 800;
+}
+
 .token-log-row .token-log-total {
     font-family: "JetBrains Mono", monospace;
     font-weight: 800;
+}
+
+/* 缓存命中率统计卡片：与累计/今日消耗并列，命中为 0 时用中性色避免误导 */
+.stat-card.cache .value {
+    color: #0369a1;
+}
+
+.stat-card .hint {
+    color: #94a3b8;
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+/* 详情弹窗的用量明细网格 */
+.token-usage-io-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.token-usage-io-item {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fbfcfe;
+}
+
+.token-usage-io-item .label {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.token-usage-io-item .value {
+    color: #111827;
+    font-size: 15px;
+    font-weight: 800;
+}
+
+.token-usage-io-item .hint {
+    color: #94a3b8;
+    font-size: 10px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.token-usage-io-item.cache {
+    border-color: #bae6fd;
+    background: #f0f9ff;
+}
+
+.token-usage-io-item.cache .value {
+    color: #0369a1;
 }
 
 .action-badge.memory {

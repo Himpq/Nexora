@@ -9021,6 +9021,32 @@ function formatBadgeTokensPerSec(outputTokens, elapsedMs) {
     return `${Math.round(tps)} tok/s`;
 }
 
+function formatBadgeTokenAmount(tokens) {
+    const n = safeTokenInt(tokens);
+    if (n <= 0) return '0';
+    if (n < 1000) return String(n);
+    if (n < 1000000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+    return `${(n / 1000000).toFixed(1)}M`;
+}
+
+/**
+ * 模型徽章的缓存命中统计。
+ * 累计口径来自本次请求跨全部工具轮次的 usage 快照（badge_timing），
+ * 与「用量详情」弹窗的每轮记录不同：这里看的是整次请求。
+ */
+function getModelBadgeCacheStats(timing) {
+    const t = (timing && typeof timing === 'object') ? timing : {};
+    const cached = safeTokenInt(t.cachedInput);
+    const raw = safeTokenInt(t.rawInput);
+
+    // 上游没回报原始输入时无从判断命中率，此时不展示而不是显示 0%。
+    if (!(cached > 0) || !(raw > 0)) {
+        return { cached, raw, rate: null };
+    }
+
+    return { cached, raw, rate: Math.min(100, cached / raw * 100) };
+}
+
 function buildModelBadgeTimingText(timing) {
     const t = (timing && typeof timing === 'object') ? timing : {};
     const startedAt = Number(t.startedAt) || 0;
@@ -9034,15 +9060,16 @@ function buildModelBadgeTimingText(timing) {
         : 0;
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
-    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
-        : '';
+    const cache = getModelBadgeCacheStats(timing);
+    const cacheText = cache.rate === null
+        ? ''
+        : `缓存 ${cache.rate.toFixed(1)}% ${formatBadgeTokenAmount(cache.cached)}/${formatBadgeTokenAmount(cache.raw)}`;
 
     const parts = [];
     if (totalMs > 0) parts.push(`总耗时 ${formatBadgeDuration(totalMs)}`);
     if (firstTokenMs > 0) parts.push(`首token ${formatBadgeDuration(firstTokenMs)}`);
     if (tpsText) parts.push(`速率 ${tpsText}`);
-    if (cacheRate) parts.push(`缓存 ${cacheRate}`);
+    if (cacheText) parts.push(cacheText);
 
     return parts.length ? ` - ${parts.join(' · ')}` : '';
 }
@@ -9058,15 +9085,20 @@ function buildModelBadgeTimingTitle(timing) {
         : 0;
     const outputTokens = safeTokenInt(t.outputTokens);
     const tpsText = startedAt > 0 ? formatBadgeTokensPerSec(outputTokens, totalMs) : '';
-    const cacheRate = (safeTokenInt(t.cachedInput) > 0 && safeTokenInt(t.rawInput) > 0)
-        ? `${(Math.min(100, Math.round(safeTokenInt(t.cachedInput) / safeTokenInt(t.rawInput) * 10000) / 100)).toFixed(2)}%`
-        : '';
+    const cache = getModelBadgeCacheStats(timing);
 
     const parts = [];
     if (totalMs > 0) parts.push(`总耗时: ${formatBadgeDuration(totalMs)}`);
     if (firstTokenMs > 0) parts.push(`首token耗时: ${formatBadgeDuration(firstTokenMs)}`);
     if (tpsText) parts.push(`生成速率: ${tpsText}`);
-    if (cacheRate) parts.push(`缓存命中: ${cacheRate}`);
+
+    if (cache.rate === null) {
+        // 命中期望存在但命中量为 0 是一条有意义的信息：说明这次完全没吃到缓存。
+        if (cache.raw > 0) parts.push('缓存命中: 0%（未命中）');
+    } else {
+        parts.push(`缓存命中: ${cache.rate.toFixed(1)}%`);
+        parts.push(`缓存量: ${cache.cached.toLocaleString()} / 原始输入 ${cache.raw.toLocaleString()}`);
+    }
 
     return parts.join('\n');
 }
@@ -9146,7 +9178,11 @@ function renderMessageModelBadgeText(messageDiv) {
             timing: {}
         };
     const expanded = badge.dataset.expanded === '1';
-    const compactText = String(state.modelName || '-').trim() || '-';
+    // 折叠态保留模型名 + 缓存命中率：不展开也能一眼看出这次有没有吃到缓存。
+    const compactCache = getModelBadgeCacheStats(state.timing);
+    const compactText = compactCache.rate === null
+        ? (String(state.modelName || '-').trim() || '-')
+        : `${String(state.modelName || '-').trim() || '-'} · 缓存 ${compactCache.rate.toFixed(0)}%`;
     const fullText = buildModelBadgeText(
         state.modelName,
         state.searchFlag,
@@ -9460,9 +9496,46 @@ async function openTokenModal() {
         const res = await fetch('/api/tokens/stats');
         const data = await res.json();
         if(data.success) {
-            if(els.modalTotalTokens) els.modalTotalTokens.textContent = data.total.toLocaleString();
-            if(els.modalTodayTokens) els.modalTodayTokens.textContent = (data.today || 0).toLocaleString();
-            
+            const totalRaw = safeTokenInt(data.raw_input_total);
+            const todayRaw = safeTokenInt(data.today_raw_input);
+
+            if(els.modalTotalTokens) els.modalTotalTokens.textContent = safeTokenInt(data.total).toLocaleString();
+            if(els.modalTodayTokens) els.modalTodayTokens.textContent = safeTokenInt(data.today).toLocaleString();
+
+            // 累计与今日各标出其中多少是缓存命中的输入。
+            const renderScopeHint = (elementId, raw, cached) => {
+                const element = document.getElementById(elementId);
+
+                if (!element) {
+                    return;
+                }
+
+                if (!(raw > 0)) {
+                    element.textContent = '输入按原始上下文计';
+
+                    return;
+                }
+
+                const rate = (cached / raw) * 100;
+                element.textContent = `输入 ${raw.toLocaleString()}，缓存命中 ${cached.toLocaleString()}（${rate.toFixed(1)}%）`;
+            };
+
+            renderScopeHint('modalTotalCacheHint', totalRaw, safeTokenInt(data.cached_input_total));
+            renderScopeHint('modalTodayCacheHint', todayRaw, safeTokenInt(data.today_cached_input));
+
+            // 缓存命中：累计命中率，原始输入为 0 时不显示无意义的 0%。
+            const cacheRate = Number(data.cache_hit_rate || 0);
+            const cacheRateEl = document.getElementById('modalCacheHitRate');
+            const cacheDetailEl = document.getElementById('modalCacheHitDetail');
+
+            if (cacheRateEl) {
+                cacheRateEl.textContent = totalRaw > 0 ? `${(cacheRate * 100).toFixed(1)}%` : '—';
+            }
+
+            if (cacheDetailEl) {
+                cacheDetailEl.textContent = `累计命中 ${safeTokenInt(data.cached_input_total).toLocaleString()} / 原始输入 ${totalRaw.toLocaleString()}`;
+            }
+
             // 渲染历史日志
             const logsTableBody = document.getElementById('tokenLogsTableBody');
             if (logsTableBody && data.history) {

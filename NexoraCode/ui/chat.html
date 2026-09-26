@@ -360,10 +360,17 @@
                         <div class="stat-card total">
                             <span class="label">累计消耗</span>
                             <span id="modalTotalTokens" class="value mono">0</span>
+                            <span id="modalTotalCacheHint" class="hint">输入按原始上下文计</span>
                         </div>
                         <div class="stat-card today">
                             <span class="label">今日消耗</span>
                             <span id="modalTodayTokens" class="value mono">0</span>
+                            <span id="modalTodayCacheHint" class="hint">输入按原始上下文计</span>
+                        </div>
+                        <div class="stat-card cache">
+                            <span class="label">缓存命中</span>
+                            <span id="modalCacheHitRate" class="value mono">0%</span>
+                            <span id="modalCacheHitDetail" class="hint">累计命中 0 / 原始输入 0</span>
                         </div>
                     </div>
                     
@@ -378,6 +385,7 @@
                                     <col class="col-time">
                                     <col class="col-title">
                                     <col class="col-type">
+                                    <col class="col-cache">
                                     <col class="col-num">
                                 </colgroup>
                                 <thead>
@@ -385,6 +393,7 @@
                                         <th>时间</th>
                                         <th>对话/操作</th>
                                         <th>类型</th>
+                                        <th class="num">缓存命中</th>
                                         <th class="num">合计</th>
                                     </tr>
                                 </thead>
@@ -410,6 +419,10 @@
                     </button>
                 </div>
                 <div id="tokenUsageDetailBody" class="modal-body token-usage-detail-body">
+                    <section class="token-usage-detail-section token-usage-io-section" aria-labelledby="tokenUsageIoTitle">
+                        <h4 id="tokenUsageIoTitle">用量明细</h4>
+                        <div id="tokenUsageIoGrid" class="token-usage-io-grid"></div>
+                    </section>
                     <section class="token-usage-detail-section" aria-labelledby="tokenUsageUserTitle">
                         <h4 id="tokenUsageUserTitle">用户提问</h4>
                         <div id="tokenUsageUserContent" class="token-usage-markdown markdown-content"></div>
