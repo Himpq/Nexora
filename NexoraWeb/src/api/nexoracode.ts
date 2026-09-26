@@ -187,9 +187,19 @@ export interface RemoteTokenUsage {
     cached_input_tokens: number
 }
 
+/** 提问载荷：电脑端原样构造后转发，字段与 MessageItem 的 QuestionPayload 对齐。 */
 export interface RemoteQuestion {
+    question_title?: string
     question_content: string
-    permission_request?: { path?: string; scope?: string; access?: string; reason?: string }
+    choices?: string[]
+    allow_other?: boolean
+    track_answer?: boolean
+    question_id?: string
+    question_card_id?: string
+    resolved?: boolean
+    answer?: string
+    permission_request?: { conversation_id?: string; path?: string; scope?: string; access?: string; reason?: string }
+    [key: string]: unknown
 }
 
 /** 任务事件：与电脑侧 AgentLoop 事件同构，额外带 _stream_seq 游标。 */
@@ -297,11 +307,3 @@ export function grantRemotePermission(
         }
     )
 }
-
-/*
- * 旧 Projects 页（RemoteProjectsView.vue）仍在使用，作为备用暂时保留。
- * 新代码请直接用上面的 Remote* 类型，这里只做别名避免重复定义。
- */
-export type LocalConversation = RemoteConversation
-export type RemoteSession = RemoteTaskSession
-export type RemoteEvent = RemoteTaskEvent
