@@ -26,7 +26,7 @@
                     <strong>{{ statusHeadline }}</strong>
                     <span class="remote-connection-status-detail">{{ statusDetail }}</span>
                 </span>
-                <Button size="compact" icon="fa-solid fa-rotate" :disabled="busy" @click="run(loadDevices)">刷新</Button>
+                <Button size="compact" icon="fa-solid fa-rotate" :disabled="busy" @click="run(() => loadDevices({ manual: true }))">刷新</Button>
             </div>
 
             <p class="remote-connection-lead">
@@ -104,14 +104,20 @@
 
     const emit = defineEmits<{ close: [] }>()
 
-    const devices = ref<RemoteDevice[]>([])
-    const pairCode = ref('')
-    const pairExpiresAt = ref(0)
-    const now = ref(Date.now())
-    const loading = ref(false)
-    const busy = ref(false)
-    const error = ref('')
-    let ticker: number | null = null
+/** 设备在线状态由电脑端主动上报，弹窗必须自己轮询才能看到变化。 */
+const DEVICE_POLL_MS = 5000
+
+const devices = ref<RemoteDevice[]>([])
+const pairCode = ref('')
+const pairExpiresAt = ref(0)
+const now = ref(Date.now())
+const loading = ref(false)
+const busy = ref(false)
+const error = ref('')
+let ticker: number | null = null
+let poller: number | null = null
+/** 用户点过「刷新」后短暂抑制轮询，避免把手动动作的节奏打乱。 */
+let manualRefreshUntil = 0
 
     const serverUrl = window.location.origin
 
@@ -179,7 +185,11 @@
         }
     }
 
-    async function loadDevices(): Promise<void> {
+    async function loadDevices(options: { manual?: boolean } = {}): Promise<void> {
+        if (options.manual) {
+            manualRefreshUntil = Date.now() + DEVICE_POLL_MS
+        }
+
         loading.value = true
 
         try {
@@ -216,6 +226,11 @@
             window.clearInterval(ticker)
             ticker = null
         }
+
+        if (poller !== null) {
+            window.clearInterval(poller)
+            poller = null
+        }
     }
 
     watch(
@@ -237,7 +252,15 @@
                     pairExpiresAt.value = 0
                 }
             }, 1000)
-            void run(loadDevices)
+            void run(() => loadDevices())
+            // 电脑随时可能上线或掉线，弹窗开着就得持续反映最新状态。
+            poller = window.setInterval(() => {
+                if (busy.value || Date.now() < manualRefreshUntil) {
+                    return
+                }
+
+                void loadDevices()
+            }, DEVICE_POLL_MS)
         },
         { immediate: true }
     )

@@ -33,7 +33,7 @@
 
         <div ref="scrollerRef" class="remote-task-messages">
             <p v-if="!messages.length" class="remote-task-empty">
-                选择左侧会话查看历史，或直接在上方输入框下发新任务。
+                选择左侧会话查看历史，或在下方输入框下发新任务。
             </p>
             <MessageItem
                 v-for="message in messages"

@@ -98,6 +98,9 @@
 
     import '@/styles/remote-projects.css'
 
+    /** 设备在线状态轮询间隔(ms)：电脑端掉线/上线只能靠轮询发现。 */
+    const DEVICE_POLL_MS = 5000
+
     defineProps<{ open: boolean }>()
 
     const devices = ref<RemoteDevice[]>([])
@@ -155,7 +158,23 @@
         loadingDevices.value = true
 
         try {
-            devices.value = (await fetchDevices()).devices
+            const rows = (await fetchDevices()).devices
+            const wasOnline = online.value
+
+            devices.value = rows
+            // 电脑刚上线时自动切过去，否则用户要手动点一次才能下发任务。
+            const current = rows.find(row => row.device_id === deviceId.value)
+
+            if (!current?.online && rows.some(row => row.online) && !running.value) {
+                const next = rows.find(row => row.online)!
+
+                deviceId.value = next.device_id
+                conversationId.value = ''
+                messages.value = []
+                void guarded(loadProjects)
+            } else if (!wasOnline && online.value) {
+                void guarded(loadProjects)
+            }
         } finally {
             loadingDevices.value = false
         }
@@ -311,9 +330,7 @@
             deviceId.value = first.device_id
             void guarded(loadProjects)
         }
-    })
-
-    // 终态收尾：把流式消息定稿、收起压缩提示与提问卡。
+    })    // 终态收尾：把流式消息定稿、收起压缩提示与提问卡。
     // 必须盯 state 而不是 stream 的游标——stream 是普通变量，watch 追踪不到它的变化。
     watch(state, (next) => {
         if (!isTerminalRemoteTaskState(next)) {
@@ -332,5 +349,15 @@
 
     void loadDevices()
 
-    onBeforeUnmount(disposeStream)
+    // 电脑的在线状态由电脑端主动上报，这里轮询才能反映掉线与重新上线。
+    const devicePoller = window.setInterval(() => {
+        if (!busy.value) {
+            void loadDevices()
+        }
+    }, DEVICE_POLL_MS)
+
+    onBeforeUnmount(() => {
+        window.clearInterval(devicePoller)
+        disposeStream()
+    })
 </script>
