@@ -111,8 +111,63 @@ class ContextManager:
         self.validate_tools(messages)
         return messages
 
-    def prepare(self, conversation_id, system_prompt, tools, *, force=False, cancel_checker=None):
-        """必要时分批总结历史；当前 user 轮次及其工具结果始终保持原样。"""
+    def _measured_marginal_rate(self, conversation: dict, plain_now: int) -> float:
+        """相邻两轮实测差值给出的「每单位估算 token 的真实 token 数」。
+
+        上游实测之差就是这轮新增内容的真实开销，除以同期估算增量即得边际速率。
+        有了它，新增内容不再按固定字符比估算：英文正文约 0.75、中文约 1.0，
+        都会由实测自己体现，而不是写死一个系数。
+        """
+        state = conversation.get("context_state", {})
+        measured = int(state.get("last_input_tokens") or 0)
+        previous = int(state.get("prev_input_tokens") or 0)
+        plain_previous = int(state.get("last_estimated_tokens") or 0)
+        delta_real = measured - previous
+        delta_plain = plain_now - plain_previous
+
+        if delta_plain <= 0 or delta_real <= 0:
+            return 1.0
+
+        # 上游回报异常（重连回放、口径变化）时钳制，避免速率失控放大判定值。
+        return min(10.0, max(0.1, delta_real / delta_plain))
+
+    def _measure_request_basis(self, conversation: dict, messages: list, tools: list) -> int:
+        """估算本轮输入占用：历史部分用上游实测值，未实测的增量保持保守。
+
+        字符启发式对同一份内容会系统性偏差（英文按 3 字符/token 高估约 33%），
+        反复对整段历史重估等于把这份偏差硬塞进触发判定。改成两段处理：
+        - 已发送过的部分：直接沿用上游实测的 prompt_tokens，一个字符都不重估；
+        - 尚未发送的新增消息：按实测边际速率折算，但不设下限——
+          宁可高估这几百个 token，也不能因为低估而让请求越窗。
+        偏差因此被限制在单轮增量上，历史再长也不会放大。
+
+        无实测基线（首轮 / 摘要换代后）时退回整体估算。
+        """
+        state = conversation.get("context_state", {})
+        measured = int(state.get("last_input_tokens") or 0)
+        measured_count = int(state.get("last_measured_message_count") or 0)
+        plain_now = self.estimate_tokens({"messages": messages, "tools": tools})
+
+        if measured <= 0 or not 0 <= measured_count <= len(messages):
+            return plain_now
+
+        # 实测值已包含 tools（每轮固定），因此增量只算新消息，不再叠加 tools。
+        fresh = messages[measured_count:]
+
+        if not fresh:
+            return measured
+
+        fresh_plain = self.estimate_tokens({"messages": fresh})
+
+        return measured + math.ceil(max(1.0, self._measured_marginal_rate(conversation, plain_now)) * fresh_plain)
+
+    def prepare(self, conversation_id, system_prompt, tools, *, force=False, cancel_checker=None,
+                response_trace_id="", allow_compression=True):
+        """必要时分批总结历史；当前 user 轮次及其工具结果始终保持原样。
+
+        allow_compression=False 表示本次请求已经发出过前缀：摘要坑位一改写，
+        已缓存的整段前缀立即失效，所以非首轮不再压缩，只有真的装不下时才兜底压缩。
+        """
         conversation = self.store.get(conversation_id)
 
         if conversation is None:
@@ -128,16 +183,21 @@ class ContextManager:
             )
 
         messages = self.build_messages(conversation, system_prompt)
-        estimated = self.estimate_tokens({"messages": messages, "tools": tools})
+        measured_estimate = self._measure_request_basis(conversation, messages, tools)
         state = conversation.get("context_state", {})
-        previous = int(state.get("last_input_tokens", 0))
-        previous_estimate = int(state.get("last_estimated_tokens", 0))
-        calibration = max(1.0, previous / previous_estimate) if previous_estimate else 1.0
-        measured_estimate = math.ceil(estimated * calibration)
         threshold = min(int(window * 0.9), window - output)
+        hard_limit = window - output
 
         if not force and measured_estimate < threshold:
             return messages
+
+        if not allow_compression and measured_estimate < hard_limit:
+            # 已越过软阈值但仍装得下：保住本轮前缀，压缩留给下一次请求的首轮。
+            return messages
+
+        if not allow_compression:
+            print(f"[LocalContext] late_compression conversation={conversation_id} "
+                  f"input_estimate={measured_estimate} hard_limit={hard_limit}")
 
         history = conversation.get("messages", [])
         start = int(state.get("history_cut_index", 0))
@@ -145,7 +205,7 @@ class ContextManager:
         end = user_positions[-1] if user_positions else start
 
         if end <= start:
-            if measured_estimate >= window - output:
+            if measured_estimate >= hard_limit:
                 raise ContextLimitError("当前任务或工具结果超过模型输入预算；没有可压缩的历史轮次")
 
             yield {"type": "context_compression_status", "status": "skipped", "content": "没有可压缩的历史轮次"}
@@ -177,7 +237,7 @@ class ContextManager:
             for next_boundary in [p for p in user_positions if cursor < p <= end]:
                 trial = prefix + [self.message_payload(m) for m in history[cursor:next_boundary]]
 
-                if math.ceil(self.estimate_tokens(trial + [instruction]) * calibration) + summary_output >= window:
+                if self.estimate_tokens({"messages": trial + [instruction], "tools": tools}) + summary_output >= window:
                     break
 
                 boundary = next_boundary
@@ -190,7 +250,10 @@ class ContextManager:
             parts = []
             usage = None
             finish_reason = ""
-            stream = self.provider.stream_chat(candidate + [instruction], tools=None, tool_choice=None, max_tokens=summary_output)
+            # 摘要请求与主请求共用同一份 tools：tools 块渲染在提示词开头，
+            # 不传就会让两次请求的提示词前缀分叉，压缩调用全价冷读。
+            # 摘要只需要文本输出，因此 tool_choice 固定为 none，真出现工具调用直接判错。
+            stream = self.provider.stream_chat(candidate + [instruction], tools=tools, tool_choice="none", max_tokens=summary_output)
 
             try:
                 for event in stream:
@@ -209,12 +272,15 @@ class ContextManager:
             finally:
                 stream.close()
                 if usage:
+                    # 压缩调用挂在触发它的请求 trace 下，round_index 固定 0 表示请求正文之前发生。
                     self.store.record_compression_call(conversation_id, {
                         "model_name": self.provider.config.model,
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "usage": _extract_usage_io(usage),
                         "summary": "".join(parts),
                         "finish_reason": finish_reason,
+                        "response_trace_id": str(response_trace_id or ""),
+                        "round_index": 0,
                     })
 
             if finish_reason == "length":
@@ -236,13 +302,14 @@ class ContextManager:
         updated = dict(conversation)
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
         messages = self.build_messages(updated, system_prompt)
-        post_estimate = self.estimate_tokens({"messages": messages, "tools": tools})
+        post_estimate = self._measure_request_basis(updated, messages, tools)
 
-        if math.ceil(post_estimate * calibration) + output >= window:
+        if post_estimate + output >= window:
             raise ContextLimitError("摘要与当前任务仍超过模型窗口，未修改摘要边界")
 
         record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}
         self.store.save_context(conversation_id, record, history[:end])
-        print(f"[LocalContext] compressed conversation={conversation_id} cut={end} input_estimate={estimated} post_estimate={post_estimate} batches={len(usages)}")
+        print(f"[LocalContext] compressed conversation={conversation_id} cut={end} "
+              f"input_basis={measured_estimate} post_basis={post_estimate} batches={len(usages)}")
         yield {"type": "context_compression_status", "status": "done", "content": "上下文压缩完成", "history_cut_index": end, "summary_chars": len(summary)}
         return messages

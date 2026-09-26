@@ -209,8 +209,14 @@ class ConversationStore:
             conversation.setdefault("context_compressions", []).append(record)
             self._save_conversation(conversation)
 
-    def record_context_usage(self, conversation_id: str, input_tokens: int, estimated_tokens: int) -> None:
-        """实测输入校准下一轮估算，摘要更新后不沿用旧窗口占用。"""
+    def record_context_usage(self, conversation_id: str, input_tokens: int, message_count: int,
+                             estimated_tokens: int) -> None:
+        """落盘上游实测输入与当时的消息条数，作为下一轮占用的锚点。
+
+        同时保留上一轮的实测与整体估算：相邻两轮的差值就是「新增内容的真实
+        token 数」，由此得到的每轮边际速率不再依赖字符启发式。
+        摘要换代会重写 context_state（这里只写 last_* / prev_* 字段），旧锚点随之作废。
+        """
         with self._lock:
             conversation = self.get(conversation_id)
 
@@ -218,8 +224,10 @@ class ConversationStore:
                 raise ValueError("本地会话不存在")
 
             state = conversation.setdefault("context_state", {})
-            state["last_input_tokens"] = input_tokens
-            state["last_estimated_tokens"] = estimated_tokens
+            state["prev_input_tokens"] = max(0, int(state.get("last_input_tokens") or 0))
+            state["last_input_tokens"] = max(0, int(input_tokens or 0))
+            state["last_estimated_tokens"] = max(0, int(estimated_tokens or 0))
+            state["last_measured_message_count"] = max(0, int(message_count or 0))
             self._save_conversation(conversation)
 
     def record_compression_call(self, conversation_id: str, record: dict) -> None:

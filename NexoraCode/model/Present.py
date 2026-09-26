@@ -23,6 +23,8 @@ CODE_SCAN_SYMBOL_LINE_LIMIT = 800
 FILE_READ_CONTENT_LIMIT = 12000
 # patch diff 呈现上限。
 PATCH_DIFF_LIMIT = 12000
+# 搜索命中单次呈现条数上限（与云端 Presenter 的 matches[:50] 一致）。
+MATCH_RESULT_LIMIT = 50
 
 
 def present_tool_result(detail: Any) -> str:
@@ -489,7 +491,7 @@ def _present_code_scan(files: list, detail: dict) -> str:
 def _present_matches(matches: list, detail: dict) -> str:
     lines = []
 
-    for match in matches:
+    for match in matches[:MATCH_RESULT_LIMIT]:
         if not isinstance(match, dict):
             lines.append(f"- {match}")
             continue
@@ -506,6 +508,10 @@ def _present_matches(matches: list, detail: dict) -> str:
             lines.append(f"{prefix}  {line_text}" if line_text else prefix)
         else:
             lines.append(line_text or "-")
+
+    if len(matches) > MATCH_RESULT_LIMIT:
+        # 命中结果整段进历史且每轮重发，不封顶时一次宽泛搜索就能吃掉整个窗口。
+        lines.append(f"... 另有 {len(matches) - MATCH_RESULT_LIMIT} 条匹配未显示 ...")
 
     result = "\n".join(lines) if lines else "(无匹配)"
 

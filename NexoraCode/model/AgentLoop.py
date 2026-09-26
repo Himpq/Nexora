@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from typing import Any, Generator, Optional
 
 from core.config import config
@@ -86,6 +87,11 @@ class AgentLoop:
         question_sent = False
         permission_blocked = False
         max_tool_rounds = _max_tool_rounds()
+        # 一次 stream_send = 一个 trace，跨工具轮次的所有 usage 记录都挂在它下面，
+        # 便于把预估与实测、对话记录与压缩调用对应起来（对齐云端 response_trace_id）。
+        response_trace_id = uuid.uuid4().hex
+        # 本次请求内第几次调用模型，从 1 开始；provider 尚未返回过 usage 时为 0。
+        round_index = 0
         # 最终答复是否已落盘：正常完成/中断落盘都置位，避免中断路径重复落盘。
         final_persisted = False
         # 上一轮产生的文本与 usage（中断落盘用，循环内每轮更新）。
@@ -116,14 +122,25 @@ class AgentLoop:
             "outputTokens": 0,
         }
 
+        def _snapshot_timing(ended: bool = False) -> None:
+            """写入请求级用量快照（缓存命中 / 原始输入 / 输出）。
+
+            中断与模型异常路径同样要带上缓存数据，否则徽标上只有输出没有命中率。
+            """
+            badge_timing["cachedInput"] = int(totals.get("cached_input") or 0)
+            badge_timing["rawInput"] = int(totals.get("raw_input") or 0)
+            badge_timing["outputTokens"] = int(totals.get("output") or 0)
+
+            if ended:
+                badge_timing["endedAt"] = int(time.time() * 1000)
+
         while True:
             if self._is_cancelled(cancel_checker):
                 # 用户中断：若上一轮是纯文本轮且尚未落盘最终消息，落盘为最终消息，
                 # 保证中断的回复在重进对话后有完整消息与 model badge。
                 if content_text and not final_persisted and not last_round_had_tool_calls:
                     final_persisted = True
-                    badge_timing["endedAt"] = int(time.time() * 1000)
-                    badge_timing["outputTokens"] = int(totals.get("output") or 0)
+                    _snapshot_timing(ended=True)
                     self.store.append_message(
                         conversation_id,
                         {
@@ -137,6 +154,8 @@ class AgentLoop:
                                 request_first_round_chars,
                                 badge_timing,
                                 reasoning_content=reasoning_text,
+                                response_trace_id=response_trace_id,
+                                round_index=round_index,
                             ),
                             "timestamp": _now(),
                         },
@@ -159,12 +178,17 @@ class AgentLoop:
                     tools,
                     force=force_context_compression,
                     cancel_checker=cancel_checker,
+                    response_trace_id=response_trace_id,
+                    # 只有本次请求的首轮可以压缩：后续轮次一旦压缩，
+                    # 摘要坑位改写会让本请求已缓存的整段前缀立即失效。
+                    allow_compression=round_index <= 1,
                 )
                 force_context_compression = False
             except Exception as exc:
                 print(f"[LocalContext] prepare_failed conversation={conversation_id} error={type(exc).__name__}: {exc}")
                 raise
 
+            # 本轮实际发出的消息条数与整体估算，落盘后作为下一轮占用的实测锚点。
             input_estimate = self.context_manager.estimate_tokens({"messages": messages, "tools": tools})
 
             if request_first_round_chars <= 0:
@@ -177,6 +201,7 @@ class AgentLoop:
             assistant_reasoning_parts = []
             assistant_tool_calls = []
             round_usage = None
+            round_index += 1
 
             try:
                 for event in self.provider.stream_chat(messages, tools=tools):
@@ -213,8 +238,7 @@ class AgentLoop:
                     content_text = "".join(assistant_parts)
                     reasoning_text += "".join(assistant_reasoning_parts)
                     last_round_io = self._accumulate_usage(round_usage, totals)
-                    badge_timing["endedAt"] = int(time.time() * 1000)
-                    badge_timing["outputTokens"] = int(totals.get("output") or 0)
+                    _snapshot_timing(ended=True)
                     self.store.append_message(
                         conversation_id,
                         {
@@ -228,6 +252,8 @@ class AgentLoop:
                                 request_first_round_chars,
                                 badge_timing,
                                 reasoning_content=reasoning_text,
+                                response_trace_id=response_trace_id,
+                                round_index=round_index,
                             ),
                             "timestamp": _now(),
                         },
@@ -244,15 +270,14 @@ class AgentLoop:
             last_round_io = self._accumulate_usage(round_usage, totals)
 
             if last_round_io:
-                self.store.record_context_usage(conversation_id, int(last_round_io.get("raw_input") or 0), input_estimate)
+                self.store.record_context_usage(conversation_id, int(last_round_io.get("raw_input") or 0),
+                                               len(messages), input_estimate)
             last_round_had_tool_calls = bool(grouped_tool_calls)
-            badge_timing["cachedInput"] = int(totals.get("cached_input") or 0)
-            badge_timing["rawInput"] = int(totals.get("raw_input") or 0)
-            badge_timing["outputTokens"] = int(totals.get("output") or 0)
+            _snapshot_timing()
 
             if not grouped_tool_calls:
                 final_persisted = True
-                badge_timing["endedAt"] = int(time.time() * 1000)
+                _snapshot_timing(ended=True)
                 self.store.append_message(
                     conversation_id,
                     {
@@ -266,6 +291,8 @@ class AgentLoop:
                             request_first_round_chars,
                             badge_timing,
                             reasoning_content=reasoning_text,
+                            response_trace_id=response_trace_id,
+                            round_index=round_index,
                         ),
                         "timestamp": _now(),
                     },
@@ -294,6 +321,8 @@ class AgentLoop:
                     context_window,
                     request_first_round_chars,
                     reasoning_content=reasoning_text,
+                    response_trace_id=response_trace_id,
+                    round_index=round_index,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -466,8 +495,11 @@ class AgentLoop:
             "output": int(io.get("output") or 0),
             "raw_input": int(io.get("raw_input") or 0),
             "cached_input": int(io.get("cached_input") or 0),
+            "cached_tokens_source": str(io.get("cached_tokens_source") or ""),
+            "uncached_input": int(io.get("uncached_input") or 0),
             "effective_input": effective,
             "total": int(io.get("total") or 0),
+            "reasoning_tokens": int(io.get("reasoning_tokens") or 0),
             "cost": float(io.get("cost") or 0.0),
         }
 
@@ -480,6 +512,8 @@ class AgentLoop:
         first_round_chars: int,
         badge_timing: dict | None = None,
         reasoning_content: str = "",
+        response_trace_id: str = "",
+        round_index: int = 0,
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -488,6 +522,7 @@ class AgentLoop:
                                        供前端重进对话后从快照恢复 model badge 展示。
         - request_debug:               窗口上限与首轮载荷字符（前端脏数据保护）
         - reasoning_content:           推理过程全文（前端历史渲染的 thinking 折叠块）
+        - response_trace_id/round_index: 请求分组与轮次序号，用于把用量对回具体哪次请求的哪一轮
         """
         metadata: dict = {}
 
@@ -496,6 +531,10 @@ class AgentLoop:
 
         if reasoning_content:
             metadata["reasoning_content"] = reasoning_content
+
+        if response_trace_id:
+            metadata["response_trace_id"] = response_trace_id
+            metadata["round_index"] = max(0, int(round_index or 0))
 
         if badge_timing:
             metadata["badge_timing"] = {

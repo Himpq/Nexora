@@ -211,6 +211,14 @@ def _safe_tokens(value: Any) -> int:
         return 0
 
 
+def _safe_float(value: Any) -> float:
+    """非负浮点安全转换，非法输入返回 0.0。"""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _message_io_tokens(message: dict) -> dict:
     """从 assistant 消息 metadata 提取 io_tokens（无则空 dict）。"""
     if not isinstance(message, dict):
@@ -222,6 +230,70 @@ def _message_io_tokens(message: dict) -> dict:
         return metadata["io_tokens"]
 
     return {}
+
+
+def _message_metadata(message: dict) -> dict:
+    """取 assistant 消息 metadata（用于取 request 分组与模型名）。"""
+    if not isinstance(message, dict):
+        return {}
+
+    return message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+
+
+def _cache_hit_rate(raw_input: int, cached: int) -> float:
+    """缓存命中率：命中量占上游原始输入的比例，原始输入为 0 时无命中率可言。"""
+    if raw_input <= 0:
+        return 0.0
+
+    return round(min(1.0, max(0.0, cached / raw_input)), 6)
+
+
+def _usage_record(
+    io: dict,
+    *,
+    action: str,
+    detail_ref: str,
+    conversation_id: str,
+    conversation_title: str,
+    timestamp: str,
+    model: str,
+    response_trace_id: str = "",
+    round_index: int = 0,
+) -> dict:
+    """统一的单次模型调用用量记录（对话轮次与压缩调用共用）。
+
+    口径对齐云端：total_tokens = 原始输入 + 输出，不因缓存命中而扣减；
+    计费输入 effective = 原始输入 - 缓存命中，命中率单独给出。
+    """
+    raw_input = _safe_tokens(io.get("raw_input"))
+    cached = min(_safe_tokens(io.get("cached_input")), raw_input)
+    effective = max(0, raw_input - cached)
+    output = _safe_tokens(io.get("output"))
+    uncached = _safe_tokens(io.get("uncached_input")) or effective
+
+    return {
+        "detail_ref": detail_ref,
+        "conversation_id": conversation_id,
+        "conversation_title": conversation_title,
+        "action": action,
+        "timestamp": timestamp,
+        "model": model,
+        "provider": "",
+        # input_tokens 沿用「扣除缓存后的计费输入」，保持既有表格与徽标口径不变。
+        "input_tokens": effective,
+        "output_tokens": output,
+        "total_tokens": raw_input + output,
+        "raw_input_tokens": raw_input,
+        "cached_input_tokens": cached,
+        "cached_tokens": cached,
+        "cached_tokens_source": str(io.get("cached_tokens_source") or ""),
+        "uncached_input_tokens": uncached,
+        "effective_input_tokens": effective,
+        "reasoning_tokens": _safe_tokens(io.get("reasoning_tokens")),
+        "cache_hit_rate": _cache_hit_rate(raw_input, cached),
+        "response_trace_id": response_trace_id,
+        "round_index": max(0, int(round_index or 0)),
+    }
 
 
 def _find_preceding_user_message(messages: list, assistant_index: int) -> dict | None:
@@ -264,41 +336,34 @@ def _build_token_history(store: ConversationStore, conversation_id: str = "", li
             if not io:
                 continue
 
-            input_tokens = _safe_tokens(io.get("input"))
-            output_tokens = _safe_tokens(io.get("output"))
-
-            if input_tokens <= 0 and output_tokens <= 0:
+            if _safe_tokens(io.get("input")) <= 0 and _safe_tokens(io.get("output")) <= 0:
                 continue
 
-            rows.append({
-                "detail_ref": f"{cid}:{index}",
-                "conversation_id": cid,
-                "conversation_title": title,
-                "action": "chat",
-                "timestamp": str(message.get("timestamp") or "") if isinstance(message, dict) else "",
-                "model": str((message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}).get("model_name") or ""),
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-                "raw_input_tokens": _safe_tokens(io.get("raw_input")),
-                "cached_input_tokens": _safe_tokens(io.get("cached_input")),
-            })
+            metadata = _message_metadata(message)
+            rows.append(_usage_record(
+                io,
+                action="chat",
+                detail_ref=f"{cid}:{index}",
+                conversation_id=cid,
+                conversation_title=title,
+                timestamp=str(message.get("timestamp") or "") if isinstance(message, dict) else "",
+                model=str(metadata.get("model_name") or ""),
+                response_trace_id=str(metadata.get("response_trace_id") or ""),
+                round_index=_safe_tokens(metadata.get("round_index")),
+            ))
 
         for index, call in enumerate(conversation.get("context_compression_calls", [])):
-            io = call["usage"]
-            rows.append({
-                "detail_ref": f"{cid}:compression-{index}",
-                "conversation_id": cid,
-                "conversation_title": title,
-                "action": "context_compression",
-                "timestamp": call["timestamp"],
-                "model": call["model_name"],
-                "input_tokens": _safe_tokens(io.get("effective_input")),
-                "output_tokens": _safe_tokens(io.get("output")),
-                "total_tokens": _safe_tokens(io.get("effective_input")) + _safe_tokens(io.get("output")),
-                "raw_input_tokens": _safe_tokens(io.get("raw_input")),
-                "cached_input_tokens": _safe_tokens(io.get("cached_input")),
-            })
+            rows.append(_usage_record(
+                call.get("usage") if isinstance(call.get("usage"), dict) else {},
+                action="context_compression",
+                detail_ref=f"{cid}:compression-{index}",
+                conversation_id=cid,
+                conversation_title=title,
+                timestamp=str(call.get("timestamp") or ""),
+                model=str(call.get("model_name") or ""),
+                response_trace_id=str(call.get("response_trace_id") or ""),
+                round_index=_safe_tokens(call.get("round_index")),
+            ))
 
     rows.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
 
@@ -894,12 +959,15 @@ def local_agent_token_stats():
         "output_total": output_total,
         "raw_input_total": raw_input_total,
         "cached_input_total": cached_input_total,
-        "total": input_total + output_total,
+        # 总量按原始输入计，与云端口径一致：缓存命中不从总量中扣减。
+        "total": raw_input_total + output_total,
+        "cache_hit_rate": _cache_hit_rate(raw_input_total, cached_input_total),
         "today_input": today_input,
         "today_output": today_output,
         "today_raw_input": today_raw_input,
         "today_cached_input": today_cached_input,
-        "today": today_input + today_output,
+        "today": today_raw_input + today_output,
+        "today_cache_hit_rate": _cache_hit_rate(today_raw_input, today_cached_input),
         "history": history[:20],
     })
 
@@ -938,43 +1006,35 @@ def local_agent_token_detail():
     if not isinstance(message, dict) or str(message.get("role") or "").strip() != "assistant":
         return jsonify({"success": False, "message": "Token 记录不存在或已过期"}), 404
 
-    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    metadata = _message_metadata(message)
     io = metadata.get("io_tokens") if isinstance(metadata.get("io_tokens"), dict) else {}
-
-    input_tokens = _safe_tokens(io.get("input"))
-    output_tokens = _safe_tokens(io.get("output"))
-    total_tokens = _safe_tokens(io.get("total"))
-
-    if total_tokens <= 0:
-        total_tokens = input_tokens + output_tokens
-
-    cost = io.get("cost")
-
-    try:
-        cost = max(0.0, float(cost))
-    except (TypeError, ValueError):
-        cost = 0.0
-
+    record = _usage_record(
+        io,
+        action="chat",
+        detail_ref=f"{conversation_id}:{message_index}",
+        conversation_id=conversation_id,
+        conversation_title=str(conversation.get("title") or ""),
+        timestamp=str(message.get("timestamp") or ""),
+        model=str(metadata.get("model_name") or ""),
+        response_trace_id=str(metadata.get("response_trace_id") or ""),
+        round_index=_safe_tokens(metadata.get("round_index")),
+    )
+    cumulative = metadata.get("io_tokens_cumulative") if isinstance(metadata.get("io_tokens_cumulative"), dict) else {}
     user_message = _find_preceding_user_message(messages, message_index)
     assistant_content = _message_content_text(message.get("content"))
 
     return jsonify({
         "success": True,
         "detail": {
+            **record,
             "title": "Token 调用详情",
-            "timestamp": str(message.get("timestamp") or ""),
-            "conversation_title": str(conversation.get("title") or ""),
-            "action": "chat",
-            "model": str(metadata.get("model_name") or ""),
-            "provider": "",
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "raw_input_tokens": _safe_tokens(io.get("raw_input")),
-            "cached_input_tokens": _safe_tokens(io.get("cached_input")),
-            "effective_input_tokens": input_tokens,
-            "cost": cost,
             "available": True,
+            # 累计口径是本次请求跨全部工具轮次的总和，与本轮窗口口径并列展示。
+            "cumulative_input_tokens": _safe_tokens(cumulative.get("input")),
+            "cumulative_output_tokens": _safe_tokens(cumulative.get("output")),
+            "cumulative_raw_input_tokens": _safe_tokens(cumulative.get("raw_input")),
+            "cumulative_cached_input_tokens": _safe_tokens(cumulative.get("cached_input")),
+            "cost": _safe_float(io.get("cost")),
             "user_markdown": _message_content_text(user_message.get("content")) if user_message else "该消息没有文本内容。",
             "response_markdown": assistant_content or "该消息没有文本内容。",
         },
@@ -1008,13 +1068,24 @@ def _compression_token_detail(conversation_id: str, index_text: str):
     except (ValueError, IndexError):
         return jsonify({"message": "压缩调用记录不存在"}), 404
 
-    io = call["usage"]
+    record = _usage_record(
+        call.get("usage") if isinstance(call.get("usage"), dict) else {},
+        action="context_compression",
+        detail_ref=f"{conversation_id}:compression-{index}",
+        conversation_id=conversation_id,
+        conversation_title=str(conversation.get("title") or ""),
+        timestamp=str(call.get("timestamp") or ""),
+        model=str(call.get("model_name") or ""),
+        response_trace_id=str(call.get("response_trace_id") or ""),
+        round_index=_safe_tokens(call.get("round_index")),
+    )
+
     return jsonify({"success": True, "detail": {
-        "title": "上下文压缩调用", "action": "context_compression", "available": True,
-        "timestamp": call["timestamp"], "model": call["model_name"],
-        "conversation_title": conversation["title"], "provider": "",
-        "input_tokens": io["effective_input"], "output_tokens": io["output"],
-        "total_tokens": io["effective_input"] + io["output"], "raw_input_tokens": io["raw_input"],
-        "cached_input_tokens": io["cached_input"], "effective_input_tokens": io["effective_input"], "cost": io.get("cost", 0),
-        "user_markdown": "上下文摘要请求", "response_markdown": call["summary"],
+        **record,
+        "title": "上下文压缩调用",
+        "available": True,
+        "cost": _safe_float((call.get("usage") or {}).get("cost") if isinstance(call.get("usage"), dict) else 0),
+        "finish_reason": str(call.get("finish_reason") or ""),
+        "user_markdown": "上下文摘要请求",
+        "response_markdown": str(call.get("summary") or ""),
     }})

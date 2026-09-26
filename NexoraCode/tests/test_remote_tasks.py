@@ -285,6 +285,81 @@ class RemoteTests(unittest.TestCase):
                 continue
             break
 
+    def test_usage_record_totals_raw_input_and_reports_cache_rate(self):
+        routes = module("test_model.Routes", ROOT / "model/Routes.py")
+        record = routes._usage_record(
+            {"raw_input": 4000, "cached_input": 3000, "cached_tokens_source": "prompt_tokens_details.cached_tokens",
+             "output": 120, "reasoning_tokens": 45},
+            action="chat", detail_ref="conv_x:3", conversation_id="conv_x",
+            conversation_title="测试会话", timestamp="2026-01-01 10:00:00", model="m1",
+            response_trace_id="a" * 32, round_index=2,
+        )
+        # 合计 = 原始输入 + 输出，缓存命中不从总量扣减。
+        self.assertEqual(record["total_tokens"], 4120)
+        self.assertEqual(record["raw_input_tokens"], 4000)
+        # 计费输入 = 原始输入 - 缓存命中。
+        self.assertEqual(record["input_tokens"], 1000)
+        self.assertEqual(record["effective_input_tokens"], 1000)
+        self.assertEqual(record["cached_tokens"], 3000)
+        self.assertEqual(record["cached_input_tokens"], 3000)
+        self.assertEqual(record["cached_tokens_source"], "prompt_tokens_details.cached_tokens")
+        self.assertEqual(record["cache_hit_rate"], 0.75)
+        self.assertEqual(record["reasoning_tokens"], 45)
+        self.assertEqual(record["response_trace_id"], "a" * 32)
+        self.assertEqual(record["round_index"], 2)
+
+    def test_usage_record_clamps_cache_and_handles_missing_raw_input(self):
+        routes = module("test_model.Routes", ROOT / "model/Routes.py")
+        clamped = routes._usage_record(
+            {"raw_input": 100, "cached_input": 900, "output": 5},
+            action="chat", detail_ref="c:0", conversation_id="c", conversation_title="t",
+            timestamp="", model="m",
+        )
+        self.assertEqual(clamped["cached_tokens"], 100)
+        self.assertEqual(clamped["input_tokens"], 0)
+        self.assertEqual(clamped["cache_hit_rate"], 1.0)
+
+        empty = routes._usage_record({}, action="chat", detail_ref="c:1", conversation_id="c",
+                                    conversation_title="t", timestamp="", model="m")
+        self.assertEqual(empty["total_tokens"], 0)
+        self.assertEqual(empty["cache_hit_rate"], 0.0)
+        self.assertEqual(empty["round_index"], 0)
+
+    def test_token_stats_endpoint_aggregates_cache_hit_rate(self):
+        from flask import Flask
+
+        routes = module("test_model.Routes", ROOT / "model/Routes.py")
+        app = Flask("isolated_tokens", root_path=self.temp.name)
+        app.register_blueprint(routes._local_bp)
+        client = app.test_client()
+
+        self.store.append_message(self.cid, {"role": "user", "content": "问题"})
+        self.store.append_message(self.cid, {"role": "assistant", "content": "回答", "metadata": {
+            "model_name": "m1", "response_trace_id": "b" * 32, "round_index": 1,
+            "io_tokens": {"input": 1000, "raw_input": 4000, "cached_input": 3000, "output": 50},
+        }})
+        self.store.append_message(self.cid, {"role": "user", "content": "再问"})
+        self.store.append_message(self.cid, {"role": "assistant", "content": "再答", "metadata": {
+            "model_name": "m1", "response_trace_id": "c" * 32, "round_index": 1,
+            "io_tokens": {"input": 500, "raw_input": 1000, "cached_input": 0, "output": 20},
+        }})
+
+        stats = client.get(f"/api/tokens/stats?conversation_id={self.cid}").get_json()
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["raw_input_total"], 5000)
+        self.assertEqual(stats["cached_input_total"], 3000)
+        # 总量按原始输入计。
+        self.assertEqual(stats["total"], 5070)
+        self.assertEqual(stats["cache_hit_rate"], 0.6)
+        self.assertEqual(len(stats["history"]), 2)
+        self.assertEqual(sorted(row["cache_hit_rate"] for row in stats["history"]), [0.0, 0.75])
+
+        detail = client.get(f"/api/tokens/detail?ref={self.cid}:1").get_json()["detail"]
+        self.assertEqual(detail["total_tokens"], 4050)
+        self.assertEqual(detail["cache_hit_rate"], 0.75)
+        self.assertEqual(detail["round_index"], 1)
+        self.assertEqual(detail["response_trace_id"], "b" * 32)
+
     def test_isolated_route_update_preserves_separate_methods(self):
         updater = module("test_route_updater", ROOT.parent / "ChatDBServer/tests/update_route_baseline.py")
         directory = Path(self.temp.name) / "route_update"
