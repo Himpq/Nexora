@@ -985,6 +985,40 @@
     
     
     
+        if (compact.startsWith('scheduledtask')) {
+
+            const taskTitle = objectTitle || readExecutionFlowResultText(markdown, result, ['任务'], ['task.title', 'title']);
+
+            if (compact.endsWith('list')) {
+
+                const count = readExecutionFlowResultCount(markdown, result, ['任务数量'], ['tasks.length'], ['tasks']);
+
+                return count !== null ? `读取定时任务 ${count} 个` : '读取定时任务';
+
+            }
+
+            if (compact.endsWith('create')) {
+
+                return taskTitle ? `创建定时任务 ${clipExecutionFlowText(taskTitle, 34)}` : '创建定时任务';
+
+            }
+
+            if (compact.endsWith('update')) {
+
+                return taskTitle ? `更新定时任务 ${clipExecutionFlowText(taskTitle, 34)}` : '更新定时任务';
+
+            }
+
+            if (compact.endsWith('delete')) {
+
+                return '删除定时任务';
+
+            }
+
+        }
+
+
+
         if (compact === 'memoryprofileread' || compact === 'getuserprofilememory' || compact === 'memoryread') {
     
             return '读取用户画像';

@@ -21,5 +21,8 @@ from .notification import (
 )
 from .service_status_monitor import ServiceStatusMonitor
 from .testapi import create_testapi_blueprint
+from App.ScheduledTasks import scheduled_tasks_bp
+
+notification_bp.register_blueprint(scheduled_tasks_bp)
 
 __all__ = [n for n in globals() if not n.startswith('_')]
