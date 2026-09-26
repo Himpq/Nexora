@@ -69,6 +69,9 @@ NexoraSearch/storage
 
 ChatDBServer/static/new/
 
+# 端到端验证产物：构建日志与 Playwright 截图
+NexoraWeb/output/
+
 # pnpm content-addressable store (workspace root, never version this)
 .pnpm-store/
 
