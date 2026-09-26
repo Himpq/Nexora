@@ -36,6 +36,7 @@
             @learning-new="handleLearningNew"
             @open-learning-conversation="handleOpenLearningConversation"
             @open-changes="changesOpen = true"
+            @open-remote="remoteConnectionOpen = true"
             @view-branch-source="handleViewBranchSource"
         />
 
@@ -258,6 +259,8 @@
         />
 
         <ChangesModal :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
+    
+    <RemoteConnectionModal :open="remoteConnectionOpen" @close="remoteConnectionOpen = false" />
 
         <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
@@ -316,6 +319,7 @@
     import ChatHeader from '@/components/ChatHeader.vue'
     import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
     import ChangesModal from '@/components/ChangesModal.vue'
+    import RemoteConnectionModal from '@/components/RemoteConnectionModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -358,6 +362,7 @@
     const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
     const settingsOpen = ref(false)
     const changesOpen = ref(false)
+    const remoteConnectionOpen = ref(false)
     const notesOpen = ref(false)
     const sidebarCollapsed = ref(false)
     const tokenDetailOpen = ref(false)

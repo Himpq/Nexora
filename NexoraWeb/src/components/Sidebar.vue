@@ -458,6 +458,10 @@
                         <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
                         <span>变更</span>
                     </a>
+                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('remote')">
+                        <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
+                        <span>远程连接</span>
+                    </a>
                     <div class="menu-divider"></div>
                     <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
                         <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
@@ -489,6 +493,7 @@
     const emit = defineEmits<{
         'toggle-mobile': []
         'open-settings': []
+        'open-remote': []
         'open-chat': []
         'open-workspaces': []
         'open-projects': []
@@ -920,7 +925,7 @@
     }
 
     /** 用户菜单动作(原版 userMenu 的菜单项) */
-    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'logout'): void {
+    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'remote' | 'logout'): void {
         closePopover('user-menu')
 
         if (action === 'rank') {
@@ -938,6 +943,12 @@
 
         if (action === 'changes') {
             emit('open-changes')
+
+            return
+        }
+
+        if (action === 'remote') {
+            emit('open-remote')
 
             return
         }

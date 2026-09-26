@@ -1,0 +1,171 @@
+/*
+ * remote-connection-modal.css — 远程连接弹窗
+ *
+ * 范围：仅 .remote-connection-modal 内部。复用 gddp-form-field / gddp-input
+ * 与 Button 组件，不重复定义按钮与表单基元。
+ */
+
+.remote-connection-modal .remote-connection {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 20px 24px 24px;
+    overflow-y: auto;
+}
+
+.remote-connection-lead {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 12.5px;
+    line-height: 1.6;
+}
+
+.remote-connection-value {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.remote-connection-code {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+/* 配对码需要一眼可读，用强调色与字重区别于只读的服务器地址 */
+.remote-connection-code.is-emphasis {
+    color: var(--color-accent, #0369a1);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.remote-connection-countdown {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.remote-connection-hint {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 12.5px;
+    line-height: 1.6;
+}
+
+.remote-connection-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.remote-connection-devices {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 16px;
+    border-top: 1px solid var(--color-border);
+}
+
+.remote-connection-devices-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--color-text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.remote-connection-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.remote-connection-device {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+}
+
+.remote-connection-device-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    border-radius: 6px;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-secondary);
+    font-size: 13px;
+}
+
+.remote-connection-device-main {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
+.remote-connection-device-name {
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.remote-connection-device-meta {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.remote-connection-device-state {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.remote-connection-device-state.is-online {
+    color: #16a34a;
+}
+
+.remote-connection-device-state.is-offline {
+    color: var(--color-text-secondary);
+}
+
+.remote-connection-error {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--color-danger-border, #fecaca);
+    border-radius: 6px;
+    background: var(--color-danger-bg, #fef2f2);
+    color: var(--color-danger-text, #b91c1c);
+    font-size: 12.5px;
+    line-height: 1.6;
+}
+
+@media (max-width: 560px) {
+    .remote-connection-modal .remote-connection {
+        padding: 16px 18px 20px;
+    }
+
+    .remote-connection-device {
+        flex-wrap: wrap;
+    }
+}
