@@ -1339,6 +1339,10 @@ class User:
         input_tokens = int(input_tokens or 0)
         output_tokens = int(output_tokens or 0)
         token_details = metadata.get("token_details") if isinstance(metadata.get("token_details"), dict) else {}
+        estimated_flag = bool(metadata.get("estimated", token_details.get("estimated", False)))
+        billing_source = str(
+            metadata.get("billing_source") or ("estimated" if estimated_flag else "snapshot")
+        )
         total_tokens = usage_record_total_tokens({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -1366,6 +1370,14 @@ class User:
             "memory_analysis": bool(metadata.get("memory_analysis", False)),
             "memory_job_id": str(metadata.get("memory_job_id") or ""),
             "memory_action": str(metadata.get("memory_action") or ""),
+            "is_regenerate": bool(metadata.get("is_regenerate", False)),
+            "regenerate_index": parse_message_index(metadata.get("regenerate_index"), default=-1),
+            "round_index": parse_message_index(metadata.get("round_index"), default=-1),
+            "estimated": estimated_flag,
+            "usage_source": str(metadata.get("usage_source") or "provider_usage"),
+            "billing_source": billing_source,
+            "reconciliation_id": str(metadata.get("reconciliation_id") or ""),
+            "reconciliation_status": str(metadata.get("reconciliation_status") or ""),
             "source_assistant_index": parse_message_index(metadata.get("source_assistant_index"), default=-1),
             "response_trace_id": str(metadata.get("response_trace_id") or "")
         }
@@ -1379,7 +1391,7 @@ class User:
             output_tokens=output_tokens,
             pricing=pricing,
             token_details=log_entry["token_details"],
-            source="snapshot",
+            source=log_entry["billing_source"],
         )
 
         append_usage_log_record(log_file, log_entry)

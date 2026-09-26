@@ -16,6 +16,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MODELS_PATH = os.path.join(DATA_DIR, 'models.json')
 MODEL_QUOTA_PATH = os.path.join(DATA_DIR, 'model_quota.jsonl')
+PROVIDER_RECONCILIATION_PATH = os.path.join(DATA_DIR, 'provider_billing_reconciliations.json')
 
 _SERVER_QUOTA_LOCK = threading.RLock()
 _MODEL_QUOTE_LOCK = threading.RLock()
@@ -404,6 +405,9 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
     models_catalog = _read_models_catalog()
     total_tokens = 0
     total_requests = 0
+    pending_reconciliation_tokens = 0
+    pending_reconciliation_requests = 0
+    existing_reconciliation_ids = set()
     provider_map: Dict[str, Dict[str, Any]] = {}
     model_totals: Dict[str, Dict[str, Any]] = {}
 
@@ -446,61 +450,33 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
             'requests': 0,
         })
 
-    user_root = os.path.join(DATA_DIR, 'users')
-    if os.path.exists(user_root):
-        for username in os.listdir(user_root):
-            token_file = os.path.join(user_root, username, 'token_usage.json')
-            logs = read_usage_log_records(token_file)
+    def _reconciliation_round_key(log: Any) -> Optional[tuple]:
+        item = log if isinstance(log, dict) else {}
+        trace_id = str(item.get('response_trace_id') or '').strip()
+        round_index = _int_value(item.get('round_index', 0))
 
-            for log in logs:
-                if not isinstance(log, dict):
-                    continue
-                total = usage_record_total_tokens(log)
+        if not trace_id or round_index <= 0:
+            return None
 
-                model = _normalize_model_name(log.get('model'))
-                provider = _resolve_active_provider(model, log.get('provider'))
-                quota_key = _model_quota_key(provider, model)
+        return trace_id, round_index
 
-                total_tokens += total
-                total_requests += 1
+    def _is_unreconciled_error_estimate(log: Any, reconciled_rounds: set) -> bool:
+        item = log if isinstance(log, dict) else {}
 
-                if provider == 'unknown' or model == 'unknown':
-                    continue
+        if str(item.get('usage_source') or '').strip() != 'stream_error_estimate':
+            return False
 
-                provider_entry = provider_map.setdefault(provider, {
-                    'name': provider,
-                    'tokens': 0,
-                    'requests': 0,
-                    'models': {},
-                })
-                provider_entry['tokens'] += total
-                provider_entry['requests'] += 1
+        if str(item.get('reconciliation_status') or '').strip().lower() != 'pending':
+            return False
 
-                model_entry = provider_entry['models'].setdefault(quota_key, {
-                    'key': quota_key,
-                    'name': model,
-                    'provider': provider,
-                    'tokens': 0,
-                    'requests': 0,
-                })
-                model_entry['tokens'] += total
-                model_entry['requests'] += 1
+        round_key = _reconciliation_round_key(item)
 
-                global_model = model_totals.setdefault(quota_key, {
-                    'key': quota_key,
-                    'name': model,
-                    'provider': provider,
-                    'tokens': 0,
-                    'requests': 0,
-                })
-                global_model['tokens'] += total
-                global_model['requests'] += 1
+        return not round_key or round_key not in reconciled_rounds
 
-    for log in iter_papi_token_log_entries():
-        if not isinstance(log, dict):
-            continue
+    def _add_usage_record(log: Dict[str, Any]) -> None:
+        nonlocal total_tokens, total_requests
+
         total = usage_record_total_tokens(log)
-
         model = _normalize_model_name(log.get('model'))
         provider = _resolve_active_provider(model, log.get('provider'))
         quota_key = _model_quota_key(provider, model)
@@ -509,7 +485,7 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
         total_requests += 1
 
         if provider == 'unknown' or model == 'unknown':
-            continue
+            return
 
         provider_entry = provider_map.setdefault(provider, {
             'name': provider,
@@ -539,6 +515,86 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
         })
         global_model['tokens'] += total
         global_model['requests'] += 1
+
+    user_root = os.path.join(DATA_DIR, 'users')
+    if os.path.exists(user_root):
+        for username in os.listdir(user_root):
+            token_file = os.path.join(user_root, username, 'token_usage.json')
+            logs = read_usage_log_records(token_file)
+            reconciled_rounds = {
+                round_key
+                for log in logs
+                if isinstance(log, dict)
+                and str(log.get('usage_source') or '').strip() == 'provider_billing_reconciliation'
+                and str(log.get('reconciliation_status') or '').strip().lower() == 'reconciled'
+                for round_key in [_reconciliation_round_key(log)]
+                if round_key
+            }
+
+            for log in logs:
+                if not isinstance(log, dict):
+                    continue
+
+                if str(log.get('usage_source') or '').strip() == 'provider_billing_reconciliation':
+                    reconciliation_id = str(log.get('reconciliation_id') or '').strip()
+
+                    if reconciliation_id:
+                        existing_reconciliation_ids.add(reconciliation_id)
+
+                if _is_unreconciled_error_estimate(log, reconciled_rounds):
+                    pending_reconciliation_tokens += usage_record_total_tokens(log)
+                    pending_reconciliation_requests += 1
+                    continue
+
+                _add_usage_record(log)
+
+    papi_logs = list(iter_papi_token_log_entries())
+    papi_reconciled_rounds = {
+        round_key
+        for log in papi_logs
+        if isinstance(log, dict)
+        and str(log.get('usage_source') or '').strip() == 'provider_billing_reconciliation'
+        and str(log.get('reconciliation_status') or '').strip().lower() == 'reconciled'
+        for round_key in [_reconciliation_round_key(log)]
+        if round_key
+    }
+
+    for log in papi_logs:
+        if not isinstance(log, dict):
+            continue
+
+        if str(log.get('usage_source') or '').strip() == 'provider_billing_reconciliation':
+            reconciliation_id = str(log.get('reconciliation_id') or '').strip()
+
+            if reconciliation_id:
+                existing_reconciliation_ids.add(reconciliation_id)
+
+        if _is_unreconciled_error_estimate(log, papi_reconciled_rounds):
+            pending_reconciliation_tokens += usage_record_total_tokens(log)
+            pending_reconciliation_requests += 1
+            continue
+
+        _add_usage_record(log)
+
+    reconciliation_logs = read_usage_log_records(PROVIDER_RECONCILIATION_PATH)
+
+    for log in reconciliation_logs:
+        if not isinstance(log, dict):
+            continue
+
+        if str(log.get('usage_source') or '').strip() != 'provider_billing_reconciliation':
+            continue
+
+        if str(log.get('reconciliation_status') or '').strip().lower() != 'reconciled':
+            continue
+
+        reconciliation_id = str(log.get('reconciliation_id') or '').strip()
+
+        if not reconciliation_id or reconciliation_id in existing_reconciliation_ids:
+            continue
+
+        existing_reconciliation_ids.add(reconciliation_id)
+        _add_usage_record(log)
 
     # 把模型配置中的模型也并入，便于即使没产生调用也可以直接配额。
     for model_id, model_info in models_catalog.items():
@@ -633,6 +689,8 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
     return {
         'total_tokens': total_tokens,
         'total_requests': total_requests,
+        'pending_reconciliation_tokens': pending_reconciliation_tokens,
+        'pending_reconciliation_requests': pending_reconciliation_requests,
         'providers': provider_list,
         'top_models': top_models,
         'model_status_map': model_status_map,
@@ -701,6 +759,8 @@ def get_server_quota_status() -> Dict[str, Any]:
         'providers': providers,
         'top_models': usage['top_models'],
         'total_requests': int(usage.get('total_requests', 0) or 0),
+        'pending_reconciliation_tokens': int(usage.get('pending_reconciliation_tokens', 0) or 0),
+        'pending_reconciliation_requests': int(usage.get('pending_reconciliation_requests', 0) or 0),
         'model_status_map': model_status_map,
         'model_quota_total_tokens': int(usage.get('model_quota_total_tokens', 0) or 0),
         'model_quota_overage_tokens': int(usage.get('model_quota_overage_tokens', 0) or 0),

@@ -47,6 +47,7 @@ from .tool_protocol import (
     canonical_tool_call_signature,
     sanitize_tool_calls_in_messages,
 )
+from .tool_parser import parse_model_tools
 from basis.TokenUsage import append_usage_log_record
 from longterm.longterm_api import (
     build_longterm_hook_payload,
@@ -1799,108 +1800,16 @@ class Model(MailMixin):
         return re.sub(r"\[ref_(\d+)\]", repl, src)
 
     def _parse_tools(self, tools_config: List[Dict]) -> List[Dict]:
-        """解析工具定义为API格式 - 兼容不同供应商"""
-        parsed_tools = []
-        learning_mode = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
-        rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
-        rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
-        mail_tools_enabled, _ = self._can_inject_mail_tools()
-        nexora_search_cfg = CONFIG.get("nexora_search", {}) if isinstance(CONFIG, dict) else {}
-        nexora_search_enabled = bool(nexora_search_cfg.get("nexora_search_enabled", False))
-        gen_image_cfg = CONFIG.get("gen_image", {}) if isinstance(CONFIG, dict) else {}
-        gen_image_enabled = (
-            isinstance(gen_image_cfg, dict)
-            and bool(str(gen_image_cfg.get("enabled_api", "") or "").strip())
-            and isinstance(gen_image_cfg.get("apis", {}), dict)
-            and str(gen_image_cfg.get("enabled_api", "") or "").strip() in gen_image_cfg.get("apis", {})
+        """Build the provider schema through the Core tool parser."""
+        return parse_model_tools(
+            model=self,
+            tools_config=tools_config,
+            config=CONFIG,
+            mail_tool_names=MAIL_TOOL_NAMES,
+            learning_allowed_base_tool_names=LEARNING_ALLOWED_BASE_TOOL_NAMES,
+            get_learning_tools=get_learning_tools,
+            canonicalize_tool_name=canonicalize_tool_name,
         )
-        provider = getattr(self, 'provider', 'volcengine')
-        use_responses_api = self._provider_use_responses_api(provider)
-        disabled_injected_tool_names = {
-            "knowledge_graph_read",
-            "server_render_page",
-            "arxiv_search",
-            "conversation_context_length",
-            "conversation_context_read",
-            "conversation_context_search",
-            # 知识库/文件语义检索已统一进 search 工具，不再单独注入（executor 保留以兼容历史调用）
-            "knowledge_search_keyword",
-            "knowledge_search_vector",
-            "cloud_file_search_semantic",
-        }
-
-        # 1) 优先注入 provider 级 native tools（由 model_adapters.json 驱动）
-        if getattr(self, "native_search_tools", None):
-            for native_tool in self.native_search_tools:
-                if use_responses_api:
-                    # Responses API 可直接使用 native tools
-                    parsed_tools.append(native_tool)
-                else:
-                    # Chat Completions：仅注入 function 类型，native 搜索走 provider 专属参数
-                    if str(native_tool.get("type", "")).strip() == "function":
-                        parsed_tools.append(native_tool)
-        
-        # 2) 解析自定义 function 工具
-        for tool in tools_config:
-            if tool["type"] == "function":
-                func_def = tool["function"]
-                func_name = str(func_def.get("name") or "").strip()
-                canonical_func_name = canonicalize_tool_name(func_name)
-
-                if canonical_func_name in disabled_injected_tool_names:
-                    continue
-
-                if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
-                    continue
-                if canonical_func_name in MAIL_TOOL_NAMES and not mail_tools_enabled:
-                    continue
-                if func_def.get("name") == "server_render_page" and not nexora_search_enabled:
-                    continue
-                if func_def.get("name") == "generate_image" and not gen_image_enabled:
-                    continue
-
-                if use_responses_api:
-                    # Responses API 使用扁平结构
-                    parsed_tools.append({
-                        "type": "function",
-                        "name": func_def["name"],
-                        "description": func_def["description"],
-                        "parameters": func_def.get("parameters", {})
-                    })
-                else:
-                    # 标准 OpenAI 格式 (Stepfun 等)
-                    parsed_tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": func_def["name"],
-                            "description": func_def["description"],
-                            "parameters": func_def.get("parameters", {})
-                        }
-                    })
-        if learning_mode:
-            for tool in (get_learning_tools() or []):
-                if not isinstance(tool, dict) or tool.get("type") != "function":
-                    continue
-                func_def = tool.get("function") if isinstance(tool.get("function"), dict) else {}
-                if not func_def.get("name"):
-                    continue
-                if use_responses_api:
-                    parsed_tools.append({
-                        "type": "function",
-                        "name": func_def["name"],
-                        "description": func_def.get("description", ""),
-                        "parameters": func_def.get("parameters", {})
-                    })
-                else:
-                    parsed_tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": func_def["name"],
-                            "description": func_def.get("description", ""),
-                            "parameters": func_def.get("parameters", {})
-                        }
-                    })
-        return parsed_tools
 
     def register_external_function_tool(
         self,
@@ -3616,6 +3525,19 @@ class Model(MailMixin):
         self._cache_attribution = {}
         self._pending_tool_image_inputs = {}
 
+        # 将重答请求写入 Token 日志上下文，避免重答只能被看成普通 chat。
+        # 额度总量仍按每个模型轮次累加，这些字段只用于审计和差值追踪。
+        if is_regenerate:
+            self._usage_action_type = "regenerate"
+        usage_metadata = dict(getattr(self, "_usage_metadata", {}) or {})
+        usage_metadata["is_regenerate"] = bool(is_regenerate)
+        usage_metadata["regenerate_index"] = (
+            parse_message_index(regenerate_index, default=-1)
+            if is_regenerate and regenerate_index is not None
+            else -1
+        )
+        self._usage_metadata = usage_metadata
+
         try:
             quota_gate = get_generation_quota_gate(provider_name=self.provider, model_name=self.model_name)
         except Exception:
@@ -5292,6 +5214,11 @@ class Model(MailMixin):
                     "model": self.model_name,
                     "conversation_id": str(self.conversation_id or ""),
                     "round": int(round_index) + 1,
+                    "is_regenerate": bool(is_regenerate),
+                    "regenerate_index": parse_message_index(regenerate_index, default=-1)
+                    if is_regenerate and regenerate_index is not None else -1,
+                    "round_input_est_tokens": int(max(0, round_input_est_tokens or 0)),
+                    "usage_seen": bool(round_usage),
                     "request_timeout_sec": float(last_request_timeout_sec or 0.0),
                     "round_elapsed_ms": int(max(0, (now_ts - float(round_started_at or now_ts)) * 1000)),
                 }
@@ -5324,6 +5251,15 @@ class Model(MailMixin):
                     f"[STREAM_ERROR] code={terminal_error_code} retryable={terminal_error_retryable} "
                     f"round={int(round_index) + 1} trace={json.dumps(trace_payload, ensure_ascii=False, default=str)}"
                 )
+                _log_token_attempt(
+                    "stream_error",
+                    round_index=round_index,
+                    input_est_tokens=round_input_est_tokens,
+                    retry=is_retry_mode,
+                    usage_seen=bool(round_usage),
+                    error=exc,
+                    status_code=getattr(exc, "status_code", "")
+                )
 
                 return {
                     "type": "error",
@@ -5332,6 +5268,159 @@ class Model(MailMixin):
                     "content": terminal_error_content,
                     "stream_trace": trace_payload,
                 }
+
+            def _log_token_attempt(
+                phase: str,
+                *,
+                round_index: int,
+                input_est_tokens: int,
+                retry: bool = False,
+                usage_seen: bool = False,
+                error: Optional[Exception] = None,
+                status_code: Any = ""
+            ):
+                """记录一次上游请求尝试，补齐无 usage 的失败请求审计链。"""
+                error_type = type(error).__name__ if error is not None else ""
+                attempt_payload = {
+                    "phase": str(phase or ""),
+                    "provider": self.provider,
+                    "model": self.model_name,
+                    "conversation_id": str(self.conversation_id or ""),
+                    "response_trace_id": str(response_trace_id or ""),
+                    "round": int(round_index) + 1,
+                    "is_regenerate": bool(is_regenerate),
+                    "regenerate_index": parse_message_index(regenerate_index, default=-1)
+                    if is_regenerate and regenerate_index is not None else -1,
+                    "retry": bool(retry),
+                    "input_est_tokens": int(max(0, input_est_tokens or 0)),
+                    "usage_seen": bool(usage_seen),
+                    "error_type": error_type,
+                    "status_code": str(status_code or "")
+                }
+                print(f"[TOKEN_ATTEMPT] {json.dumps(attempt_payload, ensure_ascii=False, default=str)}")
+
+            def _persist_stream_error_estimate(error: Exception):
+                """为未收到 usage 的终止流保存待对账估算，避免失败请求完全消失。"""
+                if round_usage:
+                    return None
+
+                try:
+                    prompt_snapshot = json.dumps(messages, ensure_ascii=False, default=str)
+                except Exception:
+                    prompt_snapshot = str(messages)
+
+                estimated_input = int(max(
+                    0,
+                    int(round_input_est_tokens or 0),
+                    int(self._estimate_token_count(prompt_snapshot) or 0),
+                ))
+                tool_args_text = str(round_tool_args_delta or "")
+
+                if not tool_args_text and function_calls:
+                    tool_args_text = "\n".join([
+                        str((fc or {}).get("arguments", "") or "")
+                        for fc in function_calls
+                    ])
+
+                estimated_output_text = (
+                    f"{round_content or accumulated_content or ''}"
+                    f"{accumulated_reasoning or ''}"
+                    f"{tool_args_text}"
+                )
+                estimated_output = int(max(0, self._estimate_token_count(estimated_output_text) or 0))
+                estimated_total = estimated_input + estimated_output
+
+                if estimated_total <= 0:
+                    return None
+
+                round_duration_ms = max(0, int((time.time() - float(round_started_at)) * 1000))
+                round_ttft_ms = max(
+                    0,
+                    int((float(round_first_emit_at) - float(round_started_at)) * 1000)
+                ) if round_first_emit_at else 0
+                has_text_output = bool(str(round_content or "").strip())
+                estimated_action = str(getattr(self, "_usage_action_type", "chat") or "chat").strip() or "chat"
+                primary_tool = ""
+
+                if function_calls:
+                    primary_tool = str(function_calls[0].get("name", "") or "")
+                elif has_web_search:
+                    primary_tool = "web_search"
+
+                estimated_output_tps = 0.0
+
+                if round_duration_ms > 0:
+                    estimated_output_tps = round(estimated_output * 1000.0 / round_duration_ms, 3)
+
+                error_reconciliation_id = (
+                    f"{response_trace_id}:round:{int(round_num) + 1}"
+                )
+                estimated_metadata = {
+                    "provider": self.provider,
+                    "model": self.model_name,
+                    "estimated": True,
+                    "usage_source": "stream_error_estimate",
+                    "billing_source": "estimated",
+                    "reconciliation_id": error_reconciliation_id,
+                    "reconciliation_status": "pending",
+                    "token_details": {
+                        "estimated": True,
+                        "estimate_method": "stream_error_round_input_plus_visible_output",
+                        "prompt_chars": len(prompt_snapshot),
+                        "output_chars": len(round_content or accumulated_content or ""),
+                        "reasoning_chars": len(accumulated_reasoning or ""),
+                        "tool_args_chars": len(tool_args_text or ""),
+                        "error_type": type(error).__name__,
+                    },
+                    "has_web_search": has_web_search,
+                    "tool_call_count": len(function_calls or []),
+                    "round_kind": "chat" if has_text_output else "tool_assisted",
+                    "primary_tool": primary_tool,
+                    "has_text_output": has_text_output,
+                    "duration_ms": round_duration_ms,
+                    "ttft_ms": round_ttft_ms,
+                    "output_tps": estimated_output_tps,
+                    "round_index": round_num + 1,
+                    "response_trace_id": response_trace_id,
+                }
+                estimated_metadata.update(dict(getattr(self, "_usage_metadata", {}) or {}))
+
+                fallback_title = (
+                    (str(msg).strip()[:30] + "...")
+                    if msg and len(str(msg).strip()) > 30
+                    else (str(msg).strip() if msg else "新对话")
+                )
+                self.user.log_token_usage(
+                    self.conversation_id or "unknown",
+                    fallback_title or "新对话",
+                    estimated_action,
+                    estimated_input,
+                    estimated_output,
+                    total_tokens=estimated_total,
+                    metadata=estimated_metadata,
+                )
+                self._notify_usage_observer(
+                    input_tokens=estimated_input,
+                    output_tokens=estimated_output,
+                    raw_input_tokens=estimated_input,
+                    cached_input_tokens=0,
+                    estimated=True,
+                )
+                _log_token_attempt(
+                    "stream_error_estimate",
+                    round_index=round_num,
+                    input_est_tokens=estimated_input,
+                    retry=is_retry_mode,
+                    usage_seen=False,
+                    error=error,
+                )
+                print(
+                    f"[ROUND_USAGE_EST] round={round_num + 1} input_est={estimated_input} "
+                    f"output_est={estimated_output} reasoning_chars={len(accumulated_reasoning or '')} "
+                    f"reason=stream_error error_type={type(error).__name__} "
+                    f"reconciliation_id={error_reconciliation_id}"
+                )
+                return error_reconciliation_id
             
             # 网络半包重试预算（架构层统一处理，避免散落 patch）
             network_retry_budget = 1
@@ -6179,6 +6268,11 @@ class Model(MailMixin):
                     
                     # 调用API
                     print(f"[DEBUG_API] 发送请求 (Provider: {self.provider})")
+                    _log_token_attempt(
+                        "open",
+                        round_index=round_num,
+                        input_est_tokens=round_input_est_tokens
+                    )
 
                     preflight_quota_error = _build_quota_preflight_error_payload(round_input_est_tokens)
                     if isinstance(preflight_quota_error, dict):
@@ -6202,6 +6296,13 @@ class Model(MailMixin):
                             use_responses_api=use_responses_api
                         )
                     except Exception as e:
+                         _log_token_attempt(
+                             "open_error",
+                             round_index=round_num,
+                             input_est_tokens=round_input_est_tokens,
+                             error=e,
+                             status_code=getattr(e, "status_code", "")
+                         )
                          # 统一错误处理，稍后会由 retry 逻辑捕捉或重抛
                          pass
 
@@ -6218,6 +6319,12 @@ class Model(MailMixin):
                     is_retry_mode = False
                     try:
                          if response_iterator is None:
+                             _log_token_attempt(
+                                 "open_retry",
+                                 round_index=round_num,
+                                 input_est_tokens=round_input_est_tokens,
+                                 retry=True
+                             )
                              response_iterator = self.provider_adapter.create_stream_iterator(
                                  client=self.client,
                                  request_params=request_params,
@@ -6245,6 +6352,12 @@ class Model(MailMixin):
                              print(
                                  f"[ROUND_PAYLOAD_RETRY] round={round_num + 1} input_count={round_input_count} "
                                  f"input_chars={round_input_chars} input_est_tokens={round_input_est_tokens}"
+                             )
+                             _log_token_attempt(
+                                 "context_retry",
+                                 round_index=round_num,
+                                 input_est_tokens=round_input_est_tokens,
+                                 retry=True
                              )
                              preflight_quota_error_retry = _build_quota_preflight_error_payload(round_input_est_tokens)
                              if isinstance(preflight_quota_error_retry, dict):
@@ -6624,6 +6737,7 @@ class Model(MailMixin):
                         if eof_like_error and (round_content or accumulated_content or round_reasoning or function_calls):
                             print("[WARN] 上游流提前断开，已收到部分内容，按正常结束处理以便继续 longterm 续跑。")
                         else:
+                            _persist_stream_error_estimate(e)
                             terminal_payload = _build_terminal_stream_error_payload(
                                 e,
                                 round_index=round_num,
@@ -6679,6 +6793,13 @@ class Model(MailMixin):
                             f"cached={prompt_tokens_dbg_cached} prompt_tokens_effective={prompt_tokens_dbg} "
                             f"total_tokens={total_tokens_dbg}"
                         )
+                        _log_token_attempt(
+                            "completed",
+                            round_index=round_num,
+                            input_est_tokens=round_input_est_tokens,
+                            retry=is_retry_mode,
+                            usage_seen=True
+                        )
                         round_token_debug_payload = _build_round_token_debug_payload(
                             round_num + 1,
                             estimated=False,
@@ -6706,12 +6827,20 @@ class Model(MailMixin):
                             timing_meta={
                                 "duration_ms": round_duration_ms,
                                 "ttft_ms": round_ttft_ms,
-                                "output_tps": round_output_tps
+                                "output_tps": round_output_tps,
+                                "round_index": round_num + 1,
                             },
                             response_trace_id=response_trace_id
                         )
                     else:
                         # 某些 Provider 不返回 usage，使用估算值，避免 token 全为 0
+                        _log_token_attempt(
+                            "completed_without_usage",
+                            round_index=round_num,
+                            input_est_tokens=round_input_est_tokens,
+                            retry=is_retry_mode,
+                            usage_seen=False
+                        )
                         fallback_title = (str(msg).strip()[:30] + "...") if msg and len(str(msg).strip()) > 30 else (str(msg).strip() if msg else "新对话")
                         try:
                             prompt_snapshot = json.dumps(messages, ensure_ascii=False, default=str)
@@ -6768,7 +6897,8 @@ class Model(MailMixin):
                             "has_text_output": has_text_output,
                             "duration_ms": round_duration_ms,
                             "ttft_ms": round_ttft_ms,
-                            "output_tps": round_output_tps
+                            "output_tps": round_output_tps,
+                            "round_index": round_num + 1,
                         }
                         estimated_usage_metadata["response_trace_id"] = response_trace_id
                         estimated_usage_metadata.update(dict(getattr(self, "_usage_metadata", {}) or {}))
@@ -8178,7 +8308,8 @@ class Model(MailMixin):
                 "has_text_output": has_text_output,
                 "duration_ms": duration_ms,
                 "ttft_ms": ttft_ms,
-                "output_tps": output_tps
+                "output_tps": output_tps,
+                "round_index": parse_message_index(timing.get("round_index"), default=-1),
             }
             usage_metadata["response_trace_id"] = str(response_trace_id or "")
             usage_metadata.update(dict(getattr(self, "_usage_metadata", {}) or {}))

@@ -33,6 +33,7 @@ class DashScopeProvider(ProviderInterface):
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            max_retries=0,
         )
 
     def _resolve_native_image_endpoint(self, base_url: str) -> str:

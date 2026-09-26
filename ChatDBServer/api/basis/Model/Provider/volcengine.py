@@ -28,6 +28,7 @@ class VolcengineProvider(ProviderInterface):
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            max_retries=0,
         )
 
     def list_models(
