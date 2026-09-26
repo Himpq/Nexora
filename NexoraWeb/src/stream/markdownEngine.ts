@@ -22,6 +22,11 @@ import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js'
 import katex from 'katex'
 
+import {
+    protectKnowledgeReferencesInMarkdown,
+    restoreKnowledgeReferencesInHtml,
+} from './knowledgeReferences'
+
 // 代码高亮主题不在此静态引入:入口页 index.html 声明 github(亮,常开)与
 // github-dark(暗,id=hljs-theme-dark)双 link,由 ui/theme.ts 按主题互斥启停。
 import 'katex/dist/katex.min.css'
@@ -400,11 +405,12 @@ function normalizeMarkdownForRendering(source: string): string {
 export function renderMarkdownHtml(source: string): string {
     ensurePipeline()
 
-    const normalized = normalizeMarkdownForRendering(source)
+    const protectedReferences = protectKnowledgeReferencesInMarkdown(source)
+    const normalized = normalizeMarkdownForRendering(protectedReferences.text)
 
     const withMath = renderInlineMath(renderBlockMath(normalized))
 
     const raw = marked.parse(withMath, { gfm: true, breaks: true }) as string
 
-    return sanitizeHtml(raw)
+    return restoreKnowledgeReferencesInHtml(sanitizeHtml(raw), protectedReferences.references)
 }

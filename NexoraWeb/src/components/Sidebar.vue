@@ -77,6 +77,10 @@
                     </template>
                 </button>
                 <template v-if="!isLearningMode && !courseModeOn">
+                    <button class="toolbar-item" type="button" @click="emit('open-projects')">
+                        <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
+                        <span>Projects</span>
+                    </button>
                     <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
                         <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
                         <span>Workspaces</span>
@@ -88,6 +92,10 @@
                     <button id="knowledgeMgmtBtn" class="toolbar-item" type="button" @click="emit('open-knowledge-mgmt')">
                         <i class="fa-solid fa-book" aria-hidden="true"></i>
                         <span>Knowledge</span>
+                    </button>
+                    <button id="scheduledTasksBtn" class="toolbar-item" :class="{ 'is-active': overlay.view === 'scheduled-tasks' }" type="button" @click="emit('open-scheduled-tasks')">
+                        <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                        <span>定时任务</span>
                     </button>
                 </template>
                 <!--
@@ -483,8 +491,10 @@
         'open-settings': []
         'open-chat': []
         'open-workspaces': []
+        'open-projects': []
         'open-files': []
         'open-knowledge-mgmt': []
+        'open-scheduled-tasks': []
         'open-changes': []
         'open-learning': []
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]

@@ -141,7 +141,7 @@ const emit = defineEmits<{
         models: ModelItem[]
         knowledgeTitle?: string
         /** 当前视图:chat(默认) | files | workspaces | knowledge | knowledge-mgmt | mail | learning */
-        view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'
+        view?: 'chat' | 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'
         /** 标题覆盖(如 Workspace 详情/共享对话标题);空串表示走视图默认标题 */
         overrideTitle?: string
         /** 覆盖标题的悬停说明(如「只读共享 · @owner」) */
@@ -200,8 +200,10 @@ const emit = defineEmits<{
     const VIEW_TITLES: Record<string, string> = {
         files: 'Files',
         workspaces: 'Workspaces',
+        projects: 'Projects',
         knowledge: '',
         'knowledge-mgmt': '知识库管理',
+        'scheduled-tasks': '定时任务',
         mail: 'Mail',
         learning: 'Learning',
     }

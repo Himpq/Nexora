@@ -1,0 +1,16 @@
+.remote-projects { padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%; box-sizing: border-box; overflow: auto; }
+.remote-toolbar, .remote-device, .remote-devices { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.remote-toolbar h1 { margin-right: auto; }
+.remote-muted { color: var(--color-text-secondary); font-size: 13px; }
+.remote-notice { padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; margin: 12px 0; }
+.remote-error { color: var(--color-danger-text); }
+.remote-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; margin-top: 20px; }
+.remote-conversations { display: flex; flex-direction: column; gap: 10px; }
+.remote-conversations h2 { font-size: 15px; }
+.remote-project { display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.remote-task { min-width: 0; }
+.remote-messages { max-height: 55vh; overflow: auto; }
+.remote-messages article { padding: 12px 0; }
+.remote-projects pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.remote-projects textarea { width: 100%; box-sizing: border-box; margin: 12px 0; padding: 12px; background: var(--color-bg-elevated); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 8px; font: inherit; }
+@media (max-width: 760px) { .remote-layout { grid-template-columns: 1fr; } .remote-projects { padding: 16px; } }
