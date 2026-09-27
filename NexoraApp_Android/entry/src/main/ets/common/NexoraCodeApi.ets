@@ -19,7 +19,20 @@ export interface RemoteTaskBody {
     request_id: string;
     conversation_id: string;
     message: string;
-    force_context_compression: boolean;
+    model_name: string;
+}
+
+/** 电脑上可用的模型，id 形如 provider_id/model，与电脑侧解析模型的方式一致。 */
+export interface RemoteModel {
+    id: string;
+    name: string;
+    provider: string;
+}
+
+/** 电脑的模型目录。default_model 是电脑自己认的默认（来自 providers.json 的 default_id）。 */
+export interface RemoteModelCatalog {
+    defaultModel: string;
+    models: RemoteModel[];
 }
 
 interface RpcQuery { after: number; }
@@ -77,6 +90,21 @@ export class NexoraCodeApi {
         const body: CreateConversationBody = { metadata: metadata };
         const result: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/conversations', 'POST', body);
         return Json.string(result, 'conversation_id');
+    }
+
+    /**
+     * 读取电脑的模型目录。
+     *
+     * 必须显式把 default_model 下发给电脑：桌面端把用户选择存在浏览器 localStorage，
+     * 云端与手机都看不到；下发空串让电脑回退内部默认，实际用的可能和用户以为的不同。
+     */
+    static async models(deviceId: string): Promise<RemoteModelCatalog> {
+        const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/config');
+        const models: RemoteModel[] = Json.array(data, 'models').map((raw: Object): RemoteModel => {
+            const row: Record<string, Object> = raw as Record<string, Object>;
+            return { id: Json.string(row, 'id'), name: Json.string(row, 'name'), provider: Json.string(row, 'provider') };
+        });
+        return { defaultModel: Json.string(data, 'default_model'), models: models };
     }
 
     static async grant(deviceId: string, conversationId: string, permission: Object): Promise<void> {

@@ -13,7 +13,10 @@ import { display, promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
-import { ChatMessage, TokenUsage, ToolResultPayload } from '../common/ChatTypes';
+import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory } from '../common/ChatTypes';
+import { Json } from '../common/JsonUtil';
+import { NexoraCodeApi, RemoteTaskBody } from '../common/NexoraCodeApi';
+import { RemoteModel } from '../common/NexoraCodeApi';
 import { chatStream, StreamListener, StreamOptions } from '../common/ChatStreamClient';
 import { LiveViewController } from '../common/LiveViewController';
 import { NextFrameCallback } from '../common/NextFrame';
@@ -30,10 +33,10 @@ import { ImageViewer } from '../components/chat/ImageViewer';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
+import { RemoteModelPickerSheet } from '../components/sheets/RemoteModelPickerSheet';
 import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
-import { RemoteProjectsPage } from '../components/nexoracode/RemoteProjectsPage';
 import { MailPage } from '../components/mail/MailPage';
 import { NotesPage } from '../components/notes/NotesPage';
 import { LearningPage } from '../components/learning/LearningPage';
@@ -71,6 +74,14 @@ const HIGHLIGHT_DURATION: number = 3000;
 // min=8 / max=16 给惯性滚动留出已完成创建与测量的跑道，减少视口边缘首次布局。
 const CACHE_MIN_ROWS: number = 8;
 const CACHE_MAX_ROWS: number = 16;
+
+class RemotePermissionGrant {
+    path: string = '';
+    scope: string = '';
+    operation: string = '';
+    access: string = '';
+}
+
 @Component
 export struct MainChat {
     // 页面级统一用 @State 本地持有进程单例（@Observed 加持，字段级变化驱动本页刷新）
@@ -122,8 +133,16 @@ export struct MainChat {
     // ---------- 邮件页（全屏覆盖层） ----------
     // 条件挂载 + 右滑转场；mailDetailOpen 以 @Link 下发 MailPage，返回键先退详情再退页面
     @State private mailOpen: boolean = false;
-    @State private projectsOpen: boolean = false;
     @State private mailDetailOpen: boolean = false;
+    @State private remoteDeviceId: string = '';
+    @State private remoteStreamId: string = '';
+    @State private remoteCursor: number = 0;
+    @State private remoteModelName: string = '';
+    @State private remoteModelLabel: string = '';
+    @State private remoteModels: RemoteModel[] = [];
+    private remotePollTimer: number = -1;
+    private remotePollBusy: boolean = false;
+    private remoteSessionEpoch: number = 0;
 
     // 随笔页：页面层持有编辑器状态，保证返回键可以先退出编辑器再退出随笔页
     @State private notesOpen: boolean = false;
@@ -260,10 +279,6 @@ export struct MainChat {
 
     // 系统返回键处理：优先级 邮件页(详情→页面) > 随笔编辑器/页面 > Learning 子页/页面 > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
-        if (this.projectsOpen) {
-            this.projectsOpen = false;
-            return true;
-        }
         if (this.viewerUrl.length > 0) {
             this.viewerUrl = '';
             return true;
@@ -350,11 +365,6 @@ export struct MainChat {
 
             // 侧栏抽屉层：始终挂载，用 translate/opacity 控制显隐（避免 if 卸载退场动画失效）
             this.SidebarLayer();
-
-            // 邮件页层：条件挂载，整页右滑进出（进入即拉取当前箱列表）
-            if (this.projectsOpen) {
-                RemoteProjectsPage({ onBack: (): void => { this.projectsOpen = false; } });
-            }
 
             if (this.mailOpen) {
                 MailPage({
@@ -462,7 +472,9 @@ export struct MainChat {
                     .textOverflow({ overflow: TextOverflow.Ellipsis });
 
                 Row({ space: Space.xxs }) {
-                    Text(this.modelLabel)
+                    Text(this.remoteDeviceId.length > 0
+                        ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
+                        : this.modelLabel)
                         .fontSize(FontSize.micro)
                         .fontColor($r('app.color.text_tertiary'))
                         .maxLines(1)
@@ -776,8 +788,11 @@ export struct MainChat {
                         this.openNotes(false);
                     },
                     onOpenProjects: () => {
-                        this.closeSidebar();
-                        this.projectsOpen = true;
+                        this.app.setSidebarView('remote');
+                        this.openSidebar();
+                    },
+                    onOpenRemoteChat: (deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): void => {
+                        void this.openRemoteChat(deviceId, remoteId, remoteTitle, project);
                     },
                     onOpenLearning: () => {
                         void this.openLearning();
@@ -844,6 +859,12 @@ export struct MainChat {
 
     // ---------- 弹层 ----------
     private openSheetModel(): void {
+        if (this.remoteDeviceId.length > 0) {
+            this.sheetKind = 'remoteModel';
+            this.showSheet = true;
+            return;
+        }
+
         this.sheetKind = 'model';
         this.showSheet = true;
     }
@@ -865,7 +886,17 @@ export struct MainChat {
 
     @Builder
     SheetBuilder() {
-        if (this.sheetKind === 'model') {
+        if (this.sheetKind === 'remoteModel') {
+            RemoteModelPickerSheet({
+                models: this.remoteModels,
+                selectedId: this.remoteModelName,
+                onPicked: (modelId: string, label: string): void => {
+                    this.remoteModelName = modelId;
+                    this.remoteModelLabel = label;
+                    this.closeSheet();
+                }
+            });
+        } else if (this.sheetKind === 'model') {
             ModelPickerSheet({
                 app: this.app,
                 onPicked: (modelId: string) => {
@@ -1064,6 +1095,276 @@ export struct MainChat {
     }
 
     // ---------- 会话行为 ----------
+    /** 电脑项目点击后在主聊天页打开远程历史，项目本身则新建一个关联该项目的远程会话。 */
+    private async openRemoteChat(deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): Promise<void> {
+        this.remoteSessionEpoch++;
+
+        if (this.streaming) {
+            this.stopStreaming();
+        }
+
+        this.remoteDeviceId = deviceId;
+        this.remoteStreamId = '';
+        this.stopRemotePolling();
+        this.remoteCursor = 0;
+        this.streaming = false;
+        this.loadError = '';
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
+
+        try {
+            const id: string = remoteId.length > 0 ? remoteId : await NexoraCodeApi.createConversation(deviceId, project);
+            this.conversationId = id;
+            this.title = remoteTitle.length > 0 ? remoteTitle : '电脑对话';
+            this.replaceMessages([]);
+
+            const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/conversations/' + id + '/messages');
+            const history: ChatMessage[] = [];
+
+            for (const raw of Json.array(data, 'messages')) {
+                const row: Record<string, Object> = raw as Record<string, Object>;
+                const message: ChatMessage = messageFromHistory(row as RawHistoryMessage, history.length);
+                message.streaming = false;
+                history.push(message);
+            }
+
+            this.replaceMessages(history);
+            this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
+            const catalog = await NexoraCodeApi.models(deviceId);
+            this.remoteModelName = catalog.defaultModel;
+            this.remoteModels = catalog.models;
+            this.remoteModelLabel = catalog.models
+                .filter((model): boolean => model.id === catalog.defaultModel)
+                .map((model): string => model.name + ' · ' + model.provider)[0] || '';
+            this.closeSidebar();
+            this.scrollToEnd('remote-history');
+        } catch (cause) {
+            this.loadError = String(cause);
+            this.closeSidebar();
+        }
+    }
+
+    /** 远程任务的增量事件更新同一条 ChatMessage，并经主聊天的数据源刷新对应渲染块。 */
+    private async sendRemoteMessage(text: string): Promise<void> {
+        if (this.streaming || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+
+        try {
+            if (this.conversationId.length === 0) {
+                const createdId: string = await NexoraCodeApi.createConversation(deviceId, null);
+
+                if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId) {
+                    return;
+                }
+
+                this.conversationId = createdId;
+            }
+
+            const conversationId: string = this.conversationId;
+
+            const user: ChatMessage = ChatMessage.createUser(text);
+            const assistant: ChatMessage = ChatMessage.createAssistant();
+            this.messages = [...this.messages, user, assistant];
+            this.itemSource.appendItems(this.buildItems([user, assistant]));
+            this.rebuildItemIndex();
+            this.streaming = true;
+            this.scrollToEnd('remote-send', true);
+
+            const body: RemoteTaskBody = {
+                request_id: 'android-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+                conversation_id: conversationId,
+                message: text,
+                model_name: this.remoteModelName
+            };
+            const result: Record<string, Object> = await NexoraCodeApi.rpc(
+                deviceId, '/api/local/tasks', 'POST', body);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId
+                || conversationId !== this.conversationId) {
+                const staleStreamId: string = Json.string(result, 'stream_id');
+                if (staleStreamId.length > 0) {
+                    await NexoraCodeApi.rpc(deviceId, '/api/local/tasks/' + staleStreamId + '/cancel', 'POST');
+                }
+                return;
+            }
+
+            this.remoteStreamId = Json.string(result, 'stream_id');
+            this.remoteCursor = 0;
+            this.startRemotePolling();
+        } catch (cause) {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+                this.finishRemoteAssistant();
+            }
+        }
+    }
+
+    private startRemotePolling(): void {
+        if (this.remotePollTimer >= 0) {
+            return;
+        }
+
+        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, 1200);
+    }
+
+    private async pollRemoteEvents(): Promise<void> {
+        if (this.remotePollBusy || this.remoteStreamId.length === 0 || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        this.remotePollBusy = true;
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+        const streamId: string = this.remoteStreamId;
+
+        try {
+            const data: Record<string, Object> = await NexoraCodeApi.rpc(
+                deviceId, '/api/local/tasks/' + streamId + '/events', 'GET', undefined, this.remoteCursor);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId || streamId !== this.remoteStreamId) {
+                return;
+            }
+
+            const assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
+            const events: Object[] = Json.array(data, 'events');
+
+            if (assistant === undefined || assistant.isUser) {
+                return;
+            }
+
+            let pendingTextType: string = '';
+            let pendingText: string = '';
+            let appliedCount: number = 0;
+            let batchTextChars: number = 0;
+            let contentChanged: boolean = false;
+            let messageChanged: boolean = false;
+
+            const flushTextDelta = (): void => {
+                if (pendingText.length === 0) {
+                    return;
+                }
+
+                const segmentType: string = pendingTextType;
+                batchTextChars += pendingText.length;
+                assistant.appendDelta(segmentType === 'content' ? 'content' : 'reasoning', pendingText);
+                if (segmentType === 'content') {
+                    assistant.thinkingExpanded = false;
+                    contentChanged = true;
+                }
+                pendingText = '';
+                messageChanged = true;
+            };
+
+            for (const raw of events) {
+                const event: Record<string, Object> = raw as Record<string, Object>;
+                const seq: number = Json.number(event, '_stream_seq');
+
+                if (seq <= this.remoteCursor) {
+                    continue;
+                }
+
+                this.remoteCursor = seq;
+                const type: string = Json.string(event, 'type');
+                const callId: string = Json.string(event, 'call_id') || Json.string(event, 'id');
+                const name: string = Json.string(event, 'name');
+                appliedCount++;
+
+                if (type === 'content' || type === 'reasoning_content') {
+                    const delta: string = Json.string(event, 'content');
+                    const deltaType: string = type === 'content' ? 'content' : 'reasoning_content';
+
+                    if (pendingText.length > 0 && pendingTextType !== deltaType) {
+                        flushTextDelta();
+                    }
+
+                    pendingTextType = deltaType;
+                    pendingText += delta;
+                } else if (type === 'function_call') {
+                    flushTextDelta();
+                    assistant.beginToolCall(callId, name, Json.string(event, 'arguments'), Json.number(event, 'round'));
+                    assistant.thinkingExpanded = false;
+                    messageChanged = true;
+                } else if (type === 'function_result') {
+                    flushTextDelta();
+                    assistant.completeToolCall(callId, makeToolResultPayload(
+                        Json.string(event, 'result'), Json.string(event, 'model_visible_result'),
+                        Json.string(event, 'display_result') || Json.string(event, 'result'),
+                        Json.object(event, 'display_media')));
+                    messageChanged = true;
+                } else if (type === 'question') {
+                    flushTextDelta();
+                    assistant.beginQuestion(callId, Json.object(event, 'question'));
+                    messageChanged = true;
+                } else if (type === 'error') {
+                    flushTextDelta();
+                    assistant.appendDelta('error', Json.string(event, 'message') || Json.string(event, 'content'));
+                    messageChanged = true;
+                }
+            }
+
+            flushTextDelta();
+
+            if (messageChanged) {
+                this.itemSource.refreshMessage(assistant);
+            }
+
+            if (contentChanged) {
+                this.scheduleStreamFollowToBottom();
+            }
+
+            if (appliedCount > 0) {
+                hilog.info(DOMAIN, TAG,
+                    '[remote-stream] applied=%{public}d batch=%{public}d chars=%{public}d cursor=%{public}d',
+                    appliedCount, events.length, batchTextChars, this.remoteCursor);
+            }
+
+            const session: Record<string, Object> | null = Json.object(data, 'session');
+
+            if (session !== null) {
+                const status: string = Json.string(session, 'status');
+                const finished: boolean = status !== 'running' && status !== 'cancelling'
+                    && this.remoteCursor >= Json.number(session, 'last_seq');
+
+                if (finished) {
+                    this.remoteStreamId = '';
+                    this.finishRemoteAssistant();
+                }
+            }
+        } catch (cause) {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+            }
+        } finally {
+            this.remotePollBusy = false;
+
+            if (epoch === this.remoteSessionEpoch && this.remoteStreamId.length === 0) {
+                clearInterval(this.remotePollTimer);
+                this.remotePollTimer = -1;
+            }
+        }
+    }
+
+    private finishRemoteAssistant(): void {
+        const assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
+
+        if (assistant !== undefined && !assistant.isUser) {
+            assistant.finish();
+            this.itemSource.reloadMessage(assistant);
+        }
+
+        this.streaming = false;
+        this.stopRemotePolling();
+    }
+
+    private stopRemotePolling(): void {
+        clearInterval(this.remotePollTimer);
+        this.remotePollTimer = -1;
+    }
+
     private loadHistory(): void {
         this.loadingHistory = true;
         this.loadError = '';
@@ -1162,6 +1463,11 @@ export struct MainChat {
             return;
         }
 
+        if (this.remoteDeviceId.length > 0 && item.isPermissionCard()) {
+            void this.answerRemotePermission(item, text);
+            return;
+        }
+
         if (this.streaming || chatStream.isStreamingFor(this.conversationId)) {
             this.notify('当前对话已有回复生成中,请稍候', 1200);
             return;
@@ -1183,6 +1489,48 @@ export struct MainChat {
                 this.sendMessage(text);
             });
         });
+    }
+
+    /** 远程权限卡与 Web 语义一致：允许写入临时授权，拒绝只在本地标记并提示重新下发。 */
+    private async answerRemotePermission(item: QuestionItem, answer: string): Promise<void> {
+        const allow: boolean = answer.includes('允许');
+        const deny: boolean = answer.includes('拒绝');
+
+        if (!allow && !deny) {
+            this.notify('请选择允许或拒绝访问', 1600);
+            return;
+        }
+
+        item.submitting = true;
+
+        try {
+            if (allow) {
+                const request = item.payload.permissionRequest;
+
+                if (request === null) {
+                    throw new Error('该问卡没有可授权的路径信息');
+                }
+
+                const permission: RemotePermissionGrant = new RemotePermissionGrant();
+                permission.path = request.path;
+                permission.scope = request.scope;
+                permission.operation = request.operation;
+                permission.access = request.operation;
+                await NexoraCodeApi.grant(this.remoteDeviceId, this.conversationId, permission);
+            }
+
+            item.markAnswered(allow ? '已允许本次对话临时访问。重新下发任务即可继续。' : '已拒绝本次访问权限。');
+            const assistant: ChatMessage | undefined = this.messages.find((message: ChatMessage): boolean =>
+                message.questions.some((question: QuestionItem): boolean => question.callId === item.callId));
+
+            if (assistant !== undefined) {
+                this.itemSource.refreshMessage(assistant);
+            }
+        } catch (cause) {
+            this.notify(String(cause), 2000);
+        } finally {
+            item.submitting = false;
+        }
     }
 
     // 本地回答锁恢复：历史加载、分页和 question 帧到达时复原已答卡片。
@@ -1221,6 +1569,12 @@ export struct MainChat {
 
         this.draft = '';
         this.activatedActionId = '';
+
+        if (this.remoteDeviceId.length > 0) {
+            void this.sendRemoteMessage(text);
+            return;
+        }
+
         this.sendMessage(text);
     }
 
@@ -1405,11 +1759,14 @@ export struct MainChat {
 
     // 打开历史会话：原地替换会话状态并载入历史，不做导航压栈
     private openConversation(conversationId: string, convTitle: string): void {
+        this.remoteSessionEpoch++;
         if (this.streaming) {
             this.stopStreaming();
         }
 
         this.conversationId = conversationId;
+        this.remoteDeviceId = '';
+        this.stopRemotePolling();
         this.streamUserScrolled = false;
         this.streamFollowPending = false;
         this.stopBottomLoop();
@@ -1429,7 +1786,10 @@ export struct MainChat {
         }
 
         this.stopStreaming();
+        this.remoteSessionEpoch++;
         this.conversationId = '';
+        this.remoteDeviceId = '';
+        this.stopRemotePolling();
         this.streamUserScrolled = false;
         this.streamFollowPending = false;
         this.stopBottomLoop();
@@ -1443,6 +1803,13 @@ export struct MainChat {
     }
 
     private stopStreaming(): void {
+        if (this.remoteDeviceId.length > 0 && this.remoteStreamId.length > 0) {
+            void NexoraCodeApi.rpc(this.remoteDeviceId, '/api/local/tasks/' + this.remoteStreamId + '/cancel', 'POST');
+            this.remoteStreamId = '';
+            this.finishRemoteAssistant();
+            return;
+        }
+
         if (chatStream.isStreaming) {
             chatStream.cancel();
             return;
@@ -2277,6 +2644,10 @@ export struct MainChat {
     // ---------- 展示文案 ----------
     // 工程约定：UI 描述一律走普通方法而非组件 getter（getter 在 UI 更新路径曾取到 undefined 触发崩溃 / 脏值）
     private inputPlaceholder(): string {
+        if (this.remoteDeviceId.length > 0) {
+            return '向这台电脑继续发送任务…';
+        }
+
         return this.conversationId.length > 0 ? '继续追问…' : '给 Nexora 发送消息，或试试下面的能力…';
     }
 
