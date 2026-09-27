@@ -6,6 +6,7 @@ import json
 import secrets
 import threading
 import time
+import urllib.parse as urllib_parse
 import uuid
 from pathlib import Path
 
@@ -138,12 +139,57 @@ def _gateway():
     return current_app.extensions["nexoracode_gateway"]
 
 
+def _normalize_origin(value: str) -> str:
+    """归一化来源字符串：去掉末尾斜杠与默认端口。
+
+    nginx 的 X-Host 带 ":443"/":80"，而浏览器的 Origin 不带默认端口，
+    不归一化就会把同源请求判成跨站。
+    """
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+
+    parts = urllib_parse.urlsplit(text)
+
+    if not parts.scheme or not parts.netloc:
+        return text.lower()
+
+    host = parts.hostname or ""
+    port = parts.port
+
+    if port and not ((parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80)):
+        host = f"{host}:{port}"
+
+    return f"{parts.scheme.lower()}://{host.lower()}"
+
+
+def _public_origin() -> str:
+    """重建浏览器实际访问的来源。
+
+    反代把 Host 改写成本机地址（nginx: proxy_set_header Host 127.0.0.1:$server_port），
+    所以 request.host_url 拿到的是 http://127.0.0.1:5000/，与浏览器发来的 Origin 永远不等。
+
+    X-Scheme / X-Host 由 nginx 用 proxy_set_header 覆盖写入，客户端自带的同名头会被丢弃，
+    因此可信；没有这两个头时（直连部署）才退回 request.host_url。
+
+    注意：不能用 server.get_public_base_url()，它在 host 为本地地址时会反过来采信
+    Origin/Referer 还原域名；拿它做同源比对等于自己和自己比，检查会失效。
+    """
+    scheme = str(request.headers.get("X-Scheme", "") or "").split(",")[0].strip()
+    host = str(request.headers.get("X-Host", "") or "").split(",")[0].strip()
+
+    if scheme and host:
+        return _normalize_origin(f"{scheme}://{host}")
+
+    return _normalize_origin(request.host_url)
+
+
 @remote_gateway_bp.before_request
 def _check_remote_access():
     # 带浏览器 Origin 的请求必须同源，防止第三方网页借登录 cookie 控制电脑。
     origin = request.headers.get("Origin")
 
-    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+    if origin and _normalize_origin(origin) != _public_origin():
         return jsonify({"message": "禁止跨站远程请求"}), 403
 
     if request.endpoint != "remote_gateway.claim" and not session.get("username"):
