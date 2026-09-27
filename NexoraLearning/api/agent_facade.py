@@ -33,7 +33,15 @@ from core.lectures import (
 from core.nexora_proxy import NexoraProxy
 from core.runlog import log_event
 from core.user.learning_progress import compute_user_lecture_progress, init_learning_progress, learning_records_with_measured_duration
-from core.memory.evidence_memory import build_memory_context, record_user_message, retrieve_memories, filter_superseded_dialog
+from core.memory.evidence_memory import (
+    PERSONAL_MEMORY_KINDS,
+    build_memory_context,
+    correct_memory,
+    filter_superseded_dialog,
+    list_personal_memories,
+    record_user_message,
+    retrieve_memories,
+)
 
 
 agent_facade_bp = Blueprint("agent_facade", __name__, url_prefix="/api/agent/v1")
@@ -1898,6 +1906,93 @@ def agent_prereq_check():
     result = check_prereq(_CFG, username, lecture_id, book_id, chapter_index, now=now)
     log_event("agent_prereq_check", "前置知识缺口检查", payload={"user_id": username, "lecture_id": lecture_id, "chapter_index": chapter_index})
     return _response(action=action, data=result)
+
+
+def _require_memory_user(data: Optional[Mapping[str, Any]], action: str) -> Tuple[str, Optional[Any]]:
+    """Keep memory operations on one user even when several identity fields are supplied."""
+    body = data if isinstance(data, Mapping) else {}
+    candidates = [
+        request.headers.get("X-Nexora-Username"), request.headers.get("X-Username"),
+        request.headers.get("X-User-Id"), request.args.get("username"),
+        body.get("username"), body.get("user_id"),
+    ]
+    identities = set()
+    for value in candidates:
+        if value is None:
+            continue
+        if not isinstance(value, str) or not _valid_identifier(value, max_length=128):
+            return "", _failure(action, "INVALID_ARGUMENT", "username is invalid.")
+        identities.add(value.strip())
+    if not identities:
+        return "", _failure(action, "AUTH_REQUIRED", "username is required.")
+    if len(identities) != 1:
+        return "", _failure(action, "FORBIDDEN", "Request user identities do not match.", status=403)
+    return identities.pop(), None
+
+
+def _personal_memory_item(row: Mapping[str, Any]) -> Dict[str, Any]:
+    updated_at = int(row.get("recorded_at") or row.get("occurred_at") or 0)
+    if updated_at > 10 ** 11:
+        updated_at //= 1000
+    return {
+        "id": row["id"], "kind": row["kind"], "text": row["quote"],
+        "updated_at": updated_at,
+        "lecture_id": str(row.get("lecture_id") or ""), "book_id": str(row.get("book_id") or ""),
+    }
+
+
+@agent_facade_bp.route("/memories", methods=["GET"])
+def agent_memories():
+    action = "memories"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    username, error = _require_memory_user(None, action)
+    if error is not None:
+        return error
+    items = [_personal_memory_item(row) for row in list_personal_memories(_CFG, username)]
+    return _response(action=action, data={"items": items, "generated_at": int(time.time())})
+
+
+def _change_personal_memory(*, forget: bool):
+    action = "memories_forget" if forget else "memories_update"
+    auth_error = _auth_error()
+    if auth_error is not None:
+        return auth_error
+    data = _body()
+    username, error = _require_memory_user(data, action)
+    if error is not None:
+        return error
+    memory_id = data.get("memory_id")
+    if not isinstance(memory_id, str) or not _valid_identifier(memory_id, max_length=160):
+        return _failure(action, "INVALID_ARGUMENT", "memory_id must be a non-empty string.")
+    text = None
+    if not forget:
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text.strip()) > 2000 or "\x00" in text:
+            return _failure(action, "INVALID_ARGUMENT", "text must be a non-empty string of at most 2000 characters.")
+        text = text.strip()
+    result = correct_memory(
+        _CFG, username, memory_id.strip(), verdict="disagree",
+        source_id="memory_change_" + uuid.uuid4().hex[:20],
+        replacement_text=text, allowed_kinds=PERSONAL_MEMORY_KINDS,
+    )
+    if not result.get("updated"):
+        return _failure(action, "NOT_FOUND", "This memory does not belong to the current user or is no longer available.", status=404)
+    changed: Dict[str, Any] = {"updated": True}
+    if not forget:
+        changed["item"] = _personal_memory_item(result["memory"])
+    return _response(action=action, data=changed)
+
+
+@agent_facade_bp.route("/memories/update", methods=["POST"])
+def agent_memories_update():
+    return _change_personal_memory(forget=False)
+
+
+@agent_facade_bp.route("/memories/forget", methods=["POST"])
+def agent_memories_forget():
+    return _change_personal_memory(forget=True)
 
 
 @agent_facade_bp.route("/cognition/overview", methods=["GET"])

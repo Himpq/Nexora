@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Mapping
 
 _GLOBAL_KEYS = {"major", "cognitive_style", "interest_direction", "learning_pace"}
 _SINGLE_KEYS = {"major", "cognitive_style", "learning_goal", "learning_pace"}
+PERSONAL_MEMORY_KINDS = ("goal", "preference", "pace", "difficulty", "background", "interest")
+_UI_TEST_MESSAGE = re.compile(r"^界面测试\s*[，,:：]")
 _PREFIX = re.compile(r"^(?:请(?:你)?记住|记住|更正一下|更正|纠正一下|纠正|不对|其实)[，,：:\s]*")
 _REPORTED = re.compile(r"^(?:老师说|书上|教材|文章|朋友说|他说|她说|翻译|假如|假设|如果|举例|示例|例如)")
 _PATTERNS = [
@@ -113,10 +115,14 @@ def _public(row: Mapping[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _is_ui_test_message(text: str) -> bool:
+    return bool(_UI_TEST_MESSAGE.match(str(text or "").strip()))
+
+
 def _extract(text: str) -> List[Dict[str, str]]:
     # Deliberately high precision: ambiguous, quoted and hypothetical language
     # stays an episode for the assistant to clarify, not a persistent profile.
-    if _REPORTED.match(text) or any(mark in text for mark in ('“', '”', '「', '」', '"')):
+    if _is_ui_test_message(text) or _REPORTED.match(text) or any(mark in text for mark in ('“', '”', '「', '」', '"')):
         return []
     claims = []
     for sentence in re.split(r"[。！？!?；;\n]", text):
@@ -218,7 +224,9 @@ def record_user_message(cfg: Mapping[str, Any], user_id: str, *, text: str, sour
 
 
 def correct_memory(cfg: Mapping[str, Any], user_id: str, memory_id: str, *, verdict: str,
-                   note: str = "", source_id: str, occurred_at: int | None = None) -> Dict[str, Any]:
+                   note: str = "", source_id: str, occurred_at: int | None = None,
+                   replacement_text: str | None = None,
+                   allowed_kinds: tuple[str, ...] | None = None) -> Dict[str, Any]:
     """Confirm, retract, or literally replace a statement; never change mastery."""
     source_id = str(source_id or "").strip()
     if verdict not in {"agree", "disagree"} or not source_id or len(source_id) > 256:
@@ -227,7 +235,14 @@ def correct_memory(cfg: Mapping[str, Any], user_id: str, memory_id: str, *, verd
     timestamp = current if occurred_at is None else int(occurred_at)
     if timestamp < 0:
         raise ValueError("occurred_at must be non-negative")
-    content = str(note or "").strip()[:2000]
+    if replacement_text is not None:
+        if (verdict != "disagree" or not isinstance(replacement_text, str)
+                or not replacement_text.strip() or len(replacement_text.strip()) > 2000
+                or "\x00" in replacement_text):
+            raise ValueError("replacement_text must be a non-empty string of at most 2000 characters")
+        content = replacement_text.strip()
+    else:
+        content = str(note or "").strip()[:2000]
     with _database(cfg, user_id) as connection:
         if connection is None:
             return {"updated": False, "memory": None}
@@ -242,7 +257,7 @@ def correct_memory(cfg: Mapping[str, Any], user_id: str, memory_id: str, *, verd
                 row = connection.execute(_SELECT + " WHERE m.id=?", (replacement,)).fetchone()
                 return {"updated": True, "duplicate": True, "memory": _public(row) if row else None}
             original = connection.execute(_SELECT + " WHERE m.id=? AND m.status='active'", (memory_id,)).fetchone()
-            if original is None:
+            if original is None or allowed_kinds is not None and original["kind"] not in allowed_kinds:
                 return {"updated": False, "memory": None}
             connection.execute("INSERT INTO sources VALUES (?,?,?,?,?,?)",
                                (source_id, "rebuttal", "user_correction", content, timestamp, current))
@@ -251,7 +266,7 @@ def correct_memory(cfg: Mapping[str, Any], user_id: str, memory_id: str, *, verd
                 connection.execute("UPDATE memories SET confidence=0.99 WHERE id=?", (memory_id,))
             else:
                 connection.execute("UPDATE memories SET status='retracted' WHERE id=?", (memory_id,))
-                if content and content not in {"不对", "不是", "忘掉", "删除", "撤回"}:
+                if content and (replacement_text is not None or content not in {"不对", "不是", "忘掉", "删除", "撤回"}):
                     replacement = _insert_memory(connection, source_id=source_id,
                         claim={"key": original["key"], "kind": original["kind"], "quote": content},
                         lecture_id=original["lecture_id"], book_id=original["book_id"],
@@ -341,6 +356,8 @@ def apply_model_claims(cfg: Mapping[str, Any], user_id: str, *, source_id: str, 
     event_id = str(source_id or "").strip()
     if not content or not event_id:
         return {"applied": 0, "skipped": len(claims or []), "memories": []}
+    if _is_ui_test_message(content):
+        return {"applied": 0, "skipped": len(claims or []), "memories": [], "reason": "test_message"}
     normalized_text = re.sub(r"\s+", "", content)
     timestamp = int(time.time()) if occurred_at is None else int(occurred_at)
     applied: List[str] = []
@@ -350,6 +367,15 @@ def apply_model_claims(cfg: Mapping[str, Any], user_id: str, *, source_id: str, 
         source = connection.execute("SELECT text FROM sources WHERE source_id=?", (event_id,)).fetchone()
         if source is None or source["text"] != content:
             return {"applied": 0, "skipped": len(claims or []), "memories": [], "reason": "source_missing"}
+        # A late extractor may choose another quote (and therefore another slot)
+        # from an utterance the learner has already corrected. Keep existing
+        # sibling facts, but do not let that stale job recreate revoked evidence.
+        corrected = connection.execute(
+            """SELECT 1 FROM feedback f JOIN memories m ON m.id=f.memory_id
+               WHERE m.source_id=? AND f.verdict='disagree' LIMIT 1""", (event_id,),
+        ).fetchone()
+        if corrected:
+            return {"applied": 0, "skipped": len(claims or []), "memories": [], "reason": "source_corrected"}
         existing_slots = {row["slot"] for row in connection.execute("SELECT slot FROM memories WHERE source_id=?", (event_id,))}
         for claim in claims or []:
             if not isinstance(claim, Mapping):
@@ -468,6 +494,23 @@ def retrieve_memories(cfg: Mapping[str, Any], user_id: str, *, query: str = "",
     selected = reserved + [row for row in rows if row["id"] not in reserved_ids][:count - len(reserved)]
     selected.sort(key=rank, reverse=True)
     return [_public(row) for row in selected]
+
+
+def list_personal_memories(cfg: Mapping[str, Any], user_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+    """List manageable learner facts; episodes and generated observations never use the limit."""
+    count = max(0, min(100, int(limit)))
+    with _database(cfg, user_id) as connection:
+        if connection is None or not count:
+            return []
+        connection.create_function("is_ui_test_message", 1, _is_ui_test_message, deterministic=True)
+        placeholders = ",".join("?" for _ in PERSONAL_MEMORY_KINDS)
+        rows = connection.execute(
+            _SELECT + f" WHERE m.status='active' AND m.kind IN ({placeholders})"
+            + " AND NOT is_ui_test_message(s.text)"
+            + " ORDER BY s.occurred_at DESC, s.rowid DESC LIMIT ?",
+            (*PERSONAL_MEMORY_KINDS, count),
+        ).fetchall()
+    return [_public(row) for row in rows]
 
 
 def memory_stats(cfg: Mapping[str, Any], user_id: str) -> Dict[str, int]:

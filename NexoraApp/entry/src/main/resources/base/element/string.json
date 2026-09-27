@@ -15,6 +15,14 @@
     {
       "name": "microphone_reason",
       "value": "用于将语音转换为随笔文字"
+    },
+    {
+      "name": "learning_form_name",
+      "value": "Nexora 学习"
+    },
+    {
+      "name": "learning_form_description",
+      "value": "查看学习安排，回复好或晚点"
     }
   ]
 }

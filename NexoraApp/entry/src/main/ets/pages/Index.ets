@@ -9,6 +9,7 @@ import { Size, Space } from '../common/DesignToken';
 import { BrandLogo } from '../components/common/BrandLogo';
 import { LoginPage } from './LoginPage';
 import { MainChat } from './MainChat';
+import { LearningSystemEntry } from '../common/LearningSystemEntry';
 
 @Entry
 @Component
@@ -36,6 +37,7 @@ struct Index {
 
     // 启动链路：恢复本地状态 → 校验会话有效性 → 决定进入登录还是主界面
     private async bootstrap(): Promise<void> {
+        AppStorage.setOrCreate('nxSessionReady', false);
         const host = this.getUIContext().getHostContext();
 
         if (host !== undefined) {
@@ -43,6 +45,10 @@ struct Index {
         }
 
         this.loggedIn = await this.app.validateSession();
+        AppStorage.setOrCreate('nxSessionReady', this.loggedIn);
+        if (!this.loggedIn && host !== undefined) {
+            LearningSystemEntry.clear(host);
+        }
         this.ready = true;
     }
 
@@ -76,11 +82,20 @@ struct Index {
 
     // 登录成功进入主界面，主页 aboutToAppear 自行拉取模型与会话
     private enterHome(): void {
+        AppStorage.setOrCreate('nxSessionReady', true);
         this.loggedIn = true;
     }
 
     // 登出：停掉可能的生成流、清空会话数据后切回登录页
     private async handleSignOut(): Promise<void> {
+        AppStorage.setOrCreate('nxSessionReady', false);
+        AppStorage.setOrCreate('nxLaunchRoute', '');
+        AppStorage.setOrCreate('nxLaunchDecision', '');
+        AppStorage.setOrCreate('nxPendingReviewTask', '');
+        const host = this.getUIContext().getHostContext();
+        if (host !== undefined) {
+            LearningSystemEntry.clear(host);
+        }
         if (chatStream.isStreaming) {
             chatStream.cancel();
         }

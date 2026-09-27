@@ -9,7 +9,7 @@
         "url": "http://123.60.41.184:5002"
       },
       "version": "1.0.0",
-      "documentationUrl": "",
+      "documentationUrl": "http://123.60.41.184:5002",
       "capabilities": {
         "streaming": false,
         "pushNotifications": false,

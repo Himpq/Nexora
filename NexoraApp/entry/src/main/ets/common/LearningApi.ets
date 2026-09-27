@@ -67,6 +67,9 @@ export interface LearningParagraph {
     kind: string;
     text: string;
     imageId: string;
+    // 全书 plain 正文中的 Unicode 码点半开区间，不是 UTF-16 下标。
+    start: number;
+    end: number;
 }
 
 // 章节阅读内容（对齐 build_chapter_payload 返回）
@@ -76,6 +79,9 @@ export interface LearningChapterContent {
     chapterTitle: string;
     chapterCount: number;
     chapterStart: number;
+    // 后端章标识使用 START:LENGTH 字符串；与 read_ranges 的 [start, end) 不同。
+    chapterRange: string;
+    coordinateSpace: string;
     bookTotalChars: number;
     paragraphs: LearningParagraph[];
 }
@@ -103,6 +109,15 @@ export interface LearningChapterContentResult {
     success: boolean;
     message: string;
     content: LearningChapterContent | null;
+}
+
+// 只有课程 / 教材 ID 的入口可直接把成功结果交给 LearningReader。
+export interface LearningReaderTargetResult {
+    success: boolean;
+    message: string;
+    lecture: LearningLecture | null;
+    book: LearningBook | null;
+    chapters: LearningChapterSummary[];
 }
 
 // 图片占位串：{{nxl_image:<lecture>:<book>:<image_id>:<filename>}}
@@ -192,6 +207,45 @@ export class LearningApi {
             message: '',
             chapters: LearningApi.readChapters(Json.array(body.payload, 'chapters')),
         };
+    }
+
+    async resolveReaderTarget(lectureId: string, bookId: string): Promise<LearningReaderTargetResult> {
+        if (lectureId.trim().length === 0 || bookId.trim().length === 0) {
+            return { success: false, message: '缺少课程或教材信息', lecture: null, book: null, chapters: [] };
+        }
+
+        const detail: LearningLectureDetailResult = await this.getLecture(lectureId);
+
+        if (!detail.success || detail.lecture === null) {
+            return { success: false, message: detail.message, lecture: null, book: null, chapters: [] };
+        }
+
+        let book: LearningBook | null = null;
+
+        for (let i: number = 0; i < detail.books.length; i++) {
+            if (detail.books[i].id === bookId) {
+                book = detail.books[i];
+                break;
+            }
+        }
+
+        if (book === null) {
+            return { success: false, message: '课程中未找到这本教材', lecture: detail.lecture, book: null, chapters: [] };
+        }
+
+        const catalog: LearningChapterListResult = await this.getBookChapters(lectureId, bookId);
+
+        if (!catalog.success || catalog.chapters.length === 0) {
+            return {
+                success: false,
+                message: catalog.success ? '教材目录尚未就绪' : catalog.message,
+                lecture: detail.lecture,
+                book: book,
+                chapters: [],
+            };
+        }
+
+        return { success: true, message: '', lecture: detail.lecture, book: book, chapters: catalog.chapters };
     }
 
     // 章节正文：GET /api/lectures/{l}/books/{b}/chapter/{i}?paragraphs=1
@@ -366,6 +420,8 @@ export class LearningApi {
             kind: Json.string(source, 'kind'),
             text: text,
             imageId: LearningApi.imageIdOf(text),
+            start: Json.number(source, 'start'),
+            end: Json.number(source, 'end'),
         };
     }
 
@@ -397,6 +453,8 @@ export class LearningApi {
             chapterTitle: Json.string(payload, 'chapter_title'),
             chapterCount: Json.number(payload, 'chapter_count'),
             chapterStart: Json.number(payload, 'chapter_start'),
+            chapterRange: Json.string(payload, 'chapter_range'),
+            coordinateSpace: Json.string(payload, 'coordinate_space'),
             bookTotalChars: Json.number(payload, 'book_total_chars'),
             paragraphs: paragraphs,
         };

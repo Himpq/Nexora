@@ -16,18 +16,39 @@ export interface LearningBody {
     ok: boolean;
     message: string;
     payload: Record<string, Object> | null;
+    // 网络失败为 0；阅读队列据此区分无效记录和可重试故障。
+    status: number;
+}
+
+// 异步操作捕获同一份地址与身份，不能在 await 后改用另一个账号的请求头。
+export interface LearningIdentity {
+    readonly username: string;
+    readonly serviceBase: string;
+    readonly scope: string;
+    readonly revision: number;
 }
 
 export class LearningHttp {
     private static userName: string = '';
     private static serviceRoot: string = '';
+    private static identityRevision: number = 0;
 
     // AppState 在登录就绪后注入用户标识与 Learning 独立服务地址。
     static configure(username: string, frontendUrl: string = ''): void {
-        LearningHttp.userName = username.trim();
-        LearningHttp.serviceRoot = LearningHttp.userName.length > 0
+        const nextUsername: string = username.trim();
+        const nextRoot: string = nextUsername.length > 0
             ? LearningHttp.normalizeServiceRoot(frontendUrl)
             : '';
+        const changed: boolean = LearningHttp.userName !== nextUsername || LearningHttp.serviceRoot !== nextRoot;
+        if (changed) {
+            LearningHttp.identityRevision++;
+        }
+        LearningHttp.userName = nextUsername;
+        LearningHttp.serviceRoot = nextRoot;
+        if (changed) {
+            // 先更新身份再通知，阅读器可在切换瞬间结束旧计时并拒绝旧章节回包。
+            AppStorage.setOrCreate('nxLearningIdentityRevision', LearningHttp.identityRevision);
+        }
 
         hilog.info(
             DOMAIN,
@@ -47,6 +68,25 @@ export class LearningHttp {
         return LearningHttp.serviceRoot;
     }
 
+    static captureIdentity(): LearningIdentity | null {
+        if (!LearningHttp.configured) {
+            return null;
+        }
+        return {
+            username: LearningHttp.userName,
+            serviceBase: LearningHttp.serviceRoot,
+            // encodeURIComponent 会保留 '_'，不能用它分隔两段，避免地址/用户名组合碰撞。
+            scope: encodeURIComponent(LearningHttp.serviceRoot) + '|' + encodeURIComponent(LearningHttp.userName),
+            revision: LearningHttp.identityRevision
+        };
+    }
+
+    static isCurrent(identity: LearningIdentity | null): boolean {
+        return identity !== null && LearningHttp.configured && identity.username === LearningHttp.userName &&
+            identity.serviceBase === LearningHttp.serviceRoot && identity.revision === LearningHttp.identityRevision &&
+            identity.scope === encodeURIComponent(LearningHttp.serviceRoot) + '|' + encodeURIComponent(LearningHttp.userName);
+    }
+
     // 身份头：流式请求（http.requestInStream）绕不开 HttpUtil，需要自行带上同一份头
     static authHeaders(): Record<string, string> {
         return LearningHttp.headers();
@@ -58,16 +98,23 @@ export class LearningHttp {
     }
 
     // ---------- 请求 ----------
-    static async getJson(path: string): Promise<LearningBody> {
-        const result: HttpResult = await HttpUtil.get(LearningHttp.absolute(path), LearningHttp.headers());
+    static async getJson(path: string, identity: LearningIdentity | null = LearningHttp.captureIdentity()): Promise<LearningBody> {
+        if (identity === null || !LearningHttp.isCurrent(identity)) {
+            return { ok: false, message: '学习服务身份已变更或尚未就绪', payload: null, status: 0 };
+        }
+        const result: HttpResult = await HttpUtil.get(identity.serviceBase + path, LearningHttp.headers(identity));
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
 
         return LearningHttp.readBody(result);
     }
 
-    static async postJson(path: string, payload: Object): Promise<LearningBody> {
-        const result: HttpResult = await HttpUtil.post(LearningHttp.absolute(path), payload, LearningHttp.headers());
+    static async postJson(path: string, payload: Object,
+        identity: LearningIdentity | null = LearningHttp.captureIdentity(), readTimeoutMs?: number): Promise<LearningBody> {
+        if (identity === null || !LearningHttp.isCurrent(identity)) {
+            return { ok: false, message: '学习服务身份已变更或尚未就绪', payload: null, status: 0 };
+        }
+        const result: HttpResult = await HttpUtil.post(identity.serviceBase + path, payload, LearningHttp.headers(identity), readTimeoutMs);
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
 
@@ -75,11 +122,11 @@ export class LearningHttp {
     }
 
     // ---------- 响应判定 ----------
-    private static headers(): Record<string, string> {
+    private static headers(identity: LearningIdentity | null = LearningHttp.captureIdentity()): Record<string, string> {
         const headers: Record<string, string> = {};
 
-        if (LearningHttp.userName.length > 0) {
-            headers['X-Nexora-Username'] = LearningHttp.userName;
+        if (identity !== null) {
+            headers['X-Nexora-Username'] = identity.username;
         }
 
         return headers;
@@ -89,7 +136,7 @@ export class LearningHttp {
         if (result.code === 0) {
             hilog.error(DOMAIN, TAG, 'learning request unreachable');
 
-            return { ok: false, message: '网络请求失败，请检查后端地址与网络', payload: null };
+            return { ok: false, message: '网络请求失败，请检查后端地址与网络', payload: null, status: result.code };
         }
 
         const payload: Record<string, Object> | null = Json.parseObject(result.body);
@@ -103,21 +150,21 @@ export class LearningHttp {
 
             if (failure.length > 0) {
                 hilog.warn(DOMAIN, TAG, 'learning business failure message=%{public}s', failure);
-                return { ok: false, message: failure, payload: null };
+                return { ok: false, message: failure, payload: null, status: result.code };
             }
         }
 
-        if (!result.ok) {
+        if (result.code < 200 || result.code >= 300) {
             hilog.warn(DOMAIN, TAG, 'learning http failure code=%{public}d', result.code);
-            return { ok: false, message: '请求失败(' + result.code + ')', payload: null };
+            return { ok: false, message: '请求失败(' + result.code + ')', payload: null, status: result.code };
         }
 
         if (payload === null) {
             hilog.error(DOMAIN, TAG, 'learning body parse failure chars=%{public}d', result.body.length);
-            return { ok: false, message: '响应解析失败', payload: null };
+            return { ok: false, message: '响应解析失败', payload: null, status: result.code };
         }
 
-        return { ok: true, message: '', payload: payload };
+        return { ok: true, message: '', payload: payload, status: result.code };
     }
 
     // 服务端错误优先上报 message，其次 error（字符串或 {code,message} 两种形态）

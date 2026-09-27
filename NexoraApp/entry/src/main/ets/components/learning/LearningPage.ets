@@ -67,6 +67,7 @@ const TAB_BAR_HEIGHT: number = 56;
 @Component
 export struct LearningPage {
     @ObjectLink app: AppState;
+    @Prop visible: boolean = true;
     // 宿主返回键编排：与 frames.length - 1 不一致表示外层要求回退一层
     @Link @Watch('onNavDepthBack') navDepth: number;
     onBack: () => void = () => {};
@@ -167,6 +168,7 @@ export struct LearningPage {
                 book: this.readerBook,
                 chapters: this.readerChapters,
                 startChapterIndex: this.readerStartChapter,
+                visible: this.visible && this.topFrame() === WorkspaceLevel.READER,
                 navDepth: $navDepth,
                 navLevel: this.frameIndex(WorkspaceLevel.READER),
                 readerOverlayOpen: $readerOverlayOpen,
