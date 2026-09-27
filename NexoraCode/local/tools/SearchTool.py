@@ -314,6 +314,10 @@ class FileSearchTreeTool(LocalTool):
         include_hidden = bool(args.get("include_hidden", False))
         blocked_dirs = DEFAULT_EXCLUDE_DIRS | set(_normalize_string_list(args.get("exclude_dirs")))
         entries = []
+        # pattern 过滤前的条目数。entries 为空时靠它区分「目录真的是空的」和
+        # 「目录有内容但都不匹配 pattern」——后者若也说成空目录，模型会误判目录为空
+        # 并转而去猜不存在的路径。
+        scanned_entries = 0
         truncated = False
         skipped = {
             "hidden": 0,
@@ -344,8 +348,11 @@ class FileSearchTreeTool(LocalTool):
                 if current_depth < safe_depth:
                     kept_dirs.append(name)
 
-                if include_dirs and current_depth + 1 <= safe_depth and _matches_any_pattern(dir_path, root, [safe_pattern]):
-                    entries.append(_build_tree_entry(dir_path, root, "dir", current_depth + 1))
+                if include_dirs and current_depth + 1 <= safe_depth:
+                    scanned_entries += 1
+
+                    if _matches_any_pattern(dir_path, root, [safe_pattern]):
+                        entries.append(_build_tree_entry(dir_path, root, "dir", current_depth + 1))
 
             dir_names[:] = kept_dirs
 
@@ -360,6 +367,8 @@ class FileSearchTreeTool(LocalTool):
                     if not include_sensitive and is_sensitive_path(file_path):
                         skipped["sensitive"] += 1
                         continue
+
+                    scanned_entries += 1
 
                     if _matches_any_pattern(file_path, root, [safe_pattern]):
                         entries.append(_build_tree_entry(file_path, root, "file", current_depth + 1))
@@ -381,6 +390,7 @@ class FileSearchTreeTool(LocalTool):
             "truncated": truncated,
             "entries": entries[:safe_max_entries],
             "entry_count": min(len(entries), safe_max_entries),
+            "scanned_entries": scanned_entries,
             "skipped": skipped,
         }
 

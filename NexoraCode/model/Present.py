@@ -41,7 +41,7 @@ def present_tool_result(detail: Any) -> str:
     entries = detail.get("entries")
 
     if isinstance(entries, list):
-        return _present_entries(entries)
+        return _present_entries(entries, detail)
 
     # code_scan 的 files 是「文件 → 符号列表」结构；非空列表要求首项带 symbols 才判定，
     # 空列表靠 scanned_files/root 字段识别，避免误伤其他恰好返回 files 字段的工具。
@@ -388,7 +388,7 @@ def _present_shell_exec(detail: dict) -> str:
     return "\n".join(lines).strip()
 
 
-def _present_entries(entries: list) -> str:
+def _present_entries(entries: list, detail: dict) -> str:
     lines = []
 
     for item in entries:
@@ -402,7 +402,33 @@ def _present_entries(entries: list) -> str:
         size_text = f" ({size} B)" if isinstance(size, (int, float)) else ""
         lines.append(f"[dir]  {name}" if is_dir else f"- {name}{size_text}")
 
-    return "\n".join(lines) if lines else "(空目录)"
+    if lines:
+        return "\n".join(lines)
+
+    return _present_empty_entries(detail)
+
+
+def _present_empty_entries(detail: dict) -> str:
+    """条目为空时的文案：必须区分「目录真空」和「pattern 过滤后为空」。
+
+    两者对模型是完全不同的信息。说成空目录会让模型认定目录里什么都没有，
+    转而去猜并不存在的路径（历史里出现过反复读 Server/resources/Server.py 的情况）。
+    """
+    pattern = str(detail.get("pattern") or "").strip()
+    scanned = detail.get("scanned_entries")
+
+    # 没传 pattern 语义的工具（entries 为空即真的空），保持原样。
+    if not pattern:
+        return "(空目录)"
+
+    if isinstance(scanned, (int, float)) and scanned > 0:
+        return (f"(目录非空：{int(scanned)} 个条目都没有匹配 `{pattern}`；"
+                f"去掉 pattern 或放宽它再看)")
+
+    if pattern not in ("*", ""):
+        return f"(没有匹配 `{pattern}` 的条目；该范围内未发现其它条目)"
+
+    return "(空目录)"
 
 
 def _present_code_scan(files: list, detail: dict) -> str:
