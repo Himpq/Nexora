@@ -504,6 +504,7 @@ const streamStatusSyncController = getNexoraChatStreaming().createStreamStatusSy
     moveConversationStreamState,
     applyStreamSessionMetaRows,
     renderConversationSnapshotFromServer,
+    loadConversations,
     getStoredRunningStreamStates,
     attachStreamSessionMonitor,
     getCurrentConversationId: () => currentConversationId
