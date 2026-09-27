@@ -1,0 +1,243 @@
+/*
+ * remote-sidebar-section.css — 侧边栏远程电脑/项目/对话
+ *
+ * 移植自 NexoraCode 桌面端 style.css 的「NexoraCode 项目侧边栏」区块：
+ * 折叠动画沿用 grid-template-rows 1fr/0fr 过渡(与原版逐像素一致)，
+ * 电脑层是原版项目层的同一套结构,项目层则直接沿用原版项目的写法。
+ *
+ * 配色说明：会话侧边栏在明暗两套主题下都是深色底(--bg-sidebar 亮色为 #050505)，
+ * 所以这里只用 sidebar 专用令牌(--text-sidebar / --bg-sidebar-hover)与原版的
+ * rgba 字面值，不能用会随主题翻转的 --color-*，否则亮色主题下文字会变成深色看不见。
+ */
+
+.remote-sidebar {
+    margin-bottom: 10px;
+}
+
+/* ---------- 行内操作按钮(电脑行与项目行共用) ---------- */
+
+.remote-sidebar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    opacity: 0.55;
+    transition: opacity 0.15s ease;
+}
+
+.remote-sidebar-device-row:hover .remote-sidebar-actions,
+.remote-sidebar-project-row:hover .remote-sidebar-actions {
+    opacity: 1;
+}
+
+.remote-sidebar-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--text-sidebar);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.remote-sidebar-icon-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.remote-sidebar-icon-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.remote-sidebar-caret-btn i {
+    transition: transform 0.22s ease;
+}
+
+.remote-sidebar-device.is-collapsed .remote-sidebar-device-row .remote-sidebar-caret-btn i,
+.remote-sidebar-project.is-collapsed .remote-sidebar-project-row .remote-sidebar-caret-btn i {
+    transform: rotate(-90deg);
+}
+
+/* ---------- 行内图标 / 名称 / 数量徽标(电脑行与项目行共用) ---------- */
+
+.remote-sidebar-row-icon {
+    font-size: 12px;
+    color: rgba(160, 160, 160, 0.75);
+    flex-shrink: 0;
+    transition: color 0.15s ease;
+}
+
+.remote-sidebar-device-row:hover .remote-sidebar-row-icon,
+.remote-sidebar-project-row:hover .remote-sidebar-row-icon {
+    color: #e5e5e5;
+}
+
+.remote-sidebar-row-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #d8d8d8;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color 0.15s ease;
+}
+
+.remote-sidebar-device-row:hover .remote-sidebar-row-name,
+.remote-sidebar-project-row:hover .remote-sidebar-row-name {
+    color: #fff;
+}
+
+.remote-sidebar-row-count {
+    flex-shrink: 0;
+    min-width: 16px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.09);
+    color: rgba(200, 200, 200, 0.85);
+    font-size: 10.5px;
+    line-height: 16px;
+    text-align: center;
+}
+
+.remote-sidebar-device-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: rgba(160, 160, 160, 0.55);
+}
+
+.remote-sidebar-device-dot.is-online {
+    background: #34c759;
+    box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.22);
+}
+
+/* ---------- 电脑行(对应原版项目行) ---------- */
+
+.remote-sidebar-device {
+    margin-bottom: 1px;
+}
+
+.remote-sidebar-device-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 6px 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.remote-sidebar-device-row:hover {
+    background-color: var(--bg-sidebar-hover);
+}
+
+.remote-sidebar-device-main,
+.remote-sidebar-project-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+}
+
+/* 电脑下面是项目,项目行比电脑行多缩进一级 */
+.remote-sidebar-project-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 6px 5px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.remote-sidebar-project-row:hover {
+    background-color: var(--bg-sidebar-hover);
+}
+
+/* ---------- 折叠动画:grid rows 0fr/1fr 过渡(原版做法) ---------- */
+
+.remote-sidebar-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.26s ease;
+}
+
+.remote-sidebar-device.is-collapsed .remote-sidebar-body {
+    grid-template-rows: 0fr;
+}
+
+.remote-sidebar-body-inner {
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: 2px;
+    opacity: 1;
+    transition: opacity 0.2s ease;
+}
+
+.remote-sidebar-device.is-collapsed .remote-sidebar-body-inner {
+    opacity: 0;
+}
+
+.remote-sidebar-conversations {
+    display: grid;
+    grid-template-rows: 1fr;
+    margin: 1px 0 3px 14px;
+    padding-left: 10px;
+    border-left: 1px solid rgba(255, 255, 255, 0.12);
+    transition: grid-template-rows 0.24s ease, margin 0.24s ease, border-color 0.24s ease;
+}
+
+.remote-sidebar-project.is-collapsed .remote-sidebar-conversations {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    margin-bottom: 0;
+    border-color: transparent;
+}
+
+.remote-sidebar-conversations-inner {
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    opacity: 1;
+    transition: opacity 0.18s ease;
+}
+
+.remote-sidebar-project.is-collapsed .remote-sidebar-conversations-inner {
+    opacity: 0;
+}
+
+.conversation-item.remote-sidebar-conversation {
+    padding: 6px 10px;
+    font-size: 13px;
+    margin-bottom: 0;
+}
+
+.remote-sidebar-empty,
+.remote-sidebar-conversation-empty {
+    margin: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: rgba(160, 160, 160, 0.5);
+}

@@ -77,10 +77,6 @@
                     </template>
                 </button>
                 <template v-if="!isLearningMode && !courseModeOn">
-                    <button class="toolbar-item" type="button" @click="emit('open-projects')">
-                        <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
-                        <span>Projects</span>
-                    </button>
                     <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
                         <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
                         <span>Workspaces</span>
@@ -225,6 +221,8 @@
         </div>
 
         <div v-show="!isLearningMode && !courseModeOn" class="sidebar-content" id="conversationList">
+            <RemoteSidebarSection @open="emit('open-projects')" />
+
             <div
                 v-for="row in store.branchRows"
                 :key="row.conversation.id"
@@ -489,6 +487,7 @@
 
     import ContextMenu from './ContextMenu.vue'
     import MarkdownView from './MarkdownView.vue'
+    import RemoteSidebarSection from './nexoracode/RemoteSidebarSection.vue'
 
     const emit = defineEmits<{
         'toggle-mobile': []

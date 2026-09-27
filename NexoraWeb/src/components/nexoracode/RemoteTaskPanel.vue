@@ -1,170 +1,97 @@
 <!--
-    RemoteTaskPanel.vue — 远程任务面板
+    RemoteTaskPanel.vue — 远程会话主区
 
-    消息区复用 MessageItem（工具执行卡片、thinking 折叠、token 徽标、提问卡
-    与云端聊天完全一致），本组件只负责：
-      - 顶部状态条：显式状态机的当前状态，停止按钮挂在旁边；
-      - 压缩提示条：电脑端上下文压缩的进度；
-      - 输入区：发送 / 停止 / 强制压缩。
+    完全复用云端会话的那一套外壳，不再自建输入坞：
+      - 消息区用原生 .messages-area + MessageItem（工具卡、thinking、token 徽标、问卡一致）
+      - 输入区直接用原生 ChatInput（variant="remote"），发送/停止由远程任务状态机驱动
+      - 模型不再单独选：沿用顶栏左上角那一个选择器，取 modelStore.selectedId 下发
+
+    状态全部来自 stores/remote.ts，与侧边栏共用同一份，不会各读一份。
 -->
 
 <template>
     <section class="remote-task-panel">
-        <header class="remote-task-head">
-            <div class="remote-task-head-main">
-                <span class="remote-task-title">{{ title }}</span>
-                <span class="remote-task-state" :class="`is-${state}`">{{ stateLabel }}</span>
-            </div>
-            <div class="remote-task-head-actions">
-                <span v-if="stageDetail" class="remote-task-stage" :title="stageDetail">{{ stageDetail }}</span>
-                <Button
-                    v-if="canStop"
-                    size="compact"
-                    variant="danger"
-                    icon="fa-solid fa-stop"
-                    @click="$emit('stop')"
-                >停止</Button>
-            </div>
-        </header>
+        <p v-if="store.error" role="alert" class="remote-task-error">{{ store.error }}</p>
 
-        <p v-if="!online" class="remote-task-banner" role="status">
+        <p v-else-if="!store.deviceId" class="remote-task-banner" role="status">
+            还没有绑定电脑。在左下角用户菜单的「远程连接」里生成配对码。
+        </p>
+
+        <p v-else-if="!store.online" class="remote-task-banner" role="status">
             电脑已离线，无法下发任务或读取历史。已加载的内容仍可查看。
         </p>
 
-        <div ref="scrollerRef" class="remote-task-messages">
-            <p v-if="!messages.length" class="remote-task-empty">
-                选择左侧会话查看历史，或在下方输入框下发新任务。
+        <p v-else-if="stateError" role="alert" class="remote-task-error">{{ stateError }}</p>
+
+        <div ref="scrollerRef" class="messages-area remote-task-messages">
+            <p v-if="!store.messages.length" class="remote-task-empty">
+                在左侧 Remote 列表里选一个会话查看历史，或直接给这台电脑下发任务。
             </p>
             <MessageItem
-                v-for="message in messages"
+                v-for="message in store.messages"
                 :key="message.index"
                 :message="message"
                 :streaming="message.status === 'streaming'"
-                :conversation-id="conversationId"
+                :conversation-id="store.conversationId"
                 readonly
-                @question-answer="(item, questionId, answer) => $emit('answer-question', item, questionId, answer)"
-                @open-knowledge="(reference) => $emit('open-knowledge', reference)"
-                @open-image="(url) => $emit('open-image', url)"
+                @question-answer="(item, questionId, answer) => store.answerQuestion(item, questionId, answer)"
+                @open-image="(url) => emit('open-image', url)"
             />
         </div>
 
-        <ul v-if="notices.length" class="remote-task-notices">
-            <li v-for="(notice, index) in notices" :key="index" :class="`is-${notice.status}`">
+        <ul v-if="store.notices.length" class="remote-task-notices">
+            <li v-for="(notice, index) in store.notices" :key="index" :class="`is-${notice.status}`">
                 <i class="fa-solid fa-compress" aria-hidden="true"></i>
                 <span>{{ notice.content }}</span>
             </li>
         </ul>
 
-        <div class="remote-task-composer">
-            <div class="remote-task-composer-head">
-                <label class="remote-task-model">
-                    <span>模型</span>
-                    <select v-model="modelName" :disabled="!online || running" class="remote-task-select">
-                        <option value="">电脑默认模型</option>
-                        <option v-for="model in models" :key="model.id" :value="model.id">
-                            {{ model.name }} · {{ model.provider }}
-                        </option>
-                    </select>
-                </label>
-            </div>
-            <textarea
-                v-model="draft"
-                class="remote-task-input"
-                rows="3"
-                :disabled="!online"
-                :placeholder="online ? '向这台电脑上的 NexoraCode 下发任务' : '电脑离线，无法下发任务'"
-                @keydown.enter.exact.prevent="submit"
-            />
-            <div class="remote-task-composer-actions">
-                <Button
-                    variant="primary"
-                    icon="fa-solid fa-paper-plane"
-                    :disabled="!canSend"
-                    @click="submit"
-                >发送到电脑</Button>
-                <Button
-                    :disabled="!forceCompression || !canSend"
-                    :title="forceCompression ? '本次发送会先压缩上下文再执行' : '让电脑端在本次任务前先压缩上下文'"
-                    @click="forceCompression = !forceCompression"
-                >{{ forceCompression ? '已启用压缩' : '压缩上下文' }}</Button>
-                <span class="remote-task-composer-hint">
-                    Enter 发送 · 任务在电脑本地执行，云端只转发
-                </span>
-            </div>
-        </div>
+        <ChatInput
+            variant="remote"
+            :streaming="store.running"
+            :draft-key="store.conversationId"
+            :placeholder="store.online ? '向这台电脑上的 NexoraCode 下发任务' : '电脑离线，无法下发任务'"
+            @send="send"
+            @stop="store.stop()"
+        />
     </section>
 </template>
 
 <script setup lang="ts">
     import { computed, nextTick, ref, watch } from 'vue'
 
-    import type { ChatMessage } from '@/api/conversations'
-    import type { RemoteModelOption } from '@/api/nexoracode'
-    import type { RemoteTaskState } from '@/network/remoteTaskStream'
-    import type { RemoteTaskNotice } from '@/stream/remoteSegments'
+    import ChatInput from '@/components/ChatInput.vue'
     import MessageItem from '@/components/MessageItem.vue'
-    import { Button } from '@/ui'
+    import { remoteStore } from '@/stores/remote'
 
     import '@/styles/remote-task-panel.css'
+    import '@/styles/remote-task-banners.css'
 
-    const props = defineProps<{
-        title: string
-        state: RemoteTaskState
-        stageDetail: string
-        online: boolean
-        busy: boolean
-        conversationId: string
-        messages: ChatMessage[]
-        notices: RemoteTaskNotice[]
-        /** 电脑上可用的模型，id 形如 provider_id/model，留空表示用电脑默认。 */
-        models: RemoteModelOption[]
-    }>()
+    const emit = defineEmits<{ 'open-image': [url: string] }>()
 
-    const emit = defineEmits<{
-        send: [text: string, options: { forceContextCompression: boolean; modelName: string }]
-        stop: []
-        'answer-question': [message: ChatMessage, questionId: string, answer: string]
-        'open-knowledge': [reference: unknown]
-        'open-image': [url: string]
-    }>()
+    const store = remoteStore
 
-    const draft = ref('')
-    const forceCompression = ref(false)
-    const modelName = ref('')
     const scrollerRef = ref<HTMLElement | null>(null)
 
-    const stateLabel = computed(() => {
-        switch (props.state) {
-            case 'starting': return '正在下发'
-            case 'running': return '执行中'
-            case 'stopping': return '正在停止'
-            case 'done': return '已完成'
-            case 'failed': return '执行异常'
-            case 'cancelled': return '已停止'
+    /** 终态异常才提示:执行中/成功由侧边栏的运行标记与消息内的状态承载,不占用主区。 */
+    const stateError = computed(() => {
+        switch (store.state) {
+            case 'failed': return '任务在电脑上执行失败'
             case 'interrupted': return '电脑进程已重启，任务中断'
-            case 'gone': return '任务不存在或已清理'
-            default: return '空闲'
+            case 'gone': return '任务不存在或已被清理'
+            default: return ''
         }
     })
 
-    const running = computed(() => props.state === 'starting' || props.state === 'running' || props.state === 'stopping')
-    const canStop = computed(() => props.state === 'running' || props.state === 'starting')
-    const canSend = computed(() => props.online && !props.busy && !running.value && !!draft.value.trim())
-
-    function submit(): void {
-        const text = draft.value.trim()
-
-        if (!text || !canSend.value) {
-            return
-        }
-
-        emit('send', text, { forceContextCompression: forceCompression.value, modelName: modelName.value })
-        draft.value = ''
+    function send(text: string): void {
+        // 顶栏那个选择器(远程视图下已切为当前电脑的模型目录)的选中项。
+        // 初始值就是电脑自己的 default_model,所以这里下发的永远是用户看得见的那个模型。
+        void store.send(text, store.modelName)
     }
 
     // 流式过程中始终贴底，用户手动上滚后不再强制拉回。
     watch(
-        () => props.messages.map(message => message.content.length).join(','),
+        () => store.messages.map(message => message.content.length).join(','),
         async () => {
             const scroller = scrollerRef.value
 

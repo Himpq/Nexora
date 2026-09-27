@@ -17,7 +17,7 @@
 
 import type { ChatMessage } from '@/api/conversations'
 import type { RemoteChatMessage, RemoteQuestion, RemoteTaskEvent } from '@/api/nexoracode'
-import type { MessageSegment } from '@/stream/messageSegments'
+import { rebuildSegmentsForMessage, type MessageSegment } from '@/stream/messageSegments'
 
 /** 压缩状态等非正文事件，统一挂在这里由面板渲染成提示条。 */
 export interface RemoteTaskNotice {
@@ -64,31 +64,90 @@ function toQuestion(raw: RemoteQuestion | undefined): MessageSegment['question']
     }
 }
 
-/** 电脑侧历史消息 → ChatMessage。tool 消息并入其上一条 assistant 的 segments。 */
-export function remoteHistoryToMessages(rows: RemoteChatMessage[]): ChatMessage[] {
-    const messages: ChatMessage[] = []
-    let index = 0
+/**
+ * 是否「只有工具步骤、没有正文」的 assistant 轮。
+ */
+function isToolOnlyAssistant(message: ChatMessage): boolean {
+    if (message.role !== 'assistant') {
+        return false
+    }
 
-    for (const row of rows || []) {
-        const role = String(row?.role || '')
+    const segments = Array.isArray(message.segments) ? message.segments : []
+    const hasToolStep = segments.some(item => item.type === 'function_call' || item.type === 'function_result')
+    const hasContent = segments.some(item => item.type === 'content' && String(item.text || '').trim())
 
-        if (role === 'tool') {
-            // 工具结果紧跟在那次工具调用之后，MessageItem 只渲染 assistant 消息。
-            const host = messages[messages.length - 1]
+    return hasToolStep && !hasContent
+}
 
-            if (host && host.role === 'assistant') {
-                host.segments = (host.segments || []).concat({
-                    type: 'function_result',
-                    text: toText(row.content),
-                    callId: String((row as unknown as Record<string, unknown>).tool_call_id || ''),
-                })
-            }
+/**
+ * 把连续的无正文工具轮并进下一条有正文的 assistant。
+ *
+ * 电脑端 AgentLoop 每个工具轮单独落盘成一条 assistant 消息（无正文、只含工具步骤），
+ * 逐条渲染会在 .message 之间留出 24px 间隔，看起来像凭空多出一节。
+ * 口径与原版 chat_messages.js 的 mergeToolOnlyAssistantRows 一致：
+ *   - 工具轮只并入 assistant，不并入 user/其他角色；
+ *   - 遇到非 assistant 时先把 pending 单独落一条，保持消息顺序；
+ *   - 请求以工具轮收尾（权限弹卡中断等）时，pending 也单独成条，不丢步骤。
+ */
+function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
+    const merged: ChatMessage[] = []
+    let pendingSegments: MessageSegment[] = []
+
+    const flushPending = (): void => {
+        if (!pendingSegments.length) {
+            return
+        }
+
+        merged.push({
+            index: merged.length,
+            role: 'assistant',
+            content: '',
+            status: 'completed',
+            segments: pendingSegments,
+        })
+        pendingSegments = []
+    }
+
+    for (const message of messages) {
+        if (isToolOnlyAssistant(message)) {
+            pendingSegments = pendingSegments.concat(message.segments || [])
 
             continue
         }
 
+        if (pendingSegments.length && message.role === 'assistant') {
+            message.segments = pendingSegments.concat(message.segments || [])
+            pendingSegments = []
+            // 合并后 token 徽标取后一条（它的 io_tokens 才是这一轮之后的累计值）。
+            merged.push(message)
+
+            continue
+        }
+
+        flushPending()
+        merged.push(message)
+    }
+
+    flushPending()
+
+    return merged.map((message, index) => ({ ...message, index }))
+}
+
+/**
+ * 电脑侧历史消息 → ChatMessage。
+ *
+ * 电脑端已经把工具调用与工具结果归一化进 assistant 的 metadata.process_steps，
+ * 并且不再单独返回 role=tool 行（见 NexoraCode/model/Routes.py 的
+ * _normalize_history_messages），所以这里只需按云端历史的口径建好 segments，
+ * 再把逐工具轮落盘的消息合并回一轮，剩下交给 MessageItem。
+ */
+export function remoteHistoryToMessages(rows: RemoteChatMessage[]): ChatMessage[] {
+    const messages: ChatMessage[] = []
+
+    for (const row of rows || []) {
+        const role = String(row?.role || '')
         const message: ChatMessage = {
-            index: index++,
+            index: messages.length,
             role: role === 'assistant' ? 'assistant' : role === 'system' ? 'system' : 'user',
             content: toText(row.content),
             status: 'completed',
@@ -99,10 +158,24 @@ export function remoteHistoryToMessages(rows: RemoteChatMessage[]): ChatMessage[
             message.metadata = row.metadata as Record<string, unknown>
         }
 
+        // assistant 的正文与工具卡都挂在 segments 上,只填 content 会渲染成空消息。
+        rebuildSegmentsForMessage(message)
         messages.push(message)
     }
 
-    return messages
+    return mergeToolOnlyAssistantRows(messages)
+}
+
+/** 新建一条已落定的 user 消息。
+ *  电脑端要等任务跑完才会把这条写进自己的历史，Web 侧先本地补上，
+ *  否则对话里只剩助手回复，看不到自己刚下发的内容。 */
+export function createRemoteUserMessage(index: number, content: string): ChatMessage {
+    return {
+        index,
+        role: 'user',
+        content,
+        status: 'completed',
+    }
 }
 
 /** 新建一条正在生成的 assistant 消息。 */

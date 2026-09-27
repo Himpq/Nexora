@@ -201,7 +201,7 @@
                 </div>
 
                 <div v-show="overlay.view === 'projects'" class="gddp-content-view">
-                    <RemoteProjectsView :open="overlay.view === 'projects'" />
+                    <RemoteTaskPanel @open-image="imageViewerUrl = $event" />
                 </div>
 
                 <div v-show="scheduledTasksOpen" class="gddp-content-view">
@@ -341,7 +341,7 @@
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
     import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
-    import RemoteProjectsView from '@/components/nexoracode/RemoteProjectsView.vue'
+    import RemoteTaskPanel from '@/components/nexoracode/RemoteTaskPanel.vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import type { NoteItem } from '@/api/notes'
@@ -1508,6 +1508,13 @@
             conversationStore.fillStreamingMessageWithError(state.conversationId, errorText)
 
             showError(errorText)
+
+            return
+        }
+
+        // 模型正文已完成；终帧仍会补齐已落盘消息和 usage，但此时先停止正文输出动画。
+        if (chunk.type === 'done') {
+            conversationStore.finishStreamOutput(state.conversationId)
 
             return
         }

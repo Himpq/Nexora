@@ -44,8 +44,16 @@ export interface RemoteTaskStreamHandlers {
 }
 
 /** 活动轮询间隔；空闲时按 IDLE_POLL_INTERVAL 退避，减少对网关的压力。 */
-const ACTIVE_POLL_MS = 700
-const IDLE_POLL_MS = 2000
+const ACTIVE_POLL_MS = 250
+const IDLE_POLL_MS = 1500
+/**
+ * 看到终态后继续读的次数上限，用来排空尾部事件。
+ *
+ * 电脑端先把 session 标成 done，再把最后几个事件刷进 journal；网关单次 rpc 又是
+ * 「读到当下为止」的快照，所以第一次读到 done 时末尾通常还缺事件。排空后才把终态
+ * 交给上层，否则上层会把消息定稿并拒收后续事件，表现为回复结尾被截断。
+ */
+const DRAIN_MAX_POLLS = 8
 /** 连续失败后的退避上限，避免电脑离线时把网关打满。 */
 const MAX_ERROR_BACKOFF_MS = 15000
 /** 多久没有任何新事件就认为进入空闲（长工具调用期间不会有事件）。 */
@@ -111,7 +119,23 @@ export class RemoteTaskStream {
     private errorStreak = 0
     private lastEventAt = 0
     private startedAt = 0
-    private lastParams: StartRemoteTaskParams | null = null
+    /**
+     * 已从电脑侧读到、但还没对外广播的终态。
+     *
+     * 排空期间 this.state 仍保持非终态，界面继续显示「执行中」，
+     * 等尾部事件读干净了才 setState 收尾。
+     */
+    private pendingTerminal: RemoteTaskState | null = null
+    private drainCount = 0
+    /**
+     * 已发出但电脑尚未确认的请求。
+     *
+     * request_id 只能在「同一个请求重试」时复用：电脑按 request_id 去重，
+     * 相同 id + 不同内容会直接判为「已被不同请求使用」。所以只有当上一次
+     * startRemoteTask 抛在传输途中（电脑没收到，也没确认）时，隔一次重发才
+     * 算同一个请求；一旦拿到 stream_id，后续每次 start 都是新任务，必须换 id。
+     */
+    private unconfirmed: { requestId: string; conversationId: string; message: string } | null = null
 
     constructor(deviceId: string, handlers: RemoteTaskStreamHandlers) {
         this.deviceId = deviceId
@@ -140,8 +164,10 @@ export class RemoteTaskStream {
     }
 
     /**
-     * 启动任务。request_id 由本类生成并保留：网络失败后重试 start 会命中电脑侧
-     * 的去重记录，不会重复执行。
+     * 启动任务。
+     *
+     * request_id 的复用规则见 unconfirmed 字段：只有「上一次请求电脑压根没收到」
+     * 且这次发的是同一条内容时才算重试，其余情况一律新 id。
      */
     async start(params: Omit<StartRemoteTaskParams, 'requestId'> & { requestId?: string }): Promise<void> {
         if (this.state !== 'idle' && this.state !== 'done' && this.state !== 'failed'
@@ -149,20 +175,41 @@ export class RemoteTaskStream {
             throw new Error('已有任务在进行中')
         }
 
+        const conversationId = params.conversationId || ''
+        const isRetry = this.unconfirmed !== null
+            && this.unconfirmed.conversationId === conversationId
+            && this.unconfirmed.message === params.message
+
         const payload: StartRemoteTaskParams = {
             ...params,
-            requestId: params.requestId || this.lastParams?.requestId || newRequestId(),
+            requestId: params.requestId || (isRetry ? this.unconfirmed!.requestId : newRequestId()),
         }
 
-        this.lastParams = payload
+        this.unconfirmed = {
+            requestId: payload.requestId,
+            conversationId,
+            message: params.message,
+        }
         this.stopped = false
         this.cursor = 0
         this.errorStreak = 0
         this.startedAt = Date.now()
         this.lastEventAt = Date.now()
+        this.pendingTerminal = null
+        this.drainCount = 0
         this.setState('starting', null)
 
-        const result = await startRemoteTask(this.deviceId, payload)
+        let result: { stream_id?: string; conversation_id?: string }
+
+        try {
+            result = await startRemoteTask(this.deviceId, payload)
+        } catch (error) {
+            // 保留 unconfirmed：这次重发同一条内容时复用 id，命中电脑去重。
+            throw error
+        }
+
+        // 电脑已受理，后续 start 都是新任务。
+        this.unconfirmed = null
 
         this.streamId = String(result.stream_id || '')
         this.conversationId = String(result.conversation_id || payload.conversationId || '')
@@ -222,7 +269,9 @@ export class RemoteTaskStream {
         this.streamId = ''
         this.cursor = 0
         this.session = null
-        this.lastParams = null
+        this.unconfirmed = null
+        this.pendingTerminal = null
+        this.drainCount = 0
         this.setState('idle', null)
     }
 
@@ -274,6 +323,8 @@ export class RemoteTaskStream {
             const { events, session } = await readRemoteTaskEvents(this.deviceId, this.streamId, this.cursor)
             this.errorStreak = 0
 
+            let fresh = 0
+
             for (const event of events || []) {
                 // 同一游标重复读取是幂等的，仍按 seq 去重以防电脑侧返回重叠区间。
                 if (Number(event?._stream_seq) <= this.cursor) {
@@ -282,6 +333,7 @@ export class RemoteTaskStream {
 
                 this.cursor = Number(event._stream_seq)
                 this.lastEventAt = Date.now()
+                fresh += 1
                 this.handlers.onEvent(event)
             }
 
@@ -291,19 +343,29 @@ export class RemoteTaskStream {
                 this.session = session
             }
 
-            if (this.state === 'starting') {
-                this.setState(nextState === 'gone' ? 'running' : nextState, this.session)
-            } else if (nextState !== this.state) {
-                this.setState(nextState, this.session)
-            } else {
-                this.handlers.onState?.(this.state, this.session)
+            if (isTerminalRemoteTaskState(nextState)) {
+                this.pendingTerminal = nextState
             }
 
-            if (isTerminalRemoteTaskState(this.state)) {
+            // drainCount > 0 保证「首次观测到终态」之后至少再读一次：
+            // 第一轮读到 done 时 fresh 很可能为 0（任务还没产出事件），
+            // 那不是「已排空」，直接收尾会丢掉后续全部内容。
+            if (this.pendingTerminal && this.drainCount > 0
+                && (fresh === 0 || this.drainCount >= DRAIN_MAX_POLLS)) {
+                this.setState(this.pendingTerminal, this.session)
                 this.stopped = true
                 this.clearTimer()
 
                 return
+            }
+
+            if (this.pendingTerminal) {
+                this.drainCount += 1
+            } else if (nextState !== this.state) {
+                this.drainCount = 0
+                this.setState(this.state === 'starting' && nextState === 'gone' ? 'running' : nextState, this.session)
+            } else {
+                this.handlers.onState?.(this.state, this.session)
             }
 
             if (Date.now() - this.startedAt > MAX_TRACK_MS) {

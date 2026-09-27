@@ -16,7 +16,7 @@
 <template>
     <div
         class="message"
-        :class="[message.role, { pending: message.pending, 'stream-caret-active': streamCaretActive }]"
+        :class="[message.role, { pending: message.pending, 'output-finished': message.outputFinished, 'stream-caret-active': streamCaretActive }]"
         :data-index="message.index"
     >
         <div class="message-content">
@@ -211,7 +211,12 @@
                             <div class="question-card-title">{{ item.payload.question_title || '问题' }}</div>
                             <div class="question-card-content">{{ item.payload.question_content }}</div>
 
-                            <template v-if="!isQuestionAnswered(item) && !readonly">
+                            <!--
+                                readonly 只挡云端会话的删除/重答/分叉,不挡问卡作答:
+                                远程会话的答案由父组件转给电脑端(见 RemoteTaskPanel 的
+                                answer-question),把它一起藏掉会让权限请求永远无法授权。
+                            -->
+                            <template v-if="!isQuestionAnswered(item)">
                                 <div v-if="(item.payload.choices || []).length" class="question-card-choices">
                                     <button
                                         v-for="(choice, choiceIndex) in item.payload.choices"
@@ -1122,7 +1127,7 @@
      * (思考行有节点脉冲/滚动窗口,工具行有执行中状态,互不打架)
      */
     const tailContentIndex = computed<number>(() => {
-        if (!props.streaming) {
+        if (!props.streaming || !props.message.pending || props.message.outputFinished) {
             return -1
         }
 
@@ -1636,6 +1641,10 @@
     /* 正文尾标(stream-caret)显示时,隐藏 legacy pending ●(style.css .message-content::after),
        避免同一消息内两个闪烁指示重复;思考/等待首 token 阶段(无正文尾标)保留 ● */
     .message.assistant.pending.stream-caret-active .message-content::after {
+        display: none;
+    }
+
+    .message.assistant.pending.output-finished .message-content::after {
         display: none;
     }
 

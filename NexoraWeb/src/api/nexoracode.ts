@@ -54,12 +54,15 @@ export interface RemoteConversation {
     metadata?: { nexoracode_project?: RemoteProjectRef }
 }
 
-/** 电脑侧 GET /api/conversations 的条目，附带派生的项目视图。 */
-export interface RemoteProject {
-    path: string
-    name: string
+/**
+ * 电脑上的会话分组。
+ *
+ * 电脑侧没有独立的「项目」接口，项目来自会话 metadata.nexoracode_project；
+ * 没有该元数据的会话 project 为 null，按原版侧栏的做法平铺在根级而不是被丢掉。
+ */
+export interface RemoteConversationGroup {
+    project: RemoteProjectRef | null
     conversations: RemoteConversation[]
-    updated_at: number
 }
 
 export interface RemoteChatMessage {
@@ -71,7 +74,7 @@ export interface RemoteChatMessage {
     metadata?: Record<string, unknown>
 }
 
-/** 电脑上可用的模型，id 形如 provider_id/model，下发任务时原样传给电脑。 */
+/** 电脑上可用的模型，id 形如 provider_id/model，与电脑侧解析模型的方式一致。 */
 export interface RemoteModelOption {
     id: string
     name: string
@@ -79,8 +82,15 @@ export interface RemoteModelOption {
     context_window: number
 }
 
+/**
+ * 电脑的模型目录。
+ *
+ * default_model 是电脑自己认的默认（来自 providers.json 的 default_id）。
+ * 必须显式下发它：电脑桌面把用户选择存在浏览器 localStorage，云端看不到，
+ * 若下发空串让它回退内部默认，实际用的可能和桌面上显示的不是同一个模型。
+ */
 export function listRemoteModels(deviceId: string) {
-    return remoteCall<{ success: boolean; models: RemoteModelOption[] }>(deviceId, '/api/config')
+    return remoteCall<{ success: boolean; default_model: string; models: RemoteModelOption[] }>(deviceId, '/api/config')
 }
 
 export interface RemoteTurn {
@@ -97,37 +107,54 @@ export function listRemoteConversations(deviceId: string) {
 }
 
 /**
- * 电脑侧没有独立的「项目」接口：项目来自会话 metadata.nexoracode_project，
- * 这里按 path 聚合，同一项目下挂它的全部会话。
+ * 按项目聚合电脑上的会话。
+ *
+ * 分组内与分组之间都按 updated_at 倒序，无项目分组的会话排在最前（根级平铺）。
  */
-export async function listRemoteProjects(deviceId: string): Promise<RemoteProject[]> {
+export async function listRemoteConversationGroups(deviceId: string): Promise<RemoteConversationGroup[]> {
     const { conversations } = await listRemoteConversations(deviceId)
-    const grouped = new Map<string, RemoteProject>()
+    const byProject = new Map<string, RemoteConversationGroup>()
+    const ungrouped: RemoteConversation[] = []
 
     for (const conversation of conversations || []) {
         const project = conversation.metadata?.nexoracode_project
 
         if (!project?.path) {
+            ungrouped.push(conversation)
             continue
         }
 
-        let entry = grouped.get(project.path)
+        let group = byProject.get(project.path)
 
-        if (!entry) {
-            entry = {
-                path: project.path,
-                name: project.name || project.path,
-                conversations: [],
-                updated_at: 0,
-            }
-            grouped.set(project.path, entry)
+        if (!group) {
+            group = { project, conversations: [] }
+            byProject.set(project.path, group)
         }
 
-        entry.conversations.push(conversation)
-        entry.updated_at = Math.max(entry.updated_at, Number(conversation.updated_at) || 0)
+        group.conversations.push(conversation)
     }
 
-    return Array.from(grouped.values()).sort((a, b) => b.updated_at - a.updated_at)
+    const sortByRecency = (items: RemoteConversation[]) => [...items]
+        .sort((a, b) => (Number(b.updated_at) || 0) - (Number(a.updated_at) || 0))
+
+    const groups = Array.from(byProject.values())
+
+    groups.forEach(group => {
+        group.conversations = sortByRecency(group.conversations)
+    })
+
+    groups.sort((a, b) => recencyOf(b.conversations) - recencyOf(a.conversations))
+
+    if (!ungrouped.length) {
+        return groups
+    }
+
+    return [{ project: null, conversations: sortByRecency(ungrouped) }, ...groups]
+}
+
+/** 分组的代表时间：取组内最近一次会话更新时间。 */
+function recencyOf(conversations: RemoteConversation[]): number {
+    return conversations.reduce((max, item) => Math.max(max, Number(item.updated_at) || 0), 0)
 }
 
 export function getRemoteConversation(deviceId: string, conversationId: string) {
@@ -247,8 +274,8 @@ export interface StartRemoteTaskParams {
     requestId: string
     conversationId?: string
     message: string
+    /** 电脑上可用的模型 id(provider_id/model)，留空表示由电脑自己决定。 */
     modelName?: string
-    forceContextCompression?: boolean
     isRegenerate?: boolean
     assistantIndex?: number
     regenerateIndex?: number
@@ -264,7 +291,6 @@ export function startRemoteTask(deviceId: string, params: StartRemoteTaskParams)
             conversation_id: params.conversationId || '',
             message: params.message,
             model_name: params.modelName || '',
-            force_context_compression: params.forceContextCompression === true,
             is_regenerate: params.isRegenerate === true,
             assistant_index: params.assistantIndex,
             regenerate_index: params.regenerateIndex,
