@@ -463,6 +463,14 @@ def _stream_worker_factory(body: dict):
                 target_config = provider
                 break
 
+    # 任务路由的 provider 归属必须落到日志：provider 报 400/401 时，
+    # 少了这行就只能靠猜是哪个 base_url 出的问题（/api/chat/stream 至少打了 model）。
+    if target_config is not None:
+        print(f"[LocalAgent] /api/local/tasks provider: id={target_config.provider_id} "
+              f"name={target_config.name} model={target_config.model} base_url={target_config.base_url}")
+    else:
+        print(f"[LocalAgent] /api/local/tasks provider: (default) model_name={model_name or '(unset)'}")
+
     def _worker(push_chunk, set_conversation_id, set_stage, is_cancel_requested) -> None:
         if not message:
             push_chunk({"type": "error", "message": "消息不能为空"})

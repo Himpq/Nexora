@@ -238,6 +238,38 @@ def _migrate_legacy_provider() -> List[ProviderConfig]:
     return [config]
 
 
+def read_provider_error_detail(upstream: Any) -> str:
+    """把上游错误响应压成一行可读文案。
+
+    上游（火山方舟 / OpenAI 兼容网关等）统一返回
+    {"error": {"code": ..., "message": ..., "type": ...}}，把整段 JSON 原样塞给用户
+    没有任何信息量，只剩一堵带 request id 的墙。解析出 code + message；
+    不是这个结构（或解析失败）才退回原文，行为与原来一致。
+    """
+    try:
+        detail = upstream.text[:2000]
+    except Exception:
+        return ""
+
+    try:
+        payload = json.loads(detail)
+    except (TypeError, ValueError):
+        return detail
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+
+    if not isinstance(error, dict):
+        return detail
+
+    code = str(error.get("code") or "").strip()
+    message = str(error.get("message") or "").strip()
+
+    if not message:
+        return detail
+
+    return f"{code}：{message}" if code else message
+
+
 class ProviderError(Exception):
     pass
 
@@ -526,12 +558,7 @@ class ProviderClient:
             raise ProviderError(f"Provider 请求失败: {exc}")
 
         if int(upstream.status_code or 0) >= 400:
-            try:
-                detail = upstream.text[:2000]
-            except Exception:
-                detail = ""
-
-            raise ProviderError(f"Provider HTTP {upstream.status_code}: {detail}")
+            raise ProviderError(f"Provider HTTP {upstream.status_code}: {read_provider_error_detail(upstream)}")
 
         if not getattr(upstream, "raw", None):
             raise ProviderError("Provider 未返回流式响应")
