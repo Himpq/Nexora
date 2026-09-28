@@ -71,9 +71,9 @@ export struct SidebarPanel {
                 .color($r('app.color.divider'))
                 .margin({ left: Space.lg, right: Space.lg });
 
-            if (this.app.sidebarView === 'remote') {
-                Blank().height(32);
-            } else {
+            // 「电脑」视图不展示分组标题（远程会话自带设备/项目信息，再加标题是噪声）。
+            // 这里不塞占位块，避免 SectionHeader 一改高度就出现错位。
+            if (this.app.sidebarView !== 'remote') {
                 this.SectionHeader();
             }
 

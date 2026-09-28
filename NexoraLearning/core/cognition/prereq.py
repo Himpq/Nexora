@@ -27,6 +27,7 @@ from core.cognition.service import CognitionService
 from core.cognition.storage import CognitiveEvidenceStore
 from core.decision import evaluate as evaluate_decision
 from core.runlog import log_event
+from core.settings import config_section, merged_params, record_agent_decision
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "mastery_threshold": 0.6,
@@ -35,12 +36,7 @@ DEFAULT_PARAMS: Dict[str, Any] = {
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    params = dict(DEFAULT_PARAMS)
-    override = cfg.get("prereq") if isinstance(cfg, dict) and isinstance(cfg.get("prereq"), dict) else {}
-    for key in DEFAULT_PARAMS:
-        if key in override:
-            params[key] = override[key]
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "prereq"))
 
 
 def _normalize_name(value: str) -> str:
@@ -207,10 +203,7 @@ def check_prereq(
             minutes=gap["minutes"],
             now=current,
         )
-        decision_record = dict(decision)
-        decision_record["type"] = "agent_decision"
-        decision_record["username"] = username
-        user_store.append_learning_record(cfg, username, decision_record)
+        record_agent_decision(cfg, username, decision, user_store)
         cards_written += 1
 
     log_event("prereq_check", "前置知识缺口检查完成", payload={"user_id": username, "matched": len(matched), "gaps": len(gaps), "cards_written": cards_written})

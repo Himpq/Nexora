@@ -24,11 +24,19 @@ from core.user.learning_progress import init_learning_progress
 
 class AgentLearningFeedbackTests(unittest.TestCase):
     def setUp(self):
+        # 这些断言验证同步的画像更新；关闭另起线程的模型整理和困惑扫描，
+        # 避免它们在临时目录销毁后继续写文件，并只观察本次请求的状态。
+        extraction = patch("core.memory.memory_extract.schedule_extraction", return_value=False)
+        extraction.start()
+        self.addCleanup(extraction.stop)
+        confusion = patch("core.cognition.triggers.schedule_confusion_scan", return_value=False)
+        confusion.start()
+        self.addCleanup(confusion.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg = {
             "data_dir": str(Path(self.temp.name) / "data"),
-            "runtime_api": {"enabled": True, "api_key": ""},
+            "runtime_api": {"enabled": True, "api_key": "", "allow_unauthenticated": True},
             "nexora": {"base_url": "http://127.0.0.1:9", "api_key": ""},
             "models": {"default_nexora_model": ""},
         }
@@ -130,12 +138,31 @@ class AgentLearningFeedbackTests(unittest.TestCase):
         report = self.client.get(f"/api/frontend/learning/report?lecture_id={lecture['id']}&book_id={book['id']}",
                                  headers=self.headers).get_json()
         self.assertEqual(report["summary"]["total_chapters"], 1)
-        graph = self.client.get(f"/api/frontend/knowledge-graph?lecture_id={lecture['id']}&book_id={book['id']}",
-                                headers=self.headers).get_json()["graph"]
+        with patch("api.route_modules.knowledge._fetch_session_user_from_nexora",
+                   return_value={"success": True, "user": {"username": "new_learner"}}):
+            graph = self.client.get(f"/api/frontend/knowledge-graph?lecture_id={lecture['id']}&book_id={book['id']}",
+                                    headers=self.headers).get_json()["graph"]
         self.assertIsNotNone(graph)
         self.assertEqual(graph["chapters"][0]["reading_percent"], report["summary"]["reading_progress_percent"])
         self.assertFalse(graph["chapters"][0]["completed"])
         self.assertIsNone(graph["chapters"][0]["concepts"][0]["mastery"])
+
+    def test_personalized_graph_requires_matching_session(self):
+        self.enable_frontend()
+        lecture, book = self.seed_course()
+        url = f"/api/frontend/knowledge-graph?lecture_id={lecture['id']}&book_id={book['id']}"
+
+        with patch("api.route_modules.knowledge._fetch_session_user_from_nexora",
+                   return_value={"success": False}):
+            self.assertEqual(self.client.get(url, headers=self.headers).status_code, 401)
+
+        with patch("api.route_modules.knowledge._fetch_session_user_from_nexora",
+                   return_value={"success": True, "user": {"username": "another_learner"}}):
+            self.assertEqual(self.client.get(url, headers=self.headers).status_code, 403)
+
+        with patch("api.route_modules.knowledge._fetch_session_user_from_nexora",
+                   return_value={"success": True, "user": {"username": "new_learner"}}):
+            self.assertEqual(self.client.get(url, headers=self.headers).status_code, 200)
 
     def test_chat_updates_existing_profile_and_report_dimensions(self):
         self.enable_frontend()

@@ -17,6 +17,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from core.settings import config_section, merged_params
+
 ACTS = ("hold", "card", "liveview", "notify", "xiaoyi_suggest")
 
 DIALOG_RECORD_TYPE = "agent_dialog"
@@ -61,23 +63,20 @@ def set_judge_override(fn: Optional[Callable[[Dict[str, Any]], Optional[Dict[str
     _failure_until.clear()
 
 
+DEFAULT_PARAMS: Dict[str, Any] = {
+    "enabled": True,
+    "model": "",
+    "timeout": 40,
+    # 默认模型带推理链（reasoning_content 先于正文计费）：400 会被思考吃光、正文为空。
+    # 预算按「思考 + 一段 JSON」给足，并显式关闭思考；不支持 think 选项的模型忽略该字段。
+    "max_tokens": 2000,
+    "temperature": 0.2,
+    "think": False,
+}
+
+
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    proactive = cfg.get("proactive") if isinstance(cfg, Mapping) and isinstance(cfg.get("proactive"), Mapping) else {}
-    raw = proactive.get("judgment") if isinstance(proactive.get("judgment"), Mapping) else {}
-    params = {
-        "enabled": True,
-        "model": "",
-        "timeout": 40,
-        # 默认模型带推理链（reasoning_content 先于正文计费）：400 会被思考吃光、正文为空。
-        # 预算按「思考 + 一段 JSON」给足，并显式关闭思考；不支持 think 选项的模型忽略该字段。
-        "max_tokens": 2000,
-        "temperature": 0.2,
-        "think": False,
-    }
-    for key in params:
-        if key in raw:
-            params[key] = raw[key]
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(config_section(cfg, "proactive"), "judgment"))
 
 
 def _model_options(params: Mapping[str, Any], *, max_tokens: int, temperature: float) -> Dict[str, Any]:

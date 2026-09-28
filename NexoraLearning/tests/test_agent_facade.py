@@ -14,7 +14,9 @@ from core.user import set_lecture_selection
 def _app(tmp_path, *, api_key: str = ""):
     cfg = {
         "data_dir": str(tmp_path / "data"),
-        "runtime_api": {"enabled": True, "api_key": api_key},
+        # 不传 api_key 时显式声明 allow_unauthenticated，走本地免密钥路径；
+        # 传了 api_key 就走真实校验（见 test_api_key_and_event_idempotency）。
+        "runtime_api": {"enabled": True, "api_key": api_key, "allow_unauthenticated": api_key == ""},
         "nexora": {"base_url": "http://127.0.0.1:9", "api_key": ""},
         "models": {"default_nexora_model": ""},
     }
@@ -278,6 +280,19 @@ class AgentFacadeTests(unittest.TestCase):
             self.assertEqual(second.status_code, 200)
             self.assertFalse(first.get_json()["data"]["duplicate"])
             self.assertTrue(second.get_json()["data"]["duplicate"])
+
+    def test_missing_runtime_key_rejects_requests_before_creating_users(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            app, cfg = _app(Path(directory))
+            cfg["runtime_api"]["allow_unauthenticated"] = False
+            response = app.test_client().get(
+                "/api/agent/v1/context", headers={"X-Nexora-Username": "new_learner"})
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.get_json()["error"]["code"], "API_KEY_NOT_CONFIGURED")
+            self.assertFalse((Path(cfg["data_dir"]) / "users" / "new_learner").exists())
 
     def test_ask_in_context_uses_requested_chapter(self):
         import tempfile

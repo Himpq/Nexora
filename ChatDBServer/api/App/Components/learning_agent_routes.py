@@ -85,7 +85,7 @@ def proxy_learning_agent(agent_path: str):
         timeout = min(120.0, max(1.0, float(cfg.get("request_timeout") or 30)))
         if agent_path in {"ask-in-context", "plan", "review-plan", "flow/submit"}:
             timeout = max(timeout, 90.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError, AttributeError):
         return _failure("LEARNING_CONFIG_INVALID", "学习服务配置无效，请联系管理员", 503)
 
     username = str(session["username"])
@@ -129,11 +129,21 @@ def proxy_learning_agent(agent_path: str):
             raw = response.read(_MAX_RESPONSE_BYTES + 1)
         if status == 401:
             return _failure("LEARNING_AUTH_FAILED", "学习服务鉴权失败，请管理员检查服务密钥", 502)
-        if status < 200 or 300 <= status < 400 or len(raw) > _MAX_RESPONSE_BYTES:
-            raise ValueError("invalid upstream response")
-        payload = json.loads(raw)
+        if status < 200 or 300 <= status < 400:
+            raise ValueError("unexpected upstream status")
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise ValueError("upstream response too large")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise ValueError("invalid upstream JSON")
         if not isinstance(payload, dict):
             raise ValueError("invalid upstream JSON")
+
+        # 上游 4xx 属于业务错误，保留原有状态码与错误信封，供客户端识别具体原因。
+        # 401 表示代理与学习服务之间鉴权失败，已在上面单独屏蔽内部响应。
+        if status >= 500:
+            return _failure("LEARNING_UNAVAILABLE", "学习服务暂时不可用，请稍后重试", 502)
         return jsonify(payload), status
     except (urllib_error.URLError, TimeoutError, OSError, ValueError):
         return _failure("LEARNING_UNAVAILABLE", "学习服务暂时不可用，请稍后重试", 502)

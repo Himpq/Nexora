@@ -40,6 +40,7 @@ from core.decision.state import (
     target_key,
     today_fired_count,
 )
+from core.settings import config_section, merged_params
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "weights": {"urgency": 0.40, "timing": 0.30, "cost": 0.20, "penalty": 0.30},
@@ -96,20 +97,7 @@ _SUPPRESS_REASON = {
 
 
 def _merge_params(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    params: Dict[str, Any] = {
-        key: (dict(value) if isinstance(value, dict) else list(value) if isinstance(value, list) else value)
-        for key, value in DEFAULT_PARAMS.items()
-    }
-    if isinstance(cfg, dict) and isinstance(cfg.get("proactive"), dict):
-        override = cfg["proactive"]
-        for key, default in DEFAULT_PARAMS.items():
-            if key in override:
-                value = override[key]
-                if isinstance(default, dict) and isinstance(value, dict):
-                    params[key].update(value)
-                else:
-                    params[key] = value
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "proactive"))
 
 
 def _int_param(params: Dict[str, Any], key: str, default: int) -> int:

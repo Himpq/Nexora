@@ -25,6 +25,22 @@ def frontend_knowledge_graph():
         from core.knowledge_graph import load_cached_graph
         graph = load_cached_graph(_cfg, lecture_id, book_id)
         return jsonify({"success": True, "graph": graph, "cached": graph is not None})
+
+    # 个性化图谱包含用户的阅读和评估结果。请求头只能作为期望身份，
+    # 实际身份必须由主站会话查询确定，不能由客户端自行声明。
+    session_result = _fetch_session_user_from_nexora()
+    if not session_result.get("success"):
+        return jsonify({"success": False, "error": "Login required."}), 401
+
+    session_user = session_result.get("user") if isinstance(session_result.get("user"), dict) else {}
+    identities = {
+        str(session_user.get("id") or "").strip(),
+        str(session_user.get("username") or "").strip(),
+    }
+    identities.discard("")
+    if username not in identities:
+        return jsonify({"success": False, "error": "User identity does not match the session."}), 403
+
     try:
         result = build_learning_graph(_cfg, username, lecture_id, book_id)
     except ValueError as exc:

@@ -23,7 +23,7 @@ from api.agent_facade import agent_facade_bp, init_agent_facade
 def _app(tmp_path):
     cfg = {
         "data_dir": str(tmp_path / "data"),
-        "runtime_api": {"enabled": True, "api_key": ""},
+        "runtime_api": {"enabled": True, "api_key": "", "allow_unauthenticated": True},
         "nexora": {"base_url": "http://127.0.0.1:9", "api_key": ""},
         "models": {"default_nexora_model": ""},
         # 本文件验收的是规则地板；模型裁决在 test_agent_judgment.py 单独覆盖。
