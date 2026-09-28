@@ -77,6 +77,7 @@ export interface ConversationItem {
     time: string;
     mode: string;
     pin: boolean;
+    profileInterview?: boolean;
 }
 
 // 知识库列表条目：title 既是展示名也是唯一标识（后端以 title 为 key）
