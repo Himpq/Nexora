@@ -144,6 +144,29 @@ def load_providers() -> List[ProviderConfig]:
         return [ProviderConfig.from_dict(item) for item in raw_list if isinstance(item, dict)]
 
 
+def validate_context_budget(providers: List[ProviderConfig]) -> None:
+    """窗口必须为正数且大于单次输出上限，否则任何请求都无法在窗口内构建。
+
+    上下文压缩按 window - max_tokens 预留输入预算，非法窗口只能让全部对话失败，
+    因此在设置保存入口拒绝，而不是等到运行期报错。只校验用户输入，不放在
+    save_providers：旧版配置迁移在读取路径上调用它，校验会让读取整体失败。
+    """
+    for provider in providers:
+        label = provider.name or provider.model
+
+        if provider.context_window <= 0:
+            raise ValueError(f"模型「{label}」的上下文窗口必须大于 0")
+
+        if provider.max_tokens <= 0:
+            raise ValueError(f"模型「{label}」的单次输出上限必须大于 0")
+
+        if provider.max_tokens >= provider.context_window:
+            raise ValueError(
+                f"模型「{label}」的单次输出上限 {provider.max_tokens} "
+                f"必须小于上下文窗口 {provider.context_window}"
+            )
+
+
 def save_providers(providers: List[ProviderConfig], default_id: str = "") -> None:
     _PROVIDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
     default_id = str(default_id or "").strip()
@@ -215,34 +238,140 @@ def _migrate_legacy_provider() -> List[ProviderConfig]:
     return [config]
 
 
+def read_provider_error_detail(upstream: Any) -> str:
+    """把上游错误响应压成一行可读文案。
+
+    上游（火山方舟 / OpenAI 兼容网关等）统一返回
+    {"error": {"code": ..., "message": ..., "type": ...}}，把整段 JSON 原样塞给用户
+    没有任何信息量，只剩一堵带 request id 的墙。解析出 code + message；
+    不是这个结构（或解析失败）才退回原文，行为与原来一致。
+    """
+    try:
+        detail = upstream.text[:2000]
+    except Exception:
+        return ""
+
+    try:
+        payload = json.loads(detail)
+    except (TypeError, ValueError):
+        return detail
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+
+    if not isinstance(error, dict):
+        return detail
+
+    code = str(error.get("code") or "").strip()
+    message = str(error.get("message") or "").strip()
+
+    if not message:
+        return detail
+
+    return f"{code}：{message}" if code else message
+
+
 class ProviderError(Exception):
     pass
 
 
-def _extract_cached_tokens(u: dict) -> int:
-    """从 usage 提取缓存命中 token，覆盖主流 provider 字段。
+def _is_cache_hit_key(key: str) -> bool:
+    """只把「读缓存」认作命中，避免把缓存写入量当成命中而错误扣减输入。"""
+    text = str(key or "").lower()
+
+    if "cache" not in text or "token" not in text:
+        return False
+
+    if any(marker in text for marker in ("creation", "create", "write")):
+        return False
+
+    return "read" in text or "cached" in text
+
+
+def _scan_cached_tokens(u: dict) -> tuple[int, str]:
+    """启发式扫描 usage 各层字典，兼容自定义命名的兼容端点。"""
+    best = 0
+    best_key = ""
+
+    for container_name in ("prompt_tokens_details", "input_tokens_details", "top"):
+        container = u if container_name == "top" else u.get(container_name)
+
+        if not isinstance(container, dict):
+            continue
+
+        for key, value in container.items():
+            if not _is_cache_hit_key(key):
+                continue
+
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+
+            if number > best:
+                best = number
+                best_key = f"{container_name}.{key}" if container_name != "top" else str(key)
+
+    return best, best_key
+
+
+def _extract_cached_tokens(u: dict) -> tuple[int, str]:
+    """从 usage 提取缓存命中 token 与命中的上游字段名，覆盖主流 provider。
 
     - OpenAI / OpenRouter: prompt_tokens_details.cached_tokens、input_tokens_details.cached_tokens
     - DeepSeek:            prompt_cache_hit_tokens
     - Anthropic 风格:      cache_read_input_tokens / cache_read_tokens（顶层或 input_tokens_details 内）
     - 部分网关:            顶层 cached_tokens / input_cached_tokens
+
+    固定候选键都未命中时退回启发式扫描，兼容自定义命名的兼容端点。
     """
     prompt_details = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
     input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
 
     candidates = (
-        ("prompt_details", prompt_details.get("cached_tokens")),
-        ("input_details", input_details.get("cached_tokens")),
-        ("input_details", input_details.get("cache_read_input_tokens")),
-        ("input_details", input_details.get("cache_read_tokens")),
-        ("top", u.get("cached_tokens")),
-        ("top", u.get("input_cached_tokens")),
-        ("top", u.get("prompt_cache_hit_tokens")),
-        ("top", u.get("cache_read_input_tokens")),
-        ("top", u.get("cache_read_tokens")),
+        ("prompt_tokens_details.cached_tokens", prompt_details.get("cached_tokens")),
+        ("input_tokens_details.cached_tokens", input_details.get("cached_tokens")),
+        ("input_tokens_details.cache_read_input_tokens", input_details.get("cache_read_input_tokens")),
+        ("input_tokens_details.cache_read_tokens", input_details.get("cache_read_tokens")),
+        ("cached_tokens", u.get("cached_tokens")),
+        ("input_cached_tokens", u.get("input_cached_tokens")),
+        ("prompt_cache_hit_tokens", u.get("prompt_cache_hit_tokens")),
+        ("cache_read_input_tokens", u.get("cache_read_input_tokens")),
+        ("cache_read_tokens", u.get("cache_read_tokens")),
     )
 
-    for _, value in candidates:
+    for name, value in candidates:
+        if value is None:
+            continue
+
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if number > 0:
+            return number, name
+
+    return _scan_cached_tokens(u)
+
+
+def _extract_cache_miss_tokens(u: dict) -> int:
+    """只提取「未命中」量，用于反推命中量。
+
+    缓存写入量（cache_creation / cache_write）是新增计费而不是未命中：
+    DeepSeek 的 prompt_cache_miss_tokens 与 prompt_tokens 同口径（命中+未命中），
+    而 Anthropic 的 input_tokens 本身已排除缓存部分，两种语义不能混用，
+    否则会把写入量当成未命中量，虚增缓存命中率。
+    """
+    input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+    candidates = (
+        u.get("prompt_cache_miss_tokens"),
+        u.get("cache_miss_input_tokens"),
+        input_details.get("prompt_cache_miss_tokens"),
+        input_details.get("cache_miss_input_tokens"),
+    )
+
+    for value in candidates:
         if value is None:
             continue
 
@@ -303,7 +432,7 @@ def _extract_usage_io(raw_usage_obj) -> dict:
     raw_input = _safe_int(u.get("prompt_tokens", u.get("input_tokens", 0)))
     output = _safe_int(u.get("completion_tokens", u.get("output_tokens", 0)))
     total = _safe_int(u.get("total_tokens", 0))
-    cached = _extract_cached_tokens(u)
+    cached, cached_source = _extract_cached_tokens(u)
     uncached = _extract_uncached_tokens(u)
     reasoning = 0
 
@@ -315,12 +444,21 @@ def _extract_usage_io(raw_usage_obj) -> dict:
 
     cost = _safe_float(u.get("total_cost", u.get("cost", 0.0)))
 
-    if cached <= 0 and uncached > 0:
-        cached = max(0, raw_input - uncached)
+    # 只在厂商明确回报未命中量时反推命中量，写入量不参与推导。
+    if cached <= 0:
+        miss = _extract_cache_miss_tokens(u)
+
+        if miss > 0:
+            cached = max(0, raw_input - miss)
+            cached_source = "derived_from_cache_miss"
+
+    # 缓存命中量不得超过上游原始输入，否则命中率为负。
+    cached = min(cached, max(0, raw_input))
 
     return {
         "raw_input": max(0, raw_input),
         "cached_input": max(0, cached),
+        "cached_tokens_source": cached_source,
         "uncached_input": max(0, uncached),
         "effective_input": max(0, raw_input - cached),
         "output": max(0, output),
@@ -388,6 +526,7 @@ class ProviderClient:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         tool_choice: Any = "auto",
+        max_tokens: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         if not self.config.is_configured():
             raise ProviderError("Provider 未配置：请先在设置中填写 base_url / model")
@@ -397,14 +536,14 @@ class ProviderClient:
             "messages": messages,
             "stream": True,
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": self.config.max_tokens if max_tokens is None else max_tokens,
             "stream_options": {"include_usage": True},
         }
 
         if tools:
             payload["tools"] = tools
 
-        if tool_choice is not None:
+        if tools and tool_choice is not None:
             payload["tool_choice"] = tool_choice
 
         try:
@@ -419,12 +558,7 @@ class ProviderClient:
             raise ProviderError(f"Provider 请求失败: {exc}")
 
         if int(upstream.status_code or 0) >= 400:
-            try:
-                detail = upstream.text[:2000]
-            except Exception:
-                detail = ""
-
-            raise ProviderError(f"Provider HTTP {upstream.status_code}: {detail}")
+            raise ProviderError(f"Provider HTTP {upstream.status_code}: {read_provider_error_detail(upstream)}")
 
         if not getattr(upstream, "raw", None):
             raise ProviderError("Provider 未返回流式响应")

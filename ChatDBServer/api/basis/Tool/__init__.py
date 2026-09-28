@@ -142,6 +142,10 @@ MAIN_CONVERSATION_EXCLUDED_TOOL_NAMES = {
 # 项目模式强制 force 并自动询问权限，无需模型显式调用）。
 # exa_web_search 同属联网搜索，同步裁剪以保持项目模式纯净
 NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
+    "scheduled_task_create",
+    "scheduled_task_list",
+    "scheduled_task_update",
+    "scheduled_task_delete",
     "knowledge_list",
     "knowledge_basis_create",
     "knowledge_basis_delete",
@@ -238,6 +242,64 @@ import prompts
 
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduled_task_create",
+            "description": "按用户明确指定的每周时间创建定时任务。到点后由 Nexora 执行 prompt，将完整结果保存到用户知识库并发送通知。时间使用北京时间；周一为 0，周日为 6。用户没有说清执行星期或时刻时，先询问用户。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "简短任务标题。"},
+                    "prompt": {"type": "string", "description": "每次到点执行的完整提示词。"},
+                    "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "执行星期数组，周一 0、周日 6。"},
+                    "hour": {"type": "integer", "description": "北京时间小时，0 到 23。"},
+                    "minute": {"type": "integer", "description": "北京时间分钟，0 到 59。"},
+                },
+                "required": ["title", "prompt", "weekdays", "hour", "minute"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduled_task_list",
+            "description": "列出当前用户的定时任务及下次执行时间。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduled_task_update",
+            "description": "修改或暂停当前用户的定时任务。仅传入需要修改的字段；时间使用北京时间。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "从定时任务列表获取的任务 ID。"},
+                    "title": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "weekdays": {"type": "array", "items": {"type": "integer"}},
+                    "hour": {"type": "integer"},
+                    "minute": {"type": "integer"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduled_task_delete",
+            "description": "根据任务 ID 删除当前用户的定时任务。",
+            "parameters": {
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

@@ -10,6 +10,13 @@ from .agent_tunnel import call_local_tool_sync, get_agent_tools, is_agent_online
 agent_permissions_bp = Blueprint("agent_permissions", __name__)
 
 
+@agent_permissions_bp.record_once
+def _install_remote_gateway(state):
+    """设备网关属于 Agent 域，注册留在本域，主 server 不增加路由逻辑。"""
+    from .remote_gateway import remote_gateway_bp
+    state.app.register_blueprint(remote_gateway_bp)
+
+
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
 

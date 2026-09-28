@@ -31,6 +31,7 @@
             <nav class="nav-list">
                 <button type="button" class="nav-item active" data-view="provider">模型 Provider</button>
                 <button type="button" class="nav-item" data-view="general">对话</button>
+                <button type="button" class="nav-item" data-view="remote">远程连接</button>
                 <button type="button" class="nav-item" data-view="about">关于</button>
             </nav>
             <div class="nav-foot">本地模式 · 对话与会话均在本地</div>
@@ -106,6 +107,19 @@
             </section>
 
             <!-- About -->
+            <section id="view-remote" class="view">
+                <h1>远程连接</h1>
+                <p class="sub">在 Nexora 网页的 Projects 中生成配对码，再在这里绑定电脑。同账号设备可发送任务、查看历史和处理授权；云端只转发，历史与执行事件保存在本机。</p>
+                <label class="field"><span>服务器地址</span><input id="remote-url" type="url" placeholder="https://你的 Nexora 服务器"/></label>
+                <label class="field"><span>电脑名称</span><input id="remote-name" type="text" placeholder="我的电脑"/></label>
+                <label class="field"><span>一次性配对码</span><input id="remote-code" type="text" autocomplete="off"/></label>
+                <div class="pf-actions">
+                    <button id="remote-pair" type="button" class="primary">配对并启用</button>
+                    <button id="remote-toggle" type="button" class="secondary">启用远程连接</button>
+                </div>
+                <p id="remote-status" role="status" class="sub"></p>
+            </section>
+
             <section id="view-about" class="view">
                 <h1>关于</h1>
                 <p class="sub">NexoraCode — 运行在用户本地的编程助手。</p>
@@ -124,5 +138,6 @@
     </div>
 
     <script src="/settings.js"></script>
+    <script src="/remote-settings.js"></script>
 </body>
 </html>

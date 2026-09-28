@@ -23,7 +23,6 @@ from flask import Blueprint, Response, jsonify, request, send_file, send_from_di
 from werkzeug.utils import secure_filename
 
 from core import storage
-from prompts import PROFILE_INTERVIEW_PROMPT, PROFILE_UPDATE_PROMPT
 from core.lectures import (
     create_book as create_lecture_book,
     create_lecture as create_learning_lecture,
@@ -3768,76 +3767,73 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
     interview_active = bool(payload_map.get("interview"))
 
     base_system_prompt = (
-        "You are in NexoraLearning mode. Use NexoraLearning tools to inspect lectures, books, overview XML, detail XML, questions XML, "
-        "and only read raw text when needed. Prefer structured learning materials over direct full-text reads."
+        "You are in NexoraLearning mode. Follow task-specific instructions "
+        "in the current learning context."
         "\n\nWhen using the question tool, set track_answer=false and omit question_id for ordinary one-off clarification questions. "
         "Set track_answer=true and provide a stable question_id only when the user's answer must be tracked, reused, or written as durable learning state."
     )
+    context_blocks = [
+        {
+            "type": "learning_profile",
+            "title": "Learning Profile",
+            "content": json.dumps(
+                {
+                    "user_id": user_id,
+                    "user": user_payload,
+                    "selected_lectures": lecture_rows,
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "type": "learning_progress",
+            "title": "Learning Progress",
+            "content": "\n".join(progress_lines) if progress_lines else "No active lecture progress.",
+        },
+        {
+            "type": "learning_course_books",
+            "title": "Learning Course Books",
+            "content": json.dumps(book_rows, ensure_ascii=False),
+        },
+        {
+            "type": "learning_recent_records",
+            "title": "Recent Learning Records",
+            "content": json.dumps(recent_learning, ensure_ascii=False),
+        },
+        {
+            "type": "learning_profile_dimensions",
+            "title": "学习画像",
+            "content": (
+                f"画像完整度：{profile_rate}/{profile_total}\n"
+                + "\n".join(
+                    f"- {d['name']}（{d['key']}）：{'已填写 — ' + profile_dims[d['key']]['value'] if profile_dims.get(d['key'], {}).get('filled') else '未填写'}"
+                    for d in PROFILE_DIMENSIONS
+                )
+                + ("\n\n待填写维度：" + "、".join(empty_dims) if empty_dims else "\n\n所有维度已填写完毕。")
+                + "\n\n## 最近进步\n"
+                + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["progress"]) if profile_timeline["progress"] else "- 暂无记录")
+                + "\n\n## 需要注意\n"
+                + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["attention"]) if profile_timeline["attention"] else "- 暂无")
+            ),
+        },
+    ]
 
     if interview_active:
-        filled_list = [
-            d["name"] for d in PROFILE_DIMENSIONS if profile_dims.get(d["key"], {}).get("filled")
-        ]
-        filled_summary = "、".join(filled_list) or "无"
-        empty_summary = "、".join(empty_dims) or "无"
+        from core.memory import build_profile_center_payload
 
-        if empty_dims:
-            template = PROFILE_INTERVIEW_PROMPT
-        else:
-            template = PROFILE_UPDATE_PROMPT
-
-        interview_instruction = template.replace("{{filled_summary}}", filled_summary).replace("{{empty_list}}", empty_summary)
-        base_system_prompt += "\n\n## 画像访谈模式（已激活）\n\n" + interview_instruction
+        profile_center_payload = build_profile_center_payload(_cfg, user_id)
+        interview_prompt = str(profile_center_payload.get("interview_prompt") or "").strip()
+        context_blocks = [{
+            "type": "learning_profile_interview",
+            "title": "Learning Profile Interview",
+            "content": "## Learning Profile Interview\n" + interview_prompt,
+        }]
 
     return {
         "learning": True,
         "lecture_id": active_lecture_id,
         "system_prompt": base_system_prompt,
-        "context_blocks": [
-            {
-                "type": "learning_profile",
-                "title": "Learning Profile",
-                "content": json.dumps(
-                    {
-                        "user_id": user_id,
-                        "user": user_payload,
-                        "selected_lectures": lecture_rows,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-            {
-                "type": "learning_progress",
-                "title": "Learning Progress",
-                "content": "\n".join(progress_lines) if progress_lines else "No active lecture progress.",
-            },
-            {
-                "type": "learning_course_books",
-                "title": "Learning Course Books",
-                "content": json.dumps(book_rows, ensure_ascii=False),
-            },
-            {
-                "type": "learning_recent_records",
-                "title": "Recent Learning Records",
-                "content": json.dumps(recent_learning, ensure_ascii=False),
-            },
-            {
-                "type": "learning_profile_dimensions",
-                "title": "学习画像",
-                "content": (
-                    f"画像完整度：{profile_rate}/{profile_total}\n"
-                    + "\n".join(
-                        f"- {d['name']}（{d['key']}）：{'已填写 — ' + profile_dims[d['key']]['value'] if profile_dims.get(d['key'], {}).get('filled') else '未填写'}"
-                        for d in PROFILE_DIMENSIONS
-                    )
-                    + ("\n\n待填写维度：" + "、".join(empty_dims) if empty_dims else "\n\n所有维度已填写完毕。")
-                    + "\n\n## 最近进步\n"
-                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["progress"]) if profile_timeline["progress"] else "- 暂无记录")
-                    + "\n\n## 需要注意\n"
-                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["attention"]) if profile_timeline["attention"] else "- 暂无")
-                ),
-            },
-        ],
+        "context_blocks": context_blocks,
         "meta": {
             "source": "nexoralearning_runtime",
             "selected_lecture_count": len(lecture_rows),

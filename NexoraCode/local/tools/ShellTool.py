@@ -19,6 +19,7 @@ from pathlib import Path
 
 from core.config import config
 from ..Tool import LocalTool, ToolContext
+from .CommandRuntime import run_command
 
 
 _BLACKLIST = (
@@ -83,14 +84,12 @@ class ShellExecTool(LocalTool):
         env["PYTHONUNBUFFERED"] = "1"
 
         try:
-            result = subprocess.run(
+            result = run_command(
                 patched_command,
-                shell=True,
-                capture_output=True,
-                text=False,
                 timeout=timeout,
                 cwd=str(resolved),
                 env=env,
+                cancel_checker=context.cancelled,
             )
 
             stdout = _decode_output(result.stdout)

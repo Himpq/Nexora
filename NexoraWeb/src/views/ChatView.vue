@@ -27,13 +27,16 @@
             @open-settings="handleOpenSettings"
             @open-chat="handleOpenLearningChat"
             @open-workspaces="handleOpenWorkspaces"
+            @open-projects="openView('projects')"
             @open-files="handleOpenFileCenter"
             @open-knowledge-mgmt="handleOpenKnowledgeMgmt"
+            @open-scheduled-tasks="handleOpenScheduledTasks"
             @open-learning="handleOpenLearning"
             @learning-nav="handleLearningNav"
             @learning-new="handleLearningNew"
             @open-learning-conversation="handleOpenLearningConversation"
             @open-changes="changesOpen = true"
+            @open-remote="remoteConnectionOpen = true"
             @view-branch-source="handleViewBranchSource"
         />
 
@@ -107,6 +110,7 @@
                             @regenerate="handleRegenerate"
                             @question-answer="handleQuestionAnswer"
                             @open-image="handleOpenImage"
+                            @open-knowledge="handleOpenKnowledgeReference"
                             @fork="handleForkMessage"
                             @switch-version="handleSwitchVersion"
                         />
@@ -173,6 +177,7 @@
                                     :message="message"
                                     readonly
                                     @open-image="handleOpenImage"
+                                    @open-knowledge="handleOpenKnowledgeReference"
                                 />
                             </template>
                         </div>
@@ -192,6 +197,17 @@
                         :open="knowledgeMgmtOpen"
                         @close="backToChat"
                         @open-document="handleOpenKnowledgeDocument"
+                    />
+                </div>
+
+                <div v-show="overlay.view === 'projects'" class="gddp-content-view">
+                    <RemoteTaskPanel @open-image="imageViewerUrl = $event" />
+                </div>
+
+                <div v-show="scheduledTasksOpen" class="gddp-content-view">
+                    <ScheduledTasksView
+                        :open="scheduledTasksOpen"
+                        @open-knowledge="handleOpenKnowledgeDocument"
                     />
                 </div>
 
@@ -243,6 +259,8 @@
         />
 
         <ChangesModal :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
+    
+    <RemoteConnectionModal :open="remoteConnectionOpen" @close="remoteConnectionOpen = false" />
 
         <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
@@ -280,6 +298,7 @@
 
     import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
+    import type { KnowledgeReference } from '@/stream/knowledgeReferences'
     import { deleteMessage, forkConversation, resolveConversationQuestion, switchMessageVersion, updateMessageContent } from '@/api/conversations'
     import { chatStream, type ChatStreamChunk, type ChatStreamHandlers } from '@/network/chatStream'
     import { showConfirm } from '@/stores/confirm'
@@ -300,6 +319,7 @@
     import ChatHeader from '@/components/ChatHeader.vue'
     import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
     import ChangesModal from '@/components/ChangesModal.vue'
+    import RemoteConnectionModal from '@/components/RemoteConnectionModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
@@ -314,12 +334,14 @@
     import MessageItem from '@/components/MessageItem.vue'
     import NotesPanel from '@/components/NotesPanel.vue'
     import SelectionContextMenu from '@/components/SelectionContextMenu.vue'
+    import ScheduledTasksView from '@/components/ScheduledTasksView.vue'
     import LearningFrameView from '@/components/LearningFrameView.vue'
     import SettingsModal from '@/components/SettingsModal.vue'
     import Sidebar from '@/components/Sidebar.vue'
     import TokenDetailModal from '@/components/TokenDetailModal.vue'
     import TurnIndicatorPanel from '@/components/TurnIndicatorPanel.vue'
     import WorkspacesView from '@/components/workspaces/WorkspacesView.vue'
+    import RemoteTaskPanel from '@/components/nexoracode/RemoteTaskPanel.vue'
 
     import type { CloudFileItem } from '@/api/files-center'
     import type { NoteItem } from '@/api/notes'
@@ -340,6 +362,7 @@
     const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
     const settingsOpen = ref(false)
     const changesOpen = ref(false)
+    const remoteConnectionOpen = ref(false)
     const notesOpen = ref(false)
     const sidebarCollapsed = ref(false)
     const tokenDetailOpen = ref(false)
@@ -548,6 +571,7 @@
         { immediate: true }
     )
     const knowledgeMgmtOpen = computed(() => overlay.view === 'knowledge-mgmt')
+    const scheduledTasksOpen = computed(() => overlay.view === 'scheduled-tasks')
     const knowledgeOpen = computed(() => overlay.view === 'knowledge')
     const mailCenterOpen = computed(() => overlay.view === 'mail')
     const learningOpen = computed(() => overlay.view === 'learning')
@@ -925,7 +949,7 @@
     }
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
-    const activeView = computed<'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'>(() => {
+    const activeView = computed<'chat' | 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'>(() => {
         return overlay.view || 'chat'
     })
 
@@ -1488,6 +1512,13 @@
             return
         }
 
+        // 模型正文已完成；终帧仍会补齐已落盘消息和 usage，但此时先停止正文输出动画。
+        if (chunk.type === 'done') {
+            conversationStore.finishStreamOutput(state.conversationId)
+
+            return
+        }
+
         // stream_session 携带早期 context_events（首帧即带，避免结束后突然出现在开头）
         if (chunk.type === 'stream_session' && chunk.conversation_id) {
             if (Array.isArray((chunk as Record<string, unknown>).context_events)) {
@@ -1556,6 +1587,7 @@
         const detail = info as {
             error?: string
             errorCode?: string
+            transportInterrupted?: boolean
             finalContent?: string
             finalMessage?: Record<string, unknown>
             contextEvents?: ConversationContextEvent[]
@@ -1579,6 +1611,20 @@
 
         if (reason === 'error') {
             const errorCode = String(detail?.errorCode || '')
+
+            // 传输层中断不等于模型生成失败:网络层已保留服务端流并会继续尝试续播。
+            // 此处严禁调用 abortStream,否则会清掉 sessionStorage 快照,刷新后只能看到空占位。
+            if (detail?.transportInterrupted) {
+                chatStream.persistSnapshot(true)
+
+                if (conversationStore.currentId === state.conversationId) {
+                    showToast('连接暂时中断,服务端仍在生成,恢复网络后会继续', 'warning')
+                }
+
+                state.errorToastShown = false
+
+                return
+            }
 
             // 索引过期:本地序号与服务端脱锚,重载会话回到权威数据(幽灵消息随之消失)
             if (state.staleIndexPending || errorCode === 'conversation_index_stale') {
@@ -1913,6 +1959,17 @@
         openView('knowledge', { keepPanel: 'knowledge' })
     }
 
+    /** 对话中的 [kb] 引用:打开对应知识库正文,来源片段通过按钮 title 保留可见。 */
+    function handleOpenKnowledgeReference(reference: KnowledgeReference): void {
+        const title = String(reference.source || '').trim()
+
+        if (!title) {
+            return
+        }
+
+        handleOpenKnowledgeDocument(title)
+    }
+
     /** 知识库被删除:若当前正文正打开该文档则返回聊天主视图 */
     function handleKnowledgeDocumentDeleted(title: string): void {
         if (knowledgeTitle.value !== title) {
@@ -1942,6 +1999,17 @@
         }
 
         openView('knowledge-mgmt')
+    }
+
+    /** 定时任务与其他内容视图互斥；执行结果由知识库视图展示。 */
+    function handleOpenScheduledTasks(): void {
+        if (scheduledTasksOpen.value) {
+            backToChat()
+
+            return
+        }
+
+        openView('scheduled-tasks')
     }
 
     /** 侧边栏 Files 按钮:打开/关闭文件中心视图(对齐原版 openFilesFrameView 的互斥切换) */

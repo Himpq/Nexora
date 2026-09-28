@@ -56,48 +56,54 @@
                 <div class="input-options">
                     <div class="input-options-tools">
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
-                            <label
-                                class="composer-chip composer-chip-upload"
-                                :title="uploadingFiles ? '上传中...' : 'Upload File / Image'"
-                                :class="{ 'is-uploading': uploadingFiles }"
-                            >
-                                <input type="file" id="fileInput" style="display:none" multiple @change="handleFileSelection">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-                                </svg>
-                            </label>
+                            <!--
+                                云端专属控件整体隐去于 remote 形态:附件进的是云端沙箱,
+                                Thinking/Search/Tools 是云端 Agent 开关,电脑侧任务接口不认。
+                            -->
+                            <template v-if="isCloud">
+                                <label
+                                    class="composer-chip composer-chip-upload"
+                                    :title="uploadingFiles ? '上传中...' : 'Upload File / Image'"
+                                    :class="{ 'is-uploading': uploadingFiles }"
+                                >
+                                    <input type="file" id="fileInput" style="display:none" multiple @change="handleFileSelection">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                                    </svg>
+                                </label>
 
-                            <button
-                                type="button"
-                                class="composer-chip composer-chip-thinking"
-                                :class="{ 'is-active': enableThinking }"
-                                :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
-                                :aria-pressed="enableThinking"
-                                @click="enableThinking = !enableThinking"
-                            >
-                                <i class="fa-solid fa-brain" aria-hidden="true"></i>
-                            </button>
+                                <button
+                                    type="button"
+                                    class="composer-chip composer-chip-thinking"
+                                    :class="{ 'is-active': enableThinking }"
+                                    :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
+                                    :aria-pressed="enableThinking"
+                                    @click="enableThinking = !enableThinking"
+                                >
+                                    <i class="fa-solid fa-brain" aria-hidden="true"></i>
+                                </button>
 
-                            <button
-                                type="button"
-                                class="composer-chip composer-chip-search"
-                                :class="{ 'is-active': enableWebSearch }"
-                                :title="enableWebSearch ? 'Web Search: On' : 'Web Search: Off'"
-                                :aria-pressed="enableWebSearch"
-                                @click="enableWebSearch = !enableWebSearch"
-                            >
-                                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                            </button>
+                                <button
+                                    type="button"
+                                    class="composer-chip composer-chip-search"
+                                    :class="{ 'is-active': enableWebSearch }"
+                                    :title="enableWebSearch ? 'Web Search: On' : 'Web Search: Off'"
+                                    :aria-pressed="enableWebSearch"
+                                    @click="enableWebSearch = !enableWebSearch"
+                                >
+                                    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                                </button>
 
-                            <!-- Tools 模式下拉(复用通用 GDDP SettingSelect,icon + 当前模式) -->
-                            <SettingSelect
-                                v-model="toolsMode"
-                                :options="toolsModes"
-                                popover-key="tools-menu"
-                                placement="top"
-                                class="chat-tools-select"
-                                prefix-icon="fa-solid fa-screwdriver-wrench"
-                            />
+                                <!-- Tools 模式下拉(复用通用 GDDP SettingSelect,icon + 当前模式) -->
+                                <SettingSelect
+                                    v-model="toolsMode"
+                                    :options="toolsModes"
+                                    popover-key="tools-menu"
+                                    placement="top"
+                                    class="chat-tools-select"
+                                    prefix-icon="fa-solid fa-screwdriver-wrench"
+                                />
+                            </template>
                         </div>
                     </div>
                 </div>
@@ -105,7 +111,7 @@
                 <textarea
                     id="messageInput"
                     ref="inputRef"
-                    placeholder="Type a message..."
+                    :placeholder="placeholder || 'Type a message...'"
                     rows="1"
                     :value="draft"
                     @input="handleInput"
@@ -113,8 +119,10 @@
                 >                </textarea>
 
                 <!-- 上下文/队列状态簇:作为容器独立子级(桌面与 footer 同排视觉不变;
-                    手机 Grid 布局放工具行右端作锚点,平衡整行) -->
-                <div class="token-footer-left">
+                    手机 Grid 布局放工具行右端作锚点,平衡整行)。
+                    remote 形态隐藏:这里统计的是云端会话的 CTX/TK,电脑任务的用量
+                    由每条消息上的 token 徽标呈现。 -->
+                <div v-if="isCloud" class="token-footer-left">
                     <span
                         v-if="conversationStore.queueCount > 0"
                         class="queue-badge"
@@ -232,10 +240,29 @@
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import TokenBudgetCard from '@/components/TokenBudgetCard.vue'
 
-    const props = defineProps<{
+    const props = withDefaults(defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */
         attachments?: AttachmentInput[]
-    }>()
+        /**
+         * 输入坞形态:
+         *   cloud  —— 走云端 Agent,附件/Thinking/Search/Tools 与 CTX 计数齐全;
+         *   remote —— 同一套输入坞,但内容下发给电脑,这些云端专属控件整体隐去
+         *              (附件进的是云端沙箱,Thinking/Search/Tools 是云端 Agent 开关,
+         *               电脑侧任务接口只认 message 与 model_name)。
+         */
+        variant?: 'cloud' | 'remote'
+        /** remote 形态下由远程任务状态机驱动发送/停止按钮,不再看云端会话。 */
+        streaming?: boolean
+        /** 草稿命名空间:remote 传远程会话 id,避免与云端会话草稿串台。 */
+        draftKey?: string
+        placeholder?: string
+    }>(), {
+        attachments: undefined,
+        variant: 'cloud',
+        streaming: false,
+        draftKey: '',
+        placeholder: '',
+    })
 
     const emit = defineEmits<{
         send: [content: string, options: {
@@ -257,6 +284,12 @@
     const conversationStore = useConversationStore()
     const modelStore = useModelStore()
 
+    /** 是否云端形态:决定云端专属控件(工具簇/CTX 计数)是否渲染。 */
+    const isCloud = computed(() => props.variant === 'cloud')
+
+    /** 草稿命名空间:remote 用远程会话 id,云端沿用当前会话 id。 */
+    const draftNamespace = computed(() => props.draftKey || conversationStore.currentId)
+
     const draft = ref('')
     const inputRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -265,7 +298,7 @@
 
     /** 恢复当前会话草稿(挂载与切换对话时调用):回到上次未发送的文字,并同步输入框高度 */
     function restoreDraft(): void {
-        const saved = loadDraft(conversationStore.currentId)
+        const saved = loadDraft(draftNamespace.value)
 
         if (saved === draft.value) {
             return
@@ -287,16 +320,13 @@
     })
 
     // 切换对话/新建对话:换回该会话的草稿
-    watch(
-        () => conversationStore.currentId,
-        () => {
-            restoreDraft()
-        }
-    )
+    watch(draftNamespace, () => {
+        restoreDraft()
+    })
 
     // 输入即按会话落缓存(防刷新丢失);草稿清空时自动移除该会话缓存
     watch(draft, (text) => {
-        saveDraft(conversationStore.currentId, text)
+        saveDraft(draftNamespace.value, text)
     })
 
     /** 附件列表(空值安全:父级未传时为空数组) */
@@ -368,8 +398,11 @@
     const toolsMode = ref(normalizeToolsMode(composerPrefs.toolsMode))
     const toolsMenuOpen = computed(() => overlay.popover === 'tools-menu')
 
-    /** 生成中:输入框保持可用,发送按钮切换为"停止" */
-    const streaming = computed(() => conversationStore.currentConversationGenerating)
+    /** 生成中:输入框保持可用,发送按钮切换为"停止"。
+     *  remote 形态由远程任务状态机决定,云端形态看当前会话。 */
+    const streaming = computed(() => isCloud.value
+        ? conversationStore.currentConversationGenerating
+        : props.streaming)
 
     /** CTX 显示:当前模型上下文窗口(对齐原版 tokenBudgetUsage) */
     const ctxText = computed(() => {
@@ -750,7 +783,7 @@
         })
 
         // 发送成功后清除该会话草稿(避免刷新后旧草稿复活)
-        clearDraft(conversationStore.currentId)
+        clearDraft(draftNamespace.value)
 
         draft.value = ''
 

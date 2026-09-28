@@ -1902,6 +1902,9 @@ PROFILE_QUICK_INTERVIEW_PROMPT = """你正在为学习者进行一次「六维�
    没有调用工具 = 评分丢失，绝对不要只口头确认。
 4. 记录完成后继续提问下一个未评分维度；六个维度全部有分后，用 2-3 句话简短总结并结束，不要继续提问。
 
+## 工具范围
+本次评估只调用 question 和 submit_profile_score。不要调用 search、knowledge_list、knowledge_basis_read、教材检索或学习记忆工具。不要将评估结果写入学习记忆；分数只通过 submit_profile_score 保存。
+
 ## 评分约束
 - 每个未评分维度都必须出分，严禁以"证据不足""需要长期观察"为由留空或不评分。
 - 不要在回复中展示分数、置信度或内部判断。

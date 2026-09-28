@@ -9,8 +9,8 @@
     <header class="chat-header">
         <div class="header-left">
             <!-- 文件中心/Workspaces/知识库等覆盖视图:左侧仅返回按钮(对齐原版 closeFileCenterOrReturn) -->
-            <!-- Learning 例外:保留折叠按钮 + 模型选择,侧栏对话发送沿用全局选中模型 -->
-            <template v-if="view !== 'chat' && view !== 'learning'">
+            <!-- Learning/Remote 例外:保留折叠按钮 + 模型选择,两者都是"选中模型决定发到哪"的会话视图 -->
+            <template v-if="view !== 'chat' && view !== 'learning' && view !== 'projects'">
                 <button class="btn-icon" title="Back" @click="emit('back-to-chat')">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="19" y1="12" x2="5" y2="12"></line>
@@ -27,7 +27,21 @@
                     </svg>
                 </button>
 
-                <ModelSelect :models="models" />
+                <!--
+                    远程视图复用同一个选择器,但目录换成当前这台电脑的模型
+                    (受控模式,见 ModelSelect.selectedId/onSelect),避免把电脑的模型
+                    写进云端 modelStore 的全局选中项。
+                -->
+                <ModelSelect
+                    v-if="view === 'projects'"
+                    :models="remoteModels"
+                    popover-key="remote-model-select"
+                    :selected-id="remoteModelId"
+                    :on-select="selectRemoteModel"
+                    leading-placeholder="电脑默认模型"
+                    empty-label="这台电脑没有可用模型"
+                />
+                <ModelSelect v-else :models="models" />
             </template>
         </div>
 
@@ -121,6 +135,7 @@
     import { useConversationStore } from '@/stores/conversation'
     import { useMailStore } from '@/stores/mail'
     import { useNotificationStore } from '@/stores/notification'
+    import { remoteStore } from '@/stores/remote'
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
 
     import ModelSelect from './ModelSelect.vue'
@@ -141,7 +156,7 @@ const emit = defineEmits<{
         models: ModelItem[]
         knowledgeTitle?: string
         /** 当前视图:chat(默认) | files | workspaces | knowledge | knowledge-mgmt | mail | learning */
-        view?: 'chat' | 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'
+        view?: 'chat' | 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'
         /** 标题覆盖(如 Workspace 详情/共享对话标题);空串表示走视图默认标题 */
         overrideTitle?: string
         /** 覆盖标题的悬停说明(如「只读共享 · @owner」) */
@@ -158,6 +173,16 @@ const emit = defineEmits<{
     const mailStore = useMailStore()
 
     const notificationBtnRef = ref<HTMLElement | null>(null)
+
+    /** 远程视图的模型目录来自当前电脑,选中项也存远程 store(见 ModelSelect 受控模式)。 */
+    const remoteModels = computed<ModelItem[]>(() => remoteStore.models)
+    const remoteModelId = computed(() => remoteStore.modelName)
+
+    function selectRemoteModel(id: string): void {
+        remoteStore.modelName = id
+        // 标记为手动选择,后续轮询刷新模型目录时不再被电脑的 default_model 覆盖。
+        remoteStore.modelPinned = true
+    }
 
     /** 未读数(通知 store 唯一数据源:HTTP 拉取 + WSS 推送) */
     const notificationUnread = computed(() => notificationStore.unreadCount)
@@ -200,8 +225,10 @@ const emit = defineEmits<{
     const VIEW_TITLES: Record<string, string> = {
         files: 'Files',
         workspaces: 'Workspaces',
+        projects: 'Remote',
         knowledge: '',
         'knowledge-mgmt': '知识库管理',
+        'scheduled-tasks': '定时任务',
         mail: 'Mail',
         learning: 'Learning',
     }

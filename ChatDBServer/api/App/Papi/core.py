@@ -1543,10 +1543,21 @@ def _papi_stream_openai_chat(
         previous_response_id=None,
         current_function_outputs=None,
     )
+    stream_options = request_params.get('stream_options')
+    include_usage = bool(isinstance(stream_options, dict) and stream_options.get('include_usage'))
+    adapter_api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+
+    # Ask OpenAI-compatible providers to return usage for accounting even when
+    # the downstream client did not request a usage chunk.
+    if adapter_api_type in {'openai', 'openai_compatible'}:
+        upstream_stream_options = dict(stream_options) if isinstance(stream_options, dict) else {}
+        upstream_stream_options['include_usage'] = True
+        request_params['stream_options'] = upstream_stream_options
+
     _papi_log_final_request_summary(
         model_name=model_name,
         provider_name=str(getattr(adapter, 'provider_name', '') or ''),
-        adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+        adapter_api_type=adapter_api_type,
         request_params=request_params,
         use_responses_api=False,
         route_mode='chat_stream',
@@ -1557,8 +1568,6 @@ def _papi_stream_openai_chat(
         stream=True,
         messages=request_params.get('messages'),
     )
-    stream_options = request_params.get('stream_options')
-    include_usage = bool(isinstance(stream_options, dict) and stream_options.get('include_usage'))
     iterator = adapter.create_stream_iterator(
         client=client,
         request_params=request_params,
@@ -1824,7 +1833,9 @@ def _papi_stream_openai_chat(
         if not usage_payload:
             _papi_log(
                 f"[PAPI_CHAT_STREAM_USAGE_MISSING] model={model_name} "
-                f"include_usage={'yes' if include_usage else 'no'} events={event_counts}",
+                f"api_type={adapter_api_type or 'unknown'} "
+                f"upstream_include_usage={'yes' if adapter_api_type in {'openai', 'openai_compatible'} else 'no'} "
+                f"client_include_usage={'yes' if include_usage else 'no'} events={event_counts}",
                 level='error',
             )
         if usage_payload and callable(usage_recorder):

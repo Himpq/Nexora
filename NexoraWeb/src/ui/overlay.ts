@@ -21,7 +21,7 @@
 
 import { reactive } from 'vue'
 
-export type ContentViewId = 'files' | 'workspaces' | 'knowledge' | 'knowledge-mgmt' | 'mail' | 'learning'
+export type ContentViewId = 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'
 export type PanelId = 'files' | 'knowledge'
 
 /** 浮层状态(响应式单例) */

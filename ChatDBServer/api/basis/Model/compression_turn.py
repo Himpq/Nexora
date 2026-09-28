@@ -92,6 +92,7 @@ def run_append_compression_round(
     )
 
     stream_text = ""
+    usage_obj = None
 
     try:
         response_iterator = model.provider_adapter.create_stream_iterator(
@@ -110,6 +111,10 @@ def run_append_compression_round(
                 continue
 
             ev_type = str(event.get("type", "") or "").strip()
+
+            if ev_type == "usage":
+                usage_obj = event.get("usage") or event
+                continue
 
             if ev_type != "content_delta":
                 continue
@@ -132,6 +137,28 @@ def run_append_compression_round(
         print(f"[CTX_COMPRESS] append compression round failed: {exc}")
         yield {"type": "error", "error": out["error"], "from_stream": True}
         return out
+
+    if usage_obj is not None:
+        original_action = str(getattr(model, "_usage_action_type", "chat") or "chat")
+        model._usage_action_type = "context_compression"
+
+        try:
+            model._log_token_usage_safe(
+                usage_obj,
+                False,
+                [],
+                [],
+                user_message="上下文压缩",
+                round_content=stream_text,
+                timing_meta={"round_index": 0},
+            )
+        finally:
+            model._usage_action_type = original_action
+    else:
+        print(
+            "[CTX_COMPRESS_USAGE_MISSING] provider stream completed without usage event; "
+            f"model={getattr(model, 'model_name', '')} provider={getattr(model, 'provider', '')}"
+        )
 
     final_text = str(stream_text or "").strip()
     out["model_reply"] = final_text

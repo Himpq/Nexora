@@ -1,0 +1,31 @@
+/*
+ * remote-task-panel.css — 远程会话主区
+ *
+ * 输入坞、消息滚动区、消息块宽度全部复用云端会话的原生样式
+ * （.input-dock / .messages-area / MessageItem），这里只补远程特有的两处：
+ * 空态文案与消息区顶部内边距收窄，避免空会话时整块留白过大。
+ */
+
+.remote-task-panel {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+    background: var(--color-bg-page);
+    overflow: hidden;
+}
+
+/* 原生 .messages-area 自带 40px 上下留白；远程首屏常见空会话，收到 24px 更耐看。 */
+.remote-task-messages {
+    padding-top: 24px;
+    padding-bottom: 24px;
+}
+
+.remote-task-empty {
+    margin: auto;
+    max-width: 320px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.7;
+    text-align: center;
+}

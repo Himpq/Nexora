@@ -43,6 +43,10 @@ class ToolExecutor:
             "runtime_tool_enable": self._runtime_tool_enable,
             "skill": self._skill,
             "question": self._question,
+            "scheduled_task_create": self._scheduled_task_create,
+            "scheduled_task_list": self._scheduled_task_list,
+            "scheduled_task_update": self._scheduled_task_update,
+            "scheduled_task_delete": self._scheduled_task_delete,
             "ask_for_permission": self._ask_for_permission,
             "knowledge_list": self._get_knowledge_list,
             "memory_short_add": self._add_short,
@@ -733,6 +737,43 @@ class ToolExecutor:
             },
         )
         return "已添加到基础知识库"
+
+    def _scheduled_task_create(self, args: Dict[str, Any]) -> str:
+        """Create a weekly task for this model's authenticated user."""
+        from App.ScheduledTasks.store import create_task
+
+        task = create_task(
+            self.model.username,
+            args.get("title"),
+            args.get("prompt"),
+            args.get("weekdays"),
+            args.get("hour"),
+            args.get("minute"),
+        )
+        return json.dumps({"success": True, "task": task}, ensure_ascii=False)
+
+    def _scheduled_task_list(self, args: Dict[str, Any]) -> str:
+        """List only schedules owned by the current user."""
+        from App.ScheduledTasks.store import list_tasks
+
+        return json.dumps({"success": True, "tasks": list_tasks(self.model.username)}, ensure_ascii=False)
+
+    def _scheduled_task_update(self, args: Dict[str, Any]) -> str:
+        """Edit or pause one owned schedule."""
+        from App.ScheduledTasks.store import update_task
+
+        task_id = str(args.get("task_id") or "").strip()
+        changes = {key: value for key, value in args.items() if key != "task_id"}
+        task = update_task(self.model.username, task_id, changes)
+        return json.dumps({"success": True, "task": task}, ensure_ascii=False)
+
+    def _scheduled_task_delete(self, args: Dict[str, Any]) -> str:
+        """Delete one owned schedule."""
+        from App.ScheduledTasks.store import delete_task
+
+        task_id = str(args.get("task_id") or "").strip()
+        delete_task(self.model.username, task_id)
+        return json.dumps({"success": True, "task_id": task_id}, ensure_ascii=False)
 
     def _remove_short(self, args: Dict[str, Any]) -> str:
         self.model.user.removeShort(args.get("ID"))

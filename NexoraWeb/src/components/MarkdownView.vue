@@ -16,12 +16,17 @@
     import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
     import { renderMarkdownHtml } from '@/stream/markdownEngine'
+    import type { KnowledgeReference } from '@/stream/knowledgeReferences'
 
     /** 流式节流间隔(ms):该周期内的多次增量合并为一次解析 */
     const RENDER_THROTTLE_MS = 120
 
     const props = defineProps<{
         content: string
+    }>()
+
+    const emit = defineEmits<{
+        'knowledge-reference': [reference: KnowledgeReference]
     }>()
 
     /** 实际参与渲染的内容(节流缓冲区) */
@@ -78,10 +83,34 @@
     })
 
     const renderedHtml = computed(() => renderMarkdownHtml(displayContent.value))
+
+    /** v-html 内的知识来源按钮通过事件代理交给外层聊天视图处理。 */
+    function handleMarkdownClick(event: MouseEvent): void {
+        const target = event.target as HTMLElement | null
+        const reference = target?.closest<HTMLElement>('[data-kb-source]')
+
+        if (!reference) {
+            return
+        }
+
+        const source = String(reference.dataset.kbSource || '').trim()
+
+        if (!source) {
+            return
+        }
+
+        event.preventDefault()
+        event.stopPropagation()
+
+        emit('knowledge-reference', {
+            source,
+            snippet: String(reference.dataset.kbSnippet || '').trim(),
+        })
+    }
 </script>
 
 <template>
-    <div class="markdown-body" v-html="renderedHtml"></div>
+    <div class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
 </template>
 
 <style scoped>

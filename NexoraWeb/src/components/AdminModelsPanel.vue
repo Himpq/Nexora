@@ -76,6 +76,16 @@
                                 @update:model-value="saveOverageAction(selectedProvider, String($event))"
                             />
                         </span>
+                        <button
+                            class="btn-primary-outline btn-compact"
+                            type="button"
+                            :disabled="quotaRefreshing"
+                            title="重新读取最新额度"
+                            @click="loadQuota"
+                        >
+                            <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                            <span>刷新额度</span>
+                        </button>
                         <button class="btn-primary-outline btn-compact" type="button" @click="handleEditProvider(selectedProvider)">
                             <i class="fa-solid fa-pen" aria-hidden="true"></i>
                             <span>编辑供应商</span>
@@ -423,6 +433,7 @@
     const quotaProviders = ref<QuotaProvider[]>([])
     const quotaOverageActions = ref<Record<string, string>>({})
     const quotaDefaultAction = ref('disable_model')
+    const quotaRefreshing = ref(false)
     /** 显示单位(持久化到 localStorage,对齐原版 ADMIN_QUOTA_UNIT_STORAGE_KEY) */
     const QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit'
     const quotaUnit = ref(normalizeQuotaUnit(localStorage.getItem(QUOTA_UNIT_STORAGE_KEY)))
@@ -946,6 +957,12 @@
 
     /** 仅刷新额度(不影响模型列表) */
     async function loadQuota(): Promise<void> {
+        if (quotaRefreshing.value) {
+            return
+        }
+
+        quotaRefreshing.value = true
+
         try {
             const quota = await fetchAdminQuota()
 
@@ -955,6 +972,8 @@
             showToast('额度已刷新', 'success')
         } catch (error) {
             showError(error instanceof Error ? error.message : '刷新额度失败')
+        } finally {
+            quotaRefreshing.value = false
         }
     }
 
