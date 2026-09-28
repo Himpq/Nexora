@@ -10,7 +10,7 @@ import { UserAvatar } from '../common/UserAvatar';
 import { IconButton } from '../common/IconButton';
 import { RemoteSidebarSection } from '../nexoracode/RemoteSidebarSection';
 
-// 版本说明：与后端地址合并展示在侧栏底部说明行
+// 版本号显示在侧栏底部，部署地址只在设置内展示。
 const APP_VERSION_LABEL: string = 'v1.0.2';
 
 @Component
@@ -161,16 +161,16 @@ export struct SidebarPanel {
     @Builder
     ActionEntries() {
         Column({ space: Space.xs }) {
-            this.ActionRow('primary', $r('app.media.ic_plus'), this.app.sidebarView === 'chat'
-                ? '新对话' : (this.app.sidebarView === 'knowledge' ? '新建知识库' : '刷新电脑'), (): void => {
-                if (this.app.sidebarView === 'chat') {
-                    this.onNewChat();
-                } else if (this.app.sidebarView === 'knowledge') {
-                    this.onCreateKnowledge();
-                } else {
-                    this.onOpenProjects();
-                }
-            });
+            if (this.app.sidebarView !== 'remote') {
+                this.ActionRow('primary', $r('app.media.ic_plus'), this.app.sidebarView === 'chat'
+                    ? '新对话' : '新建知识库', (): void => {
+                    if (this.app.sidebarView === 'chat') {
+                        this.onNewChat();
+                    } else {
+                        this.onCreateKnowledge();
+                    }
+                });
+            }
 
             this.ActionRow('mail', $r('app.media.ic_mail'), '邮件', (): void => {
                 this.onOpenMail();
@@ -465,7 +465,7 @@ export struct SidebarPanel {
         .padding({ left: Space.lg, right: Space.lg, top: Space.sm });
     }
 
-    // 底部账户区：紧凑账户行（头像 + 展示名 + 设置按钮）与「后端地址 · 版本」说明行
+    // 底部账户区：紧凑账户行（头像 + 展示名 + 设置按钮）与版本说明行
     // 展示名沿用 accountDisplayName 普通方法链路（@ObjectLink 组件 getter 间接取值曾崩溃，见其注释）
     @Builder
     AccountFooter() {
@@ -498,7 +498,7 @@ export struct SidebarPanel {
             .height(48)
             .padding({ left: Space.lg, right: Space.xs });
 
-            Text(this.app.backendUrl + ' · ' + APP_VERSION_LABEL)
+            Text(APP_VERSION_LABEL)
                 .fontSize(FontSize.caption)
                 .lineHeight(LineHeight.caption)
                 .fontColor($r('app.color.text_tertiary'))
