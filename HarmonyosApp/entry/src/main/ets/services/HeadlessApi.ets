@@ -15,7 +15,7 @@ import { Identity } from './Identity';
 import { AgentEnvelope, AgentError } from '../models/AgentContracts';
 
 export class HeadlessApi {
-  private root: string = NxEnv.baseUrl();
+  private baseUrl: string = NxEnv.agentApiBaseUrl();
   private username: string = NxEnv.USE_LOCAL ? NxEnv.LOCAL_USERNAME : '';
   private sessionCookie: string = '';
   private fromAppStorage: boolean = false;
@@ -94,7 +94,7 @@ export class HeadlessApi {
       if (body.length > 0) {
         options.extraData = body;
       }
-      const resp: http.HttpResponse = await client.request(this.root + '/api/agent/v1' + path, options);
+      const resp: http.HttpResponse = await client.request(this.baseUrl + path, options);
       if (resp.responseCode < 200 || resp.responseCode >= 300) {
         throw new Error('HTTP ' + resp.responseCode + ' ' + path);
       }

@@ -69,7 +69,7 @@ export default class EntryFormAbility extends FormExtensionAbility {
       this.reflect(formId, '这张卡上现在没有等你决定的事，打开 Nexora 看看今天的安排。', false);
       return;
     }
-    const root: string = baseUrl.length > 0 ? baseUrl.replace(/\/+$/, '') : NxEnv.baseUrl();
+    const agentBaseUrl: string = NxEnv.agentApiBaseUrl(baseUrl);
     this.reflect(formId, '正在把你的选择告诉 Nexora…', false);
 
     const client = http.createHttp();
@@ -81,7 +81,7 @@ export default class EntryFormAbility extends FormExtensionAbility {
       if (cookie.length > 0) {
         headers['Cookie'] = cookie;
       }
-      const resp: http.HttpResponse = await client.request(root + '/api/agent/v1/decision/respond', {
+      const resp: http.HttpResponse = await client.request(agentBaseUrl + '/decision/respond', {
         method: http.RequestMethod.POST,
         header: headers,
         extraData: JSON.stringify({ 'decision_id': decisionId, 'response': response }),

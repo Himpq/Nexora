@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
+from core.user.user import validate_user_id
+
 _GLOBAL_KEYS = {"major", "cognitive_style", "interest_direction", "learning_pace"}
 _SINGLE_KEYS = {"major", "cognitive_style", "learning_goal", "learning_pace"}
 PERSONAL_MEMORY_KINDS = ("goal", "preference", "pace", "difficulty", "background", "interest")
@@ -58,10 +60,7 @@ _SELECT = """SELECT m.*, s.source, s.source_type, s.occurred_at, s.recorded_at, 
 
 def validate_memory_user_id(user_id: str) -> str:
     """Match facade username semantics, including Chinese account names."""
-    user = str(user_id or "").strip()
-    if not user or len(user) > 160 or user in {".", ".."} or any(char in user for char in ("/", "\\", "\x00")):
-        raise ValueError("invalid user_id")
-    return user
+    return validate_user_id(user_id)
 
 
 def _path(cfg: Mapping[str, Any], user_id: str) -> Path:

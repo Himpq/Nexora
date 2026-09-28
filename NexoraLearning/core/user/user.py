@@ -45,8 +45,29 @@ def _users_root(cfg: Dict[str, Any]) -> Path:
     return Path(cfg.get("data_dir") or "data") / "users"
 
 
+def validate_user_id(user_id: str) -> str:
+    """Reject account identifiers that can escape or alias the user directory."""
+    user = str(user_id or "").strip()
+
+    if not user or len(user) > 160 or user in {".", ".."} or any(char in user for char in ("/", "\\", "\x00", ":")):
+        raise ValueError("invalid user_id")
+
+    return user
+
+
+def _contained_user_dir(root_path: Path, user_id: str) -> Path:
+    user = validate_user_id(user_id)
+    root = root_path.resolve()
+    folder = root / user
+
+    if folder.resolve() != folder:
+        raise ValueError("user path must stay in the user's directory")
+
+    return folder
+
+
 def _user_dir(cfg: Dict[str, Any], user_id: str) -> Path:
-    return _users_root(cfg) / user_id
+    return _contained_user_dir(_users_root(cfg), user_id)
 
 
 def _user_json_path(cfg: Dict[str, Any], user_id: str) -> Path:
@@ -86,7 +107,7 @@ def _question_refs_root(cfg: Dict[str, Any]) -> Path:
 
 
 def _question_refs_path(cfg: Dict[str, Any], user_id: str) -> Path:
-    return _question_refs_root(cfg) / user_id / "question_refs.jsonl"
+    return _contained_user_dir(_question_refs_root(cfg), user_id) / "question_refs.jsonl"
 
 
 def _memories_dir(cfg: Dict[str, Any], user_id: str) -> Path:

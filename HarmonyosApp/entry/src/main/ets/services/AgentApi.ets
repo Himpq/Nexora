@@ -28,15 +28,14 @@ import { Identity } from './Identity';
 import { ReplyCancellation } from './ReplyCancellation';
 
 export class AgentApi {
-  private baseUrl: string = NxEnv.CLOUD_BASE_URL + '/api/agent/v1';
+  private baseUrl: string = NxEnv.agentApiBaseUrl();
   private username: string = '';
   private apiKey: string = '';
 
   constructor() {
     // 环境与身份统一来自 AppStorage（EntryAbility → Identity.resolve 写入），不再各自写死。
-    this.setBaseUrl(NxEnv.baseUrl());
     const override: string | undefined = AppStorage.get<string>('nxBaseUrl');
-    if (override !== undefined && override.length > 0) {
+    if (NxEnv.USE_LOCAL && override !== undefined && override.length > 0) {
       this.setBaseUrl(override);
     }
     this.refreshIdentity();
@@ -44,11 +43,8 @@ export class AgentApi {
 
   /** 身份异步解析完成后（华为账号登录）再取一次，避免首个请求用到空用户名。 */
   private refreshIdentity(): void {
-    const baseOverride: string | undefined = AppStorage.get<string>('nxBaseUrl');
-    const base: string = baseOverride !== undefined && baseOverride.trim().length > 0
-      ? baseOverride.trim()
-      : NxEnv.baseUrl();
-    const expectedBase: string = base.replace(/\/+$/, '') + '/api/agent/v1';
+    const baseOverride: string | undefined = NxEnv.USE_LOCAL ? AppStorage.get<string>('nxBaseUrl') : undefined;
+    const expectedBase: string = NxEnv.agentApiBaseUrl(baseOverride !== undefined ? baseOverride : '');
     if (this.baseUrl !== expectedBase) {
       this.baseUrl = expectedBase;
     }
@@ -63,9 +59,13 @@ export class AgentApi {
   }
 
   setBaseUrl(baseUrl: string): void {
+    if (!NxEnv.USE_LOCAL) {
+      throw new Error('云端 Agent 地址由账号代理统一配置');
+    }
+
     const trimmed = baseUrl.trim();
     if (trimmed.length > 0) {
-      this.baseUrl = trimmed.replace(/\/+$/, '') + '/api/agent/v1';
+      this.baseUrl = NxEnv.agentApiBaseUrl(trimmed);
     }
   }
 
@@ -77,7 +77,7 @@ export class AgentApi {
     for (const key of Object.keys(auth)) {
       headers[key] = auth[key];
     }
-    if (this.apiKey.length > 0) {
+    if (NxEnv.USE_LOCAL && this.apiKey.length > 0) {
       headers['X-API-Key'] = this.apiKey;
     }
     const options: http.HttpRequestOptions = {

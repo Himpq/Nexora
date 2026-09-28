@@ -1,40 +1,47 @@
-"""清理误入记忆的机器指令值（如 continue_learning）。
+"""按已核实的记忆 ID 清理误入记忆的机器指令值。
 
 用法（在 NexoraLearning 目录）：
-    python -X utf8 tools/retract_machine_memories.py --username ots20oug [--dry-run] [--data-dir data]
+    python -X utf8 tools/retract_machine_memories.py --username ots20oug --memory-id mem_xxx [--dry-run] [--data-dir data]
 
-规则：evidence.sqlite3 里 status='active' 且 quote 匹配 ^[a-z][a-z0-9_-]*$（长度 ≤ 64）的记忆
-标为 retracted，并写一条 source_type='system_cleanup' 的 feedback 留痕；不删除任何行。
+只有人工核实并明确列出的 ID 才会标为 retracted；同时写入
+source_type='system_cleanup' 的 feedback 留痕，不删除任何行。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 import sys
 import time
 from pathlib import Path
 
-_TOKEN = re.compile(r"^[a-z][a-z0-9_\-]{0,63}$")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--username", required=True)
     parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--memory-id", action="append", required=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    path = Path(args.data_dir) / "users" / args.username / "memories" / "evidence.sqlite3"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from core.memory.evidence_memory import _path
+
+    path = _path({"data_dir": args.data_dir}, args.username)
     if not path.is_file():
         print(json.dumps({"ok": False, "reason": "no_memory_db", "path": str(path)}, ensure_ascii=False))
         return 0
     connection = sqlite3.connect(str(path), timeout=15)
     connection.row_factory = sqlite3.Row
     rows = connection.execute("SELECT id, kind, key, quote FROM memories WHERE status='active'").fetchall()
-    targets = [row for row in rows if _TOKEN.match(str(row["quote"] or "").strip())]
+    requested_ids = set(args.memory_id)
+    targets = [row for row in rows if row["id"] in requested_ids]
+    missing_ids = requested_ids - {row["id"] for row in targets}
+
+    if missing_ids:
+        connection.close()
+        print(json.dumps({"ok": False, "reason": "memory_id_not_active", "ids": sorted(missing_ids)}, ensure_ascii=False))
+        return 1
     result = {"ok": True, "username": args.username, "active_before": len(rows),
               "retracted": [{"id": r["id"], "kind": r["kind"], "quote": r["quote"]} for r in targets],
               "dry_run": bool(args.dry_run)}

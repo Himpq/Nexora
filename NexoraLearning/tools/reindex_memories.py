@@ -41,17 +41,24 @@ def main() -> int:
     args = parser.parse_args()
     cfg = _load_cfg(args.data_dir)
     from core.memory import memory_index
-    from core.memory.evidence_memory import _SELECT, _public
+    from core.memory.evidence_memory import _SELECT, _path, _public, validate_memory_user_id
 
     if not memory_index.enabled(cfg):
         print(json.dumps({"ok": False, "reason": "nexoradb_not_configured",
                           "service_url": (cfg.get("nexoradb") or {}).get("service_url")}, ensure_ascii=False))
         return 1
     users_root = Path(args.data_dir) / "users"
-    users = [args.username] if args.username else sorted(p.name for p in users_root.iterdir() if (p / "memories" / "evidence.sqlite3").is_file())
+    if args.username:
+        users = [validate_memory_user_id(args.username)]
+    elif users_root.is_dir():
+        users = sorted(p.name for p in users_root.iterdir() if p.is_dir() and _path(cfg, p.name).is_file())
+    else:
+        users = []
+
     report = {}
+
     for user in users:
-        db = users_root / user / "memories" / "evidence.sqlite3"
+        db = _path(cfg, user)
         if not db.is_file():
             report[user] = {"rows": 0, "indexed": 0, "reason": "no_db"}
             continue

@@ -25,4 +25,14 @@ export class NxEnv {
   static baseUrl(): string {
     return NxEnv.USE_LOCAL ? NxEnv.LOCAL_BASE_URL : NxEnv.CLOUD_BASE_URL;
   }
+
+  /** 云端 Agent 只走账号会话鉴权的代理；本地联调才直连 Learning。 */
+  static agentApiBaseUrl(localBaseUrl: string = ''): string {
+    if (NxEnv.USE_LOCAL) {
+      const baseUrl: string = localBaseUrl.trim().length > 0 ? localBaseUrl.trim() : NxEnv.LOCAL_BASE_URL;
+      return baseUrl.replace(/\/+$/, '') + '/api/agent/v1';
+    }
+
+    return NxEnv.NEXORA_AUTH_BASE_URL.replace(/\/+$/, '') + '/api/learning/agent';
+  }
 }
