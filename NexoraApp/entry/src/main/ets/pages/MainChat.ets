@@ -13,7 +13,9 @@ import { display, promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
-import { ChatMessage, TokenUsage, ToolResultPayload } from '../common/ChatTypes';
+import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory } from '../common/ChatTypes';
+import { Json } from '../common/JsonUtil';
+import { NexoraCodeApi, RemoteModel, RemoteTaskBody } from '../common/NexoraCodeApi';
 import { chatStream, ConversationModePayload, StreamListener, StreamOptions } from '../common/ChatStreamClient';
 import { ChatItemBuilder } from '../common/ChatItemBuilder';
 import { ChatItemDataSource } from '../common/ChatItemDataSource';
@@ -28,10 +30,11 @@ import { ChatInputBar } from '../components/ChatInputBar';
 import { QuickActionGrid } from '../components/QuickActionGrid';
 import { ImageViewer } from '../components/chat/ImageViewer';
 import { ChatItemRow } from '../components/chat/ChatItemRow';
-import { TurnIndicatorPanel } from '../components/chat/TurnIndicatorPanel';
+import { ChatScrollOverlay, ChatScrollOverlayState } from '../components/chat/ChatScrollOverlay';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
+import { RemoteModelPickerSheet } from '../components/sheets/RemoteModelPickerSheet';
 import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
@@ -76,6 +79,13 @@ const SCROLL_GAP_LOG_INTERVAL: number = 120;
 const CACHE_MIN_ROWS: number = 8;
 const CACHE_MAX_ROWS: number = 16;
 
+class RemotePermissionGrant {
+    path: string = '';
+    scope: string = '';
+    operation: string = '';
+    access: string = '';
+}
+
 // 单条流的绑定上下文：本地临时键的流在服务端返回会话 ID 后迁移，
 // context.key 始终指向当前缓冲/传输锁键，回调据此路由事件与视图更新
 interface StreamContext {
@@ -117,6 +127,17 @@ export struct MainChat {
     @State private title: string = '新对话';
     @State private loadingHistory: boolean = false;
     @State private loadError: string = '';
+
+    // 电脑会话沿用本页的消息流和渲染器，设备与轮询状态独立于本地会话缓冲。
+    @State private remoteDeviceId: string = '';
+    @State private remoteStreamId: string = '';
+    @State private remoteCursor: number = 0;
+    @State private remoteModelName: string = '';
+    @State private remoteModelLabel: string = '';
+    @State private remoteModels: RemoteModel[] = [];
+    private remotePollTimer: number = -1;
+    private remotePollBusy: boolean = false;
+    private remoteSessionEpoch: number = 0;
 
     // ---------- 多会话并行缓冲 ----------
     // 会话键 → 本地消息缓冲：切走的流持续写入自己的缓冲，切回时原样接上
@@ -176,14 +197,12 @@ export struct MainChat {
     @State private learningNavDepth: number = 0;
 
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
-    @State private showScrollBottom: boolean = false;
-    @State private scrollBottomPressed: boolean = false;
+    @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
 
     // 全屏图片查看器当前图片地址（空串表示关闭）
     @State private viewerUrl: string = '';
 
     // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
-    @State private activeTurnIndex: number = -1;
 
     // 轮次跳转后临时高亮的消息索引（-1 表示无高亮）
     private highlightToken: number = 0;
@@ -274,6 +293,11 @@ export struct MainChat {
         this.app.backHandler = (): boolean => {
             return this.handleBackPress();
         };
+    }
+
+    aboutToDisappear(): void {
+        this.remoteSessionEpoch++;
+        this.stopRemotePolling();
     }
 
     // 系统返回键处理：图片查看器 > 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
@@ -433,7 +457,7 @@ export struct MainChat {
         .height('100%')
         .backgroundColor($r('app.color.bg_page'))
         .bindSheet(this.showSheet, this.SheetBuilder(), {
-            height: this.sheetKind === 'model' ? SheetSize.MEDIUM : SheetSize.LARGE,
+            height: this.sheetKind === 'model' || this.sheetKind === 'remoteModel' ? SheetSize.MEDIUM : SheetSize.LARGE,
             showClose: false,
             dragBar: false,
             onDisappear: () => {
@@ -488,7 +512,9 @@ export struct MainChat {
                     .textOverflow({ overflow: TextOverflow.Ellipsis });
 
                 Row({ space: Space.xxs }) {
-                    Text(this.modelLabel)
+                    Text(this.remoteDeviceId.length > 0
+                        ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
+                        : this.modelLabel)
                         .fontSize(FontSize.micro)
                         .fontColor($r('app.color.text_tertiary'))
                         .maxLines(1)
@@ -674,75 +700,23 @@ export struct MainChat {
                     .color($r('app.color.brand_primary'));
             }
 
-            // 回到底部按钮：滚动离开底部时浮现，定位在内容区右下角（输入框正上方）
-            if (this.showScrollBottom && this.messages.length > 0) {
-                Stack() {
-                    this.ScrollBottomButton();
+            ChatScrollOverlay({
+                state: this.scrollOverlayState,
+                turnCount: this.userTurnCount,
+                messagesExist: this.messages.length > 0,
+                onJump: (turnIndex: number) => {
+                    this.jumpToTurn(turnIndex);
+                },
+                onRequirePreviews: (): string[] => {
+                    return this.buildTurnPreviews();
+                },
+                onScrollToEnd: () => {
+                    this.scrollToEnd('button', true);
                 }
-                .alignContent(Alignment.BottomEnd)
-                .width('100%')
-                .height('100%')
-                .padding({ right: Space.lg, bottom: Space.lg })
-                .hitTestBehavior(HitTestMode.Transparent);
-            }
-
-            // 轮次指示器：右侧垂直居中，仅在有多轮对话时显示
-            if (this.userTurnCount >= 2) {
-                Stack() {
-                    TurnIndicatorPanel({
-                        turnCount: this.userTurnCount,
-                        activeIndex: this.activeTurnIndex,
-                        onJump: (turnIndex: number) => {
-                            this.jumpToTurn(turnIndex);
-                        },
-                        onRequirePreviews: (): string[] => {
-                            return this.buildTurnPreviews();
-                        }
-                    });
-                }
-                .alignContent(Alignment.End)
-                .width('100%')
-                .height('100%')
-                .padding({ right: Space.sm })
-                .hitTestBehavior(HitTestMode.Transparent);
-            }
+            });
         }
         .layoutWeight(1)
         .width('100%');
-    }
-
-    // 回到底部浮动按钮：分阶段定位到末条，避免从远端平滑加载全部中间消息。
-    @Builder
-    ScrollBottomButton() {
-        Column() {
-            Image($r('app.media.ic_chevron_down'))
-                .width(Size.icon)
-                .height(Size.icon)
-                .fillColor($r('app.color.icon_secondary'));
-        }
-        .width(Size.touchTarget)
-        .height(Size.touchTarget)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(Size.touchTarget / 2)
-        .backgroundColor(this.scrollBottomPressed ? $r('app.color.bg_pressed') : $r('app.color.bg_card'))
-        .shadow(Shadow.raised)
-        .scale({
-            x: this.scrollBottomPressed ? PressScale.pressed : PressScale.normal,
-            y: this.scrollBottomPressed ? PressScale.pressed : PressScale.normal
-        })
-        .animation({ duration: Motion.durationPress, curve: Motion.press })
-        .onTouch((event: TouchEvent) => {
-            if (event.type === TouchType.Down) {
-                this.scrollBottomPressed = true;
-            }
-
-            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-                this.scrollBottomPressed = false;
-            }
-        })
-        .onClick(() => {
-            this.scrollToEnd('button', true);
-        });
     }
 
     // 装饰背景：品牌色渐变光球，垫在问候区背后，仅空态出现
@@ -818,7 +792,11 @@ export struct MainChat {
                 iconSize: Size.iconSmall,
                 buttonSize: 32,
                 onTap: () => {
-                    this.loadHistory(this.conversationId);
+                    if (this.remoteDeviceId.length > 0) {
+                        void this.openRemoteChat(this.remoteDeviceId, this.conversationId, this.title, null);
+                    } else {
+                        this.loadHistory(this.conversationId);
+                    }
                 }
             });
         }
@@ -874,6 +852,12 @@ export struct MainChat {
                     onOpenNotes: () => {
                         this.closeSidebar();
                         this.openNotes(false);
+                    },
+                    onOpenProjects: () => {
+                        this.app.setSidebarView('remote');
+                    },
+                    onOpenRemoteChat: (deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): void => {
+                        void this.openRemoteChat(deviceId, remoteId, remoteTitle, project);
                     },
                     onOpenLearning: () => {
                         void this.openLearning();
@@ -942,6 +926,12 @@ export struct MainChat {
 
     // ---------- 弹层 ----------
     private openSheetModel(): void {
+        if (this.remoteDeviceId.length > 0) {
+            this.sheetKind = 'remoteModel';
+            this.showSheet = true;
+            return;
+        }
+
         this.sheetKind = 'model';
         this.showSheet = true;
     }
@@ -963,7 +953,17 @@ export struct MainChat {
 
     @Builder
     SheetBuilder() {
-        if (this.sheetKind === 'model') {
+        if (this.sheetKind === 'remoteModel') {
+            RemoteModelPickerSheet({
+                models: this.remoteModels,
+                selectedId: this.remoteModelName,
+                onPicked: (modelId: string, label: string): void => {
+                    this.remoteModelName = modelId;
+                    this.remoteModelLabel = label;
+                    this.closeSheet();
+                }
+            });
+        } else if (this.sheetKind === 'model') {
             ModelPickerSheet({
                 app: this.app,
                 onPicked: (modelId: string) => {
@@ -1197,6 +1197,314 @@ export struct MainChat {
     }
 
     // ---------- 会话行为 ----------
+    /** 电脑项目点击后在主聊天页打开远程历史，项目本身则新建一个关联该项目的远程会话。 */
+    private async openRemoteChat(deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): Promise<void> {
+        this.remoteSessionEpoch++;
+        const epoch: number = this.remoteSessionEpoch;
+
+        this.remoteDeviceId = deviceId;
+        this.remoteStreamId = '';
+        this.stopRemotePolling();
+        this.remoteCursor = 0;
+        this.streaming = false;
+        this.loadError = '';
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
+
+        try {
+            const id: string = remoteId.length > 0 ? remoteId : await NexoraCodeApi.createConversation(deviceId, project);
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            this.conversationId = id;
+            this.title = remoteTitle.length > 0 ? remoteTitle : '电脑对话';
+            this.replaceMessages([]);
+
+            const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/conversations/' + id + '/messages');
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            const history: ChatMessage[] = [];
+
+            for (const raw of Json.array(data, 'messages')) {
+                const row: Record<string, Object> = raw as Record<string, Object>;
+                const message: ChatMessage = messageFromHistory(row as RawHistoryMessage, history.length);
+                message.streaming = false;
+                history.push(message);
+            }
+
+            this.replaceMessages(history);
+            this.applyQuestionLocks(id, history);
+            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+            this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
+            const catalog = await NexoraCodeApi.models(deviceId);
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            this.remoteModelName = catalog.defaultModel;
+            this.remoteModels = catalog.models;
+            this.remoteModelLabel = catalog.models
+                .filter((model): boolean => model.id === catalog.defaultModel)
+                .map((model): string => model.name + ' · ' + model.provider)[0] || '';
+            this.closeSidebar();
+            this.scrollToEnd('remote-history');
+        } catch (cause) {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+                this.closeSidebar();
+            }
+        }
+    }
+
+    /** 远程任务的增量事件更新同一条 ChatMessage，并经主聊天的数据源刷新对应渲染块。 */
+    private async sendRemoteMessage(text: string): Promise<void> {
+        if (this.streaming || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+
+        try {
+            if (this.conversationId.length === 0) {
+                const createdId: string = await NexoraCodeApi.createConversation(deviceId, null);
+
+                if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId) {
+                    return;
+                }
+
+                this.conversationId = createdId;
+            }
+
+            const conversationId: string = this.conversationId;
+
+            const user: ChatMessage = ChatMessage.createUser(text);
+            const assistant: ChatMessage = ChatMessage.createAssistant();
+            this.messages = [...this.messages, user, assistant];
+            this.itemSource.appendItems(this.buildItems([user, assistant]));
+            this.rebuildItemIndex();
+            this.streaming = true;
+            this.scrollToEnd('remote-send', true);
+
+            const body: RemoteTaskBody = {
+                request_id: 'mobile-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+                conversation_id: conversationId,
+                message: text,
+                model_name: this.remoteModelName
+            };
+            const result: Record<string, Object> = await NexoraCodeApi.rpc(
+                deviceId, '/api/local/tasks', 'POST', body);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId
+                || conversationId !== this.conversationId) {
+                const staleStreamId: string = Json.string(result, 'stream_id');
+                if (staleStreamId.length > 0) {
+                    await NexoraCodeApi.rpc(deviceId, '/api/local/tasks/' + staleStreamId + '/cancel', 'POST');
+                }
+                return;
+            }
+
+            this.remoteStreamId = Json.string(result, 'stream_id');
+            this.remoteCursor = 0;
+            this.startRemotePolling();
+        } catch (cause) {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+                this.finishRemoteAssistant();
+            }
+        }
+    }
+
+    private startRemotePolling(): void {
+        if (this.remotePollTimer >= 0) {
+            return;
+        }
+
+        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, 1200);
+    }
+
+    private async pollRemoteEvents(): Promise<void> {
+        if (this.remotePollBusy || this.remoteStreamId.length === 0 || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        this.remotePollBusy = true;
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+        const streamId: string = this.remoteStreamId;
+
+        try {
+            const data: Record<string, Object> = await NexoraCodeApi.rpc(
+                deviceId, '/api/local/tasks/' + streamId + '/events', 'GET', undefined, this.remoteCursor);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId || streamId !== this.remoteStreamId) {
+                return;
+            }
+
+            const assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
+            const events: Object[] = Json.array(data, 'events');
+
+            if (assistant === undefined || assistant.isUser) {
+                return;
+            }
+
+            let pendingTextType: string = '';
+            let pendingText: string = '';
+            let appliedCount: number = 0;
+            let batchTextChars: number = 0;
+            let contentChanged: boolean = false;
+            let messageChanged: boolean = false;
+            let questionChanged: boolean = false;
+
+            const flushTextDelta = (): void => {
+                if (pendingText.length === 0) {
+                    return;
+                }
+
+                const segmentType: string = pendingTextType;
+                batchTextChars += pendingText.length;
+                assistant.appendDelta(segmentType === 'content' ? 'content' : 'reasoning', pendingText);
+                if (segmentType === 'content') {
+                    assistant.thinkingExpanded = false;
+                    contentChanged = true;
+                }
+                pendingText = '';
+                messageChanged = true;
+            };
+
+            for (const raw of events) {
+                const event: Record<string, Object> = raw as Record<string, Object>;
+                const seq: number = Json.number(event, '_stream_seq');
+
+                if (seq <= this.remoteCursor) {
+                    continue;
+                }
+
+                this.remoteCursor = seq;
+                const type: string = Json.string(event, 'type');
+                const callId: string = Json.string(event, 'call_id') || Json.string(event, 'id');
+                const name: string = Json.string(event, 'name');
+                appliedCount++;
+
+                if (type === 'content' || type === 'reasoning_content') {
+                    const delta: string = Json.string(event, 'content');
+                    const deltaType: string = type === 'content' ? 'content' : 'reasoning_content';
+
+                    if (pendingText.length > 0 && pendingTextType !== deltaType) {
+                        flushTextDelta();
+                    }
+
+                    pendingTextType = deltaType;
+                    pendingText += delta;
+                } else if (type === 'function_call') {
+                    flushTextDelta();
+                    assistant.beginToolCall(callId, name, Json.string(event, 'arguments'), Json.number(event, 'round'));
+                    assistant.thinkingExpanded = false;
+                    messageChanged = true;
+                } else if (type === 'function_result') {
+                    flushTextDelta();
+                    assistant.completeToolCall(callId, makeToolResultPayload(
+                        Json.string(event, 'result'), Json.string(event, 'model_visible_result'),
+                        Json.string(event, 'display_result') || Json.string(event, 'result'),
+                        Json.object(event, 'display_media')));
+                    messageChanged = true;
+                } else if (type === 'question') {
+                    flushTextDelta();
+                    assistant.beginQuestion(callId, Json.object(event, 'question'));
+                    messageChanged = true;
+                    questionChanged = true;
+                } else if (type === 'error') {
+                    flushTextDelta();
+                    assistant.appendDelta('error', Json.string(event, 'message') || Json.string(event, 'content'));
+                    messageChanged = true;
+                }
+            }
+
+            flushTextDelta();
+
+            if (messageChanged) {
+                this.itemSource.refreshMessage(assistant);
+            }
+
+            if (questionChanged) {
+                this.applyQuestionLocks(this.conversationId, [assistant]);
+            }
+
+            if (contentChanged) {
+                this.scheduleStreamFollowToBottom();
+            }
+
+            if (appliedCount > 0) {
+                hilog.info(DOMAIN, TAG,
+                    '[remote-stream] applied=%{public}d batch=%{public}d chars=%{public}d cursor=%{public}d',
+                    appliedCount, events.length, batchTextChars, this.remoteCursor);
+            }
+
+            const session: Record<string, Object> | null = Json.object(data, 'session');
+
+            if (session !== null) {
+                const status: string = Json.string(session, 'status');
+                const finished: boolean = status !== 'running' && status !== 'cancelling'
+                    && this.remoteCursor >= Json.number(session, 'last_seq');
+
+                if (finished) {
+                    this.remoteStreamId = '';
+                    this.finishRemoteAssistant();
+                }
+            }
+        } catch (cause) {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+            }
+        } finally {
+            this.remotePollBusy = false;
+
+            if (epoch === this.remoteSessionEpoch && this.remoteStreamId.length === 0) {
+                clearInterval(this.remotePollTimer);
+                this.remotePollTimer = -1;
+            }
+        }
+    }
+
+    private finishRemoteAssistant(): void {
+        const assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
+
+        if (assistant !== undefined && !assistant.isUser) {
+            assistant.finish();
+            this.itemSource.reloadMessage(assistant);
+        }
+
+        this.streaming = false;
+        this.stopRemotePolling();
+    }
+
+    private stopRemotePolling(): void {
+        clearInterval(this.remotePollTimer);
+        this.remotePollTimer = -1;
+    }
+
+    // 切回本地会话时使旧电脑请求失效，避免迟到的历史或事件覆盖当前页面。
+    private leaveRemoteConversation(): void {
+        if (this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        this.remoteSessionEpoch++;
+        this.stopRemotePolling();
+        this.remoteDeviceId = '';
+        this.remoteStreamId = '';
+        this.remoteCursor = 0;
+        this.remoteModelName = '';
+        this.remoteModelLabel = '';
+        this.remoteModels = [];
+    }
+
     // 加载指定会话的最近一页历史：写入该会话缓冲；仅在仍查看该会话时镜像到视图。
     // 缓冲里比服务端本页更新的消息（未落库的提问 / 刚生成完的回复）一并保留，
     // 合并规则见 mergeHistoryWithLive
@@ -1238,8 +1546,8 @@ export struct MainChat {
                 this.applyQuestionLocks(conversationId, history);
                 this.scrollToEnd('load-history');
                 // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
-                this.activeTurnIndex = this.computeActiveTurnOfLastMessage();
-                hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.activeTurnIndex);
+                this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+                hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.scrollOverlayState.activeTurnIndex);
             }
         });
     }
@@ -1310,7 +1618,7 @@ export struct MainChat {
 
             if (centerBeforeLoad >= 0 && preservedCenter < this.turnIndexByItem.length) {
                 const preservedActiveTurn: number = this.computeActiveTurn(preservedCenter);
-                this.activeTurnIndex = preservedActiveTurn;
+                this.scrollOverlayState.activeTurnIndex = preservedActiveTurn;
                 hilog.info(DOMAIN, TAG,
                     '[history] prepend=%{public}d center=%{public}d->%{public}d active=%{public}d',
                     insertedCount, centerBeforeLoad, preservedCenter, preservedActiveTurn);
@@ -1336,6 +1644,12 @@ export struct MainChat {
 
         this.draft = '';
         this.activatedActionId = '';
+
+        if (this.remoteDeviceId.length > 0) {
+            void this.sendRemoteMessage(text);
+            return;
+        }
+
         this.sendMessage(text);
     }
 
@@ -1564,6 +1878,28 @@ export struct MainChat {
             return;
         }
 
+        if (this.remoteDeviceId.length > 0 && item.isPermissionCard()) {
+            void this.answerRemotePermission(item, text);
+            return;
+        }
+
+        if (this.remoteDeviceId.length > 0) {
+            const epoch: number = this.remoteSessionEpoch;
+            const conversationId: string = this.conversationId;
+            item.submitting = true;
+
+            this.app.loadQuestionLocks().then((store: string) => {
+                if (epoch !== this.remoteSessionEpoch) {
+                    return;
+                }
+
+                this.app.saveQuestionLocks(writeQuestionLock(store, conversationId, item.cardId, text));
+                item.markAnswered(text);
+                void this.sendRemoteMessage(text);
+            });
+            return;
+        }
+
         if (this.isCurrentStreaming() || chatStream.isStreamingFor(this.currentBufferKey())) {
             this.notify('当前对话已有回复生成中,请稍候', 1200);
             return;
@@ -1577,6 +1913,62 @@ export struct MainChat {
             item.markAnswered(text);
             this.dispatchSend(text, this.currentBufferKey(), false);
         });
+    }
+
+    /** 远程权限卡与 Web 语义一致：允许写入临时授权，拒绝只在本地标记并提示重新下发。 */
+    private async answerRemotePermission(item: QuestionItem, answer: string): Promise<void> {
+        const allow: boolean = answer.includes('允许');
+        const deny: boolean = answer.includes('拒绝');
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+        const conversationId: string = this.conversationId;
+
+        if (!allow && !deny) {
+            this.notify('请选择允许或拒绝访问', 1600);
+            return;
+        }
+
+        item.submitting = true;
+
+        try {
+            if (allow) {
+                const request = item.payload.permissionRequest;
+
+                if (request === null) {
+                    throw new Error('该问卡没有可授权的路径信息');
+                }
+
+                const permission: RemotePermissionGrant = new RemotePermissionGrant();
+                permission.path = request.path;
+                permission.scope = request.scope;
+                permission.operation = request.operation;
+                permission.access = request.operation;
+                await NexoraCodeApi.grant(deviceId, conversationId, permission);
+            }
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            item.markAnswered(allow ? '已允许本次对话临时访问。重新下发任务即可继续。' : '已拒绝本次访问权限。');
+            const store: string = await this.app.loadQuestionLocks();
+            await this.app.saveQuestionLocks(writeQuestionLock(store, conversationId, item.cardId, item.answer));
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            const assistant: ChatMessage | undefined = this.messages.find((message: ChatMessage): boolean =>
+                message.questions.some((question: QuestionItem): boolean => question.callId === item.callId));
+
+            if (assistant !== undefined) {
+                this.itemSource.refreshMessage(assistant);
+            }
+        } catch (cause) {
+            this.notify(String(cause), 2000);
+        } finally {
+            item.submitting = false;
+        }
     }
 
     // 本地回答锁恢复：历史加载 / 分页 / question 帧到达时把已答卡片置为锁定态
@@ -1609,6 +2001,7 @@ export struct MainChat {
     // 打开历史会话：切到目标会话并恢复现场，不中断任何进行中的流。
     // 目标会话正在生成时以本地缓冲为准（服务端尚未落盘），其余情况重新拉取权威历史
     private openConversation(conversationId: string, convTitle: string): void {
+        this.leaveRemoteConversation();
         this.conversationId = conversationId;
         this.streamUserScrolled = false;
         this.streamFollowPending = false;
@@ -1630,7 +2023,7 @@ export struct MainChat {
             this.loadingHistory = false;
             this.syncStreamingState();
             this.scrollToEnd('open-conversation');
-            this.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
             return;
         }
 
@@ -1643,6 +2036,7 @@ export struct MainChat {
 
     // 新开一轮：切到空白视图回到空白态（顶栏 + 侧栏共用），不中断后台流
     private startNewRound(): void {
+        this.leaveRemoteConversation();
         this.conversationId = '';
         this.streamUserScrolled = false;
         this.streamFollowPending = false;
@@ -1662,6 +2056,13 @@ export struct MainChat {
 
     // 停止当前查看会话的流：后台其他会话的流不受影响
     private stopStreaming(): void {
+        if (this.remoteDeviceId.length > 0 && this.remoteStreamId.length > 0) {
+            void NexoraCodeApi.rpc(this.remoteDeviceId, '/api/local/tasks/' + this.remoteStreamId + '/cancel', 'POST');
+            this.remoteStreamId = '';
+            this.finishRemoteAssistant();
+            return;
+        }
+
         const key: string = this.currentBufferKey();
 
         if (key.length > 0) {
@@ -1741,7 +2142,7 @@ export struct MainChat {
 
     // 把同一帧内到达的多个正文增量合并为一次贴底，避免滚动控制 API 与手势连续竞争。
     private scheduleStreamFollowToBottom(): void {
-        if (this.streamUserScrolled || this.showScrollBottom || this.streamFollowPending) {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom || this.streamFollowPending) {
             return;
         }
 
@@ -1749,7 +2150,7 @@ export struct MainChat {
         this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
             this.streamFollowPending = false;
 
-            if (!this.streamUserScrolled && !this.showScrollBottom && this.messages.length > 0) {
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom && this.messages.length > 0) {
                 this.scrollToEnd('stream-follow');
             }
         }));
@@ -1759,12 +2160,12 @@ export struct MainChat {
     // 挂载当帧 List 还没为它排版，同步 scrollToIndex 会停在旧底部。
     // 推迟一帧，等区块的真实高度参与排版后再滚动，视口才真正贴住消息末尾。
     private scrollToEndAfterLayout(): void {
-        if (this.streamUserScrolled || this.showScrollBottom) {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom) {
             return;
         }
 
         this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
-            if (!this.streamUserScrolled && !this.showScrollBottom) {
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom) {
                 this.scrollToEnd('after-layout');
             }
         }));
@@ -1821,8 +2222,8 @@ export struct MainChat {
 
         const nextShowScrollBottom: boolean = end < this.itemSource.totalCount() - 1;
 
-        if (this.showScrollBottom !== nextShowScrollBottom) {
-            this.showScrollBottom = nextShowScrollBottom;
+        if (this.scrollOverlayState.showScrollBottom !== nextShowScrollBottom) {
+            this.scrollOverlayState.showScrollBottom = nextShowScrollBottom;
         }
 
         // 定位在途时不跟随中间落点，等定位落地后一次性带动画设置激活轮次：
@@ -1830,8 +2231,8 @@ export struct MainChat {
         if (this.jumpTargetIndex < 0 && center >= 0 && center < this.turnIndexByItem.length) {
             const nextActiveTurn: number = this.turnIndexByItem[center];
 
-            if (this.activeTurnIndex !== nextActiveTurn) {
-                this.activeTurnIndex = nextActiveTurn;
+            if (this.scrollOverlayState.activeTurnIndex !== nextActiveTurn) {
+                this.scrollOverlayState.activeTurnIndex = nextActiveTurn;
                 hilog.info(DOMAIN, TAG,
                     '[scroll] active turn=%{public}d center=%{public}d start=%{public}d end=%{public}d',
                     nextActiveTurn, center, start, end);
@@ -2067,7 +2468,7 @@ export struct MainChat {
         // （滚动过程中的跟随更新是瞬时生效，对齐 web「滚动不播动画、跳转才播」）
         if (target >= 0 && target < this.turnIndexByItem.length) {
             animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
-                this.activeTurnIndex = this.turnIndexByItem[target];
+                this.scrollOverlayState.activeTurnIndex = this.turnIndexByItem[target];
             });
         }
 
@@ -2598,7 +2999,10 @@ export struct MainChat {
 
     // 同步生成态：输入栏当前会话开关 + 侧栏各会话流式指示
     private syncStreamingState(): void {
-        this.streaming = this.isCurrentStreaming();
+        if (this.remoteDeviceId.length === 0) {
+            this.streaming = this.isCurrentStreaming();
+        }
+
         this.syncStreamingConvIds();
     }
 
@@ -2688,6 +3092,10 @@ export struct MainChat {
     // ---------- 展示文案 ----------
     // 工程约定：UI 描述一律走普通方法而非组件 getter（getter 在 UI 更新路径曾取到 undefined 触发崩溃 / 脏值）
     private inputPlaceholder(): string {
+        if (this.remoteDeviceId.length > 0) {
+            return '向这台电脑继续发送任务…';
+        }
+
         return this.conversationId.length > 0 ? '继续追问…' : '给 Nexora 发送消息，或试试下面的能力…';
     }
 

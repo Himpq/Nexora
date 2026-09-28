@@ -8,8 +8,9 @@ import { AppState } from '../../common/AppState';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { UserAvatar } from '../common/UserAvatar';
 import { IconButton } from '../common/IconButton';
+import { RemoteSidebarSection } from '../nexoracode/RemoteSidebarSection';
 
-// 版本说明：与后端地址合并展示在侧栏底部说明行
+// 版本号显示在侧栏底部，部署地址只在设置内展示。
 const APP_VERSION_LABEL: string = 'v1.0.2';
 
 @Component
@@ -30,6 +31,9 @@ export struct SidebarPanel {
     onOpenMail: () => void = () => {};
     // 打开轻量随笔页：由宿主关闭抽屉后全屏挂载
     onOpenNotes: () => void = () => {};
+    onOpenProjects: () => void = () => {};
+    onOpenRemoteChat: (deviceId: string, conversationId: string, title: string, project: Object | null) => void =
+        (_deviceId: string, _conversationId: string, _title: string, _project: Object | null): void => {};
     // 打开 Learning 工作区：由宿主关闭抽屉后全屏挂载（ArkWeb 薄挂载）
     onOpenLearning: () => void = () => {};
     onOpenConversation: (conversationId: string, title: string) => void = () => {};
@@ -65,7 +69,11 @@ export struct SidebarPanel {
                 .color($r('app.color.divider'))
                 .margin({ left: Space.lg, right: Space.lg });
 
-            this.SectionHeader();
+            if (this.app.sidebarView === 'remote') {
+                Blank().height(32);
+            } else {
+                this.SectionHeader();
+            }
 
             // 列表区：根据侧栏视图切换，淡入淡出过渡
             if (this.app.sidebarView === 'chat') {
@@ -95,7 +103,7 @@ export struct SidebarPanel {
                 .layoutWeight(1)
                 .width('100%')
                 .transition(TransitionEffect.OPACITY.animation({ duration: Motion.durationBase, curve: Motion.easeOut }));
-            } else {
+            } else if (this.app.sidebarView === 'knowledge') {
                 Column() {
                     if (this.app.knowledgeError.length > 0) {
                         this.KnowledgeErrorHint();
@@ -120,6 +128,13 @@ export struct SidebarPanel {
                 .layoutWeight(1)
                 .width('100%')
                 .transition(TransitionEffect.OPACITY.animation({ duration: Motion.durationBase, curve: Motion.easeOut }));
+            } else {
+                RemoteSidebarSection({
+                    activeConversationId: this.activeConversationId,
+                    onOpenChat: (deviceId: string, conversationId: string, title: string, project: Object | null): void => {
+                        this.onOpenRemoteChat(deviceId, conversationId, title, project);
+                    }
+                });
             }
 
             Blank();
@@ -146,16 +161,23 @@ export struct SidebarPanel {
     @Builder
     ActionEntries() {
         Column({ space: Space.xs }) {
-            this.ActionRow('primary', $r('app.media.ic_plus'), this.app.sidebarView === 'chat' ? '新对话' : '新建知识库', (): void => {
-                if (this.app.sidebarView === 'chat') {
-                    this.onNewChat();
-                } else {
-                    this.onCreateKnowledge();
-                }
-            });
+            if (this.app.sidebarView !== 'remote') {
+                this.ActionRow('primary', $r('app.media.ic_plus'), this.app.sidebarView === 'chat'
+                    ? '新对话' : '新建知识库', (): void => {
+                    if (this.app.sidebarView === 'chat') {
+                        this.onNewChat();
+                    } else {
+                        this.onCreateKnowledge();
+                    }
+                });
+            }
 
             this.ActionRow('mail', $r('app.media.ic_mail'), '邮件', (): void => {
                 this.onOpenMail();
+            });
+
+            this.ActionRow('projects', $r('app.media.ic_computer'), '电脑项目', (): void => {
+                this.onOpenProjects();
             });
 
             this.ActionRow('notes', $r('app.media.ic_edit'), '随笔', (): void => {
@@ -443,7 +465,7 @@ export struct SidebarPanel {
         .padding({ left: Space.lg, right: Space.lg, top: Space.sm });
     }
 
-    // 底部账户区：紧凑账户行（头像 + 展示名 + 设置按钮）与「后端地址 · 版本」说明行
+    // 底部账户区：紧凑账户行（头像 + 展示名 + 设置按钮）与版本说明行
     // 展示名沿用 accountDisplayName 普通方法链路（@ObjectLink 组件 getter 间接取值曾崩溃，见其注释）
     @Builder
     AccountFooter() {
@@ -476,7 +498,7 @@ export struct SidebarPanel {
             .height(48)
             .padding({ left: Space.lg, right: Space.xs });
 
-            Text(this.app.backendUrl + ' · ' + APP_VERSION_LABEL)
+            Text(APP_VERSION_LABEL)
                 .fontSize(FontSize.caption)
                 .lineHeight(LineHeight.caption)
                 .fontColor($r('app.color.text_tertiary'))
@@ -495,11 +517,11 @@ export struct SidebarPanel {
     ViewSwitcher() {
         Stack({ alignContent: Alignment.TopStart }) {
             Column()
-                .width('50%')
+                .width('33.33%')
                 .height(36)
                 .borderRadius(Radius.md)
                 .backgroundColor($r('app.color.brand_soft'))
-                .translate({ x: this.app.sidebarView === 'chat' ? '0%' : '100%' })
+                .translate({ x: this.app.sidebarView === 'chat' ? '0%' : (this.app.sidebarView === 'knowledge' ? '100%' : '200%') })
                 .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
 
             Row() {
@@ -524,6 +546,18 @@ export struct SidebarPanel {
                     .onClick(() => {
                         animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
                             this.app.setSidebarView('knowledge');
+                        });
+                    });
+
+                Text('电脑')
+                    .fontSize(FontSize.body)
+                    .fontWeight(this.app.sidebarView === 'remote' ? FontWeight.Medium : FontWeight.Regular)
+                    .fontColor(this.app.sidebarView === 'remote' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                    .layoutWeight(1)
+                    .textAlign(TextAlign.Center)
+                    .onClick(() => {
+                        animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
+                            this.app.setSidebarView('remote');
                         });
                     });
             }
