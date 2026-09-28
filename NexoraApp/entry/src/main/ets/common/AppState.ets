@@ -52,7 +52,7 @@ export class AppState {
     private pendingLocals: ConversationItem[] = [];
 
     // 侧栏视图切换：对话列表 / 知识库列表
-    sidebarView: 'chat' | 'knowledge' = 'chat';
+    sidebarView: 'chat' | 'knowledge' | 'remote' = 'chat';
 
     // 知识库列表
     knowledgeList: KnowledgeItem[] = [];
@@ -504,7 +504,7 @@ export class AppState {
 
     // ---------- 侧栏视图与知识库 ----------
     // 切换侧栏视图：切到知识库时自动拉取一次列表，保证数据不过期
-    setSidebarView(view: 'chat' | 'knowledge'): void {
+    setSidebarView(view: 'chat' | 'knowledge' | 'remote'): void {
         if (this.sidebarView === view) {
             return;
         }

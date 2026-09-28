@@ -1,6 +1,6 @@
 // MainChat.ets - 主对话页（豆包式单一主页）
 // 登录后的唯一主页 = 对话界面本身，取代旧「HomePage 首页 + ChatPage 详情」的两页跳转：
-//  - 顶栏左侧头像点击滑出侧栏抽屉（功能入口：新对话/邮件 / 最近对话 / 视图切换 / 账户行）
+//  - 顶栏左侧头像点击滑出侧栏抽屉（功能入口：新对话/邮件/随笔 / 最近对话 / 视图切换 / 账户行）
 //  - 中间列展示会话标题 + 当前模型（可点切换），右侧 + 新建对话
 //  - 空态显示问候 + 快捷能力宫格，发送后原地进入消息流（不压栈）
 //  - 历史会话从侧栏点选后「原地替换状态」，会话删除后若删的是当前会话则复位空态
@@ -15,21 +15,22 @@ import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
 import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory } from '../common/ChatTypes';
 import { Json } from '../common/JsonUtil';
-import { NexoraCodeApi, RemoteTaskBody } from '../common/NexoraCodeApi';
-import { RemoteModel } from '../common/NexoraCodeApi';
-import { chatStream, StreamListener, StreamOptions } from '../common/ChatStreamClient';
-import { LiveViewController } from '../common/LiveViewController';
-import { NextFrameCallback } from '../common/NextFrame';
-import { FontSize, Glow, Motion, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
-import { ChatInputBar } from '../components/ChatInputBar';
-import { QuickActionGrid } from '../components/QuickActionGrid';
+import { NexoraCodeApi, RemoteModel, RemoteTaskBody } from '../common/NexoraCodeApi';
+import { chatStream, ConversationModePayload, StreamListener, StreamOptions } from '../common/ChatStreamClient';
 import { ChatItemBuilder } from '../common/ChatItemBuilder';
 import { ChatItemDataSource } from '../common/ChatItemDataSource';
 import { ChatRenderItem } from '../common/ChatRenderItem';
+import { ConversationBuffer } from '../common/ConversationBuffer';
+import { LiveViewController } from '../common/LiveViewController';
+import { MapRendererConfig } from '../common/MapRendererConfig';
+import { NextFrameCallback } from '../common/NextFrame';
 import { QuestionItem, readQuestionLock, writeQuestionLock } from '../common/QuestionLocks';
+import { FontSize, Glow, Motion, PressScale, Radius, Shadow, Size, Space, StaggerDelay } from '../common/DesignToken';
+import { ChatInputBar } from '../components/ChatInputBar';
+import { QuickActionGrid } from '../components/QuickActionGrid';
+import { ImageViewer } from '../components/chat/ImageViewer';
 import { ChatItemRow } from '../components/chat/ChatItemRow';
 import { ChatScrollOverlay, ChatScrollOverlayState } from '../components/chat/ChatScrollOverlay';
-import { ImageViewer } from '../components/chat/ImageViewer';
 import { IconButton } from '../components/common/IconButton';
 import { UserAvatar } from '../components/common/UserAvatar';
 import { ModelPickerSheet } from '../components/sheets/ModelPickerSheet';
@@ -38,6 +39,7 @@ import { SettingsSheet } from '../components/sheets/SettingsSheet';
 import { KnowledgeEditorSheet } from '../components/sheets/KnowledgeEditorSheet';
 import { SidebarPanel } from '../components/sidebar/SidebarPanel';
 import { MailPage } from '../components/mail/MailPage';
+import { NotesEntryCard } from '../components/notes/NotesEntryCard';
 import { NotesPage } from '../components/notes/NotesPage';
 import { LearningPage } from '../components/learning/LearningPage';
 
@@ -46,32 +48,34 @@ const TAG: string = 'NexoraMain';
 const TITLE_MAX_LENGTH: number = 18;
 // 侧栏抽屉宽度：固定 vp，translate 用 -100% 相对自身宽，隐藏时刚好滑出屏幕
 const DRAWER_WIDTH: number = 304;
-// 上滑历史分页条数：前插的行都没被测量过，列表只能用「已测行平均高度」估算补偿量，
-// 误差与插入行数成正比 —— 20 条一页会偏掉近两屏，6 条一页只偏半屏（跳变随页变小）
-const HISTORY_PAGE_SIZE: number = 6;
+// 新会话预创建失败时，承载该流的本地临时键前缀（SSE 首帧绑定真实会话 ID 后迁移）
+const PENDING_STREAM_PREFIX: string = 'pending:';
+// 单步落地后的校验延时：等待该步布局完成与滚动索引上报（约 4 帧）；索引上报本身也会提前收尾
+const JUMP_SETTLE_DELAY: number = 56;
+// 定位期间屏蔽触顶分页的时长：定位过程经过索引 0 时不能启动历史分页
+const JUMP_PAGINATION_HOLD: number = 240;
+// 最大推进步数：仍无法命中说明行高估计被严重带偏，停止推进并保持当前位置
+const JUMP_MAX_STEPS: number = 10;
+// 等待动画推进的最大次数：动画卡死时不能无限等，超限即改发无动画步兜住结果
+const JUMP_MAX_REARMS: number = 6;
 // 触底校验延时（ms）：等该次 scrollEdge 的布局与索引上报完成
 const BOTTOM_SETTLE_DELAY: number = 56;
 // 触底最大重试次数：引擎对内容边界的认知来自未测量行的行高估算，需逐次逼近
 const BOTTOM_MAX_ATTEMPTS: number = 12;
-// 程序滚动（定位 / 触底 / 回底）后屏蔽触顶分页的时长（ms）
-const JUMP_PAGINATION_HOLD: number = 240;
-// 触顶判定要求的连续贴顶帧数：估算修正会让视口单帧路过索引 0，一帧就触发会连锁前插
-const TOP_TRIGGER_STREAK: number = 3;
-// 前插落地后的分页静默期（ms）：给列表留出修正估算的时间，静默期内不再前插
-const PREPEND_PAGINATION_HOLD: number = 2000;
-// 滚动来源追踪只保留一次手势末尾的少量样本，在停止时汇总输出，不在滚动帧里打印日志。
-const SCROLL_SOURCE_TRACE_CAP: number = 64;
-// 轮次跳转高亮的保持时长（ms）
+// 上滑历史的分页条数：前插补偿的误差与插入行数成正比，页越小跳变越小（见 loadMoreMessages）
+const HISTORY_PAGE_SIZE: number = 6;
+// 轮次跳转高亮的保持时长
 const HIGHLIGHT_DURATION: number = 3000;
-// 预取窗口（行）。maxCount 既是销毁线、也是空闲时向上/下预加载的行数。
-//
-// 曾经把窗口放大到 48/192，想「用静态期把行建好、别在滚动期建」——方向错了：
-// 引擎会就地预建到 maxCount，打开会话后一次性建出 212 行（整份会话），
-// 每行约 470 KB 原生堆（冷启动实测：61 MB → 159 MB，线性），
-// ArkTS 堆到 171 MB 后老年代并发标记变成每秒一轮，标记/压实 STW 300~500 ms。
-// 于是「每秒冻一次」——滚动期任何编排都碰不到这条路径。
-// 现在按「只留视口附近」配置：视口约 15~25 行（行高 30~56vp）+ 两侧半屏预取。
-// min=8 / max=16 给惯性滚动留出已完成创建与测量的跑道，减少视口边缘首次布局。
+// 跳转末段滑入的行数：远距离先无动画落到目标前方这么多行，最后一段平滑滑入
+// （对齐「跳转要有动画」的手感；长距离平滑会被框架丢弃，所以只让末段动）
+const JUMP_GLIDE_ROWS: number = 14;
+// 动画步的落地校验延时：等平滑滚动播完再校验（无动画步只需等布局完成）
+const JUMP_ANIMATE_SETTLE_DELAY: number = 360;
+// 帧间隔告警阈值（ms）：60fps 一帧 16.7ms，超过即掉帧；原来取 32ms 只能看到 30fps 以下的卡顿
+const SCROLL_GAP_WARN_MS: number = 17;
+// 帧间隔告警的最小间隔（ms）：限流，避免日志本身成为滚动开销
+const SCROLL_GAP_LOG_INTERVAL: number = 120;
+// 列表预取窗口：给惯性滑动留出已完成创建与测量的跑道，同时避免整份历史被预建。
 const CACHE_MIN_ROWS: number = 8;
 const CACHE_MAX_ROWS: number = 16;
 
@@ -81,6 +85,29 @@ class RemotePermissionGrant {
     operation: string = '';
     access: string = '';
 }
+
+// 单条流的绑定上下文：本地临时键的流在服务端返回会话 ID 后迁移，
+// context.key 始终指向当前缓冲/传输锁键，回调据此路由事件与视图更新
+interface StreamContext {
+    key: string;
+    conversationId: string;
+}
+
+// 单次发送要带上的会话模式：learning 会话由后端挂载 NexoraLearning 运行时，
+// payload 决定运行时内的子场景（如 interview=true 走六维画像快速评估链路）
+interface SendMode {
+    conversationMode: string;
+    payload: ConversationModePayload;
+}
+
+// 学习会话固定标识：后端 conversation_mode 字段值
+const LEARNING_MODE: string = 'learning';
+// 画像快速评估会话标题
+const PROFILE_INTERVIEW_TITLE: string = '学习画像评估';
+// 评估类型写入 Nexora 会话 scope.tags，切换设备或重开应用后仍能恢复子模式
+const PROFILE_INTERVIEW_TAG: string = 'learning_profile_interview';
+// 画像评估开场消息：真正的评估指令由后端画像访谈链路注入系统提示，客户端只负责发起这一轮
+const PROFILE_INTERVIEW_KICKOFF: string = '开始我的六维学习画像快速评估';
 
 @Component
 export struct MainChat {
@@ -92,6 +119,8 @@ export struct MainChat {
     // ---------- 会话状态 ----------
     // conversationId 需要驱动侧栏激活态高亮，故用 @State（history 载入由方法显式触发）
     @State private conversationId: string = '';
+    // 新评估会话刚创建后，等侧栏列表刷新前先用此 ID 保持首轮后的子模式
+    private profileInterviewConversationId: string = '';
     @State private messages: ChatMessage[] = [];
     @State private draft: string = '';
     @State private streaming: boolean = false;
@@ -99,11 +128,33 @@ export struct MainChat {
     @State private loadingHistory: boolean = false;
     @State private loadError: string = '';
 
+    // 电脑会话沿用本页的消息流和渲染器，设备与轮询状态独立于本地会话缓冲。
+    @State private remoteDeviceId: string = '';
+    @State private remoteStreamId: string = '';
+    @State private remoteCursor: number = 0;
+    @State private remoteModelName: string = '';
+    @State private remoteModelLabel: string = '';
+    @State private remoteModels: RemoteModel[] = [];
+    private remotePollTimer: number = -1;
+    private remotePollBusy: boolean = false;
+    private remoteSessionEpoch: number = 0;
+
+    // ---------- 多会话并行缓冲 ----------
+    // 会话键 → 本地消息缓冲：切走的流持续写入自己的缓冲，切回时原样接上
+    private buffers: Map<string, ConversationBuffer> = new Map<string, ConversationBuffer>();
+    // 进行中流的键集合（会话 ID 或本地临时键）：判定会话级生成状态与侧栏指示
+    private streamingKeys: Set<string> = new Set<string>();
+    // 侧栏流式指示镜像：普通 Set 变更不驱动 UI，重算为新数组交给 @Prop 刷新
+    @State private streamingConvIds: string[] = [];
+    // 空白新会话在预创建失败时承载本次流的本地临时键（绑定真实 ID 后清空）
+    private pendingSendKey: string = '';
+    private pendingKeySeq: number = 0;
+
     // 消息分页：初始只取最近一页，滚到顶部再加载更早的一页，避免长对话一次性渲染卡死主线程
     @State private hasMoreMessages: boolean = false;
     @State private oldestLoadedIndex: number = 0;
     @State private loadingMoreMessages: boolean = false;
-    // 加载更多前的可见区域中心索引：前插会改变所有旧消息的下标，用它修正活动轮次
+    // 加载更多前的视口中心索引，前插消息后用于保持同一条消息仍处于视口中心
     private scrollCenterBeforeLoad: number = -1;
 
     // ---------- 快捷能力 ----------
@@ -120,13 +171,13 @@ export struct MainChat {
 
     // 顶栏模型展示名镜像：选中模型/刷新清单后由 syncModelLabel() 同步（实测正常）。
     @State private modelLabel: string = '选择模型';
-
     // ---------- 侧栏抽屉 ----------
     // 始终挂载，用 translate+opacity 控制显隐：避免 if 卸载时退场动画失效（关闭动画直接偏移）
     @State private sidebarOpen: boolean = false;
     @State private sidebarTranslate: number = -DRAWER_WIDTH;
     @State private sidebarOverlayOpacity: number = 0;
     @State private avatarPressed: boolean = false;
+    @State private modelTitlePressed: boolean = false;
     // 拖拽起始时的 translate 值（跟手拖动用，非响应式）
     private dragStartTranslate: number = 0;
 
@@ -134,32 +185,27 @@ export struct MainChat {
     // 条件挂载 + 右滑转场；mailDetailOpen 以 @Link 下发 MailPage，返回键先退详情再退页面
     @State private mailOpen: boolean = false;
     @State private mailDetailOpen: boolean = false;
-    @State private remoteDeviceId: string = '';
-    @State private remoteStreamId: string = '';
-    @State private remoteCursor: number = 0;
-    @State private remoteModelName: string = '';
-    @State private remoteModelLabel: string = '';
-    @State private remoteModels: RemoteModel[] = [];
-    private remotePollTimer: number = -1;
-    private remotePollBusy: boolean = false;
-    private remoteSessionEpoch: number = 0;
 
-    // 随笔页：页面层持有编辑器状态，保证返回键可以先退出编辑器再退出随笔页
+    // 随笔页（全屏覆盖层）：编辑态由宿主持有，系统返回键可先退出编辑再退出页面
     @State private notesOpen: boolean = false;
     @State private noteEditorOpen: boolean = false;
     @State private noteLaunchEditor: boolean = false;
 
-    // Learning 页：页面层持有导航深度，返回键按页面内层级逐级返回
+    // Learning 工作区（全屏覆盖层）：原生 ArkUI 学习页；内层导航深度由子组件经 @Link 回报，
+    // 系统返回键逐级回退（阅读器 → 课程目录 → 课程列表 → 退出学习）
     @State private learningOpen: boolean = false;
     @State private learningNavDepth: number = 0;
+
+    // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
+    @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
 
     // 全屏图片查看器当前图片地址（空串表示关闭）
     @State private viewerUrl: string = '';
 
-    // 滚动反馈状态独立于页面状态：索引变化只更新覆盖层，不触发整页 build。
-    @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
+    // 轮次指示器：当前激活的用户轮次索引（-1 表示无）
 
-
+    // 轮次跳转后临时高亮的消息索引（-1 表示无高亮）
+    private highlightToken: number = 0;
     // 会话列表代次：每次刷新/置顶/删除后 +1，随 @Prop 下发侧栏并进 ForEach key，
     // 强制列表行整体重建——规避 @ObjectLink 对数组整体替换通知不稳导致的"重开侧栏才更新"
     @State private convEpoch: number = 0;
@@ -173,89 +219,56 @@ export struct MainChat {
     private lastReasoningLog: number = -1;
 
     private scroller: ListScroller = new ListScroller();
-
     // 流式贴底只允许由当前帧合并执行；用户开始滚动后不再抢占手势
     private streamFollowPending: boolean = false;
     private streamUserScrolled: boolean = false;
-    // 滑动期间只保留滚动反馈的普通字段，停止后再提交到覆盖层，避免覆盖层与 List 同帧重绘。
-    private scrollGestureActive: boolean = false;
-    private pendingOverlayShowBottom: boolean = false;
-    private pendingOverlayActiveTurn: number = -1;
-    private pendingOverlayActiveValid: boolean = false;
-    // 滚动索引回调可能在同一帧触发多次，只保留最后一次结果，避免反复驱动指示器重排
+    // 滚动索引回调可能在同一帧触发多次，只保留最后一次结果，避免反复驱动指示器重排。
     private scrollIndexFramePending: boolean = false;
     private pendingScrollStart: number = -1;
     private pendingScrollEnd: number = -1;
     private pendingScrollCenter: number = -1;
-    // 滚动来源诊断：will 是引擎准备执行的本帧位移，did 是实际执行的本帧位移。
-    // 两路都只写入固定环形缓冲，停止后一次性输出，用来区分业务滚动和 List 自身修正。
-    private scrollTraceWillOffsets: number[] = [];
-    private scrollTraceWillStates: number[] = [];
-    private scrollTraceWillSources: number[] = [];
-    private scrollTraceWillWrite: number = 0;
-    private scrollTraceWillCount: number = 0;
-    private scrollTraceDidOffsets: number[] = [];
-    private scrollTraceDidStates: number[] = [];
-    private scrollTraceDidWrite: number = 0;
-    private scrollTraceDidCount: number = 0;
-    private scrollTraceDidPrevious: number = 0;
-    private scrollTraceDidPrimed: boolean = false;
-    private scrollTraceDidMaxJerk: number = 0;
-    // 列表实测宽度派生出的「可用文本宽度」：切片器靠它推算一行能排多少字，
-    // 猜错了每片会白吃一行，行数上升就是滚动期单帧成本的直接来源
-    private measuredContentWidth: number = 0;
-    // 宽度冻结后若实测值与冻结值不符，只报一次警：用来确认播种是对的
-    private widthLockWarned: boolean = false;
+    // 帧间隔探针：记录超过一帧预算的间隔（60fps = 16.7ms），限流后打日志
+    private lastScrollFrameAt: number = 0;
+    private lastScrollGapLogAt: number = 0;
+    // 定位状态：目标索引（-1 表示无在途定位）/ 对齐方式 / 已推进步数 / 落地回调
+    private jumpTargetIndex: number = -1;
+    private jumpAlign: ScrollAlign = ScrollAlign.CENTER;
+    private jumpSteps: number = 0;
+    private jumpSettled: () => void = () => {};
+    private jumpLabel: string = '';
+    // 定位代次：连续点击轮次时，旧定位链路的落地回调据此失效
+    private jumpToken: number = 0;
+    // 本次定位是否已用过动画步：动画步被框架丢弃时不重复尝试，避免来回摆动
+    private jumpAnimated: boolean = false;
+    // 上一次校验时的可视区间：区间还在变说明动画正在推进，应继续等而不是再发一步定位
+    private jumpLastStart: number = -1;
+    private jumpLastEnd: number = -1;
+    // 动画推进的额外等待次数：限流，避免动画卡死时无限等待
+    private jumpRearms: number = 0;
+    // 滚动索引处理（JS 侧）单帧最大耗时：用于区分掉帧来自 JS 还是渲染引擎
+    private maxScrollIndexCost: number = 0;
     // 触底收敛状态：在途标记 + 已尝试次数
     private bottomLoopActive: boolean = false;
     private bottomAttempts: number = 0;
-    // 程序滚动后的分页屏蔽截止时间戳：布尔开关在异常路径漏复位会永久锁死分页，时间戳可自愈
+    // 定位后的分页屏蔽截止时间戳：布尔开关在异常路径漏复位会永久锁死分页，时间戳可自愈
     private paginationBlockedUntil: number = 0;
-    // 前插落地后的分页静默截止时间戳 + 连续贴顶帧计数
-    private prependGuardUntil: number = 0;
-    private topStreak: number = 0;
-    // 最近一次 List 上报的可视区间：触底收敛与帧间隔探针都读它
+    // 最近一次 List 上报的可视区间：定位落地后据此校验目标是否真的进入视口
     private visibleStartIndex: number = 0;
     private visibleEndIndex: number = 0;
-    // 轮次高亮代次：连续跳转时，旧的清除定时器据此失效
-    private highlightToken: number = 0;
-
-    // 块级渲染单元数据源：一条消息按 Markdown AST 拆成多个小行，
-    // 流式增量只更新真正变化的那一块，不必重建整条消息对应的行
+    // 列表数据源装的是「块级渲染单元」：一条助手消息按 Markdown AST 拆成多行，
+    // 行高跨度从 67~3394vp 压到几十~两三百 vp，列表对未测量行的估算误差随之塌下来
     private itemSource: ChatItemDataSource = new ChatItemDataSource();
-    // 单元索引在单元集合变化时一次性建立，滚动回调只读 O(1) 结果，不再每帧扫描整段历史
+    // 单元索引在单元集合变化时一次性建立，滚动回调只读 O(1) 结果，避免每帧扫描整段历史。
     @State private userTurnCount: number = 0;
     private turnIndexByItem: number[] = [];
-    // 每条消息的首个单元下标：轮次跳转以「该消息的第一行」为目标
+    // 每条消息的首个单元下标：轮次跳转与重答定位都以「该消息的第一行」为目标
     private messageStartByMessage: number[] = [];
-    // 替换消息数组的唯一入口：同步响应式页面状态与 LazyForEach 数据源
-    private replaceMessages(messages: ChatMessage[]): void {
-        this.messages = messages;
-        this.itemSource.replaceAll(this.buildItems(messages));
-        this.rebuildItemIndex();
-    }
-
-    // 把消息数组整体展开成渲染单元（顺序即渲染顺序）
-    private buildItems(messages: ChatMessage[]): ChatRenderItem[] {
-        const items: ChatRenderItem[] = [];
-
-        for (let i: number = 0; i < messages.length; i++) {
-            const built: ChatRenderItem[] = ChatItemBuilder.build(messages[i]);
-
-            for (let j: number = 0; j < built.length; j++) {
-                items.push(built[j]);
-            }
-        }
-
-        return items;
-    }
+    // 列表实测宽度派生出的可用文本宽度：切片器在首次展开前据此确定稳定切点。
+    private measuredContentWidth: number = 0;
+    private widthLockWarned: boolean = false;
 
     aboutToAppear(): void {
-        // 必须排在一切构建之前：切片宽度一旦定型就不许再变（键 = uid#order 与内容一一对应），
-        // 所以正确的值要在第一次 build 之前就位。列表的 onAreaChange 发生在子行首次布局之后，
-        // 只等它会让首屏那批行按缺省值切片、后续行按实测值切片 —— 同一段对话被切成两种口径
         this.seedContentWidth();
-
         this.greeting = greetingOfHour(new Date().getHours());
         this.labelForModel(this.app.selectedModelId);
         this.app.refreshModels().then(() => {
@@ -264,7 +277,13 @@ export struct MainChat {
         this.app.refreshConversations().then(() => {
             this.bumpList();
         });
+        this.app.refreshNotes();
         this.app.refreshUserProfile();
+        // Learning 运行时配置轻量预取：侧栏入口生效前拿到开关与工作区地址
+        void this.app.refreshLearningRuntime();
+
+        // 地图渲染配置轻量预取：登录后只拉一次，地图结果到达时无需等待
+        MapRendererConfig.ensure();
 
         // 空态区域交错入场（仅问候 / 快捷能力两个区块，输入栏常驻底部不做位移）
         setTimeout(() => { this.greetingVisible = true; }, StaggerDelay.greeting);
@@ -274,10 +293,14 @@ export struct MainChat {
         this.app.backHandler = (): boolean => {
             return this.handleBackPress();
         };
-
     }
 
-    // 系统返回键处理：优先级 邮件页(详情→页面) > 随笔编辑器/页面 > Learning 子页/页面 > 侧边栏 > 弹层 > 对话→新对话
+    aboutToDisappear(): void {
+        this.remoteSessionEpoch++;
+        this.stopRemotePolling();
+    }
+
+    // 系统返回键处理：图片查看器 > 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
     private handleBackPress(): boolean {
         if (this.viewerUrl.length > 0) {
             this.viewerUrl = '';
@@ -366,6 +389,7 @@ export struct MainChat {
             // 侧栏抽屉层：始终挂载，用 translate/opacity 控制显隐（避免 if 卸载退场动画失效）
             this.SidebarLayer();
 
+            // 邮件页层：条件挂载，整页右滑进出（进入即拉取当前箱列表）
             if (this.mailOpen) {
                 MailPage({
                     app: this.app,
@@ -380,7 +404,7 @@ export struct MainChat {
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
             }
 
-            // 随笔页层：由 MainChat 统一持有返回键和编辑器状态，避免侧栏点击后只关闭抽屉而没有目标页面
+            // 随笔页层：与邮件同级的轻量全屏容器，避免把编辑态塞进知识库弹层
             if (this.notesOpen) {
                 NotesPage({
                     app: this.app,
@@ -396,13 +420,19 @@ export struct MainChat {
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
             }
 
-            // Learning 页层：页面内部通过 navDepth 管理子页，宿主只负责最外层挂载与退出
+            // Learning 工作区层：与邮件/随笔同级的全屏覆盖层（原生 ArkUI 学习页）
             if (this.learningOpen) {
                 LearningPage({
                     app: this.app,
                     navDepth: $learningNavDepth,
                     onBack: () => {
                         this.learningOpen = false;
+                    },
+                    onOpenImage: (url: string) => {
+                        this.viewerUrl = url;
+                    },
+                    onStartProfileInterview: () => {
+                        this.startProfileInterview();
                     }
                 })
                     .width('100%')
@@ -411,6 +441,7 @@ export struct MainChat {
                         .animation({ duration: Motion.durationBase, curve: Motion.easeInOut }));
             }
 
+            // 全屏图片查看器：最顶层，点击任意区域或系统返回键关闭
             if (this.viewerUrl.length > 0) {
                 ImageViewer({
                     url: this.viewerUrl,
@@ -426,7 +457,7 @@ export struct MainChat {
         .height('100%')
         .backgroundColor($r('app.color.bg_page'))
         .bindSheet(this.showSheet, this.SheetBuilder(), {
-            height: this.sheetKind === 'model' ? SheetSize.MEDIUM : SheetSize.LARGE,
+            height: this.sheetKind === 'model' || this.sheetKind === 'remoteModel' ? SheetSize.MEDIUM : SheetSize.LARGE,
             showClose: false,
             dragBar: false,
             onDisappear: () => {
@@ -452,11 +483,20 @@ export struct MainChat {
             .height(Size.touchTarget)
             .justifyContent(FlexAlign.Center)
             .borderRadius(Size.touchTarget / 2)
-            .backgroundColor(this.avatarPressed ? $r('app.color.bg_sunken') : Color.Transparent)
-            .scale({ x: this.avatarPressed ? 0.94 : 1, y: this.avatarPressed ? 0.94 : 1 })
-            .animation({ duration: Motion.durationFast, curve: Motion.spring })
+            .backgroundColor(this.avatarPressed ? $r('app.color.bg_pressed') : Color.Transparent)
+            .scale({
+                x: this.avatarPressed ? PressScale.pressed : PressScale.normal,
+                y: this.avatarPressed ? PressScale.pressed : PressScale.normal
+            })
+            .animation({ duration: Motion.durationPress, curve: Motion.press })
             .onTouch((event: TouchEvent) => {
-                this.avatarPressed = event.type === TouchType.Down;
+                if (event.type === TouchType.Down) {
+                    this.avatarPressed = true;
+                }
+
+                if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                    this.avatarPressed = false;
+                }
             })
             .onClick(() => {
                 this.openSidebar();
@@ -491,6 +531,18 @@ export struct MainChat {
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start)
+            .borderRadius(Radius.md)
+            .backgroundColor(this.modelTitlePressed ? $r('app.color.bg_pressed') : Color.Transparent)
+            .animation({ duration: Motion.durationPress, curve: Motion.press })
+            .onTouch((event: TouchEvent) => {
+                if (event.type === TouchType.Down) {
+                    this.modelTitlePressed = true;
+                }
+
+                if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                    this.modelTitlePressed = false;
+                }
+            })
             .onClick(() => {
                 this.openSheetModel();
             });
@@ -520,6 +572,12 @@ export struct MainChat {
                     Scroll() {
                         Column({ space: Space.xl }) {
                             this.GreetingBlock();
+
+                            NotesEntryCard({
+                                onTap: () => {
+                                    this.openNotes(true);
+                                }
+                            });
 
                             QuickActionGrid({
                                 actions: QUICK_ACTIONS,
@@ -559,59 +617,62 @@ export struct MainChat {
                                 }
                             });
                         }
-                        // 键值取「消息身份 + 单元序号」：单元序号在消息内稳定，
-                        // 同一条消息的第 N 个块流式期间始终复用同一个节点
+                     // 键值取「消息身份 + 单元序号」：单元序号在消息内稳定，同一条消息的
+                     // 第 N 个块流式期间始终复用同一个节点；不能用数组下标——前插历史会让
+                     // 所有下标位移，列表会把单元错配到别的行上
                     }, (item: ChatRenderItem) => item.key());
                 }
                 .width('100%')
                 .height('100%')
                 .listDirection(Axis.Vertical)
                 .edgeEffect(EdgeEffect.Spring)
-                // 隐藏滚动条：引擎每次为修正行高估算重新锚定偏移时，thumb 位置
-                // （= 偏移 / 内容总高，两个量都在变）都会跟着回跳 —— 它是滚动中最显眼的「跳」。
-                // 修正本身避不开，但不必把它画出来；聊天页也不需要滚动条
-                .scrollBar(BarState.Off)
                 // 预取窗口双值：低于 minCount 就趁空闲预加载，超过 maxCount 才销毁/复用，
-                // 空闲时按 maxCount 把上下的行先建好。惯性滑动一屏约 13~16 行，
-                // maxCount=16 给一次滑动留出约一屏的「已建好」跑道，
-                // 又不会把整份历史预建出来；滑动期间新建行越少，首次测量引起的重锚越少
+                // 减少惯性滚动时的首次创建与测量，同时避免长历史被整份预建。
                 .cachedCount({ minCount: CACHE_MIN_ROWS, maxCount: CACHE_MAX_ROWS }, false)
-                // 切片点必须贴着真实折行位置。可用宽度写死成 360vp 屏的 328 时，
-                // 在 392.7vp 的屏上预算偏小，每片都白吃一行。只认实测算出的宽度，不再猜屏宽
+                // 切片点必须贴着真实折行位置：首次展开前允许用列表实测宽度校正预算，
+                // 首个渲染单元建立后宽度会冻结，避免同一个 LazyForEach key 对应不同文本。
                 .onAreaChange((oldArea: Area, newArea: Area) => {
                     this.applyContentWidth(newArea.width as number);
                 })
-                // 关闭「同步加载全部子组件」：默认 true 时无动画跳转/首屏会把沿途尚未布局的行
-                // 在同一帧里全部布局完，置 false 后单帧布局超时会把这部分工作顺延到后续帧
+                // 关闭「同步加载全部子组件」：默认 true 时，无动画跳转/首屏会把沿途尚未布局的行
+                // 在同一帧里全部布局完（实测一次跨 19 行的跳转 → 主线程卡死 68 帧 ≈ 1.1s）。
+                // 置 false 后单帧布局超时会把这部分工作顺延到后续帧，视口不再整帧卡死
                 .syncLoad(false)
-                // 历史消息只在列表头部前插，交给 List 保持当前可见内容；
-                // 不再手动 scrollToIndex 二次定位 —— 手动恢复的落点按估算算，本身就是一次硬跳
+                // 历史消息只在列表头部前插，交给 List 保持当前可见内容，避免重排后再次 scrollToIndex。
                 .maintainVisibleContentPosition(true)
                 // 纵向留白走 contentStart/EndOffset：写在 padding 上会变成裁切死带，
-                // 表现为「最后一条消息与输入栏之间永远空一条」
+                // 表现为「最后一条消息与输入栏之间永远空一条」（底部空线）
                 .contentStartOffset(Space.xs)
                 .contentEndOffset(Space.sm)
                 .onScrollIndex((start: number, end: number, center: number) => {
                     this.scheduleScrollIndexUpdate(start, end, center);
                 })
-                .onWillScroll((offset: number, state: ScrollState, source: ScrollSource) => {
-                    this.recordScrollWill(offset, state, source);
-                })
-                .onDidScroll((offset: number, state: ScrollState) => {
-                    this.recordScrollDid(offset, state);
-                })
-                // 只在手势开始时声明用户已接管滚动；不把业务回调挂到每一帧 offset 上。
+                // 该回调只在用户/惯性滚动的每帧开始前触发，scrollToIndex 不会触发它。
                 // 一旦用户开始阅读历史内容，流式更新不得再把手势拉回末条。
-                .onScrollStart(() => {
-                    this.resetScrollTrace();
-                    this.streamUserScrolled = true;
-                    this.scrollGestureActive = true;
-                    this.pendingOverlayActiveValid = false;
+                .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => {
+                    const now: number = Date.now();
+                    const gap: number = this.lastScrollFrameAt > 0 ? now - this.lastScrollFrameAt : 0;
+
+                    if (gap >= SCROLL_GAP_WARN_MS && now - this.lastScrollGapLogAt >= SCROLL_GAP_LOG_INTERVAL) {
+                        const jsCost: number = this.maxScrollIndexCost;
+                        const chars: number = this.visibleContentChars();
+                        this.maxScrollIndexCost = 0;
+                        this.lastScrollGapLogAt = now;
+                        hilog.warn(DOMAIN, TAG,
+                            '[scroll] frame gap=%{public}dms offset=%{public}d visible=%{public}d-%{public}d js=%{public}dms chars=%{public}d',
+                            gap, offset, this.visibleStartIndex, this.visibleEndIndex, jsCost, chars);
+                    }
+
+                    this.lastScrollFrameAt = now;
+
+                    if (!this.streamUserScrolled) {
+                        this.streamUserScrolled = true;
+                    }
+
+                    return { offsetRemain: offset };
                 })
                 .onScrollStop(() => {
-                    this.scrollGestureActive = false;
-                    this.commitScrollOverlay();
-                    this.reportScrollTrace();
+                    this.lastScrollFrameAt = 0;
                 });
 
                 // 已打开会话但无消息（如空历史 / 加载失败后）：居中轻提示
@@ -708,8 +769,8 @@ export struct MainChat {
         .alignItems(HorizontalAlign.Start)
         .padding({ top: Space.md, bottom: Space.xs })
         .opacity(this.greetingVisible ? 1 : 0)
-        .translate({ y: this.greetingVisible ? 0 : 24 })
-        .animation({ duration: Motion.durationSlow, curve: Motion.easeOut });
+        .translate({ y: this.greetingVisible ? 0 : 8 })
+        .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
     }
 
     // 历史加载失败提示条：可点刷新重试
@@ -731,7 +792,11 @@ export struct MainChat {
                 iconSize: Size.iconSmall,
                 buttonSize: 32,
                 onTap: () => {
-                    this.loadHistory();
+                    if (this.remoteDeviceId.length > 0) {
+                        void this.openRemoteChat(this.remoteDeviceId, this.conversationId, this.title, null);
+                    } else {
+                        this.loadHistory(this.conversationId);
+                    }
                 }
             });
         }
@@ -776,6 +841,7 @@ export struct MainChat {
                     activeConversationId: this.conversationId,
                     convList: this.convListSnapshot,
                     convEpoch: this.convEpoch,
+                    streamingIds: this.streamingConvIds,
                     onNewChat: () => {
                         this.startNewRound();
                     },
@@ -789,7 +855,6 @@ export struct MainChat {
                     },
                     onOpenProjects: () => {
                         this.app.setSidebarView('remote');
-                        this.openSidebar();
                     },
                     onOpenRemoteChat: (deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): void => {
                         void this.openRemoteChat(deviceId, remoteId, remoteTitle, project);
@@ -820,7 +885,7 @@ export struct MainChat {
                         });
                     },
                     onOpenKnowledge: (title: string) => {
-
+                        this.closeSidebar();
                         this.openSheetKnowledge(title);
                     },
                     onToggleKnowledgePin: (item: KnowledgeItem) => {
@@ -839,7 +904,9 @@ export struct MainChat {
             .shadow(Shadow.float)
             .translate({ x: this.sidebarTranslate })
             .hitTestBehavior(this.sidebarOpen ? HitTestMode.Default : HitTestMode.None)
-            .parallelGesture(
+            // 使用独占手势：抽屉内横向拖动一旦识别为关闭手势，就取消子项的点击，
+            // 避免拖动结束时把手指落点误判成某个会话的点击。
+            .gesture(
                 PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
                     .onActionStart(() => {
                         this.dragStartTranslate = this.sidebarTranslate;
@@ -963,7 +1030,8 @@ export struct MainChat {
         this.mailOpen = false;
     }
 
-    // 打开随笔页；launchEditor 由快捷入口决定，侧栏入口默认打开列表
+    // ---------- 随笔页 ----------
+    // 首页入口直接进入编辑态，侧栏入口进入按日期分组的列表态
     private openNotes(launchEditor: boolean): void {
         this.noteLaunchEditor = launchEditor;
         this.noteEditorOpen = launchEditor;
@@ -976,7 +1044,8 @@ export struct MainChat {
         this.notesOpen = false;
     }
 
-    // Learning 入口需要先刷新运行时配置，避免打开页面后才发现功能未启用或地址为空
+    // ---------- Learning 工作区 ----------
+    // 打开 Learning：先刷新运行时配置（管理端开关/地址可能刚变更），校验后进入全屏工作区
     private async openLearning(): Promise<void> {
         await this.app.refreshLearningRuntime();
 
@@ -993,6 +1062,39 @@ export struct MainChat {
         this.closeSidebar();
         this.learningNavDepth = 0;
         this.learningOpen = true;
+    }
+
+    // 学习侧发起一轮学习会话（当前用于六维画像快速评估）：
+    // 评估必须跑在 NexoraLearning 的画像链路上——只有 conversation_mode='learning' 的会话，
+    // 后端才会挂载学习运行时（question 工具逐维出选择题、submit_profile_score 写回评分），
+    // 并由 payload.interview=true 把画像访谈指令注入系统提示。
+    // 因此这里新建一个学习会话并切过去，客户端只发一条开场消息，不搬运评估指令原文。
+    private startProfileInterview(): void {
+        this.learningOpen = false;
+        this.learningNavDepth = 0;
+
+        // 当前会话正在生成时不抢占：新会话照常预建，等这一轮结束再发
+        if (this.isCurrentStreaming()) {
+            this.notify('当前回复生成中，请稍后再开始评估', 2000);
+            return;
+        }
+
+        ApiService.createConversation(PROFILE_INTERVIEW_TITLE, LEARNING_MODE, [PROFILE_INTERVIEW_TAG]).then((created) => {
+            if (!created.success || created.conversationId.length === 0) {
+                this.notify('评估会话创建失败：' + created.message, 2400);
+                return;
+            }
+
+            this.profileInterviewConversationId = created.conversationId;
+            this.openConversation(created.conversationId, PROFILE_INTERVIEW_TITLE);
+            this.app.refreshConversations().then(() => {
+                this.bumpList();
+            });
+
+            const payload: ConversationModePayload = { learning: true, interview: true };
+            const mode: SendMode = { conversationMode: LEARNING_MODE, payload: payload };
+            this.dispatchSend(PROFILE_INTERVIEW_KICKOFF, created.conversationId, true, mode);
+        });
     }
 
     // ---------- 侧栏开关 ----------
@@ -1098,10 +1200,7 @@ export struct MainChat {
     /** 电脑项目点击后在主聊天页打开远程历史，项目本身则新建一个关联该项目的远程会话。 */
     private async openRemoteChat(deviceId: string, remoteId: string, remoteTitle: string, project: Object | null): Promise<void> {
         this.remoteSessionEpoch++;
-
-        if (this.streaming) {
-            this.stopStreaming();
-        }
+        const epoch: number = this.remoteSessionEpoch;
 
         this.remoteDeviceId = deviceId;
         this.remoteStreamId = '';
@@ -1114,11 +1213,21 @@ export struct MainChat {
 
         try {
             const id: string = remoteId.length > 0 ? remoteId : await NexoraCodeApi.createConversation(deviceId, project);
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
             this.conversationId = id;
             this.title = remoteTitle.length > 0 ? remoteTitle : '电脑对话';
             this.replaceMessages([]);
 
             const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/conversations/' + id + '/messages');
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
             const history: ChatMessage[] = [];
 
             for (const raw of Json.array(data, 'messages')) {
@@ -1129,8 +1238,15 @@ export struct MainChat {
             }
 
             this.replaceMessages(history);
+            this.applyQuestionLocks(id, history);
+            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
             this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
             const catalog = await NexoraCodeApi.models(deviceId);
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
             this.remoteModelName = catalog.defaultModel;
             this.remoteModels = catalog.models;
             this.remoteModelLabel = catalog.models
@@ -1139,8 +1255,10 @@ export struct MainChat {
             this.closeSidebar();
             this.scrollToEnd('remote-history');
         } catch (cause) {
-            this.loadError = String(cause);
-            this.closeSidebar();
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadError = String(cause);
+                this.closeSidebar();
+            }
         }
     }
 
@@ -1175,7 +1293,7 @@ export struct MainChat {
             this.scrollToEnd('remote-send', true);
 
             const body: RemoteTaskBody = {
-                request_id: 'android-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+                request_id: 'mobile-' + Date.now() + '-' + Math.random().toString(36).slice(2),
                 conversation_id: conversationId,
                 message: text,
                 model_name: this.remoteModelName
@@ -1242,6 +1360,7 @@ export struct MainChat {
             let batchTextChars: number = 0;
             let contentChanged: boolean = false;
             let messageChanged: boolean = false;
+            let questionChanged: boolean = false;
 
             const flushTextDelta = (): void => {
                 if (pendingText.length === 0) {
@@ -1299,6 +1418,7 @@ export struct MainChat {
                     flushTextDelta();
                     assistant.beginQuestion(callId, Json.object(event, 'question'));
                     messageChanged = true;
+                    questionChanged = true;
                 } else if (type === 'error') {
                     flushTextDelta();
                     assistant.appendDelta('error', Json.string(event, 'message') || Json.string(event, 'content'));
@@ -1310,6 +1430,10 @@ export struct MainChat {
 
             if (messageChanged) {
                 this.itemSource.refreshMessage(assistant);
+            }
+
+            if (questionChanged) {
+                this.applyQuestionLocks(this.conversationId, [assistant]);
             }
 
             if (contentChanged) {
@@ -1365,51 +1489,101 @@ export struct MainChat {
         this.remotePollTimer = -1;
     }
 
-    private loadHistory(): void {
+    // 切回本地会话时使旧电脑请求失效，避免迟到的历史或事件覆盖当前页面。
+    private leaveRemoteConversation(): void {
+        if (this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        this.remoteSessionEpoch++;
+        this.stopRemotePolling();
+        this.remoteDeviceId = '';
+        this.remoteStreamId = '';
+        this.remoteCursor = 0;
+        this.remoteModelName = '';
+        this.remoteModelLabel = '';
+        this.remoteModels = [];
+    }
+
+    // 加载指定会话的最近一页历史：写入该会话缓冲；仅在仍查看该会话时镜像到视图。
+    // 缓冲里比服务端本页更新的消息（未落库的提问 / 刚生成完的回复）一并保留，
+    // 合并规则见 mergeHistoryWithLive
+    private loadHistory(conversationId: string): void {
         this.loadingHistory = true;
         this.loadError = '';
         this.hasMoreMessages = false;
         this.oldestLoadedIndex = 0;
 
-        ApiService.fetchMessages(this.conversationId, 20, 0).then((result) => {
-            this.loadingHistory = false;
+        ApiService.fetchMessages(conversationId, 20, 0).then((result) => {
+            const isViewing: boolean = this.currentBufferKey() === conversationId;
+
+            if (isViewing) {
+                this.loadingHistory = false;
+            }
 
             if (!result.success) {
-                this.loadError = result.message;
+                if (isViewing) {
+                    this.loadError = result.message;
+                }
+
                 return;
             }
 
-            this.replaceMessages(result.messages);
-            this.applyQuestionLocks(this.conversationId, result.messages);
-            this.hasMoreMessages = result.hasMoreBefore;
-            this.oldestLoadedIndex = result.startIndex;
-            this.streamUserScrolled = false;
-            this.scrollToEnd('load-history');
-            // scrollToEnd 的 scrollEdge 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
-            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
-            hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length,
-                this.scrollOverlayState.activeTurnIndex);
+            const buffer: ConversationBuffer = this.bufferFor(conversationId);
+            // 服务端本页窗口之后的本地消息（尚未落库的提问 / 刚生成完但落库有延迟的回复）
+            // 由缓冲保留，窗口内以服务端为准：否则切走期间生成结束时切回，回复会凭空消失
+            const windowEnd: number = result.startIndex + result.messages.length;
+            const history: ChatMessage[] = this.mergeHistoryWithLive(result.messages, buffer.messages, windowEnd);
+
+            buffer.messages = history;
+            buffer.hasMore = result.hasMoreBefore;
+            buffer.oldestIndex = result.startIndex;
+
+            if (isViewing) {
+                this.replaceMessages(history);
+                this.hasMoreMessages = result.hasMoreBefore;
+                this.oldestLoadedIndex = result.startIndex;
+                this.applyQuestionLocks(conversationId, history);
+                this.scrollToEnd('load-history');
+                // scrollToEnd 的 scrollToIndex 不一定触发 onScrollIndex，这里主动以末条为基准算出当前轮次
+                this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+                hilog.info(DOMAIN, TAG, '[loadHistory] msgCount=%{public}d activeTurn=%{public}d', this.messages.length, this.scrollOverlayState.activeTurnIndex);
+            }
         });
     }
 
-    // 加载更早的一页消息：滚到顶部时触发，插入列表头部。
-    // List 的 maintainVisibleContentPosition 负责保持当前可见内容，不再手动二次定位
+    // 加载更早的一页消息：只作用于当前查看会话的缓冲，插入列表头部。
+    // List 的 maintainVisibleContentPosition 负责保持当前可见内容，不再手动二次定位。
     private loadMoreMessages(): void {
-        if (!this.hasMoreMessages || this.loadingMoreMessages || this.oldestLoadedIndex <= 0) {
+        const key: string = this.currentBufferKey();
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined || !buffer.hasMore || this.loadingMoreMessages || buffer.oldestIndex <= 0) {
             return;
         }
 
         this.loadingMoreMessages = true;
         const centerBeforeLoad: number = this.scrollCenterBeforeLoad;
 
-        ApiService.fetchMessages(this.conversationId, HISTORY_PAGE_SIZE, this.oldestLoadedIndex).then((result) => {
+        // 历史页大小刻意取小：前插的这些行都还没被测量过，列表只能用「已测行的平均高度」
+        // 估算它们的总高并据此补偿滚动位置。估算是系统性的（实测偏低约 6.6%），
+        // 误差与插入行数成正比 —— 20 条消息约 220 行时累积到 14 行（约 2 个屏幕）的可见跳变，
+        // 6 条消息约 66 行时降到 4 行左右（约半屏）。再多翻几页只是多几次请求，代价远小于跳变。
+        ApiService.fetchMessages(key, HISTORY_PAGE_SIZE, buffer.oldestIndex).then((result) => {
+            // 期间切走：结果作废，缓冲一致性由该会话下次打开时的初始页加载保证。
+            // 必须释放加载锁：该锁是视图级单例，漏释放会让切过去的会话再也拉不动历史
+            if (this.currentBufferKey() !== key) {
+                this.loadingMoreMessages = false;
+                return;
+            }
+
             if (!result.success) {
                 this.loadingMoreMessages = false;
                 return;
             }
 
             // 去重：跳过新加载消息中与已有消息 index 重叠的部分
-            const existingMinIndex: number = this.messages.length > 0 ? this.messages[0].index : -1;
+            const existingMinIndex: number = buffer.messages.length > 0 ? buffer.messages[0].index : -1;
             const dedupedMessages: ChatMessage[] = [];
 
             for (let i: number = 0; i < result.messages.length; i++) {
@@ -1419,144 +1593,45 @@ export struct MainChat {
             }
 
             if (dedupedMessages.length === 0) {
+                buffer.hasMore = false;
                 this.hasMoreMessages = false;
                 this.loadingMoreMessages = false;
                 return;
             }
 
             const insertedCount: number = dedupedMessages.length;
-            const insertedItems: ChatRenderItem[] = this.buildItems(dedupedMessages);
-            this.messages = [...dedupedMessages, ...this.messages];
-            this.itemSource.prependItems(insertedItems);
-            this.applyQuestionLocks(this.conversationId, dedupedMessages);
-            this.rebuildItemIndex();
-            this.hasMoreMessages = result.hasMoreBefore;
-            this.oldestLoadedIndex = result.startIndex;
+            buffer.messages = [...dedupedMessages, ...buffer.messages];
+            buffer.hasMore = result.hasMoreBefore;
+            buffer.oldestIndex = result.startIndex;
 
-            // 前插会改变所有旧消息的数组下标；先按偏移修正活动轮次，
-            // 避免指示器在旧轮次与新轮次之间出现双高亮
+            const insertedItems: ChatRenderItem[] = this.buildItems(dedupedMessages);
+            this.itemSource.prependItems(insertedItems);
+            this.messages = buffer.messages;
+            this.rebuildItemIndex();
+
+            hilog.info(DOMAIN, TAG, '[history] source=prepend add=%{public}d size=%{public}d',
+                insertedCount, this.messages.length);
+
+            // 消息前插会改变所有旧消息的数组索引；先同步修正活动轮次，
+            // 再恢复滚动位置，避免指示器在旧轮次与新轮次之间出现双高亮。
             const preservedCenter: number = centerBeforeLoad + insertedItems.length;
 
             if (centerBeforeLoad >= 0 && preservedCenter < this.turnIndexByItem.length) {
-                this.scrollOverlayState.activeTurnIndex = this.computeActiveTurn(preservedCenter);
+                const preservedActiveTurn: number = this.computeActiveTurn(preservedCenter);
+                this.scrollOverlayState.activeTurnIndex = preservedActiveTurn;
+                hilog.info(DOMAIN, TAG,
+                    '[history] prepend=%{public}d center=%{public}d->%{public}d active=%{public}d',
+                    insertedCount, centerBeforeLoad, preservedCenter, preservedActiveTurn);
             }
 
-            hilog.info(DOMAIN, TAG, '[history] prepend add=%{public}d size=%{public}d',
-                insertedCount, this.messages.length);
+            this.hasMoreMessages = buffer.hasMore;
+            this.oldestLoadedIndex = buffer.oldestIndex;
+            this.applyQuestionLocks(key, dedupedMessages);
 
-            // 前插落地后的静默期：视口的估算修正会在随后 1~2 秒内多次甩动，
-            // 甩动路过索引 0 若被当成触顶就会连锁前插，这里先把分页入口关掉
-            this.prependGuardUntil = Date.now() + PREPEND_PAGINATION_HOLD;
-            this.topStreak = 0;
-
-            // 释放加载锁：可见位置由 List 属性保持，不再需要等定位回调
-            this.loadingMoreMessages = false;
-        });
-    }
-
-    // question 作答：服务端登记成功后写本地锁，再把回答作为普通用户消息送入当前会话。
-    // 服务端登记是跨设备恢复卡片状态的权威步骤，本地状态不能先于它落地。
-    private answerQuestion(item: QuestionItem, answer: string): void {
-        const text: string = answer.trim();
-
-        if (text.length === 0 || item.answered || item.submitting) {
-            return;
-        }
-
-        if (this.remoteDeviceId.length > 0 && item.isPermissionCard()) {
-            void this.answerRemotePermission(item, text);
-            return;
-        }
-
-        if (this.streaming || chatStream.isStreamingFor(this.conversationId)) {
-            this.notify('当前对话已有回复生成中,请稍候', 1200);
-            return;
-        }
-
-        item.submitting = true;
-        this.app.loadQuestionLocks().then((store: string) => {
-            const updated: string = writeQuestionLock(store, this.conversationId, item.cardId, text);
-
-            return ApiService.resolveConversationQuestion(this.conversationId, item.payload.questionId, text).then((result) => {
-                if (!result.success) {
-                    item.submitting = false;
-                    this.notify(result.message, 1600);
-                    return;
-                }
-
-                this.app.saveQuestionLocks(updated);
-                item.markAnswered(text);
-                this.sendMessage(text);
-            });
-        });
-    }
-
-    /** 远程权限卡与 Web 语义一致：允许写入临时授权，拒绝只在本地标记并提示重新下发。 */
-    private async answerRemotePermission(item: QuestionItem, answer: string): Promise<void> {
-        const allow: boolean = answer.includes('允许');
-        const deny: boolean = answer.includes('拒绝');
-
-        if (!allow && !deny) {
-            this.notify('请选择允许或拒绝访问', 1600);
-            return;
-        }
-
-        item.submitting = true;
-
-        try {
-            if (allow) {
-                const request = item.payload.permissionRequest;
-
-                if (request === null) {
-                    throw new Error('该问卡没有可授权的路径信息');
-                }
-
-                const permission: RemotePermissionGrant = new RemotePermissionGrant();
-                permission.path = request.path;
-                permission.scope = request.scope;
-                permission.operation = request.operation;
-                permission.access = request.operation;
-                await NexoraCodeApi.grant(this.remoteDeviceId, this.conversationId, permission);
-            }
-
-            item.markAnswered(allow ? '已允许本次对话临时访问。重新下发任务即可继续。' : '已拒绝本次访问权限。');
-            const assistant: ChatMessage | undefined = this.messages.find((message: ChatMessage): boolean =>
-                message.questions.some((question: QuestionItem): boolean => question.callId === item.callId));
-
-            if (assistant !== undefined) {
-                this.itemSource.refreshMessage(assistant);
-            }
-        } catch (cause) {
-            this.notify(String(cause), 2000);
-        } finally {
-            item.submitting = false;
-        }
-    }
-
-    // 本地回答锁恢复：历史加载、分页和 question 帧到达时复原已答卡片。
-    private applyQuestionLocks(conversationId: string, messages: ChatMessage[]): void {
-        if (conversationId.length === 0 || messages.length === 0) {
-            return;
-        }
-
-        this.app.loadQuestionLocks().then((store: string) => {
-            for (let m: number = 0; m < messages.length; m++) {
-                const message: ChatMessage = messages[m];
-
-                for (let q: number = 0; q < message.questions.length; q++) {
-                    const item: QuestionItem = message.questions[q];
-
-                    if (item.answered) {
-                        continue;
-                    }
-
-                    const locked: string = readQuestionLock(store, conversationId, item.cardId);
-
-                    if (locked.length > 0) {
-                        message.markQuestionAnswered(item.callId, locked);
-                    }
-                }
-            }
+            // 等待数据源刷新完成后释放加载锁；可见位置由 List 属性保持。
+            setTimeout(() => {
+                this.loadingMoreMessages = false;
+            }, 0);
         });
     }
 
@@ -1578,111 +1653,136 @@ export struct MainChat {
         this.sendMessage(text);
     }
 
-    // 发送消息入口：新对话（无 conversation_id）先预建会话拿 id 再发流（prepareNewRoundThenSend），
-    // 追问/重答走 dispatchSend 直发。预创建让 conversation_id 在流开始前已知：
+    // 发送消息入口：当前查看会话正在生成时拒绝；空白新会话先预建会话拿 id 再发流。
+    // 预创建让 conversation_id 在流开始前已知：
     //   ① 侧栏在回复途中即可出现新会话并可高亮（不再等 SSE 首帧——整包聚合时首帧要流末才到）；
-    //   ② ChatStreamClient 轮询兜底可凭 conversation_id 解 stream 做增量渲染（整包也逐段显示）
+    //   ② ChatStreamClient 轮询兜底可凭 conversation_id 解 stream 做增量渲染（整包也逐段显示）。
+    // 预创建是异步的：期间用户切走也照常发送到目标会话（后台生成），不丢弃本次提问。
     private sendMessage(text: string): void {
-        if (this.streaming) {
+        if (this.isCurrentStreaming()) {
             return;
         }
 
-        if (this.conversationId.length === 0) {
-            this.prepareNewRoundThenSend(text);
+        if (this.conversationId.length > 0) {
+            this.dispatchSend(text, this.conversationId, false);
             return;
         }
 
-        this.dispatchSend(text);
-    }
-
-    // 新对话首问：先 POST /api/conversations 建空会话拿 id，再发流。
-    // 失败自动退回老路径（conversation_id 保持空，由 SSE 首帧 stream_session 带回并绑定，侧栏延后出现）
-    private prepareNewRoundThenSend(text: string): void {
         ApiService.createConversation(text).then((created) => {
-            // 预创建是异步的：期间用户若已切到别的会话（conversationId 被 openConversation 改走），
-            // 放弃本次发送，避免问句落错会话
-            if (this.conversationId.length > 0 && this.conversationId !== created.conversationId) {
-                hilog.warn(DOMAIN, TAG, 'pre-create raced with conversation switch, send dropped');
+            const stillOnBlank: boolean = this.conversationId.length === 0;
+
+            if (created.success && created.conversationId.length > 0) {
+                hilog.info(DOMAIN, TAG, 'conversation pre-created: %{public}s', created.conversationId);
+                this.dispatchSend(text, created.conversationId, stillOnBlank);
                 return;
             }
 
-            if (created.success && created.conversationId.length > 0) {
-                this.conversationId = created.conversationId;
-                hilog.info(DOMAIN, TAG, 'conversation pre-created: %{public}s', created.conversationId);
-            } else {
-                hilog.warn(DOMAIN, TAG, 'pre-create failed (%{public}s), fallback to sse-head binding', created.message);
-            }
-
-            this.dispatchSend(text);
+            // 预创建失败：用本地临时键承载本次流，SSE 首帧带回真实 ID 后迁移（会话列表延后出现）
+            hilog.warn(DOMAIN, TAG, 'pre-create failed (%{public}s), fallback to sse-head binding', created.message);
+            this.dispatchSend(text, this.nextPendingKey(), stillOnBlank);
         });
     }
 
-    // 实际发流：消息入列 + 侧栏即时占位（若列表还没有该会话）+ 挂流
-    private dispatchSend(text: string): void {
-        if (this.streaming) {
+    // 实际发流：消息写入目标会话缓冲 + 侧栏即时占位（若列表还没有该会话）+ 挂流。
+    // targetKey 为该流在本地缓冲/传输锁中的键（真实会话 ID；预创建失败时为本地临时键）；
+    // adoptView 表示用户仍停留在发起发送的空白视图上，发送后直接换绑到该流（后台流不劫持当前视图）
+    private dispatchSend(text: string, targetKey: string, adoptView: boolean, mode?: SendMode): void {
+        if (this.streamingKeys.has(targetKey) || chatStream.isStreamingFor(targetKey)) {
+            this.notify('该对话已有回复生成中，请稍候', 1200);
             return;
         }
 
+        const buffer: ConversationBuffer = this.bufferFor(targetKey);
+        // 本地消息必须分配连续且唯一的 index：列表 ForEach key 由 message.index 派生，
+        // 新建消息若恒为 0 会与首条消息 key 冲突，ArkUI 按 key 复用组件导致列表错位/末条重复
+        // （表现：发送瞬间最后一条消息被重复渲染、工具调用段位置错乱；重进会话后索引来自服务端才正常）。
+        // 取末条 index + 1 同时与后端持久化索引对齐
+        const baseIndex: number = buffer.messages.length > 0 ? buffer.messages[buffer.messages.length - 1].index + 1 : 0;
         const userMessage: ChatMessage = ChatMessage.createUser(text);
+        userMessage.index = baseIndex;
         const assistantMessage: ChatMessage = ChatMessage.createAssistant();
-        // 追加包在显式 animateTo 中：配合 ListItem 的 transition 播放"淡入 + 轻微上移"，
-        // 消除新消息硬插入的闪烁感（空态问候页首次切入消息流时尤其明显）
+        assistantMessage.index = baseIndex + 1;
+
+        // 追加包在显式 animateTo 中：新行插入引起的高度与偏移变化参与同一段动画，避免硬插入突跳。
+        // 不用 ListItem 的 .transition() —— LazyForEach 滚动创建行时它同样会播放，
+        // 表现为滚动中某行「一帧错位 + 半透明」（用户报的「看不清是什么文本」正是它）
         animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
-            this.messages = [...this.messages, userMessage, assistantMessage];
-            this.itemSource.appendItems(this.buildItems([userMessage, assistantMessage]));
-            this.rebuildItemIndex();
+            if (adoptView) {
+                if (targetKey.startsWith(PENDING_STREAM_PREFIX)) {
+                    this.pendingSendKey = targetKey;
+                } else {
+                    this.conversationId = targetKey;
+                }
+            }
+
+            this.appendMessages(targetKey, [userMessage, assistantMessage]);
         });
-        this.streaming = true;
+
+        this.streamingKeys.add(targetKey);
+        this.syncStreamingState();
         this.lastContentLog = -1;
         this.lastReasoningLog = -1;
 
         // 预创建/既有会话：消息入列后即可让侧栏出现本会话（ensureConversationVisible 内部幂等：
         // 列表或占位里已有则直接返回）。整包聚合传输下不再依赖迟到的 SSE 首帧才显示新会话
-        if (this.conversationId.length > 0) {
+        if (!targetKey.startsWith(PENDING_STREAM_PREFIX)) {
             const alreadyVisible: boolean = this.app.conversations
-                .some((item: ConversationItem): boolean => item.id === this.conversationId);
+                .some((item: ConversationItem): boolean => item.id === targetKey);
 
             if (!alreadyVisible) {
-                this.app.ensureConversationVisible(this.conversationId, this.firstQuestionHint());
+                this.app.ensureConversationVisible(targetKey, this.firstQuestionHint(targetKey));
                 this.app.refreshConversations().then(() => {
                     this.bumpList();
                 });
             }
         }
 
-        this.scrollToEnd('send', true);
+        if (this.currentBufferKey() === targetKey) {
+            this.scrollToEnd('send', true);
+        }
 
-        chatStream.start(this.conversationId, {
+        const streamOptions: StreamOptions = {
             message: text,
-            conversationId: this.conversationId.length > 0 ? this.conversationId : undefined,
+            conversationId: targetKey.startsWith(PENDING_STREAM_PREFIX) ? undefined : targetKey,
             modelName: this.app.selectedModelName.length > 0 ? this.app.selectedModelName : undefined,
             enableThinking: this.app.enableThinking,
             enableWebSearch: this.app.enableWebSearch,
             enableTools: true,
             toolMode: this.app.forceTools ? 'force' : 'auto_off'
-        } as StreamOptions, this.listenerFor(assistantMessage));
+        };
+
+        let effectiveMode: SendMode | undefined = mode;
+
+        if (effectiveMode === undefined && this.isProfileInterviewConversation(targetKey)) {
+            effectiveMode = {
+                conversationMode: LEARNING_MODE,
+                payload: { learning: true, interview: true }
+            };
+        }
+
+        // Nexora 会话标签恢复评估子模式；每轮使用相同工具集，动态评分状态走上下文尾部注入。
+        if (effectiveMode !== undefined) {
+            streamOptions.conversationMode = effectiveMode.conversationMode;
+            streamOptions.conversationModePayload = effectiveMode.payload;
+        }
+
+        chatStream.start(targetKey, streamOptions, this.listenerFor(assistantMessage, targetKey));
+    }
+
+    private isProfileInterviewConversation(conversationId: string): boolean {
+        if (conversationId === this.profileInterviewConversationId) {
+            return true;
+        }
+
+        return this.app.conversations.some((item: ConversationItem): boolean =>
+            item.id === conversationId && item.profileInterview === true
+        );
     }
 
     // 重新生成：通过后端 is_regenerate 机制覆盖目标回答（自动保存旧版本）。
     // 不截断消息列表、不新增用户消息，直接清空目标 assistant 消息并锁定流式更新该消息。
-    // 接收 ChatMessage（由 ChatItemRow 的 onRegenerate 回调传入），通过 uid 查找索引
+    // 直接接收 ForEach 的数组索引，不依赖 indexOf（@ObjectLink 代理与原数组引用不等）
     private regenerate(targetMessage: ChatMessage): void {
-        // 页面标志与传输层锁是两条独立状态链：页面可能已收到 done，
-        // 但传输层还在等待 dataEnd；反过来也可能是旧页面标志残留。
-        // 以真实会话锁裁决是否能重答，避免清空消息后才发现请求被静默拒绝。
-        const clientStreaming: boolean = chatStream.isStreamingFor(this.conversationId);
-
-        if (clientStreaming) {
-            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: client stream active conv=%{public}s',
-                this.conversationId);
-            return;
-        }
-
-        if (this.streaming) {
-            hilog.warn(DOMAIN, TAG, '[regenerate] corrected stale page streaming flag');
-            this.streaming = false;
-        }
-
         let targetIndex: number = -1;
 
         for (let i: number = 0; i < this.messages.length; i++) {
@@ -1694,6 +1794,23 @@ export struct MainChat {
 
         if (targetIndex < 0) {
             hilog.warn(DOMAIN, TAG, '[regenerate] skipped: message not in view');
+            return;
+        }
+
+        if (this.isCurrentStreaming()) {
+            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: current conversation streaming');
+            return;
+        }
+
+        const key: string = this.currentBufferKey();
+
+        if (key.length === 0) {
+            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: no conversation key');
+            return;
+        }
+
+        if (targetIndex < 0 || targetIndex >= this.messages.length) {
+            hilog.warn(DOMAIN, TAG, '[regenerate] skipped: targetIndex out of range=%{public}d', targetIndex);
             return;
         }
 
@@ -1722,29 +1839,24 @@ export struct MainChat {
         target.reasoning = '';
         target.segments = [];
         target.toolCalls = [];
+        target.questions = [];
         target.usage = null;
         target.errorMessage = '';
         target.streaming = true;
         target.thinkingExpanded = true;
-        this.messages = [...this.messages];
-        this.itemSource.refreshMessage(target);
-        // 清空目标消息会改变它的单元数：其后所有单元下标整体位移，映射必须跟着重建
-        this.rebuildItemIndex();
+        this.replaceMessages([...this.messages]);
+        // 重答目标就在当前会话缓冲中：视图重建的数组同步回缓冲，保持单一数据源
+        this.bufferFor(key).messages = this.messages;
 
-        this.streaming = true;
+        this.streamingKeys.add(key);
+        this.syncStreamingState();
         this.lastContentLog = -1;
         this.lastReasoningLog = -1;
 
-        // 滚动到目标消息位置，让用户看到正在重答的消息
-        const itemIndex: number = this.itemSource.startIndexOf(target.uid);
+        // 定位到目标消息位置，让用户看到正在重答的消息（以该消息的第一行为目标）
+        this.startJumpToMessage(this.firstItemOfMessage(targetIndex), ScrollAlign.CENTER, 'regenerate', () => {});
 
-        if (itemIndex >= 0) {
-            // 程序滚动会路过索引 0：触顶分页由时间戳统一挡掉，不能让它启动历史前插
-            this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
-            this.scroller.scrollToIndex(itemIndex, true, ScrollAlign.CENTER);
-        }
-
-        chatStream.start(this.conversationId, {
+        chatStream.start(key, {
             message: question,
             conversationId: this.conversationId,
             modelName: this.app.selectedModelName.length > 0 ? this.app.selectedModelName : undefined,
@@ -1754,54 +1866,195 @@ export struct MainChat {
             toolMode: this.app.forceTools ? 'force' : 'auto_off',
             isRegenerate: true,
             regenerateIndex: target.index
-        } as StreamOptions, this.listenerFor(target));
+        }, this.listenerFor(target, key));
     }
 
-    // 打开历史会话：原地替换会话状态并载入历史，不做导航压栈
-    private openConversation(conversationId: string, convTitle: string): void {
-        this.remoteSessionEpoch++;
-        if (this.streaming) {
-            this.stopStreaming();
-        }
+    // question 作答：写本地回答锁并作为普通用户消息发送
+    // （与 Web handleQuestionAnswer 一致：上一条助手消息以 await 收尾，模型把该消息当回答继续）
+    private answerQuestion(item: QuestionItem, answer: string): void {
+        const text: string = answer.trim();
 
-        this.conversationId = conversationId;
-        this.remoteDeviceId = '';
-        this.stopRemotePolling();
-        this.streamUserScrolled = false;
-        this.streamFollowPending = false;
-        this.stopBottomLoop();
-        this.title = convTitle.length > 0 ? convTitle : '新对话';
-        this.replaceMessages([]);
-        this.loadError = '';
-        this.activatedActionId = '';
-        this.loadHistory();
-        this.closeSidebar();
-    }
-
-    // 新开一轮：清空会话上下文回到空白态（顶栏 + 侧栏共用）
-    private startNewRound(): void {
-        if (this.streaming) {
-            this.notify('正在生成中，请先停止', 1200);
+        if (text.length === 0 || item.answered || item.submitting) {
             return;
         }
 
-        this.stopStreaming();
-        this.remoteSessionEpoch++;
-        this.conversationId = '';
-        this.remoteDeviceId = '';
-        this.stopRemotePolling();
+        if (this.remoteDeviceId.length > 0 && item.isPermissionCard()) {
+            void this.answerRemotePermission(item, text);
+            return;
+        }
+
+        if (this.remoteDeviceId.length > 0) {
+            const epoch: number = this.remoteSessionEpoch;
+            const conversationId: string = this.conversationId;
+            item.submitting = true;
+
+            this.app.loadQuestionLocks().then((store: string) => {
+                if (epoch !== this.remoteSessionEpoch) {
+                    return;
+                }
+
+                this.app.saveQuestionLocks(writeQuestionLock(store, conversationId, item.cardId, text));
+                item.markAnswered(text);
+                void this.sendRemoteMessage(text);
+            });
+            return;
+        }
+
+        if (this.isCurrentStreaming() || chatStream.isStreamingFor(this.currentBufferKey())) {
+            this.notify('当前对话已有回复生成中,请稍候', 1200);
+            return;
+        }
+
+        item.submitting = true;
+
+        this.app.loadQuestionLocks().then((store: string) => {
+            const updated: string = writeQuestionLock(store, this.conversationId, item.cardId, text);
+            this.app.saveQuestionLocks(updated);
+            item.markAnswered(text);
+            this.dispatchSend(text, this.currentBufferKey(), false);
+        });
+    }
+
+    /** 远程权限卡与 Web 语义一致：允许写入临时授权，拒绝只在本地标记并提示重新下发。 */
+    private async answerRemotePermission(item: QuestionItem, answer: string): Promise<void> {
+        const allow: boolean = answer.includes('允许');
+        const deny: boolean = answer.includes('拒绝');
+        const epoch: number = this.remoteSessionEpoch;
+        const deviceId: string = this.remoteDeviceId;
+        const conversationId: string = this.conversationId;
+
+        if (!allow && !deny) {
+            this.notify('请选择允许或拒绝访问', 1600);
+            return;
+        }
+
+        item.submitting = true;
+
+        try {
+            if (allow) {
+                const request = item.payload.permissionRequest;
+
+                if (request === null) {
+                    throw new Error('该问卡没有可授权的路径信息');
+                }
+
+                const permission: RemotePermissionGrant = new RemotePermissionGrant();
+                permission.path = request.path;
+                permission.scope = request.scope;
+                permission.operation = request.operation;
+                permission.access = request.operation;
+                await NexoraCodeApi.grant(deviceId, conversationId, permission);
+            }
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            item.markAnswered(allow ? '已允许本次对话临时访问。重新下发任务即可继续。' : '已拒绝本次访问权限。');
+            const store: string = await this.app.loadQuestionLocks();
+            await this.app.saveQuestionLocks(writeQuestionLock(store, conversationId, item.cardId, item.answer));
+
+            if (epoch !== this.remoteSessionEpoch) {
+                return;
+            }
+
+            const assistant: ChatMessage | undefined = this.messages.find((message: ChatMessage): boolean =>
+                message.questions.some((question: QuestionItem): boolean => question.callId === item.callId));
+
+            if (assistant !== undefined) {
+                this.itemSource.refreshMessage(assistant);
+            }
+        } catch (cause) {
+            this.notify(String(cause), 2000);
+        } finally {
+            item.submitting = false;
+        }
+    }
+
+    // 本地回答锁恢复：历史加载 / 分页 / question 帧到达时把已答卡片置为锁定态
+    private applyQuestionLocks(conversationId: string, messages: ChatMessage[]): void {
+        if (conversationId.length === 0 || messages.length === 0) {
+            return;
+        }
+
+        this.app.loadQuestionLocks().then((store: string) => {
+            for (let m: number = 0; m < messages.length; m++) {
+                const message: ChatMessage = messages[m];
+
+                for (let q: number = 0; q < message.questions.length; q++) {
+                    const item: QuestionItem = message.questions[q];
+
+                    if (item.answered) {
+                        continue;
+                    }
+
+                    const locked: string = readQuestionLock(store, conversationId, item.cardId);
+
+                    if (locked.length > 0) {
+                        message.markQuestionAnswered(item.callId, locked);
+                    }
+                }
+            }
+        });
+    }
+
+    // 打开历史会话：切到目标会话并恢复现场，不中断任何进行中的流。
+    // 目标会话正在生成时以本地缓冲为准（服务端尚未落盘），其余情况重新拉取权威历史
+    private openConversation(conversationId: string, convTitle: string): void {
+        this.leaveRemoteConversation();
+        this.conversationId = conversationId;
         this.streamUserScrolled = false;
         this.streamFollowPending = false;
+        this.pendingSendKey = '';
+        this.title = convTitle.length > 0 ? convTitle : '新对话';
+        this.activatedActionId = '';
+        this.loadError = '';
+        this.loadingMoreMessages = false;
+        this.cancelJump();
         this.stopBottomLoop();
+        this.closeSidebar();
+
+        const buffer: ConversationBuffer | undefined = this.buffers.get(conversationId);
+
+        if (this.streamingKeys.has(conversationId) && buffer !== undefined) {
+            this.replaceMessages(buffer.messages);
+            this.hasMoreMessages = buffer.hasMore;
+            this.oldestLoadedIndex = buffer.oldestIndex;
+            this.loadingHistory = false;
+            this.syncStreamingState();
+            this.scrollToEnd('open-conversation');
+            this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
+            return;
+        }
+
+        this.replaceMessages([]);
+        this.hasMoreMessages = false;
+        this.oldestLoadedIndex = 0;
+        this.syncStreamingState();
+        this.loadHistory(conversationId);
+    }
+
+    // 新开一轮：切到空白视图回到空白态（顶栏 + 侧栏共用），不中断后台流
+    private startNewRound(): void {
+        this.leaveRemoteConversation();
+        this.conversationId = '';
+        this.streamUserScrolled = false;
+        this.streamFollowPending = false;
+        this.pendingSendKey = '';
         this.title = '新对话';
         this.replaceMessages([]);
+        this.cancelJump();
+        this.stopBottomLoop();
         this.loadError = '';
+        this.loadingHistory = false;
         this.hasMoreMessages = false;
         this.oldestLoadedIndex = 0;
         this.activatedActionId = '';
+        this.syncStreamingState();
         this.closeSidebar();
     }
 
+    // 停止当前查看会话的流：后台其他会话的流不受影响
     private stopStreaming(): void {
         if (this.remoteDeviceId.length > 0 && this.remoteStreamId.length > 0) {
             void NexoraCodeApi.rpc(this.remoteDeviceId, '/api/local/tasks/' + this.remoteStreamId + '/cancel', 'POST');
@@ -1810,38 +2063,23 @@ export struct MainChat {
             return;
         }
 
-        if (chatStream.isStreaming) {
-            chatStream.cancel();
-            return;
-        }
+        const key: string = this.currentBufferKey();
 
-        // 传输层已结束但页面状态尚未收到终止回调时，不能留下不可操作的停止按钮。
-        // 同步结束仍标记为 streaming 的消息行，避免下一次发送继续复用圆点占位。
-        if (!this.streaming) {
-            return;
+        if (key.length > 0) {
+            chatStream.cancel(key);
         }
-
-        for (let i: number = 0; i < this.messages.length; i++) {
-            if (this.messages[i].streaming) {
-                this.messages[i].finish();
-                this.itemSource.refreshMessage(this.messages[i]);
-            }
-        }
-
-        this.streaming = false;
-        this.stopBottomLoop();
-        LiveViewController.shared.stop();
     }
 
-    // 滚动到底：history / send / button / stream-follow 等入口统一走这里，
-    // reason 用于把「视口被强行拉回底部」当场归因到具体链路
+    // 滚动到底：smooth=true 时用带动画的滚动（首条消息/历史载入），
+    // 流式增量期间传 false 快速贴底，避免逐帧动画叠加造成卡顿/闪烁
     private scrollToEnd(reason: string, resumeStreamFollow: boolean = false): void {
-        if (this.itemSource.totalCount() === 0) {
+        if (this.messages.length === 0) {
             return;
         }
 
+        // 记录调用来源：视口被强行拉回底部时，必须能立刻指认是哪条链路发的请求
         hilog.info(DOMAIN, TAG, '[bottom] request reason=%{public}s total=%{public}d visible=%{public}d-%{public}d',
-            reason, this.itemSource.totalCount(), this.visibleStartIndex, this.visibleEndIndex);
+            reason, this.messages.length, this.visibleStartIndex, this.visibleEndIndex);
 
         if (resumeStreamFollow) {
             this.streamUserScrolled = false;
@@ -1860,22 +2098,20 @@ export struct MainChat {
     // 触底一步：滚到内容边界后校验末条是否可见。
     // scrollEdge 的「边界」同样来自引擎对内容总高的认知（未测量行按估算计入），
     // 行高还没测全时一次调用会停在内容中部（进入会话停在非底部的直接原因）；
-    // 每次调用都会让引擎补测沿途行高，逐次校验重试即可逼近真实底部
+    // 每次调用都会让引擎补测沿途行高，因此逐次校验重试即可逼近真实底部。
     private runBottomStep(): void {
-        if (this.itemSource.totalCount() === 0) {
+        if (this.messages.length === 0) {
             this.stopBottomLoop();
             return;
         }
 
         this.bottomAttempts++;
         this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
-        hilog.info(DOMAIN, TAG, '[bottom] edge attempt=%{public}d visible=%{public}d-%{public}d',
-            this.bottomAttempts, this.visibleStartIndex, this.visibleEndIndex);
         this.scroller.scrollEdge(Edge.Bottom);
         const attempt: number = this.bottomAttempts;
 
         setTimeout(() => {
-            if (!this.bottomLoopActive || attempt !== this.bottomAttempts) {
+            if (this.messages.length === 0 || !this.bottomLoopActive || attempt !== this.bottomAttempts) {
                 return;
             }
 
@@ -1904,19 +2140,124 @@ export struct MainChat {
         this.bottomAttempts = 0;
     }
 
-    // 以可见区域索引为基准读取用户轮次索引：查 rebuildItemIndex 建立的表，
-    // 滚动回调只读 O(1) 结果，不再每帧扫描整段历史
-    private computeActiveTurn(center: number): number {
-        if (center < 0 || center >= this.turnIndexByItem.length) {
-            return -1;
+    // 把同一帧内到达的多个正文增量合并为一次贴底，避免滚动控制 API 与手势连续竞争。
+    private scheduleStreamFollowToBottom(): void {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom || this.streamFollowPending) {
+            return;
         }
 
-        return this.turnIndexByItem[center];
+        this.streamFollowPending = true;
+        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
+            this.streamFollowPending = false;
+
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom && this.messages.length > 0) {
+                this.scrollToEnd('stream-follow');
+            }
+        }));
     }
 
-    // 末条消息所在轮次：载入 / 打开会话后直接把指示器定到最后一轮
-    private computeActiveTurnOfLastMessage(): number {
-        return this.computeActiveTurn(this.itemSource.totalCount() - 1);
+    // 独立区块（工具结果卡 / 选择题卡 / 图片画廊）贴底：这些块是本轮最后的输出时才挂载，
+    // 挂载当帧 List 还没为它排版，同步 scrollToIndex 会停在旧底部。
+    // 推迟一帧，等区块的真实高度参与排版后再滚动，视口才真正贴住消息末尾。
+    private scrollToEndAfterLayout(): void {
+        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom) {
+            return;
+        }
+
+        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
+            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom) {
+                this.scrollToEnd('after-layout');
+            }
+        }));
+    }
+
+    // 替换消息数组的唯一入口：同步响应式页面状态与 LazyForEach 数据源，避免两套数据不同步。
+    private replaceMessages(messages: ChatMessage[]): void {
+        this.messages = messages;
+        this.itemSource.replaceAll(this.buildItems(messages));
+        this.rebuildItemIndex();
+    }
+
+    // 把消息数组整体展开成渲染单元（顺序即渲染顺序）
+    private buildItems(messages: ChatMessage[]): ChatRenderItem[] {
+        const items: ChatRenderItem[] = [];
+
+        for (let i: number = 0; i < messages.length; i++) {
+            const built: ChatRenderItem[] = ChatItemBuilder.build(messages[i]);
+
+            for (let j: number = 0; j < built.length; j++) {
+                items.push(built[j]);
+            }
+        }
+
+        return items;
+    }
+
+    // 将滚动索引更新合并到下一帧：活动轮次按视口中心计算，避免底部刚露出的用户消息提前抢占指示器。
+    private scheduleScrollIndexUpdate(start: number, end: number, center: number): void {
+        this.pendingScrollStart = start;
+        this.pendingScrollEnd = end;
+        this.pendingScrollCenter = center;
+
+        if (this.scrollIndexFramePending) {
+            return;
+        }
+
+        this.scrollIndexFramePending = true;
+        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
+            this.scrollIndexFramePending = false;
+
+            const nextStart: number = this.pendingScrollStart;
+            const nextEnd: number = this.pendingScrollEnd;
+            const nextCenter: number = this.pendingScrollCenter;
+            this.applyScrollIndex(nextStart, nextEnd, nextCenter);
+        }));
+    }
+
+    // 应用一帧内最后一次滚动索引：底部按钮仍看 end，轮次指示器只看 center。
+    private applyScrollIndex(start: number, end: number, center: number): void {
+        const startedAt: number = Date.now();
+        this.visibleStartIndex = start;
+        this.visibleEndIndex = end;
+
+        const nextShowScrollBottom: boolean = end < this.itemSource.totalCount() - 1;
+
+        if (this.scrollOverlayState.showScrollBottom !== nextShowScrollBottom) {
+            this.scrollOverlayState.showScrollBottom = nextShowScrollBottom;
+        }
+
+        // 定位在途时不跟随中间落点，等定位落地后一次性带动画设置激活轮次：
+        // 否则高亮会随远跳的每一步中间落点闪动
+        if (this.jumpTargetIndex < 0 && center >= 0 && center < this.turnIndexByItem.length) {
+            const nextActiveTurn: number = this.turnIndexByItem[center];
+
+            if (this.scrollOverlayState.activeTurnIndex !== nextActiveTurn) {
+                this.scrollOverlayState.activeTurnIndex = nextActiveTurn;
+                hilog.info(DOMAIN, TAG,
+                    '[scroll] active turn=%{public}d center=%{public}d start=%{public}d end=%{public}d',
+                    nextActiveTurn, center, start, end);
+            }
+        }
+
+        if (center >= 0) {
+            this.scrollCenterBeforeLoad = center;
+        }
+
+        // 定位目标已被 List 上报为可见：立即收尾，不必再等单步校验定时器
+        if (this.jumpTargetIndex >= start && this.jumpTargetIndex <= end) {
+            this.completeJump('visible');
+        }
+
+        // 只有用户真正触顶时才加载历史；程序定位经过索引 0 时不能启动分页。
+        if (start <= 0 && !this.isPaginationBlocked()) {
+            this.loadMoreMessages();
+        }
+
+        const cost: number = Date.now() - startedAt;
+
+        if (cost > this.maxScrollIndexCost) {
+            this.maxScrollIndexCost = cost;
+        }
     }
 
     // 单元集合变化时重建索引：每个单元继承所属消息的轮次，
@@ -1954,21 +2295,27 @@ export struct MainChat {
         }
     }
 
-    // 指定轮次里用户消息的首个单元下标：轮次跳转以「该轮用户消息的第一行」为目标
-    private firstItemOfTurn(turnIndex: number): number {
-        let seen: number = -1;
-
-        for (let i: number = 0; i < this.messages.length; i++) {
-            if (this.messages[i].isUser) {
-                seen++;
-
-                if (seen === turnIndex) {
-                    return i < this.messageStartByMessage.length ? this.messageStartByMessage[i] : -1;
-                }
-            }
+    // 某条消息的首个单元下标：轮次跳转与重答定位都以「该消息的第一行」为目标
+    private firstItemOfMessage(messageIndex: number): number {
+        if (messageIndex < 0 || messageIndex >= this.messageStartByMessage.length) {
+            return -1;
         }
 
-        return -1;
+        return this.messageStartByMessage[messageIndex];
+    }
+
+    // 以可见区域索引为基准，读取最后一个位置 ≤ center 的用户轮次索引
+    private computeActiveTurn(center: number): number {
+        if (center < 0 || center >= this.turnIndexByItem.length) {
+            return -1;
+        }
+
+        return this.turnIndexByItem[center];
+    }
+
+    // 末条消息所在轮次：载入 / 打开会话后直接把指示器定到最后一轮
+    private computeActiveTurnOfLastMessage(): number {
+        return this.computeActiveTurn(this.itemSource.totalCount() - 1);
     }
 
     // 生成各轮次用户消息预览文本
@@ -1985,77 +2332,249 @@ export struct MainChat {
         return previews;
     }
 
-    // 跳转到指定轮次：滚动使目标用户消息居中，并临时高亮。
-    // 目标下标查 rebuildItemIndex 建立的表，不再整表扫描
+    // 跳转到指定轮次：命中目标用户消息后交给分步定位
     private jumpToTurn(turnIndex: number): void {
-        const itemIndex: number = this.firstItemOfTurn(turnIndex);
+        let userCount: number = 0;
 
-        if (itemIndex < 0) {
-            return;
+        for (let i: number = 0; i < this.messages.length; i++) {
+            if (this.messages[i].isUser) {
+                if (userCount === turnIndex) {
+                    const itemIndex: number = this.firstItemOfMessage(i);
+                    this.startJumpToMessage(itemIndex, ScrollAlign.CENTER, 'turn=' + turnIndex, () => {
+                        this.highlightMessage(i);
+                    });
+                    return;
+                }
+
+                userCount++;
+            }
         }
-
-        // 程序滚动会路过索引 0：触顶分页由时间戳统一挡掉，不能让它启动历史前插
-        this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
-        this.scroller.scrollToIndex(itemIndex, true, ScrollAlign.CENTER);
-        this.highlightMessage(itemIndex);
     }
 
-    // 临时高亮指定消息的所有渲染单元：设置 highlighted 字段后 3 秒自动清除。
-    // index 是渲染单元索引，需找到同一条消息的所有单元一起高亮
-    private highlightMessage(index: number): void {
-        const items: ChatRenderItem[] = this.itemSource.snapshot();
+    // 分步定位：List 只能按已测平均行高估算未测量行的偏移，一次远跳会落到估算位置
+    // （新建列表连平均行高都没建立时会停在原位）；平滑动画又会与 LazyForEach 的布局更新冲突被丢弃。
+    // 因此改为无动画硬定位 + 落地校验：目标进入可视区即完成，否则按二分逼近继续推进。
+    private startJumpToMessage(targetIndex: number, align: ScrollAlign, label: string,
+        onSettled: () => void): void {
+        this.jumpToken = this.jumpToken + 1;
+        this.jumpTargetIndex = targetIndex;
+        this.jumpAlign = align;
+        this.jumpSteps = 0;
+        this.jumpSettled = onSettled;
+        this.jumpLabel = label;
+        this.jumpAnimated = false;
+        this.jumpLastStart = -1;
+        this.jumpLastEnd = -1;
+        this.jumpRearms = 0;
 
-        if (index < 0 || index >= items.length) {
+        hilog.info(DOMAIN, TAG, '[jump] start label=%{public}s target=%{public}d total=%{public}d',
+            label, targetIndex, this.messages.length);
+
+        this.runJumpStep(label, this.jumpToken);
+    }
+
+    // 推进一步：首步直取目标（行高已测准时一步到位），之后剩余距离较大时只推进一半，
+    // 让 List 在推进过程中逐段建立真实行高，逐步收敛到目标
+    private runJumpStep(label: string, token: number): void {
+        if (token !== this.jumpToken || this.jumpTargetIndex < 0) {
             return;
         }
 
-        const targetUid: string = items[index].message.uid;
-        // 代次 +1：连续跳转时，旧定时器不得清掉新目标的高亮
-        this.highlightToken++;
-        const token: number = this.highlightToken;
+        this.jumpSteps++;
+        this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
 
-        for (let i: number = 0; i < items.length; i++) {
-            if (items[i].message.uid === targetUid) {
-                items[i].highlighted = true;
+        const target: number = this.jumpTargetIndex;
+        const from: number = this.visibleCenterIndex();
+        const gap: number = target - from;
+        let nextIndex: number = target;
+        let animated: boolean = true;
+
+        // 远距离先无动画落到「目标前方 JUMP_GLIDE_ROWS 行」：长距离平滑滚动会被框架丢弃
+        // （见 ArkUI 论坛结论），也会拖慢跳转；末段那一小段再用动画滑入，保留跳转动画手感
+        if (Math.abs(gap) > JUMP_GLIDE_ROWS) {
+            nextIndex = target - (gap > 0 ? JUMP_GLIDE_ROWS : -JUMP_GLIDE_ROWS);
+            animated = false;
+        } else if (this.jumpAnimated) {
+            // 动画步整轮只试一次：被框架丢弃后改用无动画步，避免「动画-丢弃-再动画」来回摆动
+            animated = false;
+        }
+
+        this.jumpAnimated = this.jumpAnimated || animated;
+
+        const startedAt: number = Date.now();
+        this.scroller.scrollToIndex(nextIndex, animated, this.jumpAlign);
+        hilog.info(DOMAIN, TAG,
+            '[jump] step=%{public}d from=%{public}d next=%{public}d target=%{public}d animated=%{public}d elapsed=%{public}dms',
+            this.jumpSteps, from, nextIndex, target, animated ? 1 : 0, Date.now() - startedAt);
+
+        setTimeout(() => {
+            this.settleJump(label, token);
+        }, animated ? JUMP_ANIMATE_SETTLE_DELAY : JUMP_SETTLE_DELAY);
+    }
+
+    // 落地校验：目标已进入可视区则完成（含临时高亮）；未进入则继续推进；超过步数上限则放弃
+    private settleJump(label: string, token: number): void {
+        if (token !== this.jumpToken || this.jumpTargetIndex < 0) {
+            return;
+        }
+
+        const target: number = this.jumpTargetIndex;
+
+        if (target >= this.visibleStartIndex && target <= this.visibleEndIndex) {
+            this.completeJump('verify');
+            return;
+        }
+
+        // 可视区间相对上次校验还在变化 → 动画正在推进中，继续等它走完。
+        // （早先一发现没到位就改发无动画步，会把已经开始的平滑滚动直接截断成瞬移）
+        const moved: boolean = this.visibleStartIndex !== this.jumpLastStart
+            || this.visibleEndIndex !== this.jumpLastEnd;
+        this.jumpLastStart = this.visibleStartIndex;
+        this.jumpLastEnd = this.visibleEndIndex;
+
+        if (moved && this.jumpRearms < JUMP_MAX_REARMS) {
+            this.jumpRearms++;
+            hilog.info(DOMAIN, TAG,
+                '[jump] waiting label=%{public}s target=%{public}d visible=%{public}d-%{public}d rearm=%{public}d',
+                label, target, this.visibleStartIndex, this.visibleEndIndex, this.jumpRearms);
+            setTimeout(() => {
+                this.settleJump(label, token);
+            }, JUMP_SETTLE_DELAY);
+            return;
+        }
+
+        if (this.jumpSteps >= JUMP_MAX_STEPS) {
+            hilog.warn(DOMAIN, TAG,
+                '[jump] give up label=%{public}s target=%{public}d steps=%{public}d visible=%{public}d-%{public}d',
+                label, target, this.jumpSteps, this.visibleStartIndex, this.visibleEndIndex);
+            this.finishJump();
+            return;
+        }
+
+        this.runJumpStep(label, token);
+    }
+
+    // 定位完成：记录落地方式后收尾，并执行落地回调（临时高亮）。
+    // by=verify 表示定时校验确认，by=visible 表示 List 上报的窗口先一步确认
+    private completeJump(by: string): void {
+        const label: string = this.jumpLabel;
+        const target: number = this.jumpTargetIndex;
+        const steps: number = this.jumpSteps;
+        const onSettled: () => void = this.jumpSettled;
+
+        this.finishJump();
+
+        // 跳转落地才更新激活轮次，并带动画：面板线条随之平滑滑到目标轮次
+        // （滚动过程中的跟随更新是瞬时生效，对齐 web「滚动不播动画、跳转才播」）
+        if (target >= 0 && target < this.turnIndexByItem.length) {
+            animateTo({ duration: Motion.durationBase, curve: Motion.easeOut }, () => {
+                this.scrollOverlayState.activeTurnIndex = this.turnIndexByItem[target];
+            });
+        }
+
+        hilog.info(DOMAIN, TAG, '[jump] settled label=%{public}s target=%{public}d steps=%{public}d by=%{public}s',
+            label, target, steps, by);
+        onSettled();
+    }
+
+    // 定位收尾：清理目标，并继续屏蔽一小段触顶回调，避免定位刚落到索引 0 就触发历史分页
+    private finishJump(): void {
+        this.jumpTargetIndex = -1;
+        this.jumpSettled = () => {};
+        this.jumpLabel = '';
+        this.paginationBlockedUntil = Date.now() + JUMP_PAGINATION_HOLD;
+    }
+
+    // 取消在途定位：列表内容被整体替换后旧目标索引已失效
+    private cancelJump(): void {
+        this.jumpToken = this.jumpToken + 1;
+        this.jumpTargetIndex = -1;
+        this.jumpSettled = () => {};
+        this.jumpLabel = '';
+        this.paginationBlockedUntil = 0;
+        this.visibleStartIndex = 0;
+        this.visibleEndIndex = 0;
+    }
+
+    // 分页屏蔽判定：有在途定位、或刚定位完的一小段时间内，不启动历史分页
+    private isPaginationBlocked(): boolean {
+        return this.jumpTargetIndex >= 0 || Date.now() < this.paginationBlockedUntil;
+    }
+
+    // 当前可见行的正文长度之和：作为该帧渲染子树规模的代理指标（长回答 = 每帧成本高）
+    private visibleContentChars(): number {
+        const items: ChatRenderItem[] = this.itemSource.snapshot();
+        let total: number = 0;
+
+        for (let i: number = this.visibleStartIndex; i <= this.visibleEndIndex && i < items.length; i++) {
+            const item: ChatRenderItem = items[i];
+
+            if (item.firstOfMessage) {
+                total += item.message.content.length;
             }
         }
 
-        setTimeout(() => {
-            if (token !== this.highlightToken) {
-                return;
-            }
+        return total;
+    }
 
-            for (let i: number = 0; i < items.length; i++) {
-                if (items[i].message.uid === targetUid) {
-                    items[i].highlighted = false;
-                }
+    // 当前视口中心行：分步推进的起点（List 尚未上报过索引时按 0 起算）
+    private visibleCenterIndex(): number {
+        return Math.floor((this.visibleStartIndex + this.visibleEndIndex) / 2);
+    }
+
+    // 临时高亮指定消息：设置索引后到时自动清除（代次令牌避免旧定时器提前清掉新的高亮）
+    private highlightMessage(messageIndex: number): void {
+        this.highlightToken = this.highlightToken + 1;
+        const token: number = this.highlightToken;
+
+        this.setMessageHighlight(messageIndex, true);
+        setTimeout(() => {
+            if (token === this.highlightToken) {
+                this.setMessageHighlight(messageIndex, false);
             }
         }, HIGHLIGHT_DURATION);
     }
 
-    // 首轮生成结束后用首条提问作为会话标题
-    private deriveTitle(): void {
-        if (this.title !== '新对话' || this.messages.length === 0) {
+    // 高亮标记写在单元上（单元是 @Observed，行用 @ObjectLink 观察它）：
+    // 页面级下标比较不会让 LazyForEach 已创建的行重新渲染，标记必须落在单元自身
+    private setMessageHighlight(messageIndex: number, highlighted: boolean): void {
+        const items: ChatRenderItem[] = this.itemSource.snapshot();
+        const start: number = this.firstItemOfMessage(messageIndex);
+
+        if (start < 0 || start >= items.length) {
             return;
         }
 
-        const first: ChatMessage = this.messages[0];
+        const uid: string = items[start].message.uid;
 
-        if (!first.isUser) {
-            return;
+        for (let i: number = start; i < items.length && items[i].message.uid === uid; i++) {
+            items[i].highlighted = highlighted;
+        }
+    }
+
+    // 以指定会话缓冲的首条提问生成标题（流结束时用于顶栏与侧栏占位项）
+    private deriveTitleFor(key: string): string {
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined || buffer.messages.length === 0) {
+            return '新对话';
         }
 
-        this.title = first.content.length > TITLE_MAX_LENGTH
+        const first: ChatMessage = buffer.messages[0];
+
+        if (!first.isUser || first.content.length === 0) {
+            return '新对话';
+        }
+
+        return first.content.length > TITLE_MAX_LENGTH
             ? first.content.substring(0, TITLE_MAX_LENGTH) + '…'
             : first.content;
     }
 
     // 回复完成 / 中止后轮询刷新会话列表：服务端对"新会话入库 / 标题落盘"存在可见延迟，
     // 单次延时刷新可能拉到的还是旧列表（表现为"重开侧栏才出现新会话"）。
-    // 改为按 0.6s/2s/4.5s/9s 递增重试，直到当前会话出现在列表里为止。
-    private scheduleListRefresh(): void {
-        const targetId: string = this.conversationId;
-
+    // 改为按 0.6s/2s/4.5s/9s 递增重试，直到该会话出现在列表里为止（与当前查看哪个会话无关）
+    private scheduleListRefresh(targetId: string): void {
         if (targetId.length === 0) {
             return;
         }
@@ -2066,11 +2585,6 @@ export struct MainChat {
         const pollOnce = (): void => {
             this.app.refreshConversations().then(() => {
                 this.bumpList();
-
-                // 轮询期间用户已切到别的会话：不再打扰
-                if (this.conversationId !== targetId) {
-                    return;
-                }
 
                 const found: boolean = this.app.conversations.some((item: ConversationItem): boolean => item.id === targetId);
 
@@ -2120,6 +2634,52 @@ export struct MainChat {
         });
     }
 
+    // 列表首次布局前把实测可用宽度交给切片器；宽度冻结后只核对，不再改写切点。
+    private applyContentWidth(listWidth: number): void {
+        if (listWidth <= 0) {
+            return;
+        }
+
+        const contentWidth: number = listWidth - Space.lg * 2;
+
+        if (ChatItemBuilder.isContentWidthLocked()) {
+            if (!this.widthLockWarned && Math.abs(contentWidth - ChatItemBuilder.currentContentWidth()) > 1) {
+                this.widthLockWarned = true;
+                hilog.warn(DOMAIN, TAG, '[width] locked slice=%{public}d list=%{public}d delta=%{public}d',
+                    Math.round(ChatItemBuilder.currentContentWidth()), Math.round(contentWidth),
+                    Math.round(contentWidth - ChatItemBuilder.currentContentWidth()));
+            }
+
+            return;
+        }
+
+        if (Math.abs(contentWidth - this.measuredContentWidth) < 1) {
+            return;
+        }
+
+        this.measuredContentWidth = contentWidth;
+        ChatItemBuilder.setContentWidth(contentWidth);
+        hilog.info(DOMAIN, TAG, '[width] list=%{public}d content=%{public}d',
+            Math.round(listWidth), Math.round(contentWidth));
+    }
+
+    // 构建前播种切片宽度，保证首批消息也使用与列表一致的文本宽度。
+    private seedContentWidth(): void {
+        try {
+            const screenVp: number = px2vp(display.getDefaultDisplaySync().width);
+            const contentWidth: number = screenVp - Space.lg * 2;
+
+            if (contentWidth > 200 && contentWidth < 600) {
+                this.measuredContentWidth = contentWidth;
+                ChatItemBuilder.setContentWidth(contentWidth);
+                hilog.info(DOMAIN, TAG, '[width] seed screen=%{public}d content=%{public}d',
+                    Math.round(screenVp), Math.round(contentWidth));
+            }
+        } catch (err) {
+            hilog.warn(DOMAIN, TAG, '[width] seed failed: %{public}s', JSON.stringify(err));
+        }
+    }
+
     // Toast 统一出口：getPromptAction 版 showToast（非 deprecated），声明可能抛异常，在此集中 try/catch 消化
     private notify(message: string, duration?: number): void {
         try {
@@ -2152,6 +2712,11 @@ export struct MainChat {
     }
 
     private async performDelete(item: ConversationItem): Promise<void> {
+        if (this.streamingKeys.has(item.id)) {
+            this.notify('回复生成中，请先停止再操作', 1600);
+            return;
+        }
+
         const error: string = await this.app.deleteConversation(item.id);
 
         if (error.length > 0) {
@@ -2161,6 +2726,7 @@ export struct MainChat {
 
         this.notify('会话已删除');
         this.bumpList();
+        this.buffers.delete(item.id);
 
         // 删的是当前正在看的会话：复位到新对话空态，避免停留在已删除会话的消息上
         if (item.id === this.conversationId) {
@@ -2168,27 +2734,34 @@ export struct MainChat {
         }
     }
 
-    // 流式事件到消息模型的映射：所有增量最终都落到同一条 assistant 消息上。
+    // 流式事件到消息模型的映射：所有增量落到该流自己的 assistant 消息上。
+    // streamKey 为这条流在本地缓冲/传输锁中的键：新会话预创建失败时是本地临时键，
+    // SSE 首帧带回真实会话 ID 后迁移；事件只在流所属会话正在查看时才驱动滚动。
     // 统一经 UI 线程跳板（setTimeout 0）再改 @Observed 消息：
     // http 流回调线程不保证是 UI 线程，直接在此改 @Observed 字段可能不触发界面通知，
     // 表现为"服务端在推、界面一字不流"（曾实测复现），必须回到 UI 线程再落地。
-    private listenerFor(assistant: ChatMessage): StreamListener {
+    private listenerFor(assistant: ChatMessage, streamKey: string): StreamListener {
+        const context: StreamContext = {
+            key: streamKey,
+            conversationId: streamKey.startsWith(PENDING_STREAM_PREFIX) ? '' : streamKey
+        };
+
         const onUi = (action: () => void, reloadMessage: boolean = false): void => {
             setTimeout(() => {
                 action();
 
-                // 本帧改动的消息字段同步给列表数据源：
+                // 本帧改动的消息字段（正文块 / 工具卡 / 用量 / 状态）同步给列表数据源：
                 // 原地改写受影响的单元，列表不重建，只有真正变化的那一行重渲染
-                if (reloadMessage) {
-                    this.itemSource.reloadMessage(assistant);
-                } else {
-                    this.itemSource.refreshMessage(assistant);
+                if (this.currentBufferKey() === context.key) {
+                    if (reloadMessage) {
+                        this.itemSource.reloadMessage(assistant);
+                    } else {
+                        this.itemSource.refreshMessage(assistant);
+                    }
                 }
             }, 0);
         };
 
-        // 同一帧内到达的多个增量合并成一次落地：每条 SSE 增量各自重跑一遍 markdown
-        // 解析与单元重建，字符级流式下足以把主线程一直钉在高负载上
         let pendingReasoning: string = '';
         let pendingContent: string = '';
         let deltaFlushScheduled: boolean = false;
@@ -2212,12 +2785,14 @@ export struct MainChat {
 
                 assistant.appendDelta('content', content);
                 this.logStreamProgress(assistant, false);
-                this.scheduleStreamFollowToBottom();
+
+                if (this.currentBufferKey() === context.key) {
+                    this.scheduleStreamFollowToBottom();
+                }
 
                 // 胶囊滚动窗口：截取正文末尾 5 字更新灵动岛胶囊（仅退后台活跃时生效）
                 LiveViewController.shared.updateContent(assistant.content);
             }
-
         };
 
         const scheduleDeltaFlush = (): void => {
@@ -2240,10 +2815,9 @@ export struct MainChat {
         return {
             onConversationId: (conversationId: string) => {
                 onUi(() => {
-                    this.conversationId = conversationId;
-                    hilog.info(DOMAIN, TAG, 'conversation bound: %{public}s', conversationId);
+                    this.bindPendingStream(context, conversationId);
                     // 会话已建立：立即本地占位 + 刷新一次列表，让新会话在回复途中就出现在侧栏并可高亮
-                    this.app.ensureConversationVisible(conversationId, this.firstQuestionHint());
+                    this.app.ensureConversationVisible(conversationId, this.firstQuestionHint(context.key));
                     this.app.refreshConversations().then(() => {
                         this.bumpList();
                     });
@@ -2276,7 +2850,10 @@ export struct MainChat {
                     }
 
                     assistant.beginToolCall(callId, name, args, round);
-                    this.scheduleStreamFollowToBottom();
+
+                    if (this.currentBufferKey() === context.key) {
+                        this.scheduleStreamFollowToBottom();
+                    }
                 });
             },
             onToolResult: (name: string, callId: string, payload: ToolResultPayload, round: number) => {
@@ -2285,18 +2862,27 @@ export struct MainChat {
                     assistant.completeToolCall(callId, payload);
 
                     // 工具结果卡是本轮最后输出时后面不再有正文增量，这里必须自己补一次贴底，
-                    // 否则结果块（含图片画廊）会停在视口下方
-                    this.scrollToEndAfterLayout();
+                    // 否则结果块（含 Exa 图片画廊）会停在视口下方
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEndAfterLayout();
+                    }
                 });
             },
             onQuestion: (callId: string, payload: Object | null, round: number) => {
                 onUi(() => {
                     flushDeltaNow();
+                    // question 工具等待作答：关闭思考块并挂载交互卡片，回答走 answerQuestion
+                    if (assistant.thinkingExpanded) {
+                        assistant.thinkingExpanded = false;
+                    }
+
                     assistant.beginQuestion(callId, payload);
-                    this.applyQuestionLocks(this.conversationId, [assistant]);
+                    this.applyQuestionLocks(context.conversationId, [assistant]);
 
                     // 选择题卡通常是本轮最后一块输出：挂载当帧还没有真实高度，同步滚动会漏底
-                    this.scrollToEndAfterLayout();
+                    if (this.currentBufferKey() === context.key) {
+                        this.scrollToEndAfterLayout();
+                    }
                 });
             },
             onTokenUsage: (usage: TokenUsage) => {
@@ -2308,8 +2894,12 @@ export struct MainChat {
                 onUi(() => {
                     flushDeltaNow();
                     assistant.setError(message);
-                    this.streaming = false;
-                    LiveViewController.shared.stop();
+                    this.finishStream(context.key);
+
+                    // 还有别的会话在生成：实况窗保留，等待最后一个流收尾
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.stop();
+                    }
                 }, true);
             },
             onComplete: (finalContent: string) => {
@@ -2322,323 +2912,181 @@ export struct MainChat {
                     }
 
                     assistant.finish();
-                    this.streaming = false;
-                    this.deriveTitle();
-                    this.app.updatePendingConversation(this.conversationId, this.title);
-                    this.scheduleListRefresh();
-                    // 正常完成：胶囊改"回复完成"保留 5 秒后自动关闭
-                    LiveViewController.shared.finishGenerating();
+                    this.finishStream(context.key);
+                    this.finalizeStreamConversation(context);
+
+                    // 最后一个流完成：胶囊改"回复完成"保留 5 秒后自动关闭
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.finishGenerating();
+                    }
                 }, true);
             },
             onAborted: () => {
                 onUi(() => {
                     flushDeltaNow();
                     assistant.finish();
-                    this.streaming = false;
-                    this.deriveTitle();
-                    this.app.updatePendingConversation(this.conversationId, this.title);
-                    this.scheduleListRefresh();
-                    LiveViewController.shared.stop();
+                    this.finishStream(context.key);
+                    this.finalizeStreamConversation(context);
+
+                    if (chatStream.streamingCount <= 1) {
+                        LiveViewController.shared.stop();
+                    }
                 }, true);
             }
         };
     }
 
-    // ---------- 滚动仲裁 ----------
-    // 程序滚动（定位 / 触底 / 回底）与前插静默期内屏蔽触顶分页：
-    // 定位经过索引 0、前插后的估算修正甩动都会让视口「停在顶部」，
-    // 不挡掉就会连锁前插 → 连锁修正 → 滑动动量被反复打断。
-    // 用时间戳而不是布尔开关：异常路径漏复位会让分页永久锁死，时间戳能自愈
-    private isPaginationBlocked(): boolean {
-        const now: number = Date.now();
+    // 流正常结束/中止后的会话收尾：更新标题与侧栏占位项，并按需刷新会话列表
+    private finalizeStreamConversation(context: StreamContext): void {
+        const derived: string = this.deriveTitleFor(context.key);
 
-        return now < this.paginationBlockedUntil || now < this.prependGuardUntil;
+        // 仍停留在该流所属会话且标题还是默认值时，顶栏同步为推导标题
+        if (this.currentBufferKey() === context.key && this.title === '新对话') {
+            this.title = derived;
+        }
+
+        if (context.conversationId.length > 0) {
+            this.app.updatePendingConversation(context.conversationId, derived);
+        }
+
+        this.scheduleListRefresh(context.conversationId);
     }
 
-    // 滚动索引回调可能在同一帧触发多次，只保留最后一次结果并推迟到下一帧统一应用。
-    // 每帧无条件写 @State 会让整页（含侧栏层与轮次面板）重跑一遍 build
-    private scheduleScrollIndexUpdate(start: number, end: number, center: number): void {
-        this.pendingScrollStart = start;
-        this.pendingScrollEnd = end;
-        this.pendingScrollCenter = center;
+    // ---------- 多会话并行辅助 ----------
 
-        // 手势/惯性滚动期间不需要再把普通索引处理推到下一帧：
-        // 当前调用只更新可见范围、分页计数和待提交反馈，不触发页面状态写入。
-        if (this.scrollGestureActive) {
-            this.applyScrollIndex(start, end, center);
+    // 当前视图对应的缓冲键：已打开会话用会话 ID；空白会话发送中（预创建失败）用本地临时键
+    private currentBufferKey(): string {
+        return this.conversationId.length > 0 ? this.conversationId : this.pendingSendKey;
+    }
+
+    // 当前查看会话是否正在生成
+    private isCurrentStreaming(): boolean {
+        return this.streamingKeys.has(this.currentBufferKey());
+    }
+
+    // 取指定会话的缓冲，不存在则新建
+    private bufferFor(key: string): ConversationBuffer {
+        const existing: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (existing !== undefined) {
+            return existing;
+        }
+
+        const buffer: ConversationBuffer = new ConversationBuffer();
+        this.buffers.set(key, buffer);
+        return buffer;
+    }
+
+    // 向指定会话缓冲追加消息；该会话正是当前视图时同步镜像到 @State 与数据源。
+    // 尾部追加必须走数据源的 append（增量 ADD）：走 replaceMessages 会触发 RELOAD，
+    // 重建整个列表并清空已测行高 —— 列表位置回到顶部、后续跳转的行高估算全部失真
+    private appendMessages(key: string, messages: ChatMessage[]): void {
+        const buffer: ConversationBuffer = this.bufferFor(key);
+        buffer.messages = [...buffer.messages, ...messages];
+
+        if (this.currentBufferKey() === key) {
+            this.messages = buffer.messages;
+            this.itemSource.appendItems(this.buildItems(messages));
+            this.rebuildItemIndex();
+        }
+    }
+
+    // 流收尾：从进行中集合移除并同步输入栏/侧栏状态
+    private finishStream(key: string): void {
+        this.streamingKeys.delete(key);
+        this.syncStreamingState();
+    }
+
+    // 同步生成态：输入栏当前会话开关 + 侧栏各会话流式指示
+    private syncStreamingState(): void {
+        if (this.remoteDeviceId.length === 0) {
+            this.streaming = this.isCurrentStreaming();
+        }
+
+        this.syncStreamingConvIds();
+    }
+
+    // 侧栏指示镜像：重算为新数组触发 @Prop 刷新（本地临时键尚未绑定真实会话，不出现在侧栏）
+    private syncStreamingConvIds(): void {
+        const ids: string[] = [];
+
+        this.streamingKeys.forEach((key: string): void => {
+            if (!key.startsWith(PENDING_STREAM_PREFIX)) {
+                ids.push(key);
+            }
+        });
+
+        this.streamingConvIds = ids;
+    }
+
+    // 生成新的本地临时流键（新会话预创建失败时使用，SSE 绑定真实 ID 后迁移）
+    private nextPendingKey(): string {
+        this.pendingKeySeq = this.pendingKeySeq + 1;
+        return PENDING_STREAM_PREFIX + Date.now() + ':' + this.pendingKeySeq;
+    }
+
+    // 新会话流首次拿到真实会话 ID：迁移本地缓冲与传输锁键；
+    // 若用户仍停留在这次空白发送的视图上则直接换绑，消息流不中断
+    private bindPendingStream(context: StreamContext, conversationId: string): void {
+        const fromKey: string = context.key;
+
+        if (fromKey === conversationId) {
+            context.conversationId = conversationId;
             return;
         }
 
-        if (this.scrollIndexFramePending) {
-            return;
+        const buffer: ConversationBuffer | undefined = this.buffers.get(fromKey);
+
+        if (buffer !== undefined) {
+            this.buffers.delete(fromKey);
+            this.buffers.set(conversationId, buffer);
         }
 
-        this.scrollIndexFramePending = true;
-        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
-            this.scrollIndexFramePending = false;
-            this.applyScrollIndex(this.pendingScrollStart, this.pendingScrollEnd, this.pendingScrollCenter);
-        }));
-    }
+        this.streamingKeys.delete(fromKey);
+        this.streamingKeys.add(conversationId);
+        chatStream.rekey(fromKey, conversationId);
 
-    // 清空一次手势的滚动来源样本。样本只在手势开始时分配，滚动帧内只改固定数组槽位。
-    private resetScrollTrace(): void {
-        this.scrollTraceWillOffsets = [];
-        this.scrollTraceWillStates = [];
-        this.scrollTraceWillSources = [];
-        this.scrollTraceWillWrite = 0;
-        this.scrollTraceWillCount = 0;
-        this.scrollTraceDidOffsets = [];
-        this.scrollTraceDidStates = [];
-        this.scrollTraceDidWrite = 0;
-        this.scrollTraceDidCount = 0;
-        this.scrollTraceDidPrevious = 0;
-        this.scrollTraceDidPrimed = false;
-        this.scrollTraceDidMaxJerk = 0;
-    }
+        context.key = conversationId;
+        context.conversationId = conversationId;
 
-    // 记录引擎本帧准备执行的位移和来源；不会返回 ScrollResult，也不改变滚动行为。
-    private recordScrollWill(offset: number, state: ScrollState, source: ScrollSource): void {
-        const slot: number = this.scrollTraceWillWrite;
-        this.scrollTraceWillOffsets[slot] = offset;
-        this.scrollTraceWillStates[slot] = state;
-        this.scrollTraceWillSources[slot] = source;
-        this.scrollTraceWillWrite = (slot + 1) % SCROLL_SOURCE_TRACE_CAP;
-
-        if (this.scrollTraceWillCount < SCROLL_SOURCE_TRACE_CAP) {
-            this.scrollTraceWillCount++;
-        }
-    }
-
-    // 记录引擎本帧实际执行的位移；相邻位移差用于确认是否出现单帧异常 offset。
-    private recordScrollDid(offset: number, state: ScrollState): void {
-        const slot: number = this.scrollTraceDidWrite;
-        this.scrollTraceDidOffsets[slot] = offset;
-        this.scrollTraceDidStates[slot] = state;
-        this.scrollTraceDidWrite = (slot + 1) % SCROLL_SOURCE_TRACE_CAP;
-
-        if (this.scrollTraceDidCount < SCROLL_SOURCE_TRACE_CAP) {
-            this.scrollTraceDidCount++;
+        if (this.pendingSendKey === fromKey) {
+            this.pendingSendKey = '';
+            this.conversationId = conversationId;
         }
 
-        if (this.scrollTraceDidPrimed) {
-            const jerk: number = Math.abs(offset - this.scrollTraceDidPrevious);
+        this.syncStreamingState();
+        hilog.info(DOMAIN, TAG, 'conversation bound: %{public}s', conversationId);
+    }
 
-            if (jerk > this.scrollTraceDidMaxJerk) {
-                this.scrollTraceDidMaxJerk = jerk;
+    // 历史窗口与本地缓冲按索引合并，取并集：
+    //  - 服务端本页覆盖到的索引以服务端为准（落库内容是权威版本）
+    //  - 仍在流式生成的助手消息例外：服务端此刻还没有它，增量只能由本地版本承载
+    //  - 索引超出本页末条的本地消息：服务端尚未落库，必须保留，否则切回时回复消失
+    // windowEnd 为本页窗口右边界（startIndex + 本页条数）
+    private mergeHistoryWithLive(history: ChatMessage[], live: ChatMessage[], windowEnd: number): ChatMessage[] {
+        const byIndex: Map<number, ChatMessage> = new Map<number, ChatMessage>();
+
+        for (let i: number = 0; i < history.length; i++) {
+            byIndex.set(history[i].index, history[i]);
+        }
+
+        for (let i: number = 0; i < live.length; i++) {
+            const message: ChatMessage = live[i];
+            const localOnly: boolean = message.index >= windowEnd || message.streaming;
+
+            if (localOnly) {
+                byIndex.set(message.index, message);
             }
         }
 
-        this.scrollTraceDidPrevious = offset;
-        this.scrollTraceDidPrimed = true;
-    }
+        const merged: ChatMessage[] = [];
 
-    // 使用固定顺序还原环形缓冲，输出 source/delta/state，方便把异常帧和具体来源对齐。
-    private scrollSourceName(source: ScrollSource): string {
-        switch (source) {
-            case ScrollSource.DRAG:
-                return 'drag';
-            case ScrollSource.FLING:
-                return 'fling';
-            case ScrollSource.EDGE_EFFECT:
-                return 'edge';
-            case ScrollSource.OTHER_USER_INPUT:
-                return 'input';
-            case ScrollSource.SCROLL_BAR:
-                return 'bar';
-            case ScrollSource.SCROLL_BAR_FLING:
-                return 'bar-fling';
-            case ScrollSource.SCROLLER:
-                return 'scroller';
-            case ScrollSource.SCROLLER_ANIMATION:
-                return 'scroller-animation';
-            default:
-                return 'source-' + source;
-        }
-    }
+        byIndex.forEach((message: ChatMessage): void => {
+            merged.push(message);
+        });
+        merged.sort((a: ChatMessage, b: ChatMessage): number => a.index - b.index);
 
-    private scrollTraceWillText(): string {
-        const values: string[] = [];
-        const first: number = this.scrollTraceWillCount >= SCROLL_SOURCE_TRACE_CAP
-            ? this.scrollTraceWillWrite : 0;
-
-        for (let i: number = 0; i < this.scrollTraceWillCount; i++) {
-            const slot: number = (first + i) % SCROLL_SOURCE_TRACE_CAP;
-            values.push(this.scrollSourceName(this.scrollTraceWillSources[slot])
-                + '/' + Math.round(this.scrollTraceWillOffsets[slot])
-                + '/' + this.scrollTraceWillStates[slot]);
-        }
-
-        return values.join(',');
-    }
-
-    private scrollTraceDidText(): string {
-        const values: string[] = [];
-        const first: number = this.scrollTraceDidCount >= SCROLL_SOURCE_TRACE_CAP
-            ? this.scrollTraceDidWrite : 0;
-
-        for (let i: number = 0; i < this.scrollTraceDidCount; i++) {
-            const slot: number = (first + i) % SCROLL_SOURCE_TRACE_CAP;
-            values.push(Math.round(this.scrollTraceDidOffsets[slot])
-                + '/' + this.scrollTraceDidStates[slot]);
-        }
-
-        return values.join(',');
-    }
-
-    // 一次滚动结束只输出一条诊断日志：will 证明谁要求了 offset，did 证明实际是否出现异常位移。
-    private reportScrollTrace(): void {
-        hilog.info(DOMAIN, TAG,
-            '[scrollsrc] will=%{public}d did=%{public}d maxJerk=%{public}d visible=%{public}d-%{public}d willSeq=%{public}s didSeq=%{public}s',
-            this.scrollTraceWillCount, this.scrollTraceDidCount, Math.round(this.scrollTraceDidMaxJerk),
-            this.visibleStartIndex, this.visibleEndIndex, this.scrollTraceWillText(), this.scrollTraceDidText());
-        this.resetScrollTrace();
-    }
-
-    // 应用滚动索引：底部按钮看 end，轮次指示器看 center（查表 O(1)）。
-    // 手势期间只暂存覆盖层结果，避免滚动反馈和 List 在同一帧竞争布局/绘制。
-    private applyScrollIndex(start: number, end: number, center: number): void {
-        this.visibleStartIndex = start;
-        this.visibleEndIndex = end;
-
-        const nextShowScrollBottom: boolean = end < this.itemSource.totalCount() - 1;
-
-        if (this.scrollGestureActive) {
-            this.pendingOverlayShowBottom = nextShowScrollBottom;
-        } else if (this.scrollOverlayState.showScrollBottom !== nextShowScrollBottom) {
-            this.scrollOverlayState.showScrollBottom = nextShowScrollBottom;
-        }
-
-        if (center >= 0 && center < this.turnIndexByItem.length) {
-            const nextActiveTurn: number = this.turnIndexByItem[center];
-
-            if (this.scrollGestureActive) {
-                this.pendingOverlayActiveTurn = nextActiveTurn;
-                this.pendingOverlayActiveValid = true;
-            } else if (this.scrollOverlayState.activeTurnIndex !== nextActiveTurn) {
-                this.scrollOverlayState.activeTurnIndex = nextActiveTurn;
-                hilog.info(DOMAIN, TAG,
-                    '[scroll] active turn=%{public}d center=%{public}d start=%{public}d end=%{public}d',
-                    nextActiveTurn, center, start, end);
-            }
-        }
-
-        if (center >= 0) {
-            this.scrollCenterBeforeLoad = center;
-        }
-
-        // 触顶分页必须先确认「用户真的停在顶部」：
-        // 前插的估算修正会让视口单帧路过索引 0，一帧就触发会连锁前插
-        if (start <= 0) {
-            this.topStreak++;
-        } else {
-            this.topStreak = 0;
-        }
-
-        if (this.topStreak >= TOP_TRIGGER_STREAK && !this.isPaginationBlocked()) {
-            this.loadMoreMessages();
-        }
-
-    }
-
-    // 在滚动停止后一次性提交按钮和轮次指示器状态，避免它们参与滚动中的逐帧更新。
-    private commitScrollOverlay(): void {
-        if (this.scrollOverlayState.showScrollBottom !== this.pendingOverlayShowBottom) {
-            this.scrollOverlayState.showScrollBottom = this.pendingOverlayShowBottom;
-        }
-
-        if (this.pendingOverlayActiveValid
-            && this.scrollOverlayState.activeTurnIndex !== this.pendingOverlayActiveTurn) {
-            this.scrollOverlayState.activeTurnIndex = this.pendingOverlayActiveTurn;
-            hilog.info(DOMAIN, TAG,
-                '[scroll] active turn=%{public}d center=stop start=%{public}d end=%{public}d',
-                this.pendingOverlayActiveTurn, this.visibleStartIndex, this.visibleEndIndex);
-        }
-
-        this.pendingOverlayActiveValid = false;
-    }
-
-    // 帧间隔探针：滑动期间只累加，不在帧内打印（日志本身会成为滚动开销）。
-    // js 有值 → 掉帧来自 JS 侧（滚动回调里的处理）；js≈0 而间隔大 → 掉帧在渲染引擎
-    // 由列表实测宽度下发可用文本宽度（扣掉行容器左右 padding）
-    private applyContentWidth(listWidth: number): void {
-        if (listWidth <= 0) {
-            return;
-        }
-
-        const contentWidth: number = listWidth - Space.lg * 2;
-
-        // 已冻结：这里只核对、不改写。改写会让同一 key 切出不同文本，就是串台本身
-        if (ChatItemBuilder.isContentWidthLocked()) {
-            if (!this.widthLockWarned && Math.abs(contentWidth - ChatItemBuilder.currentContentWidth()) > 1) {
-                this.widthLockWarned = true;
-                hilog.warn(DOMAIN, TAG, '[width] locked slice=%{public}d list=%{public}d delta=%{public}d',
-                    Math.round(ChatItemBuilder.currentContentWidth()), Math.round(contentWidth),
-                    Math.round(contentWidth - ChatItemBuilder.currentContentWidth()));
-            }
-
-            return;
-        }
-
-        if (Math.abs(contentWidth - this.measuredContentWidth) < 1) {
-            return;
-        }
-
-        this.measuredContentWidth = contentWidth;
-        ChatItemBuilder.setContentWidth(contentWidth);
-        hilog.info(DOMAIN, TAG, '[width] list=%{public}d content=%{public}d',
-            Math.round(listWidth), Math.round(contentWidth));
-    }
-
-    // 构建前播种切片宽度。列表横向铺满，宽度等于屏宽，据此推出可用文本宽度。
-    // 播种值只是初值：第一次 build 之前仍允许被列表实测值覆盖；
-    // 一旦 build 发生即冻结。取不到显示信息时保持缺省值 —— 口径会偏小，但始终一致
-    private seedContentWidth(): void {
-        try {
-            const screenVp: number = px2vp(display.getDefaultDisplaySync().width);
-            const contentWidth: number = screenVp - Space.lg * 2;
-
-            // 区间护栏：手机可用文本宽度落在 200~600vp。取不到合理值就保留缺省值 ——
-            // 口径会偏小，但始终一致；宁可多一行也不要按错误宽度定型
-            if (contentWidth > 200 && contentWidth < 600) {
-                this.measuredContentWidth = contentWidth;
-                ChatItemBuilder.setContentWidth(contentWidth);
-                hilog.info(DOMAIN, TAG, '[width] seed screen=%{public}d content=%{public}d',
-                    Math.round(screenVp), Math.round(contentWidth));
-            }
-        } catch (err) {
-            hilog.warn(DOMAIN, TAG, '[width] seed failed, keep fallback');
-        }
-    }
-
-    // 把同一帧内到达的多个正文增量合并为一次贴底，避免滚动控制 API 与手势连续竞争。
-    // 用户已接管滚动（或已离开底部）时直接放弃跟手，绝不把视口拽回末条
-    private scheduleStreamFollowToBottom(): void {
-        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom || this.streamFollowPending) {
-            return;
-        }
-
-        this.streamFollowPending = true;
-        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
-            this.streamFollowPending = false;
-
-            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom && this.messages.length > 0) {
-                this.scrollToEnd('stream-follow');
-            }
-        }));
-    }
-
-    // 独立区块（工具结果卡 / 选择题卡 / 图片画廊）贴底：这些块挂载当帧 List 还没为它排版，
-    // 同步滚动会停在旧底部。推迟一帧，等真实高度参与排版后再滚
-    private scrollToEndAfterLayout(): void {
-        if (this.streamUserScrolled || this.scrollOverlayState.showScrollBottom) {
-            return;
-        }
-
-        this.getUIContext().postFrameCallback(new NextFrameCallback(() => {
-            if (!this.streamUserScrolled && !this.scrollOverlayState.showScrollBottom) {
-                this.scrollToEnd('after-layout');
-            }
-        }));
+        return merged;
     }
 
     // ---------- 展示文案 ----------
@@ -2651,10 +3099,16 @@ export struct MainChat {
         return this.conversationId.length > 0 ? '继续追问…' : '给 Nexora 发送消息，或试试下面的能力…';
     }
 
-    // 当前会话的首问文本（截断），用于回复途中侧栏占位项的标题
-    private firstQuestionHint(): string {
-        for (let i: number = 0; i < this.messages.length; i++) {
-            const message: ChatMessage = this.messages[i];
+    // 指定会话缓冲的首问文本（截断），用于回复途中侧栏占位项的标题
+    private firstQuestionHint(key: string): string {
+        const buffer: ConversationBuffer | undefined = this.buffers.get(key);
+
+        if (buffer === undefined) {
+            return '新对话';
+        }
+
+        for (let i: number = 0; i < buffer.messages.length; i++) {
+            const message: ChatMessage = buffer.messages[i];
 
             if (message.isUser && message.content.length > 0) {
                 return message.content.length > TITLE_MAX_LENGTH

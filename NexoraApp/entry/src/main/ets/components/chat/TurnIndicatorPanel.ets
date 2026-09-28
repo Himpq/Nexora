@@ -162,7 +162,10 @@ export struct TurnIndicatorPanel {
         }
         .alignContent(Alignment.End)
         .width('100%')
-        .height('100%');
+        .height('100%')
+        // 收起时只有右侧横线面板需要接收点击，整块全屏区域必须透传给下方聊天 List；
+        // 展开时保留全屏命中，用于点击预览浮层外围关闭它。
+        .hitTestBehavior(this.expanded ? HitTestMode.Default : HitTestMode.None);
     }
 
     // 横线面板：固定 8 行高的裁切窗口，内部整列线条平移，让激活线始终回到窗口中部
