@@ -16,7 +16,7 @@
 <template>
     <div
         class="message"
-        :class="[message.role, { pending: message.pending, 'stream-caret-active': streamCaretActive }]"
+        :class="[message.role, { pending: message.pending, 'output-finished': message.outputFinished, 'stream-caret-active': streamCaretActive }]"
         :data-index="message.index"
     >
         <div class="message-content">
@@ -35,7 +35,10 @@
                 </div>
 
                 <div v-else-if="message.content" class="message-bubble">
-                    <MarkdownView :content="message.content" />
+                    <MarkdownView
+                        :content="message.content"
+                        @knowledge-reference="handleKnowledgeReference"
+                    />
                 </div>
 
                 <!-- 附件(对齐原版 appendUserAttachments:图片缩略图可点击查看大图,文件为胶囊) -->
@@ -162,7 +165,10 @@
                             <i class="fa-solid fa-chevron-down chevron-icon" aria-hidden="true"></i>
                         </div>
                         <div class="thinking-content">
-                            <MarkdownView :content="item.segment.text" />
+                            <MarkdownView
+                                :content="item.segment.text"
+                                @knowledge-reference="handleKnowledgeReference"
+                            />
                             <!-- 展开态左下角收起按钮:与标题栏切换同一折叠状态 -->
                             <button
                                 type="button"
@@ -177,7 +183,10 @@
                     </div>
 
                     <div v-else-if="item.kind === 'content'" class="content-body" :class="{ 'is-streaming-tail': isTailContent(item) }">
-                        <MarkdownView :content="item.segment.text" />
+                        <MarkdownView
+                            :content="item.segment.text"
+                            @knowledge-reference="handleKnowledgeReference"
+                        />
                         <span v-if="isTailContent(item)" class="stream-caret" aria-hidden="true"></span>
                     </div>
 
@@ -202,7 +211,12 @@
                             <div class="question-card-title">{{ item.payload.question_title || '问题' }}</div>
                             <div class="question-card-content">{{ item.payload.question_content }}</div>
 
-                            <template v-if="!isQuestionAnswered(item) && !readonly">
+                            <!--
+                                readonly 只挡云端会话的删除/重答/分叉,不挡问卡作答:
+                                远程会话的答案由父组件转给电脑端(见 RemoteTaskPanel 的
+                                answer-question),把它一起藏掉会让权限请求永远无法授权。
+                            -->
+                            <template v-if="!isQuestionAnswered(item)">
                                 <div v-if="(item.payload.choices || []).length" class="question-card-choices">
                                     <button
                                         v-for="(choice, choiceIndex) in item.payload.choices"
@@ -253,7 +267,12 @@
                                     <span>{{ draftCallStateText(item.draft) }}</span>
                                 </span>
                             </div>
-                            <MarkdownView v-if="item.draft.content" class="draft-call-content" :content="item.draft.content" />
+                            <MarkdownView
+                                v-if="item.draft.content"
+                                class="draft-call-content"
+                                :content="item.draft.content"
+                                @knowledge-reference="handleKnowledgeReference"
+                            />
                             <div v-if="item.draft.state === 'failed' && item.draft.message" class="draft-call-error">{{ item.draft.message }}</div>
                         </div>
 
@@ -274,7 +293,11 @@
                                 <span class="tool-toggle" aria-hidden="true">▸</span>
                             </div>
                             <div class="tool-output" :class="{ 'tool-output-markdown': item.markdownMode }">
-                                <MarkdownView v-if="item.markdownMode && item.outputText" :content="item.outputText" />
+                                <MarkdownView
+                                    v-if="item.markdownMode && item.outputText"
+                                    :content="item.outputText"
+                                    @knowledge-reference="handleKnowledgeReference"
+                                />
                                 <template v-else>{{ item.outputText }}</template>
                             </div>
                         </div>
@@ -298,7 +321,10 @@
                             class="content-body generated-map-result"
                             :data-call-id="item.callId || undefined"
                         >
-                            <MarkdownView :content="item.mapMarkdown" />
+                            <MarkdownView
+                                :content="item.mapMarkdown"
+                                @knowledge-reference="handleKnowledgeReference"
+                            />
                         </div>
                     </template>
                 </template>
@@ -364,6 +390,7 @@
 
     import type { ChatMessage } from '@/api/conversations'
     import type { MessageSegment } from '@/stream/messageSegments'
+    import type { KnowledgeReference } from '@/stream/knowledgeReferences'
     import {
         buildChineseToolAction,
         buildMapResultMarkdown,
@@ -425,6 +452,7 @@
         'edit-save': [message: ChatMessage, content: string]
         regenerate: [message: ChatMessage]
         'open-image': [url: string]
+        'open-knowledge': [reference: KnowledgeReference]
         fork: [message: ChatMessage]
         'switch-version': [message: ChatMessage, versionIndex: number]
         /** question 卡片作答:父级把回答作为普通用户消息发送 */
@@ -1099,7 +1127,7 @@
      * (思考行有节点脉冲/滚动窗口,工具行有执行中状态,互不打架)
      */
     const tailContentIndex = computed<number>(() => {
-        if (!props.streaming) {
+        if (!props.streaming || !props.message.pending || props.message.outputFinished) {
             return -1
         }
 
@@ -1329,6 +1357,11 @@
 
         return hasAnyIo(tokens.cumulative) ? tokens.cumulative : tokens.round
     })
+
+    /** 知识来源按钮由 MarkdownView 捕获,向 ChatView 转发以打开 KnowledgeViewer。 */
+    function handleKnowledgeReference(reference: KnowledgeReference): void {
+        emit('open-knowledge', reference)
+    }
 
     async function handleCopy(): Promise<void> {
         try {
@@ -1608,6 +1641,10 @@
     /* 正文尾标(stream-caret)显示时,隐藏 legacy pending ●(style.css .message-content::after),
        避免同一消息内两个闪烁指示重复;思考/等待首 token 阶段(无正文尾标)保留 ● */
     .message.assistant.pending.stream-caret-active .message-content::after {
+        display: none;
+    }
+
+    .message.assistant.pending.output-finished .message-content::after {
         display: none;
     }
 

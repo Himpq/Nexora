@@ -89,6 +89,10 @@
                         <i class="fa-solid fa-book" aria-hidden="true"></i>
                         <span>Knowledge</span>
                     </button>
+                    <button id="scheduledTasksBtn" class="toolbar-item" :class="{ 'is-active': overlay.view === 'scheduled-tasks' }" type="button" @click="emit('open-scheduled-tasks')">
+                        <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                        <span>定时任务</span>
+                    </button>
                 </template>
                 <!--
                     Learning 功能区入口仅列表视图可见(对齐原版 syncLearningSidebarNavigationVisibility:
@@ -217,6 +221,8 @@
         </div>
 
         <div v-show="!isLearningMode && !courseModeOn" class="sidebar-content" id="conversationList">
+            <RemoteSidebarSection @open="emit('open-projects')" />
+
             <div
                 v-for="row in store.branchRows"
                 :key="row.conversation.id"
@@ -450,6 +456,10 @@
                         <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
                         <span>变更</span>
                     </a>
+                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('remote')">
+                        <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
+                        <span>远程连接</span>
+                    </a>
                     <div class="menu-divider"></div>
                     <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
                         <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
@@ -477,14 +487,18 @@
 
     import ContextMenu from './ContextMenu.vue'
     import MarkdownView from './MarkdownView.vue'
+    import RemoteSidebarSection from './nexoracode/RemoteSidebarSection.vue'
 
     const emit = defineEmits<{
         'toggle-mobile': []
         'open-settings': []
+        'open-remote': []
         'open-chat': []
         'open-workspaces': []
+        'open-projects': []
         'open-files': []
         'open-knowledge-mgmt': []
+        'open-scheduled-tasks': []
         'open-changes': []
         'open-learning': []
         'learning-nav': [command: { kind: 'tab' | 'studio'; key: string }]
@@ -910,7 +924,7 @@
     }
 
     /** 用户菜单动作(原版 userMenu 的菜单项) */
-    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'logout'): void {
+    function handleMenuAction(action: 'rank' | 'settings' | 'changes' | 'remote' | 'logout'): void {
         closePopover('user-menu')
 
         if (action === 'rank') {
@@ -928,6 +942,12 @@
 
         if (action === 'changes') {
             emit('open-changes')
+
+            return
+        }
+
+        if (action === 'remote') {
+            emit('open-remote')
 
             return
         }

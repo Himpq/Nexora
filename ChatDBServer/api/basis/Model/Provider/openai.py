@@ -70,11 +70,23 @@ class OpenAIProvider(ProviderInterface):
 
     def create_client(self, api_key: str, base_url: str, timeout: float = 120.0):
         user_agent = str(self.provider_config.get("user_agent") or "Nexora/1.0").strip() or "Nexora/1.0"
+        configured_retries = self.provider_config.get("max_retries", 0)
+
+        try:
+            max_retries = max(0, int(configured_retries or 0))
+        except (TypeError, ValueError):
+            max_retries = 0
+
+        print(
+            f"[SDK_RETRY_POLICY] provider={self.provider_name} "
+            f"api_type={self.api_type} max_retries={max_retries}"
+        )
 
         return OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            max_retries=max_retries,
             default_headers={
                 "User-Agent": user_agent,
             },

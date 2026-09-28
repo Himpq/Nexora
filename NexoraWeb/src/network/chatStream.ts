@@ -72,6 +72,8 @@ export interface ChatStreamEndInfo {
     error?: string
     /** 后端结构化错误码(与 json_error 的 error_code / SSE error 帧一致) */
     errorCode?: string
+    /** 传输层暂时中断,服务端流仍应保留,不可清理本地恢复快照 */
+    transportInterrupted?: boolean
     cancelReason?: string
     finalContent?: string
     /** 后端落盘后的最终消息对象(含 metadata.versions),用于轻量收尾更新而非全量重载 */
@@ -114,8 +116,12 @@ const SNAPSHOT_KEY = 'nexora_active_stream_v1'
 /** 快照写入节流间隔(ms) */
 const SNAPSHOT_THROTTLE_MS = 500
 
-/** 断线自动续播次数上限(对齐原版,避免无限重试) */
+/** 首轮快速续播次数上限;超过后进入受控持续恢复 */
 const MAX_RECONNECT_ATTEMPTS = 2
+
+/** 首轮续播失败后继续等待服务端流恢复的时间配置 */
+const STREAM_RECOVERY_DELAY_MS = 2000
+const STREAM_RECOVERY_TIMEOUT_MS = 15 * 60 * 1000
 
 interface ActiveStreamContext {
     controller: AbortController
@@ -123,6 +129,10 @@ interface ActiveStreamContext {
     conversationId: string
     lastSeq: number
     reconnectAttempts: number
+    /** 模型正文 done 帧先于 stream_session 终帧到达,暂存正文等待最终消息字段。 */
+    finalContent?: string
+    /** stream_session 终帧与 [DONE] 只允许触发一次 onEnd。 */
+    endNotified: boolean
 }
 
 export class ChatStreamClient {
@@ -319,6 +329,7 @@ export class ChatStreamClient {
             conversationId: String(options.conversationId || ''),
             lastSeq: 0,
             reconnectAttempts: 0,
+            endNotified: false,
         }
 
         this.activeStreams.set(key, ctx)
@@ -355,6 +366,7 @@ export class ChatStreamClient {
             conversationId: String(options.conversationId || ''),
             lastSeq: Number(options.fromSeq) || 0,
             reconnectAttempts: 0,
+            endNotified: false,
         }
 
         this.activeStreams.set(key, ctx)
@@ -374,10 +386,14 @@ export class ChatStreamClient {
                 signal: ctx.controller?.signal,
             })
 
-            if (!res.ok || !res.body) {
+            if (res.status === 404) {
                 handlers.onEnd?.('error', { error: `STREAM_GONE(${res.status})` })
 
                 return false
+            }
+
+            if (!res.ok || !res.body) {
+                return await this.waitForStreamRecovery(handlers, ctx)
             }
 
             await this.consumeStream(res, handlers, ctx)
@@ -390,9 +406,9 @@ export class ChatStreamClient {
                 return true
             }
 
-            handlers.onEnd?.('error', { error: error instanceof Error ? error.message : '重连失败' })
+            await this.waitForStreamRecovery(handlers, ctx)
 
-            return false
+            return true
         } finally {
             this.activeStreams.delete(key)
         }
@@ -549,6 +565,12 @@ export class ChatStreamClient {
             return
         }
 
+        const responseStreamId = String(res.headers.get('X-Stream-Id') || '').trim()
+
+        if (responseStreamId) {
+            ctx.streamId = responseStreamId
+        }
+
         if (!res.body) {
             handlers.onEnd?.('error', { error: '响应为空' })
 
@@ -559,13 +581,20 @@ export class ChatStreamClient {
     }
 
     /** 逐行消费 SSE 响应体并分发数据块 */
-    private async consumeStream(res: Response, handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<void> {
+    private async consumeStream(
+        res: Response,
+        handlers: ChatStreamHandlers,
+        ctx: ActiveStreamContext,
+        allowRecovery = true,
+    ): Promise<boolean> {
         const body = res.body as ReadableStream<Uint8Array> | null
 
         if (!body) {
-            handlers.onEnd?.('error', { error: '响应体不可读' })
+            if (allowRecovery) {
+                return await this.waitForStreamRecovery(handlers, ctx)
+            }
 
-            return
+            return false
         }
 
         const reader = body.getReader()
@@ -595,21 +624,33 @@ export class ChatStreamClient {
             }
 
             if (!ended) {
-                handlers.onEnd?.('error', { error: '连接意外中断' })
+                if (allowRecovery) {
+                    return await this.waitForStreamRecovery(handlers, ctx)
+                }
+
+                return false
             }
+
+            return true
         } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') {
                 handlers.onEnd?.('aborted')
 
-                return
+                return true
             }
 
-            // 断线(非用户取消):尝试自动续播一次(从断点恢复)
-            const reconnected = await this.tryReconnect(handlers, ctx)
+            // 断线(非用户取消):先从断点快速续播,失败后继续保留快照等待服务端恢复。
+            if (allowRecovery) {
+                const reconnected = await this.tryReconnect(handlers, ctx)
 
-            if (!reconnected) {
-                handlers.onEnd?.('error', { error: '连接中断,自动续播失败' })
+                if (reconnected) {
+                    return true
+                }
+
+                return await this.waitForStreamRecovery(handlers, ctx)
             }
+
+            return false
         } finally {
             reader.releaseLock()
         }
@@ -618,7 +659,7 @@ export class ChatStreamClient {
     /**
      * 断线续播:基于已记录的 stream_id + last_seq 从断点恢复流
      *
-     * 续播成功后继续消费(最终 onEnd 由续播后的流触发),最多续播 2 次。
+     * 续播成功后继续消费(最终 onEnd 由续播后的流触发),首轮快速续播最多 2 次。
      */
     private async tryReconnect(handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<boolean> {
         if (!ctx.streamId || ctx.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -643,24 +684,129 @@ export class ChatStreamClient {
                 return false
             }
 
-            await this.consumeStream(res, handlers, ctx)
+            const responseStreamId = String(res.headers.get('X-Stream-Id') || '').trim()
 
-            return true
+            if (responseStreamId) {
+                ctx.streamId = responseStreamId
+            }
+
+            return await this.consumeStream(res, handlers, ctx, false)
         } catch {
             return false
         }
     }
 
     /**
+     * 传输层断开后的持续恢复:
+     * 服务端 worker 与 SSE 客户端连接相互独立,连接失败不代表模型生成失败。
+     * 在服务端流结束前保留快照并周期性重新连接,避免页面只留下空助手占位。
+     */
+    private async waitForStreamRecovery(handlers: ChatStreamHandlers, ctx: ActiveStreamContext): Promise<boolean> {
+        this.persistSnapshot(true)
+
+        const deadline = Date.now() + STREAM_RECOVERY_TIMEOUT_MS
+
+        while (Date.now() < deadline) {
+            if (ctx.controller.signal.aborted) {
+                handlers.onEnd?.('aborted')
+
+                return true
+            }
+
+            const waited = await this.waitForRecoveryDelay(ctx.controller.signal)
+
+            if (!waited) {
+                handlers.onEnd?.('aborted')
+
+                return true
+            }
+
+            try {
+                const res = await fetch('/api/chat/stream/reconnect', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream',
+                    },
+                    body: JSON.stringify({
+                        stream_id: ctx.streamId,
+                        from_seq: ctx.lastSeq,
+                    }),
+                    signal: ctx.controller.signal,
+                })
+
+                if (res.status === 404) {
+                    handlers.onEnd?.('error', { error: 'STREAM_GONE(404)' })
+
+                    return true
+                }
+
+                if (!res.ok || !res.body) {
+                    continue
+                }
+
+                const ended = await this.consumeStream(res, handlers, ctx, false)
+
+                if (ended) {
+                    return true
+                }
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') {
+                    handlers.onEnd?.('aborted')
+
+                    return true
+                }
+            }
+        }
+
+        handlers.onEnd?.('error', {
+            error: '连接暂时中断,已保留服务端生成状态',
+            transportInterrupted: true,
+        })
+
+        return true
+    }
+
+    /** 可被 AbortController 中断的恢复等待,避免页面停止生成后继续挂起定时器。 */
+    private waitForRecoveryDelay(signal: AbortSignal): Promise<boolean> {
+        return new Promise((resolve) => {
+            if (signal.aborted) {
+                resolve(false)
+
+                return
+            }
+
+            const timer = window.setTimeout(() => {
+                signal.removeEventListener('abort', onAbort)
+                resolve(true)
+            }, STREAM_RECOVERY_DELAY_MS)
+
+            const onAbort = () => {
+                window.clearTimeout(timer)
+                resolve(false)
+            }
+
+            signal.addEventListener('abort', onAbort, { once: true })
+        })
+    }
+
+    /**
      * 解析单行 SSE data 并分发
      *
-     * 返回 true 表示流已正常结束(done 终帧或 [DONE])
+     * 返回 true 表示流已正常结束(stream_session 终帧或 [DONE]);
+     * 模型正文 done 帧不是终态,后面仍可能有最终消息元数据。
      */
     private handleLine(line: string, handlers: ChatStreamHandlers, ctx: ActiveStreamContext): boolean {
         const trimmed = line.trim()
 
         if (trimmed === '[DONE]' || trimmed === 'data: [DONE]') {
-            handlers.onEnd?.('done')
+            if (!ctx.endNotified) {
+                ctx.endNotified = true
+                handlers.onEnd?.('done', {
+                    finalContent: ctx.finalContent || undefined,
+                })
+            }
 
             return true
         }
@@ -715,6 +861,12 @@ export class ChatStreamClient {
                     regenerateIndex: Number.isFinite(Number(chunk.regenerate_index)) ? Number(chunk.regenerate_index) : undefined,
                 }
 
+                if (ctx.endNotified) {
+                    return true
+                }
+
+                ctx.endNotified = true
+
                 if (chunk.error) {
                     handlers.onEnd?.('error', info)
                 } else if (chunk.cancel_requested) {
@@ -734,10 +886,12 @@ export class ChatStreamClient {
         // done 终帧:携带完整正文,以完整内容兜底覆盖增量拼接
         if (chunk.type === 'done') {
             handlers.onChunk(chunk)
+            // 该帧只表示模型正文结束。后端随后还会发送 stream_session(done=true),
+            // 其中才有已落盘的 assistant 消息、累计 I/O 和错误/取消状态。
+            // 在此处提前收尾会丢失最终消息字段,表现为徽标必须刷新后才变成累计值。
+            ctx.finalContent = chunk.content || undefined
 
-            handlers.onEnd?.('done', { finalContent: chunk.content || undefined })
-
-            return true
+            return false
         }
 
         // 其余数据块(正文/思考/工具/usage 等)交由调用方分发

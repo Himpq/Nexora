@@ -1,0 +1,66 @@
+/*
+ * knowledge-references.css — 对话内知识来源按钮。
+ * 只负责引用胶囊的视觉,点击与来源跳转由 MarkdownView / ChatView 处理。
+ */
+
+.kb-reference {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    max-width: min(100%, 720px);
+    min-height: 23px;
+    margin: 0 3px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.35;
+    vertical-align: baseline;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.kb-reference:hover,
+.kb-reference:focus-visible {
+    border-color: var(--color-text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+    outline: none;
+}
+
+.kb-reference-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    width: fit-content;
+    max-width: 100%;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.kb-reference-source svg {
+    flex: 0 0 auto;
+}
+
+.kb-reference-source > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.kb-reference-snippet {
+    display: block;
+    width: 100%;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

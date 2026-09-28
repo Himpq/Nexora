@@ -1163,6 +1163,36 @@
       ]
     ],
     [
+      "/api/nexoracode/claim",
+      [
+        "POST"
+      ]
+    ],
+    [
+      "/api/nexoracode/devices",
+      [
+        "GET"
+      ]
+    ],
+    [
+      "/api/nexoracode/devices/<device_id>",
+      [
+        "DELETE"
+      ]
+    ],
+    [
+      "/api/nexoracode/devices/<device_id>/rpc",
+      [
+        "POST"
+      ]
+    ],
+    [
+      "/api/nexoracode/pair",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/notes/store",
       [
         "GET"
@@ -1418,6 +1448,36 @@
     ],
     [
       "/api/rank/overview",
+      [
+        "GET"
+      ]
+    ],
+    [
+      "/api/scheduled-tasks",
+      [
+        "GET"
+      ]
+    ],
+    [
+      "/api/scheduled-tasks",
+      [
+        "POST"
+      ]
+    ],
+    [
+      "/api/scheduled-tasks/<task_id>",
+      [
+        "PATCH"
+      ]
+    ],
+    [
+      "/api/scheduled-tasks/<task_id>",
+      [
+        "DELETE"
+      ]
+    ],
+    [
+      "/api/scheduled-tasks/<task_id>/runs",
       [
         "GET"
       ]
@@ -1973,6 +2033,12 @@
     ],
     [
       "/ws/knowledge/collab/<username>/<share_id>",
+      [
+        "GET"
+      ]
+    ],
+    [
+      "/ws/nexoracode",
       [
         "GET"
       ]

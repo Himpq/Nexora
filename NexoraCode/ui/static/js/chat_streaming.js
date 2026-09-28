@@ -1864,6 +1864,7 @@
 
     function createStreamStatusSyncController(deps = {}) {
         const getConversationStreamIdsForStatusSync = requireStreamingDependency(deps, 'getConversationStreamIdsForStatusSync');
+        const loadConversations = requireStreamingDependency(deps, 'loadConversations');
         const forEachConversationStreamState = requireStreamingDependency(deps, 'forEachConversationStreamState');
         const setConversationStreamState = requireStreamingDependency(deps, 'setConversationStreamState');
         const markConversationStreamFinished = requireStreamingDependency(deps, 'markConversationStreamFinished');
@@ -1985,10 +1986,14 @@
                         silent: true
                     });
                 }
+
+                return rows;
             } catch (error) {
                 console.error('[StreamStatusSync] status sync failed', {
                     error: String((error && error.message) || error || '')
                 });
+
+                return [];
             } finally {
                 backgroundStreamStatusSyncInFlight = false;
             }
@@ -2015,13 +2020,48 @@
 
         async function tickConversationStreamStatusSync() {
             const runningStates = getStoredRunningStreamStates();
+            const currentConversationId = String(getCurrentConversationId() || '').trim();
+
+            // 会话列表没有推送通道:云端 Web 新建的会话只能靠轮询发现,
+            // 否则本机侧栏要等用户手动刷新才出现。/api/conversations 读的是本机 index,
+            // 且 renderConversationList 自带签名去重,内容没变时不会重建 DOM,
+            // 因此这里的开销只是一次本机 HTTP GET。loadConversations 内部有 requestSeq,
+            // 慢响应不会覆盖新结果。
+            await loadConversations();
 
             if (!runningStates.length) {
+                // 任务不一定由本浏览器发起：从云端 Web 下发到本机的任务，本地
+                // conversationStreamStates 里没有任何痕迹，轮询若在这里直接返回，
+                // applyStreamSessionMetaRows 就永远没机会认领这条流，表现为
+                // 「本机不进入流式，必须刷新才看到」。所以本地没有 running 状态时
+                // 也要问一次当前会话的服务器状态。
+                if (currentConversationId) {
+                    const rows = await syncStoredConversationStreamStatus({ conversationIds: [currentConversationId] });
+                    // 这里不能 skip 当前会话：认领来的外部流没有本地 SSE 连接，
+                    // 只能靠 consumeStreamSessionMonitor 按 last_seq 续读把它画出来。
+                    // 本地自己发的流带 controller，attachStreamSessionMonitor 里有守卫，不会重复挂。
+                    startStoredStreamSessionMonitors();
+
+                    const externalRunning = (Array.isArray(rows) ? rows : []).some((row) => {
+                        const cid = String((row && row.conversation_id) || '').trim();
+                        const status = String((row && row.status) || '').trim().toLowerCase();
+
+                        return cid === currentConversationId && (status === 'running' || status === 'cancelling');
+                    });
+
+                    if (externalRunning) {
+                        // 认领来的外部流要立刻反映到侧栏:上面那次 loadConversations
+                        // 早于认领完成,这里补一次,让 is-streaming 转圈立刻画出来
+                        // （转圈由 renderConversationList 依 conversationStreamStates 生成）。
+                        await loadConversations();
+                    }
+                }
+
                 return;
             }
 
             startStoredStreamSessionMonitors({
-                skipConversationId: String(getCurrentConversationId() || '').trim()
+                skipConversationId: currentConversationId
             });
             await syncStoredConversationStreamStatus();
         }

@@ -500,6 +500,7 @@ export const useConversationStore = defineStore('conversation', {
                 content: '',
                 segments: [],
                 pending: true,
+                outputFinished: false,
             }
 
             this.messages.push(userMessage, assistantMessage)
@@ -556,6 +557,7 @@ export const useConversationStore = defineStore('conversation', {
             assistant.reasoning = ''
             assistant.segments = []
             assistant.pending = true
+            assistant.outputFinished = false
             assistant.compressionStep = null
 
             // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
@@ -578,6 +580,15 @@ export const useConversationStore = defineStore('conversation', {
             appendSegmentDelta(this._resolveStreamingAssistant(conversationId), 'content', delta)
 
             this._accumulateStreamOutputEstimate(conversationId, delta)
+        },
+
+        /** 模型正文 done 帧到达后立即停止尾标动画，等待后端终帧完成落盘字段同步。 */
+        finishStreamOutput(conversationId: string): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
+
+            if (assistant) {
+                assistant.outputFinished = true
+            }
         },
 
         /** 流式增量追加思考分段(正文已输出后再次思考会新开分段,顺序追加) */

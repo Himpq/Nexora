@@ -45,6 +45,7 @@ export interface ChatMessage {
     reasoning?: string
     status?: 'completed' | 'partial' | 'error' | 'streaming'
     pending?: boolean
+    outputFinished?: boolean
     model?: { name?: string; provider?: string }
     summary?: string
     usage?: Record<string, number>

@@ -1987,7 +1987,8 @@ body {
 /* Token Modal 增强 */
 .token-summary-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* 累计 / 今日 / 缓存命中三张卡片，窄屏折行 */
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 15px;
     margin-bottom: 25px;
 }

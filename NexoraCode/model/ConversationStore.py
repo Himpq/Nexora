@@ -12,13 +12,38 @@ NexoraCode.model.ConversationStore — 本地会话存储
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from core.config import get_app_root
+
+
+# 多个本地/远程请求创建不同 Store 实例，共享锁才能避免文件读改写互相覆盖。
+_STORE_LOCK = threading.RLock()
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """同目录临时文件 + os.replace 原子写入，读取方不会看到写到一半的 JSON。
+
+    会话、任务请求去重记录与远程连接凭据都要用到，放在这里供各模块直接调用，
+    避免跨模块去调 ConversationStore 的私有方法。
+    """
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sanitize_filename(value: str) -> str:
@@ -33,7 +58,7 @@ class ConversationStore:
     def __init__(self):
         self._root = get_app_root() / "data" / "conversations"
         self._root.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._lock = _STORE_LOCK
 
     def _index_path(self):
         return self._root / "index.json"
@@ -52,8 +77,7 @@ class ConversationStore:
             return {}
 
     def _save_index(self, index: dict) -> None:
-        with open(self._index_path(), "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self._index_path(), index)
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -173,9 +197,54 @@ class ConversationStore:
 
     def _save_conversation(self, conversation: dict) -> None:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
+        write_json_atomic(path, conversation)
 
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+    def save_context(self, conversation_id: str, record: dict, expected_prefix: list) -> None:
+        """摘要只移动请求边界，保留所有消息；历史被改写时拒绝提交旧摘要。"""
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None or conversation.get("messages", [])[:len(expected_prefix)] != expected_prefix:
+                raise ValueError("摘要生成期间历史已变化，未保存旧摘要")
+
+            conversation["context_state"] = {
+                "summary": record["summary"],
+                "history_cut_index": record["history_cut_index"],
+            }
+            conversation.setdefault("context_compressions", []).append(record)
+            self._save_conversation(conversation)
+
+    def record_context_usage(self, conversation_id: str, input_tokens: int, message_count: int,
+                             estimated_tokens: int) -> None:
+        """落盘上游实测输入与当时的消息条数，作为下一轮占用的锚点。
+
+        同时保留上一轮的实测与整体估算：相邻两轮的差值就是「新增内容的真实
+        token 数」，由此得到的每轮边际速率不再依赖字符启发式。
+        摘要换代会重写 context_state（这里只写 last_* / prev_* 字段），旧锚点随之作废。
+        """
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            state = conversation.setdefault("context_state", {})
+            state["prev_input_tokens"] = max(0, int(state.get("last_input_tokens") or 0))
+            state["last_input_tokens"] = max(0, int(input_tokens or 0))
+            state["last_estimated_tokens"] = max(0, int(estimated_tokens or 0))
+            state["last_measured_message_count"] = max(0, int(message_count or 0))
+            self._save_conversation(conversation)
+
+    def record_compression_call(self, conversation_id: str, record: dict) -> None:
+        """压缩请求用量独立保存，即使摘要最终未提交也不能漏计该调用。"""
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            conversation.setdefault("context_compression_calls", []).append(record)
+            self._save_conversation(conversation)
 
     def _guess_title(self, message: dict) -> str:
         content = message.get("content") if isinstance(message, dict) else ""

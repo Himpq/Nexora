@@ -67,7 +67,11 @@ def admin_server_quota():
                     quota_payload[key] = payload.get(key)
             update_server_quota_config(quota_payload)
             _recover_quota_disabled_models(quota_payload.get('provider'))
-        return jsonify({'success': True, 'quota': get_server_quota_status()})
+        response = jsonify({'success': True, 'quota': get_server_quota_status()})
+        response.headers['Cache-Control'] = 'no-store, no-cache, max-age=0, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 

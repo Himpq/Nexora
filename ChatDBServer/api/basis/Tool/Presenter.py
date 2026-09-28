@@ -10,7 +10,9 @@ Nexora.basis.Tool.Presenter — 工具结果展示层
 
 import json
 import os
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 
 class ToolResultPresenter:
@@ -114,6 +116,10 @@ class ToolResultPresenter:
             "append_learning_memory": self._render_learning_memory_write,
             "update_learning_memory": self._render_learning_memory_write,
             "write_learning_memory": self._render_learning_memory_write,
+            "scheduled_task_create": self._render_scheduled_task,
+            "scheduled_task_list": self._render_scheduled_task,
+            "scheduled_task_update": self._render_scheduled_task,
+            "scheduled_task_delete": self._render_scheduled_task,
         }
 
     def render(self, tool_name: str, args: Dict[str, Any], result: Any) -> Optional[str]:
@@ -3833,4 +3839,81 @@ class ToolResultPresenter:
             text = str(result or "").strip()
             if text and text != "[]":
                 lines.extend(["", self._markdown_body(text, limit=4000)])
+        return "\n".join(lines).strip()
+
+    def _format_scheduled_task(self, task: Dict[str, Any]) -> List[str]:
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        weekdays = task.get("weekdays") if isinstance(task.get("weekdays"), list) else []
+        weekday_text = "、".join(weekday_names[day] for day in weekdays if type(day) is int and 0 <= day < 7)
+        hour = task.get("hour")
+        minute = task.get("minute")
+        time_text = f"{hour:02d}:{minute:02d}" if type(hour) is int and type(minute) is int else ""
+        enabled = "启用" if task.get("enabled") else "已暂停"
+        next_run = task.get("next_run_at")
+
+        if type(next_run) is int:
+            next_run_text = datetime.fromtimestamp(next_run, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+        else:
+            next_run_text = ""
+
+        lines = [f"- 任务：{self._escape_table_cell(task.get('title') or '(未命名)')}"]
+
+        if task.get("task_id"):
+            lines.append(f"- 任务 ID：`{task['task_id']}`")
+
+        if weekday_text and time_text:
+            lines.append(f"- 执行时间：每{weekday_text} {time_text}（北京时间）")
+
+        lines.append(f"- 状态：{enabled}")
+
+        if next_run_text:
+            lines.append(f"- 下次执行：{next_run_text}（北京时间）")
+
+        return lines
+
+    def _render_scheduled_task(self, args: Dict[str, Any], result: Any) -> str:
+        """Render scheduled-task tool responses as concise Markdown for the model and chat UI."""
+        payload = self._load_payload(result)
+        tool_name = str(args.get("_tool_name") or "scheduled_task").strip()
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        title_map = {
+            "scheduled_task_create": ("## 定时任务已创建", "## 定时任务创建失败"),
+            "scheduled_task_list": ("## 定时任务列表", "## 定时任务读取失败"),
+            "scheduled_task_update": ("## 定时任务已更新", "## 定时任务更新失败"),
+            "scheduled_task_delete": ("## 定时任务已删除", "## 定时任务删除失败"),
+        }
+        success_title, failed_title = title_map.get(tool_name, ("## 定时任务结果", "## 定时任务操作失败"))
+        lines = [self._status_title(success, success_title, failed_title), ""]
+
+        if not success:
+            lines.append(f"- 原因：{self._escape_table_cell(payload.get('error') or payload.get('message') or '未知错误')}")
+            return "\n".join(lines).strip()
+
+        if tool_name == "scheduled_task_list":
+            tasks = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
+            lines.append(f"- 任务数量：{len(tasks)}")
+
+            for task in tasks:
+                if isinstance(task, dict):
+                    lines.extend(["", *self._format_scheduled_task(task)])
+
+            if not tasks:
+                lines.extend(["", "当前没有定时任务。"])
+
+        elif tool_name == "scheduled_task_delete":
+            task_id = self._escape_table_cell(payload.get("task_id") or args.get("task_id") or "")
+            lines.append(f"- 任务 ID：`{task_id}`")
+
+        else:
+            task = payload.get("task")
+
+            if isinstance(task, dict):
+                lines.extend(self._format_scheduled_task(task))
+            else:
+                lines.append("- 操作已完成。")
+
         return "\n".join(lines).strip()

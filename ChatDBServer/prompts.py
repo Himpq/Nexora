@@ -401,8 +401,7 @@ memory_write_policy_prompt_template = """## Memory Write Policy
 
 learning_mode_tool_nudge_prompt = (
     "当前为 NexoraLearning 学习模式。不要只输出思考。"
-    "请直接调用一个最相关的 Learning 或知识库读取工具，"
-    "再基于工具结果继续回答用户。"
+    "请遵循当前任务指令，调用当前可用且最相关的工具后继续回答。"
 )
 
 workspace_draft_policy_prompt_template = """## Workspace Draft Policy

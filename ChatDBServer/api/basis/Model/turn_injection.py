@@ -26,6 +26,7 @@ VOLATILE_INJECTION_NAME_MARKERS = (
     ("## Workspace Resource Index", "workspace_resource_index"),
     ("## Sandbox Files", "sandbox_files"),
     ("## Knowledge changed", "knowledge_diff"),
+    ("## Learning Profile Interview", "learning_profile_interview"),
     (PROFILE_UPDATED_MARKER, "profile_diff"),
     (SKILLS_CHANGED_MARKER, "skill_diff"),
 )

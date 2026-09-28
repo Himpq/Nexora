@@ -20,6 +20,7 @@ import copy
 import threading
 import time
 import uuid
+from .SessionJournal import SessionJournal
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 
@@ -27,8 +28,9 @@ _SESSIONS_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 _MAX_CHUNKS_PER_SESSION = 12000
+# 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
+_JOURNAL_FLUSH_CHUNKS = 64
 _DONE_TTL_SEC = 900
-_STALE_RUNNING_TTL_SEC = 7200
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 _ACCUMULATED_RENDER_CHUNK_TYPES = {
     "content",
@@ -63,6 +65,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "stream_id": uuid.uuid4().hex,
         "conversation_id": str(conversation_id or "").strip(),
         "is_regenerate": bool(meta.get("is_regenerate", False)),
+        "history_user_count": meta.get("history_user_count"),
         "assistant_index": meta.get("assistant_index"),
         "regenerate_index": meta.get("regenerate_index"),
         "created_at": time.time(),
@@ -71,6 +74,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "head_seq": 1,
         "last_seq": 0,
         "chunks": [],
+        "journal_pending": [],
         "error": "",
         "stage": "created",
         "stage_detail": "",
@@ -93,10 +97,9 @@ def cleanup_sessions() -> None:
             updated_at = float(s.get("updated_at") or 0)
             age = max(0.0, now - updated_at)
 
-            if status == "running":
-                if age > _STALE_RUNNING_TTL_SEC:
-                    remove_ids.append(sid)
-            else:
+            # running / cancelling 一律不回收：长任务超过任何 TTL 仍在执行，
+            # 强制清理会让仍在跑的 worker 失去可续读的 session。worker 结束必经 _finish。
+            if status not in {"running", "cancelling"}:
                 if age > _DONE_TTL_SEC:
                     remove_ids.append(sid)
 
@@ -116,10 +119,19 @@ def start_session(
         None,
     ],
     metadata: Optional[Dict[str, Any]] = None,
+    stream_id: Optional[str] = None,
 ) -> str:
     cleanup_sessions()
     session = _new_session(conversation_id=conversation_id, metadata=metadata)
+
+    if stream_id:
+        session["stream_id"] = stream_id
+
     stream_id = session["stream_id"]
+    journal = SessionJournal()
+    # 每次开新任务顺带清一次过期事件日志：电脑长时间不关时目录会一直涨。
+    journal.purge_expired()
+    journal.save_meta(session)
 
     with _SESSIONS_LOCK:
         _SESSIONS[stream_id] = session
@@ -135,6 +147,7 @@ def start_session(
         with cond:
             session["conversation_id"] = val
             session["updated_at"] = time.time()
+            journal.save_meta(session)
             cond.notify_all()
 
     def _set_stage(stage: str, detail: str = "") -> None:
@@ -157,6 +170,25 @@ def start_session(
 
         with cond:
             return bool(session.get("cancel_requested", False))
+
+    def _flush_journal(force: bool = False) -> None:
+        """把攒下的事件批量落盘。
+
+        逐条开文件写会在持有 session 条件锁时做文件 I/O，长回复几千个 chunk
+        就是几千次 open/write/close。攒到阈值或任务收尾时一次写完，
+        代价是进程异常退出最多丢最后未落盘的那一批（该任务本就会标记 interrupted）。
+        """
+        lock = session["cond"]
+
+        with lock:
+            pending = session["journal_pending"]
+            should_flush = bool(pending) and (force or len(pending) >= _JOURNAL_FLUSH_CHUNKS)
+
+            if should_flush:
+                session["journal_pending"] = []
+
+        if should_flush:
+            journal.append(stream_id, pending)
 
     def _push_chunk(chunk: Dict[str, Any]) -> None:
         payload = copy.deepcopy(chunk) if isinstance(chunk, dict) else {"type": "message", "content": str(chunk)}
@@ -198,10 +230,18 @@ def start_session(
                 session["head_seq"] = int(session["head_seq"]) + 1
 
             session["updated_at"] = time.time()
+            # 收尾帧先落盘，保证「完成」这件事不会因为攒批而延后到下一个 chunk。
+            session["journal_pending"].append(payload)
             cond.notify_all()
+
+        _flush_journal(force=chunk_type == "finish")
 
     def _finish(status: str = "done", error: str = "") -> None:
         cond = session["cond"]
+
+        # 事件先落盘，元数据后标记：读者看到 status=finished/done 时，
+        # 事件日志一定已经完整，否则回放会得到一个「已完成但没有事件」的任务。
+        _flush_journal(force=True)
 
         with cond:
             if bool(session.get("cancel_requested", False)):
@@ -209,18 +249,31 @@ def start_session(
                 session["error"] = str(session.get("error") or "cancelled")
                 session["stage"] = "cancelled"
                 session["stage_detail"] = str(session.get("cancel_reason") or "user_abort")
-                session["stage_updated_at"] = time.time()
-                session["updated_at"] = time.time()
-                cond.notify_all()
-                return
+            else:
+                session["status"] = str(status or "done")
+                session["error"] = str(error or "")
+                session["stage"] = "finished"
+                session["stage_detail"] = str(error or "")
 
-            session["status"] = str(status or "done")
-            session["error"] = str(error or "")
-            session["stage"] = "finished"
-            session["stage_detail"] = str(error or "")
             session["stage_updated_at"] = time.time()
             session["updated_at"] = time.time()
+            journal.save_meta(session)
             cond.notify_all()
+
+    def _report_worker_error(error: BaseException) -> None:
+        """业务 worker 已推送 error 事件时不再重复上报，只补记失败状态。"""
+        cond = session["cond"]
+
+        with cond:
+            already_reported = session["last_chunk_type"] == "error"
+
+        if not already_reported:
+            try:
+                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(error)}"})
+            except Exception:
+                pass
+
+        _finish("done", str(error))
 
     def _run() -> None:
         try:
@@ -232,19 +285,9 @@ def start_session(
                 _finish("done", "cancelled")
                 return
 
-            try:
-                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(e)}"})
-            except Exception:
-                pass
-
-            _finish("done", str(e))
+            _report_worker_error(e)
         except Exception as e:
-            try:
-                _push_chunk({"type": "error", "content": f"stream runtime worker error: {str(e)}"})
-            except Exception:
-                pass
-
-            _finish("done", str(e))
+            _report_worker_error(e)
 
     thread = threading.Thread(target=_run, name=f"nc-stream-{stream_id[:8]}", daemon=True)
     thread.start()
@@ -270,6 +313,7 @@ def get_session_meta(stream_id: str) -> Optional[Dict[str, Any]]:
             "stream_id": sid,
             "conversation_id": str(s.get("conversation_id") or "").strip(),
             "is_regenerate": bool(s.get("is_regenerate", False)),
+            "history_user_count": s.get("history_user_count"),
             "assistant_index": s.get("assistant_index"),
             "regenerate_index": s.get("regenerate_index"),
             "status": str(s.get("status") or "done"),

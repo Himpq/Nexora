@@ -54,7 +54,7 @@ interface QuotaResponse {
 
 /** 读取额度状态(对齐原版 loadServerQuotaStatus) */
 export async function fetchAdminQuota(): Promise<ServerQuota> {
-    const data = await apiFetch<QuotaResponse>('/api/admin/quota')
+    const data = await apiFetch<QuotaResponse>('/api/admin/quota', { cache: 'no-store' })
 
     if (!data.success || !data.quota) {
         throw new Error(data.message || '读取额度失败')
