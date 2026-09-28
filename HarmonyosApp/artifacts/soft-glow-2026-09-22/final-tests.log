@@ -1,0 +1,940 @@
+TAP version 13
+# Subtest: composer: idle is static without timers; activity becomes quiet after ten seconds
+ok 1 - composer: idle is static without timers; activity becomes quiet after ten seconds
+  ---
+  duration_ms: 100.7427
+  type: 'test'
+  ...
+# Subtest: composer: reduced motion has no drift but still lowers intensity after ten seconds
+ok 2 - composer: reduced motion has no drift but still lowers intensity after ten seconds
+  ---
+  duration_ms: 24.362
+  type: 'test'
+  ...
+# Subtest: top: idle is static without timers; activity becomes quiet after ten seconds
+ok 3 - top: idle is static without timers; activity becomes quiet after ten seconds
+  ---
+  duration_ms: 21.572
+  type: 'test'
+  ...
+# Subtest: top: reduced motion has no drift but still lowers intensity after ten seconds
+ok 4 - top: reduced motion has no drift but still lowers intensity after ten seconds
+  ---
+  duration_ms: 18.5266
+  type: 'test'
+  ...
+# Subtest: hiding or disabling clears timers and returning uses the original request age
+ok 5 - hiding or disabling clears timers and returning uses the original request age
+  ---
+  duration_ms: 34.6589
+  type: 'test'
+  ...
+# Subtest: disappearance clears the pending timeout and even a late callback cannot mutate the unmounted instance
+ok 6 - disappearance clears the pending timeout and even a late callback cannot mutate the unmounted instance
+  ---
+  duration_ms: 14.0927
+  type: 'test'
+  ...
+# Subtest: finishing clears the deadline and a late timeout cannot restore ended top illumination
+ok 7 - finishing clears the deadline and a late timeout cannot restore ended top illumination
+  ---
+  duration_ms: 16.1182
+  type: 'test'
+  ...
+# Subtest: a queued timeout from the previous send cannot quiet a new send or discard its timer handle
+ok 8 - a queued timeout from the previous send cannot quiet a new send or discard its timer handle
+  ---
+  duration_ms: 35.6231
+  type: 'test'
+  ...
+# Subtest: a subsequent send schedules no timer for an unilluminated top layer
+ok 9 - a subsequent send schedules no timer for an unilluminated top layer
+  ---
+  duration_ms: 10.1871
+  type: 'test'
+  ...
+# Subtest: Watch ordering starts age at the busy transition and later visibility or motion changes cannot reset it
+ok 10 - Watch ordering starts age at the busy transition and later visibility or motion changes cannot reset it
+  ---
+  duration_ms: 21.2286
+  type: 'test'
+  ...
+# Subtest: ending a quiet top glow cannot brighten it regardless of busy/illumination Watch order
+ok 11 - ending a quiet top glow cannot brighten it regardless of busy/illumination Watch order
+  ---
+  duration_ms: 23.7402
+  type: 'test'
+  ...
+# Subtest: first launch defaults to system appearance and automatic atmosphere; initialization is idempotent
+ok 12 - first launch defaults to system appearance and automatic atmosphere; initialization is idempotent
+  ---
+  duration_ms: 208.5726
+  type: 'test'
+  ...
+# Subtest: day atmosphere × light system appearance stays independent
+ok 13 - day atmosphere × light system appearance stays independent
+  ---
+  duration_ms: 2.7613
+  type: 'test'
+  ...
+# Subtest: day atmosphere × dark system appearance stays independent
+ok 14 - day atmosphere × dark system appearance stays independent
+  ---
+  duration_ms: 1.9084
+  type: 'test'
+  ...
+# Subtest: night atmosphere × light system appearance stays independent
+ok 15 - night atmosphere × light system appearance stays independent
+  ---
+  duration_ms: 1.219
+  type: 'test'
+  ...
+# Subtest: night atmosphere × dark system appearance stays independent
+ok 16 - night atmosphere × dark system appearance stays independent
+  ---
+  duration_ms: 0.8099
+  type: 'test'
+  ...
+# Subtest: manual atmosphere changes never select a different page appearance
+ok 17 - manual atmosphere changes never select a different page appearance
+  ---
+  duration_ms: 0.9707
+  type: 'test'
+  ...
+# Subtest: all four user preferences survive a fresh process and immediately reapply
+ok 18 - all four user preferences survive a fresh process and immediately reapply
+  ---
+  duration_ms: 2.4912
+  type: 'test'
+  ...
+# Subtest: corrupt persisted values use safe defaults instead of inventing an appearance
+ok 19 - corrupt persisted values use safe defaults instead of inventing an appearance
+  ---
+  duration_ms: 0.8244
+  type: 'test'
+  ...
+# Subtest: system color updates affect only system appearance, preserving manual and time choices
+ok 20 - system color updates affect only system appearance, preserving manual and time choices
+  ---
+  duration_ms: 1.3428
+  type: 'test'
+  ...
+# Subtest: partial or unset system configurations never interpret undefined as light
+ok 21 - partial or unset system configurations never interpret undefined as light
+  ---
+  duration_ms: 2.8715
+  type: 'test'
+  ...
+# Subtest: the single foreground timer switches both automatic policies at the exact local boundaries
+ok 22 - the single foreground timer switches both automatic policies at the exact local boundaries
+  ---
+  duration_ms: 1.1131
+  type: 'test'
+  ...
+# Subtest: repeated refresh, foreground and preference updates never accumulate timers
+ok 23 - repeated refresh, foreground and preference updates never accumulate timers
+  ---
+  duration_ms: 1.1526
+  type: 'test'
+  ...
+# Subtest: background cancels the timer and a late callback cannot rearm it; foreground catches up
+ok 24 - background cancels the timer and a late callback cannot rearm it; foreground catches up
+  ---
+  duration_ms: 0.954
+  type: 'test'
+  ...
+# Subtest: system reduce-motion initial state and callbacks stay independent of the saved user preference
+ok 25 - system reduce-motion initial state and callbacks stay independent of the saved user preference
+  ---
+  duration_ms: 0.8005
+  type: 'test'
+  ...
+# Subtest: a canceled callback delivered after returning to foreground cannot orphan the replacement timer
+ok 26 - a canceled callback delivered after returning to foreground cannot orphan the replacement timer
+  ---
+  duration_ms: 3.7722
+  type: 'test'
+  ...
+# Subtest: failed accessibility queries preserve the last known reduced-motion state
+ok 27 - failed accessibility queries preserve the last known reduced-motion state
+  ---
+  duration_ms: 1.9503
+  type: 'test'
+  ...
+# Subtest: dispose cancels timers, removes the exact callback and supports a clean later initialization
+ok 28 - dispose cancels timers, removes the exact callback and supports a clean later initialization
+  ---
+  duration_ms: 1.8797
+  type: 'test'
+  ...
+# Subtest: manual appearance immediately updates real system-bar properties while reader immersion owns its bars
+ok 29 - manual appearance immediately updates real system-bar properties while reader immersion owns its bars
+  ---
+  duration_ms: 1.8304
+  type: 'test'
+  ...
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 30 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 319.3851
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 31 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 167.2395
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 32 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 136.3676
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 33 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 97.5198
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 34 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 101.9911
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 35 - reading position is isolated between accounts
+  ---
+  duration_ms: 13.9611
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 36 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 35.3987
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 37 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 28.2324
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 38 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 81.9851
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 39 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 70.0898
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 40 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 73.9428
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 41 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 12.9076
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 42 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 14.3908
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 43 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 103.0189
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 44 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 105.3038
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 45 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 36.9236
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 46 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 43.652
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 47 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 40.4024
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 48 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 149.5809
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 49 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 92.5199
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 50 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 9.5371
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 51 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 29.9718
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 52 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 27.1963
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 53 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 34.4621
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 54 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 29.8084
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 55 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 69.6952
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 56 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 47.0312
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 57 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 29.0223
+  type: 'test'
+  ...
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 58 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 362.8087
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 59 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 152.4341
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 60 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 120.2502
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 61 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 116.7766
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 62 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 96.0077
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 63 - reading position is isolated between accounts
+  ---
+  duration_ms: 10.5818
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 64 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 32.0073
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 65 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 32.738
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 66 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 100.4197
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 67 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 74.7693
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 68 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 85.2949
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 69 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 12.5809
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 70 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 9.9886
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 71 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 96.8215
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 72 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 90.4693
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 73 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 48.3696
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 74 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 42.5752
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 75 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 35.7344
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 76 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 139.7893
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 77 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 80.8615
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 78 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 11.353
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 79 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 33.9095
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 80 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 30.7532
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 81 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 37.1692
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 82 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 29.4526
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 83 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 75.2247
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 84 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 25.0475
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 85 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 27.548
+  type: 'test'
+  ...
+# Subtest: a valid first send lights the top through waiting and revealing; the second send does not replay
+ok 86 - a valid first send lights the top through waiting and revealing; the second send does not replay
+  ---
+  duration_ms: 63.0234
+  type: 'test'
+  ...
+# Subtest: empty and whitespace input spend no glow; duplicate taps preserve the next draft and make one request
+ok 87 - empty and whitespace input spend no glow; duplicate taps preserve the next draft and make one request
+  ---
+  duration_ms: 62.0952
+  type: 'test'
+  ...
+# Subtest: an absent account cannot consume the day; signing in permits the first visible glow
+ok 88 - an absent account cannot consume the day; signing in permits the first visible glow
+  ---
+  duration_ms: 63.2657
+  type: 'test'
+  ...
+# Subtest: errors extinguish the glow and retries keep the same message without claiming, even the next day
+ok 89 - errors extinguish the glow and retries keep the same message without claiming, even the next day
+  ---
+  duration_ms: 68.0114
+  type: 'test'
+  ...
+# Subtest: a stopped request with late success cannot overwrite a new request or its glow
+ok 90 - a stopped request with late success cannot overwrite a new request or its glow
+  ---
+  duration_ms: 69.0984
+  type: 'test'
+  ...
+# Subtest: a stopped request with late failure cannot overwrite a new request or its glow
+ok 91 - a stopped request with late failure cannot overwrite a new request or its glow
+  ---
+  duration_ms: 60.2017
+  type: 'test'
+  ...
+# Subtest: stopping while context resolves prevents starting a request and preserves next-day eligibility
+ok 92 - stopping while context resolves prevents starting a request and preserves next-day eligibility
+  ---
+  duration_ms: 58.6994
+  type: 'test'
+  ...
+# Subtest: an in-flight request crossing midnight never claims again; the next new send does
+ok 93 - an in-flight request crossing midnight never claims again; the next new send does
+  ---
+  duration_ms: 55.4132
+  type: 'test'
+  ...
+# Subtest: a send started disabled or hidden does not consume the first glow or replay it when exposed
+ok 94 - a send started disabled or hidden does not consume the first glow or replay it when exposed
+  ---
+  duration_ms: 418.3785
+  type: 'test'
+  ...
+# Subtest: after a glow was shown, hiding or disabling extinguishes it and reopening cannot replay it
+ok 95 - after a glow was shown, hiding or disabling extinguishes it and reopening cannot replay it
+  ---
+  duration_ms: 939.2682
+  type: 'test'
+  ...
+# Subtest: leaving the component cancels its request and a late response cannot resume the glow
+ok 96 - leaving the component cancels its request and a late response cannot resume the glow
+  ---
+  duration_ms: 148.8864
+  type: 'test'
+  ...
+# Subtest: production character reveal stops changing text after stop and cannot finish a later request
+ok 97 - production character reveal stops changing text after stop and cannot finish a later request
+  ---
+  duration_ms: 156.2672
+  type: 'test'
+  ...
+# Subtest: the plan route shares the daily glow and passes its own cancellation control to the network
+ok 98 - the plan route shares the daily glow and passes its own cancellation control to the network
+  ---
+  duration_ms: 153.5752
+  type: 'test'
+  ...
+# Subtest: AgentApi cancels only the matching HTTP request and leaves the next send and timeline request alive
+ok 99 - AgentApi cancels only the matching HTTP request and leaves the next send and timeline request alive
+  ---
+  duration_ms: 44.918
+  type: 'test'
+  ...
+# Subtest: a cancellation before identity is ready creates no HTTP request
+ok 100 - a cancellation before identity is ready creates no HTTP request
+  ---
+  duration_ms: 42.3784
+  type: 'test'
+  ...
+# Subtest: Day stop interrupts its production AgentApi transport immediately and remains a stopped state
+ok 101 - Day stop interrupts its production AgentApi transport immediately and remains a stopped state
+  ---
+  duration_ms: 189.8824
+  type: 'test'
+  ...
+# Subtest: keyboard height is converted once and navigation is subtracted only once through show, resize and hide
+ok 102 - keyboard height is converted once and navigation is subtracted only once through show, resize and hide
+  ---
+  duration_ms: 162.07
+  type: 'test'
+  ...
+# Subtest: window subscriptions read and track TYPE_NAVIGATION_INDICATOR independently from the status bar
+ok 103 - window subscriptions read and track TYPE_NAVIGATION_INDICATOR independently from the status bar
+  ---
+  duration_ms: 160.4164
+  type: 'test'
+  ...
+# Subtest: the brand glyph starts once after mounting and a full 60 ms delay
+ok 104 - the brand glyph starts once after mounting and a full 60 ms delay
+  ---
+  duration_ms: 168.6317
+  type: 'test'
+  ...
+# Subtest: reduced motion and hidden states cancel glyph startup; stale callbacks cannot start the new animated branch early
+ok 105 - reduced motion and hidden states cancel glyph startup; stale callbacks cannot start the new animated branch early
+  ---
+  duration_ms: 1011.16
+  type: 'test'
+  ...
+# Subtest: glyph disappearance clears startup and a later mount is isolated from the old queued callback
+ok 106 - glyph disappearance clears startup and a later mount is isolated from the old queued callback
+  ---
+  duration_ms: 143.7158
+  type: 'test'
+  ...
+# Subtest: day and night use one exact local 07:00–19:00 boundary
+ok 107 - day and night use one exact local 07:00–19:00 boundary
+  ---
+  duration_ms: 4.4305
+  type: 'test'
+  ...
+# Subtest: the next boundary is strictly later and retains the local hour across DST
+ok 108 - the next boundary is strictly later and retains the local hour across DST
+  ---
+  duration_ms: 1.8963
+  type: 'test'
+  ...
+# Subtest: claim is synchronous, once per day, and persists across a process restart
+ok 109 - claim is synchronous, once per day, and persists across a process restart
+  ---
+  duration_ms: 4.4577
+  type: 'test'
+  ...
+# Subtest: the request timestamp stays on its original day across midnight; each day is retained
+ok 110 - the request timestamp stays on its original day across midnight; each day is retained
+  ---
+  duration_ms: 2.4846
+  type: 'test'
+  ...
+# Subtest: account, service, and installation are independent and cannot consume each other
+ok 111 - account, service, and installation are independent and cannot consume each other
+  ---
+  duration_ms: 2.2564
+  type: 'test'
+  ...
+# Subtest: normalization shares equivalent base URLs without conflating different environments
+ok 112 - normalization shares equivalent base URLs without conflating different environments
+  ---
+  duration_ms: 1.8927
+  type: 'test'
+  ...
+# Subtest: missing identity, malformed services and invalid timestamps do not read or consume state
+ok 113 - missing identity, malformed services and invalid timestamps do not read or consume state
+  ---
+  duration_ms: 1.9383
+  type: 'test'
+  ...
+# Subtest: unavailable storage skips the decoration without spending the first claim
+ok 114 - unavailable storage skips the decoration without spending the first claim
+  ---
+  duration_ms: 1.667
+  type: 'test'
+  ...
+# Subtest: write failure cannot reject input or replay an already presented glow in the session
+ok 115 - write failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 1.848
+  type: 'test'
+  ...
+# Subtest: flush failure cannot reject input or replay an already presented glow in the session
+ok 116 - flush failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 1.8028
+  type: 'test'
+  ...
+# Subtest: flush start failure cannot reject input or replay an already presented glow in the session
+ok 117 - flush start failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 1.4348
+  type: 'test'
+  ...
+# Subtest: pure state accepts an injected storage adapter and safely encodes separators
+ok 118 - pure state accepts an injected storage adapter and safely encodes separators
+  ---
+  duration_ms: 1.3325
+  type: 'test'
+  ...
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 119 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 410.89
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 120 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 161.9503
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 121 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 138.7827
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 122 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 123.791
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 123 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 91.8565
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 124 - reading position is isolated between accounts
+  ---
+  duration_ms: 14.6665
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 125 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 45.0771
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 126 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 29.9818
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 127 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 93.1165
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 128 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 75.3802
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 129 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 86.2052
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 130 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 27.3127
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 131 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 15.781
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 132 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 100.4084
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 133 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 105.2415
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 134 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 37.5138
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 135 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 44.1311
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 136 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 45.6521
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 137 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 130.1396
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 138 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 85.266
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 139 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 17.6333
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 140 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 29.3244
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 141 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 30.0694
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 142 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 27.8755
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 143 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 29.6116
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 144 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 71.4773
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 145 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 21.3881
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 146 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 19.9406
+  type: 'test'
+  ...
+# Subtest: changing the colour of part of a highlight keeps the untouched parts of the original mark
+ok 147 - changing the colour of part of a highlight keeps the untouched parts of the original mark
+  ---
+  duration_ms: 60.0055
+  type: 'test'
+  ...
+# Subtest: a very long paragraph is never truncated by the pagination guard
+ok 148 - a very long paragraph is never truncated by the pagination guard
+  ---
+  duration_ms: 61.5009
+  type: 'test'
+  ...
+# Subtest: an answer that arrives after switching chapters does not land in the new chapter
+ok 149 - an answer that arrives after switching chapters does not land in the new chapter
+  ---
+  duration_ms: 70.9292
+  type: 'test'
+  ...
+# Subtest: negations and quoted phrases are questions, not plan commands; calendar needs explicit intent
+ok 150 - negations and quoted phrases are questions, not plan commands; calendar needs explicit intent
+  ---
+  duration_ms: 61.202
+  type: 'test'
+  ...
+# Subtest: a failed send keeps the message as failed, survives a timeline refresh, and can be resent
+ok 151 - a failed send keeps the message as failed, survives a timeline refresh, and can be resent
+  ---
+  duration_ms: 64.9185
+  type: 'test'
+  ...
+# Subtest: a review attempt is isolated: the same quiz id in a new round starts unanswered and submits with attempt_id
+ok 152 - a review attempt is isolated: the same quiz id in a new round starts unanswered and submits with attempt_id
+  ---
+  duration_ms: 39.7426
+  type: 'test'
+  ...
+# Subtest: proactive card failure keeps the decision pending with a retry instead of "no more reminders"
+ok 153 - proactive card failure keeps the decision pending with a retry instead of "no more reminders"
+  ---
+  duration_ms: 19.7351
+  type: 'test'
+  ...
+# Subtest: time phases are consistent across header, dots and autonomy labels
+ok 154 - time phases are consistent across header, dots and autonomy labels
+  ---
+  duration_ms: 6.8423
+  type: 'test'
+  ...
+# Subtest: markdown keeps set braces, nested fractions, ordered numbers and tables instead of deleting structure
+ok 155 - markdown keeps set braces, nested fractions, ordered numbers and tables instead of deleting structure
+  ---
+  duration_ms: 26.0464
+  type: 'test'
+  ...
+1..155
+# tests 155
+# suites 0
+# pass 155
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6616.1823

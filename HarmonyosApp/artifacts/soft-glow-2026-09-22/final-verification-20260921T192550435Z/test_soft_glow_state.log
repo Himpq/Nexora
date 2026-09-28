@@ -1,0 +1,82 @@
+TAP version 13
+# Subtest: day and night use one exact local 07:00–19:00 boundary
+ok 1 - day and night use one exact local 07:00–19:00 boundary
+  ---
+  duration_ms: 3.7119
+  type: 'test'
+  ...
+# Subtest: the next boundary is strictly later and retains the local hour across DST
+ok 2 - the next boundary is strictly later and retains the local hour across DST
+  ---
+  duration_ms: 1.8373
+  type: 'test'
+  ...
+# Subtest: claim is synchronous, once per day, and persists across a process restart
+ok 3 - claim is synchronous, once per day, and persists across a process restart
+  ---
+  duration_ms: 2.4816
+  type: 'test'
+  ...
+# Subtest: the request timestamp stays on its original day across midnight; each day is retained
+ok 4 - the request timestamp stays on its original day across midnight; each day is retained
+  ---
+  duration_ms: 1.1827
+  type: 'test'
+  ...
+# Subtest: account, service, and installation are independent and cannot consume each other
+ok 5 - account, service, and installation are independent and cannot consume each other
+  ---
+  duration_ms: 1.5333
+  type: 'test'
+  ...
+# Subtest: normalization shares equivalent base URLs without conflating different environments
+ok 6 - normalization shares equivalent base URLs without conflating different environments
+  ---
+  duration_ms: 2.0444
+  type: 'test'
+  ...
+# Subtest: missing identity, malformed services and invalid timestamps do not read or consume state
+ok 7 - missing identity, malformed services and invalid timestamps do not read or consume state
+  ---
+  duration_ms: 1.7761
+  type: 'test'
+  ...
+# Subtest: unavailable storage skips the decoration without spending the first claim
+ok 8 - unavailable storage skips the decoration without spending the first claim
+  ---
+  duration_ms: 1.9236
+  type: 'test'
+  ...
+# Subtest: write failure cannot reject input or replay an already presented glow in the session
+ok 9 - write failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 1.9341
+  type: 'test'
+  ...
+# Subtest: flush failure cannot reject input or replay an already presented glow in the session
+ok 10 - flush failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 2.0722
+  type: 'test'
+  ...
+# Subtest: flush start failure cannot reject input or replay an already presented glow in the session
+ok 11 - flush start failure cannot reject input or replay an already presented glow in the session
+  ---
+  duration_ms: 1.6792
+  type: 'test'
+  ...
+# Subtest: pure state accepts an injected storage adapter and safely encodes separators
+ok 12 - pure state accepts an injected storage adapter and safely encodes separators
+  ---
+  duration_ms: 1.385
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 407.2185

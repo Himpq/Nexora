@@ -1,0 +1,1019 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Day.ets b/HarmonyosApp/entry/src/main/ets/pages/Day.ets
+index 946a0a3..d8bd52a 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Day.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Day.ets
+@@ -8,10 +8,10 @@
+  *
+  * 数据：GET /events ＋ GET /today；前台时上报设备上下文 POST /context/device。
+  */
+-import { TimelineEntry, PlanCard, PlanData, TodayData, EventsData, OpenSessionData, LearnTarget, FlowStateData, ProactiveCard, AskAnswer, ContextData } from '../models/Index';
++import { TimelineEntry, PlanCard, PlanCardTarget, PlanData, TodayData, EventsData, OpenSessionData, LearnTarget, FlowStateData, ProactiveCard, AskAnswer, ContextData } from '../models/Index';
+ import { AgentApi, AgentEnvelope } from '../services/AgentApi';
+ import { TimelineEntryView } from '../components/entry/TimelineEntryView';
+-import { nxDayKey, nxDayLabel } from '../components/entry/TimelineRows';
++import { nxDayKey, nxDayLabel, nxTimePhase } from '../components/entry/TimelineRows';
+ import { InspectSheet } from '../components/InspectSheet';
+ import { StudyView } from './Study';
+ import { SkeletonCard, ErrorState } from '../components/common/States';
+@@ -25,8 +25,15 @@ import { sharedNotify } from '../capability/notify';
+ import { sharedCalendar } from '../capability/calendar';
+ import { sharedForm } from '../capability/form';
+ import { sharedDeviceContext } from '../capability/context';
++import { sharedPermission, PERMISSION_MICROPHONE } from '../capability/permission';
+ import { sharedCache } from '../services/cache/CacheStore';
+ import { nxReadingScope } from '../services/ReadingState';
++import { Identity } from '../services/Identity';
++import { sharedSoftGlowState } from '../services/SoftGlowState';
++import { ReplyCancellation } from '../services/ReplyCancellation';
++import { AmbientGlow } from '../components/AmbientGlow';
++import { GlowSettings } from '../components/GlowSettings';
++import { nxApplySystemBars } from '../theme/SystemBars';
+ 
+ interface DayChip {
+   key: string;
+@@ -43,15 +50,29 @@ class DayRow {
+   entry: TimelineEntry = { id: '', kind: 'system', ts: 0, text: '', unattended: false };
+ }
+ 
+-function actOf(ts: number): string {
+-  const hour: number = new Date(ts).getHours();
+-  if (hour >= 23 || hour < 8) {
+-    return 'night';
++/**
++ * 明确的行动指令才进计划（2026-09-21 审查 I6）：原正则把「我不想开始学习，请解释…」「请解释‘今天学什么’这句话」
++ * 都判成计划请求。现在：① 含否定 / 引用 / 提问语气的句子一律当问题；② 只有短句本身就是指令时才当计划。
++ * 导出为纯函数便于探针测试。
++ */
++export function nxIsLearningIntent(raw: string): boolean {
++  const text = raw.trim();
++  if (text.length === 0 || text.length > 24) {
++    return false;
+   }
+-  if (hour < 11) {
+-    return 'dawn';
++  if (/(不想|不要|别|不用|不是|什么意思|是什么|为什么|怎么|如何|解释|讲一下|讲讲|请问|吗|呢|？|\?|「|」|“|”|‘|’|引号|这句话)/.test(text)) {
++    return false;
+   }
+-  return 'day';
++  return /^(好的?[，,]?)?(开始学习|继续学习|安排(一下|今天|明天)?的?学习|学习计划|今天学什么|明天学什么|下一章|打开(课程|教材|阅读)|复习计划|帮我安排)/.test(text);
++}
++
++/** 一句话里有没有明确的「排进日历」意图（计划成功后才据此写日程，不再每次计划都写）。 */
++export function nxWantsCalendar(raw: string): boolean {
++  return /(日历|日程|提醒我|定个?时间|排到|排进)/.test(raw);
++}
++
++function actOf(ts: number): string {
++  return nxTimePhase(ts);
+ }
+ 
+ @Component
+@@ -71,14 +92,32 @@ export struct DayView {
+   @State sending: boolean = false;
+   @State listening: boolean = false;
+   /** 书房抽屉的开合放在 AppStorage：从书房推入的页面返回时（Index.onPageShow）要能重新拉起它。 */
+-  @StorageLink('nxStudyOpen') studyOpen: boolean = false;
+-  @State inspectOpen: boolean = false;
++  @StorageLink('nxStudyOpen') @Watch('onGlowVisibilityChanged') studyOpen: boolean = false;
++  @State @Watch('onGlowVisibilityChanged') inspectOpen: boolean = false;
+   @State inspectEntry: TimelineEntry | null = null;
+   @State showBackTop: boolean = false;
+   @State unreadDays: string[] = [];
+   @State keyboardInset: number = 0;
++  @State keyboardHeight: number = 0;
++  @State navigationBottomInset: number = 0;
++  @State systemTopInset: number = 0;
++  @State @Watch('onGlowVisibilityChanged') glowSettingsOpen: boolean = false;
++  @State topGlow: boolean = false;
++  @State replyPhase: string = 'idle';
++  @State viewportHeight: number = 720;
++  @StorageProp('nxGlowEnabled') @Watch('onGlowVisibilityChanged') glowEnabled: boolean = true;
++  @StorageProp('nxGlowReduceMotion') @Watch('onGlowVisibilityChanged') glowReduceMotion: boolean = false;
++  @StorageProp('nxSystemReduceMotion') @Watch('onGlowVisibilityChanged') systemReduceMotion: boolean = false;
++  @StorageProp('nxGlowPeriod') glowPeriod: string = 'day';
++  @StorageProp('nxAppForeground') @Watch('onGlowVisibilityChanged') appForeground: boolean = true;
++  @StorageProp('nxHomeVisible') @Watch('onGlowVisibilityChanged') homeVisible: boolean = true;
++  /** 语音权限被永久拒绝：入口显示「去设置」而不是无效的重试。 */
++  @State micBlocked: boolean = false;
++  /** 当前自然日（跨午夜 / 回前台时更新），并入行 key 让「今天 / 昨天」标签重算。 */
++  @State todayKey: string = nxDayKey(Date.now());
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   @StorageProp('nxStudyTick') @Watch('onStudyChanged') studyTick: number = 0;
++  @StorageProp('nxForegroundTick') @Watch('onForeground') foregroundTick: number = 0;
+   private api: AgentApi = new AgentApi();
+   private scroller: ListScroller = new ListScroller();
+   private lastTarget: LearnTarget | null = null;
+@@ -90,9 +129,22 @@ export struct DayView {
+   private todayVersion: number = 0;
+   private feedbackRefreshing: boolean = false;
+   private feedbackPending: boolean = false;
++  private midnightTimer: number = -1;
++  private glyphTimer: number = -1;
++  private glyphVersion: number = 0;
++  /** 本地未确认的用户消息（发送中 / 失败），loadEvents 用服务器记录替换列表时保留它们。 */
++  private localPending: TimelineEntry[] = [];
++  private replyVersion: number = 0;
++  private replyCancellation: ReplyCancellation | null = null;
++  private activeUserId: string = '';
++  private activeThinkingId: string = '';
+ 
+   aboutToAppear(): void {
+     this.attached = true;
++    const glowContext = this.getUIContext().getHostContext();
++    if (glowContext !== undefined) {
++      sharedSoftGlowState.init(glowContext);
++    }
+     this.launchDecisionId = AppStorage.get<string>('nxLaunchDecision') || '';
+     const route: string = AppStorage.get<string>('nxLaunchRoute') || '';
+     if (route === 'study' || route === 'reader') {
+@@ -100,26 +152,44 @@ export struct DayView {
+     } else if (route === 'mirror' || route === 'judgment') {
+       this.inspectEntry = null;
+       this.inspectOpen = true;
++    } else if (route === 'review') {
++      // 小艺「考考我」：直接进今日复习（后台已排题时页面据 nxPendingReviewTask 续接）。
++      AppStorage.setOrCreate('nxReturnToStudy', true);
++      router.pushUrl({ url: 'pages/TodayTask', params: {} });
+     }
+     if (route.length > 0) {
+       AppStorage.setOrCreate('nxLaunchRoute', '');
+     }
+-    setTimeout(() => {
+-      this.breathe = true;
+-    }, 60);
++    this.syncGlyphMotion();
+     try {
++      // 主对话自管键盘（底部输入栏按键盘高度上推，列表跟着滚到底）；全局其余页面走 RESIZE。
+       this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.NONE);
+     } catch (err) {
+       // 由 listenKeyboard 按键盘高度上推页面
+     }
+     this.listenKeyboard();
++    this.scheduleMidnight();
+     this.load();
+   }
+ 
+   aboutToDisappear(): void {
+     this.attached = false;
++    this.syncGlyphMotion();
++    this.replyVersion++;
++    this.replyCancellation?.cancel();
++    this.replyCancellation = null;
++    this.topGlow = false;
+     this.eventsVersion++;
+     this.todayVersion++;
++    if (this.midnightTimer >= 0) {
++      clearTimeout(this.midnightTimer);
++      this.midnightTimer = -1;
++    }
++    try {
++      this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
++    } catch (err) {
++      // 忽略
++    }
+     if (this.hostWindow !== undefined) {
+       try {
+         this.hostWindow.off('avoidAreaChange');
+@@ -138,6 +208,101 @@ export struct DayView {
+     return nxPalette(this.nxDark);
+   }
+ 
++  private glowExposed(): boolean {
++    return this.appForeground && this.homeVisible && !this.studyOpen && !this.inspectOpen && !this.glowSettingsOpen;
++  }
++
++  private motionAllowed(): boolean {
++    return this.glowExposed() && !this.glowReduceMotion && !this.systemReduceMotion;
++  }
++
++  onGlowVisibilityChanged(): void {
++    // 关闭设置、回前台或重新启用柔光，都不能重放已看过的每日顶部光。
++    if (!this.glowEnabled || !this.glowExposed()) {
++      this.topGlow = false;
++    }
++    this.syncGlyphMotion();
++  }
++
++  private syncGlyphMotion(): void {
++    const version: number = ++this.glyphVersion;
++    if (this.glyphTimer >= 0) {
++      clearTimeout(this.glyphTimer);
++      this.glyphTimer = -1;
++    }
++    this.breathe = false;
++    if (!this.attached || !this.motionAllowed()) {
++      return;
++    }
++    // Start only after the animated node is mounted; reopening a sheet or
++    // turning motion back on creates a new node and needs a fresh first frame.
++    this.glyphTimer = setTimeout((): void => {
++      if (version !== this.glyphVersion || !this.attached || !this.motionAllowed()) {
++        return;
++      }
++      this.glyphTimer = -1;
++      this.breathe = true;
++    }, 60);
++  }
++
++  private topGlowExtent(): number {
++    return Math.max(110, Math.min(250, (this.viewportHeight - this.keyboardInset) * 0.27));
++  }
++
++  stopReply(): void {
++    if (!this.sending) {
++      return;
++    }
++    this.replyVersion++;
++    this.replyCancellation?.cancel();
++    this.replyCancellation = null;
++    this.sending = false;
++    this.replyPhase = 'stopped';
++    this.topGlow = false;
++    this.forgetPending(this.activeUserId);
++    this.setUserStatus(this.activeUserId, undefined);
++    for (const item of this.entries) {
++      if (item.id === this.activeThinkingId) {
++        item.text = item.text.length > 0 ? item.text + '\n\n已停止回复。' : '已停止这次回复。';
++        item.status = undefined;
++      }
++    }
++    this.entries = this.entries.slice();
++    this.rebuild(this.entries);
++  }
++
++  // ---------- 日期 ----------
++
++  /** 跨午夜（2026-09-21 审查 P2-14）：到 00:00 重算日期标签；回前台也重算。 */
++  private scheduleMidnight(): void {
++    if (this.midnightTimer >= 0) {
++      clearTimeout(this.midnightTimer);
++    }
++    const now = new Date();
++    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 2).getTime();
++    this.midnightTimer = setTimeout((): void => {
++      this.midnightTimer = -1;
++      this.refreshDayLabels();
++      this.scheduleMidnight();
++    }, Math.max(1000, next - now.getTime()));
++  }
++
++  onForeground(): void {
++    if (this.attached) {
++      this.refreshDayLabels();
++    }
++  }
++
++  private refreshDayLabels(): void {
++    const key = nxDayKey(Date.now());
++    if (key === this.todayKey) {
++      return;
++    }
++    this.todayKey = key;
++    this.rebuild(this.entries);
++    this.deriveStatus(this.entries);
++  }
++
+   // ---------- 数据 ----------
+ 
+   onStudyChanged(): void {
+@@ -194,6 +359,10 @@ export struct DayView {
+       for (const raw of data.entries) {
+         items.push(raw as TimelineEntry);
+       }
++      // 本地未确认的消息（发送中 / 失败）不能被服务器列表冲掉（2026-09-21 审查 C3）。
++      for (const pending of this.localPending) {
++        items.push(pending);
++      }
+       this.entries = items;
+       if (this.launchDecisionId.length > 0) {
+         for (let i = 0; i < items.length; i++) {
+@@ -203,6 +372,8 @@ export struct DayView {
+           }
+         }
+       }
++      // 刷新是否把用户从当前阅读位置拉走：只有已经在底部时才跟随（2026-09-21 审查 P2-2）。
++      const wasFollowing: boolean = !this.showBackTop;
+       this.rebuild(items);
+       this.deriveStatus(items);
+       if (this.launchDecisionId.length > 0) {
+@@ -217,8 +388,10 @@ export struct DayView {
+           AppStorage.setOrCreate('nxLaunchDecision', '');
+           this.launchDecisionId = '';
+         }, 100);
+-      } else {
++      } else if (wasFollowing) {
+         this.scrollToLatest();
++      } else {
++        this.markUnread(this.selectedDayKey);
+       }
+       const context = this.getUIContext().getHostContext();
+       if (context !== undefined) {
+@@ -236,7 +409,7 @@ export struct DayView {
+       // （只有 /context /plan /ask-in-context 那一代接口，例如 chat.himpqblog.cn 那台机器）。
+       // 这种情况本地缓存救不了，必须说清楚，否则 App 看起来「在线」却只剩普通问答。
+       const staleServer: boolean = /^HTTP (404|405) /.test(e.message);
+-      const staleText: string = '连到的 learning 服务是旧版本，没有 /events 这类接口，我读不到自己的日志。检查 config/Env.ets 指向的服务器，或用 tools/deploy_cloud.ps1 更新它。';
++      const staleText: string = '连到的学习服务版本太旧，我读不到自己的日志。请把服务更新到最新版本后再试。';
+       const context = this.getUIContext().getHostContext();
+       if (context !== undefined) {
+         sharedCache.init(context);
+@@ -316,9 +489,11 @@ export struct DayView {
+       const row: DayRow = new DayRow();
+       row.isAct = false;
+       // TimelineEntryView 用 @State 接收 entry，只在创建时拷贝一次；ForEach 同键复用组件不会再同步。
+-      // 所以流式释放期间把文本长度并进键值，每次释放都让这一条重新渲染，否则只能看见第一个字。
+-      row.key = item.id + '_' + (item.status !== undefined ? item.status : '')
+-        + (item.status === 'streaming' ? '_' + item.text.length : '');
++      // 键值带 status 与内容指纹（文本长度 + reason 长度 + 证据数），同 ID 的正文 / 理由 / 证据更新时重建该条；
++      // 流式释放期间文本长度每拍变化，自然逐拍重建（2026-09-21 审查 I1）。
++      const fingerprint: string = item.text.length + '_' + (item.reason !== undefined ? item.reason.length : 0) + '_' +
++        (item.evidence !== undefined ? item.evidence.length : 0);
++      row.key = item.id + '_' + (item.status !== undefined ? item.status : '') + '_' + fingerprint;
+       row.entry = item;
+       rows.push(row);
+     }
+@@ -328,7 +503,6 @@ export struct DayView {
+   /** 顶部状态字：在等你 / 被你纠正过 / 在读 / 看着。只陈述数据支持的事实。 */
+   private deriveStatus(items: TimelineEntry[]): void {
+     const now: Date = new Date();
+-    const hour: number = now.getHours();
+     let pending: TimelineEntry | null = null;
+     let corrected: boolean = false;
+     for (let i = items.length - 1; i >= 0 && i >= items.length - 12; i--) {
+@@ -350,7 +524,7 @@ export struct DayView {
+       this.statusHint = '我改了对你的判断。';
+       return;
+     }
+-    if (hour >= 23 || hour < 6) {
++    if (nxTimePhase(now.getTime()) === 'night') {
+       this.statusWord = '在读';
+       this.statusHint = '夜里我会把明天的章节读完。';
+       return;
+@@ -496,7 +670,9 @@ export struct DayView {
+ 
+   private applyKeyboardPx(px: number): void {
+     const safe: number = px > 0 ? px : 0;
+-    const vp: number = this.getUIContext().px2vp(safe);
++    this.keyboardHeight = this.getUIContext().px2vp(safe);
++    // 主内容已经避让导航栏，键盘高度含导航栏时不能再重复扣一次。
++    const vp: number = Math.max(0, this.keyboardHeight - this.navigationBottomInset);
+     if (Math.abs(vp - this.keyboardInset) < 1) {
+       return;
+     }
+@@ -515,10 +691,27 @@ export struct DayView {
+     }
+     window.getLastWindow(host as common.UIAbilityContext).then((win: window.Window) => {
+       this.hostWindow = win;
++      this.systemTopInset = this.getUIContext().px2vp(win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height);
++      // TYPE_SYSTEM does not include the navigation indicator. The page has
++      // already avoided that area, so only the remaining keyboard height moves it.
++      this.navigationBottomInset = this.getUIContext().px2vp(
++        win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
++      nxApplySystemBars(win, this.nxDark);
+       win.on('keyboardHeightChange', (height: number): void => {
+         this.applyKeyboardPx(height);
+       });
+       win.on('avoidAreaChange', (data: window.AvoidAreaOptions) => {
++        if (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
++          data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
++          if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
++            this.systemTopInset = this.getUIContext().px2vp(data.area.topRect.height);
++          } else {
++            this.navigationBottomInset = this.getUIContext().px2vp(data.area.bottomRect.height);
++          }
++          const keyboard = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
++          this.applyKeyboardPx(keyboard.bottomRect.height);
++          return;
++        }
+         if (data.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
+           return;
+         }
+@@ -579,15 +772,21 @@ export struct DayView {
+     }
+   }
+ 
+-  openPlanInReader(): void {
+-    if (this.lastTarget !== null) {
++  /** 计划卡「开始学习」：优先用卡片自带的目标；旧记录没有目标时退回当前目标并说明（2026-09-21 审查 C2）。 */
++  openPlanInReader(cardTarget: PlanCardTarget | null): void {
++    const target: PlanCardTarget | LearnTarget | null = cardTarget !== null && cardTarget.book_id.length > 0 && cardTarget.chapter_index >= 0
++      ? cardTarget : this.lastTarget;
++    if (target !== null) {
+       const params: Record<string, Object> = {
+-        'lecture_id': this.lastTarget.lecture_id,
+-        'book_id': this.lastTarget.book_id,
+-        'book_title': this.lastTarget.book_title,
+-        'chapter_index': this.lastTarget.chapter_index,
+-        'chapter_name': this.lastTarget.chapter_name,
++        'lecture_id': target.lecture_id,
++        'book_id': target.book_id,
++        'book_title': target.book_title,
++        'chapter_index': target.chapter_index,
++        'chapter_name': target.chapter_name,
+       };
++      if (cardTarget === null || cardTarget.book_id.length === 0) {
++        this.errorText = '这张旧计划卡没记下具体章节，我按当前目标「' + target.chapter_name + '」打开。';
++      }
+       router.pushUrl({ url: 'pages/Reader', params: params });
+     } else {
+       this.openSession();
+@@ -632,7 +831,7 @@ export struct DayView {
+   }
+ 
+   private isLearningIntent(text: string): boolean {
+-    return /(开始学习|继续学习|安排.*学习|学习计划|今天学什么|下一章|打开.*(课程|教材|阅读)|复习计划|帮我安排)/.test(text);
++    return nxIsLearningIntent(text);
+   }
+ 
+   private async questionTarget(): Promise<LearnTarget | null> {
+@@ -677,12 +876,77 @@ export struct DayView {
+     if (text.length === 0 || this.sending) {
+       return;
+     }
++    this.inputText = '';
++    await this.sendText(text, '');
++  }
++
++  /** 失败消息重发：沿用原来的本地消息 ID，不产生第二条气泡。 */
++  async resend(entry: TimelineEntry): Promise<void> {
++    if (this.sending || entry.kind !== 'user_msg') {
++      return;
++    }
++    await this.sendText(entry.text, entry.id);
++  }
++
++  /** 失败消息编辑：放回输入框，删掉失败气泡。 */
++  editFailed(entry: TimelineEntry): void {
++    this.inputText = entry.text;
++    this.forgetPending(entry.id);
++    this.dropEntry(entry.id);
++  }
++
++  private forgetPending(id: string): void {
++    const next: TimelineEntry[] = [];
++    for (const item of this.localPending) {
++      if (item.id !== id) {
++        next.push(item);
++      }
++    }
++    this.localPending = next;
++  }
++
++  private setUserStatus(id: string, status: string | undefined): void {
++    for (const item of this.entries) {
++      if (item.id === id) {
++        item.status = status;
++      }
++    }
++    for (const item of this.localPending) {
++      if (item.id === id) {
++        item.status = status;
++      }
++    }
++    this.entries = this.entries.slice();
++    this.rebuild(this.entries);
++  }
++
++  /**
++   * 发送（2026-09-21 审查 C3）：用户消息先以 sending 状态入列表并记入 localPending；
++   * 失败改为 failed 并保留原文（可重发 / 编辑），刷新时不会被服务器列表冲掉；成功后从 localPending 移除。
++   */
++  private async sendText(text: string, reuseId: string): Promise<void> {
++    if (text.trim().length === 0 || this.sending) {
++      return;
++    }
++    const submittedAt: number = Date.now();
++    const version: number = ++this.replyVersion;
++    const cancellation: ReplyCancellation = new ReplyCancellation();
++    this.replyCancellation = cancellation;
+     this.sending = true;
++    this.replyPhase = 'waiting';
+     this.eventsVersion++;
+     let exchanged = false;
+-    this.appendEntry({ id: 'local_u_' + Date.now(), kind: 'user_msg', ts: Date.now(), text: text, unattended: false });
+-    this.inputText = '';
++    const userId: string = reuseId.length > 0 ? reuseId : 'local_u_' + Date.now();
++    this.activeUserId = userId;
++    if (reuseId.length > 0) {
++      this.setUserStatus(userId, 'sending');
++    } else {
++      const userEntry: TimelineEntry = { id: userId, kind: 'user_msg', ts: Date.now(), text: text, status: 'sending', unattended: false };
++      this.localPending.push(userEntry);
++      this.appendEntry(userEntry);
++    }
+     const thinkId: string = 'local_t_' + Date.now();
++    this.activeThinkingId = thinkId;
+     this.appendEntry({
+       id: thinkId,
+       kind: 'agent_msg',
+@@ -692,27 +956,54 @@ export struct DayView {
+       unattended: false,
+       channel: 'app',
+     });
++    // 这里只消费真正显示的首条资格，日期固定在发送瞬间。重试和任何异步回调都不重播。
++    this.topGlow = reuseId.length === 0 && this.glowEnabled && this.glowExposed() &&
++      sharedSoftGlowState.claimFirstGlow(Identity.current(), Identity.baseUrl(), submittedAt);
+     try {
+       // 只有明确的学习/安排指令进入计划；其余自由文本交给模型对话，避免把陈述句误当成“下一章”。
+       if (!this.isLearningIntent(text)) {
+         const target = await this.questionTarget();
+-        const env: AgentEnvelope = await this.api.postAskInContext(text, target, '', 'app');
++        if (version !== this.replyVersion) {
++          return;
++        }
++        const env: AgentEnvelope = await this.api.postAskInContext(text, target, '', 'app', '', cancellation);
++        if (version !== this.replyVersion) {
++          return;
++        }
+         const data: AskAnswer = env.data as AskAnswer;
+         if (data.answer === undefined || data.answer.trim().length === 0) {
+           throw new Error('这次我没给出答案。');
+         }
++        this.forgetPending(userId);
++        this.setUserStatus(userId, undefined);
+         const reason = (data.source === 'textbook_context' ? '结合教材上下文回答。' : '结合我们的交流回答。') +
+           (data.memory_updated === true ? '这次交流中的学习线索，我已记下。' : '');
+-        await this.revealAnswer(thinkId, data.answer, reason);
++        this.replyPhase = 'revealing';
++        await this.revealAnswer(thinkId, data.answer, reason, version);
+       } else {
+-        const env: AgentEnvelope = await this.api.postPlan(text, 30);
++        const env: AgentEnvelope = await this.api.postPlan(text, 30, cancellation);
++        if (version !== this.replyVersion) {
++          return;
++        }
++        this.replyPhase = 'revealing';
+         const planData: PlanData = env.data as PlanData;
++        this.forgetPending(userId);
++        this.setUserStatus(userId, undefined);
+         this.lastTarget = planData.plan.target;
+         const planCard: PlanCard = {
+           type: 'plan',
+           chapter: planData.plan.target.chapter_name,
+           minutes: planData.plan.estimated_minutes,
+           why: planData.plan.reason,
++          target: {
++            lecture_id: planData.plan.target.lecture_id,
++            lecture_title: planData.plan.target.lecture_title,
++            book_id: planData.plan.target.book_id,
++            book_title: planData.plan.target.book_title,
++            chapter_index: planData.plan.target.chapter_index,
++            chapter_name: planData.plan.target.chapter_name,
++            chapter_range: planData.plan.target.chapter_range,
++          },
+         };
+         this.dropEntry(thinkId);
+         this.appendEntry({
+@@ -723,44 +1014,72 @@ export struct DayView {
+           card: planCard,
+           unattended: false,
+         }, false);
++        // 日程是独立意图：只有用户明确说了「排进日历 / 提醒我」才写系统日历（2026-09-21 审查 I6）。
+         const hostContext = this.getUIContext().getHostContext();
+-        if (hostContext !== undefined) {
++        if (hostContext !== undefined && nxWantsCalendar(text)) {
+           sharedCalendar.scheduleStudy(hostContext, planData.plan.target.chapter_name, planData.plan.estimated_minutes)
++            .then((): void => {
++              this.appendEntry({ id: 'local_s_' + Date.now(), kind: 'system', ts: Date.now(),
++                text: '已写进系统日历：学习「' + planData.plan.target.chapter_name + '」，开始前 5 分钟提醒你。', unattended: false }, false);
++            })
+             .catch((err: Error) => {
++              this.appendEntry({ id: 'local_s_' + Date.now(), kind: 'system', ts: Date.now(),
++                text: err.message.length > 0 ? err.message : '这次没写进日历。', unattended: false }, false);
+             });
+         }
+       }
+-      exchanged = true;
++      exchanged = version === this.replyVersion;
+     } catch (err) {
++      if (version !== this.replyVersion) {
++        return;
++      }
++      this.replyPhase = 'error';
+       const e = err as BusinessError;
+       this.dropEntry(thinkId);
++      this.setUserStatus(userId, 'failed');
+       this.appendEntry({
+         id: 'local_e_' + Date.now(),
+         kind: 'system',
+         ts: Date.now(),
+-        text: '这条我没接上：' + (e.message.length > 0 ? e.message : '网络错误'),
++        text: '这条我没接上：' + (e.message.length > 0 ? e.message : '网络错误') + '。你的问题还在上面，可以重发或编辑。',
+         unattended: false,
+       }, false);
+     } finally {
+-      this.sending = false;
+-      if (exchanged) {
+-        AppStorage.setOrCreate('nxStudyTick', Date.now());
+-      } else if (this.feedbackPending && this.attached) {
+-        this.refreshLearningFeedback();
++      if (version === this.replyVersion) {
++        this.sending = false;
++        this.replyCancellation = null;
++        this.topGlow = false;
++        if (this.replyPhase !== 'error') {
++          this.replyPhase = 'complete';
++        }
++        if (exchanged) {
++          AppStorage.setOrCreate('nxStudyTick', Date.now());
++        } else if (this.feedbackPending && this.attached) {
++          this.refreshLearningFeedback();
++        }
+       }
+     }
+   }
+ 
+-  /** 网络响应到达后仍按字符释放，避免长答案瞬间铺满时间线。 */
+-  private async revealAnswer(id: string, answer: string, reason: string): Promise<void> {
++  /**
++   * 网络响应到达后按字符释放，避免长答案瞬间铺满时间线。
++   * 2026-09-21 审查 I2：① 总时长封顶约 1.2 秒（按长度自适应步长），长答案不再多等十几秒；
++   * ② 用户离开底部（showBackTop）时不再每拍强拉回底部；③ 只在接近底部时跟随。
++   */
++  private async revealAnswer(id: string, answer: string, reason: string, version: number = this.replyVersion): Promise<void> {
+     const chars: string[] = answer.split('');
++    const totalMs: number = Math.min(1200, Math.max(300, chars.length * 12));
++    const frames: number = Math.max(1, Math.round(totalMs / 30));
++    const step: number = Math.max(1, Math.ceil(chars.length / frames));
+     let visible: string = '';
+     let i: number = 0;
+     while (i < chars.length) {
+-      // 每次释放都会让这一条重建（见 rebuild 的键值），开头逐字，之后按小块释放，兼顾手感与开销。
+-      const step: number = i < 10 ? 1 : (chars.length > 400 ? 6 : 3);
+-      visible += chars.slice(i, i + step).join('');
+-      i += step;
++      if (version !== this.replyVersion) {
++        return;
++      }
++      const chunk: number = i < 10 ? 1 : step;
++      visible += chars.slice(i, i + chunk).join('');
++      i += chunk;
+       for (const item of this.entries) {
+         if (item.id === id) {
+           item.text = visible;
+@@ -772,11 +1091,16 @@ export struct DayView {
+       }
+       this.entries = this.entries.slice();
+       this.rebuild(this.entries);
+-      this.scrollToLatest();
++      if (!this.showBackTop) {
++        this.scrollToLatest();
++      }
+       await new Promise<void>((resolve: () => void) => {
+         setTimeout(resolve, i < 10 ? 18 : 30);
+       });
+     }
++    if (version !== this.replyVersion) {
++      return;
++    }
+     for (const item of this.entries) {
+       if (item.id === id) {
+         item.status = undefined;
+@@ -784,24 +1108,62 @@ export struct DayView {
+     }
+     this.entries = this.entries.slice();
+     this.rebuild(this.entries);
+-    this.scrollToLatest();
++    if (!this.showBackTop) {
++      this.scrollToLatest();
++    } else {
++      this.markUnread(this.selectedDayKey);
++    }
+   }
+ 
++  /** 语音（2026-09-21 审查 F06 / I7）：先在使用场景申请麦克风权限；识别正常结束时按钮复位。 */
+   async toggleVoice(): Promise<void> {
+     if (this.listening) {
+       sharedAsr.stop();
+       this.listening = false;
+       return;
+     }
++    const context = this.getUIContext().getHostContext();
++    if (context === undefined) {
++      return;
++    }
++    const outcome = await sharedPermission.ensure(context, [PERMISSION_MICROPHONE]);
++    if (outcome !== 'granted') {
++      this.micBlocked = outcome === 'blocked';
++      this.errorText = outcome === 'blocked' ? '麦克风权限之前被拒绝了，去系统设置里打开后再用语音。' :
++        (outcome === 'unsupported' ? '这台设备用不了语音识别，先用文字跟我说吧。' : '没有麦克风权限，先用文字跟我说吧。');
++      return;
++    }
++    this.micBlocked = false;
++    this.errorText = '';
+     this.listening = true;
+     await sharedAsr.start((text: string): void => {
+       this.inputText = this.inputText + text;
+     }, (message: string): void => {
+       this.errorText = message;
+       this.listening = false;
++    }, (): void => {
++      this.listening = false;
+     });
+   }
+ 
++  /** 错误条的「重试」按错误类型分派：麦克风被拒 → 去设置；其余 → 重新加载。 */
++  private retryFromError(): void {
++    if (this.micBlocked) {
++      const context = this.getUIContext().getHostContext();
++      if (context !== undefined) {
++        sharedPermission.openSetting(context, PERMISSION_MICROPHONE).then((granted: boolean): void => {
++          if (granted) {
++            this.micBlocked = false;
++            this.errorText = '';
++          }
++        });
++      }
++      return;
++    }
++    this.errorText = '';
++    this.load();
++  }
++
+   private inspect(entry: TimelineEntry | null): void {
+     this.inspectEntry = entry;
+     this.inspectOpen = true;
+@@ -810,47 +1172,61 @@ export struct DayView {
+   // ---------- 视图 ----------
+ 
+   private glyphColor(): string {
+-    const hour: number = new Date().getHours();
+     if (this.statusWord === '在等你') {
+       return this.palette().dawn;
+     }
+-    if (hour >= 23 || hour < 8) {
++    if (nxTimePhase(Date.now()) === 'night') {
+       return this.palette().night;
+     }
+     return this.palette().primary;
+   }
+ 
+-  /** 会呼吸的状态字：面三「一致的化身」的视觉锚点，同一字形出现在卡片与系统入口里。 */
++  /** 会呼吸的状态字：面三「一致的化身」的视觉锚点，同一字形出现在卡片与系统入口里。品牌与入口一行，状态词单独一行。 */
+   @Builder
+   header() {
+     Column({ space: NxGrid * 2 }) {
+-      Row({ space: NxGrid * 3 }) {
+-        Circle()
+-          .width(12)
+-          .height(12)
+-          .fill(this.glyphColor())
+-          .scale({ x: this.breathe ? 1.35 : 0.85, y: this.breathe ? 1.35 : 0.85 })
+-          .opacity(this.breathe ? 1.0 : 0.55)
+-          .animation({
+-            duration: NxMotion.breath,
+-            iterations: -1,
+-            playMode: PlayMode.Alternate,
+-            curve: Curve.EaseInOut,
+-          })
++      Row({ space: NxGrid * 2 }) {
++        if (this.motionAllowed()) {
++          Circle()
++            .width(12)
++            .height(12)
++            .fill(this.glyphColor())
++            .scale({ x: this.breathe ? 1.35 : 0.85, y: this.breathe ? 1.35 : 0.85 })
++            .opacity(this.breathe ? 1.0 : 0.55)
++            .animation({
++              duration: NxMotion.breath,
++              iterations: -1,
++              playMode: PlayMode.Alternate,
++              curve: Curve.EaseInOut,
++            })
++        } else {
++          // Replacing the node also cancels an already running infinite native animation.
++          Circle()
++            .width(12)
++            .height(12)
++            .fill(this.glyphColor())
++        }
+         Text('Nexora')
+           .fontSize(NxFontSize.sm)
+-          .fontColor(this.palette().text3)
++          .fontColor(this.palette().text2)
+           .letterSpacing(1)
+-        Text(this.statusWord)
+-          .fontSize(NxFontSize.h)
+-          .fontFamily(NxFontFamily.serif)
+-          .fontWeight(FontWeight.Bold)
+-          .fontColor(this.palette().text1)
+         Blank()
++        Text('外观')
++          .id('nx-glow-settings-open')
++          .fontSize(NxFontSize.sm)
++          .fontColor(this.palette().text2)
++          .height(40)
++          .padding({ left: NxGrid * 2, right: NxGrid * 2 })
++          .borderRadius(NxRadius.xs)
++          .backgroundColor(this.palette().surface2)
++          .accessibilityText('外观与柔光设置')
++          .onClick((): void => {
++            this.glowSettingsOpen = true;
++          })
+         Text('书房')
+           .fontSize(NxFontSize.sm)
+           .fontColor(this.palette().primary)
+-          .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid, bottom: NxGrid })
++          .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
+           .borderRadius(NxRadius.xs)
+           .backgroundColor(this.palette().primarySoft)
+           .onClick(() => {
+@@ -859,7 +1235,7 @@ export struct DayView {
+         Text('它眼里的你')
+           .fontSize(NxFontSize.sm)
+           .fontColor(this.palette().text2)
+-          .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid, bottom: NxGrid })
++          .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
+           .borderRadius(NxRadius.xs)
+           .backgroundColor(this.palette().surface2)
+           .onClick(() => {
+@@ -867,6 +1243,12 @@ export struct DayView {
+           })
+       }
+       .width('100%')
++      Text(this.statusWord)
++        .fontSize(NxFontSize.h)
++        .fontFamily(NxFontFamily.serif)
++        .fontWeight(FontWeight.Bold)
++        .fontColor(this.palette().text1)
++        .width('100%')
+       if (this.statusHint.length > 0 || this.todayText.length > 0) {
+         Text((this.statusHint.length > 0 ? this.statusHint + ' ' : '') + this.todayText)
+           .fontSize(NxFontSize.md)
+@@ -890,7 +1272,7 @@ export struct DayView {
+             Text(day.label)
+               .fontSize(NxFontSize.sm)
+               .fontWeight(day.key === this.selectedDayKey ? FontWeight.Medium : FontWeight.Normal)
+-              .fontColor(day.key === this.selectedDayKey ? this.palette().onPrimary : this.palette().text2)
++              .fontColor(day.key === this.selectedDayKey ? this.palette().onButton : this.palette().text2)
+             if (this.hasUnread(day.key)) {
+               Circle()
+                 .width(6)
+@@ -900,7 +1282,7 @@ export struct DayView {
+           }
+           .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid, bottom: NxGrid })
+           .borderRadius(NxRadius.lg)
+-          .backgroundColor(day.key === this.selectedDayKey ? this.palette().night : this.palette().surface2)
++          .backgroundColor(day.key === this.selectedDayKey ? this.palette().buttonFill : this.palette().surface2)
+           .onClick(() => {
+             this.selectDay(day.key);
+           })
+@@ -934,12 +1316,17 @@ export struct DayView {
+   @Builder
+   composer() {
+     Row({ space: NxGrid * 2 }) {
+-      TextInput({ placeholder: '跟我说，或者纠正我', text: this.inputText })
++      // 多行输入（2026-09-21 审查 P2-3）：复杂问题可换行，最多约 5 行后内部滚动。
++      TextArea({ placeholder: '跟我说，或者纠正我', text: this.inputText })
++        .id('nx-conversation-input')
+         .layoutWeight(1)
+-        .height(38)
++        .constraintSize({ minHeight: 40, maxHeight: 120 })
+         .fontSize(NxFontSize.md)
++        .fontColor(this.palette().text1)
++        .placeholderColor(this.palette().text3)
+         .backgroundColor(this.palette().surface2)
+         .borderRadius(NxRadius.lg)
++        .enterKeyType(EnterKeyType.Send)
+         .onChange((value: string) => {
+           this.inputText = value;
+         })
+@@ -963,16 +1350,28 @@ export struct DayView {
+       Text(this.listening ? '停止' : '语音')
+         .fontSize(NxFontSize.sm)
+         .fontColor(this.listening ? this.palette().danger : this.palette().text3)
+-        .padding({ left: NxGrid * 2, right: NxGrid * 2 })
++        .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 3, bottom: NxGrid * 3 })
+         .onClick(() => {
+           this.toggleVoice();
+         })
+-      if (this.inputText.length > 0) {
++      if (this.sending) {
++        Button('停止')
++          .id('nx-reply-stop')
++          .height(40)
++          .fontSize(NxFontSize.sm)
++          .backgroundColor(this.palette().buttonFill)
++          .fontColor(this.palette().onButton)
++          .accessibilityText(this.replyPhase === 'revealing' ? '停止回复' : '停止等待回复')
++          .onClick((): void => {
++            this.stopReply();
++          })
++      } else if (this.inputText.trim().length > 0) {
+         Button('发送')
+-          .height(34)
++          .id('nx-reply-send')
++          .height(40)
+           .fontSize(NxFontSize.sm)
+-          .backgroundColor(this.palette().primary)
+-          .fontColor(this.palette().onPrimary)
++          .backgroundColor(this.palette().buttonFill)
++          .fontColor(this.palette().onButton)
+           .enabled(!this.sending)
+           .onClick(() => {
+             this.send();
+@@ -980,6 +1379,7 @@ export struct DayView {
+       }
+     }
+     .width('100%')
++    .alignItems(VerticalAlign.Bottom)
+     .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
+     .borderRadius(NxRadius.lg)
+     .backgroundColor(this.palette().cardBg)
+@@ -1009,7 +1409,37 @@ export struct DayView {
+     .height('100%')
+   }
+ 
++  @Builder
++  glowSettingsBuilder() {
++    GlowSettings({ onClose: (): void => {
++      this.glowSettingsOpen = false;
++    } })
++  }
++
+   build() {
++    Stack({ alignContent: Alignment.TopStart }) {
++      Stack({ alignContent: Alignment.TopStart }) {
++      AmbientGlow({
++        placement: 'top', dark: this.nxDark, period: this.glowPeriod,
++        glowEnabled: this.glowEnabled, exposed: this.glowExposed(),
++        reducedMotion: this.glowReduceMotion || this.systemReduceMotion,
++        busy: this.sending, illuminated: this.topGlow, extent: this.topGlowExtent(),
++      })
++        .position({ top: -this.systemTopInset, left: 0 })
++      AmbientGlow({
++        placement: 'composer', dark: this.nxDark, period: this.glowPeriod,
++        glowEnabled: this.glowEnabled, exposed: this.glowExposed(),
++        reducedMotion: this.glowReduceMotion || this.systemReduceMotion,
++        busy: this.sending, extent: 180,
++      })
++        .position({ bottom: this.keyboardHeight - this.navigationBottomInset, left: 0 })
++      }
++      .width('100%')
++      .height('100%')
++      .backgroundColor(this.palette().pageBg)
++      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
++      .hitTestBehavior(HitTestMode.None)
++      .accessibilityLevel('no-hide-descendants')
+     Column({ space: NxGrid * 2 }) {
+       this.header()
+       this.dayStrip()
+@@ -1050,8 +1480,14 @@ export struct DayView {
+                     onOpenSession: (): void => {
+                       this.openSession();
+                     },
+-                    onOpenPlan: (): void => {
+-                      this.openPlanInReader();
++                    onOpenPlan: (target: PlanCardTarget | null): void => {
++                      this.openPlanInReader(target);
++                    },
++                    onResend: (entry: TimelineEntry): void => {
++                      this.resend(entry);
++                    },
++                    onEditFailed: (entry: TimelineEntry): void => {
++                      this.editFailed(entry);
+                     },
+                     onOpenPrereq: (lectureId: string, bookId: string, chapterIndex: number, chapterName: string): void => {
+                       this.openPrereqInReader(lectureId, bookId, chapterIndex, chapterName);
+@@ -1106,11 +1542,13 @@ export struct DayView {
+         showClose: true,
+         dragBar: true,
+         backgroundColor: this.palette().pageBg,
++        // 镜像里的反驳输入框：半模态自带键盘避让（官方 SheetKeyboardAvoidMode），面板内容压缩后可滚到输入框。
++        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY,
+       })
+ 
+       if (this.errorText.length > 0) {
+-        ErrorState({ message: this.errorText, onRetry: (): void => {
+-          this.load();
++        ErrorState({ message: this.errorText, retryLabel: this.micBlocked ? '去设置' : '重试', onRetry: (): void => {
++          this.retryFromError();
+         } })
+       }
+ 
+@@ -1124,12 +1562,24 @@ export struct DayView {
+       top: NxGrid * 2,
+       bottom: NxGrid * 2 + this.keyboardInset,
+     })
+-    .backgroundColor(this.palette().pageBg)
+     .bindSheet($$this.studyOpen, this.studyBuilder(), {
+       height: SheetSize.LARGE,
+       showClose: true,
+       dragBar: true,
+       backgroundColor: this.palette().pageBg,
+     })
++    }
++    .width('100%')
++    .height('100%')
++    .backgroundColor(this.palette().pageBg)
++    .onAreaChange((_oldArea: Area, area: Area): void => {
++      this.viewportHeight = Number(area.height);
++    })
++    .bindSheet($$this.glowSettingsOpen, this.glowSettingsBuilder(), {
++      height: SheetSize.LARGE,
++      showClose: false,
++      dragBar: true,
++      backgroundColor: this.palette().pageBg,
++    })
+   }
+ }

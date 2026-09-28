@@ -18,12 +18,12 @@ from core.cognition.question_binding import (
     validate_question_concept_bindings,
 )
 from core.lectures import get_book, get_lecture, load_book_detail_xml, load_book_info_xml, load_book_text
+from core.memory.evidence_memory import build_memory_context
 from core.runlog import log_event
 from core.user import (
     append_question_bank_item,
     ensure_user_files,
     read_lecture_context_memory,
-    read_memory,
 )
 
 
@@ -122,7 +122,7 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
     if not chapter_context and book_id:
         chapter_context = str(load_book_text(dict(cfg or {}), lecture_id, book_id) or "")
     lecture_context_memory = str(read_lecture_context_memory(dict(cfg or {}), user_id, lecture_id) or "")
-    user_memory = str(read_memory(dict(cfg or {}), user_id, "user") or "")
+    user_memory = build_memory_context(cfg, user_id, query=chapter_name, lecture_id=lecture_id)
     coarse_bookinfo = str(load_book_info_xml(dict(cfg or {}), lecture_id, book_id) or "") if book_id else ""
 
     concept_candidates = load_chapter_concept_candidates(cfg, lecture_id, book_id, chapter_name)

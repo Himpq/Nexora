@@ -10,6 +10,7 @@ import { ApiService, LearningRuntimeResult, NotesStoreResult, UserInfoResult } f
 import { HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
 import { LearningApi } from './LearningApi';
+import { LearningSystemEntry } from './LearningSystemEntry';
 import { PreferencesUtil } from './PreferencesUtil';
 import { ReaderPalette, ReaderTheme } from './DesignToken';
 import { RemoteImageCache } from './RemoteImageCache';
@@ -86,6 +87,7 @@ export class AppState {
     // Learning 入口：运行时开关与前端工作区地址（管理端配置，随偏好接口下发）
     learningEnabled: boolean = false;
     learningFrontendUrl: string = '';
+    private learningRuntimeSequence: number = 0;
 
     // 阅读器偏好（本地持久化，随启动恢复）：字号 / 行距档（0 紧凑 / 1 适中 / 2 疏松）/ 主题
     readerFontSize: number = 16;
@@ -175,6 +177,7 @@ export class AppState {
     }
 
     async signIn(backendUrl: string, username: string, password: string): Promise<string> {
+        this.invalidateLearningRuntime();
         const result = await HttpUtil.login(backendUrl, username, password);
 
         if (!result.success) {
@@ -191,6 +194,9 @@ export class AppState {
     }
 
     async signOut(): Promise<void> {
+        // 先撤销内容服务身份和所有在途配置请求，再等待主站注销。
+        this.loggedIn = false;
+        this.invalidateLearningRuntime();
         await HttpUtil.logout();
 
         if (this.context !== null) {
@@ -209,8 +215,6 @@ export class AppState {
         this.mailBox = 'inbox';
         this.mailList = [];
         this.mailError = '';
-        // 退出即失效 Learning 内容接口（用户标识清空，避免串到下个账号）
-        LearningApi.shared.configure('');
         this.notes = [];
         this.notesError = '';
         this.notesStore = null;
@@ -224,6 +228,9 @@ export class AppState {
     // ---------- 配置 ----------
     async updateBackendUrl(url: string): Promise<void> {
         HttpUtil.setBackendUrl(url);
+        if (this.backendUrl !== HttpUtil.getBackendUrl()) {
+            this.invalidateLearningRuntime();
+        }
         this.backendUrl = HttpUtil.getBackendUrl();
 
         if (this.context !== null) {
@@ -576,21 +583,43 @@ export class AppState {
     }
 
     // ---------- Learning ----------
+    private invalidateLearningRuntime(): void {
+        this.learningRuntimeSequence += 1;
+        if (this.context !== null) {
+            LearningSystemEntry.clear(this.context);
+        }
+        this.learningEnabled = false;
+        this.learningFrontendUrl = '';
+        LearningApi.shared.configure('');
+    }
+
     // 拉取 Learning 运行时配置，并把独立服务地址交给 Learning API 客户端。
     async refreshLearningRuntime(): Promise<void> {
+        if (!this.loggedIn) {
+            return;
+        }
+        const sequence: number = ++this.learningRuntimeSequence;
+        const username: string = this.username;
+        const backendUrl: string = this.backendUrl;
         const result: LearningRuntimeResult = await ApiService.fetchLearningRuntime();
+        if (sequence !== this.learningRuntimeSequence || !this.loggedIn || username !== this.username ||
+            backendUrl !== this.backendUrl || backendUrl !== HttpUtil.getBackendUrl()) {
+            return;
+        }
 
         if (!result.success) {
-            this.learningEnabled = false;
-            this.learningFrontendUrl = '';
-            LearningApi.shared.configure(this.username, '');
+            this.invalidateLearningRuntime();
             hilog.warn(DOMAIN, TAG, 'load learning runtime failed: %{public}s', result.message);
             return;
         }
 
+        // 卡片进程有独立的持久化身份，禁用/切服务时也须同步撤销。
+        if (this.context !== null && (!result.enabled || this.learningFrontendUrl !== result.frontendUrl)) {
+            LearningSystemEntry.clear(this.context);
+        }
         this.learningEnabled = result.enabled;
         this.learningFrontendUrl = result.frontendUrl;
-        LearningApi.shared.configure(this.username, result.frontendUrl);
+        LearningApi.shared.configure(username, result.enabled ? result.frontendUrl : '');
     }
 
     // ---------- 邮件 ----------

@@ -362,8 +362,9 @@ def query_library(
     query_text: str,
     top_k: int = 5,
     material_id: Optional[str] = None,
+    where: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """检索指定 NexoraDB library。"""
+    """检索指定 NexoraDB library。`where` 为 Chroma 元数据过滤（值只能 str/int/float/bool）。"""
     require_nexoradb_available(cfg)
 
     payload: Dict[str, Any] = {
@@ -373,7 +374,9 @@ def query_library(
         "library": str(library),
     }
 
-    if material_id:
+    if where:
+        payload["where"] = dict(where)
+    elif material_id:
         payload["where"] = {"material_id": material_id}
 
     resp = _post(cfg, "/query_text", payload)

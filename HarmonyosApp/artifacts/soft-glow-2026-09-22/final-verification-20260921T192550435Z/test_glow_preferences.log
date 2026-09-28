@@ -1,0 +1,118 @@
+TAP version 13
+# Subtest: first launch defaults to system appearance and automatic atmosphere; initialization is idempotent
+ok 1 - first launch defaults to system appearance and automatic atmosphere; initialization is idempotent
+  ---
+  duration_ms: 221.5716
+  type: 'test'
+  ...
+# Subtest: day atmosphere × light system appearance stays independent
+ok 2 - day atmosphere × light system appearance stays independent
+  ---
+  duration_ms: 1.1554
+  type: 'test'
+  ...
+# Subtest: day atmosphere × dark system appearance stays independent
+ok 3 - day atmosphere × dark system appearance stays independent
+  ---
+  duration_ms: 0.7219
+  type: 'test'
+  ...
+# Subtest: night atmosphere × light system appearance stays independent
+ok 4 - night atmosphere × light system appearance stays independent
+  ---
+  duration_ms: 1.9426
+  type: 'test'
+  ...
+# Subtest: night atmosphere × dark system appearance stays independent
+ok 5 - night atmosphere × dark system appearance stays independent
+  ---
+  duration_ms: 1.7021
+  type: 'test'
+  ...
+# Subtest: manual atmosphere changes never select a different page appearance
+ok 6 - manual atmosphere changes never select a different page appearance
+  ---
+  duration_ms: 2.2274
+  type: 'test'
+  ...
+# Subtest: all four user preferences survive a fresh process and immediately reapply
+ok 7 - all four user preferences survive a fresh process and immediately reapply
+  ---
+  duration_ms: 4.4666
+  type: 'test'
+  ...
+# Subtest: corrupt persisted values use safe defaults instead of inventing an appearance
+ok 8 - corrupt persisted values use safe defaults instead of inventing an appearance
+  ---
+  duration_ms: 0.7392
+  type: 'test'
+  ...
+# Subtest: system color updates affect only system appearance, preserving manual and time choices
+ok 9 - system color updates affect only system appearance, preserving manual and time choices
+  ---
+  duration_ms: 1.0725
+  type: 'test'
+  ...
+# Subtest: partial or unset system configurations never interpret undefined as light
+ok 10 - partial or unset system configurations never interpret undefined as light
+  ---
+  duration_ms: 0.9604
+  type: 'test'
+  ...
+# Subtest: the single foreground timer switches both automatic policies at the exact local boundaries
+ok 11 - the single foreground timer switches both automatic policies at the exact local boundaries
+  ---
+  duration_ms: 2.2579
+  type: 'test'
+  ...
+# Subtest: repeated refresh, foreground and preference updates never accumulate timers
+ok 12 - repeated refresh, foreground and preference updates never accumulate timers
+  ---
+  duration_ms: 2.2811
+  type: 'test'
+  ...
+# Subtest: background cancels the timer and a late callback cannot rearm it; foreground catches up
+ok 13 - background cancels the timer and a late callback cannot rearm it; foreground catches up
+  ---
+  duration_ms: 1.1806
+  type: 'test'
+  ...
+# Subtest: system reduce-motion initial state and callbacks stay independent of the saved user preference
+ok 14 - system reduce-motion initial state and callbacks stay independent of the saved user preference
+  ---
+  duration_ms: 1.0381
+  type: 'test'
+  ...
+# Subtest: a canceled callback delivered after returning to foreground cannot orphan the replacement timer
+ok 15 - a canceled callback delivered after returning to foreground cannot orphan the replacement timer
+  ---
+  duration_ms: 0.8608
+  type: 'test'
+  ...
+# Subtest: failed accessibility queries preserve the last known reduced-motion state
+ok 16 - failed accessibility queries preserve the last known reduced-motion state
+  ---
+  duration_ms: 0.8862
+  type: 'test'
+  ...
+# Subtest: dispose cancels timers, removes the exact callback and supports a clean later initialization
+ok 17 - dispose cancels timers, removes the exact callback and supports a clean later initialization
+  ---
+  duration_ms: 0.9084
+  type: 'test'
+  ...
+# Subtest: manual appearance immediately updates real system-bar properties while reader immersion owns its bars
+ok 18 - manual appearance immediately updates real system-bar properties while reader immersion owns its bars
+  ---
+  duration_ms: 0.942
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 18
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 471.8596

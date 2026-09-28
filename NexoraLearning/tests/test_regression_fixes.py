@@ -13,15 +13,20 @@ from core.vector import vectorize_book
 
 
 class _FakeQuestionRunner:
-    def __init__(self):
+    def __init__(self, scripts=None):
         self.prompt_vars = {}
+        self.requests = []
+        # scripts: 每次 run 返回的 (choice_count, text_count)；默认每次都返回合格的 4+2。
+        self.scripts = list(scripts or [])
 
     def run(self, _request, **kwargs):
         self.prompt_vars = dict(kwargs.get("extra_prompt_vars") or {})
+        self.requests.append(str(_request))
+        choice_count, text_count = self.scripts.pop(0) if self.scripts else (4, 2)
         blocks = []
-        for index in range(6):
-            question_type = "choice" if index < 4 else "text"
-            options = "A. 甲\nB. 乙" if index < 4 else ""
+        for index in range(choice_count + text_count):
+            question_type = "choice" if index < choice_count else "text"
+            options = "A. 甲\nB. 乙\nC. 丙\nD. 丁" if index < choice_count else ""
             blocks.append(
                 "<QUESTION>"
                 f"<question_title>题目{index}</question_title>"
@@ -70,6 +75,50 @@ class CoordinateRegressionTests(unittest.TestCase):
                     limit=6,
                 )
         self.assertEqual(runner.prompt_vars["chapter_context"], "BBB")
+
+    def test_quiz_generation_retries_once_on_validation_failure(self):
+        """2026-09-21 审查：结构校验失败先把错误喂回模型重试一轮，而不是直接判死。"""
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, lecture, book = self._seed(directory)
+            runner = _FakeQuestionRunner(scripts=[(3, 0), (4, 2)])
+            with (
+                patch("core.booksproc.chapter_quiz.build_profile_question_runner", return_value=runner),
+                patch("core.booksproc.chapter_quiz.load_chapter_concept_candidates", return_value=[]),
+            ):
+                rows = _generate_profile_question_bank_questions(
+                    cfg, user_id="demo", lecture_id=lecture["id"], book_id=book["id"],
+                    chapter_name="第二段", chapter_range="5:3", chapter_context="", chapter_detail_xml="<details />", limit=6,
+                )
+        self.assertEqual(len(runner.requests), 2)
+        self.assertIn("上一次输出未通过校验", runner.requests[1])
+        self.assertEqual(len(rows), 6)
+
+    def test_quiz_generation_relaxes_when_pool_is_enough_and_fails_readably_otherwise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, lecture, book = self._seed(directory)
+            # 两轮都只有 3 道选择题：够拼一组 3 题 → 降级接受。
+            runner = _FakeQuestionRunner(scripts=[(3, 0), (3, 0)])
+            with (
+                patch("core.booksproc.chapter_quiz.build_profile_question_runner", return_value=runner),
+                patch("core.booksproc.chapter_quiz.load_chapter_concept_candidates", return_value=[]),
+            ):
+                rows = _generate_profile_question_bank_questions(
+                    cfg, user_id="demo", lecture_id=lecture["id"], book_id=book["id"],
+                    chapter_name="第二段", chapter_range="5:3", chapter_context="", chapter_detail_xml="<details />", limit=3,
+                )
+            self.assertEqual(len(rows), 3)
+            # 两轮都只有 1 道题：拼不出一组 → 抛可读的中文原因。
+            runner = _FakeQuestionRunner(scripts=[(1, 0), (1, 0)])
+            with (
+                patch("core.booksproc.chapter_quiz.build_profile_question_runner", return_value=runner),
+                patch("core.booksproc.chapter_quiz.load_chapter_concept_candidates", return_value=[]),
+            ):
+                with self.assertRaises(ValueError) as caught:
+                    _generate_profile_question_bank_questions(
+                        cfg, user_id="demo", lecture_id=lecture["id"], book_id=book["id"],
+                        chapter_name="第二段", chapter_range="5:3", chapter_context="", chapter_detail_xml="<details />", limit=3,
+                    )
+            self.assertIn("出了两遍都不合格", str(caught.exception))
 
 
 class VectorReplacementTests(unittest.TestCase):

@@ -45,8 +45,29 @@ def _users_root(cfg: Dict[str, Any]) -> Path:
     return Path(cfg.get("data_dir") or "data") / "users"
 
 
+def validate_user_id(user_id: str) -> str:
+    """Reject account identifiers that can escape or alias the user directory."""
+    user = str(user_id or "").strip()
+
+    if not user or len(user) > 160 or user in {".", ".."} or any(char in user for char in ("/", "\\", "\x00", ":")):
+        raise ValueError("invalid user_id")
+
+    return user
+
+
+def _contained_user_dir(root_path: Path, user_id: str) -> Path:
+    user = validate_user_id(user_id)
+    root = root_path.resolve()
+    folder = root / user
+
+    if folder.resolve() != folder:
+        raise ValueError("user path must stay in the user's directory")
+
+    return folder
+
+
 def _user_dir(cfg: Dict[str, Any], user_id: str) -> Path:
-    return _users_root(cfg) / user_id
+    return _contained_user_dir(_users_root(cfg), user_id)
 
 
 def _user_json_path(cfg: Dict[str, Any], user_id: str) -> Path:
@@ -86,7 +107,7 @@ def _question_refs_root(cfg: Dict[str, Any]) -> Path:
 
 
 def _question_refs_path(cfg: Dict[str, Any], user_id: str) -> Path:
-    return _question_refs_root(cfg) / user_id / "question_refs.jsonl"
+    return _contained_user_dir(_question_refs_root(cfg), user_id) / "question_refs.jsonl"
 
 
 def _memories_dir(cfg: Dict[str, Any], user_id: str) -> Path:
@@ -326,10 +347,10 @@ def remove_chapter_learning_records(
         raw_chapter_index = str(row.get("chapter_index") if row.get("chapter_index") is not None else "").strip()
         row_chapter_index = int(raw_chapter_index) if raw_chapter_index.lstrip("-").isdigit() else -1
         same_chapter_index = row_chapter_index == target_chapter_index
-        remove_record = same_book and (
-            (record_type == "chapter_completed" and same_chapter_name)
-            or (record_type == "session_completed" and (same_chapter_name or same_chapter_index))
-        )
+        same_chapter = same_chapter_index if row_chapter_index >= 0 else same_chapter_name
+        remove_record = same_book and same_chapter and record_type in {
+            "chapter_completed", "session_completed",
+        }
 
         if remove_record:
             removed += 1
@@ -441,6 +462,25 @@ def append_question_completion(
 
 def list_question_completions(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
     return _read_jsonl(_question_completions_jsonl_path(cfg, user_id))
+
+
+def correct_question_completion(cfg: Dict[str, Any], user_id: str, completion_id: str, *, is_correct: bool) -> bool:
+    """Correct a user-confirmed uncertain result without counting a second attempt."""
+    path = _question_completions_jsonl_path(cfg, user_id)
+    with _lock:
+        rows = _read_jsonl(path)
+        matching = [row for row in rows if row.get("completion_id") == completion_id]
+        if not matching:
+            return False
+        row = matching[-1]
+        row.setdefault("previous_is_correct", row.get("is_correct"))
+        row["is_correct"] = is_correct
+        row["corrected_at"] = int(time.time())
+        row["correction_source"] = "flow_uncertain_verdict"
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
+        temporary.replace(path)
+    return True
 
 
 def _question_group_id_from_record(record: Dict[str, Any]) -> str:

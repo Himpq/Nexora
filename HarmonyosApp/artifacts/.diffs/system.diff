@@ -1,0 +1,899 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/capability/asr.ets b/HarmonyosApp/entry/src/main/ets/capability/asr.ets
+index aa2273a..6a7dfd0 100644
+--- a/HarmonyosApp/entry/src/main/ets/capability/asr.ets
++++ b/HarmonyosApp/entry/src/main/ets/capability/asr.ets
+@@ -12,31 +12,45 @@ import { BusinessError } from '@kit.BasicServicesKit';
+ 
+ export class AsrService {
+   private engine: speechRecognizer.SpeechRecognitionEngine | undefined = undefined;
++  private sessionSeq: number = 0;
+   private sessionId: string = 'nx_asr_session';
+   private active: boolean = false;
+   private onTextCallback: (text: string) => void = (text: string) => {
+   };
+   private onErrorCallback: (message: string) => void = (message: string) => {
+   };
++  private onCompleteCallback: () => void = () => {
++  };
+ 
+-  private buildListener(): speechRecognizer.RecognitionListener {
++  private buildListener(sessionId: string): speechRecognizer.RecognitionListener {
+     const listener: speechRecognizer.RecognitionListener = {
+-      onStart: (sessionId: string, eventMessage: string): void => {
++      onStart: (id: string, eventMessage: string): void => {
+         // 开始识别，无需处理
+       },
+-      onEvent: (sessionId: string, eventCode: number, eventMessage: string): void => {
++      onEvent: (id: string, eventCode: number, eventMessage: string): void => {
+         // 音频起止事件，无需处理
+       },
+-      onResult: (sessionId: string, result: speechRecognizer.SpeechRecognitionResult): void => {
++      onResult: (id: string, result: speechRecognizer.SpeechRecognitionResult): void => {
++        if (id !== sessionId) {
++          return;
++        }
+         const text: string = result.result;
+         if (text.length > 0 && result.isFinal) {
+           this.onTextCallback(text);
+         }
+       },
+-      onComplete: (sessionId: string, eventMessage: string): void => {
++      onComplete: (id: string, eventMessage: string): void => {
++        if (id !== sessionId) {
++          return;
++        }
++        // 正常结束也要通知 UI 复位（2026-09-21 审查 I7：原先按钮停在「停止」）。
+         this.active = false;
++        this.onCompleteCallback();
+       },
+-      onError: (sessionId: string, errorCode: number, errorMessage: string): void => {
++      onError: (id: string, errorCode: number, errorMessage: string): void => {
++        if (id !== sessionId) {
++          return;
++        }
+         this.active = false;
+         if (errorCode === 1002200012) {
+           this.onErrorCallback('没有麦克风权限，先用文字跟我说吧。');
+@@ -52,20 +66,33 @@ export class AsrService {
+     return this.active;
+   }
+ 
+-  async start(onText: (text: string) => void, onError: (message: string) => void): Promise<void> {
++  /** 引擎复用：每次 start 不再新建引擎（F15：旧引擎从未关闭，引用被覆盖后泄漏）。 */
++  private async ensureEngine(): Promise<speechRecognizer.SpeechRecognitionEngine> {
++    if (this.engine !== undefined) {
++      return this.engine;
++    }
++    const engineParams: speechRecognizer.CreateEngineParams = {
++      language: 'zh-CN',
++      online: 1,
++      extraParams: { 'locate': 'CN', 'recognizerMode': 'short' } as Record<string, Object>,
++    };
++    this.engine = await speechRecognizer.createEngine(engineParams);
++    return this.engine;
++  }
++
++  async start(onText: (text: string) => void, onError: (message: string) => void, onComplete: () => void = () => {
++  }): Promise<void> {
+     if (this.active) {
+       return;
+     }
+     this.onTextCallback = onText;
+     this.onErrorCallback = onError;
++    this.onCompleteCallback = onComplete;
++    this.sessionSeq += 1;
++    this.sessionId = 'nx_asr_' + this.sessionSeq;
+     try {
+-      const engineParams: speechRecognizer.CreateEngineParams = {
+-        language: 'zh-CN',
+-        online: 1,
+-        extraParams: { 'locate': 'CN', 'recognizerMode': 'short' } as Record<string, Object>,
+-      };
+-      this.engine = await speechRecognizer.createEngine(engineParams);
+-      this.engine.setListener(this.buildListener());
++      const engine = await this.ensureEngine();
++      engine.setListener(this.buildListener(this.sessionId));
+       const audioInfo: speechRecognizer.AudioInfo = {
+         audioType: 'pcm',
+         sampleRate: 16000,
+@@ -77,7 +104,7 @@ export class AsrService {
+         audioInfo: audioInfo,
+         extraParams: { 'recognitionMode': 0 } as Record<string, Object>,
+       };
+-      this.engine.startListening(startParams);
++      engine.startListening(startParams);
+       this.active = true;
+     } catch (err) {
+       this.active = false;
+diff --git a/HarmonyosApp/entry/src/main/ets/capability/calendar.ets b/HarmonyosApp/entry/src/main/ets/capability/calendar.ets
+index 3096216..4af08b5 100644
+--- a/HarmonyosApp/entry/src/main/ets/capability/calendar.ets
++++ b/HarmonyosApp/entry/src/main/ets/capability/calendar.ets
+@@ -9,21 +9,49 @@
+  * - Event：{type: EventType.NORMAL=0, title, startTime(13位ms), endTime(13位ms), reminderTime: number[]}
+  * 学习计划本就是日程：写入日历并开启提醒；杀进程后系统日历仍会提醒（§4.6 端侧定时唤醒）。
+  * 未来 24h 的事件（含「考」「测」等关键词）上报给决策器，成为模型裁决的上下文。
++ *
++ * 2026-09-21 审查 F06 / F15：
++ * - 读写前先按场景申请权限；无权限时 upcoming() 返回 status='unavailable'，决策器不能把它当作「没有安排」。
++ * - 官方 FAQ faq-calendar-3：提醒只在起止时间秒、毫秒都为 0 时触发，写日程前把时间对齐到整分。
+  */
+ import { calendarManager } from '@kit.CalendarKit';
+ import { common } from '@kit.AbilityKit';
++import { sharedPermission, PermissionOutcome, PERMISSION_READ_CALENDAR, PERMISSION_WRITE_CALENDAR } from './permission';
+ 
+ export interface UpcomingEvent {
+   title: string;
+   start: number;
+ }
+ 
++/** 日历读取结果：status 区分「读到了（可能为空）」与「读不到（无权限 / 不支持 / 出错）」。 */
++export interface CalendarSnapshot {
++  /** ok | unavailable */
++  status: string;
++  /** unavailable 时的原因：denied | blocked | unsupported | error | '' */
++  reason: string;
++  events: UpcomingEvent[];
++}
++
++/** 对齐到整分：官方 FAQ 明确秒与毫秒不为 0 时提醒可能不触发。 */
++export function nxAlignToMinute(ms: number): number {
++  return Math.ceil(ms / 60000) * 60000;
++}
++
+ export class CalendarService {
++  /** 上次读取的授权状态；上报设备上下文时一并带上，避免再次弹窗。 */
++  private lastOutcome: PermissionOutcome | '' = '';
++
+   async scheduleStudy(context: common.Context, chapterName: string, minutes: number, startDelayMs: number = 60 * 60 * 1000): Promise<number> {
++    const outcome = await sharedPermission.ensure(context, [PERMISSION_READ_CALENDAR, PERMISSION_WRITE_CALENDAR]);
++    this.lastOutcome = outcome;
++    if (outcome !== 'granted') {
++      throw new Error(outcome === 'blocked' ? '日历权限之前被拒绝了，去系统设置里打开后我才能写日程。' :
++        (outcome === 'unsupported' ? '这台设备不支持写入日历。' : '没有日历权限，这次没写进日程。'));
++    }
+     const manager = calendarManager.getCalendarManager(context);
+     const calendar = await manager.getCalendar();
+-    const startTime = Date.now() + startDelayMs;
+-    const endTime = startTime + minutes * 60 * 1000;
++    const startTime = nxAlignToMinute(Date.now() + startDelayMs);
++    const endTime = startTime + Math.max(1, Math.round(minutes)) * 60 * 1000;
+     const event: calendarManager.Event = {
+       type: calendarManager.EventType.NORMAL,
+       title: '学习：' + chapterName,
+@@ -34,8 +62,21 @@ export class CalendarService {
+     return await calendar.addEvent(event);
+   }
+ 
+-  /** 未来 hours 小时内的日程（标题 + 开始时间，ms）。权限未授予或平台不支持时返回空数组。 */
+-  async upcoming(context: common.Context, hours: number = 24): Promise<UpcomingEvent[]> {
++  /**
++   * 未来 hours 小时内的日程。只查权限不弹窗（interactive=false）：设备上下文上报是后台动作，
++   * 不应在用户没做任何日历相关操作时突然弹授权框；首次弹窗留给「安排日程」这类明确场景。
++   */
++  async snapshot(context: common.Context, hours: number = 24, interactive: boolean = false): Promise<CalendarSnapshot> {
++    let outcome: PermissionOutcome;
++    if (interactive) {
++      outcome = await sharedPermission.ensure(context, [PERMISSION_READ_CALENDAR]);
++    } else {
++      outcome = (await sharedPermission.isGranted(PERMISSION_READ_CALENDAR)) ? 'granted' : 'blocked';
++    }
++    this.lastOutcome = outcome;
++    if (outcome !== 'granted') {
++      return { status: 'unavailable', reason: outcome, events: [] };
++    }
+     try {
+       const manager = calendarManager.getCalendarManager(context);
+       const calendar = await manager.getCalendar();
+@@ -53,11 +94,17 @@ export class CalendarService {
+           break;
+         }
+       }
+-      return rows;
++      return { status: 'ok', reason: '', events: rows };
+     } catch (err) {
+-      return [];
++      return { status: 'unavailable', reason: 'error', events: [] };
+     }
+   }
++
++  /** 兼容旧调用：只要事件数组；读不到时返回空。新代码请用 snapshot()。 */
++  async upcoming(context: common.Context, hours: number = 24): Promise<UpcomingEvent[]> {
++    const snap = await this.snapshot(context, hours, false);
++    return snap.events;
++  }
+ }
+ 
+ export const sharedCalendar: CalendarService = new CalendarService();
+diff --git a/HarmonyosApp/entry/src/main/ets/capability/context.ets b/HarmonyosApp/entry/src/main/ets/capability/context.ets
+index 6d12155..f0d0e87 100644
+--- a/HarmonyosApp/entry/src/main/ets/capability/context.ets
++++ b/HarmonyosApp/entry/src/main/ets/capability/context.ets
+@@ -3,11 +3,14 @@
+  * 手机在前台时把「未来 24h 日历 + 免打扰 + 情景 + 设备类型」上报一次到 /context/device；
+  * 此后夜间备课、邮件、困惑等任何触发源求值时，决策器都能看到它。
+  * 位置只做用户自设的粗粒度围栏（home / school），本轮留接口：未设置即 'unknown'。
++ *
++ * 2026-09-21 审查 F06：日历读不到（未授权 / 不支持）时上报 calendar_status='unavailable'，
++ * 决策器据此不把空日历当成「今天没安排」。上报不主动弹权限框。
+  */
+ import { common } from '@kit.AbilityKit';
+ import { deviceInfo } from '@kit.BasicServicesKit';
+ import { AgentApi } from '../services/AgentApi';
+-import { sharedCalendar, UpcomingEvent } from './calendar';
++import { sharedCalendar, CalendarSnapshot } from './calendar';
+ import { sharedDnd } from './dnd';
+ 
+ export class DeviceContextService {
+@@ -19,7 +22,7 @@ export class DeviceContextService {
+     if (!force && now - this.lastReportedAt < 15 * 60 * 1000) {
+       return;
+     }
+-    const calendar: UpcomingEvent[] = await sharedCalendar.upcoming(context, 24);
++    const calendar: CalendarSnapshot = await sharedCalendar.snapshot(context, 24, false);
+     const dnd: boolean = await sharedDnd.isDoNotDisturb();
+     let device: string = 'phone';
+     try {
+@@ -29,7 +32,8 @@ export class DeviceContextService {
+     }
+     const location: string | undefined = AppStorage.get<string>('nxLocationLabel');
+     try {
+-      await api.postDeviceContext(calendar, dnd, dnd ? 'dnd' : 'normal', location !== undefined ? location : '', device);
++      await api.postDeviceContext(calendar.events, dnd, dnd ? 'dnd' : 'normal', location !== undefined ? location : '', device,
++        calendar.status, calendar.reason);
+       this.lastReportedAt = now;
+     } catch (err) {
+       // 上报失败不影响主线；下次前台再试
+diff --git a/HarmonyosApp/entry/src/main/ets/capability/form.ets b/HarmonyosApp/entry/src/main/ets/capability/form.ets
+index 5e72b3f..de8f82f 100644
+--- a/HarmonyosApp/entry/src/main/ets/capability/form.ets
++++ b/HarmonyosApp/entry/src/main/ets/capability/form.ets
+@@ -20,13 +20,15 @@ export class FormService {
+       return;
+     }
+ 
+-    // 回喂上下文：卡片进程按这三项直接调 /decision/respond。
++    // 回喂上下文：卡片进程按这三项直接调 /decision/respond（带会话 Cookie，与 App 内请求同一身份）。
+     try {
+       const baseUrl: string | undefined = AppStorage.get<string>('nxBaseUrl');
+       const username: string | undefined = AppStorage.get<string>('nxUsername');
++      const cookie: string | undefined = AppStorage.get<string>('nxSessionCookie');
+       store.putSync('decision_id', decisionId);
+       store.putSync('base_url', baseUrl !== undefined ? baseUrl : '');
+       store.putSync('username', username !== undefined ? username : '');
++      store.putSync('session_cookie', cookie !== undefined ? cookie : '');
+       store.flush();
+     } catch (err) {
+       // 上下文写入失败只影响卡片按钮回喂，不影响卡片展示
+diff --git a/HarmonyosApp/entry/src/main/ets/capability/liveview.ets b/HarmonyosApp/entry/src/main/ets/capability/liveview.ets
+index 4b78ad0..f5fe1e4 100644
+--- a/HarmonyosApp/entry/src/main/ets/capability/liveview.ets
++++ b/HarmonyosApp/entry/src/main/ets/capability/liveview.ets
+@@ -56,27 +56,30 @@ export class LiveViewService {
+     }
+   }
+ 
+-  /** 阅读进度更新：「第 3/7 节」。 */
+-  async updateStudy(sectionIndex: number, sectionTotal: number): Promise<void> {
++  /** 阅读进度更新：「第 3/7 页」（阅读器翻页 / 切章时调用）。 */
++  async updateStudy(sectionIndex: number, sectionTotal: number, chapter: string = ''): Promise<void> {
+     if (!this.active) {
+       return;
+     }
++    if (chapter.length > 0) {
++      this.chapter = chapter;
++    }
+     try {
+-      const view = this.buildView('Nexora 在陪你读 ' + this.chapter, '第 ' + sectionIndex + '/' + sectionTotal + ' 节', 0);
++      const view = this.buildView('Nexora 在陪你读 ' + this.chapter, '第 ' + sectionIndex + '/' + sectionTotal + ' 页', 0);
+       await liveViewManager.updateLiveView(view);
+     } catch (err) {
+       // 更新失败不影响阅读
+     }
+   }
+ 
+-  /** 离开阅读器：结束并存档 1 分钟。 */
+-  async stopStudy(summary: string): Promise<void> {
++  /** 离开阅读器：结束并存档 1 分钟。普通退出只说读了多久，读完这一章才说读完。 */
++  async stopStudy(summary: string, completed: boolean = false): Promise<void> {
+     if (!this.active) {
+       return;
+     }
+     this.active = false;
+     try {
+-      const view = this.buildView('Nexora 读完了 ' + this.chapter, summary, 1);
++      const view = this.buildView((completed ? 'Nexora 读完了 ' : 'Nexora 陪你读了 ') + this.chapter, summary, 1);
+       await liveViewManager.stopLiveView(view);
+     } catch (err) {
+       // 已被系统关闭时忽略
+diff --git a/HarmonyosApp/entry/src/main/ets/entryability/EntryAbility.ets b/HarmonyosApp/entry/src/main/ets/entryability/EntryAbility.ets
+index 972ce71..38ec572 100644
+--- a/HarmonyosApp/entry/src/main/ets/entryability/EntryAbility.ets
++++ b/HarmonyosApp/entry/src/main/ets/entryability/EntryAbility.ets
+@@ -20,11 +20,14 @@ import { Identity } from '../services/Identity';
+ import { AgentApi } from '../services/AgentApi';
+ import { sharedDeviceContext } from '../capability/context';
+ import { NEXORA_INTENT_NAMES, nexoraIntentExecutors } from '../intents/index';
++import { nxApplySystemBars } from '../theme/SystemBars';
++import { sharedGlowPreferences } from '../theme/GlowPreferences';
+ 
+ const DOMAIN = 0x0000;
+ 
+ export default class EntryAbility extends UIAbility {
+   private agentApi: AgentApi = new AgentApi();
++  private mainWindow: window.Window | undefined = undefined;
+ 
+   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+     // 意图框架：把三条意图的执行器挂进依赖图（装饰器只在被依赖的文件里参与编译）。
+@@ -32,9 +35,6 @@ export default class EntryAbility extends UIAbility {
+       NEXORA_INTENT_NAMES.join(','), nexoraIntentExecutors().length);
+     try {
+       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+-      // §8 深色令牌标记：跟随系统深浅色，主题只在 theme/ 里切换。
+-      const dark: boolean = this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+-      AppStorage.setOrCreate('nxDarkMode', dark);
+       // 环境与身份：config/Env.ets 决定云端/本地；Identity 决定用户名（本机身份或华为账号）。
+       Identity.resolve(this.context).catch((err: Error) => {
+         hilog.warn(DOMAIN, 'testTag', 'identity resolve failed: %{public}s', err.message);
+@@ -42,6 +42,7 @@ export default class EntryAbility extends UIAbility {
+     } catch (err) {
+       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
+     }
++    sharedGlowPreferences.init(this.context);
+     // 从意图框架 / 卡片 / 通知拉起时，把落点写进 AppStorage，首页据此直达。
+     this.rememberLaunchTarget(want);
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+@@ -67,12 +68,19 @@ export default class EntryAbility extends UIAbility {
+   }
+ 
+   onConfigurationUpdate(newConfig: Configuration): void {
+-    const dark: boolean = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+-    AppStorage.setOrCreate('nxDarkMode', dark);
++    const systemDark: boolean | undefined = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? true :
++      (newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT ? false : undefined);
++    sharedGlowPreferences.refresh(systemDark);
++    const dark: boolean = AppStorage.get<boolean>('nxDarkMode') === true;
++    // 2026-09-21 审查 P2-6：页面随系统深浅色变了，状态栏 / 导航栏也要一起变（阅读器沉浸时由它自管）。
++    if (this.mainWindow !== undefined && AppStorage.get<boolean>('nxReaderImmersive') !== true) {
++      nxApplySystemBars(this.mainWindow, dark);
++    }
+     hilog.info(DOMAIN, 'testTag', 'colorMode changed, nxDarkMode=%{public}s', dark ? 'true' : 'false');
+   }
+ 
+   onDestroy(): void {
++    sharedGlowPreferences.dispose();
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
+   }
+ 
+@@ -80,10 +88,15 @@ export default class EntryAbility extends UIAbility {
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+ 
+     windowStage.loadContent('pages/Index', (err) => {
+-      // 软键盘避让：压缩模式（官方 FAQ faqs-arkui-53 示例），
+-      // 否则底部输入栏/阅读器底栏会被键盘完全遮挡。
+-      const uiContext: UIContext = windowStage.getMainWindowSync().getUIContext();
+-      uiContext.setKeyboardAvoidMode(KeyboardAvoidMode.NONE);
++      // 软键盘避让（2026-09-21 审查 F05）：全局用压缩模式（官方 FAQ faqs-arkui-53），登录页、
++      // 今日复习、闭环小测的输入框都由系统避让；主对话与阅读器需要沉浸 / 自定义布局，
++      // 各自在进入时切到 NONE 并按键盘高度自管，离开时交还 RESIZE。
++      const win: window.Window = windowStage.getMainWindowSync();
++      this.mainWindow = win;
++      sharedGlowPreferences.attachWindow(win);
++      const uiContext: UIContext = win.getUIContext();
++      uiContext.setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
++      nxApplySystemBars(win, AppStorage.get<boolean>('nxDarkMode') === true);
+       if (err.code) {
+         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
+         return;
+@@ -93,11 +106,16 @@ export default class EntryAbility extends UIAbility {
+   }
+ 
+   onWindowStageDestroy(): void {
++    this.mainWindow = undefined;
++    sharedGlowPreferences.attachWindow(undefined);
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
+   }
+ 
+   onForeground(): void {
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
++    sharedGlowPreferences.setForeground(true);
++    // 回前台：日期标签（今天 / 昨天）与列表可能跨过午夜，让主页面重算一次。
++    AppStorage.setOrCreate('nxForegroundTick', Date.now());
+     // 前台是设备上下文最可靠的采样点；服务自身按 15 分钟去重，避免每次切前台都请求。
+     sharedDeviceContext.report(this.context, this.agentApi).catch((err: Error) => {
+       hilog.debug(DOMAIN, 'testTag', 'device context report skipped: %{public}s', err.message);
+@@ -106,5 +124,6 @@ export default class EntryAbility extends UIAbility {
+ 
+   onBackground(): void {
+     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
++    sharedGlowPreferences.setForeground(false);
+   }
+ }
+diff --git a/HarmonyosApp/entry/src/main/ets/entryformability/EntryFormAbility.ets b/HarmonyosApp/entry/src/main/ets/entryformability/EntryFormAbility.ets
+index a986591..c29f315 100644
+--- a/HarmonyosApp/entry/src/main/ets/entryformability/EntryFormAbility.ets
++++ b/HarmonyosApp/entry/src/main/ets/entryformability/EntryFormAbility.ets
+@@ -53,19 +53,24 @@ export default class EntryFormAbility extends FormExtensionAbility {
+     let decisionId: string = '';
+     let baseUrl: string = '';
+     let username: string = '';
++    let cookie: string = '';
+     try {
+       const options: preferences.Options = { name: CARD_PREF_NAME };
+       const store = preferences.getPreferencesSync(this.context, options);
+       decisionId = store.getSync('decision_id', '') as string;
+       baseUrl = store.getSync('base_url', '') as string;
+       username = store.getSync('username', '') as string;
++      cookie = store.getSync('session_cookie', '') as string;
+     } catch (err) {
+       return;
+     }
+     if (decisionId.length === 0) {
++      // 卡片上没有可回喂的决策（初始态 / 已回喂过）：说清楚，而不是静默无反应。
++      this.reflect(formId, '这张卡上现在没有等你决定的事，打开 Nexora 看看今天的安排。', false);
+       return;
+     }
+     const root: string = baseUrl.length > 0 ? baseUrl.replace(/\/+$/, '') : NxEnv.baseUrl();
++    this.reflect(formId, '正在把你的选择告诉 Nexora…', false);
+ 
+     const client = http.createHttp();
+     try {
+@@ -73,7 +78,10 @@ export default class EntryFormAbility extends FormExtensionAbility {
+         'Content-Type': 'application/json',
+         'X-Nexora-Username': username,
+       };
+-      await client.request(root + '/api/agent/v1/decision/respond', {
++      if (cookie.length > 0) {
++        headers['Cookie'] = cookie;
++      }
++      const resp: http.HttpResponse = await client.request(root + '/api/agent/v1/decision/respond', {
+         method: http.RequestMethod.POST,
+         header: headers,
+         extraData: JSON.stringify({ 'decision_id': decisionId, 'response': response }),
+@@ -81,24 +89,47 @@ export default class EntryFormAbility extends FormExtensionAbility {
+         connectTimeout: 10000,
+         readTimeout: 15000,
+       });
+-      this.reflectResponse(formId, response);
++      // 2026-09-21 审查 F09：只有 HTTP 2xx 且 envelope.success 才算成功，不能把任何已返回的请求当作已确认。
++      let ok: boolean = resp.responseCode >= 200 && resp.responseCode < 300;
++      if (ok) {
++        try {
++          const envelope: Record<string, Object> = JSON.parse(resp.result as string) as Record<string, Object>;
++          ok = envelope['success'] === true;
++        } catch (parseErr) {
++          ok = false;
++        }
++      }
++      if (ok) {
++        this.clearDecision();
++        this.reflectResponse(formId, response);
++      } else {
++        this.reflect(formId, '这次没送到（服务返回 ' + resp.responseCode + '），再点一次试试。', true);
++      }
+     } catch (err) {
+       hilog.error(DOMAIN, 'testTag', 'decision respond failed');
++      this.reflect(formId, '网络没接上，你的选择没送到；再点一次试试。', true);
+     } finally {
+       client.destroy();
+     }
+   }
+ 
+-  /** 回喂成功后卡片就地显示结果，按钮不再可用（§7 第一人称）。 */
+-  private reflectResponse(formId: string, response: string): void {
+-    const title: string = response === 'accept'
+-      ? '好，我把位置翻到你上次停的地方了。'
+-      : '行，我过 40 分钟再提一次。';
++  private clearDecision(): void {
++    try {
++      const options: preferences.Options = { name: CARD_PREF_NAME };
++      const store = preferences.getPreferencesSync(this.context, options);
++      store.putSync('decision_id', '');
++      store.flush();
++    } catch (err) {
++      // 忽略
++    }
++  }
++
++  private reflect(formId: string, title: string, actionable: boolean): void {
+     const data = formBindingData.createFormBindingData({
+       'title': title,
+       'minutes': '',
+       'percent': 0,
+-      'actionable': false,
++      'actionable': actionable,
+     });
+     try {
+       formProvider.updateForm(formId, data);
+@@ -107,6 +138,14 @@ export default class EntryFormAbility extends FormExtensionAbility {
+     }
+   }
+ 
++  /** 回喂成功后卡片就地显示结果，按钮不再可用（§7 第一人称）。文案只说已收到，不承诺没做的事。 */
++  private reflectResponse(formId: string, response: string): void {
++    const title: string = response === 'accept'
++      ? '好，收到了。打开 Nexora 我就带你回到上次读到的地方。'
++      : '行，晚点再提。';
++    this.reflect(formId, title, false);
++  }
++
+   private saveFormId(formId: string): void {
+     try {
+       const options: preferences.Options = { name: CARD_PREF_NAME };
+diff --git a/HarmonyosApp/entry/src/main/ets/intents/QuizMeIntent.ets b/HarmonyosApp/entry/src/main/ets/intents/QuizMeIntent.ets
+index fa71923..31cec95 100644
+--- a/HarmonyosApp/entry/src/main/ets/intents/QuizMeIntent.ets
++++ b/HarmonyosApp/entry/src/main/ets/intents/QuizMeIntent.ets
+@@ -1,11 +1,13 @@
+ /**
+  * 意图 ③「考考我」（重构方案 §二·第二步 · 小艺对话 → 拉起答题）。
+- * 用户对小艺说「Nexora 考考我」→ 前台拉起 EntryAbility，落到「它的一天」并打开书房抽屉；
+- * 后台模式下则先用 /review-plan 排一组复习题，并回一句「排好了 N 道题」。
++ * 用户对小艺说「Nexora 考考我」→ 前台拉起 EntryAbility，直接落到「今日复习」；
++ * 后台模式下则先用 /review-plan 排一组复习题，把 task_id 存下来，回一句「排好了 N 道题」；
++ * 用户下次打开 App 时今日复习页据 nxPendingReviewTask 直接续接这次生成任务（2026-09-21 审查 F08）。
+  */
+ import { insightIntent, InsightIntentEntry, InsightIntentEntryExecutor } from '@kit.AbilityKit';
+ import { hilog } from '@kit.PerformanceAnalysisKit';
+ import { HeadlessApi } from '../services/HeadlessApi';
++import { AgentEnvelope, ReviewPlanData } from '../models/AgentContracts';
+ 
+ const DOMAIN = 0x0000;
+ 
+@@ -40,15 +42,25 @@ export default class QuizMeIntent extends InsightIntentEntryExecutor<string> {
+   async onExecute(): Promise<insightIntent.IntentResult<string>> {
+     hilog.info(DOMAIN, 'nxIntent', 'QuizMe count=%{public}d', this.count);
+     let text: string = '';
++    const api: HeadlessApi = new HeadlessApi(null);
++    const limit: number = Math.max(1, Math.min(20, Math.round(this.count)));
+     if (this.executeMode === insightIntent.ExecuteMode.UI_ABILITY_FOREGROUND) {
+-      AppStorage.setOrCreate('nxLaunchRoute', 'study');
++      // 前台：直接落到今日复习页；出题由页面完成，用户能看到进度。
++      AppStorage.setOrCreate('nxLaunchRoute', 'review');
+       this.windowStage?.loadContent('pages/Index');
+       text = '来，打开 Nexora 开始答题。';
+     } else {
+-      const api: HeadlessApi = new HeadlessApi(null);
+       try {
+-        await api.reviewPlan(Math.max(1, Math.min(20, Math.round(this.count))));
+-        text = '我按你最近学的章节排了 ' + Math.round(this.count) + ' 道题，打开 Nexora 就能做。';
++        if (!(await api.ready())) {
++          text = '先打开一次 Nexora 登录，我才能替你出题。';
++        } else {
++          const env: AgentEnvelope = await api.reviewPlan(limit);
++          const data: ReviewPlanData = env.data as ReviewPlanData;
++          // 续接契约：task_id 交给今日复习页轮询，不再让用户回 App 重新找入口。
++          AppStorage.setOrCreate('nxPendingReviewTask', data.task.task_id);
++          AppStorage.setOrCreate('nxLaunchRoute', 'review');
++          text = '我按你最近学的章节排了 ' + limit + ' 道题，打开 Nexora 就能做。';
++        }
+       } catch (err) {
+         text = '题我现在出不了，稍后打开 Nexora 再试。';
+       }
+diff --git a/HarmonyosApp/entry/src/main/ets/services/AgentApi.ets b/HarmonyosApp/entry/src/main/ets/services/AgentApi.ets
+index 8a374a2..13e193d 100644
+--- a/HarmonyosApp/entry/src/main/ets/services/AgentApi.ets
++++ b/HarmonyosApp/entry/src/main/ets/services/AgentApi.ets
+@@ -25,6 +25,7 @@ import { DecisionData, DecisionRequest, DecisionRespondData } from '../models/De
+ import { NxEnv } from '../config/Env';
+ import { UpcomingEvent } from '../capability/calendar';
+ import { Identity } from './Identity';
++import { ReplyCancellation } from './ReplyCancellation';
+ 
+ export class AgentApi {
+   private baseUrl: string = NxEnv.CLOUD_BASE_URL + '/api/agent/v1';
+@@ -92,12 +93,22 @@ export class AgentApi {
+     return options;
+   }
+ 
+-  private async request(method: http.RequestMethod, path: string, body: string): Promise<AgentEnvelope> {
++  private async request(method: http.RequestMethod, path: string, body: string, cancellation?: ReplyCancellation): Promise<AgentEnvelope> {
+     await Identity.waitReady();
++    cancellation?.throwIfCancelled();
+     this.refreshIdentity();
+     const client = http.createHttp();
++    let destroyed: boolean = false;
++    const destroy = (): void => {
++      if (!destroyed) {
++        destroyed = true;
++        client.destroy();
++      }
++    };
+     try {
++      cancellation?.bind(destroy);
+       const resp: http.HttpResponse = await client.request(this.baseUrl + path, this.buildOptions(method, body));
++      cancellation?.throwIfCancelled();
+       const rawText: string = resp.result as string;
+       if (resp.responseCode < 200 || resp.responseCode >= 300) {
+         let detail: string = '';
+@@ -126,7 +137,8 @@ export class AgentApi {
+       }
+       return envelope;
+     } finally {
+-      client.destroy();
++      cancellation?.unbind();
++      destroy();
+     }
+   }
+ 
+@@ -142,19 +154,19 @@ export class AgentApi {
+     return this.request(http.RequestMethod.GET, '/events?limit=' + limit, '');
+   }
+ 
+-  postPlan(intent: string, availableMinutes: number): Promise<AgentEnvelope> {
++  postPlan(intent: string, availableMinutes: number, cancellation?: ReplyCancellation): Promise<AgentEnvelope> {
+     const payload: Record<string, string | number> = {
+       'intent': intent,
+       'available_minutes': availableMinutes,
+     };
+-    return this.request(http.RequestMethod.POST, '/plan', JSON.stringify(payload));
++    return this.request(http.RequestMethod.POST, '/plan', JSON.stringify(payload), cancellation);
+   }
+ 
+   postOpenSession(): Promise<AgentEnvelope> {
+     return this.request(http.RequestMethod.POST, '/open-session', '{}');
+   }
+ 
+-  postAskInContext(question: string, target: LearnTarget | null, contextText: string = '', source: string = 'app', photoText: string = ''): Promise<AgentEnvelope> {
++  postAskInContext(question: string, target: LearnTarget | null, contextText: string = '', source: string = 'app', photoText: string = '', cancellation?: ReplyCancellation): Promise<AgentEnvelope> {
+     const payload: Record<string, string | number> = {
+       'question': question,
+       'source': source,
+@@ -172,17 +184,20 @@ export class AgentApi {
+     } else if (target !== null && !/第\s*[0-9一二三四五六七八九十百零两]+\s*章/.test(question)) {
+       payload['chapter_index'] = target.chapter_index;
+     }
+-    return this.request(http.RequestMethod.POST, '/ask-in-context', JSON.stringify(payload));
++    return this.request(http.RequestMethod.POST, '/ask-in-context', JSON.stringify(payload), cancellation);
+   }
+ 
+-  /** 设备上下文上报（重构方案 ContextBundle）：日历、免打扰、情景、位置、设备类型。 */
+-  postDeviceContext(calendar: UpcomingEvent[], doNotDisturb: boolean, scene: string, location: string, device: string): Promise<AgentEnvelope> {
++  /** 设备上下文上报（重构方案 ContextBundle）：日历、免打扰、情景、位置、设备类型；日历读不到时带 calendar_status。 */
++  postDeviceContext(calendar: UpcomingEvent[], doNotDisturb: boolean, scene: string, location: string, device: string,
++    calendarStatus: string = 'ok', calendarReason: string = ''): Promise<AgentEnvelope> {
+     const rows: Record<string, string | number>[] = [];
+     for (const event of calendar) {
+       rows.push({ 'title': event.title, 'start': event.start });
+     }
+     const payload: Record<string, Object> = {
+       'calendar': rows,
++      'calendar_status': calendarStatus,
++      'calendar_reason': calendarReason,
+       'do_not_disturb': doNotDisturb,
+       'scene': scene,
+       'location': location,
+@@ -210,7 +225,7 @@ export class AgentApi {
+     return this.request(http.RequestMethod.GET, '/tasks/' + taskId, '');
+   }
+ 
+-  postReviewSubmit(quizId: string, target: LearnTarget, answers: ReviewAnswerDraft[]): Promise<AgentEnvelope> {
++  postReviewSubmit(quizId: string, target: LearnTarget, answers: ReviewAnswerDraft[], attemptId: string = ''): Promise<AgentEnvelope> {
+     const payload: Record<string, Object> = {
+       'quiz_id': quizId,
+       'lecture_id': target.lecture_id,
+@@ -219,6 +234,9 @@ export class AgentApi {
+       'chapter_name': target.chapter_name,
+       'answers': answers,
+     };
++    if (attemptId.length > 0) {
++      payload['attempt_id'] = attemptId;
++    }
+     return this.request(http.RequestMethod.POST, '/review/submit', JSON.stringify(payload));
+   }
+ 
+diff --git a/HarmonyosApp/entry/src/main/ets/services/HeadlessApi.ets b/HarmonyosApp/entry/src/main/ets/services/HeadlessApi.ets
+index 1da95fb..988fc99 100644
+--- a/HarmonyosApp/entry/src/main/ets/services/HeadlessApi.ets
++++ b/HarmonyosApp/entry/src/main/ets/services/HeadlessApi.ets
+@@ -1,21 +1,30 @@
+ /**
+  * 无界面进程的轻量客户端（意图执行器 / AgentExtensionAbility 用）。
+- * 这些进程拿不到 UIAbility 的 AppStorage，所以身份走 Preferences('nx_identity') 或 NxEnv；
++ * 身份来源（2026-09-21 审查 F07）：
++ *   ① 有 Context（AgentExtension）→ 读 Preferences('nx_identity')；
++ *   ② 没有 Context（意图执行器：InsightIntentContext 不是 common.Context）→ 意图执行器与 EntryAbility 同进程，
++ *      读 EntryAbility 启动时由 Identity.resolve 写入的 AppStorage('nxUsername' / 'nxSessionCookie')，
++ *      并在首个请求前 await Identity.waitReady()，避免冷启动时身份还没解析完就带空用户名发出去。
+  * 只覆盖第二步系统入口需要的四个端点：/today /ask-in-context /review-plan /events。
+  */
+ import { http } from '@kit.NetworkKit';
+ import { preferences } from '@kit.ArkData';
+ import { common } from '@kit.AbilityKit';
+ import { NxEnv } from '../config/Env';
++import { Identity } from './Identity';
+ import { AgentEnvelope, AgentError } from '../models/AgentContracts';
+ 
+ export class HeadlessApi {
+   private root: string = NxEnv.baseUrl();
+   private username: string = NxEnv.USE_LOCAL ? NxEnv.LOCAL_USERNAME : '';
+   private sessionCookie: string = '';
++  private fromAppStorage: boolean = false;
+ 
+   constructor(context: common.Context | null) {
+-    if (context !== null && !NxEnv.USE_LOCAL) {
++    if (NxEnv.USE_LOCAL) {
++      return;
++    }
++    if (context !== null) {
+       try {
+         const options: preferences.Options = { name: 'nx_identity' };
+         const store = preferences.getPreferencesSync(context, options);
+@@ -27,6 +36,20 @@ export class HeadlessApi {
+       } catch (err) {
+         // 没有持久化身份就带空用户名，后端会以 USER_REQUIRED 拒绝，调用方据此提示先打开一次应用
+       }
++      return;
++    }
++    this.fromAppStorage = true;
++    this.readAppStorage();
++  }
++
++  private readAppStorage(): void {
++    const saved: string | undefined = AppStorage.get<string>('nxUsername');
++    const cookie: string | undefined = AppStorage.get<string>('nxSessionCookie');
++    if (saved !== undefined && saved.length > 0) {
++      this.username = saved;
++    }
++    if (cookie !== undefined && cookie.length > 0) {
++      this.sessionCookie = cookie;
+     }
+   }
+ 
+@@ -34,7 +57,24 @@ export class HeadlessApi {
+     return this.username.length > 0;
+   }
+ 
++  /** 无 Context 时等身份解析完再读一次；有 Context 时立即返回。 */
++  async ready(): Promise<boolean> {
++    if (this.fromAppStorage && !NxEnv.USE_LOCAL) {
++      try {
++        await Identity.waitReady();
++      } catch (err) {
++        // 解析失败按未登录处理
++      }
++      this.readAppStorage();
++    }
++    return this.hasIdentity();
++  }
++
+   private async request(method: http.RequestMethod, path: string, body: string): Promise<AgentEnvelope> {
++    await this.ready();
++    if (!this.hasIdentity()) {
++      throw new Error('USER_REQUIRED: 还没登录 Nexora，打开应用登录后再试。');
++    }
+     const client = http.createHttp();
+     try {
+       const headers: Record<string, string> = {
+diff --git a/HarmonyosApp/entry/src/main/ets/theme/DesignTokens.ets b/HarmonyosApp/entry/src/main/ets/theme/DesignTokens.ets
+index b3eec96..e471f11 100644
+--- a/HarmonyosApp/entry/src/main/ets/theme/DesignTokens.ets
++++ b/HarmonyosApp/entry/src/main/ets/theme/DesignTokens.ets
+@@ -34,6 +34,12 @@ export interface NxPalette {
+   onPrimarySoft: string;
+   /** 渐变/主色底上的次级块底（半透明白）。 */
+   onPrimaryFill: string;
++  /**
++   * 实心主按钮 / 用户气泡的填充色与其上文字。2026-09-21 审查 P2-6：深色 primary（#9DA0E6）是给文字用的强调色，
++   * 直接当按钮底再配白字只有 2.44:1；填充色单独定义，深色用更深的靛蓝保证 ≥4.5:1。
++   */
++  buttonFill: string;
++  onButton: string;
+   overlay: string;
+   /** 夜：它在工作的时段。 */
+   night: string;
+@@ -71,6 +77,8 @@ export const NxLightPalette: NxPalette = {
+   onPrimary: '#FFFFFF',
+   onPrimarySoft: '#D6FFFFFF',
+   onPrimaryFill: '#2EFFFFFF',
++  buttonFill: '#2B2D5C',
++  onButton: '#FFFFFF',
+   overlay: '#33000000',
+   night: '#2B2D5C',
+   nightSoft: '#E6E7F5',
+@@ -104,6 +112,8 @@ export const NxDarkPalette: NxPalette = {
+   onPrimary: '#FFFFFF',
+   onPrimarySoft: '#D6FFFFFF',
+   onPrimaryFill: '#2EFFFFFF',
++  buttonFill: '#5E62A8',
++  onButton: '#FFFFFF',
+   overlay: '#66000000',
+   night: '#9DA0E6',
+   nightSoft: '#262A4D',
+@@ -134,9 +144,12 @@ export function nxHeatColor(mastery: number, dark: boolean): string {
+   return scale[level];
+ }
+ 
+-/** 热力格上的文字色：深格用反白，浅格用正文色，保证两端都可读。 */
++/** 热力格上的文字色：深格用反白，浅格用正文色，保证两端都可读（深色表最亮一档是淡紫，要用深墨）。 */
+ export function nxHeatTextColor(mastery: number, dark: boolean): string {
+   const palette: NxPalette = nxPalette(dark);
++  if (dark) {
++    return mastery >= 0.8 ? palette.pageBg : (mastery >= 0.4 ? palette.onPrimary : palette.text2);
++  }
+   return mastery >= 0.6 ? palette.onPrimary : palette.text2;
+ }
+ 
+diff --git a/HarmonyosApp/entry/src/main/ets/widget/pages/WidgetCard.ets b/HarmonyosApp/entry/src/main/ets/widget/pages/WidgetCard.ets
+index 9094984..a19bced 100644
+--- a/HarmonyosApp/entry/src/main/ets/widget/pages/WidgetCard.ets
++++ b/HarmonyosApp/entry/src/main/ets/widget/pages/WidgetCard.ets
+@@ -11,7 +11,7 @@ const cardStorage: LocalStorage = new LocalStorage();
+ @Entry(cardStorage)
+ @Component
+ struct WidgetCard {
+-  readonly TITLE: string = 'Nexora 教练';
++  readonly TITLE: string = 'Nexora';
+   @LocalStorageProp('title') title: string = '我在看着你的进度，有需要我会说';
+   @LocalStorageProp('minutes') minutes: string = '';
+   @LocalStorageProp('percent') percent: number = 0;
+@@ -69,33 +69,50 @@ struct WidgetCard {
+       .width('100%')
+       .layoutWeight(1)
+ 
+-      Row({ space: NxGrid * 2 }) {
+-        Button('好')
+-          .height(28)
+-          .fontSize(NxFontSize.xs)
+-          .layoutWeight(1)
+-          .backgroundColor(this.palette().onPrimary)
+-          .fontColor(this.palette().primary)
+-          .onClick(() => {
+-            postCardAction(this, {
+-              action: 'message',
+-              params: { message: 'accept' },
+-            });
+-          })
+-        Button('晚点')
+-          .height(28)
++      // 只有卡片上确实有待决定的事时才给按钮（2026-09-21 审查 F09：actionable 此前从未被 UI 使用）。
++      if (this.actionable) {
++        Row({ space: NxGrid * 2 }) {
++          Button('好')
++            .height(32)
++            .fontSize(NxFontSize.xs)
++            .layoutWeight(1)
++            .backgroundColor(this.palette().onPrimary)
++            .fontColor(this.palette().primary)
++            .onClick(() => {
++              postCardAction(this, {
++                action: 'message',
++                params: { message: 'accept' },
++              });
++            })
++          Button('晚点')
++            .height(32)
++            .fontSize(NxFontSize.xs)
++            .layoutWeight(1)
++            .backgroundColor(this.palette().onPrimaryFill)
++            .fontColor(this.palette().onPrimary)
++            .onClick(() => {
++              postCardAction(this, {
++                action: 'message',
++                params: { message: 'defer' },
++              });
++            })
++        }
++        .width('100%')
++      } else {
++        Button('打开 Nexora')
++          .height(32)
+           .fontSize(NxFontSize.xs)
+-          .layoutWeight(1)
++          .width('100%')
+           .backgroundColor(this.palette().onPrimaryFill)
+           .fontColor(this.palette().onPrimary)
+           .onClick(() => {
+             postCardAction(this, {
+-              action: 'message',
+-              params: { message: 'defer' },
++              action: 'router',
++              abilityName: 'EntryAbility',
++              params: { nx_route: 'day' },
+             });
+           })
+       }
+-      .width('100%')
+     }
+     .width('100%')
+     .height('100%')

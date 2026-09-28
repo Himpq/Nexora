@@ -1,0 +1,84 @@
+{
+  "notice": "Actual emulator screenshot sampling, not an FPS or performance measurement. No interpolation. The final repeated image and 0.250 s hold are specified by frames.ffconcat.",
+  "source": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\day-final-verified\\frames.ffconcat",
+  "sourceUniqueImages": 83,
+  "encodedFramesIncludingManifestFinalRepeat": 84,
+  "timestampBasis": "Exact cumulative millisecond durations from frames.ffconcat; video starts at source frame 0. Capture times use frames.json and start with first image at +0.5312391 seconds.",
+  "maxPresentationTimestampErrorSeconds": 0.0,
+  "fullVideoDecodePassed": true,
+  "video": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\day-final-verified.mp4",
+  "videoMetadata": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 628,
+        "height": 1380,
+        "time_base": "1/1000",
+        "nb_frames": "84"
+      }
+    ],
+    "format": {
+      "duration": "50.013000",
+      "size": "784019"
+    }
+  },
+  "contactSheet": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\day-final-verified-contact.png",
+  "keyframes": [
+    {
+      "frame": 0,
+      "file": "frame-0000.png",
+      "captureSeconds": 0.5312391,
+      "videoSeconds": 0.0,
+      "visibleState": "发送前 · 底部弱静态光"
+    },
+    {
+      "frame": 8,
+      "file": "frame-0008.png",
+      "captureSeconds": 7.2681997,
+      "videoSeconds": 6.738,
+      "visibleState": "等待峰值 · 顶部暖光"
+    },
+    {
+      "frame": 22,
+      "file": "frame-0022.png",
+      "captureSeconds": 15.539780499999999,
+      "videoSeconds": 15.008,
+      "visibleState": "持续等待 · 降强度前"
+    },
+    {
+      "frame": 24,
+      "file": "frame-0024.png",
+      "captureSeconds": 16.7072987,
+      "videoSeconds": 16.175,
+      "visibleState": "长等待 · 已降低强度"
+    },
+    {
+      "frame": 33,
+      "file": "frame-0033.png",
+      "captureSeconds": 21.892869199999996,
+      "videoSeconds": 21.361,
+      "visibleState": "完成 · 顶部淡出中"
+    },
+    {
+      "frame": 34,
+      "file": "frame-0034.png",
+      "captureSeconds": 22.478398300000002,
+      "videoSeconds": 21.947,
+      "visibleState": "完成 · 顶部恢复底色"
+    }
+  ],
+  "comparison": {
+    "output": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\day-night-comparison.png",
+    "daySource": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\37-day-first-final.png",
+    "nightSource": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\20-night-first-keyboard.png",
+    "crop": [
+      0,
+      0,
+      1256,
+      850
+    ],
+    "sourceCropPixelsUnchanged": true
+  }
+}

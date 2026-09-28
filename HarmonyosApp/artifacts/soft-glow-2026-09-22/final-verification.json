@@ -1,0 +1,12 @@
+{
+  "testExecutions": 155,
+  "uniqueNames": 99,
+  "testFailures": 0,
+  "lintErrors": 0,
+  "lintWarnings": 19,
+  "productBuildInstalled": true,
+  "validationCopyRemoved": false,
+  "validationAppUninstalled": true,
+  "cleanupStatus": "Local validation-app recursive removal was rejected by automatic approval review: blocked by policy. No deletion was executed or retried.",
+  "originalSourceExists": true
+}

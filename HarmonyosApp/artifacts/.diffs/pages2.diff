@@ -1,0 +1,432 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Index.ets b/HarmonyosApp/entry/src/main/ets/pages/Index.ets
+index a06ab1b..40256a3 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Index.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Index.ets
+@@ -6,6 +6,7 @@
+ import { DayView } from './Day';
+ import { LoginView } from './Login';
+ import { nxPalette, NxPalette } from '../theme/DesignTokens';
++import { sharedGlowPreferences } from '../theme/GlowPreferences';
+ 
+ @Entry
+ @Component
+@@ -22,6 +23,8 @@ struct Index {
+    * 推页时抽屉会被系统收起，这里据 nxReturnToStudy 重新拉起，并通知书房刷新进度。
+    */
+   onPageShow(): void {
++    AppStorage.setOrCreate('nxHomeVisible', true);
++    sharedGlowPreferences.refresh();
+     // Re-read the session after Identity.resolve finishes. This also makes a
+     // freshly installed build show LoginView instead of an old cached timeline.
+     const sessionReady: boolean = AppStorage.get<boolean>('nxAuthenticated') === true;
+@@ -40,6 +43,11 @@ struct Index {
+     }
+   }
+ 
++  onPageHide(): void {
++    AppStorage.setOrCreate('nxHomeVisible', false);
++    sharedGlowPreferences.refresh();
++  }
++
+   build() {
+     Column() {
+       if (this.authenticated) {
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Login.ets b/HarmonyosApp/entry/src/main/ets/pages/Login.ets
+index aa6a0b4..e467ff6 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Login.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Login.ets
+@@ -94,8 +94,8 @@ export struct LoginView {
+           .width('100%')
+           .fontSize(NxFontSize.lg)
+           .fontWeight(FontWeight.Medium)
+-          .fontColor(this.palette().onPrimary)
+-          .backgroundColor(this.palette().primary)
++          .fontColor(this.palette().onButton)
++          .backgroundColor(this.palette().buttonFill)
+           .borderRadius(NxRadius.sm)
+           .onClick(() => {
+             this.submit();
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Quiz.ets b/HarmonyosApp/entry/src/main/ets/pages/Quiz.ets
+index a9097f8..55520b5 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Quiz.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Quiz.ets
+@@ -24,6 +24,8 @@ struct Quiz {
+   @State submitted: boolean = false;
+   @State wrapup: object | null = null;
+   @State submitting: boolean = false;
++  /** 区分「题目没加载出来」与「交卷没送到」：前者重试重新加载，后者重试重发同一份草稿。 */
++  @State loadFailed: boolean = false;
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   private api: AgentApi = new AgentApi();
+   private flowId: string = '';
+@@ -43,17 +45,25 @@ struct Quiz {
+   async load(): Promise<void> {
+     this.loading = true;
+     this.errorText = '';
++    this.loadFailed = false;
+     try {
+       const env: AgentEnvelope = await this.api.getFlowState(this.flowId);
+       const data: FlowStateData = env.data as FlowStateData;
++      // 题目刷新按稳定 question_id 合并已有草稿（2026-09-21 审查 F10：原来每次加载都清空作答）。
++      const previous: Map<string, string> = new Map<string, string>();
++      for (let index = 0; index < this.questions.length; index++) {
++        previous.set(this.questionKey(index), this.answers[index] !== undefined ? this.answers[index] : '');
++      }
+       this.questions = data.quiz.questions;
+       const drafts: string[] = [];
+-      for (const question of this.questions) {
+-        drafts.push('');
++      for (let index = 0; index < this.questions.length; index++) {
++        const key = this.questionKey(index);
++        drafts.push(previous.has(key) ? previous.get(key)! : '');
+       }
+       this.answers = drafts;
+     } catch (err) {
+       const e = err as BusinessError;
++      this.loadFailed = true;
+       this.errorText = '加载题目失败：' + (e.message.length > 0 ? e.message : '网络错误');
+     } finally {
+       this.loading = false;
+@@ -105,7 +115,8 @@ struct Quiz {
+       this.submitted = true;
+     } catch (err) {
+       const e = err as BusinessError;
+-      this.errorText = '提交失败：' + (e.message.length > 0 ? e.message : '网络错误');
++      this.loadFailed = false;
++      this.errorText = '提交失败：' + (e.message.length > 0 ? e.message : '网络错误') + '。你的作答还在，再交一次即可。';
+     } finally {
+       this.submitting = false;
+     }
+@@ -140,8 +151,12 @@ struct Quiz {
+         }
+ 
+         if (this.errorText.length > 0) {
+-          ErrorState({ message: this.errorText, onRetry: (): void => {
+-            this.load();
++          ErrorState({ message: this.errorText, retryLabel: this.loadFailed ? '重新加载' : '再交一次', onRetry: (): void => {
++            if (this.loadFailed) {
++              this.load();
++            } else {
++              this.submit();
++            }
+           } })
+         }
+ 
+@@ -160,8 +175,8 @@ struct Quiz {
+               .width('100%')
+               .height(40)
+               .fontSize(NxFontSize.lg)
+-              .backgroundColor(this.palette().primary)
+-              .fontColor(this.palette().onPrimary)
++              .backgroundColor(this.palette().buttonFill)
++              .fontColor(this.palette().onButton)
+               .onClick(() => {
+                 router.back();
+               })
+@@ -226,8 +241,8 @@ struct Quiz {
+             .width('100%')
+             .height(42)
+             .fontSize(NxFontSize.lg)
+-            .backgroundColor(this.palette().primary)
+-            .fontColor(this.palette().onPrimary)
++            .backgroundColor(this.palette().buttonFill)
++            .fontColor(this.palette().onButton)
+             .enabled(!this.submitting && this.questions.length > 0)
+             .onClick(() => {
+               this.submit();
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Report.ets b/HarmonyosApp/entry/src/main/ets/pages/Report.ets
+index 93c15bd..0a2d988 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Report.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Report.ets
+@@ -47,6 +47,10 @@ struct Report {
+   @State bookCoverage: number = -1;
+   @State courseCoverage: number = -1;
+   @State tab: number = 0;
++  /** 图谱状态：idle | loading | ready | empty | error。 */
++  @State graphState: string = 'idle';
++  @State graphError: string = '';
++  @State graphLoadedAt: number = 0;
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   @StorageProp('nxStudyTick') @Watch('onStudyChanged') studyTick: number = 0;
+   private api: ReportApi = new ReportApi();
+@@ -160,11 +164,12 @@ struct Report {
+     throw new Error('选好一门课程后，我会把阅读和练习记录整理在这里。');
+   }
+ 
+-  /** 知识图谱是附加信息，取不到不影响报告主线。 */
++  /** 知识图谱是附加信息，取不到不影响报告主线；但要分清「没生成」与「取失败」（2026-09-21 审查 F16）。 */
+   async loadGraph(version: number = this.loadVersion): Promise<void> {
+     if (this.bookId.length === 0) {
+       return;
+     }
++    this.graphState = 'loading';
+     try {
+       const payload: GraphPayload = await this.api.getGraph(this.lectureId, this.bookId);
+       if (version !== this.loadVersion) {
+@@ -176,10 +181,30 @@ struct Report {
+         this.relationCount = this.relations.length;
+         this.bookCoverage = payload.graph.book_reading_progress_percent !== undefined ? payload.graph.book_reading_progress_percent : -1;
+         this.courseCoverage = payload.graph.course_reading_progress_percent !== undefined ? payload.graph.course_reading_progress_percent : -1;
++        this.graphState = this.chapters.length > 0 ? 'ready' : 'empty';
++        this.graphLoadedAt = Date.now();
++      } else {
++        this.graphState = 'empty';
+       }
+     } catch (err) {
+-      // 图谱未生成时静默：报告仍可看
++      if (version !== this.loadVersion) {
++        return;
++      }
++      const e = err as BusinessError;
++      this.graphState = 'error';
++      this.graphError = e.message.length > 0 ? e.message : '网络错误';
++    }
++  }
++
++  private graphStatusText(): string {
++    if (this.graphState === 'loading') {
++      return '正在取这本书的概念关系…';
++    }
++    if (this.graphState === 'error') {
++      return '概念关系这次没取到：' + this.graphError +
++        (this.graphLoadedAt > 0 ? '。下面是上次取到的版本。' : '');
+     }
++    return '';
+   }
+ 
+   private accuracyLabel(): string {
+@@ -248,6 +273,34 @@ struct Report {
+     return this.palette().primary;
+   }
+ 
++  /** 图谱章节 → 阅读器（章序号来自后端 chapter_index，缺失时按列表位置）。 */
++  private chapterIndexOf(chapter: GraphChapter): number {
++    if (chapter.chapter_index !== undefined && chapter.chapter_index >= 0) {
++      return chapter.chapter_index;
++    }
++    return this.chapters.indexOf(chapter);
++  }
++
++  openChapter(chapter: GraphChapter): void {
++    const params: Record<string, Object> = {
++      'lecture_id': this.lectureId,
++      'book_id': this.bookId,
++      'book_title': '',
++      'chapter_index': this.chapterIndexOf(chapter),
++      'chapter_name': chapter.name,
++    };
++    router.pushUrl({ url: 'pages/Reader', params: params });
++  }
++
++  openReview(chapter: GraphChapter): void {
++    const params: Record<string, Object> = {
++      'lecture_id': this.lectureId,
++      'book_id': this.bookId,
++      'chapter_index': this.chapterIndexOf(chapter),
++    };
++    router.pushUrl({ url: 'pages/TodayTask', params: params });
++  }
++
+   private durationLabel(): string {
+     if (this.summary === null) {
+       return '0 秒';
+@@ -403,8 +456,32 @@ struct Report {
+           }
+ 
+           if (this.tab === 1) {
++            if (this.graphStatusText().length > 0) {
++              Row({ space: NxGrid * 2 }) {
++                Text(this.graphStatusText())
++                  .fontSize(NxFontSize.sm)
++                  .fontColor(this.graphState === 'error' ? this.palette().danger : this.palette().text3)
++                  .lineHeight(18)
++                  .layoutWeight(1)
++                if (this.graphState === 'error') {
++                  Button('重试')
++                    .height(36)
++                    .fontSize(NxFontSize.sm)
++                    .backgroundColor(this.palette().surface3)
++                    .fontColor(this.palette().text2)
++                    .onClick(() => {
++                      this.loadGraph(this.loadVersion);
++                    })
++                }
++              }
++              .width('100%')
++            }
+             if (this.chapters.length === 0) {
+-              EmptyState({ text: '阅读记录已经单独保存；这本书的概念关系整理好后，会出现在这里。' })
++              if (this.graphState === 'empty') {
++                EmptyState({ text: '阅读记录已经单独保存；这本书的概念关系还没整理出来，整理好后会出现在这里。' })
++              } else if (this.graphState !== 'loading' && this.graphState !== 'error') {
++                EmptyState({ text: '阅读记录已经单独保存；这本书的概念关系整理好后，会出现在这里。' })
++              }
+             } else {
+               Column({ space: NxGrid * 2 }) {
+                 Text('我从这本书里理出 ' + this.chapters.length + ' 章、' + this.relationCount + ' 条概念关系。' +
+@@ -472,13 +549,38 @@ struct Report {
+                           Text(concept.name + (concept.mastery !== undefined && concept.mastery !== null ? ' ' + Math.round(concept.mastery * 100) + '%' : ''))
+                             .fontSize(NxFontSize.xs)
+                             .fontColor(this.conceptTone(concept))
+-                            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++                            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
+                             .borderRadius(NxRadius.xs)
+                             .backgroundColor(this.palette().primarySoft)
+                             .margin({ right: NxGrid, bottom: NxGrid })
++                            .onClick(() => {
++                              // 概念标签的下一步（2026-09-21 审查）：进入该章原文。
++                              this.openChapter(chapter);
++                            })
+                         }, (concept: GraphConcept, ci: number) => concept.name + '_' + ci)
+                     }
+                     .width('100%')
++                    Row({ space: NxGrid * 2 }) {
++                      Text('去读这一章')
++                        .fontSize(NxFontSize.xs)
++                        .fontColor(this.palette().primary)
++                        .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
++                        .borderRadius(NxRadius.xs)
++                        .backgroundColor(this.palette().cardBgRaised)
++                        .onClick(() => {
++                          this.openChapter(chapter);
++                        })
++                      Text('练这一章')
++                        .fontSize(NxFontSize.xs)
++                        .fontColor(this.palette().primary)
++                        .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
++                        .borderRadius(NxRadius.xs)
++                        .backgroundColor(this.palette().cardBgRaised)
++                        .onClick(() => {
++                          this.openReview(chapter);
++                        })
++                    }
++                    .width('100%')
+                   }
+                   .width('100%')
+                   .padding(NxGrid * 4)
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Study.ets b/HarmonyosApp/entry/src/main/ets/pages/Study.ets
+index b950f69..67178e0 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Study.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Study.ets
+@@ -11,6 +11,7 @@ import { ReaderApi } from '../services/ReaderApi';
+ import { SkeletonCard, ErrorState } from '../components/common/States';
+ import { sharedCache } from '../services/cache/CacheStore';
+ import { ReadingPosition, nxReadPosition, nxLastBook } from '../services/ReadingState';
++import { Identity } from '../services/Identity';
+ import { nxPalette, NxPalette, NxRadius, NxGrid, NxFontSize } from '../theme/DesignTokens';
+ import { BusinessError } from '@kit.BasicServicesKit';
+ import { router } from '@kit.ArkUI';
+@@ -24,6 +25,8 @@ export struct StudyView {
+   @State opening: boolean = false;
+   @State lastBookLabel: string = '';
+   @State positionLabels: Map<string, string> = new Map<string, string>();
++  @State settingsOpen: boolean = false;
++  @State loggingOut: boolean = false;
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   @StorageProp('nxReadingSyncStatus') readingSyncStatus: string = '';
+   /** 阅读器记完一章 / 页面回到前台时 +1，书房据此刷新进度。 */
+@@ -44,6 +47,24 @@ export struct StudyView {
+     this.load();
+   }
+ 
++  /** 退出：清本地会话与账号相关缓存视图，Index 据 nxAuthenticated 回到登录页。 */
++  async logout(): Promise<void> {
++    if (this.loggingOut) {
++      return;
++    }
++    const context = this.getUIContext().getHostContext();
++    if (context === undefined) {
++      return;
++    }
++    this.loggingOut = true;
++    try {
++      await Identity.logout(context);
++      AppStorage.setOrCreate('nxStudyOpen', false);
++    } finally {
++      this.loggingOut = false;
++    }
++  }
++
+   private palette(): NxPalette {
+     return nxPalette(this.nxDark);
+   }
+@@ -295,7 +316,7 @@ export struct StudyView {
+       Text(lecture.title)
+         .fontSize(NxFontSize.sm)
+         .fontWeight(lecture.id === this.selectedLectureId ? FontWeight.Medium : FontWeight.Normal)
+-        .fontColor(lecture.id === this.selectedLectureId ? this.palette().onPrimary : this.palette().text2)
++        .fontColor(lecture.id === this.selectedLectureId ? this.palette().onButton : this.palette().text2)
+         .maxLines(1)
+         .textOverflow({ overflow: TextOverflow.Ellipsis })
+       Text('阅读 ' + this.coverageLabel(lecture) + '%')
+@@ -305,7 +326,7 @@ export struct StudyView {
+     .constraintSize({ maxWidth: 180 })
+     .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
+     .borderRadius(NxRadius.sm)
+-    .backgroundColor(lecture.id === this.selectedLectureId ? this.palette().night : this.palette().surface2)
++    .backgroundColor(lecture.id === this.selectedLectureId ? this.palette().buttonFill : this.palette().surface2)
+     .alignItems(HorizontalAlign.Start)
+     .onClick(() => {
+       this.selectedLectureId = lecture.id;
+@@ -320,9 +341,50 @@ export struct StudyView {
+             .fontSize(NxFontSize.title)
+             .fontWeight(FontWeight.Bold)
+             .fontColor(this.palette().text1)
++          Blank()
++          // 账号面（2026-09-21 审查：退出 / 当前账号此前没有任何入口）。
++          Text(this.settingsOpen ? '收起' : '账号')
++            .fontSize(NxFontSize.sm)
++            .fontColor(this.palette().text2)
++            .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
++            .borderRadius(NxRadius.xs)
++            .backgroundColor(this.palette().surface2)
++            // 半模态右上角有系统关闭按钮，入口向左让开。
++            .margin({ right: NxGrid * 12 })
++            .onClick(() => {
++              this.settingsOpen = !this.settingsOpen;
++            })
+         }
+         .width('100%')
+ 
++        if (this.settingsOpen) {
++          Column({ space: NxGrid * 2 }) {
++            Text('当前账号：' + (Identity.current().length > 0 ? Identity.current() : '未登录'))
++              .fontSize(NxFontSize.md)
++              .fontColor(this.palette().text1)
++              .width('100%')
++            Text('教材与课程在网页端管理；这里只负责阅读、练习和它对你的判断。')
++              .fontSize(NxFontSize.xs)
++              .fontColor(this.palette().text3)
++              .lineHeight(17)
++              .width('100%')
++            Button(this.loggingOut ? '退出中…' : '退出登录')
++              .width('100%')
++              .height(40)
++              .fontSize(NxFontSize.md)
++              .backgroundColor(this.palette().surface3)
++              .fontColor(this.palette().danger)
++              .enabled(!this.loggingOut)
++              .onClick(() => {
++                this.logout();
++              })
++          }
++          .width('100%')
++          .padding(NxGrid * 4)
++          .borderRadius(NxRadius.md)
++          .backgroundColor(this.palette().cardBg)
++        }
++
+         if (this.loading && this.lectures.length === 0) {
+           SkeletonCard()
+           SkeletonCard()
+@@ -444,8 +506,8 @@ export struct StudyView {
+             .width('100%')
+             .height(40)
+             .fontSize(NxFontSize.lg)
+-            .backgroundColor(this.palette().primary)
+-            .fontColor(this.palette().onPrimary)
++            .backgroundColor(this.palette().buttonFill)
++            .fontColor(this.palette().onButton)
+             .enabled(!this.opening)
+             .onClick(() => {
+               this.continueLearning();

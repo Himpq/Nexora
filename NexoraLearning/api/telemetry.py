@@ -207,15 +207,15 @@ def _normalise_event(raw: Mapping[str, Any]) -> Optional[Tuple[str, Dict[str, An
         if key == "stream":
             continue
         key_str = str(key)
-        if key_str in columns and key_str != "ts":
-            out[key_str] = value if value is not None else ""
-        elif key_str == "extra":
+        if key_str == "extra":
             if isinstance(value, str):
                 out["extra"] = value
             elif isinstance(value, dict):
                 out["extra"] = json.dumps(value, ensure_ascii=False)
             else:
                 out["extra"] = "" if value is None else str(value)
+        elif key_str in columns and key_str != "ts":
+            out[key_str] = value if value is not None else ""
         elif key_str not in columns:
             extra_dict[key_str] = value
 
@@ -422,68 +422,27 @@ def query_reading_summary(
 
     Output:
         total_events: int
-        total_snapshots: int              (10-second heartbeat events → ~10s each)
-        chapter_dwell: {ci: seconds}      estimated per-chapter reading time
+        total_snapshots: int              heartbeat event count
+        chapter_dwell: {ci: seconds}      measured per-chapter active reading time
         scroll_depth_max: {ci: float}     deepest scroll position per chapter
         selection_count: int              how many text selections were made
         focus_distribution: {reader|chat|blur: count}
     """
-    uid = str(user_id or "").strip()
-    p = _csv_path(uid, "reading")
-    if not p.exists():
-        return {"total_events": 0, "total_snapshots": 0, "chapter_dwell": {},
-                "scroll_depth_max": {}, "selection_count": 0, "focus_distribution": {}}
-
-    columns = _columns_for("reading")
-    total = 0
-    snapshots = 0
-    selections = 0
-    chapter_dwell: Dict[str, int] = {}      # ci -> seconds
-    scroll_max: Dict[str, float] = {}       # ci -> max scroll
+    events = _collect_reading_events(user_id, book_id=book_id, since_ts=since_ts)
+    analysis = _compute_reading_analysis(events)
     focus_dist: Dict[str, int] = {}
-
-    with open(p, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f, fieldnames=columns)
-        next(reader, None)
-        for row in reader:
-            bid = str(row.get("bid", "")).strip()
-            if book_id and bid != book_id:
-                continue
-            ts_str = row.get("ts", "0")
-            try:
-                ts = int(ts_str)
-            except (ValueError, TypeError):
-                ts = 0
-            if since_ts is not None and ts < since_ts:
-                continue
-
-            total += 1
-            event = str(row.get("event", "")).strip()
-            ci = str(row.get("ci", "-1")).strip()
-
-            if event == "snapshot":
-                snapshots += 1
-                chapter_dwell[ci] = chapter_dwell.get(ci, 0) + 10  # ~10s per snapshot
-            if event == "selection":
-                selections += 1
-            if event in ("scroll", "snapshot"):
-                try:
-                    s = float(row.get("scroll", "0") or "0")
-                    if s > scroll_max.get(ci, 0):
-                        scroll_max[ci] = s
-                except (ValueError, TypeError):
-                    pass
-
-            focus = str(row.get("focus", "")).strip()
-            if focus:
-                focus_dist[focus] = focus_dist.get(focus, 0) + 1
+    for event in events:
+        focus = str(event.get("focus") or "").strip()
+        if focus:
+            focus_dist[focus] = focus_dist.get(focus, 0) + 1
 
     return {
-        "total_events": total,
-        "total_snapshots": snapshots,
-        "chapter_dwell": chapter_dwell,
-        "scroll_depth_max": scroll_max,
-        "selection_count": selections,
+        "total_events": analysis["total_events"],
+        "total_snapshots": sum(1 for event in events if event["event"] == "snapshot"),
+        "chapter_dwell": analysis["chapter_dwell"],
+        "total_reading_sec": analysis["total_reading_sec"],
+        "scroll_depth_max": analysis["scroll_depth_max"],
+        "selection_count": analysis["selection_count"],
         "focus_distribution": focus_dist,
     }
 
@@ -748,7 +707,11 @@ def _collect_reading_events(user_id: str, book_id: str = "", since_ts: Optional[
                 ts = int(ts_str)
             except (ValueError, TypeError):
                 ts = 0
-            if since_ts is not None and ts < since_ts:
+            # Legacy service events used seconds; native/browser clients may
+            # send milliseconds. Analysis computes gaps in milliseconds.
+            ts = ts if ts > 10_000_000_000 else ts * 1000
+            since_ms = since_ts if since_ts is None or since_ts > 10_000_000_000 else since_ts * 1000
+            if since_ms is not None and ts < since_ms:
                 continue
             rows.append({
                 "ts": ts,
@@ -764,46 +727,40 @@ def _collect_reading_events(user_id: str, book_id: str = "", since_ts: Optional[
 
 
 def _compute_reading_analysis(events: List[Dict[str, Any]], *, idle_threshold_sec: int = 60) -> Dict[str, Any]:
+    from core.user.learning_progress import (
+        _measured_reading_seconds_per_book,
+        _parse_duration_ms_from_extra_dict,
+        _parse_extra_dict,
+    )
+
+    measured_events = [
+        {**event, "ci": event.get("ci_raw", event.get("ci", "")), "si": event.get("si_raw", event.get("si", ""))}
+        for event in events
+    ]
     # --- helpers -----------------------------------------------------------
     def _ci_key(row: Dict[str, Any]) -> str:
         return str(row.get("ci_raw", "-1")).strip()
 
     # --- verified reader sessions -----------------------------------------
-    # 只接收会话离开事件携带的明确 duration_ms；事件首末时间不能证明中间一直在学习。
-    session_map: Dict[str, Dict[str, Any]] = {}
+    # Explicit cumulative heartbeats update a visit before the reader exits.
+    # Event timestamps never create duration across background or idle gaps.
+    session_map: Dict[tuple, Dict[str, Any]] = {}
     unmeasured_session_events = 0
 
     for event in sorted(events, key=lambda row: row["ts"]):
-        if event["event"] not in ("focus_out", "session_complete"):
+        if event["event"] not in ("focus_out", "session_complete", "snapshot"):
             continue
-
-        extra_text = str(event.get("extra") or "").strip()
-
-        try:
-            extra = json.loads(extra_text) if extra_text else {}
-        except (json.JSONDecodeError, TypeError):
-            extra = {}
-
-        if not isinstance(extra, dict):
-            extra = {}
-
-        duration_ms = 0.0
-
-        for key in ("duration_ms", "active_duration_ms"):
-            try:
-                candidate = float(extra.get(key) or 0)
-            except (ValueError, TypeError):
-                candidate = 0.0
-
-            if candidate > 0:
-                duration_ms = candidate
-                break
+        extra = _parse_extra_dict(event.get("extra"))
+        duration_ms = _parse_duration_ms_from_extra_dict(extra)
 
         if duration_ms <= 0:
-            unmeasured_session_events += 1
+            if event["event"] != "snapshot":
+                unmeasured_session_events += 1
             continue
 
-        session_key = str(extra.get("session_key") or "").strip()
+        session_key = str(extra.get("session_key") or extra.get("session_id") or "").strip()
+        if event["event"] == "snapshot" and not session_key:
+            continue
 
         if not session_key:
             session_key = "|".join([
@@ -815,12 +772,13 @@ def _compute_reading_analysis(events: List[Dict[str, Any]], *, idle_threshold_se
             ])
 
         duration_sec = duration_ms / 1000.0
-        current = session_map.get(session_key)
+        key = (str(event.get("bid") or ""), session_key)
+        current = session_map.get(key)
 
         if current and float(current.get("duration_sec") or 0.0) >= duration_sec:
             continue
 
-        session_map[session_key] = {
+        session_map[key] = {
             "start_ts": int(event["ts"] - duration_ms),
             "end_ts": event["ts"],
             "duration_sec": round(duration_sec, 1),
@@ -863,23 +821,28 @@ def _compute_reading_analysis(events: List[Dict[str, Any]], *, idle_threshold_se
     # --- selection events --------------------------------------------------
     selection_events = [e for e in events if e["event"] == "selection"]
 
-    # --- per-chapter focus distribution & dwell proxy ----------------------
+    # --- per-chapter focus distribution & measured duration ----------------
     chapter_focus: Dict[str, Dict[str, int]] = {}  # ci -> {focus -> count}
-    snapshot_counts: Dict[str, int] = {}  # ci -> count (each ≈ 10 s)
+    chapter_events: Dict[str, List[Dict[str, Any]]] = {}
     for e in events:
         ci = _ci_key(e)
         focus = e["focus"]
         if focus:
             chapter_focus.setdefault(ci, {})
             chapter_focus[ci][focus] = chapter_focus[ci].get(focus, 0) + 1
-        if e["event"] == "snapshot":
-            snapshot_counts[ci] = snapshot_counts.get(ci, 0) + 1
-
-    chapter_dwell: Dict[str, float] = {ci: cnt * 10.0 for ci, cnt in snapshot_counts.items()}
+    for event in measured_events:
+        chapter_events.setdefault(_ci_key(event), []).append(event)
+    chapter_dwell = {}
+    for ci, rows in chapter_events.items():
+        per_book, _ = _measured_reading_seconds_per_book(rows)
+        seconds = sum(per_book.values())
+        if seconds > 0:
+            chapter_dwell[ci] = round(seconds, 1)
 
     # --- totals -----------------------------------------------------------
     total_idle_sec = round(sum(g["idle_sec"] for g in idle_gaps), 1)
-    total_reading_sec = round(sum(s["duration_sec"] for s in sessions), 1)
+    per_book_seconds, _ = _measured_reading_seconds_per_book(measured_events)
+    total_reading_sec = round(sum(per_book_seconds.values()), 1)
 
     return {
         "session_count": len(sessions),

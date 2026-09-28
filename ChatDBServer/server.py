@@ -11791,6 +11791,8 @@ configure_context_window_fetchers(_fetch_aliyun_models_page, _fetch_volc_foundat
 app.register_blueprint(papi_admin_bp)
 from App.Agent import agent_permissions_bp
 app.register_blueprint(agent_permissions_bp)
+from App.Components.learning_agent_routes import learning_agent_bp
+app.register_blueprint(learning_agent_bp)
 from App.Collaboration import global_search_bp
 app.register_blueprint(global_search_bp)
 from App.Observability import create_testapi_blueprint

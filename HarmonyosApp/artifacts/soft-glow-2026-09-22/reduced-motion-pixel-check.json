@@ -1,0 +1,75 @@
+{
+  "method": "Decode original images to RGBA with FFmpeg; exact per-channel comparison without scaling or thresholding. ROI coordinates are zero-based in original image pixels.",
+  "width": 1256,
+  "height": 2760,
+  "files": [
+    {
+      "file": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\30-reduce-fixed-static-a.png",
+      "sha256": "2a4b87cabc9e15f75fa06f0e44b8ddb2f374fb65b8c6a668c14999cc8db5836a",
+      "modifiedAt": "2026-09-21T19:29:14.213Z"
+    },
+    {
+      "file": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\31-reduce-fixed-static-b.png",
+      "sha256": "2a4b87cabc9e15f75fa06f0e44b8ddb2f374fb65b8c6a668c14999cc8db5836a",
+      "modifiedAt": "2026-09-21T19:29:17.448Z"
+    }
+  ],
+  "regions": [
+    {
+      "name": "brand-circle-with-edge",
+      "roi": {
+        "x": 54,
+        "y": 220,
+        "width": 82,
+        "height": 86
+      },
+      "pixelCount": 7052,
+      "changedPixels": 0,
+      "maxChannelDelta": 0,
+      "identical": true,
+      "changedBoundingBox": null
+    },
+    {
+      "name": "bottom-glow-and-composer",
+      "roi": {
+        "x": 0,
+        "y": 2300,
+        "width": 1256,
+        "height": 460
+      },
+      "pixelCount": 577760,
+      "changedPixels": 0,
+      "maxChannelDelta": 0,
+      "identical": true,
+      "changedBoundingBox": null
+    },
+    {
+      "name": "bottom-exposed-glow",
+      "roi": {
+        "x": 0,
+        "y": 2636,
+        "width": 1256,
+        "height": 124
+      },
+      "pixelCount": 155744,
+      "changedPixels": 0,
+      "maxChannelDelta": 0,
+      "identical": true,
+      "changedBoundingBox": null
+    },
+    {
+      "name": "whole-screenshot",
+      "roi": {
+        "x": 0,
+        "y": 0,
+        "width": 1256,
+        "height": 2760
+      },
+      "pixelCount": 3466560,
+      "changedPixels": 0,
+      "maxChannelDelta": 0,
+      "identical": true,
+      "changedBoundingBox": null
+    }
+  ]
+}

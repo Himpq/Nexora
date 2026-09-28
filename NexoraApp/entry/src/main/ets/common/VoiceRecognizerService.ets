@@ -44,11 +44,13 @@ export class VoiceRecognizerService {
     private engineFinishRequested: boolean = false;
     private lastLevelAt: number = 0;
     private engineStartTimer: number = -1;
+    private startGeneration: number = 0;
+    private starting: boolean = false;
 
     // 启动一次中文长语音识别：先建引擎并等它就绪（onStart），再开始采集并送入音频。
     // 采集必须排在引擎之后——引擎启动阶段占用录音焦点，先起的采集器会被中断、只拿到静音。
     async start(context: common.UIAbilityContext, callbacks: VoiceRecognitionCallbacks): Promise<string> {
-        if (this.active) {
+        if (this.active || this.starting) {
             return '语音识别正在进行';
         }
 
@@ -56,6 +58,9 @@ export class VoiceRecognizerService {
         if (!canIUse('SystemCapability.AI.SpeechRecognizer')) {
             return '当前设备不支持语音识别(模拟器不可用)';
         }
+
+        const generation: number = ++this.startGeneration;
+        this.starting = true;
 
         this.callbacks = callbacks;
         this.sessionId = 'nexora_voice_' + Date.now().toString();
@@ -67,13 +72,14 @@ export class VoiceRecognizerService {
 
         try {
             const permissionGranted: boolean = await this.requestMicrophonePermission(context);
+            if (generation !== this.startGeneration) { return ''; }
 
             if (!permissionGranted) {
                 this.releaseResources();
                 return '未获得麦克风权限，请允许后再试';
             }
 
-            this.engine = await speechRecognizer.createEngine({
+            const createdEngine: speechRecognizer.SpeechRecognitionEngine = await speechRecognizer.createEngine({
                 language: 'zh-CN',
                 online: 1,
                 extraParams: {
@@ -81,9 +87,12 @@ export class VoiceRecognizerService {
                     recognizerMode: 'long'
                 }
             });
+            if (generation !== this.startGeneration) { createdEngine.shutdown(); return ''; }
+            this.engine = createdEngine;
 
             this.engine.setListener(this.createRecognitionListener());
             const currentCapturer: audio.AudioCapturer = await audio.createAudioCapturer(this.createAudioOptions());
+            if (generation !== this.startGeneration) { await currentCapturer.release(); return ''; }
             this.capturer = currentCapturer;
             this.readDataHandler = (buffer: ArrayBuffer): void => {
                 this.forwardAudio(buffer);
@@ -122,6 +131,7 @@ export class VoiceRecognizerService {
             // 抢先启动的 AudioCapturer 会被焦点中断、之后拿到的全是静音数据
             // （表现为波形一直是零、始终识别不出文字）。启动超时由上面的定时器兜住，不会挂死。
             const engineStartError: string = await engineStartPromise;
+            if (generation !== this.startGeneration) { return ''; }
             this.clearEngineStartTimer();
 
             // 用户中途结束/取消：按正常收尾返回，不作为错误提示
@@ -136,21 +146,29 @@ export class VoiceRecognizerService {
             }
 
             await currentCapturer.start();
+            if (generation !== this.startGeneration) {
+                try { await currentCapturer.stop(); } catch (error) { /* 已由 cancel 释放。 */ }
+                return '';
+            }
 
             hilog.info(DOMAIN, TAG, 'voice recognition started, session=%{public}s', this.sessionId);
             return '';
         } catch (error) {
+            if (generation !== this.startGeneration) { return ''; }
             const message: string = this.formatError(error as BusinessError);
             hilog.error(DOMAIN, TAG, 'voice recognition start failed: %{public}s', message);
             this.clearEngineStartTimer();
             this.resolveEngineStart(message);
             this.releaseResources();
             return message;
+        } finally {
+            if (generation === this.startGeneration) { this.starting = false; }
         }
     }
 
     // 结束当前识别，先停止采集并发送完已缓存的合法音频包，再让引擎回传最后结果。
     async finish(): Promise<void> {
+        if (this.starting && !this.active) { this.cancel(); return; }
         if (!this.active || this.engine === undefined || this.sessionId.length === 0) {
             return;
         }
@@ -186,6 +204,8 @@ export class VoiceRecognizerService {
 
     // 页面离开或编辑器切换时立即取消识别，避免音频采集器留在后台。
     cancel(): void {
+        this.startGeneration++;
+        this.starting = false;
         if (!this.active || this.engine === undefined || this.sessionId.length === 0) {
             this.releaseResources();
             return;

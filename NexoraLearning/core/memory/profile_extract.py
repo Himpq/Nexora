@@ -126,21 +126,27 @@ def build_profile_extraction_prompt(
 ) -> str:
     """Build a prompt for LLM to extract/update profile dimensions."""
     from prompts import PROFILE_EXTRACTION_PROMPT
+    from core.memory.evidence_memory import learner_evidence_only
 
     dim_list = "\n".join(
         f"- **{d['name']}** ({d['key']}): {d['description']}"
         for d in PROFILE_DIMENSIONS
     )
-    records_json = str(recent_records or [])
+    records_json = str(learner_evidence_only(recent_records or []))
     if len(records_json) > 8000:
         records_json = records_json[:8000] + "..."
 
-    return PROFILE_EXTRACTION_PROMPT.replace(
+    prompt = PROFILE_EXTRACTION_PROMPT.replace(
         "{{dim_list}}", dim_list
     ).replace(
         "{{current_profile}}", current_profile or "（暂无画像数据）"
     ).replace(
         "{{records_json}}", records_json
+    )
+    return prompt + (
+        "\nOnly explicit learner statements and measured events can support a profile. "
+        "Do not infer mastery from reading, weakness from asking, or user facts from assistant answers. "
+        "Keep unknown dimensions unknown and honor the latest user correction."
     )
 
 

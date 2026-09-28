@@ -1,0 +1,112 @@
+{
+  "completedAt": "2026-09-21T19:28:24.823Z",
+  "workspace": "D:\\Nexora\\HarmonyosApp",
+  "sourceScope": "Product source in entry/src/main/ets; validation-app excluded.",
+  "snapshotNote": "Node regression results precede the root agent's final Day.header animated/static circle split. Day.ets was the only source change between the saved before/after manifests. Root will run targeted post-fix verification; this batch was not rerun.",
+  "node": {
+    "executions": [
+      {
+        "name": "test_reading_progress",
+        "command": "node --test tools/test_reading_progress.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_reading_progress.log",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      {
+        "name": "test_uiux_fixes",
+        "command": "node --test tools/test_uiux_fixes.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_uiux_fixes.log",
+        "tests": 37,
+        "passed": 37,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      {
+        "name": "test_soft_glow_state",
+        "command": "node --test tools/test_soft_glow_state.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_soft_glow_state.log",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      {
+        "name": "test_soft_glow_conversation",
+        "command": "node --test tools/test_soft_glow_conversation.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_soft_glow_conversation.log",
+        "tests": 46,
+        "passed": 46,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      {
+        "name": "test_glow_preferences",
+        "command": "node --test tools/test_glow_preferences.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_glow_preferences.log",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      {
+        "name": "test_ambient_glow",
+        "command": "node --test tools/test_ambient_glow.cjs",
+        "exitCode": 0,
+        "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\test_ambient_glow.log",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    ],
+    "reportedExecutions": 152,
+    "passedExecutions": 152,
+    "failedExecutions": 0,
+    "distinctSubtests": 96,
+    "duplication": {
+      "baseline": "test_reading_progress.cjs",
+      "baselineCount": 28,
+      "executionsPerBaselineTest": 3,
+      "extraRepeatedExecutions": 56,
+      "importers": [
+        "test_uiux_fixes.cjs",
+        "test_soft_glow_conversation.cjs"
+      ],
+      "unexpectedDuplicateNames": 0
+    }
+  },
+  "lint": {
+    "command": "devecocli check lint entry/src/main/ets --limit 1000",
+    "exitCode": 0,
+    "scope": "entry/src/main/ets",
+    "fixRequested": false,
+    "reportedFilesChecked": 9,
+    "errors": 0,
+    "warnings": 19,
+    "suggestions": 0,
+    "log": "D:\\Nexora\\HarmonyosApp\\artifacts\\soft-glow-2026-09-22\\final-verification-20260921T192550435Z\\devecocli-check-lint.log"
+  },
+  "modifiedByThisValidation": "Only evidence logs and manifests were written. No source edits or device operations.",
+  "sourceChangesBetweenManifests": [
+    "entry/src/main/ets/pages/Day.ets"
+  ]
+}

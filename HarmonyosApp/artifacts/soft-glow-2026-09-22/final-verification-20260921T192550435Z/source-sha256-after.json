@@ -1,0 +1,222 @@
+[
+  {
+    "Path": "entry\\src\\main\\ets\\agentextability\\NexoraAgentExtAbility.ets",
+    "Hash": "812DB0788C9FFC7FA8E77A0F2854666341A3C373296B803A0093B811568A25EB"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\account.ets",
+    "Hash": "D71E1E1C9D8B1D669D562BB5D154E321096D361762C2FD0EB476A70CFB2F3AA2"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\asr.ets",
+    "Hash": "2921C2AB87AF5252CCAADEBE85FD94994117DB4E1BA3BF9EE0AA5163ADC731BB"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\calendar.ets",
+    "Hash": "FBA860E61CAE7BE64C5C4B85A334D9BAA2046B70E73DAAB201686366E7C15FE7"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\context.ets",
+    "Hash": "46E14308B13A81ECC7C101D55C291EE9A6A93158CD780555D9043BB49C62FC25"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\dnd.ets",
+    "Hash": "7AEE820BC7F4E0BF0A8559848467120E9F34439671723AC52043FAA5867DBE9B"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\form.ets",
+    "Hash": "7F21788E46CF84C684BCCB42916250E77EE2792D6F2C2E8250AC00B2D1DCF8F7"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\liveview.ets",
+    "Hash": "AA47CE740126C7275542969F47B7BE71949AD7D86D256EC9C1A0BDB48EC96AA3"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\notify.ets",
+    "Hash": "2542F16CDCB987CF9F7252338F31E934EB7474E965068C06B7E197920F3B1B2D"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\permission.ets",
+    "Hash": "E32F0428BF2EA034A5C9CA9A4656BE526CFC8BF562A1546BBB0F06A3390C68E4"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\capability\\tts.ets",
+    "Hash": "638E663AFF5E147D56C2EAD4E7ED2AE46FF646D010DD6667CFCBD972E41CFAFE"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\AmbientGlow.ets",
+    "Hash": "483272216675342CE7FA7CB4B90530266A7E102EBBF948F807174AFFAF2CB6B0"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\common\\MarkdownView.ets",
+    "Hash": "EB1BFB36500BAE8F65D4054873CBE7971C5D2A5B49E2108E682658FEA3E9D788"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\common\\States.ets",
+    "Hash": "77F6C45249432AED330F950D515DA2ED2C87E7926853BEA7226295F45F80E74C"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\common\\ThinkingLine.ets",
+    "Hash": "4FACC020F11D587886BE1AB85599FD4D1CE8E9B7675FCE7BD09033FB1C0FFD81"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\entry\\TimelineEntryView.ets",
+    "Hash": "5CF9DDBE4C0C4F064049CF94E9D4737905B036F61521A8C3E3B923EA6347D259"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\entry\\TimelineRows.ets",
+    "Hash": "F18118DFA6B120770F8EE716F30B87EA47ADA2D0D3EE684D4413AC5E6FC250A9"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\GlowSettings.ets",
+    "Hash": "4B206C9D4AAC17011071BB76E324FD8E212B96E2CC0DA5185D51B12DA85E50C2"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\components\\InspectSheet.ets",
+    "Hash": "DFAA0CBDFC8C4B7839F447BBE08A3D1AE217BA7B387C432BCFDCC1C65B5B6569"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\config\\Env.ets",
+    "Hash": "6BE2B27AB1E5912BB9B4B7B8058FE21FC63FF7086B0CA67584604698232D9DEF"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\entryability\\EntryAbility.ets",
+    "Hash": "66277646FE5E2EF248FF611C7819147CE2949F6448CAD9FAC954691E65774E42"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\entrybackupability\\EntryBackupAbility.ets",
+    "Hash": "D3636F4C9E2AF79AB59105A1846427D6967DCD31CA93EC4B0A3190B85E63CE7A"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\entryformability\\EntryFormAbility.ets",
+    "Hash": "D125749D33CA5B5C99A395B86CC4E88E4BC937FB1E5B91A47F5192548EF0A571"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\intents\\ExplainIntent.ets",
+    "Hash": "B612F589F3FFDDD11DE5E364060541B57085B88B4832FBF87884BDE29D4C0D3F"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\intents\\index.ets",
+    "Hash": "2C9DB325A44852CD2A9491820E95CE0719B862A43A525AABB3C1F3E724CCCDFA"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\intents\\QuizMeIntent.ets",
+    "Hash": "5770D06384C95CE14FBFEDA58119FCB769DA7A26DB190B6FA74B8EB23D39A647"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\intents\\WhatsNextIntent.ets",
+    "Hash": "25D476ACDBB552DFD47BA5035DA888BF56C3FFF06EF22D8E1E2566F7664FDD69"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\models\\AgentContracts.ets",
+    "Hash": "60D3E2308C67D4ED826127D89A7F11412FE3AEDA5C5AAD8FC19D51AF878D4368"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\models\\Decision.ets",
+    "Hash": "F5C4057C54A21755D09E4702EBC3E19357302964C7FDB20D97DC6506B1DF758D"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\models\\Index.ets",
+    "Hash": "7CC5DECA40B11A55FE5B5BAFD96C98495D422B4B5AD67D979FA79F669EC3C073"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\models\\TimelineEntry.ets",
+    "Hash": "0FE94553C44D4EA5154CFF0A66F864E072926DE9A8384942A8CFA6AAD54D3E71"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\models\\UserModelFacet.ets",
+    "Hash": "EA6C4B46F8F653F06182A721D98D05DA095DA57EF83A1E322F3AE64FBC33574B"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Day.ets",
+    "Hash": "169F3B865FD244EA25A82F75A459B5B69A8B13358B768F042BC9DC1BDC237222"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Index.ets",
+    "Hash": "35630A7E5139FB8C537B7299195B7C233E1CB5CEE4360C5E3CDB25A54C338953"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Login.ets",
+    "Hash": "8F228607D01EEF28DB0EA45C11131AF3617F7C7F2C705BAF4C423AAE1AA17BCF"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Quiz.ets",
+    "Hash": "4552368C3D6563608DCB570EAC6FD2D831E1A753684937CE9D48FBDCCBCD61F5"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Reader.ets",
+    "Hash": "F781F6CC3D8DFCAE767D91E78EC26EB90227B4D41A6A51EEBFFC7F1D21A6F0C0"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Report.ets",
+    "Hash": "15EEA4BB0D8A0C0D22C17A7BB23F0AE7B0E6F4C083F80CD453E2F025EC30DEE3"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\Study.ets",
+    "Hash": "80816A6DE2094CF0CEAE0BE6B95CFD471D0D912EBF138EA8FFC1B84B28B9580E"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\pages\\TodayTask.ets",
+    "Hash": "873206B26194233FDCAE5A7AAA03251139469F71CD0D74CE0FBDA0B9F5392802"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\AgentApi.ets",
+    "Hash": "A0E9DF8C932694D9FA27A1EC0E516B1A4AC370A9C2D458100C2F3A2BD69146FF"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\cache\\CacheStore.ets",
+    "Hash": "AACA5E396AD528E0673F74DD1F7BE61ADB500BFA0D729E390EF258750DABD489"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\HeadlessApi.ets",
+    "Hash": "BEF3BD49A9E32F1037EBE050071113231934564534163192F624E5B73AA53926"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\Identity.ets",
+    "Hash": "03CFE8233B33E847063E92FC7FFD8F8A5B43EAFF669580293F351557E9A2DF6D"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\ReaderApi.ets",
+    "Hash": "3E67255522CDA7B8C3C4C499F873963A090CB150F67A464CD5A0944D47DC1A5D"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\ReadingState.ets",
+    "Hash": "0306FF153C5004661186AD41C4CBF43C76ABCC20B06A949F19667F0CB81E5512"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\ReplyCancellation.ets",
+    "Hash": "536D52FEABDC12F21F02B4ED7EAEC0D6EE406E103F2732CFAB67513BD54D34A4"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\ReportApi.ets",
+    "Hash": "701DCC35B67EA5A008D26CF5FD397A8689C0892865C6008EC7FD5DC86D4730FE"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\SoftGlowState.ets",
+    "Hash": "59557CC071518A70E19A19AE5867A6F95D08404DBCE9F3F48E91E9C1B2BCCB46"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\services\\StreamClient.ets",
+    "Hash": "05F7A617FF9AF03B5152A6EF1BB0F8F5A8F20554F41AAD133FDCB37D2ACF0FE4"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\theme\\AmbientTokens.ets",
+    "Hash": "B81D2427FBCD9F1F4218BCCE455AA0A40CBE013DEC98712708D83C1E4CEF81EE"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\theme\\DesignTokens.ets",
+    "Hash": "7672C9C59974A74FBE04829933AD9A3F43095CF32C4CE4676AEC082F67F25C6A"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\theme\\GlowPreferences.ets",
+    "Hash": "249728DCF5AB6C27CF624AAE8C37EA0402E04DCD338FA3E129266031A4BA84E9"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\theme\\SystemBars.ets",
+    "Hash": "12651FE81AA473CC5B94CC414BC7A141CC82B511DD8FE0624D5FBC2E91FD726D"
+  },
+  {
+    "Path": "entry\\src\\main\\ets\\widget\\pages\\WidgetCard.ets",
+    "Hash": "8BCE1BFBF0844FB9B169AF13882C0C4B5D03B9BCAEF02CFDE27769E846ADC168"
+  }
+]

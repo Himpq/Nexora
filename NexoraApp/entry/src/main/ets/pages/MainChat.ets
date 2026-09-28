@@ -10,6 +10,7 @@
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display, promptAction } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
@@ -42,6 +43,10 @@ import { MailPage } from '../components/mail/MailPage';
 import { NotesEntryCard } from '../components/notes/NotesEntryCard';
 import { NotesPage } from '../components/notes/NotesPage';
 import { LearningPage } from '../components/learning/LearningPage';
+import { LearningAgent } from '../components/agent/LearningAgent';
+import { LearningHttp } from '../common/LearningHttp';
+import { LearningReadingApi } from '../common/LearningReadingApi';
+import { LearningSystemEntry } from '../common/LearningSystemEntry';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
@@ -166,6 +171,7 @@ export struct MainChat {
     // ---------- 弹层（单 bindSheet：kind 决定内容与高度） ----------
     @State private showSheet: boolean = false;
     @State private sheetKind: string = 'model';
+    @State private settingsMemoryOpen: boolean = false;
     // 知识库编辑目标标题：打开编辑弹层时设定
     @State private knowledgeEditTarget: string = '';
 
@@ -195,6 +201,22 @@ export struct MainChat {
     // 系统返回键逐级回退（阅读器 → 课程目录 → 课程列表 → 退出学习）
     @State private learningOpen: boolean = false;
     @State private learningNavDepth: number = 0;
+    // Agent 是主页模式；邮件、随笔和学习仍是覆盖页，关闭后回到此模式。
+    @State private agentOpen: boolean = false;
+    @State private agentNavDepth: number = 0;
+    @State private agentInsightsToken: number = 0;
+    @State private agentLaunchRoute: string = 'day';
+    @State private agentLaunchDecision: string = '';
+    @State private agentLaunchToken: number = 0;
+    @StorageLink('nxLaunchRoute') @Watch('onLaunchRequested') private nxLaunchRoute: string = '';
+    @StorageLink('nxLaunchDecision') @Watch('onLaunchRequested') private nxLaunchDecision: string = '';
+    @StorageLink('nxLaunchToken') @Watch('onLaunchRequested') private nxLaunchToken: number = 0;
+    @StorageProp('nxSessionReady') @Watch('onLaunchRequested') private sessionReady: boolean = false;
+    private learningReady: Promise<boolean> | null = null;
+    private launchConsuming: boolean = false;
+    private launchRequestVersion: number = 0;
+    private sidebarAgentLaunchToken: number = -1;
+    private attached: boolean = false;
 
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
     @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
@@ -268,6 +290,7 @@ export struct MainChat {
     private widthLockWarned: boolean = false;
 
     aboutToAppear(): void {
+        this.attached = true;
         this.seedContentWidth();
         this.greeting = greetingOfHour(new Date().getHours());
         this.labelForModel(this.app.selectedModelId);
@@ -280,7 +303,7 @@ export struct MainChat {
         this.app.refreshNotes();
         this.app.refreshUserProfile();
         // Learning 运行时配置轻量预取：侧栏入口生效前拿到开关与工作区地址
-        void this.app.refreshLearningRuntime();
+        void this.ensureLearningServices().then(() => { void this.consumeLaunchRoute(); });
 
         // 地图渲染配置轻量预取：登录后只拉一次，地图结果到达时无需等待
         MapRendererConfig.ensure();
@@ -296,14 +319,29 @@ export struct MainChat {
     }
 
     aboutToDisappear(): void {
+        this.attached = false;
+        this.launchRequestVersion++;
+        this.app.backHandler = null;
         this.remoteSessionEpoch++;
         this.stopRemotePolling();
     }
 
-    // 系统返回键处理：图片查看器 > 邮件/随笔页(详情→页面) > 侧边栏 > 弹层 > 对话→新对话
+    // 系统返回键处理：只关闭最上层；Agent 根页与普通首页交由系统处理。
     private handleBackPress(): boolean {
         if (this.viewerUrl.length > 0) {
             this.viewerUrl = '';
+            return true;
+        }
+
+        if (this.showSheet) {
+            if (!this.returnToSettings()) {
+                this.closeSheet();
+            }
+            return true;
+        }
+
+        if (this.sidebarOpen) {
+            this.closeSidebar();
             return true;
         }
 
@@ -337,14 +375,12 @@ export struct MainChat {
             return true;
         }
 
-        if (this.sidebarOpen) {
-            this.closeSidebar();
-            return true;
-        }
-
-        if (this.showSheet) {
-            this.showSheet = false;
-            return true;
+        if (this.agentOpen) {
+            if (this.agentNavDepth > 0) {
+                this.agentNavDepth--;
+                return true;
+            }
+            return false;
         }
 
         if (this.conversationId.length > 0) {
@@ -357,30 +393,58 @@ export struct MainChat {
 
     build() {
         Stack() {
-            // 主对话界面
+            // 两种主页模式共用顶栏。普通对话保持挂载，切回时保留草稿、消息和滚动现场。
             Column() {
-                this.TopBar();
-
-                this.ContentArea();
-
-                if (this.loadError.length > 0) {
-                    this.ErrorBar();
+                if (!this.agentOpen || this.agentNavDepth === 0) {
+                    this.TopBar();
                 }
 
-                ChatInputBar({
-                    draft: $draft,
-                    streaming: this.streaming,
-                    placeholder: this.inputPlaceholder(),
-                    onSend: () => {
-                        this.sendDraft();
-                    },
-                    onStop: () => {
-                        this.stopStreaming();
-                    },
-                    onPickModel: () => {
-                        this.openSheetModel();
+                Stack() {
+                    Column() {
+                        this.ContentArea();
+
+                        if (this.loadError.length > 0) {
+                            this.ErrorBar();
+                        }
+
+                        ChatInputBar({
+                            draft: $draft,
+                            streaming: this.streaming,
+                            placeholder: this.inputPlaceholder(),
+                            onSend: () => {
+                                this.sendDraft();
+                            },
+                            onStop: () => {
+                                this.stopStreaming();
+                            },
+                            onPickModel: () => {
+                                this.openSheetModel();
+                            }
+                        });
                     }
-                });
+                    .width('100%')
+                    .height('100%')
+                    .visibility(this.agentOpen ? Visibility.Hidden : Visibility.Visible)
+                    .hitTestBehavior(this.agentOpen ? HitTestMode.None : HitTestMode.Default);
+
+                    if (this.agentOpen) {
+                        LearningAgent({
+                            app: this.app,
+                            navDepth: $agentNavDepth,
+                            insightsToken: this.agentInsightsToken,
+                            visible: !this.mailOpen && !this.notesOpen && !this.learningOpen &&
+                                !this.sidebarOpen && !this.showSheet && this.viewerUrl.length === 0,
+                            launchRoute: this.agentLaunchRoute,
+                            launchDecision: this.agentLaunchDecision,
+                            launchToken: this.agentLaunchToken,
+                            onBack: () => { this.exitAgentMode(); },
+                            onOpenLearning: () => { void this.openLearning(); },
+                            onOpenImage: (url: string) => { this.viewerUrl = url; }
+                        }).width('100%').height('100%');
+                    }
+                }
+                .width('100%')
+                .layoutWeight(1);
             }
             .width('100%')
             .height('100%')
@@ -425,6 +489,7 @@ export struct MainChat {
                 LearningPage({
                     app: this.app,
                     navDepth: $learningNavDepth,
+                    visible: this.learningOpen && this.viewerUrl.length === 0,
                     onBack: () => {
                         this.learningOpen = false;
                     },
@@ -460,14 +525,16 @@ export struct MainChat {
             height: this.sheetKind === 'model' || this.sheetKind === 'remoteModel' ? SheetSize.MEDIUM : SheetSize.LARGE,
             showClose: false,
             dragBar: false,
+            onWillDismiss: (action: DismissSheetAction) => { this.handleSheetDismiss(action); },
             onDisappear: () => {
                 this.showSheet = false;
+                this.settingsMemoryOpen = false;
             }
         });
     }
 
     // ---------- 顶栏 ----------
-    // 左：头像（点开侧栏）/ 中：会话标题 + 模型（点开模型选择）/ 右：新对话
+    // Agent 模式保留头像入口，书本打开学习情况；普通对话保留模型与新建入口。
     @Builder
     TopBar() {
         Row({ space: Space.xs }) {
@@ -498,13 +565,15 @@ export struct MainChat {
                     this.avatarPressed = false;
                 }
             })
+            .id('main_open_sidebar')
+            .accessibilityText('打开侧边栏')
             .onClick(() => {
                 this.openSidebar();
             });
 
             // 标题 + 模型：整列可点，点按弹出模型选择
             Column({ space: Space.xxs }) {
-                Text(this.title)
+                Text(this.agentOpen ? 'Agent' : this.title)
                     .fontSize(FontSize.bodyLarge)
                     .fontWeight(FontWeight.Medium)
                     .fontColor($r('app.color.text_primary'))
@@ -512,19 +581,22 @@ export struct MainChat {
                     .textOverflow({ overflow: TextOverflow.Ellipsis });
 
                 Row({ space: Space.xxs }) {
-                    Text(this.remoteDeviceId.length > 0
-                        ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
-                        : this.modelLabel)
+                    Text(this.agentOpen ? '学习助手 · 时间线' :
+                        (this.remoteDeviceId.length > 0
+                            ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
+                            : this.modelLabel))
                         .fontSize(FontSize.micro)
                         .fontColor($r('app.color.text_tertiary'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1);
 
-                    Image($r('app.media.ic_chevron_down'))
-                        .width(10)
-                        .height(10)
-                        .fillColor($r('app.color.icon_secondary'));
+                    if (!this.agentOpen) {
+                        Image($r('app.media.ic_chevron_down'))
+                            .width(10)
+                            .height(10)
+                            .fillColor($r('app.color.icon_secondary'));
+                    }
                 }
                 .constraintSize({ maxWidth: '100%' })
                 .alignItems(VerticalAlign.Center);
@@ -535,7 +607,7 @@ export struct MainChat {
             .backgroundColor(this.modelTitlePressed ? $r('app.color.bg_pressed') : Color.Transparent)
             .animation({ duration: Motion.durationPress, curve: Motion.press })
             .onTouch((event: TouchEvent) => {
-                if (event.type === TouchType.Down) {
+                if (event.type === TouchType.Down && !this.agentOpen) {
                     this.modelTitlePressed = true;
                 }
 
@@ -544,15 +616,24 @@ export struct MainChat {
                 }
             })
             .onClick(() => {
-                this.openSheetModel();
+                if (!this.agentOpen) {
+                    this.openSheetModel();
+                }
             });
 
             IconButton({
-                icon: $r('app.media.ic_plus'),
+                icon: this.agentOpen ? $r('app.media.ic_book') : $r('app.media.ic_plus'),
                 onTap: () => {
-                    this.startNewRound();
+                    if (this.agentOpen) {
+                        this.getUIContext().getFocusController().clearFocus();
+                        this.agentInsightsToken++;
+                    } else {
+                        this.startNewRound();
+                    }
                 }
-            });
+            })
+                .id('main_header_action')
+                .accessibilityText(this.agentOpen ? 'Agent 学习情况' : '新对话');
         }
         .width('100%')
         .padding({ left: Space.sm, right: Space.sm, top: Space.sm, bottom: Space.sm });
@@ -838,7 +919,8 @@ export struct MainChat {
             Column() {
                 SidebarPanel({
                     app: this.app,
-                    activeConversationId: this.conversationId,
+                    activeConversationId: this.agentOpen ? '' : this.conversationId,
+                    agentActive: this.agentOpen,
                     convList: this.convListSnapshot,
                     convEpoch: this.convEpoch,
                     streamingIds: this.streamingConvIds,
@@ -861,6 +943,9 @@ export struct MainChat {
                     },
                     onOpenLearning: () => {
                         void this.openLearning();
+                    },
+                    onOpenAgent: () => {
+                        this.toggleAgentMode();
                     },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
@@ -937,6 +1022,7 @@ export struct MainChat {
     }
 
     private openSheetSettings(): void {
+        this.settingsMemoryOpen = false;
         this.sheetKind = 'settings';
         this.showSheet = true;
     }
@@ -949,6 +1035,22 @@ export struct MainChat {
 
     private closeSheet(): void {
         this.showSheet = false;
+        this.settingsMemoryOpen = false;
+    }
+
+    private returnToSettings(): boolean {
+        if (this.sheetKind === 'settings' && this.settingsMemoryOpen) {
+            this.settingsMemoryOpen = false;
+            return true;
+        }
+        return false;
+    }
+
+    private handleSheetDismiss(action: DismissSheetAction): void {
+        if (action.reason === DismissReason.PRESS_BACK && this.returnToSettings()) {
+            return;
+        }
+        action.dismiss();
     }
 
     @Builder
@@ -980,6 +1082,7 @@ export struct MainChat {
         } else if (this.sheetKind === 'settings') {
             SettingsSheet({
                 app: this.app,
+                memoryOpen: $settingsMemoryOpen,
                 onSaved: () => {
                     this.closeSheet();
                     this.app.refreshModels().then(() => {
@@ -1047,7 +1150,10 @@ export struct MainChat {
     // ---------- Learning 工作区 ----------
     // 打开 Learning：先刷新运行时配置（管理端开关/地址可能刚变更），校验后进入全屏工作区
     private async openLearning(): Promise<void> {
-        await this.app.refreshLearningRuntime();
+        if (!(await this.ensureLearningServices())) {
+            this.notify('学习服务尚未就绪，请确认登录与服务配置', 2000);
+            return;
+        }
 
         if (!this.app.learningEnabled) {
             this.notify('Learning 未启用', 1600);
@@ -1060,8 +1166,136 @@ export struct MainChat {
         }
 
         this.closeSidebar();
+        this.mailOpen = false;
+        this.notesOpen = false;
+        this.showSheet = false;
+        this.viewerUrl = '';
         this.learningNavDepth = 0;
         this.learningOpen = true;
+    }
+
+    // 仅显式切回对话才退出模式，同时撤销还在等待服务配置的 Agent 入口。
+    private exitAgentMode(): void {
+        this.agentOpen = false;
+        this.agentNavDepth = 0;
+        this.agentInsightsToken = 0;
+        this.agentLaunchRoute = 'day';
+        this.agentLaunchDecision = '';
+        this.sidebarAgentLaunchToken = -1;
+        this.launchRequestVersion++;
+        this.nxLaunchRoute = '';
+        this.nxLaunchDecision = '';
+    }
+
+    private toggleAgentMode(): void {
+        this.closeSidebar();
+        if (this.agentOpen || this.nxLaunchRoute.length > 0) {
+            this.exitAgentMode();
+            return;
+        }
+        this.sidebarAgentLaunchToken = this.nxLaunchToken + 1;
+        this.nxLaunchDecision = '';
+        this.nxLaunchRoute = 'day';
+        this.nxLaunchToken = this.sidebarAgentLaunchToken;
+    }
+
+    private async ensureLearningServices(): Promise<boolean> {
+        if (!this.attached || !this.sessionReady || !this.app.loggedIn) {
+            return false;
+        }
+        if (this.learningReady === null) {
+            this.learningReady = this.loadLearningServices();
+        }
+        try {
+            return await this.learningReady;
+        } finally {
+            this.learningReady = null;
+        }
+    }
+
+    private async loadLearningServices(): Promise<boolean> {
+        const username: string = this.app.username;
+        try {
+            await this.app.refreshLearningRuntime();
+        } catch (error) {
+            hilog.warn(DOMAIN, TAG, 'learning runtime refresh failed');
+            return false;
+        }
+        if (!this.attached || !this.sessionReady || !this.app.loggedIn || username !== this.app.username ||
+            !this.app.learningEnabled || !LearningHttp.configured) {
+            return false;
+        }
+        const host = this.getUIContext().getHostContext();
+        if (host !== undefined) {
+            LearningSystemEntry.prepare(host);
+            void LearningReadingApi.flushReadingProgress(host as common.UIAbilityContext);
+        }
+        return true;
+    }
+
+    private onLaunchRequested(): void {
+        const version: number = ++this.launchRequestVersion;
+        setTimeout(() => {
+            if (this.attached && version === this.launchRequestVersion) {
+                void this.consumeLaunchRoute();
+            }
+        }, 0);
+    }
+
+    private async consumeLaunchRoute(): Promise<void> {
+        if (!this.attached || !this.sessionReady || this.nxLaunchRoute.length === 0 || this.launchConsuming) {
+            return;
+        }
+        const launchToken: number = this.nxLaunchToken;
+        const requestVersion: number = this.launchRequestVersion;
+        this.launchConsuming = true;
+        try {
+            if (!(await this.ensureLearningServices())) {
+                if (this.attached && this.sessionReady && this.nxLaunchRoute.length > 0) {
+                    this.notify('学习服务尚未就绪，配置好后可继续打开', 2200);
+                }
+                return;
+            }
+            if (!this.attached || !this.sessionReady || this.nxLaunchRoute.length === 0) {
+                return;
+            }
+            const route: string = this.nxLaunchRoute;
+            if (['day', 'study', 'reader', 'mirror', 'judgment', 'review'].indexOf(route) < 0) {
+                this.nxLaunchRoute = '';
+                return;
+            }
+            // 侧栏切模式只更新底层主页，保留等待服务期间用户打开的覆盖页。
+            // 系统深链接仍将请求的目的页带到前台。
+            const fromSidebar: boolean = this.sidebarAgentLaunchToken === this.nxLaunchToken &&
+                route === 'day' && this.nxLaunchDecision.length === 0;
+            if (!fromSidebar) {
+                this.closeSidebar();
+                this.learningOpen = false;
+                this.mailOpen = false;
+                this.notesOpen = false;
+                this.noteEditorOpen = false;
+                this.showSheet = false;
+                this.viewerUrl = '';
+            }
+            this.agentLaunchDecision = this.nxLaunchDecision;
+            this.agentLaunchRoute = route;
+            this.agentLaunchToken++;
+            if (!this.agentOpen) {
+                this.agentNavDepth = 0;
+            }
+            this.agentOpen = true;
+            this.sidebarAgentLaunchToken = -1;
+            this.nxLaunchRoute = '';
+            this.nxLaunchDecision = '';
+        } finally {
+            this.launchConsuming = false;
+            // An explicit retry can arrive while runtime discovery is in flight. Retry that newer
+            // request once; a failure with the same token must remain pending without a retry loop.
+            if (this.attached && this.sessionReady && this.nxLaunchRoute.length > 0 &&
+                (launchToken !== this.nxLaunchToken || requestVersion !== this.launchRequestVersion)) {
+                this.onLaunchRequested();
+            }
+        }
     }
 
     // 学习侧发起一轮学习会话（当前用于六维画像快速评估）：
@@ -1100,6 +1334,7 @@ export struct MainChat {
     // ---------- 侧栏开关 ----------
     // 打开/关闭用 animateTo 驱动 translate+opacity 属性动画（始终挂载，无 if 卸载退场动画问题）
     private openSidebar(): void {
+        this.getUIContext().getFocusController().clearFocus();
         // 每次展开顺手刷新一次会话列表，保证最近对话不过期；完成后推高列表代次驱动重建
         this.app.refreshConversations().then(() => {
             this.bumpList();
@@ -2001,6 +2236,7 @@ export struct MainChat {
     // 打开历史会话：切到目标会话并恢复现场，不中断任何进行中的流。
     // 目标会话正在生成时以本地缓冲为准（服务端尚未落盘），其余情况重新拉取权威历史
     private openConversation(conversationId: string, convTitle: string): void {
+        this.exitAgentMode();
         this.leaveRemoteConversation();
         this.conversationId = conversationId;
         this.streamUserScrolled = false;
@@ -2036,6 +2272,7 @@ export struct MainChat {
 
     // 新开一轮：切到空白视图回到空白态（顶栏 + 侧栏共用），不中断后台流
     private startNewRound(): void {
+        this.exitAgentMode();
         this.leaveRemoteConversation();
         this.conversationId = '';
         this.streamUserScrolled = false;

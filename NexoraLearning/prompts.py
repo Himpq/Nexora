@@ -1818,11 +1818,12 @@ OUTLINE_GENERATION_PROMPT = """
 
 ## 规则
 1. sections 数量控制在 8-15 个，根据课程内容复杂度调整
-2. 每个 section 的 sources 必须引用真实的教材内容，不要编造
-3. prerequisites 中的 id 必须在 sections 中存在
-4. estimated_minutes 根据内容量估算，每个 section 在 15-60 分钟之间
-5. exploration.agent_prompt 要具体、可执行，能引导学生深入学习
-6. 必须通过 submit_outline 工具提交，不要输出纯文本 JSON
+2. 每个 section 的 sources 必须引用真实的教材内容，不要编造；book_id 必须使用「章节结构」里给出的原值
+3. **sections 必须覆盖教材列表里的每一本教材**：每本书至少要被一个 section 的 sources 引用；两本书主题相近的章可以合并进同一个 section，sources 同时引用两本书。漏掉任何一本教材的大纲会被拒绝
+4. prerequisites 中的 id 必须在 sections 中存在
+5. estimated_minutes 根据内容量估算，每个 section 在 15-60 分钟之间
+6. exploration.agent_prompt 要具体、可执行，能引导学生深入学习
+7. 必须通过 submit_outline 工具提交，不要输出纯文本 JSON
 """.strip()
 
 

@@ -1,0 +1,566 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/components/entry/TimelineEntryView.ets b/HarmonyosApp/entry/src/main/ets/components/entry/TimelineEntryView.ets
+index 61f3c06..b99c9ce 100644
+--- a/HarmonyosApp/entry/src/main/ets/components/entry/TimelineEntryView.ets
++++ b/HarmonyosApp/entry/src/main/ets/components/entry/TimelineEntryView.ets
+@@ -4,11 +4,12 @@
+  * 主动推送卡（proactive）：好 / 晚点 / 不用了 → /decision/respond 回喂决策器。
+  * plan 卡：开始学习 → /open-session。其余卡片类型走通用摘要渲染（#5/#9 等任务逐步专化）。
+  */
+-import { TimelineEntry, ProactiveCard, PlanCard, PrepCard, PrepStep, PrereqCard, ConfusionCard,
++import { TimelineEntry, ProactiveCard, PlanCard, PlanCardTarget, PrepCard, PrepStep, PrereqCard, ConfusionCard,
+   ConfusionBreakdown, WrapupCard, QuizCard, MasteryShift, UncertainItem, MessageCard, EvidenceRef,
+-  JudgmentSummary, ContextSnapshot } from '../../models/Index';
++  JudgmentSummary, ContextSnapshot, SearchCard, SearchFinding, VideoCard, ProgressCard, MailCard } from '../../models/Index';
+ import { AgentApi, AgentEnvelope } from '../../services/AgentApi';
+ import { nxPalette, NxPalette, NxRadius, NxGrid, NxFontSize, NxFontFamily, NxShadow } from '../../theme/DesignTokens';
++import { nxTimePhase } from './TimelineRows';
+ import { sharedTts } from '../../capability/tts';
+ import { MarkdownView } from '../common/MarkdownView';
+ import { ThinkingLine } from '../common/ThinkingLine';
+@@ -77,6 +78,11 @@ export struct TimelineEntryView {
+   };
+   @State evidenceOpen: boolean = false;
+   @State responding: boolean = false;
++  /** 请求状态与业务状态分开（2026-09-21 审查 C1）：失败只记在这里，entry.status 保持 pending，动作按钮保留。 */
++  @State respondError: string = '';
++  @State lastResponse: string = '';
++  /** 本条朗读中（用 requestId 区分，避免别的条目停掉时也跟着变）。 */
++  @State speakingThis: boolean = false;
+   @State expanded: boolean = false;
+   @State contextOpen: boolean = false;
+   @State stepsOpen: boolean = false;
+@@ -84,7 +90,8 @@ export struct TimelineEntryView {
+   };
+   onOpenSession: () => void = () => {
+   };
+-  onOpenPlan: () => void = () => {
++  /** 计划卡「开始学习」：带上这张卡自己的目标（旧记录可能为 null，由页面降级处理）。 */
++  onOpenPlan: (target: PlanCardTarget | null) => void = (target: PlanCardTarget | null) => {
+   };
+   onOpenPrereq: (lectureId: string, bookId: string, chapterIndex: number, chapterName: string) => void =
+     (lectureId: string, bookId: string, chapterIndex: number, chapterName: string) => {
+@@ -98,6 +105,11 @@ export struct TimelineEntryView {
+   /** 长按任一条 → 抽屉：它当时看到了什么 + 它眼里的你。 */
+   onInspect: (entry: TimelineEntry) => void = (entry: TimelineEntry) => {
+   };
++  /** 发送失败的用户消息：重发 / 放回输入框编辑（2026-09-21 审查 C3）。 */
++  onResend: (entry: TimelineEntry) => void = (entry: TimelineEntry) => {
++  };
++  onEditFailed: (entry: TimelineEntry) => void = (entry: TimelineEntry) => {
++  };
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   private api: AgentApi = new AgentApi();
+ 
+@@ -105,6 +117,9 @@ export struct TimelineEntryView {
+     this.entry = params.entry as TimelineEntry;
+     this.evidenceOpen = false;
+     this.responding = false;
++    this.respondError = '';
++    this.lastResponse = '';
++    this.speakingThis = false;
+     this.expanded = false;
+     this.contextOpen = false;
+     this.stepsOpen = false;
+@@ -136,8 +151,11 @@ export struct TimelineEntryView {
+       return;
+     }
+     this.responding = true;
++    this.respondError = '';
++    this.lastResponse = response;
+     try {
+       const env: AgentEnvelope = await this.api.postDecisionRespond(this.decisionId(), response);
++      // 只有服务确认后才改业务状态。
+       this.entry.status = response;
+       this.onResponded();
+       if (response === 'accept') {
+@@ -158,12 +176,42 @@ export struct TimelineEntryView {
+         }
+       }
+     } catch (err) {
+-      this.entry.status = 'error';
++      // 失败：业务状态仍是 pending，三个按钮保留，并给出重试。原实现把它写成 error 并显示「已确认，不再提醒」。
++      const e = err as Error;
++      this.respondError = '这个选择没送到：' + (e.message !== undefined && e.message.length > 0 ? e.message : '网络错误');
+     } finally {
+       this.responding = false;
+     }
+   }
+ 
++  private responseLabel(card: ProactiveCard, response: string): string {
++    if (response === 'accept') {
++      return card.accept;
++    }
++    if (response === 'defer') {
++      return card.defer;
++    }
++    return card.dismiss;
++  }
++
++  private statusLabel(): string {
++    const status: string = this.entry.status !== undefined ? this.entry.status : '';
++    if (status === 'accept') {
++      return '已确认，正在打开学习会话';
++    }
++    if (status === 'defer') {
++      return '已确认，稍后再提醒';
++    }
++    if (status === 'dismiss') {
++      return '已确认，不再提醒';
++    }
++    if (status === 'expired' || status === 'timeout') {
++      return '这条已经过期';
++    }
++    // 未知的服务端状态如实显示，不归入「不再提醒」。
++    return '状态：' + status;
++  }
++
+   @Builder
+   proactiveCard(card: ProactiveCard) {
+     Column({ space: NxGrid * 3 }) {
+@@ -196,9 +244,9 @@ export struct TimelineEntryView {
+       // 操作独占一行：原先与时长挤在同一 Row，窄屏三个按钮必被压扁。
+       if (this.entry.status === undefined || this.entry.status === 'pending') {
+         Row({ space: NxGrid * 2 }) {
+-          Button(card.accept)
++          Button(this.responding && this.lastResponse === 'accept' ? '发送中…' : card.accept)
+             .layoutWeight(2)
+-            .height(34)
++            .height(40)
+             .fontSize(NxFontSize.md)
+             .backgroundColor(this.palette().onPrimary)
+             .fontColor(this.palette().primary)
+@@ -208,7 +256,7 @@ export struct TimelineEntryView {
+             })
+           Button(card.defer)
+             .layoutWeight(1)
+-            .height(34)
++            .height(40)
+             .fontSize(NxFontSize.sm)
+             .backgroundColor(this.palette().onPrimaryFill)
+             .fontColor(this.palette().onPrimary)
+@@ -218,7 +266,7 @@ export struct TimelineEntryView {
+             })
+           Button(card.dismiss)
+             .layoutWeight(1)
+-            .height(34)
++            .height(40)
+             .fontSize(NxFontSize.sm)
+             .backgroundColor(this.palette().onPrimaryFill)
+             .fontColor(this.palette().onPrimarySoft)
+@@ -228,8 +276,26 @@ export struct TimelineEntryView {
+             })
+         }
+         .width('100%')
++        if (this.respondError.length > 0) {
++          Row({ space: NxGrid * 2 }) {
++            Text(this.respondError)
++              .fontSize(NxFontSize.xs)
++              .fontColor(this.palette().onPrimarySoft)
++              .layoutWeight(1)
++            Text('重试「' + this.responseLabel(card, this.lastResponse) + '」')
++              .fontSize(NxFontSize.xs)
++              .fontColor(this.palette().onPrimary)
++              .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++              .borderRadius(NxRadius.xs)
++              .backgroundColor(this.palette().onPrimaryFill)
++              .onClick(() => {
++                this.respond(this.lastResponse);
++              })
++          }
++          .width('100%')
++        }
+       } else {
+-        Text(this.entry.status === 'accept' ? '已确认，正在打开学习会话' : (this.entry.status === 'defer' ? '已确认，稍后再提醒' : '已确认，不再提醒'))
++        Text(this.statusLabel())
+           .fontSize(NxFontSize.sm)
+           .fontColor(this.palette().onPrimarySoft)
+           .width('100%')
+@@ -417,10 +483,10 @@ export struct TimelineEntryView {
+         .width('100%')
+       Button('先过一遍（约 ' + card.minutes + ' 分钟）')
+         .width('100%')
+-        .height(34)
++        .height(40)
+         .fontSize(NxFontSize.md)
+-        .backgroundColor(this.palette().primary)
+-        .fontColor(this.palette().onPrimary)
++        .backgroundColor(this.palette().buttonFill)
++        .fontColor(this.palette().onButton)
+         .onClick(() => {
+           const lectureId = card.fromLectureId !== undefined ? card.fromLectureId : '';
+           const bookId = card.fromBookId !== undefined ? card.fromBookId : '';
+@@ -443,10 +509,10 @@ export struct TimelineEntryView {
+         .width('100%')
+       Button('开始答题')
+         .width('100%')
+-        .height(34)
++        .height(40)
+         .fontSize(NxFontSize.md)
+-        .backgroundColor(this.palette().primary)
+-        .fontColor(this.palette().onPrimary)
++        .backgroundColor(this.palette().buttonFill)
++        .fontColor(this.palette().onButton)
+         .onClick(() => {
+           this.onOpenQuiz(card.flowId !== undefined ? card.flowId : '');
+         })
+@@ -501,7 +567,7 @@ export struct TimelineEntryView {
+               } else {
+                 Row({ space: NxGrid * 2 }) {
+                   Button('对')
+-                    .height(28)
++                    .height(36)
+                     .fontSize(NxFontSize.sm)
+                     .backgroundColor(this.palette().surface3)
+                     .fontColor(this.palette().text2)
+@@ -509,7 +575,7 @@ export struct TimelineEntryView {
+                       this.verdictUncertain(card, item.questionId, 'agree');
+                     })
+                   Button('不对')
+-                    .height(28)
++                    .height(36)
+                     .fontSize(NxFontSize.sm)
+                     .backgroundColor(this.palette().surface3)
+                     .fontColor(this.palette().text2)
+@@ -571,12 +637,12 @@ export struct TimelineEntryView {
+       }
+       Button('开始学习')
+         .width('100%')
+-        .height(34)
++        .height(40)
+         .fontSize(NxFontSize.md)
+-        .backgroundColor(this.palette().primary)
+-        .fontColor(this.palette().onPrimary)
++        .backgroundColor(this.palette().buttonFill)
++        .fontColor(this.palette().onButton)
+         .onClick(() => {
+-          this.onOpenPlan();
++          this.onOpenPlan(card.target !== undefined && card.target !== null ? card.target : null);
+         })
+     }
+     .width('100%')
+@@ -596,7 +662,7 @@ export struct TimelineEntryView {
+         .maxLines(4)
+         .textOverflow({ overflow: TextOverflow.Ellipsis })
+       Button('回到原文')
+-        .height(30)
++        .height(36)
+         .fontSize(NxFontSize.sm)
+         .backgroundColor(this.palette().primarySoft)
+         .fontColor(this.palette().primary)
+@@ -625,6 +691,51 @@ export struct TimelineEntryView {
+           .fontColor(this.palette().text2)
+           .width('100%')
+       }
++      // 契约里已有的字段尽量展示，不再只剩标题（2026-09-21 审查「工具卡片声明强于呈现」）。
++      if (this.entry.card !== null && this.entry.card !== undefined) {
++        if (this.entry.card.type === 'search') {
++          ForEach((this.entry.card as SearchCard).findings.slice(0, 3), (row: SearchFinding, index: number) => {
++            Column({ space: 2 }) {
++              Text(row.title)
++                .fontSize(NxFontSize.sm)
++                .fontColor(this.palette().primary)
++                .maxLines(1)
++                .textOverflow({ overflow: TextOverflow.Ellipsis })
++                .width('100%')
++              if (row.snippet.length > 0) {
++                Text(row.snippet)
++                  .fontSize(NxFontSize.xs)
++                  .fontColor(this.palette().text3)
++                  .maxLines(2)
++                  .textOverflow({ overflow: TextOverflow.Ellipsis })
++                  .width('100%')
++              }
++            }
++            .width('100%')
++          }, (row: SearchFinding, index: number) => row.url + '_' + index)
++        } else if (this.entry.card.type === 'video') {
++          Text((this.entry.card as VideoCard).source.length > 0 ? '来源：' + (this.entry.card as VideoCard).source : '视频')
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().text3)
++            .width('100%')
++        } else if (this.entry.card.type === 'progress') {
++          Progress({ value: Math.round((this.entry.card as ProgressCard).percent), total: 100, type: ProgressType.Linear })
++            .width('100%')
++            .color(this.palette().primary)
++        } else if (this.entry.card.type === 'mail') {
++          Text('来自 ' + (this.entry.card as MailCard).from +
++            ((this.entry.card as MailCard).dueDate !== undefined && (this.entry.card as MailCard).dueDate!.length > 0 ? ' · 截止 ' + (this.entry.card as MailCard).dueDate : ''))
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().text3)
++            .width('100%')
++          if ((this.entry.card as MailCard).summary.length > 0 && (this.entry.card as MailCard).summary !== this.entry.text) {
++            Text((this.entry.card as MailCard).summary)
++              .fontSize(NxFontSize.sm)
++              .fontColor(this.palette().text2)
++              .width('100%')
++          }
++        }
++      }
+     }
+     .width('100%')
+     .padding(NxGrid * 3)
+@@ -643,15 +754,15 @@ export struct TimelineEntryView {
+     if (this.entry.kind !== 'agent_act') {
+       return '';
+     }
+-    const hour: number = new Date(this.entry.ts).getHours();
+-    const night: boolean = hour >= 22 || hour < 7;
++    const night: boolean = nxTimePhase(this.entry.ts) === 'night';
+     const card: MessageCard | null | undefined = this.entry.card;
+     const isPrep: boolean = card !== null && card !== undefined && card.type === 'prep';
+     if (isPrep && night) {
+-      return '你睡着的时候';
++      // 只说它做了什么，不推断用户睡没睡。
++      return '夜里我准备的';
+     }
+     if (night) {
+-      return '你不在的时候';
++      return '夜里我做的';
+     }
+     return '我主动做的';
+   }
+@@ -686,8 +797,8 @@ export struct TimelineEntryView {
+   }
+ 
+   /**
+-   * 克制的证据（§11.4 第 4 条）：它为什么选择不说话，以及当时算了多少分。
+-   * 后端字段缺失时整块不渲染，不影响其余显示。
++   * 克制的证据（§11.4 第 4 条）：它为什么选择不说话。
++   * 决策分 / 门槛是诊断信息（v6：不在主时间线显示内部 score），收进「为什么」展开后的快照里。
+    */
+   @Builder
+   holdEvidence() {
+@@ -700,11 +811,11 @@ export struct TimelineEntryView {
+           .borderRadius(NxRadius.xs)
+           .backgroundColor(this.palette().surface3)
+       }
+-      if (typeof this.entry.score === 'number') {
++      if (this.expanded && typeof this.entry.score === 'number') {
+         // 后端部分 hold（如流程超时收敛）没有分数，JSON 里是 null，不能只判 undefined。
+         Text('决策分 ' + this.entry.score.toFixed(2) + ' / 门槛 0.55')
+           .fontSize(NxFontSize.xs)
+-          .fontColor(this.palette().text4)
++          .fontColor(this.palette().text3)
+       }
+       Blank()
+     }
+@@ -835,7 +946,7 @@ export struct TimelineEntryView {
+     .backgroundColor(this.palette().surface3)
+   }
+ 
+-  /** 用户消息：右对齐窄气泡，与 Agent 的便签在视觉上分开；同样挂在时间轴上。 */
++  /** 用户消息：右对齐窄气泡，与 Agent 的便签在视觉上分开；同样挂在时间轴上。失败的消息保留原文并可重发。 */
+   @Builder
+   userBubble() {
+     Column({ space: NxGrid }) {
+@@ -843,19 +954,44 @@ export struct TimelineEntryView {
+         Blank()
+         Text(this.entry.text)
+           .fontSize(NxFontSize.md)
+-          .fontColor(this.palette().onPrimary)
++          .fontColor(this.palette().onButton)
+           .lineHeight(20)
+           .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid * 2, bottom: NxGrid * 2 })
+           .borderRadius(NxRadius.md)
+-          .backgroundColor(this.palette().primary)
++          .backgroundColor(this.palette().buttonFill)
++          .opacity(this.entry.status === 'failed' ? 0.6 : 1)
+           .constraintSize({ maxWidth: '78%' })
+       }
+       .width('100%')
+-      Row() {
++      Row({ space: NxGrid * 2 }) {
+         Blank()
+-        Text(formatEntryTime(this.entry.ts))
+-          .fontSize(NxFontSize.xs)
+-          .fontColor(this.palette().text4)
++        if (this.entry.status === 'failed') {
++          Text('没发出去')
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().danger)
++          Text('重发')
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().primary)
++            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++            .onClick(() => {
++              this.onResend(this.entry);
++            })
++          Text('编辑')
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().primary)
++            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++            .onClick(() => {
++              this.onEditFailed(this.entry);
++            })
++        } else if (this.entry.status === 'sending') {
++          Text('发送中')
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().text4)
++        } else {
++          Text(formatEntryTime(this.entry.ts))
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().text4)
++        }
+       }
+       .width('100%')
+     }
+@@ -883,8 +1019,7 @@ export struct TimelineEntryView {
+     if (this.entry.kind === 'system' || this.entry.kind === 'tool_step') {
+       return this.palette().text4;
+     }
+-    const hour: number = new Date(this.entry.ts).getHours();
+-    if (hour >= 23 || hour < 8) {
++    if (nxTimePhase(this.entry.ts) === 'night') {
+       return this.palette().night;
+     }
+     if (this.entry.kind === 'agent_act' || this.entry.kind === 'agent_msg') {
+@@ -893,6 +1028,22 @@ export struct TimelineEntryView {
+     return this.palette().text3;
+   }
+ 
++  /** 朗读 / 停止：只对本条生效；服务是单例，别的条目开始朗读时本条按钮回到「朗读」。 */
++  private toggleSpeak(): void {
++    if (this.speakingThis) {
++      sharedTts.stop();
++      this.speakingThis = false;
++      return;
++    }
++    sharedTts.setStateListener((speaking: boolean): void => {
++      this.speakingThis = speaking;
++    });
++    this.speakingThis = true;
++    sharedTts.speakText(this.entry.text, (message: string): void => {
++      this.speakingThis = false;
++    });
++  }
++
+   private isHold(): boolean {
+     return this.entry.kind === 'agent_hold';
+   }
+@@ -931,14 +1082,15 @@ export struct TimelineEntryView {
+           }
+           Blank()
+           if ((this.entry.kind === 'agent_act' || this.entry.kind === 'agent_msg') &&
+-            this.entry.status !== 'thinking' && this.entry.text.length > 0) {
+-            Text('朗读')
++            this.entry.status !== 'thinking' && this.entry.status !== 'streaming' && this.entry.text.length > 0) {
++            // 流式释放中不允许朗读半截正文；朗读中显示「停止」。
++            Text(this.speakingThis ? '停止朗读' : '朗读')
+               .fontSize(NxFontSize.xs)
+-              .fontColor(this.palette().text4)
+-              .margin({ right: NxGrid * 2 })
++              .fontColor(this.speakingThis ? this.palette().danger : this.palette().text3)
++              .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++              .margin({ right: NxGrid })
+               .onClick(() => {
+-                sharedTts.speakText(this.entry.text, (message: string): void => {
+-                });
++                this.toggleSpeak();
+               })
+           }
+           if (this.entry.status !== undefined && this.entry.status === 'accept') {
+diff --git a/HarmonyosApp/entry/src/main/ets/components/entry/TimelineRows.ets b/HarmonyosApp/entry/src/main/ets/components/entry/TimelineRows.ets
+index 84a007f..1e5f5dd 100644
+--- a/HarmonyosApp/entry/src/main/ets/components/entry/TimelineRows.ets
++++ b/HarmonyosApp/entry/src/main/ets/components/entry/TimelineRows.ets
+@@ -43,6 +43,21 @@ export function nxDayLabel(ts: number): string {
+   return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+ }
+ 
++/**
++ * 统一的时段划分（2026-09-21 审查 I8）：原来分幕 23–08、状态字 23–06、自主性文案 22–07 三处不一致。
++ * night：它在工作的时段（22:00–07:00）；dawn：它报告的时刻（07:00–11:00）；day：其余。
++ */
++export function nxTimePhase(ts: number): string {
++  const hour: number = new Date(ts).getHours();
++  if (hour >= 22 || hour < 7) {
++    return 'night';
++  }
++  if (hour < 11) {
++    return 'dawn';
++  }
++  return 'day';
++}
++
+ export class SectionedEntryDataSource implements IDataSource {
+   private rows: TimelineRow[] = [];
+   private entries: TimelineEntry[] = [];
+diff --git a/HarmonyosApp/entry/src/main/ets/models/AgentContracts.ets b/HarmonyosApp/entry/src/main/ets/models/AgentContracts.ets
+index 869da3d..7f08f3a 100644
+--- a/HarmonyosApp/entry/src/main/ets/models/AgentContracts.ets
++++ b/HarmonyosApp/entry/src/main/ets/models/AgentContracts.ets
+@@ -163,6 +163,8 @@ export interface ReviewResult {
+   chapter_index: number;
+   chapter_name: string;
+   quiz_id: string;
++  /** 一次练习的身份：题组内容可缓存复用，每个生成任务都是新的一轮，结算与累计按它隔离。 */
++  attempt_id?: string;
+   questions: ReviewQuestion[];
+ }
+ 
+@@ -187,17 +189,24 @@ export interface ReviewSubmitItem {
+ 
+ export interface ReviewSubmitData {
+   quiz_id: string;
++  attempt_id?: string;
+   /** 本次结算的题：对/总。逐题结算时通常是 1/1 或 0/1。 */
+   score: string;
+   correct: number;
+   total: number;
+   items: ReviewSubmitItem[];
+-  /** 整卷累计（后端按 quiz_id 汇总所有已结算题）。 */
++  /** 整卷累计（后端按 quiz_id + attempt_id 汇总这一轮已结算的题）。 */
+   quiz_correct?: number;
+   quiz_total?: number;
+   quiz_settled?: number;
++  settled_ids?: string[];
+   completed?: boolean;
+   evidence_written?: number;
++  /** 成绩实际归到的来源（题组自身），不是请求里的当前选择。 */
++  lecture_id?: string;
++  book_id?: string;
++  chapter_index?: number;
++  chapter_name?: string;
+ }
+ 
+ export interface TaskData {
+diff --git a/HarmonyosApp/entry/src/main/ets/models/Index.ets b/HarmonyosApp/entry/src/main/ets/models/Index.ets
+index 99f5fff..cb1ac4b 100644
+--- a/HarmonyosApp/entry/src/main/ets/models/Index.ets
++++ b/HarmonyosApp/entry/src/main/ets/models/Index.ets
+@@ -60,6 +60,7 @@ export {
+   MasteryShift,
+   MessageCard,
+   PlanCard,
++  PlanCardTarget,
+   PrepBriefing,
+   PrepCard,
+   PrepStep,
+diff --git a/HarmonyosApp/entry/src/main/ets/models/TimelineEntry.ets b/HarmonyosApp/entry/src/main/ets/models/TimelineEntry.ets
+index 52533a6..4c762de 100644
+--- a/HarmonyosApp/entry/src/main/ets/models/TimelineEntry.ets
++++ b/HarmonyosApp/entry/src/main/ets/models/TimelineEntry.ets
+@@ -146,11 +146,23 @@ export interface WrapupCard {
+   flowId?: string;
+ }
+ 
++export interface PlanCardTarget {
++  lecture_id: string;
++  lecture_title: string;
++  book_id: string;
++  book_title: string;
++  chapter_index: number;
++  chapter_name: string;
++  chapter_range: string;
++}
++
+ export interface PlanCard {
+   type: 'plan';
+   chapter: string;
+   minutes: number;
+   why: string;
++  /** 这张卡自己的目标：「开始学习」打开的必须是卡上写的那一章。旧记录可能没有。 */
++  target?: PlanCardTarget | null;
+ }
+ 
+ export interface QuizCard {

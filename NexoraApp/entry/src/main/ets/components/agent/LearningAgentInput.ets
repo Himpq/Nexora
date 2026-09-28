@@ -1,0 +1,83 @@
+import { FontSize, Motion, Radius, Shadow, Size, Space } from '../../common/DesignToken';
+import { LearningAgentVoiceButton } from './LearningAgentVoiceButton';
+
+// Agent owns its draft and transport; the card shares the main conversation's input shape.
+@Component
+export struct LearningAgentInput {
+    @Link draft: string;
+    @Prop sending: boolean = false;
+    @Prop statusLabel: string = 'Agent 正在回应…';
+    @Prop contextLabel: string = '';
+    @Prop visible: boolean = true;
+    @Prop photoText: string = '';
+    @Prop pickingPhoto: boolean = false;
+    @Prop includeNotes: boolean = false;
+    @StorageProp('insetBottom') private insetBottom: number = 0;
+    @State private focused: boolean = false;
+    onSend: () => void = () => {};
+    onPhoto: () => void = () => {};
+    onRemovePhoto: () => void = () => {};
+    onToggleNotes: () => void = () => {};
+    onError: (message: string) => void = () => {};
+
+    build() {
+        Column({ space: Space.sm }) {
+            if (this.photoText.length > 0) {
+                Row({ space: Space.sm }) {
+                    Text('图片文字：' + this.photoText).fontSize(FontSize.caption).fontColor($r('app.color.text_secondary'))
+                        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                    Button('移除', { type: ButtonType.Normal }).fontSize(FontSize.small).backgroundColor(Color.Transparent)
+                        .fontColor($r('app.color.text_secondary')).onClick(() => { this.onRemovePhoto(); }).id('agent_photo_remove')
+                }.width('100%')
+            }
+            TextArea({ placeholder: '向 Agent 发送消息，继续今天的学习…', text: $$this.draft })
+                .id('agent_input').fontSize(FontSize.body).fontColor($r('app.color.text_primary'))
+                .caretColor($r('app.color.brand_primary')).backgroundColor(Color.Transparent)
+                .borderRadius(0).padding(0)
+                .constraintSize({ minHeight: Size.iconLarge, maxHeight: Size.inputMaxHeight })
+                .maxLines(6).maxLength(3000)
+                .onFocus(() => { this.focused = true; })
+                .onBlur(() => { this.focused = false; })
+            Row({ space: Space.xs }) {
+                LearningAgentVoiceButton({ disabled: !this.visible || this.sending || this.pickingPhoto,
+                    onText: (text: string) => { this.draft = (this.draft + text).substring(0, 3000); }, onError: this.onError })
+                Button(this.pickingPhoto ? '识别中…' : '图片', { type: ButtonType.Normal })
+                    .id('agent_photo').fontSize(FontSize.small).backgroundColor(Color.Transparent).fontColor($r('app.color.text_secondary'))
+                    .enabled(!this.sending && !this.pickingPhoto).onClick(() => { this.onPhoto(); })
+                Button(this.includeNotes ? '已附带随笔' : '附带随笔', { type: ButtonType.Normal })
+                    .id('agent_notes_context').fontSize(FontSize.small).backgroundColor(Color.Transparent)
+                    .fontColor(this.includeNotes ? $r('app.color.text_brand') : $r('app.color.text_secondary'))
+                    .enabled(!this.sending).onClick(() => { this.onToggleNotes(); })
+                Blank()
+            }.width('100%')
+            Row({ space: Space.sm }) {
+                Row({ space: Space.xs }) {
+                    Image($r('app.media.ic_spark')).width(Size.iconSmall).height(Size.iconSmall)
+                        .fillColor($r('app.color.icon_secondary'))
+                    Text(this.sending ? this.statusLabel : 'Agent' + (this.contextLabel.length > 0 ? ' · ' + this.contextLabel : ' · 学习模式'))
+                        .fontSize(FontSize.caption).fontColor($r('app.color.text_secondary'))
+                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.constraintSize({ maxWidth: '76%' })
+                    .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
+                    .borderRadius(Radius.full).backgroundColor($r('app.color.bg_sunken'))
+                Blank()
+                Button({ type: ButtonType.Circle }) {
+                    if (this.sending) {
+                        LoadingProgress().width(Size.icon).height(Size.icon).color($r('app.color.text_inverse'))
+                    } else {
+                        Image($r('app.media.ic_send')).width(Size.icon).height(Size.icon).fillColor($r('app.color.text_inverse'))
+                    }
+                }.id('agent_send').width(Size.touchTarget).height(Size.touchTarget)
+                    .backgroundColor($r('app.color.brand_primary'))
+                    .enabled(!this.sending && this.draft.trim().length > 0)
+                    .accessibilityText(this.sending ? 'Agent 正在回应' : '发送给 Agent')
+                    .onClick(() => { this.onSend(); })
+            }.width('100%').alignItems(VerticalAlign.Center)
+        }.id('agent_ask').width('100%')
+            .padding({ left: Space.lg, right: Space.xs, top: Space.lg, bottom: Space.md })
+            .margin({ bottom: this.insetBottom }).borderRadius(Radius.xl)
+            .backgroundColor($r('app.color.bg_card')).shadow(Shadow.card)
+            .border({ width: this.focused ? 1 : 0, color: $r('app.color.brand_primary') })
+            .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
+    }
+}

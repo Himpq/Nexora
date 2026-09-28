@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Mapping
 
 from core.booksproc import build_memory_runner, get_memory_settings
+from .evidence_memory import build_memory_context, learner_evidence_only
 from .memory_queue import mark_analysis_completed
 from core.runlog import log_event
 from core.user import (
@@ -27,7 +28,7 @@ def _recent_records_for_lecture(cfg: Mapping[str, Any], user_id: str, lecture_id
         if str(row.get("lecture_id") or "").strip() != str(lecture_id or "").strip():
             continue
         out.append(dict(row))
-    return out[-max(1, int(limit or 12)) :]
+    return learner_evidence_only(out[-max(1, int(limit or 12)) :])
 
 
 def _normalize_markdown(text: str) -> str:
@@ -79,7 +80,7 @@ def run_memory_analysis_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> N
     lecture_id = str(job.get("lecture_id") or "").strip()
     job_id = str(job.get("job_id") or "").strip()
     reason = str(job.get("reason") or "").strip() or "manual"
-    payload = dict(job.get("payload") or {})
+    payload = learner_evidence_only(dict(job.get("payload") or {}))
     if not user_id:
         raise ValueError("memory analysis job missing user_id")
     if not lecture_id:
@@ -133,6 +134,10 @@ def run_memory_analysis_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> N
     shared_input_suffix = (
         "\n\nRecent conversation messages (JSON): "
         + json.dumps(recent_conversation_messages, ensure_ascii=False, indent=2)
+        + "\n\nOnly explicit learner statements and measured learning events are evidence. "
+        "Never treat assistant answers as learner facts, questions as weaknesses, or reading as mastery. "
+        "An absent observation is unknown, not a zero score. New user corrections take precedence.\n"
+        + build_memory_context(cfg, user_id, lecture_id=lecture_id)
     )
 
     next_user_memory = runner.update_memory(

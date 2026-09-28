@@ -92,8 +92,9 @@ export class HttpUtil {
         return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers);
     }
 
-    static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.POST, pathOrUrl, payload, headers);
+    static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>,
+        readTimeoutMs: number = READ_TIMEOUT): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.POST, pathOrUrl, payload, headers, readTimeoutMs);
     }
 
     // 置顶等资源状态修改走 PUT，payload 为完整的变更请求体
@@ -235,7 +236,8 @@ export class HttpUtil {
     }
 
     // ---------- 内部实现 ----------
-    private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object, headers?: Record<string, string>): Promise<HttpResult> {
+    private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object,
+        headers?: Record<string, string>, readTimeoutMs: number = READ_TIMEOUT): Promise<HttpResult> {
         const url: string = HttpUtil.resolveUrl(pathOrUrl);
         const requestId: number = HttpUtil.nextRequestId();
         const startedAt: number = Date.now();
@@ -260,7 +262,7 @@ export class HttpUtil {
                     extraData: payload === undefined ? undefined : JSON.stringify(payload),
                     expectDataType: http.HttpDataType.STRING,
                     connectTimeout: CONNECT_TIMEOUT,
-                    readTimeout: READ_TIMEOUT,
+                    readTimeout: readTimeoutMs,
                     remoteValidation: 'skip'
                 }, (err: BusinessError, data: http.HttpResponse) => {
                     try {

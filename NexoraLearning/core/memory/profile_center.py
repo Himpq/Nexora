@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
-from core.memory.profile_extract import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+from core.memory.profile_extract import PROFILE_DIMENSIONS, parse_profile_timeline
+from core.memory.evidence_memory import read_profile_dimensions, validate_memory_user_id
 from core.runlog import log_event
 from core.user import ensure_user_files, read_memory
 from prompts import PROFILE_QUICK_INTERVIEW_PROMPT
@@ -27,16 +27,10 @@ PROFILE_SCORE_DIMENSIONS: List[Dict[str, str]] = [
 
 _PROFILE_SCORE_KEYS = {item["key"] for item in PROFILE_SCORE_DIMENSIONS}
 _PROFILE_CENTER_LOCK = threading.RLock()
-_SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
 
 
 def validate_profile_center_user_id(user_id: str) -> str:
-    safe_user_id = str(user_id or "").strip()
-
-    if not safe_user_id or not _SAFE_USER_ID_RE.fullmatch(safe_user_id):
-        raise ValueError("invalid user_id")
-
-    return safe_user_id
+    return validate_memory_user_id(user_id)
 
 
 def _profile_center_path(cfg: Mapping[str, Any], user_id: str) -> Path:
@@ -177,7 +171,7 @@ def build_profile_center_payload(cfg: Mapping[str, Any], user_id: str) -> Dict[s
     safe_user_id = validate_profile_center_user_id(user_id)
     state = _load_state(cfg, safe_user_id)
     user_md = str(read_memory(dict(cfg), safe_user_id, "user") or "")
-    dimensions = parse_profile_dimensions(user_md)
+    dimensions = read_profile_dimensions(cfg, safe_user_id)
     filled_count = sum(1 for item in dimensions.values() if item.get("filled"))
     scored_count = sum(1 for item in state["scores"] if item.get("score") is not None)
 

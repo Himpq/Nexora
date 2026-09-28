@@ -1,0 +1,1247 @@
+[
+  {
+    "frame": 0,
+    "file": "frame-0000.png",
+    "captureSeconds": 0.5312391,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 1,
+    "file": "frame-0001.png",
+    "captureSeconds": 1.1365052,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 2,
+    "file": "frame-0002.png",
+    "captureSeconds": 1.6670445999999999,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 3,
+    "file": "frame-0003.png",
+    "captureSeconds": 2.2480061,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 4,
+    "file": "frame-0004.png",
+    "captureSeconds": 2.8426882,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 5,
+    "file": "frame-0005.png",
+    "captureSeconds": 3.3854906999999996,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 6,
+    "file": "frame-0006.png",
+    "captureSeconds": 6.1037913,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 7,
+    "file": "frame-0007.png",
+    "captureSeconds": 6.678648600000001,
+    "topMeanRGB": [
+      244.918,
+      227.069,
+      207.248
+    ],
+    "bottomMeanRGB": [
+      244.46,
+      223.288,
+      201.458
+    ]
+  },
+  {
+    "frame": 8,
+    "file": "frame-0008.png",
+    "captureSeconds": 7.2681997,
+    "topMeanRGB": [
+      244.628,
+      223.889,
+      201.188
+    ],
+    "bottomMeanRGB": [
+      244.189,
+      221.592,
+      198.384
+    ]
+  },
+  {
+    "frame": 9,
+    "file": "frame-0009.png",
+    "captureSeconds": 7.9972207,
+    "topMeanRGB": [
+      244.682,
+      224.092,
+      201.422
+    ],
+    "bottomMeanRGB": [
+      244.307,
+      222.059,
+      199.089
+    ]
+  },
+  {
+    "frame": 10,
+    "file": "frame-0010.png",
+    "captureSeconds": 8.7181263,
+    "topMeanRGB": [
+      244.738,
+      224.298,
+      201.661
+    ],
+    "bottomMeanRGB": [
+      244.437,
+      222.534,
+      199.84
+    ]
+  },
+  {
+    "frame": 11,
+    "file": "frame-0011.png",
+    "captureSeconds": 9.3061432,
+    "topMeanRGB": [
+      244.827,
+      224.576,
+      201.948
+    ],
+    "bottomMeanRGB": [
+      244.671,
+      223.33,
+      201.305
+    ]
+  },
+  {
+    "frame": 12,
+    "file": "frame-0012.png",
+    "captureSeconds": 9.8941401,
+    "topMeanRGB": [
+      244.908,
+      224.971,
+      202.427
+    ],
+    "bottomMeanRGB": [
+      244.861,
+      224.079,
+      202.561
+    ]
+  },
+  {
+    "frame": 13,
+    "file": "frame-0013.png",
+    "captureSeconds": 10.497616699999998,
+    "topMeanRGB": [
+      244.962,
+      225.334,
+      202.801
+    ],
+    "bottomMeanRGB": [
+      244.989,
+      224.99,
+      203.819
+    ]
+  },
+  {
+    "frame": 14,
+    "file": "frame-0014.png",
+    "captureSeconds": 11.045829,
+    "topMeanRGB": [
+      244.983,
+      225.758,
+      203.248
+    ],
+    "bottomMeanRGB": [
+      245.044,
+      225.973,
+      205.085
+    ]
+  },
+  {
+    "frame": 15,
+    "file": "frame-0015.png",
+    "captureSeconds": 11.5892819,
+    "topMeanRGB": [
+      244.987,
+      226.201,
+      203.681
+    ],
+    "bottomMeanRGB": [
+      245.051,
+      226.739,
+      206.119
+    ]
+  },
+  {
+    "frame": 16,
+    "file": "frame-0016.png",
+    "captureSeconds": 12.1814126,
+    "topMeanRGB": [
+      244.985,
+      226.544,
+      204.023
+    ],
+    "bottomMeanRGB": [
+      245.021,
+      227.264,
+      206.92
+    ]
+  },
+  {
+    "frame": 17,
+    "file": "frame-0017.png",
+    "captureSeconds": 12.794480599999998,
+    "topMeanRGB": [
+      244.987,
+      226.826,
+      204.279
+    ],
+    "bottomMeanRGB": [
+      244.948,
+      227.797,
+      207.742
+    ]
+  },
+  {
+    "frame": 18,
+    "file": "frame-0018.png",
+    "captureSeconds": 13.3679981,
+    "topMeanRGB": [
+      244.994,
+      227.094,
+      204.614
+    ],
+    "bottomMeanRGB": [
+      244.929,
+      228.074,
+      208.135
+    ]
+  },
+  {
+    "frame": 19,
+    "file": "frame-0019.png",
+    "captureSeconds": 13.9293573,
+    "topMeanRGB": [
+      244.991,
+      227.132,
+      204.614
+    ],
+    "bottomMeanRGB": [
+      244.931,
+      228.164,
+      208.23
+    ]
+  },
+  {
+    "frame": 20,
+    "file": "frame-0020.png",
+    "captureSeconds": 14.468743799999999,
+    "topMeanRGB": [
+      244.989,
+      227.129,
+      204.609
+    ],
+    "bottomMeanRGB": [
+      244.931,
+      228.166,
+      208.229
+    ]
+  },
+  {
+    "frame": 21,
+    "file": "frame-0021.png",
+    "captureSeconds": 14.979474699999999,
+    "topMeanRGB": [
+      244.989,
+      227.129,
+      204.609
+    ],
+    "bottomMeanRGB": [
+      244.931,
+      228.166,
+      208.229
+    ]
+  },
+  {
+    "frame": 22,
+    "file": "frame-0022.png",
+    "captureSeconds": 15.539780499999999,
+    "topMeanRGB": [
+      244.989,
+      227.129,
+      204.609
+    ],
+    "bottomMeanRGB": [
+      244.931,
+      228.166,
+      208.229
+    ]
+  },
+  {
+    "frame": 23,
+    "file": "frame-0023.png",
+    "captureSeconds": 16.1297995,
+    "topMeanRGB": [
+      245.328,
+      232.506,
+      216.293
+    ],
+    "bottomMeanRGB": [
+      244.912,
+      230.317,
+      213.195
+    ]
+  },
+  {
+    "frame": 24,
+    "file": "frame-0024.png",
+    "captureSeconds": 16.7072987,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 25,
+    "file": "frame-0025.png",
+    "captureSeconds": 17.3077422,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 26,
+    "file": "frame-0026.png",
+    "captureSeconds": 17.85783,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 27,
+    "file": "frame-0027.png",
+    "captureSeconds": 18.448968699999998,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 28,
+    "file": "frame-0028.png",
+    "captureSeconds": 19.040208500000002,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 29,
+    "file": "frame-0029.png",
+    "captureSeconds": 19.6489755,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 30,
+    "file": "frame-0030.png",
+    "captureSeconds": 20.2365627,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 31,
+    "file": "frame-0031.png",
+    "captureSeconds": 20.7494702,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 32,
+    "file": "frame-0032.png",
+    "captureSeconds": 21.3561642,
+    "topMeanRGB": [
+      246.017,
+      235.733,
+      223.032
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 33,
+    "file": "frame-0033.png",
+    "captureSeconds": 21.892869199999996,
+    "topMeanRGB": [
+      246.199,
+      237.917,
+      226.375
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 34,
+    "file": "frame-0034.png",
+    "captureSeconds": 22.478398300000002,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 35,
+    "file": "frame-0035.png",
+    "captureSeconds": 22.9760032,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 36,
+    "file": "frame-0036.png",
+    "captureSeconds": 23.5675863,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 37,
+    "file": "frame-0037.png",
+    "captureSeconds": 24.111613,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 38,
+    "file": "frame-0038.png",
+    "captureSeconds": 24.6554845,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 39,
+    "file": "frame-0039.png",
+    "captureSeconds": 25.264885999999997,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 40,
+    "file": "frame-0040.png",
+    "captureSeconds": 25.8706297,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 41,
+    "file": "frame-0041.png",
+    "captureSeconds": 26.4493363,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 42,
+    "file": "frame-0042.png",
+    "captureSeconds": 27.0388481,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 43,
+    "file": "frame-0043.png",
+    "captureSeconds": 27.615806199999998,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 44,
+    "file": "frame-0044.png",
+    "captureSeconds": 28.2072832,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 45,
+    "file": "frame-0045.png",
+    "captureSeconds": 28.767672599999997,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 46,
+    "file": "frame-0046.png",
+    "captureSeconds": 29.3461338,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 47,
+    "file": "frame-0047.png",
+    "captureSeconds": 29.9683649,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 48,
+    "file": "frame-0048.png",
+    "captureSeconds": 30.558779899999998,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 49,
+    "file": "frame-0049.png",
+    "captureSeconds": 31.136457599999996,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 50,
+    "file": "frame-0050.png",
+    "captureSeconds": 31.7294421,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 51,
+    "file": "frame-0051.png",
+    "captureSeconds": 32.3348841,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 52,
+    "file": "frame-0052.png",
+    "captureSeconds": 32.910615,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 53,
+    "file": "frame-0053.png",
+    "captureSeconds": 33.459536699999994,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 54,
+    "file": "frame-0054.png",
+    "captureSeconds": 34.0016688,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 55,
+    "file": "frame-0055.png",
+    "captureSeconds": 34.5764177,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 56,
+    "file": "frame-0056.png",
+    "captureSeconds": 35.1497538,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 57,
+    "file": "frame-0057.png",
+    "captureSeconds": 35.6987283,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 58,
+    "file": "frame-0058.png",
+    "captureSeconds": 36.228771800000004,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 59,
+    "file": "frame-0059.png",
+    "captureSeconds": 36.8082318,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 60,
+    "file": "frame-0060.png",
+    "captureSeconds": 37.3616925,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 61,
+    "file": "frame-0061.png",
+    "captureSeconds": 37.9661268,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 62,
+    "file": "frame-0062.png",
+    "captureSeconds": 38.4826073,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 63,
+    "file": "frame-0063.png",
+    "captureSeconds": 39.0522596,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 64,
+    "file": "frame-0064.png",
+    "captureSeconds": 39.59614129999999,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 65,
+    "file": "frame-0065.png",
+    "captureSeconds": 40.110199,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 66,
+    "file": "frame-0066.png",
+    "captureSeconds": 40.7324762,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 67,
+    "file": "frame-0067.png",
+    "captureSeconds": 41.5695824,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 68,
+    "file": "frame-0068.png",
+    "captureSeconds": 42.1171615,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 69,
+    "file": "frame-0069.png",
+    "captureSeconds": 42.684184,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 70,
+    "file": "frame-0070.png",
+    "captureSeconds": 43.2986506,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 71,
+    "file": "frame-0071.png",
+    "captureSeconds": 43.9215608,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 72,
+    "file": "frame-0072.png",
+    "captureSeconds": 44.49644429999999,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 73,
+    "file": "frame-0073.png",
+    "captureSeconds": 45.0740484,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 74,
+    "file": "frame-0074.png",
+    "captureSeconds": 45.660479699999996,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 75,
+    "file": "frame-0075.png",
+    "captureSeconds": 46.2706066,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 76,
+    "file": "frame-0076.png",
+    "captureSeconds": 46.8541189,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 77,
+    "file": "frame-0077.png",
+    "captureSeconds": 47.4240577,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 78,
+    "file": "frame-0078.png",
+    "captureSeconds": 47.9873513,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 79,
+    "file": "frame-0079.png",
+    "captureSeconds": 48.5191875,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 80,
+    "file": "frame-0080.png",
+    "captureSeconds": 49.090964,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 81,
+    "file": "frame-0081.png",
+    "captureSeconds": 49.6807527,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  },
+  {
+    "frame": 82,
+    "file": "frame-0082.png",
+    "captureSeconds": 50.2561345,
+    "topMeanRGB": [
+      247.0,
+      245.0,
+      239.0
+    ],
+    "bottomMeanRGB": [
+      245.39,
+      231.924,
+      216.969
+    ]
+  }
+]

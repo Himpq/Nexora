@@ -1,0 +1,540 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/pages/Reader.ets b/HarmonyosApp/entry/src/main/ets/pages/Reader.ets
+index 404fe68..a5afcda 100644
+--- a/HarmonyosApp/entry/src/main/ets/pages/Reader.ets
++++ b/HarmonyosApp/entry/src/main/ets/pages/Reader.ets
+@@ -12,7 +12,7 @@
+  *   · 原右缘 AI 浮球并入操作面板；AI 问答走底部 sheet（宽屏变右栏）。
+  * 事件上报：selection / ask / snapshot / focus_in / focus_out / session_complete（§4.3 信号源）。
+  */
+-import { router, window } from '@kit.ArkUI';
++import { router, window, KeyboardAvoidMode } from '@kit.ArkUI';
+ import { MeasureText } from '@kit.ArkUI';
+ import { text as graphicsText } from '@kit.ArkGraphics2D';
+ import { batteryInfo, pasteboard } from '@kit.BasicServicesKit';
+@@ -63,6 +63,7 @@ import {
+   NxMarkSwatches,
+   nxMarkSwatch,
+ } from '../theme/DesignTokens';
++import { nxApplySystemBars } from '../theme/SystemBars';
+ import { BusinessError } from '@kit.BasicServicesKit';
+ 
+ /** 一页里的一个块：段落的一部分（长段跨页时拆分）或一张图。 */
+@@ -93,6 +94,59 @@ class ReaderMark {
+   color: string = 'yellow';
+ }
+ 
++/** 从标记集合里减去 [start,end)：完全覆盖的删掉，部分重叠的裁成两侧剩余段。 */
++export function nxSubtractMarks(marks: ReaderMark[], paraIndex: number, start: number, end: number): ReaderMark[] {
++  const next: ReaderMark[] = [];
++  for (const mark of marks) {
++    if (mark.paraIndex !== paraIndex || mark.end <= start || mark.start >= end) {
++      next.push(mark);
++      continue;
++    }
++    if (mark.start < start) {
++      const left = new ReaderMark();
++      left.paraIndex = mark.paraIndex;
++      left.start = mark.start;
++      left.end = start;
++      left.style = mark.style;
++      left.color = mark.color;
++      next.push(left);
++    }
++    if (mark.end > end) {
++      const right = new ReaderMark();
++      right.paraIndex = mark.paraIndex;
++      right.start = end;
++      right.end = mark.end;
++      right.style = mark.style;
++      right.color = mark.color;
++      next.push(right);
++    }
++  }
++  return next;
++}
++
++/** 相邻且样式、颜色相同的标记合并成一段，避免一次改色后留下三段碎片。 */
++export function nxMergeAdjacentMarks(marks: ReaderMark[]): ReaderMark[] {
++  const sorted: ReaderMark[] = marks.slice().sort((a: ReaderMark, b: ReaderMark): number =>
++    a.paraIndex !== b.paraIndex ? a.paraIndex - b.paraIndex : a.start - b.start);
++  const merged: ReaderMark[] = [];
++  for (const mark of sorted) {
++    const last: ReaderMark | undefined = merged.length > 0 ? merged[merged.length - 1] : undefined;
++    if (last !== undefined && last.paraIndex === mark.paraIndex && last.end === mark.start &&
++      last.style === mark.style && last.color === mark.color) {
++      last.end = mark.end;
++      continue;
++    }
++    const copy = new ReaderMark();
++    copy.paraIndex = mark.paraIndex;
++    copy.start = mark.start;
++    copy.end = mark.end;
++    copy.style = mark.style;
++    copy.color = mark.color;
++    merged.push(copy);
++  }
++  return merged;
++}
++
+ class MarkSpan {
+   key: string = '';
+   text: string = '';
+@@ -175,10 +229,17 @@ struct Reader {
+   @State snapEnd: number = 0;
+   @State snapText: string = '';
+   @State markEpoch: number = 0;
++  /** 问答面板：接近底部时跟随新消息，用户上滑看旧回答时不强拉。 */
++  @State askFollow: boolean = true;
++  @State askKeyboardInset: number = 0;
++  /** 点按放大的教材图片；空串表示未打开。 */
++  @State zoomImageUrl: string = '';
++  @State zoomScale: number = 1;
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   private readerApi: ReaderApi = new ReaderApi();
+   private agentApi: AgentApi = new AgentApi();
+   private swiperController: SwiperController = new SwiperController();
++  private askScroller: Scroller = new Scroller();
+   /** 每个正文块一个 TextController：取选区矩形、编程清除选区。键 = 块 key（含章 / 字号 / 宽度前缀，跨分页唯一）。 */
+   private textControllers: Map<string, TextController> = new Map<string, TextController>();
+   private blockKeyPrefix: string = '';
+@@ -283,7 +344,8 @@ struct Reader {
+       });
+     }
+     const durationText = this.totalReadMs < 60000 ? '读了不到 1 分钟' : '读了 ' + Math.round(this.totalReadMs / 60000) + ' 分钟';
+-    sharedLiveView.stopStudy(durationText + (this.flowReadingConfirmed ? ' · 接下来出题' : ''));
++    // 实况窗结束语按真实状态：读完才说读完（2026-09-21 审查 F15）。
++    sharedLiveView.stopStudy(durationText + (this.flowReadingConfirmed ? ' · 接下来出题' : ''), this.completedThisSession);
+     sharedTts.release();
+   }
+ 
+@@ -344,19 +406,67 @@ struct Reader {
+       } catch (err) {
+         // 旧接口不支持隐藏状态栏时，纸色仍铺满
+       }
+-      win.setWindowSystemBarProperties({
+-        statusBarColor: this.theme().bg,
+-        navigationBarColor: this.theme().bg,
+-        statusBarContentColor: this.theme().chromeInk,
+-        navigationBarContentColor: this.theme().chromeInk,
+-      }).catch((err: Error) => {
+-      });
++      if (enable) {
++        win.setWindowSystemBarProperties({
++          statusBarColor: this.theme().bg,
++          navigationBarColor: this.theme().bg,
++          statusBarContentColor: this.theme().chromeInk,
++          navigationBarContentColor: this.theme().chromeInk,
++        }).catch((err: Error) => {
++        });
++      } else {
++        // 离开阅读器：系统栏交还给 App 全局主题（2026-09-21 审查 P2-6：原先只在这里设过一次，
++        // 回到主页面后状态栏仍是纸色 / 夜色）。
++        nxApplySystemBars(win, this.nxDark);
++      }
+       this.immersiveOk = enable;
++      AppStorage.setOrCreate('nxReaderImmersive', enable);
++      // 阅读器自管键盘（问答面板按键盘高度上移）；离开时交还全局压缩避让。
++      try {
++        this.getUIContext().setKeyboardAvoidMode(enable ? KeyboardAvoidMode.NONE : KeyboardAvoidMode.RESIZE);
++      } catch (err) {
++        // 旧系统不支持时仍按键盘高度上移
++      }
++      // 键盘高度：问答面板按它上移（全局避让为 NONE）。
++      try {
++        win.off('keyboardHeightChange');
++      } catch (err) {
++        // 未注册过
++      }
++      if (enable) {
++        win.on('keyboardHeightChange', (height: number): void => {
++          const vp: number = this.getUIContext().px2vp(height > 0 ? height : 0);
++          if (Math.abs(vp - this.askKeyboardInset) >= 1) {
++            this.askKeyboardInset = vp;
++            if (vp > 0) {
++              this.scrollAskToEnd();
++            }
++          }
++        });
++      }
+     }).catch((err: Error) => {
+       this.immersiveOk = false;
+     });
+   }
+ 
++  /** 输入框聚焦时主动读一次键盘避让区（键盘已经在时不会再触发 keyboardHeightChange）。 */
++  private readAskKeyboard(): void {
++    if (this.hostWindow === undefined) {
++      return;
++    }
++    try {
++      const area: window.AvoidArea = this.hostWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
++      const vp: number = this.getUIContext().px2vp(area.bottomRect.height > 0 ? area.bottomRect.height : 0);
++      if (vp > 0) {
++        this.askKeyboardInset = vp;
++      }
++    } catch (err) {
++      // 取不到就等 keyboardHeightChange
++    }
++    this.askFollow = true;
++    this.scrollAskToEnd();
++  }
++
+   private lineHeight(): number {
+     return Math.round(this.readerFontSize() * 1.75);
+   }
+@@ -464,7 +574,10 @@ struct Reader {
+     this.paragraphs = payload.paragraphs;
+     this.selectedPara = -1;
+     this.answerEntry = null;
++    // 换章：上一章的问答会话随章清空，在途的旧请求按 chapterRequestVersion 丢弃。
+     this.askTurns = [];
++    this.asking = false;
++    this.askFollow = true;
+     this.completedThisSession = false;
+     this.loadMarks();
+     this.paginate();
+@@ -622,6 +735,8 @@ struct Reader {
+     if (this.readingSession !== null) {
+       this.readingSession.enterPage(this.pageReadRanges(), this.canRecordReading(), Date.now());
+     }
++    // 实况窗跟着真实翻页走（2026-09-21 审查 F15：updateStudy 此前无人调用）。
++    sharedLiveView.updateStudy(index + 1, this.pages.length, this.chapterTitle);
+   }
+ 
+   // ---------- 持久化：位置 / 划线 ----------
+@@ -865,18 +980,17 @@ struct Reader {
+     return null;
+   }
+ 
++  /**
++   * 划线：新选区与旧标记做区间运算。2026-09-21 审查 F13：原实现删掉所有与选区重叠的旧标记，
++   * 只改 [40,60] 的颜色会把 [0,100] 两侧的原划线一起丢掉。现在只替换选中的那一段，两侧保留原样式。
++   */
+   applyMark(style: string, color: string): void {
+     if (!this.snapshotValid()) {
+       return;
+     }
+     const start = this.snapStart;
+     const end = this.snapEnd;
+-    const next: ReaderMark[] = [];
+-    for (const mark of this.marks) {
+-      if (mark.paraIndex !== this.snapPara || mark.end <= start || mark.start >= end) {
+-        next.push(mark);
+-      }
+-    }
++    const next: ReaderMark[] = nxSubtractMarks(this.marks, this.snapPara, start, end);
+     const added = new ReaderMark();
+     added.paraIndex = this.snapPara;
+     added.start = start;
+@@ -884,7 +998,7 @@ struct Reader {
+     added.style = style;
+     added.color = color.length > 0 ? color : 'yellow';
+     next.push(added);
+-    this.marks = next;
++    this.marks = nxMergeAdjacentMarks(next);
+     this.pendingStyle = style;
+     this.pendingColor = added.color;
+     this.markEpoch = this.markEpoch + 1;
+@@ -901,17 +1015,12 @@ struct Reader {
+     ]);
+   }
+ 
++  /** 取消划线：只去掉选中的那一段，旧标记在选区两侧的部分保留。 */
+   removeSnapshotMarks(): void {
+     if (!this.snapshotValid()) {
+       return;
+     }
+-    const next: ReaderMark[] = [];
+-    for (const mark of this.marks) {
+-      if (mark.paraIndex !== this.snapPara || mark.end <= this.snapStart || mark.start >= this.snapEnd) {
+-        next.push(mark);
+-      }
+-    }
+-    this.marks = next;
++    this.marks = nxSubtractMarks(this.marks, this.snapPara, this.snapStart, this.snapEnd);
+     this.markEpoch = this.markEpoch + 1;
+     this.persistMarks();
+     this.markStyleOpen = false;
+@@ -998,14 +1107,18 @@ struct Reader {
+     return isNaN(heightPx) ? 0 : this.getUIContext().px2vp(heightPx);
+   }
+ 
+-  /** 把放不进一页的长段按标点拆成若干块，每块都能放进 maxHeight。 */
++  /**
++   * 把放不进一页的长段按标点拆成若干块，每块都能放进 maxHeight。
++   * 2026-09-21 审查 F14：原来 guard 到 60 块就直接返回，超长段（OCR / 网页清洗）剩余正文被静默丢掉。
++   * 现在 guard 只防死循环：到上限时把剩余正文整段放进最后一块（多出一页也不丢字）。
++   */
+   private splitToFit(text: string, heading: number, maxHeight: number): string[] {
+     const chunks: string[] = [];
+     let rest = text;
+     let guard = 0;
+-    while (rest.length > 0 && guard < 60) {
++    while (rest.length > 0) {
+       guard++;
+-      if (this.measureHeight(rest, heading) <= maxHeight) {
++      if (guard > 400 || this.measureHeight(rest, heading) <= maxHeight) {
+         chunks.push(rest);
+         break;
+       }
+@@ -1360,13 +1473,23 @@ struct Reader {
+       return;
+     }
+     this.asking = true;
++    // 2026-09-21 审查 F04：整轮问答的来源在发问那一刻冻结（书 / 章 / 段 / 选段 / 章节请求版本）。
++    // 回包时章节已切换（版本变了）就丢弃，不把旧章的答案配上新章的引用。
++    const requestVersion = this.chapterRequestVersion;
++    const askLectureId = this.lectureId;
++    const askBookId = this.bookId;
++    const askBookTitle = this.bookTitle;
++    const askChapterIndex = this.chapterIndex;
++    const askChapterTitle = this.chapterTitle;
+     const anchorPara = this.snapPara >= 0 ? this.snapPara : (this.selectedPara >= 0 ? this.selectedPara : this.currentFirstPara());
++    const selectedText = this.selectedExcerpt();
++    const quoted = this.snapText.length > 0 || this.selText.length > 0;
+     this.readerApi.postTelemetry([
+       {
+         stream: 'reading',
+         event: 'ask',
+-        bid: this.bookId,
+-        ci: this.chapterIndex,
++        bid: askBookId,
++        ci: askChapterIndex,
+         si: anchorPara,
+         sel_text: text.slice(0, 200),
+         focus: 'chat',
+@@ -1389,18 +1512,23 @@ struct Reader {
+       unattended: false,
+     };
+     this.askTurns = this.askTurns.concat([userTurn, thinkTurn]);
++    this.askText = '';
++    this.scrollAskToEnd();
+     try {
+       const target: LearnTarget = {
+-        lecture_id: this.lectureId,
++        lecture_id: askLectureId,
+         lecture_title: '',
+-        book_id: this.bookId,
+-        book_title: this.bookTitle,
+-        chapter_index: this.chapterIndex,
+-        chapter_name: this.chapterTitle,
++        book_id: askBookId,
++        book_title: askBookTitle,
++        chapter_index: askChapterIndex,
++        chapter_name: askChapterTitle,
+         chapter_range: '',
+       };
+-      const selectedText = this.selectedExcerpt();
+       const env: AgentEnvelope = await this.agentApi.postAskInContext(text, target, selectedText);
++      if (this.disposed || requestVersion !== this.chapterRequestVersion) {
++        // 章节已切换：这轮会话已随章节清空，答案不再进入当前章。
++        return;
++      }
+       const data: AskAnswer = env.data as AskAnswer;
+       if (data === null || data === undefined || typeof data.answer !== 'string' || data.answer.trim().length === 0) {
+         throw new Error('这次我没给出答案。');
+@@ -1408,17 +1536,22 @@ struct Reader {
+       const excerpt = selectedText.slice(0, 120);
+       const citation: CitationCard = {
+         type: 'citation',
+-        book: this.bookTitle,
+-        chapter: this.chapterTitle,
+-        excerpt: excerpt.length > 0 ? excerpt : this.chapterTitle,
++        book: askBookTitle,
++        chapter: askChapterTitle,
++        excerpt: excerpt.length > 0 ? excerpt : askChapterTitle,
+         anchor: String(anchorPara),
+       };
++      // 2026-09-21 审查 P2-11：依据按服务端返回的来源标注，不再对每条回答固定拼「依据教材原文」。
++      const fromTextbook = data.source === 'textbook_context';
++      const reason = fromTextbook
++        ? (quoted ? '结合你选的这句和教材' + askChapterTitle + '回答。' : '结合教材' + askChapterTitle + '这一页回答。')
++        : '教材里没有直接依据，这是通用知识的补充，回原文可以对照' + askChapterTitle + '。';
+       const answer: TimelineEntry = {
+         id: String(anchorPara) + '_' + Date.now(),
+         kind: 'agent_msg',
+         ts: Date.now(),
+         text: data.answer,
+-        reason: '依据教材' + this.chapterTitle + '原文。',
++        reason: reason,
+         card: citation,
+         unattended: false,
+       };
+@@ -1431,17 +1564,22 @@ struct Reader {
+       }
+       turns.push(answer);
+       this.askTurns = turns;
+-      this.askText = '';
++      this.scrollAskToEnd();
+     } catch (err) {
++      if (this.disposed || requestVersion !== this.chapterRequestVersion) {
++        return;
++      }
+       const e = err as BusinessError;
+       const fail: TimelineEntry = {
+         id: 'err_' + Date.now(),
+         kind: 'system',
+         ts: Date.now(),
+-        text: '这个问题我没接上：' + (e.message.length > 0 ? e.message : '网络错误'),
++        text: '这个问题我没接上：' + (e.message.length > 0 ? e.message : '网络错误') + '。问题还在下面输入框里，可以重发。',
+         unattended: false,
+       };
+       this.answerEntry = fail;
++      // 失败保稿：把原问题放回输入框，用户可编辑重发。
++      this.askText = text;
+       const turns: TimelineEntry[] = [];
+       for (const turn of this.askTurns) {
+         if (turn.id !== thinkId) {
+@@ -1450,11 +1588,28 @@ struct Reader {
+       }
+       turns.push(fail);
+       this.askTurns = turns;
++      this.scrollAskToEnd();
+     } finally {
+-      this.asking = false;
++      if (requestVersion === this.chapterRequestVersion) {
++        this.asking = false;
++      }
+     }
+   }
+ 
++  /** 问答面板：新消息到达时滚到底（用户正在看上文时不强拉，只在接近底部时跟随）。 */
++  private scrollAskToEnd(): void {
++    if (!this.askFollow) {
++      return;
++    }
++    setTimeout((): void => {
++      try {
++        this.askScroller.scrollEdge(Edge.Bottom);
++      } catch (err) {
++        // 面板尚未挂载
++      }
++    }, 60);
++  }
++
+   /** 没有选段时，把当前页正文作为上下文。 */
+   private currentPageText(): string {
+     if (this.pageIndex < 0 || this.pageIndex >= this.pages.length) {
+@@ -1596,6 +1751,10 @@ struct Reader {
+         .borderRadius(NxRadius.xs)
+         .backgroundColor(this.theme().markBg)
+         .margin({ top: block.top > 0 ? PARA_GAP : 0 })
++        .onClick(() => {
++          // 2026-09-21 审查：窄长代码图在固定高区域里太小，点按全屏查看，关闭回到原阅读位置。
++          this.zoomImageUrl = block.imageUrl;
++        })
+     } else {
+       Text(undefined, { controller: this.textController(block.key) }) {
+         ForEach(this.blockSpans(block), (span: MarkSpan) => {
+@@ -2182,7 +2341,7 @@ struct Reader {
+           .textOverflow({ overflow: TextOverflow.Ellipsis })
+           .width('100%')
+       }
+-      Scroll() {
++      Scroll(this.askScroller) {
+         Column({ space: NxGrid * 2 }) {
+           if (this.askTurns.length > 0) {
+             ForEach(this.askTurns, (turn: TimelineEntry) => {
+@@ -2192,7 +2351,7 @@ struct Reader {
+                   this.jumpToParagraph(anchor);
+                 },
+               })
+-            }, (turn: TimelineEntry) => turn.id)
++            }, (turn: TimelineEntry) => turn.id + '_' + (turn.status !== undefined ? turn.status : ''))
+           } else {
+             Text('对着这一页或刚划的句子问我。')
+               .fontSize(NxFontSize.sm)
+@@ -2203,6 +2362,27 @@ struct Reader {
+       }
+       .layoutWeight(1)
+       .width('100%')
++      .scrollBar(BarState.Off)
++      .onDidScroll((xOffset: number, yOffset: number, scrollState: ScrollState) => {
++        // 用户主动上滑离开底部就停止跟随；回到接近底部再恢复。
++        try {
++          this.askFollow = this.askScroller.isAtEnd() || this.askScroller.currentOffset().yOffset <= 0;
++        } catch (err) {
++          this.askFollow = true;
++        }
++      })
++      if (!this.askFollow && this.askTurns.length > 0) {
++        Text('回到最新回答')
++          .fontSize(NxFontSize.xs)
++          .fontColor(this.palette().primary)
++          .padding({ left: NxGrid * 3, right: NxGrid * 3, top: NxGrid, bottom: NxGrid })
++          .borderRadius(NxRadius.lg)
++          .backgroundColor(this.palette().primarySoft)
++          .onClick(() => {
++            this.askFollow = true;
++            this.scrollAskToEnd();
++          })
++      }
+       Row({ space: NxGrid * 2 }) {
+         TextInput({ placeholder: this.snapText.length > 0 ? '问这句' : '问这一页', text: this.askText })
+           .layoutWeight(1)
+@@ -2214,11 +2394,17 @@ struct Reader {
+           .onSubmit(() => {
+             this.ask(this.askText);
+           })
++          .onFocus(() => {
++            this.readAskKeyboard();
++          })
++          .onBlur(() => {
++            this.askKeyboardInset = 0;
++          })
+         Button(this.asking ? '…' : '问')
+           .height(38)
+           .fontSize(NxFontSize.md)
+-          .backgroundColor(this.palette().primary)
+-          .fontColor(this.palette().onPrimary)
++          .backgroundColor(this.palette().buttonFill)
++          .fontColor(this.palette().onButton)
+           .enabled(!this.asking)
+           .onClick(() => {
+             this.ask(this.askText);
+@@ -2228,7 +2414,9 @@ struct Reader {
+     }
+     .width('100%')
+     .height(full ? '100%' : '62%')
+-    .padding(NxGrid * 4)
++    // 键盘弹起时整块面板上移：全局避让是 NONE（阅读器沉浸布局需要），这里按键盘高度自管。
++    .padding({ left: NxGrid * 4, right: NxGrid * 4, top: NxGrid * 4, bottom: NxGrid * 4 + (full ? 0 : this.askKeyboardInset) })
++    .margin({ bottom: full ? 0 : this.askKeyboardInset })
+     .borderRadius({ topLeft: NxRadius.md, topRight: NxRadius.md })
+     .backgroundColor(this.palette().surface2)
+   }
+@@ -2351,6 +2539,34 @@ struct Reader {
+           })
+         this.tocSheet()
+       }
++
++      if (this.zoomImageUrl.length > 0) {
++        Stack({ alignContent: Alignment.TopEnd }) {
++          Image(this.zoomImageUrl)
++            .width('100%')
++            .height('100%')
++            .objectFit(ImageFit.Contain)
++            .gesture(PinchGesture({ fingers: 2 }).onActionUpdate((event: GestureEvent) => {
++              this.zoomScale = Math.max(1, Math.min(4, event.scale));
++            }))
++            .scale({ x: this.zoomScale, y: this.zoomScale })
++          Text('✕')
++            .fontSize(NxFontSize.xl)
++            .fontColor(this.palette().onPrimary)
++            .padding(NxGrid * 4)
++            .onClick(() => {
++              this.zoomImageUrl = '';
++              this.zoomScale = 1;
++            })
++        }
++        .width('100%')
++        .height('100%')
++        .backgroundColor(this.palette().overlay)
++        .onClick(() => {
++          this.zoomImageUrl = '';
++          this.zoomScale = 1;
++        })
++      }
+     }
+     .width('100%')
+     .height('100%')

@@ -1,0 +1,471 @@
+diff --git a/HarmonyosApp/entry/src/main/ets/components/InspectSheet.ets b/HarmonyosApp/entry/src/main/ets/components/InspectSheet.ets
+index c007e2c..ecec62a 100644
+--- a/HarmonyosApp/entry/src/main/ets/components/InspectSheet.ets
++++ b/HarmonyosApp/entry/src/main/ets/components/InspectSheet.ets
+@@ -28,6 +28,10 @@ export struct InspectSheet {
+   @State rebuttalText: string = '';
+   @State replies: Map<string, string> = new Map<string, string>();
+   @State busyFacetId: string = '';
++  /** 正在就地更改表态的条目 id。 */
++  @State revising: string = '';
++  /** 从「这一条」进入时，整份镜像默认折叠。 */
++  @State showMirrorBelow: boolean = false;
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+   @StorageProp('nxStudyTick') @Watch('onStudyChanged') studyTick: number = 0;
+   private api: AgentApi = new AgentApi();
+@@ -130,6 +134,7 @@ export struct InspectSheet {
+       }
+       this.rebuttalFacetId = '';
+       this.rebuttalText = '';
++      this.revising = '';
+       await this.load();
+       AppStorage.setOrCreate('nxStudyTick', Date.now());
+     } catch (err) {
+@@ -168,6 +173,26 @@ export struct InspectSheet {
+     return who + ' · 把握 ' + Math.round(judgment.confidence * 100) + '%';
+   }
+ 
++  /** 依据的来源与时间（2026-09-21 审查：原话 / 阅读事实 / 模型推断分开标注）。 */
++  private evidenceMeta(item: MirrorEvidenceRef): string {
++    const source: string = item.source === 'app' || item.source === 'conversation' || item.source === 'rebuttal' || item.source === 'memory' ? '你的原话' :
++      (item.source === 'reading' || item.source === 'progress' ? '阅读 / 答题记录' : (item.source === 'review' || item.source === 'quiz' ? '答题记录' :
++        (item.source === 'confusion' || item.source === 'mirror' ? '我的推断' : item.source)));
++    if (item.occurredAt !== undefined && item.occurredAt > 0) {
++      const d = new Date(item.occurredAt > 10000000000 ? item.occurredAt : item.occurredAt * 1000);
++      return source + ' · ' + (d.getMonth() + 1) + '月' + d.getDate() + '日';
++    }
++    return source;
++  }
++
++  /** 把握度只对模型判断有意义；原话本身不谈把握。 */
++  private confidenceLabel(facet: MirrorFacet): string {
++    if (facet.kind === 'memory' || (facet.saidOn !== undefined && facet.saidOn.length > 0)) {
++      return '';
++    }
++    return '把握 ' + Math.round(facet.confidence * 100) + '%';
++  }
++
+   @Builder
+   line(label: string, value: string) {
+     if (value.length > 0) {
+@@ -257,9 +282,11 @@ export struct InspectSheet {
+           .fontColor(this.palette().text1)
+           .lineHeight(21)
+           .layoutWeight(1)
+-        Text('把握 ' + Math.round(facet.confidence * 100) + '%')
+-          .fontSize(NxFontSize.xs)
+-          .fontColor(this.palette().text4)
++        if (this.confidenceLabel(facet).length > 0) {
++          Text(this.confidenceLabel(facet))
++            .fontSize(NxFontSize.xs)
++            .fontColor(this.palette().text4)
++        }
+       }
+       .width('100%')
+       .alignItems(VerticalAlign.Top)
+@@ -271,41 +298,57 @@ export struct InspectSheet {
+             this.expandedId = this.expandedId === facet.id ? '' : facet.id;
+           })
+         Blank()
+-        if (facet.userVerdict === 'disagree') {
+-          Text('你说不对')
++        if (facet.userVerdict === 'disagree' || facet.userVerdict === 'agree') {
++          // 已表态的条目保留就地更改（2026-09-21 审查 F12）：点一下切换到可再次表态。
++          Text(facet.userVerdict === 'agree' ? '你说对' : '你说不对')
+             .fontSize(NxFontSize.sm)
+-            .fontColor(this.palette().warning)
+-        } else if (facet.userVerdict === 'agree') {
+-          Text('你说对')
+-            .fontSize(NxFontSize.sm)
+-            .fontColor(this.palette().success)
+-        } else {
+-          Text('说得对')
+-            .fontSize(NxFontSize.sm)
+-            .fontColor(this.palette().success)
+-            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
+-            .onClick(() => {
+-              this.verdict(facet, 'agree');
+-            })
+-          Text('不对')
++            .fontColor(facet.userVerdict === 'agree' ? this.palette().success : this.palette().warning)
++          Text(this.revising === facet.id ? '取消' : '改一下')
+             .fontSize(NxFontSize.sm)
+-            .fontColor(this.palette().danger)
+-            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++            .fontColor(this.palette().primary)
++            .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
+             .onClick(() => {
+-              this.rebuttalFacetId = this.rebuttalFacetId === facet.id ? '' : facet.id;
+-              this.rebuttalText = '';
++              this.revising = this.revising === facet.id ? '' : facet.id;
++              this.rebuttalFacetId = '';
+             })
+         }
++        if (facet.userVerdict === null || facet.userVerdict === undefined || facet.userVerdict.length === 0 || this.revising === facet.id) {
++          if (facet.userVerdict !== 'agree') {
++            Text('说得对')
++              .fontSize(NxFontSize.sm)
++              .fontColor(this.palette().success)
++              .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
++              .onClick(() => {
++                this.verdict(facet, 'agree');
++              })
++          }
++          if (facet.userVerdict !== 'disagree') {
++            Text('不对')
++              .fontSize(NxFontSize.sm)
++              .fontColor(this.palette().danger)
++              .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid * 2, bottom: NxGrid * 2 })
++              .onClick(() => {
++                this.rebuttalFacetId = this.rebuttalFacetId === facet.id ? '' : facet.id;
++                this.rebuttalText = '';
++              })
++          }
++        }
+       }
+       .width('100%')
+       if (this.expandedId === facet.id) {
+         ForEach(facet.evidence, (item: MirrorEvidenceRef) => {
+-          Text('· ' + item.label)
+-            .fontSize(NxFontSize.xs)
+-            .fontColor(this.palette().text3)
+-            .width('100%')
+-            .maxLines(3)
+-            .textOverflow({ overflow: TextOverflow.Ellipsis })
++          Column({ space: 2 }) {
++            Text('· ' + item.label)
++              .fontSize(NxFontSize.xs)
++              .fontColor(this.palette().text3)
++              .width('100%')
++            Text(this.evidenceMeta(item))
++              .fontSize(NxFontSize.xs)
++              .fontColor(this.palette().text4)
++              .width('100%')
++          }
++          .width('100%')
++          .alignItems(HorizontalAlign.Start)
+         }, (item: MirrorEvidenceRef, index: number) => item.label + '_' + index)
+       }
+       if (this.rebuttalFacetId === facet.id) {
+@@ -322,8 +365,8 @@ export struct InspectSheet {
+           Button(this.busyFacetId === facet.id ? '在想…' : '反驳')
+             .height(34)
+             .fontSize(NxFontSize.sm)
+-            .backgroundColor(this.palette().primary)
+-            .fontColor(this.palette().onPrimary)
++            .backgroundColor(this.palette().buttonFill)
++            .fontColor(this.palette().onButton)
+             .enabled(this.busyFacetId.length === 0)
+             .onClick(() => {
+               this.verdict(facet, 'disagree', this.rebuttalText);
+@@ -511,8 +554,31 @@ export struct InspectSheet {
+         if (this.entry !== null) {
+           this.sectionTitle('这一条')
+           this.thisEntry()
++          // 「这一条」默认聚焦本条；整份镜像折叠为入口（2026-09-21 审查）。
++          Text(this.showMirrorBelow ? '收起「它眼里的你」' : '展开「它眼里的你」')
++            .fontSize(NxFontSize.sm)
++            .fontColor(this.palette().primary)
++            .padding({ top: NxGrid * 2, bottom: NxGrid * 2 })
++            .onClick(() => {
++              this.showMirrorBelow = !this.showMirrorBelow;
++            })
+         }
+ 
++        if (this.reportLectureId.length > 0) {
++          Text('打开学习报告')
++            .fontSize(NxFontSize.md)
++            .fontColor(this.palette().primary)
++            .width('100%')
++            .textAlign(TextAlign.Center)
++            .padding(NxGrid * 3)
++            .borderRadius(NxRadius.sm)
++            .backgroundColor(this.palette().primarySoft)
++            .onClick(() => {
++              this.openReport();
++            })
++        }
++
++        if (this.entry === null || this.showMirrorBelow) {
+         this.sectionTitle('它眼里的你')
+         if (!this.loading && this.errorText.length === 0) {
+           this.mirrorPulse()
+@@ -564,19 +630,6 @@ export struct InspectSheet {
+         ForEach(this.facets, (facet: MirrorFacet) => {
+           this.facetRow(facet)
+         }, (facet: MirrorFacet) => facet.id + '_' + (facet.userVerdict === null ? 'n' : facet.userVerdict))
+-
+-        if (this.reportLectureId.length > 0) {
+-          Text('打开学习报告')
+-            .fontSize(NxFontSize.md)
+-            .fontColor(this.palette().primary)
+-            .width('100%')
+-            .textAlign(TextAlign.Center)
+-            .padding(NxGrid * 3)
+-            .borderRadius(NxRadius.sm)
+-            .backgroundColor(this.palette().primarySoft)
+-            .onClick(() => {
+-              this.openReport();
+-            })
+         }
+       }
+       .width('100%')
+diff --git a/HarmonyosApp/entry/src/main/ets/components/common/MarkdownView.ets b/HarmonyosApp/entry/src/main/ets/components/common/MarkdownView.ets
+index 940ba96..6e566c1 100644
+--- a/HarmonyosApp/entry/src/main/ets/components/common/MarkdownView.ets
++++ b/HarmonyosApp/entry/src/main/ets/components/common/MarkdownView.ets
+@@ -16,6 +16,10 @@ export class MdBlock {
+   kind: string = 'p';
+   inlines: MdInline[] = [];
+   text: string = '';
++  /** 有序列表的原始编号（保留输入编号，回答里说「第 2 步」时页面能对上）。 */
++  ordinal: string = '';
++  /** 表格：每行的单元格。 */
++  rows: string[][] = [];
+ }
+ 
+ /**
+@@ -145,6 +149,26 @@ function replaceAll(source: string, from: string, to: string): string {
+   return source.split(from).join(to);
+ }
+ 
++/** 只有当 LaTeX 里没有这些无法可靠降级的结构时才转 Unicode；否则保留原文（2026-09-21 审查 I3）。 */
++function latexTooComplex(text: string): boolean {
++  return /\\begin\{|\\end\{|\\matrix|\\cases|\\over(?![a-z])|\\underbrace|\\overbrace|\\stackrel|\\xrightarrow/.test(text);
++}
++
++/** 递归展开 \frac / \sqrt（原正则只处理无嵌套的一层）。 */
++function expandNested(text: string): string {
++  let previous = '';
++  let current = text;
++  let guard = 0;
++  while (previous !== current && guard < 12) {
++    guard++;
++    previous = current;
++    current = current.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
++    current = current.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
++    current = current.replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\{([^{}]*)\}/g, '$1');
++  }
++  return current;
++}
++
+ export function renderLatex(source: string): string {
+   let text = source.trim();
+   if (text.startsWith('$$') && text.endsWith('$$') && text.length >= 4) {
+@@ -152,11 +176,17 @@ export function renderLatex(source: string): string {
+   } else if (text.startsWith('$') && text.endsWith('$') && text.length >= 2) {
+     text = text.slice(1, text.length - 1);
+   }
+-  text = text.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+-  text = text.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
++  if (latexTooComplex(text)) {
++    // 不能靠删符号伪装成功渲染：保留原文，界面按等宽公式显示。
++    return text.trim();
++  }
++  // 集合括号 \{ \} 先换成占位，最后再还原，避免被末尾的「去花括号」一起删掉。
++  text = replaceAll(text, '\\{', '\u0001');
++  text = replaceAll(text, '\\}', '\u0002');
++  text = expandNested(text);
+   text = text.replace(/\\sqrt\s+([A-Za-z0-9]+)/g, '√$1');
+-  text = text.replace(/\\text\{([^{}]+)\}/g, '$1');
+-  text = text.replace(/\\mathrm\{([^{}]+)\}/g, '$1');
++  text = text.replace(/\\left\s*([()\[\]|.])/g, '$1');
++  text = text.replace(/\\right\s*([()\[\]|.])/g, '$1');
+   text = text.replace(/\\left/g, '');
+   text = text.replace(/\\right/g, '');
+   text = text.replace(/\\,/g, ' ');
+@@ -182,8 +212,6 @@ export function renderLatex(source: string): string {
+   for (let i = 0; i < pairs.length; i++) {
+     text = replaceAll(text, pairs[i][0], pairs[i][1]);
+   }
+-  text = replaceAll(text, '\\{', '{');
+-  text = replaceAll(text, '\\}', '}');
+   text = replaceAll(text, '\\%', '%');
+   text = replaceAll(text, '\\_', '_');
+   text = replaceAll(text, '\\&', '&');
+@@ -197,6 +225,8 @@ export function renderLatex(source: string): string {
+   text = text.replace(/_i/g, 'ᵢ');
+   text = text.replace(/_n/g, 'ₙ');
+   text = text.replace(/[{}]/g, '');
++  text = replaceAll(text, '\u0001', '{');
++  text = replaceAll(text, '\u0002', '}');
+   return text.trim();
+ }
+ 
+@@ -218,17 +248,30 @@ export function parseMarkdown(source: string): MdBlock[] {
+   const text = source.replace(/\r\n/g, '\n');
+   let index = 0;
+   let seq = 0;
+-  const pushBlock = (kind: string, raw: string, inlines: MdInline[]): void => {
++  const pushBlock = (kind: string, raw: string, inlines: MdInline[], ordinal: string = '', rows: string[][] = []): void => {
+     const block = new MdBlock();
+     block.key = 'b' + seq + '_' + nxHash(raw);
+     seq++;
+     block.kind = kind;
+     block.text = raw;
+     block.inlines = inlines;
++    block.ordinal = ordinal;
++    block.rows = rows;
+     blocks.push(block);
+   };
++  // 表格：连续的 | a | b | 行；第二行是 |---|---| 分隔线时跳过。
++  const tableRows: string[][] = [];
++  let tableRaw: string = '';
++  const flushTable = (): void => {
++    if (tableRows.length > 0) {
++      pushBlock('table', tableRaw, [], '', tableRows.slice());
++    }
++    tableRows.length = 0;
++    tableRaw = '';
++  };
+   while (index < text.length) {
+     if (text.startsWith('```', index)) {
++      flushTable();
+       const start = index + 3;
+       let nl = text.indexOf('\n', start);
+       if (nl < 0) {
+@@ -244,6 +287,7 @@ export function parseMarkdown(source: string): MdBlock[] {
+       continue;
+     }
+     if (text.startsWith('$$', index)) {
++      flushTable();
+       const close = text.indexOf('$$', index + 2);
+       const body = close >= 0 ? text.slice(index + 2, close) : text.slice(index + 2);
+       const inline = new MdInline();
+@@ -265,8 +309,23 @@ export function parseMarkdown(source: string): MdBlock[] {
+     index = end < text.length ? end + 1 : text.length;
+     const trimmed = line.trim();
+     if (trimmed.length === 0) {
++      flushTable();
++      continue;
++    }
++    if (trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.length > 2) {
++      const inner = trimmed.slice(1, trimmed.length - 1);
++      if (/^[\s|:\-]+$/.test(inner)) {
++        continue;
++      }
++      const cells: string[] = [];
++      for (const cell of inner.split('|')) {
++        cells.push(cell.trim());
++      }
++      tableRows.push(cells);
++      tableRaw += trimmed + '\n';
+       continue;
+     }
++    flushTable();
+     const heading = headingLevel(trimmed);
+     if (heading > 0) {
+       const title = trimmed.replace(/^#{1,3}\s+/, '');
+@@ -283,13 +342,15 @@ export function parseMarkdown(source: string): MdBlock[] {
+       pushBlock('li', item, parseInlines(item, seq * 10));
+       continue;
+     }
+-    if (/^\d+[.)]\s+/.test(trimmed)) {
+-      const item = trimmed.replace(/^\d+[.)]\s+/, '');
+-      pushBlock('ol', item, parseInlines(item, seq * 10));
++    const ordered = trimmed.match(/^(\d+)[.)]\s+/);
++    if (ordered !== null) {
++      const item = trimmed.slice(ordered[0].length);
++      pushBlock('ol', item, parseInlines(item, seq * 10), ordered[1] + '.');
+       continue;
+     }
+     pushBlock('p', trimmed, parseInlines(trimmed, seq * 10));
+   }
++  flushTable();
+   if (blocks.length === 0 && source.trim().length > 0) {
+     pushBlock('p', source.trim(), parseInlines(source.trim(), 0));
+   }
+@@ -342,10 +403,11 @@ export struct MarkdownView {
+         .fontSize(this.bodySize - 1)
+         .fontColor(this.palette().night)
+     } else if (item.kind === 'math') {
++      // 仍含 \ 命令的公式是「无法可靠降级、保留原文」的结果：用等宽而不是斜体，避免看起来像渲染成功。
+       Span(item.text)
+-        .fontStyle(FontStyle.Italic)
+-        .fontFamily(NxFontFamily.serif)
+-        .fontSize(this.bodySize)
++        .fontStyle(item.text.indexOf('\\') >= 0 ? FontStyle.Normal : FontStyle.Italic)
++        .fontFamily(item.text.indexOf('\\') >= 0 ? NxFontFamily.mono : NxFontFamily.serif)
++        .fontSize(item.text.indexOf('\\') >= 0 ? this.bodySize - 2 : this.bodySize)
+         .fontColor(this.palette().dawn)
+     } else {
+       Span(item.text)
+@@ -369,12 +431,12 @@ export struct MarkdownView {
+         .backgroundColor(this.codeBackground())
+     } else if (block.kind === 'math') {
+       Text(block.text)
+-        .fontSize(this.bodySize)
+-        .fontStyle(FontStyle.Italic)
+-        .fontFamily(NxFontFamily.serif)
++        .fontSize(block.text.indexOf('\\') >= 0 ? this.bodySize - 2 : this.bodySize)
++        .fontStyle(block.text.indexOf('\\') >= 0 ? FontStyle.Normal : FontStyle.Italic)
++        .fontFamily(block.text.indexOf('\\') >= 0 ? NxFontFamily.mono : NxFontFamily.serif)
+         .fontColor(this.palette().dawn)
+         .width('100%')
+-        .textAlign(TextAlign.Center)
++        .textAlign(block.text.indexOf('\\') >= 0 ? TextAlign.Start : TextAlign.Center)
+         .padding({ top: NxGrid, bottom: NxGrid })
+     } else if (block.kind === 'quote') {
+       Row({ space: NxGrid * 2 }) {
+@@ -393,11 +455,36 @@ export struct MarkdownView {
+         .layoutWeight(1)
+       }
+       .width('100%')
++    } else if (block.kind === 'table') {
++      // 表格：首行为表头，等宽列；列多时横向滚动。
++      Scroll() {
++        Column({ space: 0 }) {
++          ForEach(block.rows, (row: string[], ri: number) => {
++            Row({ space: 0 }) {
++              ForEach(row, (cell: string, ci: number) => {
++                Text(cell)
++                  .fontSize(NxFontSize.sm)
++                  .fontWeight(ri === 0 ? FontWeight.Medium : FontWeight.Normal)
++                  .fontColor(this.inkColor())
++                  .lineHeight(18)
++                  .constraintSize({ minWidth: 72, maxWidth: 220 })
++                  .padding({ left: NxGrid * 2, right: NxGrid * 2, top: NxGrid, bottom: NxGrid })
++                  .border({ width: 0.5, color: this.mutedColor() })
++              }, (cell: string, ci: number) => ci + '_' + cell)
++            }
++            .backgroundColor(ri === 0 ? this.codeBackground() : Color.Transparent)
++          }, (row: string[], ri: number) => ri + '_' + row.join('|'))
++        }
++      }
++      .scrollable(ScrollDirection.Horizontal)
++      .scrollBar(BarState.Off)
++      .width('100%')
+     } else if (block.kind === 'li' || block.kind === 'ol') {
+       Row({ space: NxGrid }) {
+-        Text(block.kind === 'ol' ? '·' : '•')
++        Text(block.kind === 'ol' ? (block.ordinal.length > 0 ? block.ordinal : '·') : '•')
+           .fontSize(this.bodySize)
+           .fontColor(this.palette().dawn)
++          .constraintSize({ minWidth: block.kind === 'ol' ? 18 : 0 })
+         Text() {
+           ForEach(block.inlines, (item: MdInline) => {
+             this.inlineView(item, false)
+diff --git a/HarmonyosApp/entry/src/main/ets/components/common/States.ets b/HarmonyosApp/entry/src/main/ets/components/common/States.ets
+index ebbddeb..e4f8bb3 100644
+--- a/HarmonyosApp/entry/src/main/ets/components/common/States.ets
++++ b/HarmonyosApp/entry/src/main/ets/components/common/States.ets
+@@ -53,6 +53,8 @@ export struct EmptyState {
+ @Component
+ export struct ErrorState {
+   message: string = '';
++  /** 按钮文案随失败的具体操作变化（重试 / 去设置 / 重发），不再一律「重试」。 */
++  retryLabel: string = '重试';
+   onRetry: () => void = () => {
+   };
+   @StorageProp('nxDarkMode') nxDark: boolean = false;
+@@ -64,8 +66,8 @@ export struct ErrorState {
+         .fontColor(nxPalette(this.nxDark).danger)
+         .lineHeight(18)
+         .layoutWeight(1)
+-      Button('重试')
+-        .height(28)
++      Button(this.retryLabel)
++        .height(36)
+         .fontSize(NxFontSize.sm)
+         .backgroundColor(nxPalette(this.nxDark).surface3)
+         .fontColor(nxPalette(this.nxDark).text2)

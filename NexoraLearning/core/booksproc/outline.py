@@ -42,6 +42,75 @@ def build_outline_source_book_ids(books: List[Mapping[str, Any]]) -> List[str]:
     )
 
 
+def outline_coverage_gap(sections: List[Mapping[str, Any]], books: List[Mapping[str, Any]]) -> Dict[str, Any]:
+    """大纲必须覆盖每一本源教材：返回 {missing: [book_id...], unknown: [book_id...]}。
+
+    历史故障（2026-09-19，课程 l_d5a6…）：两本书都 summary_status=done，模型只引用了第二本，
+    大纲 13 节全是向量数据库，认知层把所有概念都挂到那本书，备份还原那本书的题永远绑不到概念。
+    """
+    known = {str(book.get("id") or "").strip() for book in books if str(book.get("id") or "").strip()}
+    required = set(build_outline_source_book_ids(books))
+    covered = set()
+    unknown = set()
+    for section in sections or []:
+        for source in (section.get("sources") if isinstance(section, Mapping) else None) or []:
+            if not isinstance(source, Mapping):
+                continue
+            book_id = str(source.get("book_id") or "").strip()
+            if not book_id:
+                continue
+            if book_id in known:
+                covered.add(book_id)
+            else:
+                unknown.add(book_id)
+    return {"missing": sorted(required - covered), "unknown": sorted(unknown)}
+
+
+def _format_chapters_for_prompt(all_chapters: List[Mapping[str, Any]], *, limit: int = 12000) -> str:
+    """按教材分组、每本书都完整列出章名（摘要截短），避免 JSON 整体截断时把后面的书截掉。"""
+    by_book: Dict[str, List[Mapping[str, Any]]] = {}
+    titles: Dict[str, str] = {}
+    for row in all_chapters or []:
+        bid = str(row.get("book_id") or "").strip()
+        by_book.setdefault(bid, []).append(row)
+        titles.setdefault(bid, str(row.get("book_title") or "").strip())
+    if not by_book:
+        return "[]"
+    per_book_budget = max(800, limit // max(1, len(by_book)))
+    blocks: List[str] = []
+    for bid, rows in by_book.items():
+        lines = [f"### 教材 {titles.get(bid) or bid}（book_id={bid}，{len(rows)} 章）"]
+        summary_cap = max(40, min(160, per_book_budget // max(1, len(rows)) - 20))
+        for row in rows:
+            summary = str(row.get("chapter_summary") or "").strip().replace("\n", " ")[:summary_cap]
+            lines.append(f"- {row.get('chapter_name')}" + (f"：{summary}" if summary else ""))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)[:limit]
+
+
+def _format_details_for_prompt(all_details: List[Mapping[str, Any]], *, limit: int = 8000) -> str:
+    """精读关键点：按教材分组，只带标题，保证每本书都有配额。"""
+    by_book: Dict[str, List[Mapping[str, Any]]] = {}
+    titles: Dict[str, str] = {}
+    for row in all_details or []:
+        bid = str(row.get("book_id") or "").strip()
+        by_book.setdefault(bid, []).append(row)
+        titles.setdefault(bid, str(row.get("book_title") or "").strip())
+    if not by_book:
+        return "（暂无精读关键点）"
+    per_book_budget = max(600, limit // max(1, len(by_book)))
+    blocks: List[str] = []
+    for bid, rows in by_book.items():
+        lines = [f"### 教材 {titles.get(bid) or bid}（book_id={bid}）"]
+        for row in rows:
+            points = [str(p.get("title") or "").strip() for p in (row.get("key_points") or []) if isinstance(p, Mapping)]
+            points = [p for p in points if p][:8]
+            if points:
+                lines.append(f"- {row.get('chapter_name')}：" + "；".join(points))
+        blocks.append("\n".join(lines)[:per_book_budget])
+    return "\n\n".join(blocks)[:limit]
+
+
 def _safe_json_obj(raw: str) -> Dict[str, Any]:
     """安全解析 JSON 字符串为字典。"""
     text = str(raw or "").strip()
@@ -430,8 +499,8 @@ def generate_outline(
     values = {
         "lecture_title": lecture_title,
         "books_summary": books_summary,
-        "all_chapters": json.dumps(all_chapters, ensure_ascii=False, indent=2)[:8000],
-        "all_details": json.dumps(all_details, ensure_ascii=False, indent=2)[:8000],
+        "all_chapters": _format_chapters_for_prompt(all_chapters, limit=12000),
+        "all_details": _format_details_for_prompt(all_details, limit=8000),
         "profile_summary": profile_summary,
     }
 
@@ -682,6 +751,24 @@ def generate_outline(
                 learning_tasks = _normalize_str_list(args_obj.get("learning_tasks"))
 
                 if parsed_sections:
+                    gap = outline_coverage_gap(parsed_sections, books)
+                    if gap["missing"] or gap["unknown"]:
+                        title_by_id = {str(b.get("id") or ""): str(b.get("title") or "") for b in books}
+                        problems = []
+                        if gap["missing"]:
+                            problems.append("以下教材没有被任何 section 的 sources 引用，必须为它们安排学习单元（可与主题相近的章合并到同一 section）："
+                                            + "；".join(f"{title_by_id.get(b, b)}（book_id={b}）" for b in gap["missing"]))
+                        if gap["unknown"]:
+                            problems.append("sources 里出现了不存在的 book_id，必须使用章节结构中给出的原值：" + "、".join(gap["unknown"]))
+                        log_event("outline_coverage_rejected", "大纲未覆盖全部教材，要求重试",
+                                  payload={"turn": turn, "missing": gap["missing"], "unknown": gap["unknown"]})
+                        emit_status("大纲没有覆盖全部教材，已要求模型补齐")
+                        turn_history.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": json.dumps({"ok": False, "error": "\n".join(problems)}, ensure_ascii=False),
+                        })
+                        continue
                     result_outline = {
                         "course_title": course_title,
                         "course_summary": course_summary,

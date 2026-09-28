@@ -22,6 +22,15 @@ from .profile_center import (
     build_profile_center_payload,
     record_profile_center_score,
 )
+from .evidence_memory import (
+    build_memory_context,
+    correct_memory,
+    filter_superseded_dialog,
+    memory_stats,
+    read_profile_dimensions,
+    record_user_message,
+    retrieve_memories,
+)
 
 __all__ = [
     "run_memory_analysis_job",
@@ -40,4 +49,11 @@ __all__ = [
     "init_memory_queue",
     "mark_context_compression_completed",
     "maybe_enqueue_interval_analysis",
+    "build_memory_context",
+    "correct_memory",
+    "filter_superseded_dialog",
+    "memory_stats",
+    "read_profile_dimensions",
+    "record_user_message",
+    "retrieve_memories",
 ]

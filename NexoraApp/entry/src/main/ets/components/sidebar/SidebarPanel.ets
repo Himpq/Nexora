@@ -17,6 +17,7 @@ const APP_VERSION_LABEL: string = 'v1.0.2';
 export struct SidebarPanel {
     @ObjectLink app: AppState;
     @Prop activeConversationId: string = '';
+    @Prop agentActive: boolean = false;
     // 会话列表数据源：由宿主页面在每次刷新/置顶/删除后（epoch 触发重渲染时）以最新快照推送。
     // 列表展示不直接依赖 @ObjectLink 对 app.conversations 数组整体替换的通知（真机曾实测不稳），
     // 改由宿主 @State 代次 -> @Prop 快照的确定性链路驱动；ForEach key 用稳定 id，
@@ -36,6 +37,7 @@ export struct SidebarPanel {
         (_deviceId: string, _conversationId: string, _title: string, _project: Object | null): void => {};
     // 打开 Learning 工作区：由宿主关闭抽屉后全屏挂载（ArkWeb 薄挂载）
     onOpenLearning: () => void = () => {};
+    onOpenAgent: () => void = () => {};
     onOpenConversation: (conversationId: string, title: string) => void = () => {};
     onTogglePin: (item: ConversationItem) => void = () => {};
     onDeleteRequest: (item: ConversationItem) => void = () => {};
@@ -187,6 +189,9 @@ export struct SidebarPanel {
             this.ActionRow('learning', $r('app.media.ic_book'), '学习', (): void => {
                 this.onOpenLearning();
             });
+            this.ActionRow('learning_agent', $r('app.media.ic_spark'), 'Agent', (): void => {
+                this.onOpenAgent();
+            });
         }
         .width('100%')
         .padding({ left: Space.md, right: Space.md, top: Space.xl, bottom: Space.md });
@@ -199,18 +204,28 @@ export struct SidebarPanel {
             Image(icon)
                 .width(Size.icon)
                 .height(Size.icon)
-                .fillColor($r('app.color.icon_secondary'));
+                .fillColor(key === 'learning_agent' && this.agentActive ? $r('app.color.brand_primary') : $r('app.color.icon_secondary'));
 
             Text(label)
                 .fontSize(FontSize.body)
-                .fontColor($r('app.color.text_primary'))
+                .fontWeight(key === 'learning_agent' && this.agentActive ? FontWeight.Medium : FontWeight.Regular)
+                .fontColor(key === 'learning_agent' && this.agentActive ? $r('app.color.text_brand') : $r('app.color.text_primary'))
                 .layoutWeight(1);
+
+            if (key === 'learning_agent' && this.agentActive) {
+                Text('已开启')
+                    .fontSize(FontSize.small)
+                    .fontColor($r('app.color.text_brand'));
+            }
         }
         .width('100%')
         .height(50)
         .padding({ left: Space.lg, right: Space.md })
         .borderRadius(Radius.md)
-        .backgroundColor(this.pressedAction === key ? $r('app.color.bg_pressed') : Color.Transparent)
+        .backgroundColor(this.pressedAction === key ? $r('app.color.bg_pressed') :
+            key === 'learning_agent' && this.agentActive ? $r('app.color.brand_soft') : Color.Transparent)
+        .id('sidebar_action_' + key)
+        .accessibilityDescription(key === 'learning_agent' && this.agentActive ? 'Agent 模式已开启，再次点击退出' : '')
         .animation({ duration: Motion.durationPress, curve: Motion.press })
         .onTouch((event: TouchEvent) => {
             if (event.type === TouchType.Down) {

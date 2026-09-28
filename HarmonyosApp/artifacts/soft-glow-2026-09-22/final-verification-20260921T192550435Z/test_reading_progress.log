@@ -1,0 +1,178 @@
+TAP version 13
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 1 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 401.6752
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 2 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 168.1823
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 3 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 144.4247
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 4 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 156.0126
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 5 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 103.319
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 6 - reading position is isolated between accounts
+  ---
+  duration_ms: 13.4224
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 7 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 47.3535
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 8 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 49.6551
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 9 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 116.6989
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 10 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 106.4289
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 11 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 96.2386
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 12 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 24.3691
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 13 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 17.1667
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 14 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 99.9289
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 15 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 107.3569
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 16 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 57.5501
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 17 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 63.061
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 18 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 62.9833
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 19 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 156.9132
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 20 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 98.2235
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 21 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 15.9941
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 22 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 37.2692
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 23 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 41.7065
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 24 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 33.5827
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 25 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 42.3475
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 26 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 80.1597
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 27 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 33.2612
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 28 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 36.1987
+  type: 'test'
+  ...
+1..28
+# tests 28
+# suites 0
+# pass 28
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2677.1047

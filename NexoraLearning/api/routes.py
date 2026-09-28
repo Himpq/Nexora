@@ -1545,10 +1545,10 @@ def _learning_report_reading_stats(user_id: str, lecture_id: str, books: List[Di
 
 def _learning_report_profile_summary(user_id: str) -> Dict[str, Any]:
     """读取用户画像维度和时间线，提供给报告面板展示。"""
-    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+    from core.memory import PROFILE_DIMENSIONS, read_profile_dimensions, parse_profile_timeline
 
     user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
-    dimensions = parse_profile_dimensions(user_md)
+    dimensions = read_profile_dimensions(_cfg, user_id)
     timeline = parse_profile_timeline(user_md)
     rows = []
 
@@ -1562,6 +1562,9 @@ def _learning_report_profile_summary(user_id: str) -> Dict[str, Any]:
             "filled": bool((row or {}).get("filled")),
             "value": value,
             "brief": value[:120],
+            "source_id": (row or {}).get("source_id"),
+            "occurred_at": (row or {}).get("occurred_at"),
+            "confidence": (row or {}).get("confidence"),
         })
 
     filled_count = sum(1 for item in rows if item.get("filled"))
@@ -1616,6 +1619,21 @@ def _learning_report_recommendations(
     profile_completion = float(profile.get("completion_rate") or 0)
     submitted = _safe_int(question_stats.get("submitted"), 0)
     reviewed = _safe_int(question_stats.get("reviewed"), 0)
+    reading_seconds = float(progress_info.get("reading_seconds") or 0)
+    read_chapters = int(progress_info.get("read_chapters") or 0)
+
+    if (reading_seconds > 0 or read_chapters > 0) and reviewed == 0:
+        recommendations.append({
+            "title": "读过之后，确认理解",
+            "detail": f"我记下了 {reading_seconds / 60:.1f} 分钟阅读、{read_chapters} 个章节的接触记录。"
+                      "掌握程度还待验证，可以从刚读的内容做一道小测。",
+        })
+    goal = next((row for row in dimensions if row.get("key") == "learning_goal" and row.get("filled")), None)
+    preference = next((row for row in dimensions if row.get("key") == "cognitive_style" and row.get("filled")), None)
+    if goal:
+        recommendations.append({"title": "按你说的目标继续", "detail": str(goal.get("value") or "")[:200]})
+    if preference:
+        recommendations.append({"title": "我记得你的讲解偏好", "detail": str(preference.get("value") or "")[:200]})
 
     if weak_area:
         weaknesses.append({
@@ -1638,7 +1656,7 @@ def _learning_report_recommendations(
     if total_sessions > 0 and completed_sessions < total_sessions:
         recommendations.append({
             "title": "继续推进小节",
-            "detail": f"已完成 {completed_sessions}/{total_sessions} 个小节，建议先补齐当前课程的小节学习记录。",
+            "detail": f"已经读完 {completed_sessions}/{total_sessions} 个小节，可以继续刚才停下的位置。",
         })
 
     if current_chapter:
@@ -1647,10 +1665,10 @@ def _learning_report_recommendations(
             "detail": f"当前应优先学习：{current_chapter}" + (f"，随后进入：{next_chapter}" if next_chapter else ""),
         })
 
-    if profile_completion < 1:
+    if profile_completion == 0 and not (reading_seconds > 0 or read_chapters > 0):
         recommendations.append({
-            "title": "补全学习画像",
-            "detail": "画像维度越完整，学习路径、题目和资源推荐越稳定。",
+            "title": "告诉我你的学习目标",
+            "detail": "你想学到什么、喜欢怎样的讲解？告诉我后，我会记住并用于接下来的学习。",
         })
 
     if not recommendations:

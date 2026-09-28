@@ -8,18 +8,28 @@ _routes._export_route_context(globals())
 
 @bp.route("/frontend/knowledge-graph", methods=["GET"])
 def frontend_knowledge_graph():
-    """读取已缓存的知识图谱。"""
+    """Show the common graph with this learner's current reading/assessment."""
     lecture_id = str(request.args.get("lecture_id") or "").strip()
     book_id = str(request.args.get("book_id") or "").strip()
     if not lecture_id or not book_id:
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
 
-    from core.knowledge_graph import load_cached_graph
-    graph = load_cached_graph(_cfg, lecture_id, book_id)
-    if graph:
-        return jsonify({"success": True, "graph": graph, "cached": True})
-
-    return jsonify({"success": True, "graph": None, "cached": False})
+    from core.cognition.learning_graph import build_learning_graph
+    from core.user.reading_progress import valid_identifier
+    username = _resolve_runtime_user_id()
+    if not valid_identifier(lecture_id) or not valid_identifier(book_id) or (username and not valid_identifier(username)):
+        return jsonify({"success": False, "error": "valid user, lecture_id and book_id are required."}), 400
+    if get_learning_lecture(_cfg, lecture_id) is None:
+        return jsonify({"success": False, "error": "lecture not found."}), 404
+    if not username:
+        from core.knowledge_graph import load_cached_graph
+        graph = load_cached_graph(_cfg, lecture_id, book_id)
+        return jsonify({"success": True, "graph": graph, "cached": graph is not None})
+    try:
+        result = build_learning_graph(_cfg, username, lecture_id, book_id)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, **result})
 
 @bp.route("/frontend/knowledge-graph/generate", methods=["POST"])
 def frontend_knowledge_graph_generate():

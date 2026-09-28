@@ -1061,6 +1061,13 @@
       ]
     ],
     [
+      "/api/learning/agent/<path:agent_path>",
+      [
+        "GET",
+        "POST"
+      ]
+    ],
+    [
       "/api/learning/chat",
       [
         "POST"

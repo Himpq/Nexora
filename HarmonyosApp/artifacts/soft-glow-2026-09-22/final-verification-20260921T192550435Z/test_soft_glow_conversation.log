@@ -1,0 +1,286 @@
+TAP version 13
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 1 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 359.2825
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 2 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 183.1108
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 3 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 144.3678
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 4 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 173.4338
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 5 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 102.5868
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 6 - reading position is isolated between accounts
+  ---
+  duration_ms: 18.6151
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 7 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 46.6164
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 8 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 38.2543
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 9 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 103.0602
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 10 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 104.6062
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 11 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 77.1446
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 12 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 18.1084
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 13 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 25.2203
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 14 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 129.4299
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 15 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 96.783
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 16 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 56.6583
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 17 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 48.8034
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 18 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 51.8815
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 19 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 162.1176
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 20 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 94.9082
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 21 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 19.5057
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 22 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 29.8459
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 23 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 33.4839
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 24 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 25.2852
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 25 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 30.112
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 26 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 105.2464
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 27 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 32.2172
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 28 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 27.3252
+  type: 'test'
+  ...
+# Subtest: a valid first send lights the top through waiting and revealing; the second send does not replay
+ok 29 - a valid first send lights the top through waiting and revealing; the second send does not replay
+  ---
+  duration_ms: 84.0578
+  type: 'test'
+  ...
+# Subtest: empty and whitespace input spend no glow; duplicate taps preserve the next draft and make one request
+ok 30 - empty and whitespace input spend no glow; duplicate taps preserve the next draft and make one request
+  ---
+  duration_ms: 85.1301
+  type: 'test'
+  ...
+# Subtest: an absent account cannot consume the day; signing in permits the first visible glow
+ok 31 - an absent account cannot consume the day; signing in permits the first visible glow
+  ---
+  duration_ms: 86.7
+  type: 'test'
+  ...
+# Subtest: errors extinguish the glow and retries keep the same message without claiming, even the next day
+ok 32 - errors extinguish the glow and retries keep the same message without claiming, even the next day
+  ---
+  duration_ms: 85.735
+  type: 'test'
+  ...
+# Subtest: a stopped request with late success cannot overwrite a new request or its glow
+ok 33 - a stopped request with late success cannot overwrite a new request or its glow
+  ---
+  duration_ms: 86.9846
+  type: 'test'
+  ...
+# Subtest: a stopped request with late failure cannot overwrite a new request or its glow
+ok 34 - a stopped request with late failure cannot overwrite a new request or its glow
+  ---
+  duration_ms: 91.2719
+  type: 'test'
+  ...
+# Subtest: stopping while context resolves prevents starting a request and preserves next-day eligibility
+ok 35 - stopping while context resolves prevents starting a request and preserves next-day eligibility
+  ---
+  duration_ms: 147.7266
+  type: 'test'
+  ...
+# Subtest: an in-flight request crossing midnight never claims again; the next new send does
+ok 36 - an in-flight request crossing midnight never claims again; the next new send does
+  ---
+  duration_ms: 122.7058
+  type: 'test'
+  ...
+# Subtest: a send started disabled or hidden does not consume the first glow or replay it when exposed
+ok 37 - a send started disabled or hidden does not consume the first glow or replay it when exposed
+  ---
+  duration_ms: 804.8514
+  type: 'test'
+  ...
+# Subtest: after a glow was shown, hiding or disabling extinguishes it and reopening cannot replay it
+ok 38 - after a glow was shown, hiding or disabling extinguishes it and reopening cannot replay it
+  ---
+  duration_ms: 899.5051
+  type: 'test'
+  ...
+# Subtest: leaving the component cancels its request and a late response cannot resume the glow
+ok 39 - leaving the component cancels its request and a late response cannot resume the glow
+  ---
+  duration_ms: 143.0316
+  type: 'test'
+  ...
+# Subtest: production character reveal stops changing text after stop and cannot finish a later request
+ok 40 - production character reveal stops changing text after stop and cannot finish a later request
+  ---
+  duration_ms: 179.2697
+  type: 'test'
+  ...
+# Subtest: the plan route shares the daily glow and passes its own cancellation control to the network
+ok 41 - the plan route shares the daily glow and passes its own cancellation control to the network
+  ---
+  duration_ms: 149.7349
+  type: 'test'
+  ...
+# Subtest: AgentApi cancels only the matching HTTP request and leaves the next send and timeline request alive
+ok 42 - AgentApi cancels only the matching HTTP request and leaves the next send and timeline request alive
+  ---
+  duration_ms: 34.0786
+  type: 'test'
+  ...
+# Subtest: a cancellation before identity is ready creates no HTTP request
+ok 43 - a cancellation before identity is ready creates no HTTP request
+  ---
+  duration_ms: 22.2123
+  type: 'test'
+  ...
+# Subtest: Day stop interrupts its production AgentApi transport immediately and remains a stopped state
+ok 44 - Day stop interrupts its production AgentApi transport immediately and remains a stopped state
+  ---
+  duration_ms: 172.0688
+  type: 'test'
+  ...
+# Subtest: keyboard height is converted once and navigation is subtracted only once through show, resize and hide
+ok 45 - keyboard height is converted once and navigation is subtracted only once through show, resize and hide
+  ---
+  duration_ms: 152.2409
+  type: 'test'
+  ...
+# Subtest: window subscriptions read and track TYPE_NAVIGATION_INDICATOR independently from the status bar
+ok 46 - window subscriptions read and track TYPE_NAVIGATION_INDICATOR independently from the status bar
+  ---
+  duration_ms: 159.8827
+  type: 'test'
+  ...
+1..46
+# tests 46
+# suites 0
+# pass 46
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6128.2254

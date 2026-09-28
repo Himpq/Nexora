@@ -258,10 +258,14 @@ class CognitionService:
         orphan_ids = sorted({row.concept_id for row in evidence_rows if row.concept_id not in catalog_ids})
 
         if orphan_ids:
-            raise CognitionCatalogError(
-                "Stored evidence references concepts missing from the current knowledge graph.",
-                details={"orphan_concept_ids": orphan_ids},
-            )
+            # 图谱重建后 concept_id 会变，旧证据指向的概念不在目录里。以前这里直接抛错，
+            # 结果「它眼里的你」整门课静默为空；现在只忽略孤儿证据并在 summary 里计数。
+            from core.runlog import log_event
+
+            log_event("cognition_orphan_evidence", "证据引用的概念不在当前图谱里，已忽略",
+                      payload={"user_id": str(user_id or ""), "lecture_id": str(lecture_id or ""),
+                               "orphan_concept_ids": orphan_ids[:20], "count": len(orphan_ids)})
+            evidence_rows = [row for row in evidence_rows if row.concept_id in catalog_ids]
 
         grouped: Dict[str, List[CognitiveEvidence]] = defaultdict(list)
 
@@ -290,6 +294,7 @@ class CognitionService:
             "summary": {
                 "concept_count": len(states),
                 "evidence_count": len(evidence_rows),
+                "orphan_concept_count": len(orphan_ids),
                 "due_review_count": due_review_count,
                 "status_counts": {
                     status: int(status_counts.get(status, 0))

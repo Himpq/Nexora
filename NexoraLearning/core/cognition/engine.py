@@ -22,6 +22,7 @@ class CognitiveStateEngine:
         "lab_explanation": 1.6,
         "transfer_task": 2.0,
         "review": 1.3,
+        "revealed_answer": 0.5,
     }
     _review_threshold = 0.65
 
@@ -46,7 +47,10 @@ class CognitiveStateEngine:
                     },
                 )
 
-        assessed = [row for row in rows if row.evidence_type in ASSESSED_EVIDENCE_TYPES]
+        # Older clients stored agreement/disagreement with an Agent claim as a
+        # scored review. Preserve the audit trail, but never grade that feedback.
+        assessed = [row for row in rows if row.evidence_type in ASSESSED_EVIDENCE_TYPES
+                    and not ((row.metadata or {}).get("facet_id") and (row.metadata or {}).get("verdict"))]
 
         if not assessed:
             return CognitiveState(

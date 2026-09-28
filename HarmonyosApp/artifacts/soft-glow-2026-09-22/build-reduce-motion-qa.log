@@ -1,0 +1,229 @@
+Ensure the project source is trusted before proceeding.
+
+[ohpm install] Running...
+[32minstall completed in 0s 68ms[39m
+
+[hvigor sync] Skipped (configurations unchanged)
+
+[hvigor build] Running...
+> hvigor [32mUP-TO-DATE :entry:default@PreBuild...  [39m
+> hvigor [32mFinished :entry:default@CreateModuleInfo... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateMetadata...  [39m
+> hvigor [32mFinished :entry:default@ConfigureCmake... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MergeProfile...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CreateBuildProfile...  [39m
+> hvigor [32mFinished :entry:default@PreCheckSyscap... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GeneratePkgContextInfo...  [39m
+> hvigor [32mFinished :entry:default@GeneratePkgSdkInfo... after 3 ms [39m
+> hvigor [32mFinished :entry:default@ProcessIntegratedHsp... after 1 ms [39m
+> hvigor [32mFinished :entry:default@BuildNativeWithCmake... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MakePackInfo...  [39m
+> hvigor [32mFinished :entry:default@SyscapTransform... after 5 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessProfile...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessRouterMap...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessShareConfig...  [39m
+> hvigor [32mFinished :entry:default@ProcessStartupConfig... after 4 ms [39m
+> hvigor [32mFinished :entry:default@BuildNativeWithNinja... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessResource...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateLoaderJson...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessLibs...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CompileResource...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@DoNativeStrip...  [39m
+> hvigor [32mFinished :entry:default@BuildJS... after 3 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@CacheNativeLibs...  [39m
+> hvigor WARN: WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/intents/index.ets:14:11
+ Classes cannot be used as objects (arkts-no-classes-as-obj)
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/intents/index.ets:14:28
+ Classes cannot be used as objects (arkts-no-classes-as-obj)
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/intents/index.ets:14:43
+ Classes cannot be used as objects (arkts-no-classes-as-obj)
+
+WARN: ArkTS:WARN: For details about ArkTS syntax errors, see FAQs
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/calendar.ets:52:28
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/calendar.ets:62:18
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/AgentApi.ets:110:45
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/dnd.ets:14:29
+ The system capacity of this api 'intelligentScene' is not supported on all devices
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/dnd.ets:14:46
+ The system capacity of this api 'isDoNotDisturbEnabled' is not supported on all devices
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/dnd.ets:18:29
+ The system capacity of this api 'intelligentScene' is not supported on all devices
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/dnd.ets:18:46
+ The system capacity of this api 'isNotifyAllowedInDoNotDisturb' is not supported on all devices
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/HeadlessApi.ets:97:45
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/intents/WhatsNextIntent.ets:59:7
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/intents/QuizMeIntent.ets:50:7
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/SoftGlowState.ets:98:19
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/SoftGlowState.ets:103:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/SoftGlowState.ets:107:12
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/components/InspectSheet.ets:154:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/components/InspectSheet.ets:154:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/cache/CacheStore.ets:42:19
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/cache/CacheStore.ets:51:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/cache/CacheStore.ets:52:11
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/ReaderApi.ets:110:45
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/ReaderApi.ets:169:45
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Study.ets:147:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Study.ets:147:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/asr.ets:79:25
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/capability/notify.ets:13:33
+ 'requestEnableNotification' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:156:7
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:156:14
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:744:14
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:767:7
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:767:14
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:784:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:784:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:799:14
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:807:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Day.ets:807:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/TodayTask.ets:107:27
+ 'getParams' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/TodayTask.ets:768:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/TodayTask.ets:768:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/TodayTask.ets:1056:22
+ 'back' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:275:27
+ 'getParams' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:1099:47
+ 'measureTextSize' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:1409:11
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:1435:13
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:2150:20
+ 'back' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Reader.ets:2474:22
+ 'back' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Quiz.ets:34:27
+ 'getParams' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Quiz.ets:135:22
+ 'back' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Quiz.ets:181:24
+ 'back' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/services/ReportApi.ets:115:45
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:66:27
+ 'getParams' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:292:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:292:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:301:5
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:301:12
+ 'pushUrl' has been deprecated.
+
+WARN: ArkTS:WARN File: D:/Nexora/HarmonyosApp/artifacts/soft-glow-2026-09-22/validation-app/entry/src/main/ets/pages/Report.ets:377:20
+ 'back' has been deprecated.
+
+
+> hvigor [32mFinished :entry:default@CompileArkTS... after 2 s 510 ms [39m
+> hvigor [32mFinished :entry:default@GeneratePkgModuleJson... after 5 ms [39m
+> hvigor [32mFinished :entry:default@ProcessCompiledResources... after 2 ms [39m
+> hvigor [32mFinished :entry:default@PackageHap... after 395 ms [39m
+> hvigor [32mFinished :entry:default@PackingCheck... after 8 ms [39m
+> hvigor WARN: Will skip sign 'hos_hap'. No signingConfigs profile is configured in current project.
+             If needed, configure the signingConfigs in D:\Nexora\HarmonyosApp\artifacts\soft-glow-2026-09-22\validation-app\build-profile.json5.
+> hvigor [32mFinished :entry:default@SignHap... after 2 ms [39m
+> hvigor [32mFinished :entry:default@CollectDebugSymbol... after 2 ms [39m
+> hvigor [32mFinished :entry:assembleHap... after 1 ms [39m
+> hvigor [32mBUILD SUCCESSFUL in 4 s 916 ms [39m
+
+Merged central compile_commands.json for C++ language server.
+
+Build completed successfully.
+
+Installing artifacts to device 127.0.0.1:5555...
+App installed successfully
+Launching com.nexora.learning.softglowtest/EntryAbility...
+
+Application 'com.nexora.learning.softglowtest': start ability successfully.
+
+New version 1.3.3 available, run `devecocli update` to upgrade

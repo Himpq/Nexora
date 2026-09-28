@@ -1,0 +1,9 @@
+Ensure the project source is trusted before proceeding.
+
+Installing artifacts to device 127.0.0.1:5555...
+App installed successfully
+Launching com.nexora.learning/EntryAbility...
+
+Application 'com.nexora.learning': start ability successfully.
+
+New version 1.3.3 available, run `devecocli update` to upgrade

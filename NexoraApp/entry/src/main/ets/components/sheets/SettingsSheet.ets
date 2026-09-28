@@ -4,24 +4,50 @@
 import { sanitizeDisplayName } from '../../common/AppConfig';
 import { AppState } from '../../common/AppState';
 import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
+import { LearningHttp } from '../../common/LearningHttp';
 import { DangerRow, NavRow, SwitchRow } from '../common/ListRows';
 import { UserAvatar } from '../common/UserAvatar';
+import { LearningMemorySettings } from '../agent/LearningMemorySettings';
 
 @Component
 export struct SettingsSheet {
     @ObjectLink app: AppState;
+    @Link memoryOpen: boolean;
+    @StorageProp('nxSessionReady') @Watch('onLearningStateChanged') private sessionReady: boolean = false;
+    @StorageProp('nxLearningIdentityRevision') @Watch('onLearningStateChanged') private identityRevision: number = 0;
     onSaved: () => void = () => {};
     onSignOut: () => void = () => {};
     onOpenModelPicker: () => void = () => {};
+    onMemoryChanged: () => void = () => {};
 
     @State private urlDraft: string = '';
     @State private saving: boolean = false;
+    @State private learningReady: boolean = false;
 
     aboutToAppear(): void {
         this.urlDraft = this.app.backendUrl;
+        this.onLearningStateChanged();
+    }
+
+    private onLearningStateChanged(): void {
+        this.learningReady = this.sessionReady && LearningHttp.configured;
     }
 
     build() {
+        if (this.memoryOpen) {
+            LearningMemorySettings({
+                visible: this.memoryOpen,
+                inSheet: true,
+                onBack: () => { this.memoryOpen = false; },
+                onChanged: () => { this.onMemoryChanged(); }
+            });
+        } else {
+            this.SettingsContent();
+        }
+    }
+
+    @Builder
+    SettingsContent() {
         Column({ space: Space.md }) {
             Column()
                 .width(36)
@@ -40,6 +66,13 @@ export struct SettingsSheet {
             Scroll() {
                 Column({ space: Space.md }) {
                     this.AccountCard();
+                    NavRow({
+                        icon: $r('app.media.ic_person'),
+                        title: '学习偏好与记忆',
+                        value: this.learningReady ? '' : '未就绪',
+                        tint: $r('app.color.text_brand'),
+                        onTap: () => { this.memoryOpen = true; }
+                    }).id('settings_learning_memory');
                     this.BackendEditor();
 
                     SwitchRow({

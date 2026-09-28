@@ -363,15 +363,34 @@ def _normalize_mindmap(
     *,
     minimum_relations: int = 0,
     minimum_relation_coverage: float = 0.0,
+    expected_section_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """规范化 submit_mindmap 返回数据，拍平为 nodes + edges 图结构。
 
     LLM 仍以 chapters/concepts/children 树形提交（更易生成），
     此函数负责拍平为前端 G6 消费的扁平图格式，并解析 relations。
+    `expected_section_ids` 给出时，chapters 的 section_id 必须与大纲一一对应（缺、多都拒绝），
+    否则概念目录会按编号错配到别的书（2026-09-19 故障）。
     """
     raw_chapters = mindmap_data.get("chapters")
     if not isinstance(raw_chapters, list):
         raise ValueError("模型未返回有效的 chapters 数组")
+
+    if expected_section_ids:
+        submitted = [str((row or {}).get("section_id") or "").strip() for row in raw_chapters if isinstance(row, dict)]
+        expected = [str(x).strip() for x in expected_section_ids if str(x).strip()]
+        missing = [sid for sid in expected if sid not in submitted]
+        unknown = [sid for sid in submitted if sid and sid not in expected]
+        duplicated = sorted({sid for sid in submitted if sid and submitted.count(sid) > 1})
+        if missing or unknown or duplicated:
+            parts = []
+            if missing:
+                parts.append("缺少大纲 section：" + "、".join(missing))
+            if unknown:
+                parts.append("section_id 不在大纲里：" + "、".join(unknown))
+            if duplicated:
+                parts.append("section_id 重复：" + "、".join(duplicated))
+            raise ValueError("chapters 必须与大纲 sections 一一对应。" + "；".join(parts))
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -527,6 +546,7 @@ def _run_mindmap_agent(
     minimum_relations: int = 0,
     minimum_relation_coverage: float = 0.0,
     cancel_event: Any = None,
+    expected_section_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """思维导图 Agent 的工具调用主循环。
 
@@ -540,7 +560,16 @@ def _run_mindmap_agent(
         stream_timeout = float(settings.get("request_timeout") or 90)
     except Exception:
         stream_timeout = 90.0
-    stream_timeout = max(30.0, min(stream_timeout, 90.0))
+    stream_timeout = max(30.0, min(stream_timeout, 300.0))
+    try:
+        max_tokens = int(settings.get("max_output_tokens") or 6000)
+    except Exception:
+        max_tokens = 6000
+    # 15 章 × 2 概念 + 12 条关系的 JSON 约 3000+ token；再加推理链就更多。
+    # 旧值 min(2800, …) 配合不关 think 的 DeepSeek-V4-Flash 会把预算吃光、四轮都不出工具调用。
+    max_tokens = max(3000, min(max_tokens, 8000))
+    think = settings.get("think")
+    think = False if think is None else bool(think)
 
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -576,7 +605,8 @@ def _run_mindmap_agent(
             model=model_name or None,
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
-                "max_tokens": min(2800, int(settings.get("max_output_tokens") or 2800)),
+                "max_tokens": max_tokens,
+                "think": think,
                 # usst / qwen3.5-27b will not return any stream events when
                 # function tools are attached. The browser SSE still reports
                 # the agent lifecycle and renders the completed tool payload.
@@ -595,7 +625,7 @@ def _run_mindmap_agent(
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("知识图谱生成已取消")
             if "timed out" in message.lower() or "timeout" in message.lower():
-                raise RuntimeError("模型在 90 秒内未返回数据，请稍后重试。")
+                raise RuntimeError(f"模型在 {int(stream_timeout)} 秒内未返回数据，请稍后重试。")
             raise RuntimeError(f"Nexora API Error: {message}")
 
         payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
@@ -670,6 +700,7 @@ def _run_mindmap_agent(
                         args_obj,
                         minimum_relations=minimum_relations,
                         minimum_relation_coverage=minimum_relation_coverage,
+                        expected_section_ids=expected_section_ids,
                     )
                     mindmap_submitted = True
                     turn_history.append({
@@ -806,12 +837,14 @@ def generate_mindmap(
         minimum_relations=min(12, max(8, len(outline.get("sections") or []))),
         minimum_relation_coverage=0.65,
         cancel_event=cancel_event,
+        expected_section_ids=[str(s.get("id") or "").strip() for s in outline.get("sections") or [] if isinstance(s, dict)],
     )
 
-    # 补充元数据并落盘
+    # 补充元数据并落盘（记录所依据的大纲版本，供 graph_builder 判断是否过期）
     result_mindmap["lecture_id"] = safe_lecture_id
     result_mindmap["lecture_title"] = lecture_title
     result_mindmap["generated_at"] = __import__("time").time()
+    result_mindmap["outline_generated_at"] = int(outline.get("generated_at") or 0)
 
     _save_mindmap(cfg, safe_lecture_id, result_mindmap)
     emit_status("思维导图已生成并保存")

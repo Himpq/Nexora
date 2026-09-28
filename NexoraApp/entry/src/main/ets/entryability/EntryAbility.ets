@@ -5,15 +5,50 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { KeyboardAvoidMode as KeyboardAvoid, UIContext, window } from '@kit.ArkUI';
 import { chatStream } from '../common/ChatStreamClient';
 import { LiveViewController } from '../common/LiveViewController';
+import { nexoraIntentExecutors } from '../intents/index';
+import { LearningAgentSystem } from '../common/LearningAgentSystem';
+import { LearningDeviceContext } from '../common/LearningDeviceContext';
+import { LearningSystemEntry } from '../common/LearningSystemEntry';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+    nexoraIntentExecutors();
+    AppStorage.setOrCreate('appForeground', true);
+    this.rememberLaunchTarget(want);
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    this.rememberLaunchTarget(want);
+  }
+
+  private rememberLaunchTarget(want: Want): void {
+    if (want.parameters === undefined) {
+      return;
+    }
+    const ownerToken = want.parameters['nx_identity'];
+    if (typeof ownerToken === 'string' && ownerToken.length > 0 &&
+      LearningSystemEntry.readIdentity(this.context)?.token !== ownerToken) {
+      return;
+    }
+    const routeValue = want.parameters['nx_route'];
+    const decisionValue = want.parameters['decision_id'];
+    const route: string = typeof routeValue === 'string' ? routeValue.trim().toLowerCase() : '';
+    const decision: string = typeof decisionValue === 'string' ? decisionValue.trim() : '';
+    const supported: string[] = ['day', 'study', 'reader', 'mirror', 'judgment', 'review'];
+    if (route.length > 0 && supported.indexOf(route) < 0 || route.length === 0 && decision.length === 0) {
+      return;
+    }
+    // Publish the payload before the trigger; repeated taps on the same route still work.
+    AppStorage.setOrCreate('nxLaunchDecision', decision);
+    AppStorage.setOrCreate('nxLaunchRoute', route.length > 0 ? route : 'day');
+    AppStorage.setOrCreate('nxLaunchToken', (AppStorage.get<number>('nxLaunchToken') || 0) + 1);
   }
 
   onDestroy(): void {
+    AppStorage.setOrCreate('appForeground', false);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
@@ -96,14 +131,18 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
+    AppStorage.setOrCreate('appForeground', true);
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
 
     // 回前台：停止"模型正在回复"实况窗（若未活跃则幂等返回）
     LiveViewController.shared.stop();
+    void LearningAgentSystem.refresh(this.context, true);
   }
 
   onBackground(): void {
+    AppStorage.setOrCreate('appForeground', false);
+    void LearningDeviceContext.report(this.context, false);
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
 

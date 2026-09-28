@@ -499,10 +499,10 @@ def frontend_profile():
     """返回用户画像的结构化维度数据。"""
     user_id = _resolve_runtime_user_id()
 
-    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+    from core.memory import PROFILE_DIMENSIONS, read_profile_dimensions, parse_profile_timeline
 
     user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
-    dimensions = parse_profile_dimensions(user_md)
+    dimensions = read_profile_dimensions(_cfg, user_id)
     timeline = parse_profile_timeline(user_md)
 
     filled_count = sum(1 for d in dimensions.values() if d.get("filled"))
@@ -542,30 +542,46 @@ def frontend_learning_report():
     books = list_lecture_books(_cfg, lecture_id)
     learning_records = user_store.list_learning_records(_cfg, user_id)
     question_records = user_store.list_question_completions(_cfg, user_id)
-    study_hours_map = _build_user_study_hours_map(user_id, records=learning_records)
-
-    from core.user.learning_progress import list_lecture_chapter_names as _list_lecture_chapter_names
-
-    chapter_names = _list_lecture_chapter_names(lecture_id, books)
+    if book_id and not any(str(book.get("id") or "") == book_id for book in books):
+        return jsonify({"success": False, "error": "book not found in this lecture."}), 404
     scoped_learning_records = [
         row for row in learning_records
         if _learning_report_record_matches(row, lecture_id, book_id, chapter_index)
     ]
-    completed_chapter_names = {
-        str(row.get("chapter_name") or "").strip()
-        for row in scoped_learning_records
-        if str(row.get("type") or "").strip() == "chapter_completed" and str(row.get("chapter_name") or "").strip()
-    }
     completed_sessions = sum(
         1
         for row in scoped_learning_records
         if str(row.get("type") or "").strip() == "session_completed"
     )
     total_sessions = _learning_report_count_sessions(lecture_id, books, book_id=book_id)
-    progress_info = _compute_user_lecture_progress(user_id, lecture_id, books, records=learning_records)
+    progress_info = _compute_user_lecture_progress(user_id, lecture_id, books, records=learning_records,
+                                                 book_id=book_id, cfg=_cfg)
+    if chapter_index >= 0:
+        chapters = [row for row in progress_info["chapters"] if row["chapter_index"] == chapter_index]
+        if not chapters:
+            return jsonify({"success": False, "error": "chapter not found in this report scope."}), 404
+        read_chars = sum(row["read_chars"] for row in chapters)
+        total_chars = sum(row["total_chars"] for row in chapters)
+        reading_progress = round(read_chars / total_chars * 100, 2) if total_chars else 0.0
+        progress_info = {**progress_info, "chapters": chapters, "progress": round(reading_progress),
+                         "reading_progress": reading_progress, "read_chars": read_chars, "total_chars": total_chars,
+                         "read_chapters": sum(row["read_chars"] > 0 for row in chapters),
+                         "completed_chapters": sum(row["completed"] for row in chapters), "total_chapters": len(chapters),
+                         "reading_seconds": sum(row["reading_seconds"] for row in chapters),
+                         "current_chapter": chapters[0]["chapter_name"], "next_chapter": ""}
     question_stats = _learning_report_question_stats(question_records, lecture_id, book_id, chapter_index)
     reading_stats = _learning_report_reading_stats(user_id, lecture_id, books, book_id=book_id)
+    reading_stats.update({"total_reading_sec": progress_info["reading_seconds"],
+                          "total_reading_minutes": round(progress_info["reading_seconds"] / 60, 1),
+                          "read_chapters": progress_info["read_chapters"],
+                          "read_chars": progress_info["read_chars"]})
     profile = _learning_report_profile_summary(user_id)
+    try:
+        course_reading_progress = _compute_user_lecture_progress(
+            user_id, lecture_id, books, records=learning_records, cfg=_cfg
+        )["reading_progress"] if (book_id or chapter_index >= 0) else progress_info["reading_progress"]
+    except Exception:
+        course_reading_progress = progress_info["reading_progress"]
     weaknesses, recommendations = _learning_report_recommendations(
         progress_info,
         profile,
@@ -585,16 +601,24 @@ def frontend_learning_report():
         },
         "summary": {
             "progress_percent": _safe_int(progress_info.get("progress"), 0),
-            "completed_chapters": len(completed_chapter_names),
-            "total_chapters": len(chapter_names),
+            "reading_progress_percent": progress_info["reading_progress"],
+            "completed_chapters": progress_info["completed_chapters"],
+            "total_chapters": progress_info["total_chapters"],
+            "completion_percent": round(progress_info["completed_chapters"] / progress_info["total_chapters"] * 100, 1) if progress_info["total_chapters"] else 0,
+            "read_chapters": progress_info["read_chapters"],
+            "read_chars": progress_info["read_chars"],
+            "reading_seconds": progress_info["reading_seconds"],
             "completed_sessions": completed_sessions,
             "total_sessions": total_sessions,
-            "study_hours": round(float(study_hours_map.get(lecture_id, 0.0)), 2),
+            "study_hours": round(float(progress_info["reading_seconds"]) / 3600, 2),
             "submitted_questions": _safe_int(question_stats.get("submitted"), 0),
             "reviewed_questions": _safe_int(question_stats.get("reviewed"), 0),
             "correct_questions": _safe_int(question_stats.get("correct"), 0),
             "accuracy": question_stats.get("accuracy"),
             "profile_completion_rate": profile.get("completion_rate"),
+            # 口径标注：本报告的分母（本书 / 本课程），端上同屏显示避免 1.2% / 3.4% 看不出关系。
+            "scope_label": "本章" if chapter_index >= 0 else ("本书" if book_id else "本课程"),
+            "course_reading_progress_percent": course_reading_progress,
         },
         "progress": progress_info,
         "reading": reading_stats,
@@ -832,6 +856,12 @@ def frontend_select_learning_lecture():
         actor=str(data.get("actor") or "").strip(),
     )
     selected_ids = user_store.list_selected_lecture_ids(_cfg, user_id)
+    graph_state = ""
+    if selected:
+        # 没有 outline / mindmap 的课程认知层会静默为空：选课那一刻就补建（后台、幂等、失败冷却）。
+        from core.cognition.graph_builder import ensure_course_graph
+
+        graph_state = ensure_course_graph(_cfg, lecture_id, user_id=user_id)
     return jsonify(
         {
             "success": True,
@@ -839,5 +869,6 @@ def frontend_select_learning_lecture():
             "lecture": lecture,
             "selected": bool(selected),
             "selected_lecture_ids": selected_ids,
+            "graph_status": graph_state,
         }
     )

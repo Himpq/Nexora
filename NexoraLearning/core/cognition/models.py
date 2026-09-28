@@ -18,6 +18,8 @@ EVIDENCE_TYPES = {
     "lab_explanation",
     "transfer_task",
     "review",
+    # 未作答直接看答案：按错误计，但权重低于一次正式作答（见 engine 权重表）。
+    "revealed_answer",
 }
 SOURCE_TYPES = {
     "question",

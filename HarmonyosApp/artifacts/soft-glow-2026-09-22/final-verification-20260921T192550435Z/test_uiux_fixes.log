@@ -1,0 +1,232 @@
+TAP version 13
+# Subtest: partial reading emits progress before leaving or declaring the chapter complete
+ok 1 - partial reading emits progress before leaving or declaring the chapter complete
+  ---
+  duration_ms: 365.7534
+  type: 'test'
+  ...
+# Subtest: chapter changes settle the old chapter; background time is not reading time
+ok 2 - chapter changes settle the old chapter; background time is not reading time
+  ---
+  duration_ms: 205.1587
+  type: 'test'
+  ...
+# Subtest: page swipes keep only dwell-qualified ranges and do not count skipped pages
+ok 3 - page swipes keep only dwell-qualified ranges and do not count skipped pages
+  ---
+  duration_ms: 124.059
+  type: 'test'
+  ...
+# Subtest: leaving an unfinished reading flow never reports reading_done
+ok 4 - leaving an unfinished reading flow never reports reading_done
+  ---
+  duration_ms: 130.9566
+  type: 'test'
+  ...
+# Subtest: a failed chapter completion does not silently advance to another chapter
+ok 5 - a failed chapter completion does not silently advance to another chapter
+  ---
+  duration_ms: 99.9791
+  type: 'test'
+  ...
+# Subtest: reading position is isolated between accounts
+ok 6 - reading position is isolated between accounts
+  ---
+  duration_ms: 15.2482
+  type: 'test'
+  ...
+# Subtest: failed requests persist, coalesce, and retry only under their original account
+ok 7 - failed requests persist, coalesce, and retry only under their original account
+  ---
+  duration_ms: 30.481
+  type: 'test'
+  ...
+# Subtest: an older in-flight ACK never removes newer reading and only one drain runs
+ok 8 - an older in-flight ACK never removes newer reading and only one drain runs
+  ---
+  duration_ms: 36.6621
+  type: 'test'
+  ...
+# Subtest: pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+ok 9 - pagination maps emoji and trimmed whitespace to canonical codepoint ranges and restores the exact block
+  ---
+  duration_ms: 133.4506
+  type: 'test'
+  ...
+# Subtest: a failed chapter fetch resumes measurement of the chapter still visible
+ok 10 - a failed chapter fetch resumes measurement of the chapter still visible
+  ---
+  duration_ms: 92.21
+  type: 'test'
+  ...
+# Subtest: overlay and background focus telemetry share cumulative foreground time
+ok 11 - overlay and background focus telemetry share cumulative foreground time
+  ---
+  duration_ms: 87.3453
+  type: 'test'
+  ...
+# Subtest: mirror averages assessed concepts only; an assessed zero remains a real result
+ok 12 - mirror averages assessed concepts only; an assessed zero remains a real result
+  ---
+  duration_ms: 19.2221
+  type: 'test'
+  ...
+# Subtest: mirror report navigation remains available when a course has no concept facets
+ok 13 - mirror report navigation remains available when a course has no concept facets
+  ---
+  duration_ms: 11.0951
+  type: 'test'
+  ...
+# Subtest: a new account can converse without a course, and a successful exchange refreshes its model
+ok 14 - a new account can converse without a course, and a successful exchange refreshes its model
+  ---
+  duration_ms: 125.5222
+  type: 'test'
+  ...
+# Subtest: an old timeline response cannot overwrite more recent learning feedback
+ok 15 - an old timeline response cannot overwrite more recent learning feedback
+  ---
+  duration_ms: 118.8777
+  type: 'test'
+  ...
+# Subtest: reports select the last-read book instead of silently showing an unread first book
+ok 16 - reports select the last-read book instead of silently showing an unread first book
+  ---
+  duration_ms: 49.2761
+  type: 'test'
+  ...
+# Subtest: review resumes the canonical chapter on a new device regardless of record order
+ok 17 - review resumes the canonical chapter on a new device regardless of record order
+  ---
+  duration_ms: 51.2518
+  type: 'test'
+  ...
+# Subtest: review history fallback uses the latest timestamp within the selected lecture and book
+ok 18 - review history fallback uses the latest timestamp within the selected lecture and book
+  ---
+  duration_ms: 41.7454
+  type: 'test'
+  ...
+# Subtest: thirty minutes of browsing are recorded while chapter completion stays explicit
+ok 19 - thirty minutes of browsing are recorded while chapter completion stays explicit
+  ---
+  duration_ms: 139.8283
+  type: 'test'
+  ...
+# Subtest: a pagination boundary never splits one Unicode codepoint into two reading ranges
+ok 20 - a pagination boundary never splits one Unicode codepoint into two reading ranges
+  ---
+  duration_ms: 102.7394
+  type: 'test'
+  ...
+# Subtest: cross-midnight outbox keeps each day and ACK never discards a different day
+ok 21 - cross-midnight outbox keeps each day and ACK never discards a different day
+  ---
+  duration_ms: 11.0732
+  type: 'test'
+  ...
+# Subtest: uninitialized or failing preferences never claim a reading checkpoint was saved
+ok 22 - uninitialized or failing preferences never claim a reading checkpoint was saved
+  ---
+  duration_ms: 32.7606
+  type: 'test'
+  ...
+# Subtest: the durability barrier completes before any HTTP reading request
+ok 23 - the durability barrier completes before any HTTP reading request
+  ---
+  duration_ms: 24.9285
+  type: 'test'
+  ...
+# Subtest: failed disk flush is visible and is retried durably before sending
+ok 24 - failed disk flush is visible and is retried durably before sending
+  ---
+  duration_ms: 42.5984
+  type: 'test'
+  ...
+# Subtest: a successful response is not declared synchronized until the ACK is durable
+ok 25 - a successful response is not declared synchronized until the ACK is durable
+  ---
+  duration_ms: 40.4439
+  type: 'test'
+  ...
+# Subtest: the reader distinguishes unsaved reading from safely queued offline reading
+ok 26 - the reader distinguishes unsaved reading from safely queued offline reading
+  ---
+  duration_ms: 82.7542
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the account changes
+ok 27 - a pending durable read cannot send old reading after the account changes
+  ---
+  duration_ms: 28.2181
+  type: 'test'
+  ...
+# Subtest: a pending durable read cannot send old reading after the backend changes
+ok 28 - a pending durable read cannot send old reading after the backend changes
+  ---
+  duration_ms: 39.5699
+  type: 'test'
+  ...
+# Subtest: changing the colour of part of a highlight keeps the untouched parts of the original mark
+ok 29 - changing the colour of part of a highlight keeps the untouched parts of the original mark
+  ---
+  duration_ms: 76.4228
+  type: 'test'
+  ...
+# Subtest: a very long paragraph is never truncated by the pagination guard
+ok 30 - a very long paragraph is never truncated by the pagination guard
+  ---
+  duration_ms: 85.3676
+  type: 'test'
+  ...
+# Subtest: an answer that arrives after switching chapters does not land in the new chapter
+ok 31 - an answer that arrives after switching chapters does not land in the new chapter
+  ---
+  duration_ms: 81.951
+  type: 'test'
+  ...
+# Subtest: negations and quoted phrases are questions, not plan commands; calendar needs explicit intent
+ok 32 - negations and quoted phrases are questions, not plan commands; calendar needs explicit intent
+  ---
+  duration_ms: 72.3061
+  type: 'test'
+  ...
+# Subtest: a failed send keeps the message as failed, survives a timeline refresh, and can be resent
+ok 33 - a failed send keeps the message as failed, survives a timeline refresh, and can be resent
+  ---
+  duration_ms: 74.6946
+  type: 'test'
+  ...
+# Subtest: a review attempt is isolated: the same quiz id in a new round starts unanswered and submits with attempt_id
+ok 34 - a review attempt is isolated: the same quiz id in a new round starts unanswered and submits with attempt_id
+  ---
+  duration_ms: 50.6548
+  type: 'test'
+  ...
+# Subtest: proactive card failure keeps the decision pending with a retry instead of "no more reminders"
+ok 35 - proactive card failure keeps the decision pending with a retry instead of "no more reminders"
+  ---
+  duration_ms: 21.2947
+  type: 'test'
+  ...
+# Subtest: time phases are consistent across header, dots and autonomy labels
+ok 36 - time phases are consistent across header, dots and autonomy labels
+  ---
+  duration_ms: 6.2542
+  type: 'test'
+  ...
+# Subtest: markdown keeps set braces, nested fractions, ordered numbers and tables instead of deleting structure
+ok 37 - markdown keeps set braces, nested fractions, ordered numbers and tables instead of deleting structure
+  ---
+  duration_ms: 21.8977
+  type: 'test'
+  ...
+1..37
+# tests 37
+# suites 0
+# pass 37
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3060.9375
