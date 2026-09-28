@@ -443,7 +443,7 @@ def _timestamp_to_unix_seconds(value: Any) -> int:
     """Normalize frontend telemetry milliseconds / backend record seconds to unix seconds."""
     try:
         raw = float(value or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
     if not math.isfinite(raw) or raw <= 0:
