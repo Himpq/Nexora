@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from core import user as user_store
 from core.decision import evaluate as evaluate_decision
 from core.runlog import log_event
+from core.settings import config_section, merged_params, record_agent_decision
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "timeout_seconds": 10,
@@ -36,12 +37,7 @@ DEFAULT_PARAMS: Dict[str, Any] = {
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    params = dict(DEFAULT_PARAMS)
-    override = cfg.get("toolbox") if isinstance(cfg, dict) and isinstance(cfg.get("toolbox"), dict) else {}
-    for key in DEFAULT_PARAMS:
-        if key in override:
-            params[key] = override[key]
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "toolbox"))
 
 
 def _http_json(url: str, method: str = "GET", payload: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: int = 10) -> Dict[str, Any]:
@@ -338,10 +334,7 @@ def check_mail_events(cfg: Mapping[str, Any], username: str, now: Optional[int] 
             minutes=10,
             now=current,
         )
-        decision_record = dict(decision)
-        decision_record["type"] = "agent_decision"
-        decision_record["username"] = username
-        user_store.append_learning_record(cfg, username, decision_record)
+        record_agent_decision(cfg, username, decision, user_store)
         return {"checked": True, "new": 1, "subject": subject}
     except Exception as exc:
         log_event("toolbox_mail_events_failed", "邮件事件检查失败", payload={"user_id": username, "error": str(exc)})

@@ -194,12 +194,29 @@ def _runtime_cfg() -> Dict[str, Any]:
 
 
 def _auth_error():
+    """校验 Agent API 密钥。
+
+    runtime_api.api_key 为空时不存在任何可校验的凭据，直接放行等于把
+    「任意请求」变成「任意用户的数据入口」——_require_user 还会为传入的用户名
+    创建目录。服务默认监听 0.0.0.0:5002，所以缺密钥属于必须暴露的运维事故，
+    返回 503 而不是静默放行。
+
+    本地联调需要免密钥时必须显式声明 allow_unauthenticated，
+    而不是依赖「密钥恰好为空」这种隐式状态。
+    """
     runtime = _runtime_cfg()
     if not bool(runtime.get("enabled", True)):
         return _failure("auth", "API_DISABLED", "Agent API is disabled.", status=404)
     expected = str(runtime.get("api_key") or "").strip()
     if not expected:
-        return None
+        if runtime.get("allow_unauthenticated") is True:
+            return None
+        return _failure(
+            "auth",
+            "API_KEY_NOT_CONFIGURED",
+            "Agent API key is not configured on the server.",
+            status=503,
+        )
     candidates = [
         str(request.headers.get("X-API-Key") or "").strip(),
         str(request.headers.get("X-NexoraLearning-Key") or "").strip(),
@@ -212,28 +229,47 @@ def _auth_error():
     return None
 
 
-def _resolve_username(data: Optional[Mapping[str, Any]] = None) -> str:
+def _identity_candidates(data: Optional[Mapping[str, Any]] = None) -> List[Any]:
+    """列出请求里所有声明用户身份的位置。顺序即优先级，仅用于报错定位。"""
     body = data if isinstance(data, Mapping) else {}
-    for value in (
+    return [
         body.get("username"),
         body.get("user_id"),
         request.args.get("username"),
         request.headers.get("X-Nexora-Username"),
         request.headers.get("X-Username"),
         request.headers.get("X-User-Id"),
-    ):
-        normalized = str(value or "").strip()
-        if normalized:
-            return normalized
-    return ""
+    ]
+
+
+def _resolve_identity(data: Optional[Mapping[str, Any]], action: str) -> Tuple[str, Optional[Any]]:
+    """把多个身份来源收敛成唯一用户名。
+
+    多个来源同时出现且取值不一致时一律 403。原来「按顺序取第一个非空值」
+    的写法会让「header 声称是 A、body 声称是 B」的请求以 B 落库，等于绕过
+    网关侧 learning_agent_routes._strip_identity 的身份改写防护。
+    """
+    identities: List[str] = []
+    for value in _identity_candidates(data):
+        if value is None:
+            continue
+        if not isinstance(value, str) or not _valid_identifier(value, max_length=128):
+            return "", _failure(action, "INVALID_ARGUMENT", "username is invalid.", status=400)
+        normalized = value.strip()
+        if normalized and normalized not in identities:
+            identities.append(normalized)
+
+    if not identities:
+        return "", _failure(action, "AUTH_REQUIRED", "username is required.", status=400)
+    if len(identities) != 1:
+        return "", _failure(action, "FORBIDDEN", "Request user identities do not match.", status=403)
+    return identities[0], None
 
 
 def _require_user(data: Optional[Mapping[str, Any]], action: str) -> Tuple[str, Optional[Any]]:
-    username = _resolve_username(data)
-    if not username:
-        return "", _failure(action, "AUTH_REQUIRED", "username is required.", status=400)
-    if not _valid_identifier(username, max_length=128):
-        return "", _failure(action, "INVALID_ARGUMENT", "username is invalid.", status=400)
+    username, error = _resolve_identity(data, action)
+    if error is not None:
+        return "", error
     user_store.ensure_user_files(_CFG, username)
     return username, None
 
@@ -1870,10 +1906,7 @@ def agent_toolbox_kb_upsert():
         return _failure(action, "INVALID_ARGUMENT", "texts must be a non-empty array.")
     from core.toolbox import kb_upsert
 
-    result = kb_upsert(_CFG, username, project_id, texts)
-    if not result.get("ok"):
-        return _response(action=action, data=result)
-    return _response(action=action, data=result)
+    return _response(action=action, data=kb_upsert(_CFG, username, project_id, texts))
 
 
 @agent_facade_bp.route("/toolbox/kb-query", methods=["POST"])
@@ -1997,25 +2030,8 @@ def agent_prereq_check():
 
 
 def _require_memory_user(data: Optional[Mapping[str, Any]], action: str) -> Tuple[str, Optional[Any]]:
-    """Keep memory operations on one user even when several identity fields are supplied."""
-    body = data if isinstance(data, Mapping) else {}
-    candidates = [
-        request.headers.get("X-Nexora-Username"), request.headers.get("X-Username"),
-        request.headers.get("X-User-Id"), request.args.get("username"),
-        body.get("username"), body.get("user_id"),
-    ]
-    identities = set()
-    for value in candidates:
-        if value is None:
-            continue
-        if not isinstance(value, str) or not _valid_identifier(value, max_length=128):
-            return "", _failure(action, "INVALID_ARGUMENT", "username is invalid.")
-        identities.add(value.strip())
-    if not identities:
-        return "", _failure(action, "AUTH_REQUIRED", "username is required.")
-    if len(identities) != 1:
-        return "", _failure(action, "FORBIDDEN", "Request user identities do not match.", status=403)
-    return identities.pop(), None
+    """记忆类操作与普通端点共用同一套身份收敛规则，避免两套语义并存。"""
+    return _require_user(data, action)
 
 
 def _personal_memory_item(row: Mapping[str, Any]) -> Dict[str, Any]:

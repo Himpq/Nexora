@@ -84,11 +84,20 @@ const SCROLL_GAP_LOG_INTERVAL: number = 120;
 const CACHE_MIN_ROWS: number = 8;
 const CACHE_MAX_ROWS: number = 16;
 
+// 电脑端远程任务：1200ms 一次增量拉取，连续 15 分钟没有新事件才停止等待。
+const REMOTE_POLL_INTERVAL_MS: number = 1200;
+const REMOTE_POLL_TIMEOUT_MS: number = 15 * 60 * 1000;
+
+// 授权载荷：字段与 NexoraCode /api/agent/permission/grant 的入参一一对应。
+// 服务端读取顺序为 access → operation → read，所以 access 必须真实反映本次请求的操作，
+// 不能像 Web 端那样默认写死 'read'（那会把写操作降级成只读授权）。
 class RemotePermissionGrant {
     path: string = '';
     scope: string = '';
     operation: string = '';
     access: string = '';
+    reason: string = '';
+    sensitive: boolean = false;
 }
 
 // 单条流的绑定上下文：本地临时键的流在服务端返回会话 ID 后迁移，
@@ -142,6 +151,7 @@ export struct MainChat {
     @State private remoteModels: RemoteModel[] = [];
     private remotePollTimer: number = -1;
     private remotePollBusy: boolean = false;
+    private remotePollLastEventAt: number = 0;
     private remoteSessionEpoch: number = 0;
 
     // ---------- 多会话并行缓冲 ----------
@@ -1475,7 +1485,6 @@ export struct MainChat {
             this.replaceMessages(history);
             this.applyQuestionLocks(id, history);
             this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
-            this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
             const catalog = await NexoraCodeApi.models(deviceId);
 
             if (epoch !== this.remoteSessionEpoch) {
@@ -1561,11 +1570,21 @@ export struct MainChat {
             return;
         }
 
-        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, 1200);
+        this.remotePollLastEventAt = Date.now();
+        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, REMOTE_POLL_INTERVAL_MS);
     }
 
     private async pollRemoteEvents(): Promise<void> {
         if (this.remotePollBusy || this.remoteStreamId.length === 0 || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        // 远端若始终不回 session 状态（例如电脑端进程被杀），定时器会永远跑下去。
+        // 连续无新事件达到上限就停轮询并收尾；有持续输出的长任务不会被误判为失联。
+        if (Date.now() - this.remotePollLastEventAt >= REMOTE_POLL_TIMEOUT_MS) {
+            this.stopRemotePolling();
+            this.finishRemoteAssistant();
+            this.notify('电脑端长时间没有响应，已停止等待', 2400);
             return;
         }
 
@@ -1676,6 +1695,7 @@ export struct MainChat {
             }
 
             if (appliedCount > 0) {
+                this.remotePollLastEventAt = Date.now();
                 hilog.info(DOMAIN, TAG,
                     '[remote-stream] applied=%{public}d batch=%{public}d chars=%{public}d cursor=%{public}d',
                     appliedCount, events.length, batchTextChars, this.remoteCursor);
@@ -2123,6 +2143,8 @@ export struct MainChat {
             const conversationId: string = this.conversationId;
             item.submitting = true;
 
+            // 远程分支必须兜住 reject：loadQuestionLocks 失败时若不还原 submitting，
+            // 卡片会永久停在「提交中」，用户再也点不动这一题。
             this.app.loadQuestionLocks().then((store: string) => {
                 if (epoch !== this.remoteSessionEpoch) {
                     return;
@@ -2131,6 +2153,9 @@ export struct MainChat {
                 this.app.saveQuestionLocks(writeQuestionLock(store, conversationId, item.cardId, text));
                 item.markAnswered(text);
                 void this.sendRemoteMessage(text);
+            }).catch((cause: Object) => {
+                this.notify(String(cause), 2000);
+                item.submitting = false;
             });
             return;
         }
@@ -2147,6 +2172,9 @@ export struct MainChat {
             this.app.saveQuestionLocks(updated);
             item.markAnswered(text);
             this.dispatchSend(text, this.currentBufferKey(), false);
+        }).catch((cause: Object) => {
+            this.notify(String(cause), 2000);
+            item.submitting = false;
         });
     }
 
@@ -2178,6 +2206,10 @@ export struct MainChat {
                 permission.scope = request.scope;
                 permission.operation = request.operation;
                 permission.access = request.operation;
+                // reason 与 sensitive 服务端都会读取并落库：前者进授权记录，
+                // 后者决定是否按敏感路径额外提示。漏传会让授权失去可追溯的原因。
+                permission.reason = request.reason;
+                permission.sensitive = request.sensitive;
                 await NexoraCodeApi.grant(deviceId, conversationId, permission);
             }
 

@@ -23,7 +23,7 @@ from core.user import set_lecture_selection
 def _app(tmp_path):
     cfg = {
         "data_dir": str(tmp_path / "data"),
-        "runtime_api": {"enabled": True, "api_key": ""},
+        "runtime_api": {"enabled": True, "api_key": "", "allow_unauthenticated": True},
         "nexora": {"base_url": "http://127.0.0.1:9", "api_key": ""},
         "models": {"default_nexora_model": ""},
     }

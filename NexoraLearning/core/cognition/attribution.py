@@ -29,6 +29,7 @@ from core import user as user_store
 from core.cognition.service import CognitionService
 from core.decision import evaluate as evaluate_decision
 from core.runlog import log_event
+from core.settings import config_section, merged_params, record_agent_decision
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "weights": {"selection": 1.0, "ask": 1.5, "idle": 0.5, "wrong": 2.0},
@@ -46,19 +47,7 @@ _KIND_LABELS = {
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    params = {
-        key: (dict(value) if isinstance(value, dict) else value)
-        for key, value in DEFAULT_PARAMS.items()
-    }
-    override = cfg.get("confusion") if isinstance(cfg, dict) and isinstance(cfg.get("confusion"), dict) else {}
-    for key, default in DEFAULT_PARAMS.items():
-        if key in override:
-            value = override[key]
-            if isinstance(default, dict) and isinstance(value, dict):
-                params[key].update(value)
-            else:
-                params[key] = value
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "confusion"))
 
 
 def _reading_csv_path(cfg: Mapping[str, Any], username: str) -> Path:
@@ -330,10 +319,7 @@ def scan_confusion(cfg: Mapping[str, Any], username: str, *, now: Optional[int] 
             minutes=10,
             now=current,
         )
-        decision_record = dict(decision)
-        decision_record["type"] = "agent_decision"
-        decision_record["username"] = username
-        user_store.append_learning_record(cfg, username, decision_record)
+        decision_record = record_agent_decision(cfg, username, decision, user_store)
         cards_written.append({"decision": decision_record, "fire": decision["fire"], "suppressed_by": decision["suppressed_by"]})
 
     results.sort(key=lambda row: row["score"], reverse=True)

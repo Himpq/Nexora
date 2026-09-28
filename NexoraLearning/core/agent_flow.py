@@ -30,6 +30,7 @@ from core.cognition.engine import CognitiveStateEngine
 from core.cognition.service import CognitionService
 from core.cognition.storage import CognitiveEvidenceStore
 from core.runlog import log_event
+from core.settings import config_section, merged_params, record_agent_decision
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "expire_seconds": 86400,     # 24h 未推进 → 收敛
@@ -59,12 +60,7 @@ def _serialized(handler):
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    params = dict(DEFAULT_PARAMS)
-    override = cfg.get("agent_flow") if isinstance(cfg, dict) and isinstance(cfg.get("agent_flow"), dict) else {}
-    for key in DEFAULT_PARAMS:
-        if key in override:
-            params[key] = override[key]
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "agent_flow"))
 
 
 def _append(cfg: Mapping[str, Any], username: str, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -343,7 +339,7 @@ def _start_flow_quiz(cfg: Mapping[str, Any], username: str, flow_id: str, state:
                 },
                 "timestamp": int(time.time()),
             }
-            _append(cfg, username, payload)
+            # 完成状态必须最后落盘；轮询端一旦看到 completed，后续不能再有写入。
             _append(cfg, username, {"type": "agent_flow_step", "flow_id": flow_id, "step": "quiz_generated", "timestamp": int(time.time())})
             _append(cfg, username, {
                 "type": "agent_decision",
@@ -365,6 +361,7 @@ def _start_flow_quiz(cfg: Mapping[str, Any], username: str, flow_id: str, state:
                 "status": "pending",
                 "source": "agent_flow",
             })
+            _append(cfg, username, payload)
         except Exception as exc:
             _append(cfg, username, {
                 "type": "agent_flow_quiz",

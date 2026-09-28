@@ -34,6 +34,7 @@ from core.booksproc import manager as booksproc_manager
 from core.decision import evaluate as evaluate_decision
 from core.lectures import get_book, list_books, list_lectures, load_book_questions_xml
 from core.runlog import log_event
+from core.settings import config_section, merged_params, record_agent_decision
 from core.user.learning_progress import compute_user_lecture_progress
 
 DEFAULT_PARAMS: Dict[str, Any] = {
@@ -63,16 +64,7 @@ _running = False
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    params = {key: (dict(value) if isinstance(value, dict) else list(value) if isinstance(value, list) else value) for key, value in DEFAULT_PARAMS.items()}
-    override = cfg.get("nightly_prep") if isinstance(cfg, dict) and isinstance(cfg.get("nightly_prep"), dict) else {}
-    for key, default in DEFAULT_PARAMS.items():
-        if key in override:
-            value = override[key]
-            if isinstance(default, dict) and isinstance(value, dict):
-                params[key].update(value)
-            else:
-                params[key] = value
-    return params
+    return merged_params(DEFAULT_PARAMS, config_section(cfg, "nightly_prep"))
 
 
 def _state_path(cfg: Mapping[str, Any]) -> Path:
@@ -498,10 +490,7 @@ def _write_prep_card(
         minutes=15,
         now=now,
     )
-    decision_record = dict(decision)
-    decision_record["type"] = "agent_decision"
-    decision_record["username"] = username
-    user_store.append_learning_record(cfg, username, decision_record)
+    record_agent_decision(cfg, username, decision, user_store)
     return {"prep_record_id": record["decision_id"], "decision_id": decision["decision_id"], "decision_fire": decision["fire"], "suppressed_by": decision["suppressed_by"]}
 
 

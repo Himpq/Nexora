@@ -48,7 +48,12 @@ DEFAULT_CONFIG = {
     "log_retention_count": 5,
     "runtime_api": {
         "enabled": True,
+        # Agent API 的唯一凭据。留空时 agent_facade._auth_error 一律 503 fail-closed，
+        # 必须通过 NEXORALEARNING_RUNTIME_API_KEY 环境变量或本文件显式配置。
         "api_key": "",
+        # 仅本地联调使用：显式声明「本机免密钥」。默认关闭，绝不要在对外服务上打开，
+        # 打开后任意请求都能以任意 username 读写数据并创建用户目录。
+        "allow_unauthenticated": False,
         "request_timeout": 30
     },
     "performance_profile": {
