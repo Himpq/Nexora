@@ -1,11 +1,12 @@
 // LoginPage.ets - 登录页（未登录时的宿主首页）
-// 后端地址 + 账号 + 密码三栏表单，登录成功回调宿主切进主界面
+// 账号与密码放在主表单，后端连接通过设置弹层调整，登录成功回调宿主切进主界面
 // 地址默认取持久化值；登录按钮在提交期间禁用并显示进度，错误直接展示在表单下方
 
 import { sanitizeDisplayName } from '../common/AppConfig';
 import { AppState } from '../common/AppState';
 import { FontSize, Glow, LineHeight, Motion, PressScale, Radius, Size, Space } from '../common/DesignToken';
 import { BrandLogo } from '../components/common/BrandLogo';
+import { BackendConnectionSheet } from '../components/sheets/BackendConnectionSheet';
 
 @Component
 export struct LoginPage {
@@ -18,6 +19,7 @@ export struct LoginPage {
     @State private submitting: boolean = false;
     @State private errorText: string = '';
     @State private submitPressed: boolean = false;
+    @State private showBackendSettings: boolean = false;
 
     aboutToAppear(): void {
         this.backendDraft = this.app.backendUrl;
@@ -57,7 +59,15 @@ export struct LoginPage {
         }
         .width('100%')
         .height('100%')
-        .backgroundColor($r('app.color.bg_page'));
+        .backgroundColor($r('app.color.bg_page'))
+        .bindSheet(this.showBackendSettings, this.BackendSettingsBuilder(), {
+            height: SheetSize.MEDIUM,
+            showClose: false,
+            dragBar: false,
+            onDisappear: () => {
+                this.showBackendSettings = false;
+            }
+        });
     }
 
     // ---------- 区域 ----------
@@ -109,10 +119,6 @@ export struct LoginPage {
     @Builder
     FormCard() {
         Column({ space: Space.md }) {
-            this.FieldRow('后端地址', 'http://host:port', this.backendDraft, false, (value: string) => {
-                this.backendDraft = value;
-            });
-
             this.FieldRow('账号', '请输入用户名', this.usernameDraft, false, (value: string) => {
                 this.usernameDraft = value;
             });
@@ -122,6 +128,23 @@ export struct LoginPage {
             });
 
             this.SubmitButton();
+
+            Row({ space: Space.xs }) {
+                Image($r('app.media.ic_settings'))
+                    .width(Size.iconSmall)
+                    .height(Size.iconSmall)
+                    .fillColor($r('app.color.text_secondary'));
+
+                Text('连接设置')
+                    .fontSize(FontSize.small)
+                    .fontColor($r('app.color.text_secondary'));
+            }
+            .height(Size.touchTarget)
+            .justifyContent(FlexAlign.Center)
+            .width('100%')
+            .onClick(() => {
+                this.showBackendSettings = true;
+            });
         }
         .width('100%')
         .padding(Space.lg)
@@ -132,6 +155,16 @@ export struct LoginPage {
             color: '#140F1E1A',
             offsetX: 0,
             offsetY: 8
+        });
+    }
+
+    @Builder
+    BackendSettingsBuilder() {
+        BackendConnectionSheet({
+            backendUrl: $backendDraft,
+            onClose: () => {
+                this.showBackendSettings = false;
+            }
         });
     }
 
