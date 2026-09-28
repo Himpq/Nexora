@@ -38,15 +38,21 @@ def save_device_context(cfg: Mapping[str, Any], username: str, payload: Mapping[
     reported_at = int(now or time.time())
     if reported_at > 10_000_000_000:
         reported_at //= 1000
+    try:
+        sampled_at_ms = int(payload.get("sampled_at_ms") or reported_at * 1000)
+    except (ValueError, TypeError, OverflowError):
+        sampled_at_ms = reported_at * 1000
     # 端侧日历读不到（未授权 / 设备不支持）时上报 calendar_status='unavailable'：
     # 决策器不能把这种空日历当成「用户今天没有安排」。
     calendar_status = str(payload.get("calendar_status") or "ok").strip()[:24] or "ok"
     record = {
         "reported_at": reported_at,
+        "sampled_at_ms": sampled_at_ms,
         "calendar": events,
         "calendar_status": calendar_status,
         "calendar_reason": str(payload.get("calendar_reason") or "").strip()[:24],
-        "do_not_disturb": payload.get("do_not_disturb") is True,
+        "do_not_disturb": payload.get("do_not_disturb") if isinstance(payload.get("do_not_disturb"), bool) else None,
+        "dnd_status": str(payload.get("dnd_status") or ("ok" if isinstance(payload.get("do_not_disturb"), bool) else "unavailable"))[:24],
         "scene": str(payload.get("scene") or "").strip()[:24],
         "location": str(payload.get("location") or "").strip()[:24],
         "device": str(payload.get("device") or "").strip()[:24],
@@ -54,6 +60,12 @@ def save_device_context(cfg: Mapping[str, Any], username: str, payload: Mapping[
     path = _path(cfg, username)
     with _lock:
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if isinstance(previous, dict) and int(previous.get("sampled_at_ms") or int(previous.get("reported_at") or 0) * 1000) > sampled_at_ms:
+            return previous
         path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     return record
 
@@ -89,8 +101,11 @@ def merge_into_signals(cfg: Mapping[str, Any], username: str, signals: Mapping[s
     if str(stored.get("calendar_status") or "ok") != "ok":
         merged.setdefault("calendar_unavailable", True)
         merged.setdefault("calendar_unavailable_reason", str(stored.get("calendar_reason") or ""))
-    if "do_not_disturb" not in merged and stored.get("do_not_disturb"):
-        merged["do_not_disturb"] = True
+    if "do_not_disturb" not in merged and isinstance(stored.get("do_not_disturb"), bool):
+        merged["do_not_disturb"] = stored["do_not_disturb"]
+    merged.setdefault("dnd_status", "ok" if "do_not_disturb" in signals else stored.get("dnd_status") or "unavailable")
+    if stored.get("dnd_status") == "unavailable" and "do_not_disturb" not in signals:
+        merged.setdefault("dnd_unavailable", True)
     for key in ("scene", "location", "device"):
         if not merged.get(key) and stored.get(key):
             merged[key] = stored[key]

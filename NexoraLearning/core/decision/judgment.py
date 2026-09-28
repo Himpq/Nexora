@@ -218,7 +218,9 @@ def _calendar(signals: Mapping[str, Any], now: int) -> List[Dict[str, Any]]:
 
 def _device(signals: Mapping[str, Any]) -> Dict[str, Any]:
     return {
-        "do_not_disturb": signals.get("do_not_disturb") is True,
+        "do_not_disturb": (signals["do_not_disturb"] if not signals.get("dnd_unavailable")
+                           and isinstance(signals.get("do_not_disturb"), bool) else None),
+        "dnd_status": str(signals.get("dnd_status") or ("ok" if "do_not_disturb" in signals else "unavailable")),
         "scene": str(signals.get("scene") or "").strip() or "unknown",
         "kind": str(signals.get("device") or "").strip() or "unknown",
         "reported_at": signals.get("device_reported_at"),
@@ -507,7 +509,7 @@ def compact_context(bundle: Mapping[str, Any]) -> Dict[str, Any]:
         "calendar": ([f"{row.get('at', '')} {row.get('title', '')}".strip() for row in calendar[:3] if isinstance(row, Mapping)]
                      if not bundle.get("calendar_unavailable") else ["（日历未授权，读不到）"]),
         "scene": str(device.get("scene") or "unknown"),
-        "dnd": bool(device.get("do_not_disturb")),
+        "dnd": None if device.get("dnd_status") == "unavailable" else bool(device.get("do_not_disturb")),
         "location": str(bundle.get("location") or "unknown"),
         "at_risk": list(cognition.get("at_risk") or [])[:3],
         "confusion": list(cognition.get("confusion") or [])[:3],

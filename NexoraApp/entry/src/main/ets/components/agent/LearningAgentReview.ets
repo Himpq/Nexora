@@ -64,6 +64,7 @@ export struct LearningAgentReview {
     @State private confirmRegenerate: boolean = false;
     @State private showBlankErrors: boolean = false;
     @State private interrupted: boolean = false;
+    @State private retryableGeneration: boolean = false;
     @State private resultNote: string = '';
     @State private resultItems: ReviewSubmitItem[] = [];
     @State private uncertain: UncertainItem[] = [];
@@ -374,6 +375,7 @@ export struct LearningAgentReview {
             this.errorText = '';
             this.submissionFailed = false;
             this.needsReading = flow.step === 'opened';
+            this.retryableGeneration = false;
             this.interrupted = flow.step === 'aborted';
             if (this.interrupted) {
                 this.needsReading = false;
@@ -397,6 +399,7 @@ export struct LearningAgentReview {
                 this.statusText = questions.length > 0 ? '先独立作答，提交后再看参考答案。' : '这次没有取到可作答的题目，可以重新同步。';
             } else if (flow.quiz !== undefined && flow.quiz.status === 'failed') {
                 this.generating = false;
+                this.retryableGeneration = flow.quiz.retryable === true;
                 this.errorText = flow.quiz.error || '本次出题失败，请返回时间线查看';
                 this.statusText = '';
             } else {
@@ -535,7 +538,17 @@ export struct LearningAgentReview {
     private async retryError(): Promise<void> {
         const kind: string = this.errorRetryKind();
         if (kind === 'submit') { await this.submit(); }
-        else if (kind === 'flow') { await this.loadFlow(); }
+        else if (kind === 'flow') {
+            if (this.retryableGeneration && !this.generating) {
+                this.generating = true;
+                try { await LearningAgentApi.retryFlow(this.flowId); }
+                catch (error) {
+                    if (this.alive) { this.errorText = agentFailure(error); this.generating = false; }
+                    return;
+                }
+            }
+            await this.loadFlow();
+        }
         else if (kind === 'context') { await this.loadChoices(); }
         else if (kind === 'chapters') { await this.chooseBook(this.selected); }
     }
@@ -636,6 +649,24 @@ export struct LearningAgentReview {
             }
         }
         return '待确认的题目';
+    }
+
+    private async resolveUncertain(item: UncertainItem, correct: boolean): Promise<void> {
+        if (this.submitting || this.flowId.length === 0) { return; }
+        const version: number = this.version;
+        this.setSubmitting(true);
+        this.errorText = '';
+        try {
+            const result = await LearningAgentApi.resolveUncertain(this.flowId, item.questionId, correct ? 'agree' : 'disagree');
+            if (this.alive && version === this.version) {
+                this.applyFlowResult(result.state.wrapup);
+                this.resultNote = '已记录你的核对结果，并更新本次反馈。';
+            }
+        } catch (error) {
+            if (this.alive && version === this.version) { this.errorText = '核对结果尚未保存：' + agentFailure(error); }
+        } finally {
+            if (this.alive && version === this.version) { this.setSubmitting(false); }
+        }
     }
 
     private optionText(option: string): string {
@@ -881,7 +912,7 @@ export struct LearningAgentReview {
                 this.Action({ label: '重新提交', identifier: 'agent_review_retry_submit', enabled: !this.submitting && !this.generating,
                     primary: false, onTap: () => { void this.retryError(); } })
             } else if (this.errorRetryKind() === 'flow') {
-                this.Action({ label: '重新同步', identifier: 'agent_review_retry_flow', enabled: !this.submitting,
+                this.Action({ label: this.retryableGeneration ? '重新准备题目' : '重新同步', identifier: 'agent_review_retry_flow', enabled: !this.submitting && !this.generating,
                     primary: false, onTap: () => { void this.retryError(); } })
             } else if (this.errorRetryKind() === 'context') {
                 this.Action({ label: '重新读取教材', identifier: 'agent_review_retry_context', enabled: !this.loading,
@@ -1014,6 +1045,14 @@ export struct LearningAgentReview {
                     ForEach(this.uncertain, (item: UncertainItem, index: number) => {
                         Text(this.uncertainLabel(item) + '：' + item.why).fontSize(FontSize.small).lineHeight(LineHeight.caption)
                             .fontColor($r('app.color.text_secondary')).width('100%').id('agent_review_uncertain_' + index)
+                        if (this.flowId.length > 0) {
+                            Row({ space: Space.sm }) {
+                                Button('核对后答对了', { type: ButtonType.Normal }).id('agent_review_confirm_correct_' + index)
+                                    .fontSize(FontSize.small).enabled(!this.submitting).onClick(() => { void this.resolveUncertain(item, true); })
+                                Button('仍需回顾', { type: ButtonType.Normal }).id('agent_review_confirm_incorrect_' + index)
+                                    .fontSize(FontSize.small).enabled(!this.submitting).onClick(() => { void this.resolveUncertain(item, false); })
+                            }.width('100%')
+                        }
                     }, (item: UncertainItem) => item.questionId)
                     Text('这些题目仍需核对，暂不代表已经掌握。')
                         .fontSize(FontSize.small).lineHeight(LineHeight.caption).fontColor($r('app.color.text_secondary')).width('100%')

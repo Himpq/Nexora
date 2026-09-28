@@ -91,12 +91,24 @@ class ToolboxTests(unittest.TestCase):
             with patch.object(toolbox, "mail_fetch", return_value={"ok": True, "cards": [
                 {"type": "mail", "from": "老师", "subject": "数据库作业", "summary": "截止周五", "dueDate": None},
             ], "detail": {}}), patch.object(toolbox, "kb_upsert", return_value={"ok": True, "card": {"type": "kbfile", "fileName": "x", "kbName": "default", "chunks": 1}}):
-                result = toolbox.orchestrate(cfg, "demo", "把最新作业邮件整理成计划")
+                result = toolbox.orchestrate(cfg, "demo", "把最新作业邮件整理成计划并存入知识库",
+                    create_plan=lambda intent: {"plan": {"target": {"lecture_id": "lecture", "book_id": "book"}, "intent": intent}},
+                    create_review=lambda target: {"task_id": "task_real_service_result", "status": "queued"})
                 self.assertTrue(result["ok"])
                 self.assertGreaterEqual(len(result["steps"]), 2)
+                self.assertEqual(result["task_id"], "task_real_service_result")
             records = user_store.list_learning_records(cfg, "demo")
             tool_steps = [row for row in records if row.get("type") == "agent_decision" and row.get("kind") == "tool_step" and row.get("source") == "toolbox"]
             self.assertGreaterEqual(len(tool_steps), 3)
+
+    def test_orchestration_without_executor_cannot_claim_a_plan_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = _cfg(Path(directory))
+            with patch.object(toolbox, "mail_fetch", return_value={"ok": True, "cards": [{"type": "mail", "subject": "作业"}]}):
+                result = toolbox.orchestrate(cfg, "demo", "把邮件整理成计划")
+            self.assertFalse(result["ok"])
+            self.assertNotIn("task_id", result)
+            self.assertFalse(any(step.get("type") == "plan" for step in result["steps"]))
 
     def test_facade_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:

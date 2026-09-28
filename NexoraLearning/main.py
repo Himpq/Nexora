@@ -258,6 +258,9 @@ def _apply_environment_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = config
     nexora = cfg.setdefault("nexora", {})
     nexoradb = cfg.setdefault("nexoradb", {})
+    nexorasearch = cfg.setdefault("nexorasearch", {})
+    nexora_mail = cfg.setdefault("nexora_mail", {})
+    toolbox = cfg.setdefault("toolbox", {})
     runtime_api = cfg.setdefault("runtime_api", {})
 
     scalar_overrides = (
@@ -266,6 +269,11 @@ def _apply_environment_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
         ("NEXORALEARNING_NEXORA_TARGET_USERNAME", nexora, "target_username"),
         ("NEXORALEARNING_NEXORADB_SERVICE_URL", nexoradb, "service_url"),
         ("NEXORALEARNING_NEXORADB_API_KEY", nexoradb, "api_key"),
+        ("NEXORALEARNING_NEXORASEARCH_SERVICE_URL", nexorasearch, "service_url"),
+        ("NEXORALEARNING_NEXORASEARCH_API_KEY", nexorasearch, "api_key"),
+        ("NEXORALEARNING_NEXORAMAIL_SERVICE_URL", nexora_mail, "service_url"),
+        ("NEXORALEARNING_NEXORAMAIL_API_KEY", nexora_mail, "api_key"),
+        ("NEXORALEARNING_MAIL_GROUP", toolbox, "mail_group"),
         ("NEXORALEARNING_RUNTIME_API_KEY", runtime_api, "api_key"),
     )
     for env_name, target, key in scalar_overrides:

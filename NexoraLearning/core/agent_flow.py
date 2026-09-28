@@ -19,6 +19,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core import user as user_store
@@ -45,7 +46,16 @@ _FLOW_STEPS = (
     "aborted",
 )
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+_active_quiz_tasks: set[str] = set()
+
+
+def _serialized(handler):
+    @wraps(handler)
+    def run(*args, **kwargs):
+        with _lock:
+            return handler(*args, **kwargs)
+    return run
 
 
 def _params(cfg: Mapping[str, Any]) -> Dict[str, Any]:
@@ -83,6 +93,7 @@ def _record_timestamp(row: Mapping[str, Any]) -> int:
     return int(value)
 
 
+@_serialized
 def flow_state(cfg: Mapping[str, Any], username: str, flow_id: str) -> Dict[str, Any]:
     """由记录推导当前状态（服务重启后可恢复）。"""
     rows = _flow_records(cfg, username, flow_id)
@@ -109,6 +120,12 @@ def flow_state(cfg: Mapping[str, Any], username: str, flow_id: str) -> Dict[str,
         latest = quiz_rows[-1]
         state["task_id"] = str(latest.get("task_id") or "")
         state["quiz"] = latest.get("quiz") if isinstance(latest.get("quiz"), dict) else {}
+        if state["quiz"].get("status") in {"queued", "running"} and state["task_id"] not in _active_quiz_tasks:
+            interrupted = {"status": "failed", "questions": [], "retryable": True,
+                           "error": "出题被服务重启中断，请重新出题。"}
+            _append(cfg, username, {"type": "agent_flow_quiz", "flow_id": flow_id,
+                    "task_id": state["task_id"], "quiz": interrupted, "timestamp": int(time.time())})
+            state["quiz"] = interrupted
     wrapup_rows = [row for row in rows if row.get("type") == "agent_flow_wrapup"]
     if wrapup_rows:
         state["wrapup"] = wrapup_rows[-1].get("wrapup") if isinstance(wrapup_rows[-1].get("wrapup"), dict) else {}
@@ -116,6 +133,18 @@ def flow_state(cfg: Mapping[str, Any], username: str, flow_id: str) -> Dict[str,
     if mastery_rows:
         state["mastery_before"] = mastery_rows[0].get("mastery")
     return state
+
+
+def active_flow(cfg: Mapping[str, Any], username: str) -> Optional[Dict[str, Any]]:
+    """Latest unfinished flow, including its persisted quiz, for app relaunch."""
+    records = _flow_records(cfg, username)
+    for row in reversed(records):
+        if row.get("type") != "agent_flow_started":
+            continue
+        state = flow_state(cfg, username, str(row.get("flow_id") or ""))
+        if state.get("status") == "running":
+            return state
+    return None
 
 
 def _concept_mastery_snapshot(cfg: Mapping[str, Any], username: str, target: Mapping[str, Any]) -> Dict[str, float]:
@@ -162,7 +191,9 @@ def start_flow(
     session_id = f"session_{uuid.uuid4().hex[:20]}"
     target_dict = {
         "lecture_id": str(target.get("lecture_id") or "").strip(),
+        "lecture_title": str(target.get("lecture_title") or "").strip(),
         "book_id": str(target.get("book_id") or "").strip(),
+        "book_title": str(target.get("book_title") or "").strip(),
         "chapter_index": target.get("chapter_index"),
         "chapter_name": str(target.get("chapter_name") or "").strip(),
         "chapter_range": str(target.get("chapter_range") or "").strip(),
@@ -190,6 +221,7 @@ def start_flow(
     # 与 open-session 同语义的会话记录（阅读器/时间线可见）
     _append(cfg, username, {
         "type": "agent_session_opened",
+        "flow_id": flow_id,
         "session_id": session_id,
         "lecture_id": target_dict["lecture_id"],
         "book_id": target_dict["book_id"],
@@ -217,6 +249,7 @@ def start_flow(
     return {"flow_id": flow_id, "session_id": session_id, "target": target_dict}
 
 
+@_serialized
 def flow_event(
     cfg: Mapping[str, Any],
     username: str,
@@ -234,6 +267,9 @@ def flow_event(
         return {"state": state, "duplicate": True}
     if event not in {"reading_done"}:
         return {"error": "INVALID_ARGUMENT", "state": state}
+    quiz = state.get("quiz") or {}
+    if quiz.get("status") in {"queued", "completed"}:
+        return {"state": state, "duplicate": True}
     _append(cfg, username, {"type": "agent_flow_step", "flow_id": flow_id, "step": "reading_done", "timestamp": current})
     _append(cfg, username, {
         "type": "agent_decision",
@@ -275,6 +311,7 @@ def _start_flow_quiz(cfg: Mapping[str, Any], username: str, flow_id: str, state:
         except Exception:
             pass
     task_id = f"task_flow_{uuid.uuid4().hex[:16]}"
+    _active_quiz_tasks.add(task_id)
     _append(cfg, username, {
         "type": "agent_flow_quiz",
         "flow_id": flow_id,
@@ -337,11 +374,15 @@ def _start_flow_quiz(cfg: Mapping[str, Any], username: str, flow_id: str, state:
                 "timestamp": int(time.time()),
             })
             log_event("agent_flow_quiz_failed", "闭环出题失败", payload={"user_id": username, "flow_id": flow_id, "error": str(exc)})
+        finally:
+            with _lock:
+                _active_quiz_tasks.discard(task_id)
 
     threading.Thread(target=run, name=f"flow-quiz-{task_id}", daemon=True).start()
     return {"task_id": task_id, "status": "queued"}
 
 
+@_serialized
 def submit_answers(
     cfg: Mapping[str, Any],
     username: str,
@@ -383,14 +424,16 @@ def submit_answers(
         question_id = str(question.get("source_id") or question.get("question_id") or f"q{index}")
         expected = str(question.get("answer") or "").strip()
         user_answer = answer_map.get(question_id, "")
-        is_correct = grade_question(question, user_answer) if user_answer else False
+        is_correct = grade_question(question, user_answer) if user_answer else None
         if not is_correct and user_answer and user_answer == expected:
             is_correct = True
         if is_correct:
             correct += 1
         user_store.append_question_completion(cfg, username, {
-            "completion_id": completion_id_for(quiz_id, question_id),
+            "completion_id": completion_id_for(quiz_id, question_id, flow_id),
             "quiz_id": quiz_id,
+            "attempt_id": flow_id,
+            "flow_id": flow_id,
             "question_id": question_id,
             "lecture_id": str(target.get("lecture_id") or ""),
             "book_id": str(target.get("book_id") or ""),
@@ -413,7 +456,7 @@ def submit_answers(
             cfg, username, quiz_id=quiz_id, question=question, question_id=question_id,
             lecture_id=str(target.get("lecture_id") or ""), book_id=str(target.get("book_id") or ""),
             chapter_index=chapter_index, chapter_name=str(target.get("chapter_name") or ""),
-            is_correct=is_correct, occurred_at=current, source_kind="flow",
+            is_correct=is_correct, occurred_at=current, source_kind="flow", attempt_id=flow_id,
         )
     if force_uncertain and not uncertain and scored:
         uncertain.append({"questionId": scored[0]["question_id"], "why": "这道题的判分置信度不高，请你裁决。"})
@@ -490,6 +533,8 @@ def submit_answers(
         "step": "wrapup",
         "timestamp": current,
     })
+    _append(cfg, username, {"type": "agent_session_closed", "session_id": state.get("session_id"),
+                           "flow_id": flow_id, "timestamp": current})
     _append(cfg, username, {
         "type": "agent_decision",
         "decision_id": f"dec_flow_{uuid.uuid4().hex[:16]}",
@@ -523,6 +568,7 @@ def submit_answers(
     return {"state": flow_state(cfg, username, flow_id), "wrapup": wrapup}
 
 
+@_serialized
 def uncertain_verdict(
     cfg: Mapping[str, Any],
     username: str,
@@ -539,6 +585,15 @@ def uncertain_verdict(
         return {"error": "FLOW_NOT_FOUND", "state": state}
     if verdict not in {"agree", "disagree"}:
         return {"error": "INVALID_ARGUMENT", "state": state}
+    wrapup = dict(state.get("wrapup") or {})
+    resolved = dict(wrapup.get("verdicts") or {})
+    if question_id in resolved:
+        if resolved[question_id] != verdict:
+            return {"error": "VERDICT_CONFLICT", "state": state}
+        return {"updated": True, "duplicate": True, "flow_id": flow_id, "question_id": question_id,
+                "verdict": verdict, "state": state, "wrapup": wrapup}
+    if not any(row.get("questionId") == question_id for row in wrapup.get("uncertain") or []):
+        return {"error": "QUESTION_NOT_UNCERTAIN", "state": state}
     target = state.get("target") if isinstance(state.get("target"), dict) else {}
     quiz = state.get("quiz") if isinstance(state.get("quiz"), dict) else {}
     question: Optional[Dict[str, Any]] = None
@@ -586,7 +641,23 @@ def uncertain_verdict(
         "verdict": verdict,
         "source": "app",
     })
-    return {"updated": True, "flow_id": flow_id, "question_id": question_id, "verdict": verdict, "evidence_written": evidence_written}
+    from core.cognition.review_bridge import completion_id_for
+
+    quiz_id = str(quiz.get("quiz_id") or flow_id)
+    corrected = user_store.correct_question_completion(dict(cfg), username, completion_id_for(quiz_id, question_id, flow_id), is_correct=verdict == "agree")
+    if not corrected:
+        # Previously persisted flows did not include attempt_id in their key.
+        user_store.correct_question_completion(dict(cfg), username, completion_id_for(quiz_id, question_id), is_correct=verdict == "agree")
+    resolved[question_id] = verdict
+    wrapup["verdicts"] = resolved
+    wrapup["uncertain"] = [row for row in wrapup.get("uncertain") or [] if row.get("questionId") != question_id]
+    completions = [row for row in user_store.list_question_completions(dict(cfg), username)
+                   if row.get("attempt_id") == flow_id or (not row.get("attempt_id") and row.get("quiz_id") == quiz_id)]
+    by_question = {str(row.get("question_id") or ""): row for row in completions}
+    wrapup["quizScore"] = f"{sum(row.get('is_correct') is True for row in by_question.values())}/{len(quiz.get('questions') or [])}"
+    _append(cfg, username, {"type": "agent_flow_wrapup", "flow_id": flow_id, "wrapup": wrapup, "timestamp": current})
+    return {"updated": True, "flow_id": flow_id, "question_id": question_id, "verdict": verdict,
+            "evidence_written": evidence_written, "state": flow_state(cfg, username, flow_id), "wrapup": wrapup}
 
 
 def expire_flows(cfg: Mapping[str, Any], now: Optional[int] = None) -> int:
@@ -615,6 +686,8 @@ def expire_flows(cfg: Mapping[str, Any], now: Optional[int] = None) -> int:
             if ts > latest.get(flow_id, 0):
                 latest[flow_id] = ts
         for flow_id, row in started.items():
+            if flow_state(cfg, username, flow_id).get("status") == "done":
+                continue
             if latest.get(flow_id, 0) == 0 or current - latest[flow_id] <= int(params["expire_seconds"]):
                 continue
             target = row.get("target") if isinstance(row.get("target"), dict) else {}
@@ -625,6 +698,8 @@ def expire_flows(cfg: Mapping[str, Any], now: Optional[int] = None) -> int:
                 "step": "aborted",
                 "timestamp": current,
             })
+            _append(cfg, username, {"type": "agent_session_closed", "session_id": row.get("session_id"),
+                                   "flow_id": flow_id, "timestamp": current})
             _append(cfg, username, {
                 "type": "agent_decision",
                 "decision_id": f"dec_flow_{uuid.uuid4().hex[:16]}",

@@ -53,7 +53,7 @@ const { LearningSystemEntry } = load('common/LearningSystemEntry', ['LearningSys
     },
     formBindingData: { createFormBindingData: (data) => data },
     formProvider: { async updateForm(id, data) { forms.push({ id, data }); } },
-    hilog,
+    hilog, notificationManager: { async cancelGroup() {} },
 });
 const { AppState } = load('common/AppState', ['AppState'], {
     Json, AppStorage, HttpUtil, LearningSystemEntry, hilog,
@@ -229,10 +229,10 @@ test('accept and defer use the actual API contract, refresh every card, and cann
         await LearningFormClient.respond(context, action);
         assert.deepEqual(requests.map((request) => [request.method, request.url]), [
             ['GET', 'https://chat.example/api/user/info?lite=1'],
-            ['POST', 'https://learning.example/api/agent/v1/decision/respond'],
+            ['POST', 'https://chat.example/api/learning/agent/decision/respond'],
         ]);
         assert.deepEqual(JSON.parse(requests[1].extraData), { decision_id: 'decision-1', response });
-        assert.equal(requests[1].header['X-Nexora-Username'], 'real-user');
+        assert.equal(requests[1].header['X-Nexora-Username'], undefined, 'the proxy resolves identity from its cookie');
         assert.equal(requests[1].header.Cookie, 'session=real-user');
         assert.equal(destroyed, 2);
         assert.equal(LearningSystemEntry.card(context).actionable, false);

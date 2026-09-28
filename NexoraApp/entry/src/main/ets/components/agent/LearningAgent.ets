@@ -1,4 +1,8 @@
 import { AppState } from '../../common/AppState';
+import { common } from '@kit.AbilityKit';
+import { LearningAgentNotes } from '../../common/LearningAgentNotes';
+import { LearningAgentAssets } from '../../common/LearningAgentAssets';
+import { LearningAgentSystem } from '../../common/LearningAgentSystem';
 import { greetingOfHour, sanitizeDisplayName } from '../../common/AppConfig';
 import { LearningApi, LearningBook, LearningChapterSummary, NO_BOOK } from '../../common/LearningApi';
 import { LearningAgentApi, agentFailure, NO_AGENT_TARGET } from '../../common/LearningAgentApi';
@@ -7,7 +11,8 @@ import { LearningSystemEntry } from '../../common/LearningSystemEntry';
 import { LearningHttp } from '../../common/LearningHttp';
 import {
     AgentEnvelope, TodayData, LearnTarget, TimelineEntry, PlanCard, PrereqCard, QuizCard,
-    PrepCard, ProactiveCard, WrapupCard, CitationCard, FlowStateData
+    PrepCard, ProactiveCard, WrapupCard, CitationCard, FlowStateData, SearchCard, SearchFinding,
+    MailCard, VideoCard, KbfileCard, ProgressCard
 } from '../../common/LearningAgentModels';
 import { LearningReader } from '../learning/LearningReader';
 import { LearningAgentReview } from './LearningAgentReview';
@@ -89,6 +94,10 @@ export struct LearningAgent {
     @State private actionBusy: string = '';
     @State private draft: string = '';
     @State private planDraft: string = '';
+    @State private planMinutes: number = 0;
+    @State private photoText: string = '';
+    @State private pickingPhoto: boolean = false;
+    @State private includeNotes: boolean = false;
     @State private sending: boolean = false;
     @State private sendingMode: string = '';
     @State private todayStatus: string = 'loading';
@@ -353,6 +362,9 @@ export struct LearningAgent {
 
     private async refresh(): Promise<void> {
         const version: number = ++this.refreshVersion;
+        const flowAtStart: string = this.activeFlowId;
+        const stepAtStart: string = this.activeFlowStep;
+        const navigationAtStart: number = this.navigationVersion;
         const owner = LearningHttp.captureIdentity();
         this.loading = true;
         try {
@@ -361,6 +373,13 @@ export struct LearningAgent {
                 return;
             }
             this.focus = today.focus || NO_AGENT_TARGET;
+            if (today.active_flow !== undefined && this.activeFlowId === flowAtStart &&
+                this.activeFlowStep === stepAtStart && this.navigationVersion === navigationAtStart) {
+                const flow = today.active_flow;
+                this.activeFlowId = flow !== null ? flow.flow_id : '';
+                this.activeFlowTarget = flow !== null ? flow.target : NO_AGENT_TARGET;
+                this.activeFlowStep = flow !== null ? flow.step : '';
+            }
             this.todayStatus = today.status;
             this.studyMinutes = today.today !== undefined ? Math.max(0, today.today.study_minutes || 0) : 0;
             this.completedChapters = today.today !== undefined ? Math.max(0, today.today.completed_chapters || 0) : 0;
@@ -374,7 +393,7 @@ export struct LearningAgent {
                 this.scrollToLatest(false);
                 const host = this.getUIContext().getHostContext();
                 if (host !== undefined) {
-                    void LearningSystemEntry.updateToday(host, today, entries);
+                    void LearningAgentSystem.syncToday(host, today, entries);
                 }
             }
         } catch (error) {
@@ -646,15 +665,76 @@ export struct LearningAgent {
             }
             void this.openReader(target);
         } else if (card.type === 'quiz') {
+            const taskId: string = (card as QuizCard).taskId || '';
             const flowId: string = (card as QuizCard).flowId || '';
             if (flowId.length > 0) {
                 void this.openFlow(flowId);
+            } else if (taskId.length > 0) {
+                AppStorage.setOrCreate('nxPendingReviewTask', taskId);
+                this.openReview(this.focus);
             } else {
                 this.errorText = '这张旧题卡没有复习流程，请从今日复习重新开始';
             }
         } else if (card.type === 'prep') {
             void this.openSession();
+        } else if (card.type === 'video') {
+            void this.openExternal((card as VideoCard).url);
+        } else if (card.type === 'progress') {
+            AppStorage.setOrCreate('nxPendingReviewTask', (card as ProgressCard).taskId);
+            this.openReview(this.focus);
         }
+    }
+
+    private async openExternal(url: string): Promise<void> {
+        const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+        try { await LearningAgentAssets.open(context, url); }
+        catch (error) { if (this.alive) { this.errorText = '链接暂时无法打开：' + agentFailure(error); } }
+    }
+
+    private async pickPhoto(): Promise<void> {
+        if (this.pickingPhoto || this.sending) { return; }
+        const owner = LearningHttp.captureIdentity();
+        this.pickingPhoto = true;
+        try {
+            const text: string = await LearningAgentAssets.readPicture();
+            if (this.alive && LearningHttp.isCurrent(owner) && text.length > 0) {
+                this.photoText = text;
+                if (this.draft.trim().length === 0) { this.draft = '请讲解图片中的题目或知识点'; }
+            }
+        } catch (error) { if (this.alive) { this.errorText = agentFailure(error); } }
+        finally { if (this.alive) { this.pickingPhoto = false; } }
+    }
+
+    private async saveNote(entry: TimelineEntry): Promise<void> {
+        if (this.actionBusy.length > 0) { return; }
+        this.actionBusy = entry.id;
+        try {
+            await LearningAgentNotes.save(entry.id, this.entryExportText(entry), this.entryTitle(entry));
+            if (this.alive) { this.actionNotice = '已保存到随笔，再次点击不会重复创建。'; }
+        } catch (error) { if (this.alive) { this.errorText = agentFailure(error); } }
+        finally { this.actionBusy = ''; }
+    }
+
+    private entryExportText(entry: TimelineEntry): string {
+        return [this.entryTitle(entry), this.entryDetail(entry), entry.text].filter((text: string): boolean => text.length > 0).join('\n\n');
+    }
+
+    private async exportEntry(entry: TimelineEntry): Promise<void> {
+        try {
+            const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+            if (await LearningAgentAssets.exportText(context, this.entryExportText(entry)) && this.alive) {
+                this.actionNotice = '学习记录已导出。';
+            }
+        } catch (error) { if (this.alive) { this.errorText = '导出失败：' + agentFailure(error); } }
+    }
+
+    private async enableReminders(calendar: boolean = false): Promise<void> {
+        try {
+            const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+            const message: string = calendar ? await LearningAgentSystem.requestCalendarPermission(context) :
+                await LearningAgentSystem.requestPermissions(context);
+            if (this.alive) { this.actionNotice = message; }
+        } catch (error) { if (this.alive) { this.errorText = agentFailure(error); } }
     }
 
     private async send(mode: string = 'ask'): Promise<void> {
@@ -666,6 +746,9 @@ export struct LearningAgent {
             id: 'local_user_' + Date.now() + '_' + this.nextMessageId++, kind: 'user_msg',
             ts: Date.now(), text: text, unattended: false, channel: 'app'
         }, this.entries.map((entry: TimelineEntry): string => entry.id));
+        outgoing.entry.client_message_id = outgoing.entry.id;
+        const photoText: string = mode === 'ask' ? this.photoText : '';
+        const includeNotes: boolean = mode === 'ask' && this.includeNotes;
         this.outgoingMessages.push(outgoing);
         this.sending = true;
         this.sendingMode = mode;
@@ -702,9 +785,12 @@ export struct LearningAgent {
             // Discard any event snapshot started before the POST, including a concurrent refresh.
             this.eventsVersion++;
             if (mode === 'plan') {
-                await LearningAgentApi.plan(text);
+                await LearningAgentApi.plan(text, this.planMinutes > 0 ? this.planMinutes : undefined, outgoing.entry.id);
             } else {
-                await LearningAgentApi.ask(text, target);
+                const notes: string = includeNotes ? await LearningAgentNotes.context() : '';
+                if (!LearningHttp.isCurrent(owner)) { throw new Error('账号已切换，请重试'); }
+                await LearningAgentApi.ask(text, target, outgoing.entry.id, photoText, notes);
+                if (this.alive && LearningHttp.isCurrent(owner)) { this.photoText = ''; }
             }
         } catch (error) {
             if (this.alive && LearningHttp.isCurrent(owner)) {
@@ -737,12 +823,14 @@ export struct LearningAgent {
         for (const message of this.outgoingMessages) {
             if (message.remoteEntry !== null) { claimed.push(message.remoteEntry.id); }
         }
-        for (const message of this.outgoingMessages) {
+        for (let index: number = this.outgoingMessages.length - 1; index >= 0; index--) {
+            const message: AgentOutgoingMessage = this.outgoingMessages[index];
             if (!message.started) { continue; }
             const remote: TimelineEntry | undefined = this.entries.find((entry: TimelineEntry): boolean =>
                 message.remoteEntry !== null ? entry.id === message.remoteEntry.id :
-                    entry.kind === 'user_msg' && entry.channel === 'app' && entry.text === message.entry.text &&
-                    message.baselineIds.indexOf(entry.id) < 0 && claimed.indexOf(entry.id) < 0);
+                    entry.kind === 'user_msg' && claimed.indexOf(entry.id) < 0 &&
+                    (entry.client_message_id ? entry.client_message_id === message.entry.id :
+                        entry.channel === 'app' && entry.text === message.entry.text && message.baselineIds.indexOf(entry.id) < 0));
             if (remote !== undefined) {
                 message.remoteEntry = remote;
                 claimed.push(remote.id);
@@ -843,6 +931,11 @@ export struct LearningAgent {
         if (type === 'wrapup') { return '本次反馈'; }
         if (type === 'confusion') { return '值得再确认'; }
         if (type === 'citation') { return '阅读依据'; }
+        if (type === 'search') { return '找到的资料'; }
+        if (type === 'mail') { return '课程邮件'; }
+        if (type === 'kbfile') { return '知识库资料'; }
+        if (type === 'video') { return '配套视频'; }
+        if (type === 'progress') { return '任务进度'; }
         if (entry.kind === 'user_msg') { return '我的提问'; }
         if (entry.kind === 'agent_hold') { return '这次没有打扰你'; }
         if (entry.kind === 'tool_step') { return '准备过程'; }
@@ -860,6 +953,11 @@ export struct LearningAgent {
         if (card.type === 'quiz') { return '用一次小测确认理解'; }
         if (card.type === 'wrapup') { return (card as WrapupCard).chapter; }
         if (card.type === 'citation') { return (card as CitationCard).book; }
+        if (card.type === 'search') { return (card as SearchCard).query; }
+        if (card.type === 'mail') { return (card as MailCard).subject; }
+        if (card.type === 'video') { return (card as VideoCard).title; }
+        if (card.type === 'kbfile') { return (card as KbfileCard).fileName; }
+        if (card.type === 'progress') { return (card as ProgressCard).label; }
         return '';
     }
 
@@ -873,6 +971,10 @@ export struct LearningAgent {
         if (card.type === 'quiz') { return (card as QuizCard).stem; }
         if (card.type === 'wrapup') { return '本次小测 ' + (card as WrapupCard).quizScore; }
         if (card.type === 'citation') { return (card as CitationCard).excerpt; }
+        if (card.type === 'mail') { return (card as MailCard).from + '\n' + (card as MailCard).summary; }
+        if (card.type === 'video') { return (card as VideoCard).source; }
+        if (card.type === 'kbfile') { return '已存入 ' + (card as KbfileCard).kbName + ' · ' + (card as KbfileCard).chunks + ' 段资料'; }
+        if (card.type === 'progress') { return '已完成 ' + Math.round((card as ProgressCard).percent) + '%'; }
         return '';
     }
 
@@ -995,6 +1097,22 @@ export struct LearningAgent {
     }
 
     @Builder
+    SearchResults(card: SearchCard) {
+        Column({ space: Space.sm }) {
+            ForEach(card.findings || [], (finding: SearchFinding, index: number) => {
+                Button({ type: ButtonType.Normal }) {
+                    Column({ space: Space.xs }) {
+                        Text(finding.title || finding.url).fontSize(FontSize.body).fontColor($r('app.color.text_brand')).width('100%')
+                        Text(finding.snippet).fontSize(FontSize.small).fontColor($r('app.color.text_secondary')).width('100%').maxLines(4)
+                    }.width('100%').alignItems(HorizontalAlign.Start)
+                }.id('agent_search_result_' + index).width('100%').padding(Space.md)
+                    .backgroundColor($r('app.color.bg_sunken')).borderRadius(Radius.sm)
+                    .onClick(() => { void this.openExternal(finding.url); })
+            }, (finding: SearchFinding, index: number) => finding.url + ':' + index)
+        }.width('100%')
+    }
+
+    @Builder
     EntryCard(entry: TimelineEntry) {
         Column({ space: Space.md }) {
             Row({ space: Space.sm }) {
@@ -1026,6 +1144,7 @@ export struct LearningAgent {
                 this.QuietButton({ label: this.isExpanded(entry) ? '收起全文' : '展开全文', id: 'agent_entry_expand_' + entry.id, onTap: () => { this.toggleEntry(entry); } })
             }
             if (entry.card !== undefined && entry.card !== null) {
+                if (entry.card.type === 'search') { this.SearchResults(entry.card as SearchCard) }
                 if (entry.card.type === 'proactive') {
                     if (entry.status === undefined || entry.status === 'pending') {
                         this.ActionButton({ label: this.actionBusy === entry.id ? '正在确认…' : '开始复习', id: 'agent_decision_accept_' + entry.id, onTap: () => { void this.respond(entry, 'accept'); }, primary: true })
@@ -1042,6 +1161,12 @@ export struct LearningAgent {
                     this.ActionButton({ label: entry.card.type === 'quiz' ? '开始小测' : '开始阅读', id: 'agent_entry_open_' + entry.id, onTap: () => { this.openCard(entry); }, primary: true })
                 } else if (entry.card.type === 'wrapup' && ((entry.card as WrapupCard).flowId || '').length > 0) {
                     this.ActionButton({ label: '查看本次反馈', id: 'agent_entry_result_' + entry.id, onTap: () => { void this.openFlow((entry.card as WrapupCard).flowId || ''); } })
+                } else if (entry.card.type === 'video') {
+                    this.ActionButton({ label: '打开视频', id: 'agent_entry_video_' + entry.id, onTap: () => { this.openCard(entry); } })
+                } else if (entry.card.type === 'progress') {
+                    this.ActionButton({ label: '查看任务', id: 'agent_entry_task_' + entry.id, onTap: () => { this.openCard(entry); } })
+                } else if (entry.card.type === 'citation' && /^https?:\/\//i.test((entry.card as CitationCard).anchor || '')) {
+                    this.ActionButton({ label: '打开来源', id: 'agent_entry_source_' + entry.id, onTap: () => { void this.openExternal((entry.card as CitationCard).anchor); } })
                 }
             }
             Row() {
@@ -1049,6 +1174,11 @@ export struct LearningAgent {
                     ['plan', 'prereq', 'prep', 'proactive', 'quiz'].indexOf(entry.card.type) >= 0 ? '为什么推荐' : '查看依据',
                     id: 'agent_entry_inspect_' + entry.id, onTap: () => { this.openInspect(entry); } })
                 Blank()
+                if (entry.kind === 'agent_msg' || entry.card !== undefined && entry.card !== null) {
+                    this.QuietButton({ label: this.actionBusy === entry.id ? '保存中…' : '存为随笔', id: 'agent_save_note_' + entry.id,
+                        onTap: () => { void this.saveNote(entry); } })
+                    this.QuietButton({ label: '导出', id: 'agent_export_' + entry.id, onTap: () => { void this.exportEntry(entry); } })
+                }
             }.width('100%')
         }.width('100%').padding(Space.lg).borderRadius(Radius.lg)
             .alignItems(HorizontalAlign.Start).backgroundColor($r('app.color.bg_card'))
@@ -1164,6 +1294,11 @@ export struct LearningAgent {
                     this.QuietButton({ label: '安排下一步', id: 'agent_plan', onTap: () => { this.beginCompose(); } })
                 }.width('100%')
                 Row() {
+                    this.QuietButton({ label: '开启学习提醒', id: 'agent_enable_reminders', onTap: () => { void this.enableReminders(); } })
+                    Blank()
+                    this.QuietButton({ label: '日历建议', id: 'agent_enable_calendar', onTap: () => { void this.enableReminders(true); } })
+                }.width('100%')
+                Row() {
                     Text('学习时间线').fontSize(FontSize.body).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
                     if (this.processCount() > 0) {
                         this.QuietButton({ label: this.showProcess ? '收起过程' : '过程记录 ' + this.processCount(), id: 'agent_process_toggle', onTap: () => { this.showProcess = !this.showProcess; this.rebuildTimeline(); } })
@@ -1192,6 +1327,15 @@ export struct LearningAgent {
                         .fontSize(FontSize.bodyLarge).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.bg_sunken'))
                         .borderRadius(Radius.md).padding(Space.md).maxLength(3000)
                         .onChange((value: string) => { this.planDraft = value; })
+                    Row({ space: Space.xs }) {
+                        ForEach([0, 15, 30, 60], (minutes: number) => {
+                            Button(minutes === 0 ? '按描述安排' : minutes + ' 分钟', { type: ButtonType.Normal })
+                                .id('agent_plan_minutes_' + minutes).fontSize(FontSize.small)
+                                .fontColor(this.planMinutes === minutes ? $r('app.color.text_inverse') : $r('app.color.text_secondary'))
+                                .backgroundColor(this.planMinutes === minutes ? $r('app.color.brand_primary') : $r('app.color.bg_sunken'))
+                                .borderRadius(Radius.sm).onClick(() => { this.planMinutes = minutes; })
+                        }, (minutes: number) => String(minutes))
+                    }.width('100%')
                 }.width('100%').alignItems(HorizontalAlign.Start)
             }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).align(Alignment.TopStart)
             Button(this.sending ? '正在发送…' : '生成学习安排', { type: ButtonType.Normal })
@@ -1253,6 +1397,10 @@ export struct LearningAgent {
             LearningAgentInput({ draft: $draft, sending: this.sending,
                 statusLabel: this.sendingMode === 'plan' ? '正在安排下一步…' : 'Agent 正在回应…',
                 contextLabel: this.focus.chapter_name,
+                visible: this.visible, photoText: this.photoText, pickingPhoto: this.pickingPhoto, includeNotes: this.includeNotes,
+                onPhoto: () => { void this.pickPhoto(); }, onRemovePhoto: () => { this.photoText = ''; },
+                onToggleNotes: () => { this.includeNotes = !this.includeNotes; },
+                onError: (message: string) => { this.errorText = message; },
                 onSend: () => { void this.send('ask'); }
             }).width('100%')
         }.width('100%').height('100%').backgroundColor($r('app.color.bg_page'))

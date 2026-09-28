@@ -13,10 +13,13 @@ const AGENT_ROOT: string = '/api/agent/v1';
 // Context answers wait for model generation; ordinary Agent operations keep the transport default.
 const GENERATION_READ_TIMEOUT: number = 90000;
 
-interface AgentPlanRequest { intent: string; available_minutes: number; }
+interface AgentPlanRequest { intent: string; available_minutes?: number; client_message_id?: string; }
 interface AgentQuestionRequest {
     question: string;
     source: string;
+    client_message_id?: string;
+    photo_text?: string;
+    notes_context?: string;
     lecture_id?: string;
     book_id?: string;
     chapter_index?: number;
@@ -43,6 +46,8 @@ interface AgentVerdictRequest {
 }
 interface AgentMemoryUpdateRequest { memory_id: string; text: string; }
 interface AgentMemoryForgetRequest { memory_id: string; }
+interface AgentUncertainRequest { flow_id: string; question_id: string; verdict: string; }
+interface AgentFlowEventRequest { flow_id: string; event: string; }
 
 export class LearningAgentApi {
     private static body(result: LearningBody): Record<string, Object> {
@@ -113,19 +118,25 @@ export class LearningAgentApi {
         return (await LearningAgentApi.post('/open-session', request)).data as OpenSessionData;
     }
 
-    static async plan(intent: string): Promise<PlanData> {
-        const request: AgentPlanRequest = { intent: intent, available_minutes: 30 };
+    static async plan(intent: string, availableMinutes?: number, clientMessageId: string = ''): Promise<PlanData> {
+        const request: AgentPlanRequest = { intent: intent, client_message_id: clientMessageId };
+        if (availableMinutes !== undefined && availableMinutes > 0) { request.available_minutes = availableMinutes; }
         return (await LearningAgentApi.post('/plan', request)).data as PlanData;
     }
 
-    static async ask(question: string, target: LearnTarget | null): Promise<AskAnswer> {
-        const payload: AgentQuestionRequest = { question: question, source: 'app' };
+    static async ask(question: string, target: LearnTarget | null, clientMessageId: string = '',
+        photoText: string = '', notesContext: string = ''): Promise<AskAnswer> {
+        const payload: AgentQuestionRequest = { question: question, source: 'app',
+            client_message_id: clientMessageId, photo_text: photoText, notes_context: notesContext };
         if (target !== null) {
             payload.lecture_id = target.lecture_id;
             payload.book_id = target.book_id;
             payload.chapter_index = target.chapter_index;
         }
-        return (await LearningAgentApi.post('/ask-in-context', payload, GENERATION_READ_TIMEOUT)).data as AskAnswer;
+        const envelope: AgentEnvelope = await LearningAgentApi.post('/ask-in-context', payload, GENERATION_READ_TIMEOUT);
+        const answer: AskAnswer = envelope.data as AskAnswer;
+        if (envelope.next_actions !== undefined && envelope.next_actions.length > 0) { answer.next_actions = envelope.next_actions; }
+        return answer;
     }
 
     static respondDecision(decisionId: string, response: string): Promise<AgentEnvelope> {
@@ -142,9 +153,19 @@ export class LearningAgentApi {
         return (await LearningAgentApi.get('/flow/state?flow_id=' + encodeURIComponent(flowId))).data as FlowStateData;
     }
 
+    static async retryFlow(flowId: string): Promise<void> {
+        const request: AgentFlowEventRequest = { flow_id: flowId, event: 'reading_done' };
+        await LearningAgentApi.post('/flow/event', request);
+    }
+
     static async submitFlow(flowId: string, answers: ReviewAnswerDraft[]): Promise<FlowSubmitData> {
         const request: AgentFlowSubmitRequest = { flow_id: flowId, answers: answers };
         return (await LearningAgentApi.post('/flow/submit', request)).data as FlowSubmitData;
+    }
+
+    static async resolveUncertain(flowId: string, questionId: string, verdict: string): Promise<FlowSubmitData> {
+        const request: AgentUncertainRequest = { flow_id: flowId, question_id: questionId, verdict: verdict };
+        return (await LearningAgentApi.post('/flow/uncertain', request)).data as FlowSubmitData;
     }
 
     static async reviewPlan(target: LearnTarget): Promise<TaskData> {

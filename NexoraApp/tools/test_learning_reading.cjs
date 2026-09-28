@@ -1,5 +1,5 @@
 /* node --test tools/test_learning_reading.cjs
- * Runs production ArkTS state, PreferencesUtil, LearningHttp and API code with
+ * Runs production ArkTS state, PreferencesUtil, HttpUtil, LearningHttp and API code with
  * deterministic storage/network seams. Does not assert ArkUI rendering.
  */
 const assert = require('node:assert/strict');
@@ -48,16 +48,22 @@ function environment(saved = new Map()) {
       for (const [key, value] of cache) disk.set(key, value);
     },
   };
-  const HttpUtil = {
-    pathForLog: value => value,
-    async get(url, headers) { return HttpUtil.send('GET', url, null, headers); },
-    async post(url, body, headers) { return HttpUtil.send('POST', url, body, headers); },
-    async send(method, url, body, headers) {
-      const request = { method, url, body: body === null ? null : JSON.parse(JSON.stringify(body)), headers: { ...headers } };
-      requests.push(request);
-      requestWaiters.get(requests.length)?.();
-      const response = await handler(request);
-      return { ok: response.status === 200, code: response.status, body: JSON.stringify(response.body) };
+  const nativeHttp = {
+    RequestMethod: { GET: 'GET', POST: 'POST', PUT: 'PUT', PATCH: 'PATCH', DELETE: 'DELETE' },
+    HttpDataType: { STRING: 'string' },
+    createHttp() {
+      return {
+        destroy() {},
+        request(url, options, callback) {
+          const request = { method: options.method, url,
+            body: options.extraData === undefined ? null : JSON.parse(options.extraData), headers: { ...options.header } };
+          requests.push(request);
+          requestWaiters.get(requests.length)?.();
+          Promise.resolve().then(() => handler(request)).then(response => {
+            callback(null, { responseCode: response.status, result: JSON.stringify(response.body), header: {} });
+          }, error => callback(error, {}));
+        },
+      };
     },
   };
   const hilog = Object.fromEntries(['info', 'warn', 'error'].map(level => [level, (...args) => logs.push({ level, args })]));
@@ -81,7 +87,7 @@ function environment(saved = new Map()) {
     vm.runInNewContext(result.outputText, {
       exports: exported, Date: Clock, AppStorage, console,
       require(specifier) {
-        if (specifier === './HttpUtil') return { HttpUtil };
+        if (specifier === '@ohos.net.http') return { default: nativeHttp };
         if (specifier === './AppConfig') return { StorageKey: {} };
         if (specifier === '@kit.PerformanceAnalysisKit') return { hilog };
         if (specifier === '@ohos.data.preferences') return { default: { getPreferences: async () => prefs } };
@@ -91,6 +97,9 @@ function environment(saved = new Map()) {
     }, { filename });
     return exported;
   }
+  const { HttpUtil } = load('HttpUtil');
+  HttpUtil.setBackendUrl('https://main-a.invalid');
+  HttpUtil.setSessionCookie('session=reader-a-session');
   const { LearningHttp } = load('LearningHttp');
   LearningHttp.configure('reader_a', 'https://learning-a.invalid/api/frontend/');
   const state = load('LearningReading');
@@ -542,12 +551,18 @@ test('textbook completion, contextual answers, and flow completion use distinct 
   assert.equal(env.bridge.latest().type, 'chapter_completed');
   const firstTick = env.bridge.latest().tick;
   assert.deepEqual(plain(await env.api.askInContext(point, ' 为什么？ ', '这一页的正文')), { ok: true, message: '', answer: '**答案**' });
+  assert.equal(env.requests[1].url, 'https://main-a.invalid/api/learning/agent/ask-in-context');
   assert.equal(env.requests[1].body.context_text, '这一页的正文');
   assert.equal(env.requests[1].body.source, 'app');
   assert.equal(env.requests[1].body.question, '为什么？');
   assert.deepEqual(plain(await env.api.postReadingDone('flow-1', point.owner)), { ok: true, message: '' });
-  assert.equal(env.requests[2].url, 'https://learning-a.invalid/api/agent/v1/flow/event');
+  assert.equal(env.requests[2].url, 'https://main-a.invalid/api/learning/agent/flow/event');
   assert.deepEqual(env.requests[2].body, { flow_id: 'flow-1', event: 'reading_done' });
+  for (const request of env.requests.slice(1)) {
+    assert.equal(request.headers.Cookie, 'session=reader-a-session');
+    assert.equal(request.headers['X-API-Key'], undefined);
+    assert.equal(request.headers.Authorization, undefined);
+  }
   assert.equal(env.bridge.latest().flowId, 'flow-1');
   assert.equal(env.bridge.latest().type, 'flow_reading_done');
   assert.ok(env.bridge.latest().tick > firstTick);

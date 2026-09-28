@@ -24,6 +24,7 @@ function fixture() {
             const request = {
                 settled: false, destroyed: false,
                 request(url, options, callback) {
+                    this.url = url;
                     this.options = options;
                     this.deadline = now + options.readTimeout;
                     this.callback = callback;
@@ -41,6 +42,8 @@ function fixture() {
     };
     const Json = load('JsonUtil', {}, 'Json');
     const HttpUtil = load('HttpUtil', { http: native, Json, hilog });
+    HttpUtil.setBackendUrl('http://main.example');
+    HttpUtil.setSessionCookie('session=fixture');
     const LearningHttp = load('LearningHttp', { HttpUtil, Json, hilog, AppStorage });
     LearningHttp.configure('fixture_user', 'http://learning.example/api/frontend');
     const LearningAgentApi = load('LearningAgentApi', { LearningHttp, Json, AppStorage });
@@ -68,6 +71,21 @@ test('Agent answers can complete after the ordinary 15 second read deadline', as
     assert.deepEqual((await pending).value, { result: 'generated fixture' });
     assert.equal(request.destroyed, true);
     assert.equal(request.options.connectTimeout, 10000);
+});
+
+test('Agent uses the authenticated main proxy and transmits a stable message ID plus explicit context', async () => {
+    const f = fixture();
+    const pending = f.api.ask('Explain this', null, 'message-123', 'Picture text', 'My own note');
+    const request = f.requests[0];
+    assert.equal(request.url, 'http://main.example/api/learning/agent/ask-in-context');
+    assert.equal(request.options.header.Cookie, 'session=fixture');
+    const body = JSON.parse(request.options.extraData);
+    assert.equal(body.client_message_id, 'message-123');
+    assert.equal(body.photo_text, 'Picture text');
+    assert.equal(body.notes_context, 'My own note');
+    assert.equal(request.options.header['X-API-Key'], undefined);
+    request.finish(null);
+    await pending;
 });
 
 test('ordinary HTTP, Learning content, and other Agent operations keep their existing deadline', async () => {

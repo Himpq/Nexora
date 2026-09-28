@@ -215,6 +215,7 @@ export interface TaskData {
 }
 
 export interface AskAnswer {
+  next_actions?: AgentAction[];
   answer: string;
   source: string;
   book_id: string;
@@ -235,6 +236,7 @@ export interface TodayBrief {
 }
 
 export interface TodayData {
+  active_flow?: FlowStateData | null;
   status: string;
   today: TodayBrief;
   focus: LearnTarget | null;
@@ -398,6 +400,7 @@ export interface FlowQuestion {
 }
 
 export interface FlowQuizData {
+  retryable?: boolean;
   status: string;
   quiz_id?: string;
   questions: FlowQuestion[];
@@ -459,6 +462,7 @@ export interface ActionChip {
 }
 
 export interface TimelineEntry {
+  client_message_id?: string;
   id: string;
   kind: EntryKind;
   ts: number;                    // 毫秒时间戳
@@ -598,6 +602,7 @@ export interface PlanCard {
 }
 
 export interface QuizCard {
+  taskId?: string;
   type: 'quiz';
   questionId: string;
   stem: string;

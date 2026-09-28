@@ -250,11 +250,15 @@ test('EntryAbility remembers supported deep links, accepts repeated taps, and em
     const AppStorage = storage();
     const EntryAbility = methods('entryability/EntryAbility', 'EntryAbility', [
         'rememberLaunchTarget', 'onNewWant', 'onForeground', 'onBackground',
-    ], { AppStorage, hilog, DOMAIN: 0, LiveViewController: { shared: { stop() {}, startGenerating() {} } }, chatStream: { isStreaming: false } });
+    ], { AppStorage, hilog, DOMAIN: 0, LiveViewController: { shared: { stop() {}, startGenerating() {} } }, chatStream: { isStreaming: false },
+        LearningAgentSystem: { async refresh() {} }, LearningDeviceContext: { async report() {} },
+        LearningSystemEntry: { readIdentity: () => ({ token: 'current-owner' }) } });
     const ability = new EntryAbility();
     ability.onNewWant({ parameters: { nx_route: 'review', decision_id: 'd1' } }, {});
     ability.onNewWant({ parameters: { nx_route: 'review', decision_id: 'd1' } }, {});
     assert.equal(AppStorage.get('nxLaunchToken'), 2);
+    ability.onNewWant({ parameters: { nx_route: 'day', decision_id: 'stale', nx_identity: 'old-owner' } }, {});
+    assert.equal(AppStorage.get('nxLaunchToken'), 2, 'notifications from a previous account cannot open its decision');
     assert.equal(AppStorage.get('nxLaunchDecision'), 'd1');
     ability.onNewWant({ parameters: { nx_route: 'not-a-route' } }, {});
     assert.equal(AppStorage.get('nxLaunchToken'), 2);

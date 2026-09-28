@@ -443,6 +443,25 @@ def list_question_completions(cfg: Dict[str, Any], user_id: str) -> List[Dict[st
     return _read_jsonl(_question_completions_jsonl_path(cfg, user_id))
 
 
+def correct_question_completion(cfg: Dict[str, Any], user_id: str, completion_id: str, *, is_correct: bool) -> bool:
+    """Correct a user-confirmed uncertain result without counting a second attempt."""
+    path = _question_completions_jsonl_path(cfg, user_id)
+    with _lock:
+        rows = _read_jsonl(path)
+        matching = [row for row in rows if row.get("completion_id") == completion_id]
+        if not matching:
+            return False
+        row = matching[-1]
+        row.setdefault("previous_is_correct", row.get("is_correct"))
+        row["is_correct"] = is_correct
+        row["corrected_at"] = int(time.time())
+        row["correction_source"] = "flow_uncertain_verdict"
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
+        temporary.replace(path)
+    return True
+
+
 def _question_group_id_from_record(record: Dict[str, Any]) -> str:
     existing = str(record.get("question_group_id") or record.get("group_id") or "").strip()
     if existing:

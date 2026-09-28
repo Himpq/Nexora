@@ -50,15 +50,15 @@ def _seed_course(cfg):
         cfg,
         lecture["id"],
         book["id"],
-        "<book><chapter><chapter_name>第一章 数据模型</chapter_name><chapter_range>0:36</chapter_range></chapter>"
-        "<chapter><chapter_name>第二章 傅里叶变换</chapter_name><chapter_range>37:26</chapter_range></chapter></book>",
+        "<book><coordinate_space>plain</coordinate_space><chapter><chapter_name>第一章 数据模型</chapter_name><chapter_range>0:9</chapter_range></chapter>"
+        "<chapter><chapter_name>第二章 傅里叶变换</chapter_name><chapter_range>9:9</chapter_range></chapter></book>",
     )
     save_book_questions_xml(
         cfg,
         lecture["id"],
         book["id"],
         "<questions>"
-        "<chapter_questions><chapter_range>0:36</chapter_range><question_items>"
+        "<chapter_questions><chapter_range>0:9</chapter_range><question_items>"
         "<question_item><question_title>数据模型的抽象层次</question_title><question_answer>概念-逻辑-物理</question_answer></question_item>"
         "<question_item><question_title>数据模型是什么</question_title><question_answer>抽象表示</question_answer></question_item>"
         "</question_items></chapter_questions>"
@@ -103,7 +103,7 @@ class AgentFlowTests(unittest.TestCase):
             "book_id": book["id"],
             "chapter_index": chapter_index,
             "chapter_name": "第一章 数据模型" if chapter_index == 0 else "第二章 傅里叶变换",
-            "chapter_range": "0:36" if chapter_index == 0 else "37:26",
+            "chapter_range": "0:9" if chapter_index == 0 else "9:9",
         }
 
     def test_full_chain_reading_done_to_wrapup(self):

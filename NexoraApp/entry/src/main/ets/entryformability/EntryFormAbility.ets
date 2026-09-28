@@ -2,6 +2,7 @@ import { Want } from '@kit.AbilityKit';
 import { formBindingData, FormExtensionAbility } from '@kit.FormKit';
 import { LearningCardAction, LearningCardData, LearningSystemEntry } from '../common/LearningSystemEntry';
 import { LearningCardReply, LearningFormClient } from '../common/LearningFormClient';
+import { LearningAgentSystem } from '../common/LearningAgentSystem';
 
 export default class EntryFormAbility extends FormExtensionAbility {
     private responding: Set<string> = new Set<string>();
@@ -11,11 +12,14 @@ export default class EntryFormAbility extends FormExtensionAbility {
             ? undefined : want.parameters['ohos.extra.param.key.form_identity'];
         const formId: string = value === undefined ? '' : String(value);
         LearningSystemEntry.rememberForm(this.context, formId);
+        void LearningAgentSystem.refresh(this.context, false);
         return formBindingData.createFormBindingData(LearningSystemEntry.card(this.context));
     }
 
     onUpdateForm(formId: string): void {
+        LearningSystemEntry.rememberForm(this.context, formId);
         void LearningSystemEntry.updateForm(formId, LearningSystemEntry.card(this.context));
+        void LearningAgentSystem.refresh(this.context, false);
     }
 
     onRemoveForm(formId: string): void {

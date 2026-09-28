@@ -3,6 +3,13 @@ import { common } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
 import { Json } from './JsonUtil';
 import { LearningCardAction, LearningSystemEntry, LearningSystemIdentity } from './LearningSystemEntry';
+import { TodayData, TimelineEntry } from './LearningAgentModels';
+
+export interface LearningSystemSnapshot {
+    identity: LearningSystemIdentity;
+    today: TodayData;
+    entries: TimelineEntry[];
+}
 
 export interface LearningCardReply {
     message: string;
@@ -21,7 +28,7 @@ interface LearningDecisionRequest {
 
 export class LearningFormClient {
     private static async request(identity: LearningSystemIdentity, url: string,
-        payload: LearningDecisionRequest | null = null): Promise<LearningFormResponse> {
+        payload: Object | null = null): Promise<LearningFormResponse> {
         const client: http.HttpRequest = http.createHttp();
         try {
             const options: http.HttpRequestOptions = {
@@ -29,7 +36,6 @@ export class LearningFormClient {
                 header: {
                     'Content-Type': 'application/json',
                     'Cookie': identity.sessionCookie,
-                    'X-Nexora-Username': identity.username,
                 },
                 expectDataType: http.HttpDataType.STRING,
                 connectTimeout: 10000,
@@ -46,6 +52,54 @@ export class LearningFormClient {
         } finally {
             client.destroy();
         }
+    }
+
+    private static data(result: LearningFormResponse): Record<string, Object> | null {
+        if (result.status < 200 || result.status >= 300 || result.payload === null ||
+            !Json.boolean(result.payload, 'success')) { return null; }
+        return Json.object(result.payload, 'data');
+    }
+
+    private static async validate(context: common.Context, identity: LearningSystemIdentity): Promise<boolean> {
+        const session: LearningFormResponse = await LearningFormClient.request(identity,
+            identity.backendUrl + '/api/user/info?lite=1');
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return false; }
+        const user: Record<string, Object> | null = session.payload === null ? null : Json.object(session.payload, 'user');
+        if (session.status === 401 || session.status === 403 || session.status === 404 ||
+            (session.status === 200 && (session.payload === null || !Json.boolean(session.payload, 'success') ||
+            user === null || Json.string(user, 'id') !== identity.username))) {
+            LearningSystemEntry.clear(context);
+            return false;
+        }
+        return session.status === 200;
+    }
+
+    // Cookie 只发主站，Learning 的服务端密钥由主站代理附加。
+    static async refresh(context: common.Context): Promise<LearningSystemSnapshot | null> {
+        const identity: LearningSystemIdentity | null = LearningSystemEntry.readIdentity(context);
+        if (identity === null || !await LearningFormClient.validate(context, identity)) { return null; }
+        const observedAt: number = Date.now();
+        const todayResult: LearningFormResponse = await LearningFormClient.request(identity,
+            identity.backendUrl + '/api/learning/agent/today');
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return null; }
+        const today: Record<string, Object> | null = LearningFormClient.data(todayResult);
+        if (today === null || Json.object(today, 'today') === null) { return null; }
+        const eventsResult: LearningFormResponse = await LearningFormClient.request(identity,
+            identity.backendUrl + '/api/learning/agent/events?limit=120');
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return null; }
+        const events: Record<string, Object> | null = LearningFormClient.data(eventsResult);
+        if (events === null || !Array.isArray(events['entries'])) { return null; }
+        const entries: TimelineEntry[] = Json.array(events, 'entries') as TimelineEntry[];
+        const snapshot: LearningSystemSnapshot = { identity: identity, today: today as Object as TodayData, entries: entries };
+        await LearningSystemEntry.saveToday(context, identity, snapshot.today, entries, observedAt);
+        return LearningSystemEntry.isCurrent(context, identity) ? snapshot : null;
+    }
+
+    static async reportDevice(context: common.Context, identity: LearningSystemIdentity, payload: Object): Promise<boolean> {
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return false; }
+        const result: LearningFormResponse = await LearningFormClient.request(identity,
+            identity.backendUrl + '/api/learning/agent/context/device', payload);
+        return LearningSystemEntry.isCurrent(context, identity) && LearningFormClient.data(result) !== null;
     }
 
     static async respond(context: common.Context, action: LearningCardAction): Promise<LearningCardReply> {
@@ -76,7 +130,7 @@ export class LearningFormClient {
 
         const payload: LearningDecisionRequest = { decision_id: action.decisionId, response: action.response };
         const result: LearningFormResponse = await LearningFormClient.request(identity,
-            identity.serviceBase + '/api/agent/v1/decision/respond', payload);
+            identity.backendUrl + '/api/learning/agent/decision/respond', payload);
         if (!LearningSystemEntry.isCurrent(context, identity)) {
             return { message: '', retry: false };
         }

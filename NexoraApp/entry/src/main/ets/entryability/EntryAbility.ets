@@ -6,6 +6,9 @@ import { KeyboardAvoidMode as KeyboardAvoid, UIContext, window } from '@kit.ArkU
 import { chatStream } from '../common/ChatStreamClient';
 import { LiveViewController } from '../common/LiveViewController';
 import { nexoraIntentExecutors } from '../intents/index';
+import { LearningAgentSystem } from '../common/LearningAgentSystem';
+import { LearningDeviceContext } from '../common/LearningDeviceContext';
+import { LearningSystemEntry } from '../common/LearningSystemEntry';
 
 const DOMAIN = 0x0000;
 
@@ -23,6 +26,11 @@ export default class EntryAbility extends UIAbility {
 
   private rememberLaunchTarget(want: Want): void {
     if (want.parameters === undefined) {
+      return;
+    }
+    const ownerToken = want.parameters['nx_identity'];
+    if (typeof ownerToken === 'string' && ownerToken.length > 0 &&
+      LearningSystemEntry.readIdentity(this.context)?.token !== ownerToken) {
       return;
     }
     const routeValue = want.parameters['nx_route'];
@@ -129,10 +137,12 @@ export default class EntryAbility extends UIAbility {
 
     // 回前台：停止"模型正在回复"实况窗（若未活跃则幂等返回）
     LiveViewController.shared.stop();
+    void LearningAgentSystem.refresh(this.context, true);
   }
 
   onBackground(): void {
     AppStorage.setOrCreate('appForeground', false);
+    void LearningDeviceContext.report(this.context, false);
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
 

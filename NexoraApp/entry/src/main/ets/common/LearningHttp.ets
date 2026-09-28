@@ -102,7 +102,7 @@ export class LearningHttp {
         if (identity === null || !LearningHttp.isCurrent(identity)) {
             return { ok: false, message: '学习服务身份已变更或尚未就绪', payload: null, status: 0 };
         }
-        const result: HttpResult = await HttpUtil.get(identity.serviceBase + path, LearningHttp.headers(identity));
+        const result: HttpResult = await HttpUtil.get(LearningHttp.requestUrl(path, identity), LearningHttp.headers(identity));
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
 
@@ -114,7 +114,7 @@ export class LearningHttp {
         if (identity === null || !LearningHttp.isCurrent(identity)) {
             return { ok: false, message: '学习服务身份已变更或尚未就绪', payload: null, status: 0 };
         }
-        const result: HttpResult = await HttpUtil.post(identity.serviceBase + path, payload, LearningHttp.headers(identity), readTimeoutMs);
+        const result: HttpResult = await HttpUtil.post(LearningHttp.requestUrl(path, identity), payload, LearningHttp.headers(identity), readTimeoutMs);
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
 
@@ -122,6 +122,12 @@ export class LearningHttp {
     }
 
     // ---------- 响应判定 ----------
+    // Agent operations are authorized by the main site's session. Service keys stay on the server.
+    private static requestUrl(path: string, identity: LearningIdentity): string {
+        const prefix: string = '/api/agent/v1/';
+        return path.startsWith(prefix) ? '/api/learning/agent/' + path.substring(prefix.length) : identity.serviceBase + path;
+    }
+
     private static headers(identity: LearningIdentity | null = LearningHttp.captureIdentity()): Record<string, string> {
         const headers: Record<string, string> = {};
 

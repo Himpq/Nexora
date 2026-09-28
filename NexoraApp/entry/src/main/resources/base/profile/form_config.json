@@ -9,7 +9,8 @@
       "window": { "designWidth": 720, "autoDesignWidth": true },
       "colorMode": "auto",
       "isDefault": true,
-      "updateEnabled": false,
+      "updateEnabled": true,
+      "updateDuration": 2,
       "defaultDimension": "2*2",
       "supportDimensions": ["2*2"]
     }

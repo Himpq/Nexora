@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { formBindingData, formProvider } from '@kit.FormKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { notificationManager } from '@kit.NotificationKit';
 import { HttpUtil } from './HttpUtil';
 import { Json } from './JsonUtil';
 import { LearningHttp, LearningIdentity } from './LearningHttp';
@@ -79,7 +80,13 @@ export class LearningSystemEntry {
             };
             store.putSync('identity', JSON.stringify(saved));
             store.putSync('card', '');
+            store.putSync('card_day', '');
+            store.putSync('card_updated_at', 0);
             store.putSync('responded', '[]');
+            store.putSync('notified', '[]');
+            if (existing !== null) {
+                void notificationManager.cancelGroup('nexora_learning_' + existing.token).catch(() => {});
+            }
         } catch (err) {
             hilog.warn(DOMAIN, TAG, 'system identity unavailable');
         }
@@ -89,10 +96,15 @@ export class LearningSystemEntry {
     static clear(context: common.Context): void {
         try {
             const store: preferences.Preferences = LearningSystemEntry.open(context);
+            const previous: LearningSystemIdentity | null = LearningSystemEntry.readIdentity(context);
             store.putSync('identity', '');
             store.putSync('card', '');
             store.putSync('responded', '[]');
+            store.putSync('notified', '[]');
             void LearningSystemEntry.refreshForms(context);
+            if (previous !== null) {
+                void notificationManager.cancelGroup('nexora_learning_' + previous.token).catch(() => {});
+            }
         } catch (err) {
             hilog.warn(DOMAIN, TAG, 'system identity clear failed');
         }
@@ -139,9 +151,11 @@ export class LearningSystemEntry {
             return LearningSystemEntry.emptyCard();
         }
         try {
-            const raw: string = LearningSystemEntry.open(context).getSync('card', '') as string;
+            const store: preferences.Preferences = LearningSystemEntry.open(context);
+            const raw: string = store.getSync('card', '') as string;
             const value: Record<string, Object> | null = Json.parseObject(raw);
-            if (value === null || Json.string(value, 'identityToken') !== identity.token) {
+            if (value === null || Json.string(value, 'identityToken') !== identity.token ||
+                store.getSync('card_day', '') !== LearningSystemEntry.localDay()) {
                 return { title: '打开 Nexora，看看今天的学习安排', minutes: '', actionable: false,
                     decisionId: '', identityToken: identity.token };
             }
@@ -236,8 +250,21 @@ export class LearningSystemEntry {
         if (identity === null || identity.username !== current.username || identity.serviceBase !== current.serviceBase) {
             return;
         }
+        await LearningSystemEntry.saveToday(context, identity, today, entries);
+    }
+
+    static localDay(now: number = Date.now()): string {
+        const date: Date = new Date(now);
+        return date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDate();
+    }
+
+    // FormExtension 只采用自己的已验证身份，不能依赖主进程 AppStorage。
+    static async saveToday(context: common.Context, identity: LearningSystemIdentity, today: TodayData,
+        entries: TimelineEntry[], observedAt: number = Date.now()): Promise<void> {
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return; }
         try {
             const store: preferences.Preferences = LearningSystemEntry.open(context);
+            if ((store.getSync('card_updated_at', 0) as number) > observedAt) { return; }
             const responded: string[] = LearningSystemEntry.readStrings(store, 'responded');
             let pending: TimelineEntry | null = null;
             for (let i: number = 0; i < entries.length; i++) {
@@ -251,7 +278,7 @@ export class LearningSystemEntry {
                     pending = entry;
                 }
             }
-            const title: string = pending !== null ? pending.text : (today.focus !== null
+            const title: string = pending !== null ? pending.text : (today.focus !== null && today.focus !== undefined
                 ? '继续学习《' + today.focus.chapter_name + '》' : '打开 Nexora，查看今天的学习安排');
             const data: LearningCardData = {
                 title: title,
@@ -261,10 +288,31 @@ export class LearningSystemEntry {
                 identityToken: identity.token,
             };
             store.putSync('card', JSON.stringify(data));
+            store.putSync('card_day', LearningSystemEntry.localDay());
+            store.putSync('card_updated_at', observedAt);
             await LearningSystemEntry.refreshForms(context);
         } catch (err) {
             hilog.warn(DOMAIN, TAG, 'today card update failed');
         }
+    }
+
+    static wasNotified(context: common.Context, identity: LearningSystemIdentity, decisionId: string): boolean {
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return true; }
+        try {
+            const store: preferences.Preferences = LearningSystemEntry.open(context);
+            return LearningSystemEntry.readStrings(store, 'notified').indexOf(decisionId) >= 0 ||
+                LearningSystemEntry.readStrings(store, 'responded').indexOf(decisionId) >= 0;
+        } catch (err) { return true; }
+    }
+
+    static rememberNotified(context: common.Context, identity: LearningSystemIdentity, decisionId: string): void {
+        if (!LearningSystemEntry.isCurrent(context, identity)) { return; }
+        try {
+            const store: preferences.Preferences = LearningSystemEntry.open(context);
+            const ids: string[] = LearningSystemEntry.readStrings(store, 'notified');
+            if (ids.indexOf(decisionId) < 0) { ids.push(decisionId); }
+            store.putSync('notified', JSON.stringify(ids.slice(-120)));
+        } catch (err) { hilog.warn(DOMAIN, TAG, 'notification receipt unavailable'); }
     }
 
     static async finishDecision(context: common.Context, identity: LearningSystemIdentity,
