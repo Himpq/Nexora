@@ -9,6 +9,7 @@ Nexora.app.Files — 文件传输与导出
 - FileTransferStore / KnowledgeWordExporter
 """
 from .files import FileTransferStore, LiveTransferDownloadSession, LiveTransferRelayRuntime, files_bp
+from .knowledge_image_fetcher import KnowledgeImageFetcher
 from .knowledge_word_exporter import KnowledgeWordExporter
 
 __all__ = [n for n in globals() if not n.startswith('_')]
