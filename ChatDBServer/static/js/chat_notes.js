@@ -2873,6 +2873,7 @@ function normalizeExtractedKatexTex(rawTex, displayMode = false) {
 
 function escapeMarkdownTableCell(text) {
     return String(text || '')
+        .replace(/\\/g, '\\\\')
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
         .replace(/\n+/g, '<br>')

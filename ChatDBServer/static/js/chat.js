@@ -644,7 +644,6 @@ const knowledgeVectorController = getNexoraChatKnowledge().createKnowledgeVector
     confirmModalAsync,
     syncBulkVectorizeButtonVisibility,
     loadKnowledge,
-    escapeCssSelector,
     createKnowledgeVectorizeTask,
     pollKnowledgeVectorTask,
 });
@@ -18521,15 +18520,8 @@ async function readAdminJsonResponse(res, fallbackMessage) {
     try {
         data = rawText ? JSON.parse(rawText) : {};
     } catch (err) {
-        const plainText = rawText
-            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-            .replace(/<[^>]*>/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 120);
         const statusText = `${res.status || ''} ${res.statusText || ''}`.trim();
-        throw new Error(`${fallbackMessage || '请求失败'}${statusText ? ` (${statusText})` : ''}${plainText ? `：${plainText}` : ''}`);
+        throw new Error(`${fallbackMessage || '请求失败'}${statusText ? ` (${statusText})` : ''}`);
     }
 
     if (!res.ok) {
@@ -21701,13 +21693,6 @@ function setVectorStatus(text) {
 
 function setKnowledgeItemProgress(title, percent, active = true, stage = 'vectorizing') {
     return knowledgeVectorController.setKnowledgeItemProgress(title, percent, active, stage);
-}
-
-function escapeCssSelector(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') {
-        return window.CSS.escape(value);
-    }
-    return String(value || '').replace(/"/g, '\\"');
 }
 
 async function createKnowledgeVectorizeTask(title, library = 'knowledge') {
