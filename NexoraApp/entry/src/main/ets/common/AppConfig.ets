@@ -1,7 +1,7 @@
 // AppConfig.ets - 全局常量与领域枚举
 // 只放编译期常量与纯类型，运行期状态一律走 AppState，避免静态变量成为隐藏状态
 
-export const DEFAULT_BACKEND_URL: string = 'https://chat.himpqblog.cn';
+export const DEFAULT_BACKEND_URL: string = 'https://123.60.41.184/';
 
 // ---------- 存储键 ----------
 export class StorageKey {
