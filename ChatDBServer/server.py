@@ -58,7 +58,7 @@ from App.Utils import as_bool as _as_bool, mask_public_api_key as _mask_public_a
 from basis.Timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from basis.Database import safe_read_json, safe_write_json, get_path_lock
 from basis.TokenUsage import read_usage_log_records
-from App.Files import KnowledgeWordExporter
+from App.Files import KnowledgeImageFetcher, KnowledgeWordExporter
 from App.Collaboration import KnowledgeCollabHub
 from App.Utils import append_log_text, init_run_logger, log_event
 from basis.Conversation import asset_store
@@ -2253,32 +2253,6 @@ def _decode_knowledge_image_base64(raw_base64: str, mime_hint: str = "") -> Tupl
     except Exception as e:
         raise ValueError(f"invalid base64: {str(e)}")
     return mime, raw
-
-
-def _download_knowledge_image_from_url(source_url: str) -> Tuple[str, bytes]:
-    raw_url = str(source_url or '').strip()
-    if not raw_url:
-        raise ValueError("source_url is required")
-    parsed = urllib_parse.urlparse(raw_url)
-    if parsed.scheme not in ('http', 'https'):
-        raise ValueError("only http/https source_url is allowed")
-    req = urllib_request.Request(raw_url, headers={"User-Agent": "NexoraKnowledgeImageFetcher/1.0"})
-    try:
-        with urllib_request.urlopen(req, timeout=15) as resp:
-            content_type = str(resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
-            raw = resp.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
-    except Exception as e:
-        raise ValueError(f"download failed: {str(e)}")
-    if len(raw) > _KNOWLEDGE_IMAGE_MAX_BYTES:
-        raise ValueError(f"image too large (max {_KNOWLEDGE_IMAGE_MAX_BYTES} bytes)")
-    mime = content_type if content_type in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
-    if not mime:
-        guessed = _guess_image_mime_from_name(parsed.path)
-        mime = guessed if guessed in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
-    if not mime:
-        raise ValueError("unsupported source image mime")
-    return mime, raw
-
 
 def _persist_knowledge_image_bytes(
     *,
@@ -9541,7 +9515,11 @@ def upload_knowledge_image():
         elif image_base64:
             mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
         elif source_url:
-            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+            mime, raw_bytes = KnowledgeImageFetcher.fetch(
+                source_url,
+                max_bytes=_KNOWLEDGE_IMAGE_MAX_BYTES,
+                allowed_mime_types=_KNOWLEDGE_IMAGE_ALLOWED_MIME,
+            )
         else:
             return jsonify({'success': False, 'message': 'missing image payload'}), 400
 
@@ -10283,7 +10261,11 @@ def public_upload_knowledge_image(username, share_id):
         elif image_base64:
             mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
         elif source_url:
-            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+            mime, raw_bytes = KnowledgeImageFetcher.fetch(
+                source_url,
+                max_bytes=_KNOWLEDGE_IMAGE_MAX_BYTES,
+                allowed_mime_types=_KNOWLEDGE_IMAGE_ALLOWED_MIME,
+            )
         else:
             return jsonify({'success': False, 'message': 'missing image payload'}), 400
 
