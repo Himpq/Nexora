@@ -35,6 +35,7 @@ except Exception:
 
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
+from App.Security.secret_key import load_flask_secret_key
 from App.Core import Model
 from basis.User import User
 from basis.Conversation import ConversationService
@@ -95,35 +96,8 @@ from basis.TokenUsage import iter_papi_token_log_entries
 from flask_sock import Sock
 
 
-def _load_flask_secret_key() -> str:
-    env_key = str(os.environ.get('CHATDB_SECRET_KEY') or os.environ.get('NEXORA_SECRET_KEY') or '').strip()
-
-    if env_key:
-        return env_key
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(base_dir, 'data')
-    secret_path = os.path.join(data_dir, 'flask_secret.key')
-
-    os.makedirs(data_dir, exist_ok=True)
-
-    if os.path.exists(secret_path):
-        with open(secret_path, 'r', encoding='utf-8') as f:
-            existing = f.read().strip()
-
-        if existing:
-            return existing
-
-    secret = secrets.token_urlsafe(48)
-
-    with open(secret_path, 'w', encoding='utf-8') as f:
-        f.write(secret)
-
-    return secret
-
-
 app = Flask(__name__)
-app.secret_key = _load_flask_secret_key()
+app.secret_key = load_flask_secret_key(os.path.dirname(os.path.abspath(__file__)))
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)

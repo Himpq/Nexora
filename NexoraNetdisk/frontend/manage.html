@@ -177,7 +177,7 @@
                 }
                 alert(response);
                 showUserList();
-            }, `./api/manageuser.py?type=deleteuser&user=${username}`);
+            }, './api/manageuser.py', null, 'POST', true, JSON.stringify({type: 'deleteuser', user: username}));
         }
 
         function createUser() {
@@ -195,7 +195,7 @@
                 }
                 alert(response);
                 showUserList();
-            }, `./api/manageuser.py?user=${username}&pwd=${password}&type=create`);
+            }, './api/manageuser.py', null, 'POST', true, JSON.stringify({type: 'create', user: username, pwd: password}));
         }
 
         function showChangePassword(username) {
@@ -225,7 +225,7 @@
                 }
                 alert(response);
                 showUserList();
-            }, `./api/manageuser.py?user=${username}&pwd=${newPassword}&type=changepwd`);
+            }, './api/manageuser.py', null, 'POST', true, JSON.stringify({type: 'changepwd', user: username, pwd: newPassword}));
         }
 
         function showChangeRole(username, currentRole) {
@@ -254,7 +254,7 @@
                 }
                 alert(response);
                 showUserList();
-            }, `./api/manageuser.py?user=${username}&role=${newRole}`);
+            }, './api/manageuser.py', null, 'POST', true, JSON.stringify({user: username, role: newRole}));
         }
 
         function viewUserFiles(username, path = './') {

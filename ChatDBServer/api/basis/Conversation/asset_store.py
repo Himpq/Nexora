@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-from App.Utils import safe_join_path
+from App.Utils import safe_join_path, validate_path_segment
 
 
 IMAGE_MIME_TO_EXT = {
@@ -28,17 +28,24 @@ ASSET_URL_PATTERN = re.compile(r"/api/conversations/([^/\s]+)/assets/([A-Za-z0-9
 
 
 def conversation_asset_root(username: str) -> str:
+    name = validate_path_segment(username, field_name="username")
+
     return safe_join_path(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "data",
         "users",
-        str(username or ""),
+        name,
         "conversation_assets",
     )
 
 
 def conversation_asset_dir(username: str, conversation_id: str) -> str:
-    return safe_join_path(conversation_asset_root(username), str(conversation_id or ""))
+    conversation_segment = validate_path_segment(
+        conversation_id,
+        field_name="conversation_id",
+        strip=False,
+    )
+    return safe_join_path(conversation_asset_root(username), conversation_segment)
 
 
 def conversation_asset_index_path(username: str, conversation_id: str) -> str:
@@ -54,19 +61,31 @@ def load_conversation_asset_index(username: str, conversation_id: str) -> Dict[s
     try:
         with open(idx_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        if not isinstance(data, dict):
-            return {"assets": {}}
-
-        assets = data.get("assets", {})
-
-        if not isinstance(assets, dict):
-            assets = {}
-
-        data["assets"] = assets
-        return data
     except Exception:
         return {"assets": {}}
+
+    if not isinstance(data, dict):
+        return {"assets": {}}
+
+    assets = data.get("assets", {})
+
+    if not isinstance(assets, dict):
+        assets = {}
+
+    asset_dir = conversation_asset_dir(username, conversation_id)
+
+    for metadata in assets.values():
+        if not isinstance(metadata, dict):
+            continue
+
+        file_name = str(metadata.get("file_name") or "").strip()
+
+        if file_name:
+            # Validate persisted paths before returning metadata to filesystem readers.
+            safe_join_path(asset_dir, file_name)
+
+    data["assets"] = assets
+    return data
 
 
 def save_conversation_asset_index(username: str, conversation_id: str, data: Dict[str, Any]) -> None:
@@ -127,25 +146,25 @@ def persist_conversation_image_bytes(
     ext = safe_asset_ext(normalized_mime)
     filename = f"{asset_id}{ext}"
     conv_dir = conversation_asset_dir(username, conversation_id)
+    index_data = load_conversation_asset_index(username, conversation_id)
+    assets_map = index_data.setdefault("assets", {})
     os.makedirs(conv_dir, exist_ok=True)
 
-    file_path = os.path.join(conv_dir, filename)
+    file_path = safe_join_path(conv_dir, filename)
 
     with open(file_path, "wb") as wf:
         wf.write(raw)
 
-    index_data = load_conversation_asset_index(username, conversation_id)
-    assets_map = index_data.setdefault("assets", {})
     created_at = int(time.time())
     meta = metadata if isinstance(metadata, dict) else {}
     assets_map[asset_id] = {
+        **meta,
         "asset_id": asset_id,
         "file_name": filename,
         "mime": normalized_mime,
         "size": len(raw),
         "name": str(name or filename),
         "created_at": created_at,
-        **meta,
     }
     save_conversation_asset_index(username, conversation_id, index_data)
 
@@ -343,7 +362,7 @@ def cleanup_conversation_assets(username: str, conversation_id: str, keep_asset_
         file_name = str((meta or {}).get("file_name") or "").strip()
 
         if file_name:
-            fpath = os.path.join(conv_dir, file_name)
+            fpath = safe_join_path(conv_dir, file_name)
 
             try:
                 if os.path.exists(fpath):

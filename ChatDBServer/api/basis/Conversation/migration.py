@@ -18,7 +18,7 @@ import shutil
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
-from App.Utils import sanitize_assistant_visible_content
+from App.Utils import safe_join_path, sanitize_assistant_visible_content
 
 from .errors import ConversationMigrationError
 from .repository import conversation_base_path, conversation_file_path, conversation_index_path, load_json_compat
@@ -439,7 +439,7 @@ def migrate_conversation_file(username: str, conversation_id: str, *, dry_run: b
 
     ts = str(timestamp or datetime.now().strftime("%Y%m%d_%H%M%S"))
     backup_dir = conversation_migration_backup_dir(username, ts)
-    backup_path = os.path.join(backup_dir, f"{conversation_id}.json")
+    backup_path = safe_join_path(backup_dir, f"{conversation_id}.json")
 
     with get_path_lock(file_path):
         data = load_json_compat(file_path, default=None)
@@ -489,7 +489,7 @@ def migrate_all(username: str, *, dry_run: bool = False) -> Dict[str, Any]:
         if not cid:
             continue
         # 快速检查：已是 v4 跳过
-        data = load_json_compat(os.path.join(base_path, filename), default=None)
+        data = load_json_compat(safe_join_path(base_path, filename), default=None)
         if isinstance(data, dict) and int(data.get("schema_version") or 0) == SCHEMA_VERSION:
             continue
         report = migrate_conversation_file(username, cid, dry_run=dry_run, timestamp=batch_timestamp)

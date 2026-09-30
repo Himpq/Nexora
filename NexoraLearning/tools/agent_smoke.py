@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -44,6 +45,36 @@ PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
 SKIP = "SKIP"
+
+
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_HTTP_OPENER = urllib.request.build_opener(_RejectRedirectHandler)
+
+
+def _validated_base_url(value: str) -> str:
+    base_url = str(value or "").strip().rstrip("/")
+
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("--base-url must be a valid HTTP or HTTPS URL") from exc
+
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("--base-url must be an HTTP or HTTPS URL without credentials, query, or fragment")
+
+    return base_url
 
 
 def _request(base_url: str, method: str, path: str, *, key: str = "", headers: dict | None = None,
@@ -62,7 +93,7 @@ def _request(base_url: str, method: str, path: str, *, key: str = "", headers: d
         req_headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _HTTP_OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             try:
                 return resp.status, json.loads(raw)
@@ -108,6 +139,11 @@ def main() -> int:
     parser.add_argument("--read-only", action="store_true", help="跳过 open-session 等写接口")
     parser.add_argument("--timeout", type=int, default=20)
     args = parser.parse_args()
+
+    try:
+        args.base_url = _validated_base_url(args.base_url)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     results: list[tuple[str, str, str]] = []
     print(f"目标: {args.base_url}  用户: {args.username}\n")

@@ -1150,15 +1150,6 @@ def _papi_debug_len(value: Any) -> int:
     return len(_papi_debug_text(value))
 
 
-def _papi_debug_preview(value: Any, limit: int = 180) -> str:
-    text = _papi_debug_text(value).replace('\r', '\\r').replace('\n', '\\n')
-    limit = max(40, int(limit or 180))
-    if len(text) <= limit:
-        return text
-
-    return text[:limit] + '...'
-
-
 def _papi_build_chat_message_flow_summary(messages: Any) -> Dict[str, Any]:
     rows = messages if isinstance(messages, list) else []
     role_counts: Dict[str, int] = {}
@@ -1181,13 +1172,11 @@ def _papi_build_chat_message_flow_summary(messages: Any) -> Dict[str, Any]:
 
         if tool_call_id:
             output_hash = _papi_debug_hash(item.get('content'))
-            tool_outputs.append(f"{tool_call_id}:len={content_len}:hash={output_hash}")
+            tool_outputs.append(f"{tool_call_id}:len={content_len}")
             output_group = tool_output_groups.setdefault(output_hash, {
-                'hash': output_hash,
                 'count': 0,
                 'len': content_len,
                 'sample_ids': [],
-                'preview': _papi_debug_preview(item.get('content')),
             })
             output_group['count'] = int(output_group.get('count', 0) or 0) + 1
             if len(output_group.get('sample_ids') or []) < 4:
@@ -1203,16 +1192,14 @@ def _papi_build_chat_message_flow_summary(messages: Any) -> Dict[str, Any]:
             arguments = function_obj.get('arguments')
             arguments_hash = _papi_debug_hash(arguments)
             assistant_calls.append(
-                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}:hash={arguments_hash}"
+                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}"
             )
             group_key = f"{name or '-'}:{arguments_hash}"
             call_group = assistant_call_groups.setdefault(group_key, {
                 'name': name or '-',
-                'hash': arguments_hash,
                 'count': 0,
                 'len': _papi_debug_len(arguments),
                 'sample_ids': [],
-                'preview': _papi_debug_preview(arguments),
             })
             call_group['count'] = int(call_group.get('count', 0) or 0) + 1
             if len(call_group.get('sample_ids') or []) < 4:
@@ -1262,12 +1249,12 @@ def _papi_build_responses_input_flow_summary(input_items: Any) -> Dict[str, Any]
 
         if item_type == 'function_call' or (call_id and name and 'output' not in item):
             function_calls.append(
-                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}:hash={_papi_debug_hash(arguments)}"
+                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}"
             )
 
         if item_type == 'function_call_output' or (call_id and 'output' in item):
             function_outputs.append(
-                f"{call_id or '-'}:len={_papi_debug_len(output_value)}:hash={_papi_debug_hash(output_value)}"
+                f"{call_id or '-'}:len={_papi_debug_len(output_value)}"
             )
 
     return {
@@ -1280,6 +1267,7 @@ def _papi_build_responses_input_flow_summary(input_items: Any) -> Dict[str, Any]
 
 
 def _papi_log_debug_summary(label: str, payload: Dict[str, Any]) -> None:
+    # Debug logs contain metadata only; raw messages and tool payloads can contain credentials.
     try:
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
@@ -1326,23 +1314,22 @@ def _papi_log_chat_message_flow(
     )
 
 
-def _papi_request_value_preview(value: Any, limit: int = 500) -> Any:
+def _papi_request_value_metadata(value: Any) -> Any:
     if value is None:
         return None
 
-    if isinstance(value, (str, int, float, bool)):
-        text = str(value)
-        return value if len(text) <= limit else text[:limit] + '...'
+    value_type = type(value).__name__
 
-    try:
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
-        text = str(value)
+    if isinstance(value, (dict, list, tuple, set)):
+        return {
+            'type': value_type,
+            'item_count': len(value),
+        }
 
-    if len(text) <= limit:
-        return value
-
-    return text[:limit] + '...'
+    return {
+        'type': value_type,
+        'length': _papi_debug_len(value),
+    }
 
 
 def _papi_extract_tool_names_from_params(params: Dict[str, Any]) -> List[str]:
@@ -1397,12 +1384,12 @@ def _papi_build_final_request_summary(
         'top_p': params.get('top_p', None),
         'tool_count': len(tools),
         'tool_names': _papi_extract_tool_names_from_params(params),
-        'tool_choice': _papi_request_value_preview(params.get('tool_choice')),
-        'response_format': _papi_request_value_preview(params.get('response_format')),
-        'extra_body': _papi_request_value_preview(params.get('extra_body')),
-        'stream_options': _papi_request_value_preview(params.get('stream_options')),
+        'tool_choice': _papi_request_value_metadata(params.get('tool_choice')),
+        'response_format': _papi_request_value_metadata(params.get('response_format')),
+        'extra_body': _papi_request_value_metadata(params.get('extra_body')),
+        'stream_options': _papi_request_value_metadata(params.get('stream_options')),
         'reasoning_present': 'reasoning' in params,
-        'reasoning': _papi_request_value_preview(params.get('reasoning')),
+        'reasoning': _papi_request_value_metadata(params.get('reasoning')),
         'parallel_tool_calls': params.get('parallel_tool_calls', None),
         'previous_response_id': 'yes' if params.get('previous_response_id') else 'no',
         'message_summary': messages_summary,
@@ -1718,8 +1705,7 @@ def _papi_stream_openai_chat(
                         _papi_log(
                             f"[PAPI_CHAT_TOOL_SNAPSHOT_MISMATCH] model={model_name} "
                             f"call_id={call_id} field=arguments "
-                            f"streamed_len={len(current_args)} final_len={len(fc_args)} "
-                            f"streamed_hash={_papi_debug_hash(current_args)} final_hash={_papi_debug_hash(fc_args)}",
+                            f"streamed_len={len(current_args)} final_len={len(fc_args)}",
                             level='error',
                         )
 
@@ -1816,7 +1802,6 @@ def _papi_stream_openai_chat(
                             'key': key,
                             'name': streamed_tool_names.get(key, ''),
                             'arguments_len': _papi_debug_len(streamed_tool_arguments.get(key, '')),
-                            'arguments_hash': _papi_debug_hash(streamed_tool_arguments.get(key, '')),
                         }
                         for key in sorted(streamed_tool_arguments.keys())
                     ],
@@ -2672,7 +2657,6 @@ def _papi_stream_openai_responses(
                             'call_id': call_id,
                             'name': str(fc.get('name') or ''),
                             'arguments_len': _papi_debug_len(fc.get('arguments')),
-                            'arguments_hash': _papi_debug_hash(fc.get('arguments')),
                         }
                         for call_id, fc in function_calls.items()
                     ],

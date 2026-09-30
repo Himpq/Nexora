@@ -16,16 +16,21 @@ _LOCK = threading.RLock()
 
 def projects_root(cfg: Mapping[str, Any]) -> Path:
     data_dir = Path(str((cfg or {}).get("data_dir") or "data"))
-    root = data_dir / "projects"
+    root = (data_dir / "projects").resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def project_dir(cfg: Mapping[str, Any], project_id: str) -> Path:
     safe_id = _safe_project_id(project_id)
-    if not safe_id:
-        raise ValueError("project_id is required")
-    return projects_root(cfg) / safe_id
+    root = projects_root(cfg)
+    candidate = root / safe_id
+    resolved = candidate.resolve()
+
+    if candidate.is_symlink() or resolved.parent != root:
+        raise ValueError("project path must stay inside the projects directory")
+
+    return resolved
 
 
 def create_project(cfg: Mapping[str, Any], payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -179,14 +184,14 @@ def append_log(cfg: Mapping[str, Any], project_id: str, event_type: str, message
 
 
 def save_artifact(cfg: Mapping[str, Any], project_id: str, name: str, data: Any) -> Path:
-    path = project_dir(cfg, project_id) / name
+    path = _project_child_path(project_dir(cfg, project_id), name)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, data)
     return path
 
 
 def load_artifact(cfg: Mapping[str, Any], project_id: str, name: str) -> Any:
-    return read_json(project_dir(cfg, project_id) / name)
+    return read_json(_project_child_path(project_dir(cfg, project_id), name))
 
 
 def read_json(path: Path) -> Any:
@@ -211,7 +216,29 @@ def _append_log_to_project(project: Dict[str, Any], event_type: str, message: st
 
 def _safe_project_id(project_id: str) -> str:
     text = str(project_id or "").strip()
-    return re.sub(r"[^a-zA-Z0-9_.-]", "", text)[:80]
+
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?", text):
+        raise ValueError("invalid project_id")
+
+    return text
+
+
+def _project_child_path(project_root: Path, relative_path: str) -> Path:
+    raw_path = str(relative_path or "").strip()
+    candidate_path = Path(raw_path)
+    root = project_root.resolve()
+
+    if not raw_path or candidate_path.is_absolute() or ".." in candidate_path.parts:
+        raise ValueError("project file path must be relative to the project")
+
+    target = (root / candidate_path).resolve()
+
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("project file path escapes the project directory") from exc
+
+    return target
 
 
 def _file_area(relative_path: str) -> str:

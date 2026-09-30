@@ -17,6 +17,7 @@ from .secure import (
     resolve_configured_path,
     safe_filename,
     safe_join_path,
+    validate_path_segment,
 )
 from .text_patch import (
     apply_range_replacements,

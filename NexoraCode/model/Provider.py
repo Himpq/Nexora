@@ -21,6 +21,7 @@ import re
 import threading
 import uuid
 from typing import Any, Generator, List, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -501,7 +502,23 @@ class ProviderClient:
         self._cancel_event = threading.Event()
 
     def _completions_url(self) -> str:
-        base = self.config.base_url.rstrip("/")
+        base = str(self.config.base_url or "").strip().rstrip("/")
+
+        try:
+            parsed = urlsplit(base)
+            parsed.port
+        except ValueError as exc:
+            raise ProviderError("Provider base_url is invalid") from exc
+
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ProviderError("Provider base_url must be an http(s) URL without credentials, query, or fragment")
 
         if base.endswith("/chat/completions"):
             return base
@@ -553,11 +570,18 @@ class ProviderClient:
                 json=payload,
                 timeout=self.config.timeout_seconds,
                 stream=True,
+                allow_redirects=False,
             )
         except Exception as exc:
             raise ProviderError(f"Provider 请求失败: {exc}")
 
-        if int(upstream.status_code or 0) >= 400:
+        status_code = int(upstream.status_code or 0)
+
+        if 300 <= status_code < 400:
+            upstream.close()
+            raise ProviderError("Provider redirected; update the configured base_url to the final endpoint")
+
+        if status_code >= 400:
             raise ProviderError(f"Provider HTTP {upstream.status_code}: {read_provider_error_detail(upstream)}")
 
         if not getattr(upstream, "raw", None):

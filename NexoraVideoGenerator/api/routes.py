@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -14,6 +15,7 @@ from core.providers.manim import render_manim_poc
 from core.projects import create_project, get_project, list_project_files, list_projects, project_dir
 
 bp = Blueprint("nexora_video_generator", __name__, url_prefix="/api")
+_LOGGER = logging.getLogger(__name__)
 _CFG: Dict[str, Any] = {}
 
 
@@ -150,6 +152,9 @@ def api_run_project_stage(project_id: str, stage: str):
 @bp.route("/projects/<project_id>/manim", methods=["POST"])
 def api_render_project_manim(project_id: str):
     try:
+        if not request.is_json:
+            raise ValueError("Manim render requests must use application/json")
+
         payload = _request_json()
         result = render_manim_poc(
             _CFG,
@@ -159,8 +164,9 @@ def api_render_project_manim(project_id: str):
         )
     except ValueError as exc:
         return _json_failure(str(exc), 400)
-    except Exception as exc:
-        return _json_failure(str(exc), 500)
+    except Exception:
+        _LOGGER.exception("Manim render failed")
+        return _json_failure("Manim rendering failed", 500)
 
     return jsonify({
         "success": True,

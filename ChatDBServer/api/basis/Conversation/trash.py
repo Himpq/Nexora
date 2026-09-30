@@ -30,7 +30,7 @@ from contextlib import nullcontext
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from App.Utils import safe_join_path
+from App.Utils import safe_join_path, validate_path_segment
 
 from basis.Database import get_path_lock, safe_write_json
 
@@ -73,9 +73,13 @@ def _server_data_root() -> str:
 
 
 def _trash_root(username: str) -> str:
-    name = str(username or "").strip()
-    if not name:
+    if not str(username or "").strip():
         raise ConversationValidationError("username 不能为空")
+
+    try:
+        name = validate_path_segment(username, field_name="username")
+    except ValueError as exc:
+        raise ConversationValidationError("username 非法") from exc
 
     return safe_join_path(_server_data_root(), "users", name, "trash")
 
@@ -103,6 +107,17 @@ def _trash_entry_dir(username: str, trash_id: str) -> str:
     if "/" in tid or "\\" in tid or ".." in tid:
         raise ConversationValidationError(f"trash_id 非法: {tid!r}")
     return safe_join_path(_trash_conversations_dir(username), tid)
+
+
+def _resolve_trash_asset_path(root: str, file_name: str, conversation_id: str = "") -> str:
+    """Resolve an archived attachment path and reject paths outside its asset directory."""
+    try:
+        return safe_join_path(root, file_name)
+    except ValueError as exc:
+        raise ConversationValidationError(
+            "回收站附件路径非法",
+            conversation_id=conversation_id,
+        ) from exc
 
 
 def _trash_legacy_file_path(username: str, trash_id: str) -> str:
@@ -1058,7 +1073,7 @@ class ConversationTrashService:
                     if not file_name:
                         continue
 
-                    asset_path = safe_join_path(assets_dir_in_trash, file_name) if os.path.isdir(assets_dir_in_trash) else os.path.join(assets_dir_in_trash, file_name)
+                    asset_path = _resolve_trash_asset_path(assets_dir_in_trash, file_name, target_id)
 
                     if not os.path.isfile(asset_path):
                         raise ConversationValidationError(
@@ -1116,11 +1131,11 @@ class ConversationTrashService:
                     if isinstance(meta, dict):
                         fname = str(meta.get("file_name") or "").strip()
                         if fname:
-                            fpath = safe_join_path(asset_dir_active, fname) if os.path.isdir(asset_dir_active) else os.path.join(asset_dir_active, fname)
+                            fpath = _resolve_trash_asset_path(asset_dir_active, fname, target_id)
                             if not os.path.isfile(fpath):
                                 # 检查 trash 中是否有
                                 trash_assets = os.path.join(_trash_entry_dir(username, trash_id), "assets") if not is_legacy else ""
-                                trash_fpath = os.path.join(trash_assets, fname) if trash_assets else ""
+                                trash_fpath = _resolve_trash_asset_path(trash_assets, fname, target_id) if trash_assets else ""
                                 if not trash_fpath or not os.path.isfile(trash_fpath):
                                     raise ConversationValidationError(
                                         f"回收站会话附件缺失，数据不完整: {aid}",

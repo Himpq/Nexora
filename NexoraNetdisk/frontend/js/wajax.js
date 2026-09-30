@@ -19,7 +19,7 @@ function getLowSize(str){
     return i+"B";
 }
 SENDING = [];
-function newCallback(callback, sendto, arg1, type, async){
+function newCallback(callback, sendto, arg1, type, async, body){
     type = type ? type : "GET";
     async= async !== undefined ? async : true;
 
@@ -44,5 +44,8 @@ function newCallback(callback, sendto, arg1, type, async){
         // console.log(SENDING[ID].readyState, SENDING[ID].status)
     };
     SENDING[ID].open(type, sendto, async);
-    SENDING[ID].send();
+    if (body) {
+        SENDING[ID].setRequestHeader("Content-Type", "application/json");
+    }
+    SENDING[ID].send(body || null);
 }

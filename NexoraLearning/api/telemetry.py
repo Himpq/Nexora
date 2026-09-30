@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from flask import Blueprint, jsonify, request
+from core.user.user import _contained_user_dir
 
 telemetry_bp = Blueprint("telemetry", __name__, url_prefix="/api/telemetry")
 
@@ -107,7 +108,7 @@ def _data_dir() -> Path:
 # ────────────────────────────────────────────────────────────
 
 def _telemetry_dir(user_id: str) -> Path:
-    return _data_dir() / "users" / user_id / "telemetry"
+    return _contained_user_dir(_data_dir() / "users", user_id) / "telemetry"
 
 
 def _csv_path(user_id: str, stream: str) -> Path:

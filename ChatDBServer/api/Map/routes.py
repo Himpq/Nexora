@@ -11,7 +11,7 @@ map_service 配置经 configure_map_config_routes() 注入；未装配即处理�
 
 from typing import Any, Dict
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from basis.Permission import coerce_bool_flag, require_admin, require_login
 
@@ -330,8 +330,9 @@ def get_map_provider_config():
             'success': True,
             'map_provider': _build_map_provider_config_payload(cfg),
         })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('Failed to read map provider configuration')
+        return jsonify({'success': False, 'message': '地图配置读取失败'}), 500
 
 
 @map_config_bp.route('/api/admin/map/provider', methods=['GET'])
@@ -345,8 +346,9 @@ def admin_get_map_provider_config():
             'success': True,
             'map_provider': _build_map_provider_config_payload(cfg, include_admin_config=True),
         })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception:
+        current_app.logger.exception('Failed to read admin map provider configuration')
+        return jsonify({'success': False, 'message': '地图配置读取失败'}), 500
 
 
 @map_config_bp.route('/api/admin/map/provider', methods=['POST', 'PUT'])
@@ -389,7 +391,9 @@ def admin_update_map_provider_config():
             'message': message,
             'map_provider': _build_map_provider_config_payload(saved, include_admin_config=True),
         })
-    except ValueError as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    except ValueError as exc:
+        current_app.logger.info('Rejected invalid map provider configuration: %s', exc)
+        return jsonify({'success': False, 'message': '地图 provider 配置无效'}), 400
+    except Exception:
+        current_app.logger.exception('Failed to save map provider configuration')
+        return jsonify({'success': False, 'message': '地图配置保存失败'}), 500

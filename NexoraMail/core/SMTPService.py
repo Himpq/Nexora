@@ -102,17 +102,52 @@ def _safe_unlink(path: Optional[str]) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class FileBackedMailPayload:
+    path: str
+
+
 def _mail_payload_to_bytes(payload: Any) -> bytes:
-    """Read a file payload byte-for-byte or encode an in-memory mail as UTF-8."""
+    """Read only explicitly file-backed mail payloads from disk."""
     if isinstance(payload, (bytes, bytearray)):
         return bytes(payload)
 
-    if isinstance(payload, str) and os.path.isfile(payload):
-        with open(payload, 'rb') as payload_file:
+    if isinstance(payload, FileBackedMailPayload):
+        with open(payload.path, 'rb') as payload_file:
             return payload_file.read()
 
     text = str(payload if payload is not None else '')
     return text.encode('utf-8', errors='surrogateescape')
+
+
+def _send_mail_payload(conn_obj: Any, payload: Any) -> None:
+    """Send mail data and its SMTP terminator without interpreting text as a path."""
+    if isinstance(payload, FileBackedMailPayload):
+        with open(payload.path, 'rb') as payload_file:
+            while True:
+                chunk = payload_file.read(16 * 1024)
+
+                if not chunk:
+                    break
+
+                conn_obj.send(chunk)
+    else:
+        if isinstance(payload, (bytes, bytearray)):
+            content = bytes(payload)
+
+            if not content.endswith(b'\r\n'):
+                content += b'\r\n'
+
+            conn_obj.send(content)
+        else:
+            text = payload if isinstance(payload, str) else str(payload if payload is not None else '')
+
+            if not text.endswith("\r\n"):
+                text += "\r\n"
+
+            conn_obj.send(text.encode())
+
+    conn_obj.send(b"\r\n.\r\n")
 
 
 def _write_mail_content(path: str, payload: Any) -> None:
@@ -856,7 +891,7 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
         try:
             for rcpt in recipients:
                 try:
-                    result = sendMail(state.mail_from, rcpt, data_file, state, user_group, suppressError=state.suppress_error_mail)
+                    result = sendMail(state.mail_from, rcpt, data_file, state, user_group, suppressError=state.suppress_error_mail, file_backed=True)
                     if isinstance(result, tuple):
                         ok, attempts = result
                     else:
@@ -1040,13 +1075,14 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
         _safe_close(connfile)
         _safe_close(conn)
 
-def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup, suppressError=False):
+def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup, suppressError=False, file_backed=False):
     # 检查当前会话是否已认证并获取用户名
     auth_user = None
     if session and session.user:
         auth_user = session.user.get('username')
 
     session_peer = getattr(session, 'peer', 'unknown') if session else 'unknown'
+    content_payload = FileBackedMailPayload(data) if file_backed else data
 
     # Helper: check permission for auth_user
     def has_perm(u, perm):
@@ -1077,7 +1113,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             mail_dir = os.path.join(sent_root, mail_id)
             os.makedirs(mail_dir, exist_ok=True)
 
-            _write_mail_content(os.path.join(mail_dir, 'content.txt'), data)
+            _write_mail_content(os.path.join(mail_dir, 'content.txt'), content_payload)
 
             with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
                 sent_info = {
@@ -1116,7 +1152,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
         os.makedirs(mail_dir, exist_ok=True)
 
         # 如果 data 表示一个文件路径，则按原始字节复制，避免破坏 MIME/charset 信息。
-        _write_mail_content(os.path.join(mail_dir, 'content.txt'), data)
+        _write_mail_content(os.path.join(mail_dir, 'content.txt'), content_payload)
 
         mail_info = {
             'sender': sender,
@@ -1243,7 +1279,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
         # authorized to relay
         loginfo.write(f"[{sender}][SMTP] Attempting relay for {sender} -> {recipient}")
         try:
-            ok, relay_attempts = mailRelay(sender, recipient, data, userGroup, suppressError=suppressError)
+            ok, relay_attempts = mailRelay(sender, recipient, data, userGroup, suppressError=suppressError, file_backed=file_backed)
             # attach relay_attempts to outer scope for DSN
             try_relay.attempts = relay_attempts
             if ok:
@@ -1262,7 +1298,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             return False
         if auth_user and has_perm(auth_user, 'sendoutside'):
             loginfo.write(f"[{sender}][SMTP] Attempting direct delivery for {recipient}")
-            direct_res = deliver_external(sender, recipient, data, userGroup, suppressError=suppressError)
+            direct_res = deliver_external(sender, recipient, data, userGroup, suppressError=suppressError, file_backed=file_backed)
             # deliver_external may return (ok, attempts) or False
             if isinstance(direct_res, tuple):
                 ok, direct_attempts = direct_res
@@ -1769,7 +1805,7 @@ def get_mx_hosts(domain):
             return []
 
 
-def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, suppressError=False):
+def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, suppressError=False, file_backed=False):
     """直接根据 MX/A 记录对目标服务器投递邮件。
 
     行为：
@@ -1895,28 +1931,7 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
                             raise Exception('DATA command failed: ' + resp.strip())
 
                         # 发送邮件内容（支持文件路径的流式发送，确保以 CRLF . CRLF 结尾）
-                        def send_message_from_source(conn_obj, source):
-                            # source 可以是文件路径或字符串
-                            try:
-                                if isinstance(source, str) and os.path.exists(source):
-                                    with open(source, 'rb') as sf:
-                                        while True:
-                                            chunk = sf.read(16*1024)
-                                            if not chunk:
-                                                break
-                                            conn_obj.send(chunk)
-                                else:
-                                    txt = source if isinstance(source, str) else str(source)
-                                    if not txt.endswith("\r\n"):
-                                        txt = txt + "\r\n"
-                                    conn_obj.send(txt.encode())
-                                # end marker
-                                conn_obj.send(b"\r\n.\r\n")
-                                return True
-                            except Exception as e:
-                                raise
-
-                        send_message_from_source(conn, data)
+                        _send_mail_payload(conn, FileBackedMailPayload(data) if file_backed else data)
                         resp = connfile.readline()
                         if not resp.startswith('250'):
                             raise Exception('Mail delivery failed: ' + resp.strip())
@@ -1967,7 +1982,7 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
     if perms and 'sendrelay' in perms and mailrelay_enabled:
         loginfo.write(f"[{sender}][SMTP] Attempting fallback relay after MX failures for {recipient}")
         try:
-            ok, relay_attempts = mailRelay(sender, recipient, data, userGroup, suppressError=suppressError)
+            ok, relay_attempts = mailRelay(sender, recipient, data, userGroup, suppressError=suppressError, file_backed=file_backed)
             attempts.extend(relay_attempts or [])
             if ok:
                 # 构造通知邮件内容（HTML样式），告知用户邮件通过中继成功发送
@@ -2016,7 +2031,7 @@ def deliver_external(sender, recipient, data, userGroup:UserManager.UserGroup, s
     return False, attempts
 
 
-def mailRelay(sender, recipient, data, userGroup:UserManager.UserGroup, suppressError=False):
+def mailRelay(sender, recipient, data, userGroup:UserManager.UserGroup, suppressError=False, file_backed=False):
     """邮件中继功能：使用配置中的 MailRelay 设置，将邮件发送到上游中继服务器。"""
     attempts = []
     services = conf.get('SMTPServices', {})
@@ -2185,26 +2200,7 @@ def mailRelay(sender, recipient, data, userGroup:UserManager.UserGroup, suppress
         if not resp.startswith('354'):
             raise Exception('DATA command failed: ' + resp.strip())
 
-        def send_message_from_source(conn_obj, source):
-            try:
-                if isinstance(source, str) and os.path.exists(source):
-                    with open(source, 'rb') as sf:
-                        while True:
-                            chunk = sf.read(16*1024)
-                            if not chunk:
-                                break
-                            conn_obj.send(chunk)
-                else:
-                    txt = source if isinstance(source, str) else str(source)
-                    if not txt.endswith("\r\n"):
-                        txt = txt + "\r\n"
-                    conn_obj.send(txt.encode())
-                conn_obj.send(b"\r\n.\r\n")
-                return True
-            except Exception:
-                raise
-
-        send_message_from_source(conn, data)
+        _send_mail_payload(conn, FileBackedMailPayload(data) if file_backed else data)
         resp = connfile.readline()
         if not resp.startswith('250'):
             raise Exception('Mail delivery failed: ' + resp.strip())

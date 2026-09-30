@@ -51,6 +51,24 @@ def safe_filename(value: Any, *, default: str = "untitled.txt", max_len: int = 1
     return name
 
 
+def validate_path_segment(
+    value: Any,
+    *,
+    field_name: str = "path segment",
+    strip: bool = True,
+) -> str:
+    """Validate that a value stays within one cross-platform filesystem path segment."""
+    segment = normalize_text(value, default="", strip=strip, collapse_whitespace=False)
+
+    if not segment:
+        raise ValueError(f"{field_name} is required")
+
+    if segment in {".", ".."} or any(char in segment for char in ("/", "\\", ":", "\0")):
+        raise ValueError(f"{field_name} contains invalid path characters")
+
+    return segment
+
+
 def safe_join_path(root: str, *parts: Any) -> str:
     root_path = os.path.abspath(normalize_text(root, default="", collapse_whitespace=False))
     if not root_path:

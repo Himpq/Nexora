@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Generator, Optional, Tuple
 
+from App.Utils import safe_join_path, validate_path_segment
 from basis.Database import get_path_lock, safe_write_json
 
 from .errors import ConversationNotFoundError, ConversationValidationError
@@ -32,11 +33,25 @@ def _server_data_root() -> str:
     raise ConversationValidationError(f"数据根目录不存在: {candidate!r}，请检查部署路径")
 
 
-def conversation_base_path(username: str) -> str:
-    name = str(username or "").strip()
-    if not name:
+def _conversation_user_root(username: str) -> str:
+    if not str(username or "").strip():
         raise ConversationValidationError("username 不能为空")
-    return os.path.join(_server_data_root(), "users", name, "conversations")
+
+    try:
+        name = validate_path_segment(username, field_name="username")
+    except ValueError as exc:
+        raise ConversationValidationError("username 非法") from exc
+
+    users_root = safe_join_path(_server_data_root(), "users")
+
+    try:
+        return safe_join_path(users_root, name)
+    except ValueError as exc:
+        raise ConversationValidationError("username 非法") from exc
+
+
+def conversation_base_path(username: str) -> str:
+    return safe_join_path(_conversation_user_root(username), "conversations")
 
 
 def conversation_file_path(username: str, conversation_id: str) -> str:
@@ -47,19 +62,18 @@ def conversation_file_path(username: str, conversation_id: str) -> str:
     # 防止路径穿越
     if "/" in cid or "\\" in cid or ".." in cid:
         raise ConversationValidationError(f"conversation_id 非法: {cid!r}")
-    return os.path.join(base, f"{cid}.json")
+    return safe_join_path(base, f"{cid}.json")
 
 
 def conversation_index_path(username: str) -> str:
-    return os.path.join(conversation_base_path(username), "conversation_index.json")
+    return safe_join_path(conversation_base_path(username), "conversation_index.json")
 
 
 def conversation_migration_backup_dir(username: str, timestamp: str | None = None) -> str:
-    base = os.path.join(_server_data_root(), "users", str(username or "").strip(), "conversation_migrations")
     ts = str(timestamp or datetime.now().strftime("%Y%m%d_%H%M%S"))
     # 保证目录名安全
     safe_ts = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in ts)
-    return os.path.join(base, safe_ts)
+    return safe_join_path(_conversation_user_root(username), "conversation_migrations", safe_ts)
 
 
 def ensure_conversation_dir(username: str) -> str:
@@ -140,6 +154,6 @@ def backup_conversation_file(username: str, conversation_id: str, backup_dir: st
     if not os.path.exists(src):
         raise ConversationNotFoundError(f"对话不存在: {conversation_id}", conversation_id=conversation_id)
     os.makedirs(backup_dir, exist_ok=True)
-    dst = os.path.join(backup_dir, f"{conversation_id}.json")
+    dst = safe_join_path(backup_dir, f"{conversation_id}.json")
     shutil.copy2(src, dst)
     return dst

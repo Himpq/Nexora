@@ -13,6 +13,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List
 
+from App.Utils import safe_join_path
 from basis.Database import get_path_lock, safe_write_json
 
 from .repository import (
@@ -177,7 +178,7 @@ def rebuild_index(username: str) -> Dict[str, Any]:
             cid = filename[:-5].strip()
             if not cid:
                 continue
-            file_path = os.path.join(base_path, filename)
+            file_path = safe_join_path(base_path, filename)
             data = load_json_compat(file_path, default=None)
             if not isinstance(data, dict):
                 continue

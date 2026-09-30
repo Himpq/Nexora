@@ -450,11 +450,14 @@ class ExaSearchProvider(SearchProvider):
                 timeout=timeout,
             )
         except Exception as exc:
-            logger.error(f"Exa usage request failed ({usage_endpoint}): {exc}")
+            logger.error(
+                "Exa usage request failed (exception_type=%s)",
+                type(exc).__name__,
+            )
             return {
                 "ok": False,
                 "provider": self.provider_name,
-                "error": f"request failed: {exc}",
+                "error": f"request failed ({type(exc).__name__})",
                 "endpoint": usage_endpoint,
             }
 

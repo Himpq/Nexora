@@ -33,7 +33,6 @@ def get_all_users():
             with open(os.path.join(user_dir, filename), 'r') as f:
                 data = json.load(f)
                 users[un] = {
-                    "password": sha2(data["password"]),
                     "path": netdisk_rootdir + un,
                     "role": data["role"]
                 }

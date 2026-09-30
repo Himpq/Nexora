@@ -9,7 +9,7 @@ NEXORA_MAIL_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NEXORA_MAIL_ROOT))
 
 from api.server import _extract_mail_content, _load_mail_entry
-from core.SMTPService import _mail_payload_to_bytes
+from core.SMTPService import FileBackedMailPayload, _mail_payload_to_bytes
 
 
 class MailEncodingTests(unittest.TestCase):
@@ -83,7 +83,7 @@ class MailEncodingTests(unittest.TestCase):
                 path = payload_file.name
                 payload_file.write(payload)
 
-            self.assertEqual(_mail_payload_to_bytes(path), payload)
+            self.assertEqual(_mail_payload_to_bytes(FileBackedMailPayload(path)), payload)
         finally:
             if path and os.path.exists(path):
                 os.unlink(path)

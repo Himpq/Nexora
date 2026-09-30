@@ -109,9 +109,21 @@ def render_manim_script(
     lesson_spec: Mapping[str, Any],
 ) -> Dict[str, Any]:
     render_cfg = cfg.get("render") if isinstance(cfg.get("render"), dict) else {}
+    quality = str(render_cfg.get("manim_quality", "-qm")).strip()
+    if quality not in {"-ql", "-qm", "-qh", "-qk"}:
+        raise ValueError("Unsupported Manim quality")
+
     manim_command = render_cfg.get("manim_command")
-    command = [str(item) for item in manim_command] if isinstance(manim_command, list) and manim_command else ["manim"]
-    quality = str(render_cfg.get("manim_quality") or "-qm").strip()
+
+    if (
+        not isinstance(manim_command, list)
+        or not manim_command
+        or any(not isinstance(item, str) or not item.strip() for item in manim_command)
+    ):
+        raise ValueError("render.manim_command must be a non-empty command list")
+
+    # This is a trusted local configuration value and remains an argv list, never a shell string.
+    command = [item.strip() for item in manim_command]
     media_dir = project_dir(cfg, project_id) / "source" / "manim" / "media"
     output_name = _output_name(lesson_spec)
     command.extend([

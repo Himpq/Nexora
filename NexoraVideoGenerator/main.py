@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 from flask import Flask, jsonify, send_from_directory
-from flask_cors import CORS
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -49,6 +48,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "height": 1080,
         "fps": 30,
         "ffmpeg_path": "ffmpeg",
+        "manim_command": ["manim"],
     },
 }
 
@@ -90,7 +90,6 @@ def create_app():
 
     app = Flask(__name__)
     app.json.ensure_ascii = False
-    CORS(app)
 
     from api.routes import bp, init_routes
     from api.template_routes import bp as template_bp, init_template_routes
@@ -123,4 +122,4 @@ if __name__ == "__main__":
     debug = bool(cfg.get("debug", False))
     print(f"[NexoraVideoGenerator] Running on http://127.0.0.1:{port}")
     print(f"[NexoraVideoGenerator] Config: {CONFIG_PATH}")
-    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+    app.run(host="127.0.0.1", port=port, debug=debug, threaded=True)

@@ -1,15 +1,17 @@
 ﻿import json
 import os
 import re
+import secrets
 import shutil
 import time
 import hmac
 from functools import wraps
-from hashlib import sha1, sha256
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
@@ -27,21 +29,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "bootstrap_admin": {
         "enabled": True,
         "username": "admin",
-        "password": "admin123",
+        "password": "",
         "role": "admin"
     },
     "federated_auth": {
         "enabled": False,
-        "shared_secret": "change-this-federation-secret",
+        "shared_secret": "",
         "max_skew_seconds": 120,
         "auto_create_user": True,
         "default_role": "normal"
     },
     "integration": {
         "enabled": False,
-        "api_keys": [
-            "change-this-integration-key"
-        ],
+        "api_keys": [],
         "allow_user_create": True
     }
 }
@@ -91,15 +91,39 @@ def ensure_dirs() -> None:
 
 
 def _valid_username(username: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9_\-\.]{1,64}", username or ""))
+    value = username or ""
+    return bool(
+        re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value)
+        and value not in {".", ".."}
+        and not value.endswith(".")
+    )
 
 
 def _user_file(username: str) -> Path:
-    return USERS_ROOT / f"{username}.json"
+    if not _valid_username(username):
+        raise ValueError("Invalid username")
+
+    root = USERS_ROOT.resolve()
+    candidate = root / f"{username}.json"
+    user_file = candidate.resolve()
+
+    if candidate.is_symlink() or user_file.parent != root:
+        raise ValueError("User file path escapes users root")
+
+    return user_file
 
 
 def _user_root(username: str) -> Path:
-    root = (STORAGE_ROOT / username).resolve()
+    if not _valid_username(username):
+        raise ValueError("Invalid username")
+
+    storage_root = STORAGE_ROOT.resolve()
+    candidate = storage_root / username
+    root = candidate.resolve()
+
+    if candidate.is_symlink() or root.parent != storage_root:
+        raise ValueError("User directory escapes storage root")
+
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -117,6 +141,9 @@ def list_users() -> Dict[str, Dict[str, Any]]:
 
 
 def get_user(username: str) -> Optional[Dict[str, Any]]:
+    if not _valid_username(username):
+        return None
+
     fp = _user_file(username)
     if not fp.exists():
         return None
@@ -124,13 +151,46 @@ def get_user(username: str) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
-def save_user(username: str, password: str, role: str) -> None:
-    payload = {
-        "password": password,
-        "role": role
-    }
+def _write_user_record(username: str, user: Dict[str, Any]) -> None:
     with _user_file(username).open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(user, f, ensure_ascii=False, indent=2)
+
+
+def _set_user_password(username: str, user: Dict[str, Any], password: str) -> None:
+    user["password_hash"] = generate_password_hash(password, method="scrypt")
+    user.pop("password", None)
+    _write_user_record(username, user)
+
+
+def _verify_user_password(username: str, user: Dict[str, Any], password: str) -> bool:
+    if "password_hash" in user:
+        password_hash = user.get("password_hash")
+
+        if not isinstance(password_hash, str) or not password_hash:
+            return False
+
+        try:
+            is_valid = check_password_hash(password_hash, password)
+        except (TypeError, ValueError):
+            return False
+
+        if is_valid and "password" in user:
+            user.pop("password", None)
+            _write_user_record(username, user)
+
+        return is_valid
+
+    legacy_password = user.get("password")
+
+    if not isinstance(legacy_password, str) or not hmac.compare_digest(legacy_password, password):
+        return False
+
+    _set_user_password(username, user, password)
+    return True
+
+
+def save_user(username: str, password: str, role: str) -> None:
+    _set_user_password(username, {"role": role}, password)
 
 
 def delete_user(username: str) -> None:
@@ -144,16 +204,14 @@ def ensure_admin_user() -> None:
     if not boot.get("enabled", True):
         return
     username = boot.get("username") or "admin"
-    password = boot.get("password") or "admin123"
+    password = boot.get("password") or ""
     role = boot.get("role") or "admin"
     if not _valid_username(username):
         return
+    if not password:
+        return
     if get_user(username) is None:
         save_user(username, password, role)
-
-
-def _sha1_text(text: str) -> str:
-    return sha1((text or "").encode("utf-8")).hexdigest()
 
 
 def _hmac_sha256(secret: str, text: str) -> str:
@@ -215,7 +273,7 @@ def integration_required(func):
 
 def _ensure_user_for_federation(username: str, role: str = "normal") -> None:
     if get_user(username) is None:
-        random_pwd = sha256(f"{username}:{time.time()}".encode("utf-8")).hexdigest()
+        random_pwd = secrets.token_urlsafe(32)
         save_user(username, random_pwd, role)
         _user_root(username)
 
@@ -462,7 +520,7 @@ def api_login() -> Response:
     password = str(data.get("password") or "")
 
     user = get_user(username)
-    if not user or user.get("password") != password:
+    if not user or not _verify_user_password(username, user, password):
         return jsonify({"success": False, "message": "Invalid username or password"}), 401
 
     session["username"] = username
@@ -766,9 +824,7 @@ def api_admin_change_password(username: str) -> Response:
     if not new_password:
         return jsonify({"success": False, "message": "Password is required"}), 400
 
-    user["password"] = new_password
-    with _user_file(username).open("w", encoding="utf-8") as f:
-        json.dump(user, f, ensure_ascii=False, indent=2)
+    _set_user_password(username, user, new_password)
 
     return jsonify({"success": True})
 
@@ -1109,7 +1165,7 @@ def legacy_getmusiccover() -> Response:
     return jsonify({"error": "cover extraction not implemented"})
 
 
-@app.route("/api/manageuser.py", methods=["GET"])
+@app.route("/api/manageuser.py", methods=["GET", "POST"])
 def legacy_manageuser() -> Response:
     ident = current_identity()
     if not ident:
@@ -1117,17 +1173,27 @@ def legacy_manageuser() -> Response:
     if ident.get("role") != "admin":
         return Response("You dont have permission to view this page.", mimetype="text/plain")
 
-    req_type = request.args.get("type", "")
-    dst_user = (request.args.get("user") or "").strip()
-    password = request.args.get("pwd") or ""
-    role = request.args.get("role")
+    if request.method == "GET":
+        request_data = request.args
+    else:
+        request_data = request.get_json(silent=True) or request.form
+
+    if not hasattr(request_data, "get"):
+        return Response("Invalid request", status=400, mimetype="text/plain")
+
+    req_type = str(request_data.get("type") or "")
+    dst_user = str(request_data.get("user") or "").strip()
+    password = str(request_data.get("pwd") or "")
+    role = request_data.get("role")
+
+    if req_type != "alluser" and request.method != "POST":
+        return Response("Method not allowed", status=405, mimetype="text/plain")
 
     if req_type == "alluser":
         users = list_users()
         payload = {}
         for uname, meta in users.items():
             payload[uname] = {
-                "password": _sha1_text(meta.get("password") or ""),
                 "path": str(_user_root(uname)),
                 "role": meta.get("role", "normal")
             }
@@ -1143,12 +1209,12 @@ def legacy_manageuser() -> Response:
         return Response("User created", mimetype="text/plain")
 
     if req_type == "changepwd":
+        if not password:
+            return Response("Password is required", status=400, mimetype="text/plain")
         user = get_user(dst_user)
         if not user:
             return Response("User does not exist", mimetype="text/plain")
-        user["password"] = password
-        with _user_file(dst_user).open("w", encoding="utf-8") as f:
-            json.dump(user, f, ensure_ascii=False, indent=2)
+        _set_user_password(dst_user, user, password)
         return Response("Password changed", mimetype="text/plain")
 
     if role:
