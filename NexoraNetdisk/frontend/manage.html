@@ -260,90 +260,197 @@
         function viewUserFiles(username, path = './') {
             currentUser = username;
             currentPath = path;
-            
+
+            const query = new URLSearchParams({ user: username, dir: path });
+
             newCallback(function(response, xhr) {
                 if (xhr.status !== 200 || xhr.readyState !== 4) {
                     return;
                 }
-                const data = JSON.parse(response);
-                
-                let html = `
-                    <h4>${username}的文件</h4>
-                    <button class="btn btn-success mb-3" onclick="showUploadDialog('${username}', '${path}')">
-                        <i class="fa fa-upload"></i> 上传文件
-                    </button>
-                    <nav aria-label="breadcrumb">
-                        <ol class="breadcrumb">
-                            <li class="breadcrumb-item">
-                                <a href="#" onclick="viewUserFiles('${username}')">根目录</a>
-                            </li>`;
 
-                if(path !== './') {
-                    const pathParts = path.split('/').filter(p => p);
-                    let currentPath = './';
-                    pathParts.forEach((part, index) => {
-                        if (part == ".") return;
-                        currentPath += part + '/';
-                        html += `
-                            <li class="breadcrumb-item">
-                                ${index === pathParts.length - 1 ? 
-                                    part : 
-                                    `<a href="#" onclick="viewUserFiles('${username}', '${currentPath}')">${part}</a>`
-                                }
-                            </li>`;
+                const data = JSON.parse(response);
+
+                const mainContent = document.getElementById('mainContent');
+                mainContent.innerHTML = '';
+
+                const heading = document.createElement('h4');
+                heading.textContent = username + '的文件';
+                mainContent.appendChild(heading);
+
+                const uploadButton = document.createElement('button');
+                uploadButton.type = 'button';
+                uploadButton.className = 'btn btn-success mb-3';
+                uploadButton.addEventListener('click', function() {
+                    showUploadDialog(username, path);
+                });
+
+                const uploadIcon = document.createElement('i');
+                uploadIcon.className = 'fa fa-upload';
+                uploadButton.appendChild(uploadIcon);
+                uploadButton.appendChild(document.createTextNode(' 上传文件'));
+                mainContent.appendChild(uploadButton);
+
+                const navigation = document.createElement('nav');
+                navigation.setAttribute('aria-label', 'breadcrumb');
+
+                const breadcrumb = document.createElement('ol');
+                breadcrumb.className = 'breadcrumb';
+
+                const rootItem = document.createElement('li');
+                rootItem.className = 'breadcrumb-item';
+
+                const rootLink = document.createElement('a');
+                rootLink.href = '#';
+                rootLink.textContent = '根目录';
+                rootLink.addEventListener('click', function(event) {
+                    event.preventDefault();
+                    viewUserFiles(username);
+                });
+
+                rootItem.appendChild(rootLink);
+                breadcrumb.appendChild(rootItem);
+
+                if (path !== './') {
+                    const pathParts = path.split('/').filter(function(part) {
+                        return part;
+                    });
+                    let breadcrumbPath = './';
+
+                    pathParts.forEach(function(part, index) {
+                        if (part === '.') {
+                            return;
+                        }
+
+                        breadcrumbPath += part + '/';
+                        const targetPath = breadcrumbPath;
+
+                        const item = document.createElement('li');
+                        item.className = 'breadcrumb-item';
+
+                        if (index === pathParts.length - 1) {
+                            item.textContent = part;
+                        } else {
+                            const link = document.createElement('a');
+                            link.href = '#';
+                            link.textContent = part;
+                            link.addEventListener('click', function(event) {
+                                event.preventDefault();
+                                viewUserFiles(username, targetPath);
+                            });
+                            item.appendChild(link);
+                        }
+
+                        breadcrumb.appendChild(item);
                     });
                 }
 
-                html += `
-                        </ol>
-                    </nav>
-                    <div class="file-list">`;
+                navigation.appendChild(breadcrumb);
+                mainContent.appendChild(navigation);
 
-                if(path !== './') {
-                    html += `
-                        <div class="file-item" onclick="handleBackClick()">
-                            <i class="fa fa-arrow-up file-icon"></i>
-                            返回上级目录
-                        </div>`;
+                const fileList = document.createElement('div');
+                fileList.className = 'file-list';
+
+                if (path !== './') {
+                    const backItem = document.createElement('div');
+                    backItem.className = 'file-item';
+                    backItem.addEventListener('click', handleBackClick);
+
+                    const backIcon = document.createElement('i');
+                    backIcon.className = 'fa fa-arrow-up file-icon';
+                    backItem.appendChild(backIcon);
+                    backItem.appendChild(document.createTextNode(' 返回上级目录'));
+                    fileList.appendChild(backItem);
                 }
-                
-                for(let key in data) {
+
+                Object.keys(data).forEach(function(key) {
                     const item = data[key];
                     const icon = item.type ? 'fa-file' : 'fa-folder';
-                    
-                    html += `
-                        <div class="file-item" onclick="handleFileClick('${item.name}', ${item.type})">
-                            <i class="fa ${icon} file-icon"></i>
-                            ${item.name}
-                            ${item.type ? `
-                                <a href="./api/download.py?user=${username}&filepath=${path}${encodeURIComponent(item.name)}" 
-                                   class="btn btn-sm btn-primary ms-2">
-                                    <i class="fa fa-download"></i> 下载
-                                </a>` : ''}
-                        </div>`;
-                }
-                
-                html += `</div>`;
-                document.getElementById('mainContent').innerHTML = html;
-            }, `./api/getlistdir.py?user=${username}&dir=${path}`);
+
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.addEventListener('click', function() {
+                        handleFileClick(item.name, item.type);
+                    });
+
+                    const fileIcon = document.createElement('i');
+                    fileIcon.className = 'fa ' + icon + ' file-icon';
+                    fileItem.appendChild(fileIcon);
+                    fileItem.appendChild(document.createTextNode(' ' + item.name));
+
+                    if (item.type) {
+                        const downloadParams = new URLSearchParams({
+                            user: username,
+                            filepath: path + item.name
+                        });
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = './api/download.py?' + downloadParams.toString();
+                        downloadLink.className = 'btn btn-sm btn-primary ms-2';
+
+                        const downloadIcon = document.createElement('i');
+                        downloadIcon.className = 'fa fa-download';
+                        downloadLink.appendChild(downloadIcon);
+                        downloadLink.appendChild(document.createTextNode(' 下载'));
+                        fileItem.appendChild(downloadLink);
+                    }
+
+                    fileList.appendChild(fileItem);
+                });
+
+                mainContent.appendChild(fileList);
+            }, './api/getlistdir.py?' + query.toString());
         }
+
         function showUploadDialog(username, path) {
-            let html = `
-                <div class="modal-content p-4">
-                    <h4>上传文件到 ${username} 的目录</h4>
-                    <div class="mb-3">
-                        <label class="form-label">选择文件</label>
-                        <input type="file" class="form-control" id="fileInput">
-                    </div>
-                    <div class="progress mb-3" style="display:none">
-                        <div class="progress-bar" role="progressbar" style="width: 0%"></div>
-                    </div>
-                    <button class="btn btn-primary" onclick="uploadFile('${username}', '${path}')">
-                        <i class="fa fa-upload"></i> 开始上传
-                    </button>
-                </div>
-            `;
-            document.getElementById('mainContent').innerHTML = html;
+            const mainContent = document.getElementById('mainContent');
+            mainContent.innerHTML = '';
+
+            const modalContent = document.createElement('div');
+            modalContent.className = 'modal-content p-4';
+
+            const heading = document.createElement('h4');
+            heading.textContent = '上传文件到 ' + username + ' 的目录';
+            modalContent.appendChild(heading);
+
+            const fileInputGroup = document.createElement('div');
+            fileInputGroup.className = 'mb-3';
+
+            const fileLabel = document.createElement('label');
+            fileLabel.className = 'form-label';
+            fileLabel.textContent = '选择文件';
+            fileInputGroup.appendChild(fileLabel);
+
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.className = 'form-control';
+            fileInput.id = 'fileInput';
+            fileInputGroup.appendChild(fileInput);
+            modalContent.appendChild(fileInputGroup);
+
+            const progress = document.createElement('div');
+            progress.className = 'progress mb-3';
+            progress.style.display = 'none';
+
+            const progressBar = document.createElement('div');
+            progressBar.className = 'progress-bar';
+            progressBar.setAttribute('role', 'progressbar');
+            progressBar.style.width = '0%';
+            progress.appendChild(progressBar);
+            modalContent.appendChild(progress);
+
+            const uploadButton = document.createElement('button');
+            uploadButton.type = 'button';
+            uploadButton.className = 'btn btn-primary';
+            uploadButton.addEventListener('click', function() {
+                uploadFile(username, path);
+            });
+
+            const uploadIcon = document.createElement('i');
+            uploadIcon.className = 'fa fa-upload';
+            uploadButton.appendChild(uploadIcon);
+            uploadButton.appendChild(document.createTextNode(' 开始上传'));
+            modalContent.appendChild(uploadButton);
+
+            mainContent.appendChild(modalContent);
         }
 
         function uploadFile(username, path) {

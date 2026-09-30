@@ -663,24 +663,35 @@ video {
         function refreshPathShow(){
             /* 刷新现在展示的文件路径 */
             const iii = NowPath.split("/");
-            let showText = '';
+            const pathElement = document.getElementById("showerpath");
+            pathElement.innerHTML = '';
             
             // 检查路径长度是否过长
             const maxItems = 5; // 最多显示几个目录
             const startIndex = iii.length > maxItems ? iii.length - maxItems : 0;
             
             if(startIndex > 0) {
-                showText = '<span style="padding-right:5px;">...</span>';
+                const ellipsis = document.createElement('span');
+                ellipsis.style.paddingRight = '5px';
+                ellipsis.textContent = '...';
+                pathElement.appendChild(ellipsis);
             }
             
             for(let i = startIndex; i < iii.length; i++) {
                 let dir_ = iii[i];
                 if(dir_ == '') continue;
                 if(dir_ == '.') dir_ = "根目录";
-                showText += '<span style="padding-right:5px; cursor: grab;" onclick="back('+i+')">'+dir_+'</span>/';
+                const pathPart = document.createElement('span');
+                pathPart.style.paddingRight = '5px';
+                pathPart.style.cursor = 'grab';
+                pathPart.textContent = dir_;
+                pathPart.addEventListener('click', function() {
+                    back(i);
+                });
+                pathElement.appendChild(pathPart);
+                pathElement.appendChild(document.createTextNode('/'));
             }
             
-            document.getElementById("showerpath").innerHTML = showText;
             hideLogin();
         }
 
@@ -774,7 +785,10 @@ video {
                 
                 this.titlebar = document.createElement("div");
                 this.titlebar.className = "titlebar";
-                this.titlebar.innerHTML = "<span class='title'>"+title+"</span>";
+                const titleElement = document.createElement("span");
+                titleElement.className = "title";
+                titleElement.textContent = String(title);
+                this.titlebar.appendChild(titleElement);
 
                 this.window.style.width = w;
                 this.window.style.height = h;
@@ -1041,32 +1055,60 @@ video {
         }
         
         function displayFileInfo(file) { // 显示文件信息的函数
-            let fileInfo = document.getElementById('file-info');
+            const fileInfo = document.getElementById('file-info');
 
-            ctx = `
-                    <div style="display: table; width: 100%; border-collapse: collapse;">
-                        <div style="display: table-row; background-color: #f2f2f2;">
-                            <div style="display: table-cell; padding: 8px; font-weight: bold;">文件名</div>
-                            <div style="display: table-cell; padding: 8px; font-weight: bold;">文件大小</div>
-                            <div style="display: table-cell; padding: 8px; font-weight: bold;">上传状态</div>
-                        </div>
-            `;
-            
             if (file) uploadList.push([file, false]);
-            
-            for (let i=0; i<uploadList.length;i++) {
-                let fileSize = (uploadList[i][0].size / 1024 / 1024).toFixed(2) + ' MB';
-                let fileType = uploadList[i][0].type;
-                let fileName = uploadList[i][0].name;
-                ctx += `
-                        <div style="display: table-row;">
-                            <div style="display: table-cell; padding: 8px;">${fileName}<span class="uploadBtn" onclick='cancelUploadFile(${i})'><i class="fa fa-close" aria-hidden="true" /></i></span></div>
-                            <div style="display: table-cell; padding: 8px;">${fileSize}</div>
-                            <div id="uploadFile${i}" style="display: table-cell; padding: 8px;">${uploadList[i][1] == false ? "等待上传" : uploadList[i][1]}</div>
-                        </div>
-                    `;
+
+            const table = document.createElement('div');
+            table.style.cssText = 'display: table; width: 100%; border-collapse: collapse;';
+
+            const headerRow = document.createElement('div');
+            headerRow.style.cssText = 'display: table-row; background-color: #f2f2f2;';
+
+            function createFileInfoCell(text, isHeader) {
+                const cell = document.createElement('div');
+                cell.style.cssText = 'display: table-cell; padding: 8px;' + (isHeader ? ' font-weight: bold;' : '');
+                cell.textContent = text;
+                return cell;
             }
-            fileInfo.innerHTML = ctx + `</div>`;
+
+            headerRow.appendChild(createFileInfoCell('文件名', true));
+            headerRow.appendChild(createFileInfoCell('文件大小', true));
+            headerRow.appendChild(createFileInfoCell('上传状态', true));
+            table.appendChild(headerRow);
+
+            for (let i = 0; i < uploadList.length; i++) {
+                const uploadRow = document.createElement('div');
+                uploadRow.style.display = 'table-row';
+
+                const nameCell = createFileInfoCell(uploadList[i][0].name, false);
+                const cancelButton = document.createElement('span');
+                cancelButton.className = 'uploadBtn';
+                cancelButton.addEventListener('click', function() {
+                    cancelUploadFile(i);
+                });
+
+                const cancelIcon = document.createElement('i');
+                cancelIcon.className = 'fa fa-close';
+                cancelIcon.setAttribute('aria-hidden', 'true');
+                cancelButton.appendChild(cancelIcon);
+                nameCell.appendChild(cancelButton);
+                uploadRow.appendChild(nameCell);
+
+                const fileSize = (uploadList[i][0].size / 1024 / 1024).toFixed(2) + ' MB';
+                uploadRow.appendChild(createFileInfoCell(fileSize, false));
+
+                const statusCell = createFileInfoCell(
+                    uploadList[i][1] == false ? '等待上传' : String(uploadList[i][1]),
+                    false
+                );
+                statusCell.id = 'uploadFile' + i;
+                uploadRow.appendChild(statusCell);
+                table.appendChild(uploadRow);
+            }
+
+            fileInfo.innerHTML = '';
+            fileInfo.appendChild(table);
         }
 
 
@@ -1101,6 +1143,32 @@ video {
         }
 
 
+        function createFileEntryElement(key, item) {
+            const fileEntry = document.createElement('div');
+            fileEntry.setAttribute('file-type', item['type']);
+            fileEntry.className = 'file';
+
+            if (item['type']) {
+                fileEntry.style.cssText = 'background-image:url("./txt.png");background-position:23px 0;background-size:70% 90%;';
+            }
+
+            const fileIndex = Number(key);
+            fileEntry.addEventListener('click', function() {
+                clickFile(fileIndex);
+            });
+            fileEntry.addEventListener('contextmenu', function() {
+                clickFile(fileIndex, 1);
+            });
+            fileEntry.addEventListener('dblclick', openFile);
+
+            const fileNameElement = document.createElement('span');
+            fileNameElement.className = 'filename';
+            fileNameElement.textContent = item['name'];
+            fileEntry.appendChild(fileNameElement);
+
+            return fileEntry;
+        }
+
         function openIn(dir, add){ // 打开文件夹
             add = add===false ? false : true;
 
@@ -1122,28 +1190,18 @@ video {
                         showTip("无法找到该文件夹。")
                     }
                     else{
-                        fileele = document.getElementById("filelist"); 
+                        const fileele = document.getElementById("filelist");
                         NowPath = destDir;
                         
                         refreshPathShow();
                         fileele.innerHTML='';
-                        for(key in res){
-                            val = res[key];
-                            //console.log(val);
-                            fileele.innerHTML+="<div file-type='"+val['type']+"' class='file' style='"+
-                                        (val['type']
-                                        ?
-                                        "background-image:url(\"./txt.png\");background-position:23px 0;background-size:70% 90%;"
-                                        :
-                                        "")
-                                    +"' onclick='clickFile("+key+")' oncontextmenu='clickFile("+key+", 1)' ondblclick='openFile()'>"+
-                                    "<span class='filename'>"+val['name']+"</span></div>";
-                                
+                        for (const key of Object.keys(res)) {
+                            fileele.appendChild(createFileEntryElement(key, res[key]));
                         }
                         refreshMusicPicture();
                     }
                 }
-            }, "./api/getlistdir.py?dir="+destDir);
+            }, "./api/getlistdir.py?" + new URLSearchParams({ dir: destDir }).toString());
         }
 
         function logout() {  // 退出登录
@@ -1214,23 +1272,13 @@ function showLogin() {  // 展示登入界面
                         return;
                     }
 
-                    for(key in dirs){
-                        let val = dirs[key];
-                        //console.log(val);
-                        fileeles.innerHTML+="<div file-type='"+val['type']+"' class='file' style='"+
-                                (val['type']
-                                ?
-                                "background-image:url(\"./txt.png\");background-position:23px 0;background-size:70% 90%;"
-                                :
-                                "")
-                            +"' onclick='clickFile("+key+")' oncontextmenu='clickFile("+key+", 1)' ondblclick='openFile()'>"+
-                            "<span class='filename'>"+val['name']+"</span></div>";
-                        
+                    for (const key of Object.keys(dirs)) {
+                        fileeles.appendChild(createFileEntryElement(key, dirs[key]));
                     }
                     refreshMusicPicture();
                     //fileeles.innerHTML = showText;
                 }
-            }, "./api/getlistdir.py?dir="+NowPath);
+            }, "./api/getlistdir.py?" + new URLSearchParams({ dir: NowPath }).toString());
         }
 
 
@@ -1241,17 +1289,23 @@ function showLogin() {  // 展示登入界面
                 return;
             }
 
-            let filename = selectedFile[0].getElementsByClassName("filename")[0].innerHTML;
+            let filename = selectedFile[0].getElementsByClassName("filename")[0].textContent;
             let path = NowPath + filename;
+            const detailParams = new URLSearchParams({ filepath: path });
             newCallback(function(e, e1){
                 if(e1.status == 200 && e1.readyState == 4){
                     let x = JSON.parse(e)
                     x['filesize'] = getLowSize(x['filesize'])
-                    showTip("文件名:"+x['filename']+"<br>文件大小:"+x['filesize']+"<br>");
+                    const details = document.createDocumentFragment();
+                    details.appendChild(document.createTextNode('文件名:' + x['filename']));
+                    details.appendChild(document.createElement('br'));
+                    details.appendChild(document.createTextNode('文件大小:' + x['filesize']));
+                    details.appendChild(document.createElement('br'));
+                    showTip(details);
                 }else
                     //showTip("无法获取详细信息，网络错误:"+e+"|"+e1.status+"|"+e1.readyState)
                     return;
-            },"./api/getdetail.py?filepath="+NowPath+filename)
+            }, "./api/getdetail.py?" + detailParams.toString());
         }
 
         function showCreateDirWindow () {
@@ -1293,14 +1347,27 @@ function showLogin() {  // 展示登入界面
             let fileName     = selectedFile.getElementsByClassName("filename")[0].textContent;
             let renameWindow = new Window(150, 300, "重命名 - " + fileName);
 
-            content = `
-            <div style='font-family: Microsoft JhengHei; font-size:16px; padding: 20px; padding-bottom: 5px;'>
-                <input type='text' id='newName${renameWindow.ID}' value='${fileName}' style='width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 4px;'>
-            </div>
-            <div class='submitBtn' style='right:15px;' onclick='ensureRename("${renameWindow.ID}")'>重命名</div>
-            `;
+            const content = document.createElement('div');
+            content.style.cssText = 'font-family: Microsoft JhengHei; font-size:16px; padding: 20px; padding-bottom: 5px;';
 
-            renameWindow.show(100, 100, content);
+            const newNameInput = document.createElement('input');
+            newNameInput.type = 'text';
+            newNameInput.id = 'newName' + renameWindow.ID;
+            newNameInput.value = fileName;
+            newNameInput.style.cssText = 'width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 4px;';
+            content.appendChild(newNameInput);
+
+            const renameButton = document.createElement('div');
+            renameButton.className = 'submitBtn';
+            renameButton.style.right = '15px';
+            renameButton.textContent = '重命名';
+            renameButton.addEventListener('click', function() {
+                ensureRename(renameWindow.ID);
+            });
+
+            renameWindow.show(100, 100);
+            renameWindow.window.appendChild(content);
+            renameWindow.window.appendChild(renameButton);
             renameWindow.path = NowPath + "/" + fileName;
             renameWindow.oldName = fileName;
         }
@@ -1315,6 +1382,12 @@ function showLogin() {  // 展示登入界面
                 showTip("新文件名与旧文件名相同。");
                 return;
             }
+
+            const renameParams = new URLSearchParams({
+                old: WindowList[windowID].path,
+                new: newName
+            });
+
             newCallback((e, e1) => {
                 if(e1.status == 200 && e1.readyState == 4){
                     showTip(e1.responseText);
@@ -1324,7 +1397,18 @@ function showLogin() {  // 展示登入界面
                 }
 
                 WindowList[windowID].close();
-            }, "./api/rename.py?old=" + encodeURIComponent(WindowList[windowID].path) + "&new=" + newName);
+            }, "./api/rename.py?" + renameParams.toString());
+        }
+
+        function createStrongTipContent(prefix, emphasizedText) {
+            const content = document.createDocumentFragment();
+            content.appendChild(document.createTextNode(prefix));
+
+            const emphasized = document.createElement('strong');
+            emphasized.textContent = emphasizedText;
+            content.appendChild(emphasized);
+
+            return content;
         }
 
         function showTip(string){  // 展示提示
@@ -1337,7 +1421,22 @@ function showLogin() {  // 展示登入界面
             p.style.animationDuration='0.3s';
             p.style.animationName='scIn';
             p.style.animationFillMode='forwards';
-            p.innerHTML='<i class="fa fa-bell-o fa-2x" style="vertical-align: middle;" aria-hidden="true" /></i><span style="margin-left:20px;">'+ string + '</span>';
+            const icon = document.createElement('i');
+            icon.className = 'fa fa-bell-o fa-2x';
+            icon.style.verticalAlign = 'middle';
+            icon.setAttribute('aria-hidden', 'true');
+            p.appendChild(icon);
+
+            const message = document.createElement('span');
+            message.style.marginLeft = '20px';
+
+            if (string instanceof Node) {
+                message.appendChild(string);
+            } else {
+                message.textContent = String(string);
+            }
+
+            p.appendChild(message);
 
             document.getElementById("alltips").appendChild(p);
             // let o = document.getElementById("blacker");
@@ -1428,8 +1527,9 @@ function showLogin() {  // 展示登入界面
 
                     console.error("CHANGE SOURCE:", "./api/getfilequickview.py?filepath=" + NowPath + fileName)
 
-                    WPObject.changeSource("./api/getfilequickview.py?filepath=" + NowPath + fileName);
-                    MusicN.innerHTML = fileName.substring(0, fileName.length-4);
+                    const musicFileParams = new URLSearchParams({ filepath: NowPath + fileName });
+                    WPObject.changeSource("./api/getfilequickview.py?" + musicFileParams.toString());
+                    MusicN.textContent = fileName.substring(0, fileName.length-4);
                     SchedLine.value = 0;
                     playOrPauseMusic();
                     newCallback(function(resText, xmlhttp){
@@ -1446,10 +1546,12 @@ function showLogin() {  // 展示登入界面
                 console.log(fileExtension == '.mp4', fileExtension)
                 if (fileExtension == ".mp4" || fileExtension == ".avi") {
                     let videoWindow = new Window(400, 600, fileName + " - 视频播放器");
+                    const videoFileParams = new URLSearchParams({ filepath: NowPath + fileName });
+                    const videoFileUrl = "./api/getfilequickview.py?" + videoFileParams.toString();
                     let content = `
                     <div class="video-container">
                         <video id="player${videoWindow.ID}" controls width="100%" height="100%">
-                            <source src="./api/getfilequickview.py?filepath=${NowPath}${encodeURIComponent(fileName)}" type="video/mp4">
+                            <source src="${videoFileUrl}" type="video/mp4">
                             您的浏览器不支持视频播放
                         </video>
                     </div>
@@ -1465,6 +1567,8 @@ function showLogin() {  // 展示登入界面
                 }
                 if (fileExtension == '.jpg' || fileExtension == 'jpeg' || fileExtension == '.png' || fileExtension == '.gif' || fileExtension == '.bmp'){
                     let imageWindow = new Window(400, 600, fileName + " - 图片查看器");
+                    const imageFileParams = new URLSearchParams({ filepath: NowPath + fileName });
+                    const imageFileUrl = "./api/getfilequickview.py?" + imageFileParams.toString();
                     
                     imageWindow.isDragging = false;
                     imageWindow.lastX = 0;
@@ -1475,7 +1579,7 @@ function showLogin() {  // 展示登入界面
 
                     let content = `
                     <div class="image-container">
-                        <img id="picture${imageWindow.ID}" src="./api/getfilequickview.py?filepath=${NowPath}${encodeURIComponent(fileName)}" style="height:100%;">
+                        <img id="picture${imageWindow.ID}" src="${imageFileUrl}" style="height:100%;">
                         <div class="zoom-controls">
                             <button onclick="zoomImage('picture${imageWindow.ID}', 1.2)"><i class="fa fa-search-plus"></i></button>
                             <button onclick="zoomImage('picture${imageWindow.ID}', 0.8)"><i class="fa fa-search-minus"></i></button>
@@ -1835,7 +1939,7 @@ document.addEventListener("touchend", (eve) => {
                 copyFiles.push(NowPath+selectedFiles[i].getElementsByClassName("filename")[0].textContent);
             }
             isCutting = false;
-            showTip("已复制文件: <strong>"+copyFiles.join(", ")+"</strong>");
+            showTip(createStrongTipContent('已复制文件: ', copyFiles.join(', ')));
         }
 
         function cut() {
@@ -1849,7 +1953,7 @@ document.addEventListener("touchend", (eve) => {
                 copyFiles.push(NowPath+selectedFiles[i].getElementsByClassName("filename")[0].textContent);
             }
             isCutting = true;
-            showTip("已剪切文件: <strong>"+copyFiles+"</strong>");
+            showTip(createStrongTipContent('已剪切文件: ', copyFiles.join(',')));
         }
 
         function paste() {
@@ -1878,7 +1982,10 @@ document.addEventListener("touchend", (eve) => {
                     if(xhr.readyState == 4 && xhr.status == 200) {
                         pastedFiles++;
                         if(pastedFiles == copyFiles.length) {
-                            showTip("所有文件已粘贴到: <strong>" + destDir + "</strong><br>" + xhr.responseText);
+                            const pasteMessage = createStrongTipContent('所有文件已粘贴到: ', destDir);
+                            pasteMessage.appendChild(document.createElement('br'));
+                            pasteMessage.appendChild(document.createTextNode(xhr.responseText));
+                            showTip(pasteMessage);
                             openIn("");
                             if(isCutting) {
                                 copyFiles = [];
