@@ -47,6 +47,29 @@ const panelElements = new Map<string, HTMLElement>()
 /** 已注册面板的触发按钮(id → 按钮集合),点击触发按钮不关闭面板 */
 const panelTriggerElements = new Map<string, Set<HTMLElement>>()
 
+/** 注册浮层边界,不改变打开状态;挂载监听必须避免再次打开已经关闭的浮层。 */
+export function registerPopover(id: string, container: HTMLElement): void {
+    const containers = popoverElements.get(id) || new Set<HTMLElement>()
+
+    containers.add(container)
+    popoverElements.set(id, containers)
+}
+
+/** 按元素注销边界,组件卸载时不影响其他浮层的打开状态。 */
+export function unregisterPopover(id: string, container: HTMLElement): void {
+    const containers = popoverElements.get(id)
+
+    if (!containers) {
+        return
+    }
+
+    containers.delete(container)
+
+    if (!containers.size) {
+        popoverElements.delete(id)
+    }
+}
+
 /**
  * 打开一个下拉/菜单
  *
@@ -56,10 +79,7 @@ const panelTriggerElements = new Map<string, Set<HTMLElement>>()
  */
 export function openPopover(id: string, container?: HTMLElement | null, options: { keepPanel?: boolean } = {}): void {
     if (container) {
-        const set = popoverElements.get(id) || new Set<HTMLElement>()
-
-        set.add(container)
-        popoverElements.set(id, set)
+        registerPopover(id, container)
     }
 
     overlay.popover = id
