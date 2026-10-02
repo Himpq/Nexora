@@ -1,0 +1,50 @@
+/* 合并后仍能读到每个地点名，共同边框内取消单项边框和阴影。 */
+.nexora-map-tag-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+    min-height: 0;
+    padding: 4px;
+}
+
+.nexora-map-tag-group > .nexora-map-tag {
+    width: 100%;
+    min-height: 24px;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    box-shadow: none;
+    font-size: 11px;
+    line-height: 16px;
+}
+
+.nexora-map-tag-group.is-active {
+    border-color: var(--nexora-map-callout-color);
+}
+
+.nexora-map-cluster__halo,
+.nexora-map-cluster__circle {
+    fill: none;
+    vector-effect: non-scaling-stroke;
+}
+
+.nexora-map-cluster__halo {
+    stroke: rgba(255, 255, 255, 0.86);
+    stroke-width: 5;
+}
+
+.nexora-map-cluster__circle {
+    stroke: var(--nexora-map-callout-color);
+    stroke-width: 2;
+    pointer-events: stroke;
+    cursor: pointer;
+}
+
+.nexora-map-callout-lines.has-active .nexora-map-callout__cluster:not(.is-active) {
+    opacity: 0.35;
+}
+
+.nexora-map-callout__cluster.is-active .nexora-map-cluster__circle {
+    stroke-width: 2.5;
+}

@@ -1,0 +1,173 @@
+/* 地图保持完整尺寸;白底小标签集中在上方两角,容器背景透明。 */
+.nexora-map-card-body.has-map-callouts {
+    --nexora-map-rail-width: clamp(132px, 25%, 260px);
+    --nexora-map-callout-color: #d52239;
+    --nexora-map-callout-text: #172338;
+    --nexora-map-callout-muted: #8c949c;
+}
+
+.has-map-callouts .nexora-map-canvas {
+    position: relative;
+    z-index: 0;
+    min-width: 0;
+}
+
+.nexora-map-callout-rail {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    bottom: 0;
+    width: var(--nexora-map-rail-width);
+    min-width: 0;
+    min-height: 0;
+    background: transparent;
+    pointer-events: none;
+}
+
+.nexora-map-callout-rail.is-left {
+    left: 0;
+}
+
+.nexora-map-callout-rail.is-right {
+    right: 0;
+}
+
+.nexora-map-callout-list {
+    position: absolute;
+    inset: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 8px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+    pointer-events: none;
+}
+
+.nexora-map-callout-rail.is-left .nexora-map-callout-list {
+    align-items: flex-start;
+}
+
+.nexora-map-callout-rail.is-right .nexora-map-callout-list {
+    align-items: flex-end;
+}
+
+.nexora-map-tag,
+.nexora-map-tag-group {
+    box-sizing: border-box;
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    width: fit-content;
+    max-width: 100%;
+    min-height: 32px;
+    margin: 0;
+    padding: 5px 8px;
+    border: 1px solid #cfd3d9;
+    border-radius: 4px;
+    color: var(--nexora-map-callout-text);
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(20, 30, 45, 0.12);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: left;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.nexora-map-tag__name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.nexora-map-tag.is-active,
+.nexora-map-tag:hover {
+    color: var(--nexora-map-callout-color);
+    border-color: var(--nexora-map-callout-color);
+}
+
+.nexora-map-tag:focus-visible {
+    outline: 1px solid var(--nexora-map-callout-color);
+    outline-offset: 2px;
+}
+
+.nexora-map-tag.is-offscreen {
+    color: var(--nexora-map-callout-muted);
+}
+
+.nexora-map-callout-lines {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.nexora-map-callout__halo,
+.nexora-map-callout__line {
+    fill: none;
+    stroke-linejoin: miter;
+    stroke-linecap: square;
+    vector-effect: non-scaling-stroke;
+}
+
+.nexora-map-callout__halo {
+    stroke: rgba(255, 255, 255, 0.86);
+    stroke-width: 5;
+}
+
+.nexora-map-callout__line {
+    stroke: var(--nexora-map-callout-color);
+    stroke-width: 2;
+}
+
+.nexora-map-callout__point {
+    fill: #ed1735;
+    stroke: #b61529;
+    stroke-width: 1;
+    filter: drop-shadow(0 1px 2px rgba(90, 15, 25, 0.3));
+}
+
+.nexora-map-callout-lines.has-active .nexora-map-callout:not(.is-active),
+.nexora-map-callout-lines.has-active .nexora-map-callout__point:not(.is-active) {
+    opacity: 0.35;
+}
+
+.nexora-map-callout.is-active .nexora-map-callout__line {
+    stroke-width: 2.5;
+}
+
+/* 名称较多时可滚动,输入框与回复预览不遮住名称。 */
+.tool-stage-focus__surface > .nexora-map-card .nexora-map-callout-rail.is-right .nexora-map-callout-list {
+    bottom: calc(var(--tool-stage-chat-compact-height) + var(--tool-stage-controls-bottom) + 12px);
+}
+
+@media (max-width: 720px) {
+    .nexora-map-card-body.has-map-callouts {
+        --nexora-map-rail-width: clamp(98px, 33%, 160px);
+    }
+
+    .nexora-map-callout-list {
+        inset: 10px 6px;
+        gap: 6px;
+    }
+
+    .nexora-map-tag {
+        padding: 4px 6px;
+        font-size: 11px;
+        line-height: 16px;
+    }
+
+    /* 手机输入框跨过两列,回复预览变高时两列同时留出位置。 */
+    .tool-stage-focus__surface > .nexora-map-card .nexora-map-callout-list {
+        bottom: calc(var(--tool-stage-chat-compact-height) + var(--tool-stage-controls-bottom) + 12px);
+    }
+}

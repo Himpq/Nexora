@@ -1,5 +1,14 @@
+import { NexoraMapCallouts } from './nexora_map_callouts.js';
+import { BaiduMapView, TiandituMapView } from './nexora_map_view.js';
+import { loadBaiduMapGl, loadTiandituMap } from './nexora_map_sdk_loader.js';
+import './nexora_map_callouts.css';
+import './nexora_map_clusters.css';
+
 (function () {
     'use strict';
+
+    const TOOL_STAGE_OPEN_EVENT = 'nexora:tool-stage-open';
+    const TOOL_STAGE_RESIZE_EVENT = 'nexora:tool-stage-resize';
 
     const MAP_SELECTOR = [
         'pre > code.language-nexora-map',
@@ -20,8 +29,6 @@
 
     let mapSeq = 0;
     let scanTimer = null;
-    let baiduLoadPromise = null;
-    let tiandituLoadPromise = null;
 
     const instances = new Map();
 
@@ -33,15 +40,6 @@
         }
 
         return config;
-    }
-
-    function escapeHtml(value) {
-        return String(value || '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
     }
 
     function readFiniteNumber(value, fieldName) {
@@ -401,6 +399,7 @@
 
         return {
             shell,
+            header,
             title,
             status,
             body,
@@ -411,8 +410,44 @@
 
     function setStatus(parts, text, state) {
         parts.status.textContent = text;
-        parts.status.classList.toggle('is-ready', state === 'ready');
         parts.status.classList.toggle('is-error', state === 'error');
+    }
+
+    function createToolStageButton(parts) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'nexora-map-expand';
+        button.title = '放大显示';
+        button.setAttribute('aria-label', '放大显示地图');
+
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('width', '16');
+        icon.setAttribute('height', '16');
+        icon.setAttribute('viewBox', '0 0 24 24');
+        icon.setAttribute('fill', 'none');
+        icon.setAttribute('stroke', 'currentColor');
+        icon.setAttribute('stroke-width', '2');
+        icon.setAttribute('stroke-linecap', 'round');
+        icon.setAttribute('stroke-linejoin', 'round');
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M9 4H4v5M4 4l6 6M15 20h5v-5m0 5-6-6');
+        icon.appendChild(path);
+        button.appendChild(icon);
+
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            window.dispatchEvent(new CustomEvent(TOOL_STAGE_OPEN_EVENT, {
+                detail: {
+                    element: parts.shell,
+                    title: parts.title.textContent || '地图',
+                    controlsTarget: parts.header,
+                    trigger: button
+                }
+            }));
+        });
+
+        return button;
     }
 
     function renderFooter(parts, config) {
@@ -434,6 +469,7 @@
             span.textContent = item;
             return span;
         }));
+        parts.footer.appendChild(createToolStageButton(parts));
     }
 
     function renderError(parts, error) {
@@ -448,121 +484,8 @@
         setStatus(parts, '失败', 'error');
     }
 
-    function getBaiduMapAk() {
-        const config = getRendererConfig();
-        const ak = String(config.baiduMapAk || '').trim();
-
-        if (!ak) {
-            throw new Error('NEXORA_MAP_RENDERER_CONFIG.baiduMapAk 未配置');
-        }
-
-        return ak;
-    }
-
-    function loadBaiduMapGl() {
-        if (window.BMapGL) {
-            return Promise.resolve(window.BMapGL);
-        }
-
-        if (baiduLoadPromise) {
-            return baiduLoadPromise;
-        }
-
-        baiduLoadPromise = new Promise((resolve, reject) => {
-            const ak = getBaiduMapAk();
-            const config = getRendererConfig();
-            const version = String(config.baiduMapVersion || '1.0').trim();
-            const callbackName = `__nexoraBaiduMapCallback_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-            const script = document.createElement('script');
-
-            window[callbackName] = function () {
-                delete window[callbackName];
-
-                if (window.BMapGL) {
-                    resolve(window.BMapGL);
-                    return;
-                }
-
-                reject(new Error('百度地图脚本已加载，但 window.BMapGL 不存在'));
-            };
-
-            script.src = `https://api.map.baidu.com/api?type=webgl&v=${encodeURIComponent(version)}&ak=${encodeURIComponent(ak)}&callback=${encodeURIComponent(callbackName)}`;
-            script.async = true;
-            script.onerror = function () {
-                delete window[callbackName];
-                baiduLoadPromise = null;
-                reject(new Error('百度地图 GL JSAPI 脚本加载失败'));
-            };
-
-            document.head.appendChild(script);
-        });
-
-        return baiduLoadPromise;
-    }
-
-    function getTiandituMapTk() {
-        const config = getRendererConfig();
-        const tk = String(config.tiandituMapTk || '').trim();
-
-        if (!tk) {
-            throw new Error('NEXORA_MAP_RENDERER_CONFIG.tiandituMapTk 未配置');
-        }
-
-        return tk;
-    }
-
-    function loadTiandituMap() {
-        if (window.T && window.T.Map && window.T.LngLat) {
-            return Promise.resolve(window.T);
-        }
-
-        if (tiandituLoadPromise) {
-            return tiandituLoadPromise;
-        }
-
-        tiandituLoadPromise = new Promise((resolve, reject) => {
-            const tk = getTiandituMapTk();
-            const config = getRendererConfig();
-            const version = String(config.tiandituMapVersion || '4.0').trim();
-            const script = document.createElement('script');
-
-            script.src = `https://api.tianditu.gov.cn/api?v=${encodeURIComponent(version)}&tk=${encodeURIComponent(tk)}`;
-            script.async = true;
-            script.onload = function () {
-                if (window.T && window.T.Map && window.T.LngLat) {
-                    resolve(window.T);
-                    return;
-                }
-
-                tiandituLoadPromise = null;
-                reject(new Error('天地图 JSAPI 脚本已加载，但 window.T 不存在'));
-            };
-            script.onerror = function () {
-                tiandituLoadPromise = null;
-                reject(new Error('天地图 JSAPI 脚本加载失败'));
-            };
-
-            document.head.appendChild(script);
-        });
-
-        return tiandituLoadPromise;
-    }
-
     function toBaiduPoint(BMapGL, point) {
         return new BMapGL.Point(point.lng, point.lat);
-    }
-
-    function addMarker(BMapGL, map, markerConfig) {
-        const point = toBaiduPoint(BMapGL, markerConfig.point);
-        const marker = new BMapGL.Marker(point);
-        const label = new BMapGL.Label(`<span class="nexora-map-label">${escapeHtml(markerConfig.label)}</span>`, {
-            offset: new BMapGL.Size(14, -14)
-        });
-
-        marker.setLabel(label);
-        map.addOverlay(marker);
-
-        return marker;
     }
 
     function addPolyline(BMapGL, map, polylineConfig) {
@@ -596,22 +519,6 @@
         return new T.LngLat(point.lng, point.lat);
     }
 
-    function addTiandituMarker(T, map, markerConfig) {
-        const point = toTiandituPoint(T, markerConfig.point);
-        const marker = new T.Marker(point);
-        const labelCls = T.Label || T.DOMLabel;
-        const label = new labelCls({
-            text: `<span class="nexora-map-label">${escapeHtml(markerConfig.label)}</span>`,
-            position: point,
-            offset: new T.Point(14, -14)
-        });
-
-        map.addOverLay(marker);
-        map.addOverLay(label);
-
-        return marker;
-    }
-
     function addTiandituPolyline(T, map, polylineConfig) {
         const points = polylineConfig.points.map((point) => toTiandituPoint(T, point));
         const overlays = [];
@@ -639,8 +546,22 @@
         return overlays;
     }
 
-    async function renderBaiduMap(parts, resolvedPayload, config) {
-        const BMapGL = await loadBaiduMapGl();
+    function bindToolStageResize(parts, map) {
+        const resize = () => {
+            if (typeof map.checkResize !== 'function') {
+                console.warn('[mapRenderer] 当前地图 SDK 未提供 checkResize，容器变化后无法重铺地图');
+                return;
+            }
+
+            map.checkResize();
+        };
+        parts.shell.addEventListener(TOOL_STAGE_RESIZE_EVENT, resize);
+
+        return () => parts.shell.removeEventListener(TOOL_STAGE_RESIZE_EVENT, resize);
+    }
+
+    async function renderBaiduMap(parts, resolvedPayload, config, callouts) {
+        const BMapGL = await loadBaiduMapGl(getRendererConfig());
         const center = toBaiduPoint(BMapGL, config.center);
         const map = new BMapGL.Map(parts.canvas.id);
 
@@ -650,7 +571,6 @@
         map.addControl(new BMapGL.ScaleControl());
         map.addControl(new BMapGL.ZoomControl());
 
-        config.markers.forEach((marker) => addMarker(BMapGL, map, marker));
         config.polylines.forEach((polyline) => addPolyline(BMapGL, map, polyline));
 
         if (config.fitViewport && config.viewportPoints.length > 1) {
@@ -658,15 +578,19 @@
             map.setViewport(viewportPoints);
         }
 
+        callouts?.connect(new BaiduMapView(BMapGL, map));
         instances.set(parts.canvas.id, {
             map,
+            parts,
+            callouts,
+            unbindResize: bindToolStageResize(parts, map),
             payload: resolvedPayload,
             config
         });
     }
 
-    async function renderTiandituMap(parts, resolvedPayload, config) {
-        const T = await loadTiandituMap();
+    async function renderTiandituMap(parts, resolvedPayload, config, callouts) {
+        const T = await loadTiandituMap(getRendererConfig());
         const center = toTiandituPoint(T, config.center);
         const map = new T.Map(parts.canvas.id);
 
@@ -676,7 +600,6 @@
         map.addControl(new T.Control.Zoom());
         map.addControl(new T.Control.Scale());
 
-        config.markers.forEach((marker) => addTiandituMarker(T, map, marker));
         config.polylines.forEach((polyline) => addTiandituPolyline(T, map, polyline));
 
         if (config.fitViewport && config.viewportPoints.length > 1) {
@@ -684,14 +607,20 @@
             map.setViewport(viewportPoints);
         }
 
+        callouts?.connect(new TiandituMapView(T, map));
         instances.set(parts.canvas.id, {
             map,
+            parts,
+            callouts,
+            unbindResize: bindToolStageResize(parts, map),
             payload: resolvedPayload,
             config
         });
     }
 
     async function renderMap(parts, payload) {
+        let callouts = null;
+
         try {
             const resolvedPayload = await resolveMapPayload(payload);
             const config = normalizePayload(resolvedPayload);
@@ -699,16 +628,36 @@
             parts.title.textContent = config.title;
             renderFooter(parts, config);
 
-            if (config.provider === TIANDITU_PROVIDER) {
-                await renderTiandituMap(parts, resolvedPayload, config);
-            } else {
-                await renderBaiduMap(parts, resolvedPayload, config);
+            if (config.markers.length > 0) {
+                // 标签覆盖地图,不改变 SDK 画布尺寸;首次适配使用完整地图范围。
+                callouts = new NexoraMapCallouts(parts.body, parts.canvas, config.markers);
             }
 
-            setStatus(parts, '已渲染', 'ready');
+            if (config.provider === TIANDITU_PROVIDER) {
+                await renderTiandituMap(parts, resolvedPayload, config, callouts);
+            } else {
+                await renderBaiduMap(parts, resolvedPayload, config, callouts);
+            }
+
+            // 成功后移除加载状态标签,顶栏只保留地图标题与放大状态的退出入口。
+            parts.status.remove();
         } catch (error) {
+            console.error('[NexoraMapRenderer] Map render failed', { message: error.message });
+            callouts?.destroy();
             renderError(parts, error);
         }
+    }
+
+    /** 移动到工具舞台的地图仍在页面中;真正删除卡片时才清理标注事件和实例引用。 */
+    function releaseDisconnectedInstances() {
+        instances.forEach((instance, id) => {
+
+            if (!instance.parts.shell.isConnected) {
+                instance.callouts?.destroy();
+                instance.unbindResize();
+                instances.delete(id);
+            }
+        });
     }
 
     function renderCodeBlock(codeEl) {
@@ -775,6 +724,15 @@
             childList: true,
             subtree: true
         });
+
+        // 会话视图卸载时 messagesContainer 本身可能一起移除,单独监听根节点的删除生命周期。
+        const lifecycle = new MutationObserver((records) => {
+
+            if (records.some((record) => record.removedNodes.length > 0)) {
+                releaseDisconnectedInstances();
+            }
+        });
+        lifecycle.observe(document.body, { childList: true, subtree: true });
     }
 
     function renderPayload(container, payload) {

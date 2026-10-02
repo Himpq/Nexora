@@ -1,7 +1,7 @@
 /**
  * mapRenderer.ts — NexoraMapRenderer 装载器
  *
- * 渲染器本体已收编进前端工程(src/assets/map/,视觉冻结的自洽 IIFE,无导出):
+ * 渲染器本体已收编进前端工程(src/assets/map/,SDK 接入与标注布局独立拆分):
  *   - 副作用:暴露 window.NexoraMapRenderer.renderAll/renderPayload
  *   - 挂载后在 #messagesContainer 上装 MutationObserver 自动扫描
  *     ```nexora-map / ```nexora-map-ref 代码块并渲染为交互地图
