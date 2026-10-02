@@ -43,6 +43,7 @@ from App.Storage import TempContextStore
 from basis.TokenUsage import get_generation_quota_gate
 from .stream_runtime import is_stream_cancelled_error
 from .tool_protocol import (
+    FORCED_TOOL_CALL_MAX_OUTPUT_TOKENS,
     ToolLoopRoundCounter,
     build_tool_json_error_message,
     canonical_tool_call_signature,
@@ -8445,11 +8446,13 @@ class Model(ModelInitializationMixin, MailMixin):
             )
 
         if bool(getattr(self, "_require_function_tool_call", False)) and params.get("tools"):
-            # 通用 Completion API 仅保证 auto/null，required 在部分网关上会导致空转
-            params["tool_choice"] = "auto"
+            # 「必须产出工具调用」任务：是否下发强制 tool_choice 由 Provider 协议决定，
+            # 未声明该协议的 Provider 只受系统提示约束。
+            params = provider_adapter.apply_forced_tool_choice(params, model_name=self.model_name)
+
             # 记忆类任务限制输出，避免 30k 扩写
             if params.get("max_tokens") is None and params.get("max_completion_tokens") is None:
-                params["max_tokens"] = 800
+                params["max_tokens"] = FORCED_TOOL_CALL_MAX_OUTPUT_TOKENS
 
         params = provider_adapter.apply_request_options(
             params,
@@ -8461,36 +8464,13 @@ class Model(ModelInitializationMixin, MailMixin):
             model_name=self.model_name,
         )
 
-        # 主聊天链路在 OpenAI 兼容 provider（如 Ollama/vLLM）上显式传递 think 开关，
-        # 避免前端关闭 Thinking 后上游仍默认开启思考模式。
-        try:
-            provider_info = self._get_provider_info(self.provider)
-            api_type = str((provider_info or {}).get("api_type", "") or "").strip().lower()
-            if (not use_responses_api) and api_type in {"openai", "ollama"}:
-                extra_body = params.get("extra_body", {})
-                if not isinstance(extra_body, dict):
-                    extra_body = {}
-                if bool(enable_thinking):
-                    # Ollama/GPT-OSS 兼容：支持布尔或 low/medium/high 级别。
-                    lvl = str(thinking_level or "").strip().lower()
-                    if lvl in {"low", "medium", "high"}:
-                        extra_body["think"] = lvl
-                    else:
-                        extra_body["think"] = True
-                else:
-                    extra_body["think"] = False
-                    params.pop("reasoning_effort", None)
-                params["extra_body"] = extra_body
-                print(
-                    f"[CHAT_THINK] provider={self.provider} model={self.model_name} "
-                    f"api_type={api_type} think={extra_body.get('think', None)} "
-                    f"thinking_level={thinking_level} reasoning_effort={params.get('reasoning_effort', None)}"
-                )
-        except Exception as _think_e:
-            try:
-                print(f"[CHAT_THINK] normalize failed: {_think_e}")
-            except Exception:
-                pass
+        # 思考开关按 Provider 协议写入，避免关闭 Thinking 后上游仍默认开启思考模式。
+        params = provider_adapter.apply_chat_thinking_switch(
+            params,
+            enable_thinking=bool(enable_thinking),
+            thinking_level=str(thinking_level or ""),
+            model_name=self.model_name,
+        )
 
         tools_for_cache = params.get("tools", [])
 

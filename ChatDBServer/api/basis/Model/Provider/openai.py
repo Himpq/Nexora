@@ -22,7 +22,18 @@ OPENAI_CONTEXT_WINDOW_KEYS = (
     "contextsize",
     "context_size",
 )
+
 OPENAI_CONTEXT_WINDOW_MAX = 4_000_000
+
+# Ollama / GPT-OSS 风格思考开关支持的级别。
+OLLAMA_THINKING_LEVELS = ("low", "medium", "high")
+
+# Ollama / GPT-OSS 风格思考开关的 api_type 适用范围。
+OLLAMA_THINKING_API_TYPES = ("openai", "ollama")
+
+# DeepSeek 系列模型标识。DeepSeek V4 起（含 DeepSeek-V4.1-Flash / deepseek-flash）
+# 默认开启思考模式，必须按官方协议显式关闭。
+DEEPSEEK_FAMILY_MARKERS = ("deepseek",)
 
 
 class OpenAIProvider(ProviderInterface):
@@ -694,3 +705,117 @@ class OpenAIProvider(ProviderInterface):
         risky_provider = self.provider_name in {"github", "suanli"}
         risky_model = any(x in low for x in ["-reasoning", "deepseek-r1", "qwq-32b"])
         return bool(risky_provider and risky_model)
+
+    def apply_forced_tool_choice(self, params: Dict[str, Any], *, model_name: str = "") -> Dict[str, Any]:
+        """
+        OpenAI 兼容 Chat Completions 的强制工具调用协议：tool_choice=required。
+
+        记忆决策只接受「恰好一次工具调用」，auto 允许模型直接输出文本，
+        模型一旦选择解释而不调用工具，整轮决策就作废。
+        注意：思考模式下上游会拒绝该取值（DeepSeek 返回
+        400 Thinking mode does not support this tool_choice），
+        因此必须先由 apply_chat_thinking_switch 关闭思考。
+        """
+        params["tool_choice"] = "required"
+        return params
+
+    def apply_chat_thinking_switch(
+        self,
+        params: Dict[str, Any],
+        *,
+        enable_thinking: bool,
+        thinking_level: str = "",
+        model_name: str = "",
+    ) -> Dict[str, Any]:
+        """按模型族选择思考开关协议：DeepSeek 用 thinking.type，其余保持 Ollama 风格 think。"""
+        if self.is_deepseek_family_model(model_name):
+            return self._apply_deepseek_thinking_switch(
+                params,
+                enable_thinking=enable_thinking,
+                model_name=model_name,
+            )
+
+        return self._apply_ollama_thinking_switch(
+            params,
+            enable_thinking=enable_thinking,
+            thinking_level=thinking_level,
+            model_name=model_name,
+        )
+
+    def is_deepseek_family_model(self, model_name: str = "") -> bool:
+        """判断模型是否为 DeepSeek 系列（思考开关与强制工具调用协议不同于 OpenAI 兼容默认）。"""
+        value = str(model_name or "").strip().lower()
+        return any(marker in value for marker in DEEPSEEK_FAMILY_MARKERS)
+
+    def _apply_deepseek_thinking_switch(
+        self,
+        params: Dict[str, Any],
+        *,
+        enable_thinking: bool,
+        model_name: str = "",
+    ) -> Dict[str, Any]:
+        """
+        DeepSeek 官方协议：extra_body.thinking.type 开关思考模式。
+
+        DeepSeek V4 起默认思考模式（默认 effort=high），思考模式下上游拒绝强制
+        tool_choice。不显式关闭时 enable_thinking=False 完全不生效。
+        官方同时规定 thinking.type=disabled 不能与 reasoning_effort 同用。
+        """
+        extra_body = self._ensure_extra_body(params)
+        extra_body.pop("think", None)
+        extra_body["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
+        params["extra_body"] = extra_body
+
+        if not enable_thinking:
+            params.pop("reasoning_effort", None)
+
+        self._log_thinking_switch("deepseek", extra_body["thinking"]["type"], params, model_name)
+        return params
+
+    def _apply_ollama_thinking_switch(
+        self,
+        params: Dict[str, Any],
+        *,
+        enable_thinking: bool,
+        thinking_level: str = "",
+        model_name: str = "",
+    ) -> Dict[str, Any]:
+        """Ollama / GPT-OSS 风格：extra_body.think 支持布尔或 low/medium/high 级别。"""
+        if self.api_type not in OLLAMA_THINKING_API_TYPES:
+            return params
+
+        extra_body = self._ensure_extra_body(params)
+        level = str(thinking_level or "").strip().lower()
+
+        if enable_thinking:
+            extra_body["think"] = level if level in OLLAMA_THINKING_LEVELS else True
+        else:
+            extra_body["think"] = False
+            params.pop("reasoning_effort", None)
+
+        params["extra_body"] = extra_body
+        self._log_thinking_switch("ollama", extra_body["think"], params, model_name)
+        return params
+
+    def _ensure_extra_body(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """取出并返回可写的 extra_body，避免各协议分支重复判空。"""
+        extra_body = params.get("extra_body")
+
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+
+        params["extra_body"] = extra_body
+        return extra_body
+
+    def _log_thinking_switch(
+        self,
+        protocol: str,
+        thinking_value: Any,
+        params: Dict[str, Any],
+        model_name: str = "",
+    ) -> None:
+        print(
+            f"[CHAT_THINK] provider={self.provider_name} model={str(model_name or '')} "
+            f"api_type={self.api_type} protocol={protocol} thinking={thinking_value} "
+            f"reasoning_effort={params.get('reasoning_effort', None)}"
+        )

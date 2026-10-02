@@ -6,6 +6,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 INVALID_TOOL_ARGUMENTS_KEY = "__nexora_invalid_tool_arguments__"
 
+# 强制工具调用任务（记忆决策等）的输出预算：只应产出一次工具调用，
+# 不设上限时上游可能把同一轮扩写成上万 token 的正文。
+FORCED_TOOL_CALL_MAX_OUTPUT_TOKENS = 800
+
 
 class ToolLoopRoundCounter:
     """记录已经完成的模型响应轮次，并统一控制最大轮次。"""

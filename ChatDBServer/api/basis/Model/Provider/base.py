@@ -623,6 +623,31 @@ class ProviderInterface(ABC):
         """Whether function tools should be disabled for this provider/model."""
         return False
 
+    def apply_forced_tool_choice(self, params: Dict[str, Any], *, model_name: str = "") -> Dict[str, Any]:
+        """
+        「必须产出工具调用」任务（如记忆决策）写入强制 tool_choice。
+
+        默认不下发：未确认接受强制工具调用的 Provider 协议不应收到该字段，
+        这类 Provider 只能依赖系统提示约束模型行为。
+        """
+        return params
+
+    def apply_chat_thinking_switch(
+        self,
+        params: Dict[str, Any],
+        *,
+        enable_thinking: bool,
+        thinking_level: str = "",
+        model_name: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Chat Completions 下按本 Provider 协议写入思考开关。
+
+        默认不下发：思考字段各家命名不同（thinking.type / think / enable_thinking），
+        统一由具体 Provider 声明，Core 不再猜测协议。
+        """
+        return params
+
     def should_attach_native_tools_to_chat_tools(self) -> bool:
         """Whether native non-function tools can be attached to chat.completions tools."""
         return True
