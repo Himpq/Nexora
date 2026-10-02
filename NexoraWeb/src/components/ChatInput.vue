@@ -208,18 +208,19 @@
 
         <!-- 上下文窗口卡片:点击 tokenBudgetMini / tokenBudgetUsage 触发(对齐原版 #tokenBudgetTooltip) -->
         <TokenBudgetCard
+            :popover-key="tokenBudgetPopoverKey"
             :open="tokenBudgetCardOpen"
             :model="tipModel"
             :trigger="cardTrigger"
             :estimated="usedEstimated"
             @open-token-detail="emit('open-token-detail')"
-            @close="closePopover('token-budget-card')"
+            @close="closePopover(tokenBudgetPopoverKey)"
         />
     </div>
 </template>
 
 <script setup lang="ts">
-    import { computed, onMounted, ref, watch } from 'vue'
+    import { computed, onMounted, ref, useId, watch } from 'vue'
 
     import type { AttachmentInput } from '@/api/attachments'
     import { uploadFile } from '@/api/files-center'
@@ -462,21 +463,32 @@
     /** usage 悬浮提示文本(对齐原版 buildTokenBudgetHoverText) */
     const hoverText = computed(() => buildTokenBudgetHoverText(tipModel.value))
 
-    /** 上下文窗口卡片:触发按钮引用 + 打开状态(经 overlay 协调器管理) */
+    /** 每个输入框独占弹层标识,后台保留的 Remote/其他聊天不能开关当前卡片。 */
+    const tokenBudgetPopoverKey = `token-budget-card-${useId()}`
     const cardTrigger = ref<HTMLElement | null>(null)
-    const tokenBudgetCardOpen = computed(() => overlay.popover === 'token-budget-card')
+    const tokenBudgetCardOpen = computed(() => overlay.popover === tokenBudgetPopoverKey)
 
     /** 点击 tokenBudgetMini / tokenBudgetUsage 切换上下文窗口卡片(对齐原版 bindTokenBudgetTooltipTriggers) */
     function toggleTokenBudgetCard(event: Event): void {
         cardTrigger.value = (event.currentTarget as HTMLElement) || null
 
-        if (overlay.popover === 'token-budget-card') {
-            closePopover('token-budget-card')
+        const stage = cardTrigger.value?.closest('.tool-stage-focus.is-focused')
+
+        if (stage) {
+            console.info('[ToolStageFocus] Token card toggled', {
+                triggerId: cardTrigger.value?.id,
+                opening: !tokenBudgetCardOpen.value,
+                expanded: stage.classList.contains('is-chat-expanded'),
+            })
+        }
+
+        if (tokenBudgetCardOpen.value) {
+            closePopover(tokenBudgetPopoverKey)
 
             return
         }
 
-        openPopover('token-budget-card')
+        openPopover(tokenBudgetPopoverKey)
     }
 
     /** 上下文圆环:用量/预算 conic-gradient(对齐原版 renderTokenBudgetUi) */

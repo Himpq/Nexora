@@ -59,14 +59,14 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+    import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-    import { closePopover, openPopover, overlay } from '@/ui/overlay'
+    import { closePopover, registerPopover, unregisterPopover } from '@/ui/overlay'
     import type { TokenBudgetTooltipModel } from '@/stream/tokenBudget'
 
-    const POPOVER_KEY = 'token-budget-card'
-
     const props = withDefaults(defineProps<{
+        /** 所属输入框的唯一标识,避免多个常驻输入框争用全局状态。 */
+        popoverKey: string
         open: boolean
         model: TokenBudgetTooltipModel | null
         /** 触发元素(点击的 tokenBudgetMini / tokenBudgetUsage),卡片定位基准 */
@@ -90,48 +90,50 @@
 
     /** 打开期间跟随滚动/缩放重定位 */
     function reposition(): void {
-        if (overlay.popover === POPOVER_KEY) {
+        if (props.open) {
             positionCard()
         }
     }
 
     /** Esc 关闭(对齐原版 keydown Escape 分支) */
     function handleKeydown(event: KeyboardEvent): void {
-        if (event.key === 'Escape' && overlay.popover === POPOVER_KEY) {
-            closePopover(POPOVER_KEY)
+        if (event.key === 'Escape' && props.open) {
+            event.preventDefault()
+            event.stopPropagation()
+            emit('close')
         }
     }
 
-    watch(() => props.open, (isOpen) => {
-        if (isOpen && props.trigger) {
-            openPopover(POPOVER_KEY, cardRef.value)
-            void nextTick(() => {
-                // 挂载完成后 cardRef 才可用,补注册容器(点击卡片内部不关闭,对齐原版 tipEl.contains)
-                openPopover(POPOVER_KEY, cardRef.value)
-                positionCard()
-            })
+    // 只在渲染完成后注册边界,不在打开状态监听中写回打开状态。
+    // 旧实现的异步重新打开与后台输入框关闭互相触发,会形成无限更新循环。
+    watch(
+        [() => props.open, () => props.trigger, cardRef],
+        ([isOpen, trigger, card], _previous, onCleanup) => {
+            if (!isOpen || !trigger || !card) {
+                return
+            }
+
+            const key = props.popoverKey
+            registerPopover(key, trigger)
+            registerPopover(key, card)
+            positionCard()
             window.addEventListener('resize', reposition)
             window.addEventListener('scroll', reposition, true)
             document.addEventListener('keydown', handleKeydown, true)
-        } else {
-            window.removeEventListener('resize', reposition)
-            window.removeEventListener('scroll', reposition, true)
-            document.removeEventListener('keydown', handleKeydown, true)
 
-            if (overlay.popover === POPOVER_KEY) {
-                closePopover(POPOVER_KEY)
-            }
-        }
-    }, { immediate: true })
+            onCleanup(() => {
+                unregisterPopover(key, trigger)
+                unregisterPopover(key, card)
+                window.removeEventListener('resize', reposition)
+                window.removeEventListener('scroll', reposition, true)
+                document.removeEventListener('keydown', handleKeydown, true)
+            })
+        },
+        { immediate: true, flush: 'post' },
+    )
 
     onBeforeUnmount(() => {
-        window.removeEventListener('resize', reposition)
-        window.removeEventListener('scroll', reposition, true)
-        document.removeEventListener('keydown', handleKeydown, true)
-
-        if (overlay.popover === POPOVER_KEY) {
-            closePopover(POPOVER_KEY)
-        }
+        closePopover(props.popoverKey)
     })
 
     /** 依据触发元素底部中心定位,视口边缘回弹(对齐原版 positionTokenBudgetTooltipFromPoint) */
@@ -169,6 +171,19 @@
         cardStyle.value = {
             left: `${left}px`,
             top: `${top}px`,
+        }
+
+        // 只记录工具舞台内的弹层几何,与舞台开关日志一起定位未显示的原因。
+        if (trigger.closest('.tool-stage-focus.is-focused')) {
+            console.info('[ToolStageFocus] Token card positioned', {
+                triggerId: trigger.id,
+                left,
+                top,
+                width: w,
+                height: h,
+                viewportWidth: vw,
+                viewportHeight: vh,
+            })
         }
     }
 
