@@ -64,6 +64,19 @@ def _normalize_memory_reason(value: Any) -> str:
     return " ".join(str(value or "").split())[:200]
 
 
+def _reply_excerpt(content: str, reasoning: str) -> str:
+    """把模型未调用工具时输出的正文/思考压成单行片段，写入失败原因便于溯源。"""
+    parts = []
+
+    for label, value in (("content", content), ("reasoning", reasoning)):
+        text = " ".join(str(value or "").split())
+
+        if text:
+            parts.append(f"{label}={text[:200]}")
+
+    return " | ".join(parts)
+
+
 def _format_memory_tool(
     model: Model,
     name: str,
@@ -430,7 +443,32 @@ class MemoryAnalysisQueue:
             exclusive=True,
             require_tool_call=True
         )
-        stream_error = ""
+        reply = self._consume_decision_reply(model, prompt)
+
+        if reply["error"]:
+            raise RuntimeError(reply["error"])
+
+        if len(decision["calls"]) != 1:
+            raise ValueError(
+                f"memory model must call exactly one tool, received {len(decision['calls'])}"
+                f" reply={reply['excerpt']}"
+            )
+
+        return decision
+
+    def _consume_decision_reply(self, model: Model, prompt: str) -> Dict[str, str]:
+        """
+        消费记忆决策的单轮流式响应。
+
+        除工具调用外必须同时保留模型正文与思考内容：模型未调用工具时，
+        正文/思考就是「为什么不调用」的唯一证据，必须写进失败原因便于溯源。
+        """
+        reply = {
+            "error": "",
+            "content": "",
+            "reasoning": "",
+            "excerpt": "",
+        }
 
         for chunk in model.sendMessage(
             prompt,
@@ -447,18 +485,22 @@ class MemoryAnalysisQueue:
             if not isinstance(chunk, dict):
                 continue
 
-            if str(chunk.get("type") or "").strip() == "error":
-                stream_error = str(chunk.get("content") or "memory model error").strip()
+            chunk_type = str(chunk.get("type") or "").strip()
+            content = str(chunk.get("content") or "")
 
-        if stream_error:
-            raise RuntimeError(stream_error)
+            if chunk_type == "error":
+                reply["error"] = content.strip() or "memory model error"
+                continue
 
-        if len(decision["calls"]) != 1:
-            raise ValueError(
-                f"memory model must call exactly one tool, received {len(decision['calls'])}"
-            )
+            if chunk_type == "content":
+                reply["content"] += content
+                continue
 
-        return decision
+            if chunk_type == "reasoning_content":
+                reply["reasoning"] += content
+
+        reply["excerpt"] = _reply_excerpt(reply["content"], reply["reasoning"])
+        return reply
 
     def _resolve_analysis_model(self, user: User, job: Dict[str, Any]) -> tuple[str, str]:
         preferences = user.get_preferences()
