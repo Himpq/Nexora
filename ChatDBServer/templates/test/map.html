@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GTA 地图风格测试</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/map_test.css') }}">
+</head>
+<body>
+    <main id="map" aria-label="交互地图"></main>
+    <header class="map-panel">
+        <div class="map-heading"><span class="eyebrow">MAP STYLE LAB</span><h1>香港 · 维多利亚港</h1></div>
+        <div class="map-actions" role="group" aria-label="地图样式">
+            <button type="button" data-style="gta" aria-pressed="true" disabled>GTA 风格</button>
+            <button type="button" data-style="normal" aria-pressed="false" disabled>百度原图</button>
+            <button type="button" id="reset" disabled>回到港湾</button>
+        </div>
+        <label class="map-tune" for="road-width">
+            <span class="map-tune-label">路网粗细</span>
+            <input id="road-width" type="range" value="1" disabled>
+            <output id="road-width-value" for="road-width">1.00</output>
+            <span class="map-tune-zoom" id="zoom-readout">缩放 z-</span>
+        </label>
+        <p id="status" role="status" aria-live="polite">正在读取地图配置…</p>
+        <a id="login" href="/new#/login" hidden>先登录 Nexora，再刷新此页</a>
+    </header>
+    <aside class="map-caption">拖动浏览 · 滚轮缩放 · 拖动滑块调路网线宽<span>黑色陆地 / 灰白路网 / 蓝灰水域 / 图标带名称</span></aside>
+    <script type="module" src="{{ url_for('static', filename='js/map_test/page.js') }}"></script>
+</body>
+</html>

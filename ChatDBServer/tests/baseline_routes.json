@@ -2021,6 +2021,12 @@
       ]
     ],
     [
+      "/test/map",
+      [
+        "GET"
+      ]
+    ],
+    [
       "/token_logs",
       [
         "GET"

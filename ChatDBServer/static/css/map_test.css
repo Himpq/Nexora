@@ -1,0 +1,73 @@
+:root {
+    color-scheme: dark;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #eeeeee;
+    background: #080808;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+/*
+ * z-index: 0 不能省。百度 GL 会在容器里注入覆盖全图的透明拖拽遮罩
+ * （#platform z-index 5、#mask.BMap_mask z-index 9、拖拽面 z-index 20），
+ * 而 position: relative + z-index: auto 不创建层叠上下文，这些遮罩会直接参与根层叠，
+ * 压过同为 z-index: auto 的 .map-panel。透明元素照样命中指针，面板就变成可见但点不动。
+ * 给容器 z-index: 0 把它们全困在自己的层叠上下文里，面板只需再高一层。
+ */
+#map { position: relative; z-index: 0; width: 100%; height: 100%; }
+.map-panel {
+    position: absolute;
+    z-index: 1;
+    top: 24px;
+    left: 24px;
+    width: min(430px, calc(100% - 48px));
+    padding: 20px;
+    background: #121416f2;
+    border: 1px solid #41464c;
+    border-radius: 8px;
+}
+.eyebrow { color: #a5b7cb; font-size: 11px; letter-spacing: 3px; }
+h1 { margin: 8px 0 18px; font-size: 20px; font-weight: 600; }
+.map-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 线宽没有可推导的换算公式，只能在当前缩放级别上目视定值，因此做成实时滑块。 */
+.map-tune { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: 12px; color: #b9c1ca; }
+.map-tune-label { white-space: nowrap; color: #a5b7cb; }
+.map-tune input[type="range"] { flex: 1; min-width: 90px; accent-color: #d7dce3; }
+.map-tune input[type="range"]:disabled { opacity: .5; cursor: wait; }
+.map-tune input[type="range"]:focus-visible { outline: 2px solid #a6c9f4; outline-offset: 3px; }
+.map-tune output { width: 38px; text-align: right; font-variant-numeric: tabular-nums; color: #e7e7e7; }
+.map-tune-zoom { color: #7f8b97; white-space: nowrap; }
+button {
+    font: inherit;
+    font-size: 13px;
+    padding: 9px 12px;
+    border: 1px solid #555c65;
+    border-radius: 4px;
+    background: #202328;
+    color: #e7e7e7;
+    cursor: pointer;
+}
+button[aria-pressed="true"] { background: #d7dce3; color: #151719; border-color: #d7dce3; }
+button:disabled { opacity: .5; cursor: wait; }
+button:focus-visible, a:focus-visible { outline: 2px solid #a6c9f4; outline-offset: 3px; }
+#status { color: #b9c1ca; font-size: 12px; line-height: 1.6; margin: 14px 0 0; }
+#status[data-error="true"] { color: #ffb9ab; }
+#login { display: inline-block; margin-top: 10px; font-size: 13px; color: #bbd6fa; }
+#login[hidden] { display: none; }
+.map-caption {
+    position: absolute;
+    z-index: 1;
+    bottom: 42px;
+    left: 24px;
+    padding: 10px 14px;
+    background: #121416ed;
+    border: 1px solid #41464c;
+    font-size: 12px;
+    pointer-events: none;
+}
+.map-caption span { display: block; color: #a8b2bd; margin-top: 5px; }
+@media (max-width: 600px) {
+    .map-panel { top: 12px; left: 12px; width: calc(100% - 24px); padding: 14px; }
+    h1 { font-size: 17px; margin-bottom: 12px; }
+    .map-caption { left: 12px; bottom: 36px; }
+}

@@ -14,8 +14,10 @@ from typing import Any, Dict
 from flask import Blueprint, current_app, jsonify, request
 
 from basis.Permission import coerce_bool_flag, require_admin, require_login
+from .test_page import map_test_bp
 
 map_config_bp = Blueprint('map_config', __name__)
+map_config_bp.register_blueprint(map_test_bp)
 
 # ==================== provider 常量（自 server.py 迁入） ====================
 
