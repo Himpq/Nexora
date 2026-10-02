@@ -58,84 +58,92 @@
 
             <div class="gddp-view-stage">
                 <!-- 聊天节点常驻,Files/Workspace 仅覆盖显示,避免返回时重新渲染对话。 -->
-                <div v-show="activeView === 'chat'" class="gddp-chat-view">
-                <!-- 从 Workspace 打开的对话:聊天视图内提供常驻「返回 Workspace」入口
-                     (顶栏返回按钮仅在覆盖视图显示,聊天态不满足,必须就地补一个)。 -->
-                <div v-if="workspaceReturnId !== ''" class="chat-workspace-return" aria-label="Workspace 返回入口">
-                    <button class="chat-workspace-return-btn" type="button" title="返回 Workspace" @click="returnToWorkspace">
-                        <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                        <span>返回 Workspace</span>
-                    </button>
-                </div>
-                <div id="messagesContainer" class="messages-area">
-                    <!-- 切换会话加载中:显示加载占位,既不闪欢迎页也不残留旧内容 -->
-                    <div v-if="conversationStore.messagesLoading" class="messages-loading">
-                        <span class="messages-loading-spinner" aria-hidden="true"></span>
-                        <span>加载中…</span>
-                    </div>
-
-                    <template v-else>
-                    <div v-if="!conversationStore.messages.length" class="welcome-screen">
-                        <h1>Hello, {{ userStore.username }}.</h1>
-                        <p>How can I assist you today?</p>
-                    </div>
-
-                    <template v-else>
-                        <!-- 加载更早消息入口(对齐原版 loadPreviousConversationMessages:顶部触发 + 手动按钮) -->
-                        <div class="messages-history-load">
-                            <button
-                                v-if="conversationStore.hasMoreBefore"
-                                type="button"
-                                class="messages-history-load-btn"
-                                :disabled="conversationStore.loadingBefore"
-                                @click="handleLoadPrevious"
-                            >
-                                <span v-if="conversationStore.loadingBefore" class="messages-history-loading-spinner" aria-hidden="true"></span>
-                                {{ conversationStore.loadingBefore ? '加载中…' : '加载更早消息' }}
+                <ToolStageFocus
+                    :active="activeView === 'chat' && !workspaceComposerDocked"
+                    :reset-key="conversationStore.currentId"
+                    :reply="toolStageReply"
+                    :follow-bottom="followsChatBottom"
+                >
+                    <div v-show="activeView === 'chat'" class="gddp-chat-view">
+                        <!-- 从 Workspace 打开的对话:聊天视图内提供常驻「返回 Workspace」入口
+                             (顶栏返回按钮仅在覆盖视图显示,聊天态不满足,必须就地补一个)。 -->
+                        <div v-if="workspaceReturnId !== ''" class="chat-workspace-return" aria-label="Workspace 返回入口">
+                            <button class="chat-workspace-return-btn" type="button" title="返回 Workspace" @click="returnToWorkspace">
+                                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                                <span>返回 Workspace</span>
                             </button>
-                            <span v-else class="messages-history-load-end">已到最早消息</span>
+                        </div>
+                        <div id="messagesContainer" class="messages-area" data-tool-stage-scroll>
+                            <!-- 切换会话加载中:显示加载占位,既不闪欢迎页也不残留旧内容 -->
+                            <div v-if="conversationStore.messagesLoading" class="messages-loading">
+                                <span class="messages-loading-spinner" aria-hidden="true"></span>
+                                <span>加载中…</span>
+                            </div>
+
+                            <template v-else>
+                                <div v-if="!conversationStore.messages.length" class="welcome-screen">
+                                    <h1>Hello, {{ userStore.username }}.</h1>
+                                    <p>How can I assist you today?</p>
+                                </div>
+
+                                <template v-else>
+                                    <!-- 加载更早消息入口(对齐原版 loadPreviousConversationMessages:顶部触发 + 手动按钮) -->
+                                    <div class="messages-history-load">
+                                        <button
+                                            v-if="conversationStore.hasMoreBefore"
+                                            type="button"
+                                            class="messages-history-load-btn"
+                                            :disabled="conversationStore.loadingBefore"
+                                            @click="handleLoadPrevious"
+                                        >
+                                            <span v-if="conversationStore.loadingBefore" class="messages-history-loading-spinner" aria-hidden="true"></span>
+                                            {{ conversationStore.loadingBefore ? '加载中…' : '加载更早消息' }}
+                                        </button>
+                                        <span v-else class="messages-history-load-end">已到最早消息</span>
+                                    </div>
+
+                                    <MessageItem
+                                        v-for="message in conversationStore.messages"
+                                        :key="message.index"
+                                        :message="message"
+                                        :data-tool-stage-scroll-anchor="message.index"
+                                        :knowledge-events="knowledgeByAssistant.get(Number(message.index))"
+                                        :model-name="modelStore.selectedModel?.name"
+                                        :streaming="isStreamingMessage(message)"
+                                        :is-last-user-message="isLastUserMessage(message)"
+                                        :conversation-id="conversationStore.currentId"
+                                        @delete="handleDeleteMessage"
+                                        @edit-save="handleEditUserMessage"
+                                        @regenerate="handleRegenerate"
+                                        @question-answer="handleQuestionAnswer"
+                                        @open-image="handleOpenImage"
+                                        @open-knowledge="handleOpenKnowledgeReference"
+                                        @fork="handleForkMessage"
+                                        @switch-version="handleSwitchVersion"
+                                    />
+                                </template>
+                            </template>
                         </div>
 
-                        <MessageItem
-                            v-for="message in conversationStore.messages"
-                            :key="message.index"
-                            :message="message"
-                            :knowledge-events="knowledgeByAssistant.get(Number(message.index)) || []"
-                            :model-name="modelStore.selectedModel?.name"
-                            :streaming="isStreamingMessage(message)"
-                            :is-last-user-message="isLastUserMessage(message)"
-                            :conversation-id="conversationStore.currentId"
-                            @delete="handleDeleteMessage"
-                            @edit-save="handleEditUserMessage"
-                            @regenerate="handleRegenerate"
-                            @question-answer="handleQuestionAnswer"
-                            @open-image="handleOpenImage"
-                            @open-knowledge="handleOpenKnowledgeReference"
-                            @fork="handleForkMessage"
-                            @switch-version="handleSwitchVersion"
+                        <!-- Turn Indicator(对齐原版:有对话轮次即显示,当前轮高亮) -->
+                        <TurnIndicatorPanel
+                            :messages="conversationStore.turns"
+                            @jump="handleTurnIndicatorJump"
                         />
-                    </template>
-                    </template>
-                </div>
 
-                <!-- Turn Indicator(对齐原版:有对话轮次即显示,当前轮高亮) -->
-                <TurnIndicatorPanel
-                    :messages="conversationStore.turns"
-                    @jump="handleTurnIndicatorJump"
-                />
-
-                <!--
-                    输入坞:进入 Workspace 详情时停靠到详情页输入槽位(对齐原版
-                    mountWorkspaceDetailInputContainer)。必须用 v-if 条件挂载 Teleport:
-                    Vue 仅在挂载时解析一次目标,常驻 Teleport 会把启动期的 null 目标永久缓存,
-                    后续启用即 insertBefore(null) 崩溃;v-if 保证创建实例时槽位已存在。
-                    未停靠分支直接原地渲染,两分支共享同一份绑定(chatInputBindings)。
-                -->
-                <Teleport v-if="workspaceComposerDocked" to="#ws-detail-input-slot">
-                    <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
-                </Teleport>
-                <ChatInput v-else ref="chatInputRef" v-bind="chatInputBindings" />
-                </div>
+                        <!--
+                            输入坞:进入 Workspace 详情时停靠到详情页输入槽位(对齐原版
+                            mountWorkspaceDetailInputContainer)。必须用 v-if 条件挂载 Teleport:
+                            Vue 仅在挂载时解析一次目标,常驻 Teleport 会把启动期的 null 目标永久缓存,
+                            后续启用即 insertBefore(null) 崩溃;v-if 保证创建实例时槽位已存在。
+                            未停靠分支直接原地渲染,两分支共享同一份绑定(chatInputBindings)。
+                        -->
+                        <Teleport v-if="workspaceComposerDocked" to="#ws-detail-input-slot">
+                            <ChatInput ref="chatInputRef" v-bind="chatInputBindings" />
+                        </Teleport>
+                        <ChatInput v-else ref="chatInputRef" v-bind="chatInputBindings" />
+                    </div>
+                </ToolStageFocus>
 
                 <div v-show="filesCenterOpen" class="gddp-content-view">
                     <FilesCenterView
@@ -309,6 +317,7 @@
     import { getConversationWorkspace, notifyWorkspaceChanged, setConversationWorkspace } from '@/stores/workspace'
     import { DRAFT_TOOL_NAME } from '@/stream/draftCall'
     import { useBottomFollow } from '@/composables/useBottomFollow'
+    import { CHAT_SCROLL_LAYOUT_READY_EVENT, getChatScrollCenterTarget, isChatScrollLayoutReady } from '@/ui/chatScrollGeometry'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
     import { closeAllOverlays, closePanel, openPanel, openView, overlay } from '@/ui/overlay'
     import { enterLearningLightTheme, exitLearningLightTheme } from '@/ui/theme'
@@ -321,6 +330,8 @@
     import ChangesModal from '@/components/ChangesModal.vue'
     import RemoteConnectionModal from '@/components/RemoteConnectionModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
+    import ToolStageFocus from '@/components/ToolStageFocus.vue'
+    import { useCurrentToolStageReply } from '@/stream/toolStageReply'
     import FileDetailView from '@/components/FileDetailView.vue'
     import FilesCenterView from '@/components/FilesCenterView.vue'
     import FilesPanel from '@/components/FilesPanel.vue'
@@ -353,6 +364,7 @@
     import type { LearningHostEnvelope } from '@/bridge/learningBridge'
 
     const conversationStore = useConversationStore()
+    const toolStageReply = useCurrentToolStageReply()
     const modelStore = useModelStore()
     const userStore = useUserStore()
 
@@ -417,6 +429,7 @@
         resume: resumeBottomFollow,
         suspend: suspendBottomFollow,
     } = useBottomFollow()
+    const followsChatBottom = (): boolean => autoFollowBottom.value
 
     // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
     useConversationUrlSync()
@@ -1201,7 +1214,7 @@
             return
         }
 
-        const targetTop = Math.max(0, target.offsetTop - (container.clientHeight / 2) + (target.offsetHeight / 2))
+        const targetTop = getChatScrollCenterTarget(container, target)
 
         // 平滑滚动到目标(被 prepending 保护,不会被"自动滚底"打断)
         container.scrollTo({
@@ -2270,7 +2283,7 @@
     function handleMessagesScroll(): void {
         const container = document.getElementById('messagesContainer')
 
-        if (!container) {
+        if (!container || !isChatScrollLayoutReady(container)) {
             return
         }
 
@@ -2284,6 +2297,15 @@
         // 用户滚动到距顶部 40px 内且还有更早消息时触发
         if (container.scrollTop <= 40 && conversationStore.hasMoreBefore) {
             void handleLoadPrevious()
+        }
+    }
+
+    /** 形态切换的滚动不触发向前分页，只在恢复完成后同步跟随状态。 */
+    function handleMessagesLayoutReady(): void {
+        const container = document.getElementById('messagesContainer')
+
+        if (container) {
+            syncWithScroll(container)
         }
     }
 
@@ -2307,7 +2329,7 @@
             const container = document.getElementById('messagesContainer')
 
             if (container && !conversationStore.loadingBefore) {
-                container.scrollTop = container.scrollHeight
+                followNow(container)
             }
         },
         { deep: true }
@@ -2377,6 +2399,7 @@
         const container = document.getElementById('messagesContainer')
 
         container?.addEventListener('scroll', handleMessagesScroll, { passive: true })
+        container?.addEventListener(CHAT_SCROLL_LAYOUT_READY_EVENT, handleMessagesLayoutReady)
 
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
@@ -2449,6 +2472,7 @@
         const container = document.getElementById('messagesContainer')
 
         container?.removeEventListener('scroll', handleMessagesScroll)
+        container?.removeEventListener(CHAT_SCROLL_LAYOUT_READY_EVENT, handleMessagesLayoutReady)
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)

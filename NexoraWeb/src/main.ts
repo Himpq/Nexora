@@ -38,6 +38,8 @@ import './styles/exa-image-gallery.css'
 import './styles/generated-image-gallery.css'
 import './styles/workspaces.css'
 import './styles/toastui-theme.css'
+import './styles/tool-stage-focus.css'
+import './styles/tool-stage-reply-preview.css'
 
 const app = createApp(App)
 

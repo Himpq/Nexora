@@ -1,0 +1,418 @@
+/* Reusable stage layer for interactive tool output and chat controls. */
+.tool-stage-focus,
+.tool-stage-focus__chat-dock,
+.tool-stage-focus__chat-content {
+    display: contents;
+}
+
+.tool-stage-focus {
+    --tool-stage-chat-compact-width: 340px;
+    --tool-stage-chat-input-height: 52px;
+    --tool-stage-chat-preview-height: 100px;
+    --tool-stage-chat-compact-height: var(--tool-stage-chat-input-height);
+    --tool-stage-chat-compact-gutter: 48px;
+}
+
+.tool-stage-focus__chat-compact-size {
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.tool-stage-focus.is-focused {
+    display: block;
+    position: absolute;
+    z-index: 30;
+    inset: 0;
+    pointer-events: none;
+}
+
+.tool-stage-focus__overlay {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    overflow: hidden;
+    color: var(--color-text-primary);
+    background: var(--bg-main);
+    pointer-events: auto;
+}
+
+/* 输入框的旧手机样式使用 2000 层级;浮动卡片由舞台统一管理,避免盖住侧面的展开按钮。 */
+#nexora-app .tool-stage-focus.is-focused #inputWrapper,
+#nexora-app .tool-stage-focus.is-focused #inputWrapper .input-container {
+    z-index: auto !important;
+}
+
+/* 舞台负责整张卡片的动画,输入区原有的尺寸过渡不能再次逐帧驱动消息排版。 */
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper,
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #messagesContainer {
+    transition: none;
+}
+
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper .input-container,
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper #messageInput,
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper .input-footer,
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper .token-footer-left,
+#nexora-app .tool-stage-focus:is(.is-focused, :has([data-tool-stage-scroll-restoring])) #inputWrapper #sendBtn {
+    transition: border-color 0.18s, background-color 0.18s, color 0.18s, box-shadow 0.18s;
+}
+
+/* display:none 后恢复显示会重新启动消息入场动画,已有记录无需再次逐条播放。 */
+#nexora-app .tool-stage-focus.is-focused #messagesContainer .message {
+    opacity: 1;
+    animation: none;
+}
+
+.tool-stage-focus__surface {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.tool-stage-focus__surface > * {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+}
+
+.tool-stage-focus__placeholder {
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    border: 1px dashed var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-sunken);
+}
+
+.tool-stage-focus__chat-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+    background: var(--color-bg-elevated);
+    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.12);
+    cursor: pointer;
+    transition: border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease, transform 0.22s ease;
+}
+
+.tool-stage-focus__chat-toggle:hover {
+    border-color: var(--color-border-strong);
+    background: var(--color-bg-sunken);
+}
+
+.tool-stage-focus__close:focus-visible,
+.tool-stage-focus__chat-toggle:focus-visible {
+    outline: 2px solid var(--color-accent-text);
+    outline-offset: 2px;
+}
+
+/* 退出入口放进工具提供的 header,复用标准图标按钮并避免标题挤压。 */
+.tool-stage-focus__close {
+    flex: 0 0 auto;
+}
+
+.tool-stage-focus__chat-dock,
+.tool-stage-focus__chat-compact-size {
+    position: absolute;
+    right: 24px;
+    bottom: 24px;
+}
+
+.tool-stage-focus__chat-dock {
+    z-index: 2;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+    /* 宽高只在切换布局时改变一次,展开/收起由裁剪动画完成。 */
+}
+
+.tool-stage-focus__chat-content {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    pointer-events: auto;
+}
+
+.tool-stage-focus.is-chat-condensed .tool-stage-focus__chat-dock,
+.tool-stage-focus.is-focused .tool-stage-focus__chat-compact-size {
+    display: block;
+    width: min(var(--tool-stage-chat-compact-width), calc(100% - var(--tool-stage-chat-compact-gutter)));
+    height: var(--tool-stage-chat-compact-height);
+    max-height: max(var(--tool-stage-chat-input-height), calc(100% - var(--tool-stage-controls-bottom) - 36px));
+}
+
+.tool-stage-focus.is-chat-condensed .tool-stage-focus__chat-content {
+    display: block;
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: var(--tool-stage-chat-input-height);
+}
+
+/* 展开入口放入输入卡片左侧留白,整条输入区共用同一个外框。 */
+.tool-stage-focus.is-chat-condensed .tool-stage-focus__chat-toggle {
+    position: absolute;
+    bottom: 10px;
+    top: auto;
+    left: 10px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.tool-stage-focus.is-chat-condensed .tool-stage-focus__chat-toggle:hover {
+    background: var(--color-bg-hover);
+}
+
+.tool-stage-focus__chat-toggle {
+    position: relative;
+    z-index: 3;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--gddp-border-radius);
+    pointer-events: auto;
+}
+
+.tool-stage-focus.is-chat-expanded .tool-stage-focus__chat-dock {
+    display: block;
+    width: min(480px, calc(100% - 48px));
+    height: min(82vh, 860px);
+    max-height: calc(100% - var(--tool-stage-controls-bottom) - 36px);
+}
+
+.tool-stage-focus.is-chat-expanded .tool-stage-focus__chat-content {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--bg-main);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+}
+
+.tool-stage-focus.is-chat-expanded .tool-stage-focus__chat-toggle {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+}
+
+.tool-stage-focus-enter-active,
+.tool-stage-focus-leave-active {
+    transition: opacity 0.24s ease;
+}
+
+.tool-stage-focus-enter-from,
+.tool-stage-focus-leave-to {
+    opacity: 0;
+}
+
+.tool-stage-focus-enter-active .tool-stage-focus__surface > *,
+.tool-stage-focus-leave-active .tool-stage-focus__surface > * {
+    transition: transform 0.24s ease;
+}
+
+.tool-stage-focus-enter-from .tool-stage-focus__surface > *,
+.tool-stage-focus-leave-to .tool-stage-focus__surface > * {
+    transform: scale(0.985);
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: block;
+    overflow: visible;
+    background: transparent;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view > :not(.input-dock) {
+    display: none !important;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view > .input-dock {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    overflow: visible;
+    pointer-events: auto;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .input-wrapper,
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .input-wrapper.input-wrapper-collapsed {
+    position: relative;
+    width: 100%;
+    max-width: none !important;
+    max-height: none !important;
+    height: 100%;
+    margin: 0 !important;
+    overflow: visible;
+    /* 原输入外壳有页面背景,悬浮时需透明,避免圆角卡片外残留矩形色块。 */
+    background: transparent;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view #inputWrapper .input-container.composer-compact {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    max-width: none !important;
+    max-height: none !important;
+    min-height: 52px;
+    height: 100%;
+    margin: 0;
+    padding: 4px 8px 4px 50px;
+    gap: 8px;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.12);
+    background: var(--color-bg-elevated);
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view #inputWrapper .input-container.composer-compact.input-collapsed {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 52px !important;
+    height: 100% !important;
+    padding: 4px 8px 4px 50px !important;
+    border: 1px solid var(--color-border) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.12) !important;
+    background: var(--color-bg-elevated) !important;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .input-options,
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .token-footer-left,
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .input-collapse-btn {
+    display: none !important;
+}
+
+/* 收起的是聊天记录和附加控件,输入框仍可直接输入;覆盖原输入区自己的收起样式。 */
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view #inputWrapper .input-container.composer-compact #messageInput {
+    display: block !important;
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 30px !important;
+    max-height: 40px !important;
+    margin: 0 !important;
+    padding: 4px 0 !important;
+    border: 0 !important;
+    overflow-y: auto !important;
+    opacity: 1 !important;
+    transform: none !important;
+    pointer-events: auto;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view .input-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 0 0 auto;
+    gap: 0;
+    width: auto;
+    min-height: 32px;
+    max-height: 32px !important;
+    height: 32px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view #inputWrapper .input-container.composer-compact .btn-send,
+#nexora-app .tool-stage-focus.is-chat-condensed .gddp-chat-view #inputWrapper .input-container.composer-compact.input-collapsed #sendBtn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px !important;
+    width: 32px !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 6px;
+    opacity: 1 !important;
+    overflow: visible !important;
+    transform: none !important;
+    pointer-events: auto !important;
+}
+
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--bg-main);
+}
+
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view .messages-area {
+    padding: 36px 18px 16px;
+    margin-bottom: 12px;
+}
+
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper {
+    position: relative;
+    width: calc(100% - 32px);
+    max-width: calc(100% - 32px) !important;
+    margin: 0 auto 16px;
+}
+
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .input-container {
+    max-width: 100%;
+}
+
+/* 浮动聊天仅保留上下文圆环,为正文与发送按钮让出窄面板内的空间。 */
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .input-container.composer-compact {
+    display: flex;
+}
+
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .input-options,
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .token-budget-usage,
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .token-mini,
+#nexora-app .tool-stage-focus.is-chat-expanded .gddp-chat-view #inputWrapper .queue-badge {
+    display: none;
+}
+
+@media (max-width: 640px) {
+    .tool-stage-focus__chat-dock,
+    .tool-stage-focus__chat-compact-size {
+        right: 12px;
+        bottom: 12px;
+    }
+
+    .tool-stage-focus.is-chat-condensed .tool-stage-focus__chat-dock,
+    .tool-stage-focus.is-focused .tool-stage-focus__chat-compact-size {
+        max-height: max(var(--tool-stage-chat-input-height), calc(100% - var(--tool-stage-controls-bottom) - 24px));
+    }
+
+    .tool-stage-focus.is-chat-expanded .tool-stage-focus__chat-dock {
+        right: 12px;
+        bottom: 12px;
+        width: calc(100% - 24px);
+        height: min(78vh, 760px);
+        max-height: calc(100% - var(--tool-stage-controls-bottom) - 24px);
+    }
+
+}
