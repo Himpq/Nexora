@@ -3,8 +3,8 @@
 
     原版参照(ChatDBServer/static/js/chat.js L14300-15005 + style.css L14644-14770):
       - 面板固定右侧垂直居中,滚动窗口显示轮次线(.turn-indicator-lines)
-      - 激活线 = 最后一条"消息中心点 ≤ 消息视口底边"的用户轮次,随消息区滚动实时跟随
-        (updateTurnIndicatorActive 按视口底边判定,反映用户正在阅读的消息区域)
+      - 激活线 = 最后一条"消息中心点 ≤ 消息视口中心"的用户轮次,随消息区滚动实时跟随
+      - 消息区隐藏或形态切换尚未恢复滚动时不测量,恢复后按新布局重建缓存
       - 首次加载/新轮次追加/点击跳转时,激活线在窗口内居中(scrollActiveTurnIndicatorIntoView)
       - hover 面板弹出预览列表,移出 300ms 延迟隐藏,进入弹层取消隐藏
       - 预览弹层 Teleport 到 body:面板带 transform,固定定位子元素必须脱离其包含块
@@ -59,6 +59,13 @@
     import type { ChatMessage } from '@/api/conversations'
     import { useConversationStore } from '@/stores/conversation'
     import { overlay } from '@/ui/overlay'
+    import { ChatScrollLayoutObserver } from '@/ui/chatScrollLayoutObserver'
+    import {
+        CHAT_SCROLL_LAYOUT_READY_EVENT,
+        isChatScrollLayoutReady,
+        readChatScrollElementBounds,
+        readChatScrollViewport,
+    } from '@/ui/chatScrollGeometry'
 
     const props = defineProps<{
         messages: ChatMessage[]
@@ -90,7 +97,7 @@
      * DOM 测量/rAF/定时器不进入响应式系统,避免测量本身触发重渲染
      */
     const state = {
-        /** 各用户轮次消息的中心点(offsetTop + offsetHeight/2),null = 尚未渲染 */
+        /** 各用户轮次在消息滚动区自身坐标中的中心点,null = 尚未渲染 */
         centers: [] as (number | null)[],
         /** 布局脏标记:消息增删/内容变化时置位,实际重建合并到下次需要时的 rAF */
         layoutDirty: true,
@@ -104,7 +111,9 @@
         jumping: false,
         /** messageIndex → DOM 元素缓存(对齐原版 domElement 复用,isConnected 校验失效) */
         elementCache: new Map<number, HTMLElement>(),
+        layoutReady: null as boolean | null,
     }
+    let layoutObserver: ChatScrollLayoutObserver | null = null
 
     /** 用户轮次列表(每条用户消息一轮,对齐原版 collectTurnIndicatorUserMessages) */
     const userTurns = computed(() => {
@@ -165,19 +174,24 @@
 
     /**
      * 重建中心点缓存(对齐原版 rebuildTurnIndicatorLayoutCacheChunked 的单遍批量策略):
-     * 先解析全部元素(querySelector 不触发重排),再单遍读 offsetTop/offsetHeight,
+     * 先解析全部元素(querySelector 不触发重排),再单遍读取相对于滚动区的矩形,
      * 整轮只强制一次重排
      */
-    function rebuildCentersCache(): void {
+    function rebuildCentersCache(): boolean {
         const container = getMessagesContainer()
         const turns = userTurns.value
 
         if (!container || !turns.length) {
             state.centers = []
             state.layoutDirty = false
-            return
+            return true
         }
 
+        if (!isChatScrollLayoutReady(container)) {
+            return false
+        }
+
+        const viewport = readChatScrollViewport(container)
         const elements: (HTMLElement | null)[] = new Array(turns.length)
 
         for (let index = 0; index < turns.length; index++) {
@@ -189,11 +203,14 @@
         for (let index = 0; index < turns.length; index++) {
             const element = elements[index]
 
-            centers[index] = element ? element.offsetTop + (element.offsetHeight / 2) : null
+            const bounds = element ? readChatScrollElementBounds(viewport, element) : null
+            centers[index] = bounds ? bounds.top + bounds.height / 2 : null
         }
 
         state.centers = centers
         state.layoutDirty = false
+
+        return true
     }
 
     /**
@@ -313,7 +330,7 @@
     function updateActive(options: TurnUpdateOptions = {}): void {
         const container = getMessagesContainer()
 
-        if (!container || !panelVisible.value || !userTurns.value.length) {
+        if (!container || !panelVisible.value || !userTurns.value.length || !isChatScrollLayoutReady(container)) {
             return
         }
 
@@ -348,15 +365,49 @@
 
     /** 布局重建调度:rAF 防重入,重建后按同一选项计算激活态(对齐原版 scheduleTurnIndicatorLayoutRefresh) */
     function scheduleLayoutRefresh(options: TurnUpdateOptions): void {
+        const container = getMessagesContainer()
+
+        if (!container || !panelVisible.value || !isChatScrollLayoutReady(container)) {
+            return
+        }
+
         if (state.layoutRefreshRaf) {
             return
         }
 
         state.layoutRefreshRaf = requestAnimationFrame(() => {
             state.layoutRefreshRaf = 0
-            rebuildCentersCache()
+
+            if (!rebuildCentersCache()) {
+                return
+            }
+
             updateActive(options)
         })
+    }
+
+    /** 尺寸和滚动恢复必须用同一就绪条件，不能把 display:none 的零位置记为有效缓存。 */
+    function handleLayoutChange(): void {
+        const container = getMessagesContainer()
+        const ready = !!container && panelVisible.value && isChatScrollLayoutReady(container)
+        state.layoutDirty = true
+
+        if (state.layoutReady !== ready) {
+            state.layoutReady = ready
+            console.info('[TurnIndicatorPanel] Layout readiness changed', {
+                ready,
+                viewportHeight: container?.clientHeight,
+                turnCount: userTurns.value.length,
+            })
+        }
+
+        if (!ready) {
+            hideTurnListPopup()
+
+            return
+        }
+
+        scheduleLayoutRefresh({ animate: false, forceScroll: false })
     }
 
     /** 消息区滚动监听:跳转中屏蔽(对齐原版 _isJumping),其余随滚动更新激活态 */
@@ -459,7 +510,7 @@
 
     /**
      * 轮次列表变化(对齐原版 appendTurnIndicatorLine / renderTurnIndicator 的分流):
-     *   - 用户轮次增加:最新一轮置为激活并在窗口内居中(forceScroll)
+     *   - 用户轮次增加:仍以实际阅读区域计算激活轮次,只让指示线居中(forceScroll)
      *   - 减少/替换(删除消息/切换会话):重建缓存后重算激活态
      * 等待 nextTick 保证 v-for 线条与消息 DOM 均已更新
      */
@@ -467,21 +518,15 @@
         const previousLength = previousTurns ? previousTurns.length : 0
 
         void nextTick(() => {
+            state.layoutDirty = true
+
             if (!panelVisible.value) {
                 activeTurnIndex.value = -1
                 hideTurnListPopup()
                 return
             }
 
-            state.layoutDirty = true
-
-            if (turns.length > previousLength) {
-                rebuildCentersCache()
-                setActiveTurnLine(turns.length - 1, { animate: false, forceScroll: true })
-                return
-            }
-
-            scheduleLayoutRefresh({ animate: false, forceScroll: false })
+            scheduleLayoutRefresh({ animate: false, forceScroll: turns.length > previousLength })
         })
     })
 
@@ -497,11 +542,21 @@
         scheduleLayoutRefresh({ animate: false, forceScroll: false })
     })
 
+    watch(() => conversationStore.messages.map((message) => message.index), () => {
+        void nextTick(() => { layoutObserver?.refresh() })
+    })
+
     onMounted(() => {
         const container = getMessagesContainer()
 
         if (container) {
             container.addEventListener('scroll', handleMessagesScroll, { passive: true })
+            container.addEventListener(CHAT_SCROLL_LAYOUT_READY_EVENT, handleLayoutChange)
+            layoutObserver = new ChatScrollLayoutObserver(
+                container,
+                () => container.querySelectorAll<HTMLElement>('.message'),
+                handleLayoutChange,
+            )
         }
 
         // 首次状态计算(对齐原版 loadConversationTurnIndicatorList 后的 forceScroll 居中)
@@ -516,8 +571,10 @@
 
         if (container) {
             container.removeEventListener('scroll', handleMessagesScroll)
+            container.removeEventListener(CHAT_SCROLL_LAYOUT_READY_EVENT, handleLayoutChange)
         }
 
+        layoutObserver?.destroy()
         if (state.activeUpdateRaf) {
             cancelAnimationFrame(state.activeUpdateRaf)
         }

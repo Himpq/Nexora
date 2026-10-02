@@ -12,9 +12,7 @@
  */
 
 import { ref } from 'vue'
-
-/** 距底部多少像素内视为"位于底部" */
-const BOTTOM_THRESHOLD_PX = 80
+import { CHAT_SCROLL_BOTTOM_THRESHOLD, isChatScrollLayoutReady } from '@/ui/chatScrollGeometry'
 
 export function useBottomFollow() {
     /** 是否跟随底部(用户上滑离开底部后为 false,回到底部附近恢复 true) */
@@ -22,16 +20,23 @@ export function useBottomFollow() {
 
     /** 依据容器当前滚动位置更新跟随状态(在 scroll 监听中调用) */
     function syncWithScroll(container: HTMLElement): void {
+
+        if (!isChatScrollLayoutReady(container)) {
+            return
+        }
+
         const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight
 
-        following.value = distanceToBottom <= BOTTOM_THRESHOLD_PX
+        following.value = distanceToBottom <= CHAT_SCROLL_BOTTOM_THRESHOLD
     }
 
     /** 恢复跟随并立即滚到底部(会话加载完成等场景) */
     function followNow(container: HTMLElement): void {
         following.value = true
 
-        container.scrollTop = container.scrollHeight
+        if (isChatScrollLayoutReady(container)) {
+            container.scrollTop = container.scrollHeight
+        }
     }
 
     /** 恢复跟随(发送/重答等需要回到最新消息的场景;实际滚动由消息变化监听执行) */

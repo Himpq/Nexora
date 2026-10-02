@@ -1,0 +1,5 @@
+/* 切换形态复用的已有记录保持最终位置，正常界面新增记录仍使用原入场动画。 */
+#nexora-app .tool-stage-focus__chat-content [data-tool-stage-scroll-preserved] {
+    animation: none;
+    opacity: 1;
+}
