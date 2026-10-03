@@ -61,6 +61,24 @@
       ]
     ],
     [
+      "/api/admin/diagnostics/memory",
+      [
+        "GET"
+      ]
+    ],
+    [
+      "/api/admin/diagnostics/memory/tracemalloc/start",
+      [
+        "POST"
+      ]
+    ],
+    [
+      "/api/admin/diagnostics/memory/tracemalloc/stop",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/admin/gen-image/apis",
       [
         "GET"

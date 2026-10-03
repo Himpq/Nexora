@@ -35,8 +35,10 @@ from basis.TokenUsage import (
     usage_record_total_tokens,
 )
 from basis.User import load_users, save_users
+from .memory_diagnostics import memory_diagnostics_bp
 
 stats_bp = Blueprint('observability_stats', __name__)
+stats_bp.register_blueprint(memory_diagnostics_bp)
 
 # 与 server.py 顶部常量同源的数据文件路径（ChatDBServer 根 = 本文件向上 4 级）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
