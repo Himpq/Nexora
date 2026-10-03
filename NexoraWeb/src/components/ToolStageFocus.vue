@@ -8,6 +8,7 @@
             'is-chat-condensed': focused && !chatVisible,
             'is-chat-expanded': focused && chatVisible,
             'has-reply-preview': focused && replyPreviewVisible,
+            'is-reply-preview-compact': focused && replyPreviewCompact,
         }"
     >
         <Transition
@@ -69,11 +70,12 @@
 </template>
 
 <script setup lang="ts">
-    import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import ToolStageChatContent from './ToolStageChatContent.vue'
     import ToolStageReplyPreview from './ToolStageReplyPreview.vue'
     import { ToolStageChatMotion } from '@/ui/toolStageChatMotion'
+    import { readToolStageReplyPreview } from '@/ui/toolStageReplyPreview'
 
     import {
         notifyToolStageResize,
@@ -99,6 +101,15 @@
     const chatDock = ref<HTMLDivElement | null>(null)
     const compactSize = ref<HTMLDivElement | null>(null)
     const replyPreviewVisible = ref(false)
+    const replyPreviewCompact = computed(() => {
+        if (!props.reply) {
+            return false
+        }
+
+        const preview = readToolStageReplyPreview(props.reply)
+
+        return preview?.completed === true && preview.phase === 'content'
+    })
     const chatContent = ref<InstanceType<typeof ToolStageChatContent> | null>(null)
     const activeTitle = ref('Tool')
     const activeControlsTarget = ref<HTMLElement | null>(null)

@@ -5,6 +5,7 @@ export interface ToolStageReplyPreviewState {
     phase: 'thinking' | 'content' | 'tool' | 'waiting'
     title: string
     text: string
+    completed: boolean
 }
 
 /** 按真实输出顺序选择当前阶段,不用整轮扁平字段判断,避免工具后再次思考仍显示旧正文。 */
@@ -16,27 +17,29 @@ export function readToolStageReplyPreview(source: ToolStageReplySource): ToolSta
         return null
     }
 
+    const completed = source.completed === true
+
     switch (latest.type) {
         case 'reasoning':
-            return { phase: 'thinking', title: '正在思考', text: latest.text }
+            return { phase: 'thinking', title: '正在思考', text: latest.text, completed }
 
         case 'content':
         case 'error':
-            return { phase: 'content', title: '', text: latest.text }
+            return { phase: 'content', title: '', text: latest.text, completed }
 
         case 'function_call':
         case 'function_result': {
             const pending = readPendingToolCalls(segments)
 
             if (pending.length > 0) {
-                return { phase: 'tool', title: '正在调用工具', text: pending.map(readToolName).join('\n') }
+                return { phase: 'tool', title: '正在调用工具', text: pending.map(readToolName).join('\n'), completed }
             }
 
-            return { phase: 'waiting', title: '工具调用完成', text: readToolName(latest) }
+            return { phase: 'waiting', title: '工具调用完成', text: readToolName(latest), completed }
         }
 
         case 'question':
-            return { phase: 'waiting', title: '等待你的回答', text: '' }
+            return { phase: 'waiting', title: '等待你的回答', text: '', completed }
     }
 }
 
@@ -74,8 +77,28 @@ function readToolName(segment: MessageSegment): string {
     return segment.name && segment.name !== 'tool' ? segment.name : ''
 }
 
-/** 截取有限长度的末尾,保留完整字符,思考和正文共用同一个滑动窗口。 */
-export function clipToolStagePreviewText(text: string, length = 480): string {
+/** 流式预览保留末尾;完成态保留开头,避免收缩后露出回复中段。 */
+export function clipToolStagePreviewText(text: string, length = 480, fromStart = false): string {
+
+    if (fromStart) {
+        let end = Math.min(text.length, length)
+
+        if (end < text.length) {
+            const lastCodeUnit = text.charCodeAt(end - 1)
+            const nextCodeUnit = text.charCodeAt(end)
+            const splitsSurrogatePair = lastCodeUnit >= 0xD800
+                && lastCodeUnit <= 0xDBFF
+                && nextCodeUnit >= 0xDC00
+                && nextCodeUnit <= 0xDFFF
+
+            if (splitsSurrogatePair) {
+                end -= 1
+            }
+        }
+
+        return text.slice(0, end)
+    }
+
     let start = Math.max(0, text.length - length)
     const firstCodeUnit = text.charCodeAt(start)
 

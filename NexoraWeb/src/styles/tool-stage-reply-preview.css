@@ -1,6 +1,10 @@
-/* 预览与最小化输入框组成同一张卡片,正文更新不改变窗口尺寸。 */
+/* 流式期间显示较高预览窗;正文结束后切到两行高度。 */
 .tool-stage-focus.has-reply-preview {
     --tool-stage-chat-compact-height: calc(var(--tool-stage-chat-input-height) + var(--tool-stage-chat-preview-height));
+}
+
+.tool-stage-focus.is-reply-preview-compact.has-reply-preview {
+    --tool-stage-chat-preview-height: var(--tool-stage-chat-preview-compact-height);
 }
 
 .tool-stage-focus.is-chat-condensed.has-reply-preview .tool-stage-focus__chat-dock {
@@ -8,6 +12,11 @@
     overflow: hidden;
     background: var(--color-bg-elevated);
     box-shadow: inset 0 0 0 1px var(--color-border), 0 5px 18px rgba(0, 0, 0, 0.12);
+}
+
+.tool-stage-focus.is-chat-condensed.has-reply-preview .tool-stage-focus__chat-dock,
+.tool-stage-focus.is-chat-condensed.has-reply-preview .tool-stage-reply-preview {
+    transition: height 220ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 .tool-stage-reply-preview {
@@ -18,7 +27,7 @@
     top: 0;
     left: 0;
     right: 0;
-    height: calc(100% - var(--tool-stage-chat-input-height));
+    height: var(--tool-stage-chat-preview-height);
     overflow: hidden;
     border-bottom: 1px solid var(--color-border);
     color: var(--color-text-primary);
@@ -44,6 +53,14 @@
     user-select: text;
 }
 
+.tool-stage-reply-preview[data-compact="true"] .tool-stage-reply-preview__window {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
 .tool-stage-reply-preview__status {
     flex: 0 0 auto;
     padding: 8px 14px 0;
@@ -60,4 +77,11 @@
     border: 0 !important;
     border-radius: 0 0 12px 12px !important;
     box-shadow: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tool-stage-focus.is-chat-condensed.has-reply-preview .tool-stage-focus__chat-dock,
+    .tool-stage-focus.is-chat-condensed.has-reply-preview .tool-stage-reply-preview {
+        transition: none;
+    }
 }

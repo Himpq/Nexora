@@ -6,6 +6,7 @@ export const TOOL_STAGE_RESIZE_EVENT = 'nexora:tool-stage-resize'
 /** 通用预览消费当前回复的有序输出分段,不依赖地图或具体会话存储。 */
 export interface ToolStageReplySource {
     segments?: readonly MessageSegment[]
+    completed?: boolean
 }
 
 export interface ToolStageOpenRequest {

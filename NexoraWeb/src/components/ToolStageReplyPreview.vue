@@ -3,8 +3,9 @@
         v-show="visible"
         class="tool-stage-reply-preview"
         :data-phase="state?.phase"
+        :data-compact="compact"
         role="region"
-        aria-label="正在生成的回复预览"
+        aria-label="回复预览"
     >
         <div v-if="state?.title" class="tool-stage-reply-preview__status">{{ state.title }}</div>
         <div ref="previewWindow" class="tool-stage-reply-preview__window">{{ excerpt }}</div>
@@ -40,10 +41,18 @@
         return readToolStageReplyPreview(props.reply)
     })
 
-    const excerpt = computed(() => state.value ? clipToolStagePreviewText(state.value.text) : '')
+    /** 完成的正文预览回到开头,并把窗口限制为两行。 */
+    const compact = computed(() => {
+        const current = state.value
+
+        return current?.completed === true && current.phase === 'content'
+    })
+    const excerpt = computed(() => state.value
+        ? clipToolStagePreviewText(state.value.text, 480, compact.value)
+        : '')
     const visible = computed(() => !!state.value && (state.value.title !== '' || excerpt.value !== ''))
 
-    /** 同一帧内的增量只滚动一次,固定窗口始终显示最新的几行。 */
+    /** 同一帧内只调整一次位置;流式追尾,完成后回到正文开头。 */
     function scheduleScroll(): void {
 
         if (scrollFrame !== 0) {
@@ -55,13 +64,13 @@
 
             if (visible.value) {
                 const element = previewWindow.value!
-                element.scrollTop = element.scrollHeight
+                element.scrollTop = compact.value ? 0 : element.scrollHeight
             }
         })
     }
 
     watch(visible, (value) => { emit('visibility-change', value) }, { immediate: true, flush: 'sync' })
-    watch(excerpt, scheduleScroll, { flush: 'post' })
+    watch([excerpt, compact], scheduleScroll, { flush: 'post' })
 
     // 仅记录阶段切换,不记录思考正文、工具参数和结果。
     watch(() => state.value?.phase, (phase) => {

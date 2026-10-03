@@ -9,6 +9,8 @@
     --tool-stage-chat-compact-width: 340px;
     --tool-stage-chat-input-height: 52px;
     --tool-stage-chat-preview-height: 100px;
+    /* 正文完成后留出两行文字及上下留白。 */
+    --tool-stage-chat-preview-compact-height: 64px;
     --tool-stage-chat-compact-height: var(--tool-stage-chat-input-height);
     --tool-stage-chat-compact-gutter: 48px;
 }
