@@ -88,8 +88,8 @@ export class HttpUtil {
     }
 
     // ---------- 传输 ----------
-    static async get(pathOrUrl: string, headers?: Record<string, string>): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers);
+    static async get(pathOrUrl: string, headers?: Record<string, string>, timeoutMs?: number): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers, timeoutMs);
     }
 
     static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
@@ -235,11 +235,14 @@ export class HttpUtil {
     }
 
     // ---------- 内部实现 ----------
-    private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object, headers?: Record<string, string>): Promise<HttpResult> {
+    private static async send(method: http.RequestMethod, pathOrUrl: string, payload?: Object,
+        headers?: Record<string, string>, timeoutMs?: number): Promise<HttpResult> {
         const url: string = HttpUtil.resolveUrl(pathOrUrl);
         const requestId: number = HttpUtil.nextRequestId();
         const startedAt: number = Date.now();
         const route: string = HttpUtil.pathForLog(url.length > 0 ? url : pathOrUrl);
+        const connectTimeout: number = timeoutMs === undefined ? CONNECT_TIMEOUT : timeoutMs;
+        const readTimeout: number = timeoutMs === undefined ? READ_TIMEOUT : timeoutMs;
 
         if (url.length === 0) {
             hilog.error(DOMAIN, TAG, 'request start id=%{public}d method=%{public}s route=%{public}s rejected: empty url',
@@ -259,8 +262,8 @@ export class HttpUtil {
                     header: HttpUtil.buildHeaders(headers),
                     extraData: payload === undefined ? undefined : JSON.stringify(payload),
                     expectDataType: http.HttpDataType.STRING,
-                    connectTimeout: CONNECT_TIMEOUT,
-                    readTimeout: READ_TIMEOUT,
+                    connectTimeout: connectTimeout,
+                    readTimeout: readTimeout,
                     remoteValidation: 'skip'
                 }, (err: BusinessError, data: http.HttpResponse) => {
                     try {

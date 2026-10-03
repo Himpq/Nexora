@@ -27,13 +27,16 @@ export class MapRendererConfig {
     // 按需拉取；并发调用共享同一个请求，失败返回空串且不缓存
     static async ensure(): Promise<string> {
         if (MapRendererConfig.cachedJson.length > 0) {
+            hilog.info(DOMAIN, TAG, 'map renderer config cache hit');
             return MapRendererConfig.cachedJson;
         }
 
         if (MapRendererConfig.pending !== null) {
+            hilog.info(DOMAIN, TAG, 'map renderer config wait for shared request');
             return MapRendererConfig.pending;
         }
 
+        hilog.info(DOMAIN, TAG, 'map renderer config request queued');
         MapRendererConfig.pending = MapRendererConfig.fetchConfig();
 
         try {
@@ -44,10 +47,14 @@ export class MapRendererConfig {
     }
 
     private static async fetchConfig(): Promise<string> {
+        const startedAt: number = Date.now();
+        hilog.info(DOMAIN, TAG, 'map renderer config request start');
         const result = await ApiService.fetchMapRendererConfig();
 
         if (!result.success) {
-            hilog.warn(DOMAIN, TAG, 'map renderer config unavailable: %{public}s', result.message);
+            hilog.warn(DOMAIN, TAG,
+                'map renderer config unavailable durationMs=%{public}d message=%{public}s',
+                Date.now() - startedAt, result.message);
             return '';
         }
 
@@ -60,7 +67,8 @@ export class MapRendererConfig {
         };
 
         MapRendererConfig.cachedJson = JSON.stringify(payload);
-        hilog.info(DOMAIN, TAG, 'map renderer config ready provider=%{public}s', result.provider);
+        hilog.info(DOMAIN, TAG, 'map renderer config ready durationMs=%{public}d provider=%{public}s',
+            Date.now() - startedAt, result.provider);
 
         return MapRendererConfig.cachedJson;
     }

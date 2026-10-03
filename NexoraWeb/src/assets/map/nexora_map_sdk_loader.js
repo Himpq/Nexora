@@ -1,12 +1,13 @@
-/** 所有地图共用 SDK 的加载承诺,命名空间出现不能代表构造函数已准备好。 */
+/** 同一地图上下文共用 SDK 加载承诺,命名空间出现不能代表构造函数已准备好。 */
 class NexoraMapSdkLoader {
-    constructor(provider, namespace, describe, scriptUrl, usesCallback) {
+    constructor(provider, namespace, describe, scriptUrl, usesCallback, host = window) {
         this.provider = provider;
         this.namespace = namespace;
         this.describe = describe;
         this.scriptUrl = scriptUrl;
         this.usesCallback = usesCallback;
         this.pending = null;
+        this.host = host;
     }
 
     validate(sdk, stage) {
@@ -23,25 +24,34 @@ class NexoraMapSdkLoader {
     }
 
     /** 正在加载的地图必须先等待同一回调,禁止复用 SDK 引导阶段的空命名空间。 */
-    load(config) {
+    load(config, signal) {
 
         if (this.pending) {
             return this.pending;
         }
 
-        if (window[this.namespace]) {
-            return Promise.resolve(this.validate(window[this.namespace], 'existing'));
+        if (this.host[this.namespace]) {
+            return Promise.resolve(this.validate(this.host[this.namespace], 'existing'));
         }
 
         const callback = `__nexoraMapSdk_${this.provider}_${Date.now()}`;
         const url = this.scriptUrl(config, callback);
         this.pending = new Promise((resolve, reject) => {
-            const script = document.createElement('script');
+            const script = this.host.document.createElement('script');
+            const cleanup = () => {
+                delete this.host[callback];
+                signal?.removeEventListener('abort', aborted);
+            };
+            const aborted = () => {
+                cleanup();
+                script.remove();
+                reject(new DOMException('地图 SDK 加载已取消', 'AbortError'));
+            };
             const complete = () => {
-                delete window[callback];
+                cleanup();
 
                 try {
-                    const sdk = this.validate(window[this.namespace], 'loaded');
+                    const sdk = this.validate(this.host[this.namespace], 'loaded');
                     console.info('[NexoraMapSdkLoader] SDK ready', { provider: this.provider, constructors: this.describe(sdk) });
                     resolve(sdk);
                 } catch (error) {
@@ -50,42 +60,55 @@ class NexoraMapSdkLoader {
             };
 
             if (this.usesCallback) {
-                window[callback] = complete;
+                this.host[callback] = complete;
             } else {
                 script.onload = complete;
             }
 
             script.onerror = () => {
-                delete window[callback];
+                cleanup();
                 console.error('[NexoraMapSdkLoader] Script load failed', { provider: this.provider });
                 reject(new Error(`${this.namespace} 地图 SDK 脚本加载失败`));
             };
             script.src = url;
             script.async = true;
+
+            if (signal?.aborted) {
+                aborted();
+
+                return;
+            }
+
+            signal?.addEventListener('abort', aborted, { once: true });
             console.info('[NexoraMapSdkLoader] Loading SDK', { provider: this.provider });
-            document.head.appendChild(script);
+            this.host.document.head.appendChild(script);
         });
 
         return this.pending;
     }
 }
 
-const baiduLoader = new NexoraMapSdkLoader(
-    'baidu',
-    'BMapGL',
-    (sdk) => ({ Map: typeof sdk?.Map, Point: typeof sdk?.Point, ScaleControl: typeof sdk?.ScaleControl, ZoomControl: typeof sdk?.ZoomControl }),
-    (config, callback) => {
-        const ak = String(config.baiduMapAk || '').trim();
+const baiduLoaders = new WeakMap();
 
-        if (!ak) {
-            throw new Error('NEXORA_MAP_RENDERER_CONFIG.baiduMapAk 未配置');
-        }
+function createBaiduLoader(host) {
+    return new NexoraMapSdkLoader(
+        'baidu',
+        'BMapGL',
+        (sdk) => ({ Map: typeof sdk?.Map, Point: typeof sdk?.Point, ScaleControl: typeof sdk?.ScaleControl, ZoomControl: typeof sdk?.ZoomControl }),
+        (config, callback) => {
+            const ak = String(config.baiduMapAk || '').trim();
 
-        const version = String(config.baiduMapVersion || '1.0').trim();
-        return `https://api.map.baidu.com/api?type=webgl&v=${encodeURIComponent(version)}&ak=${encodeURIComponent(ak)}&callback=${encodeURIComponent(callback)}`;
-    },
-    true,
-);
+            if (!ak) {
+                throw new Error('NEXORA_MAP_RENDERER_CONFIG.baiduMapAk 未配置');
+            }
+
+            const version = String(config.baiduMapVersion || '1.0').trim();
+            return `https://api.map.baidu.com/api?type=webgl&v=${encodeURIComponent(version)}&ak=${encodeURIComponent(ak)}&callback=${encodeURIComponent(callback)}`;
+        },
+        true,
+        host,
+    );
+}
 
 const tiandituLoader = new NexoraMapSdkLoader(
     'tianditu',
@@ -104,8 +127,12 @@ const tiandituLoader = new NexoraMapSdkLoader(
     false,
 );
 
-export function loadBaiduMapGl(config) {
-    return baiduLoader.load(config);
+export function loadBaiduMapGl(config, host = window, signal) {
+    if (!baiduLoaders.has(host)) {
+        baiduLoaders.set(host, createBaiduLoader(host));
+    }
+
+    return baiduLoaders.get(host).load(config, signal);
 }
 
 export function loadTiandituMap(config) {

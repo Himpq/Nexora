@@ -116,29 +116,26 @@ export class NexoraMapCallouts {
         this.clusters.forEach((cluster) => cluster.setActive(index));
     }
 
-/**
- * 点击卡片先做选中,只有目标真的落在视野外才移动相机。
- *
- * 原实现无条件 panTo:卡片本来就在视野内也会把地图拉走,用户看到的是"点击变成拖动地图",
- * 卡片自身反而像没响应。这与上面 aria-description 声明的"标记位于当前视野外,点击可定位"
- * 也不一致——声明限定了视野外,实现却没限定。
- *
- * 合并圈走 fit 不受此限制:点击圈的语义是"放大拆开成员",即使圈已经在视野内也需要重新取景。
- */
-focusEntry(entry) {
-    this.selectedIndex = entry.index;
-    this.setActive(entry.index);
+    /** 首次点击标签时定位并高亮;再次点击只取消高亮,不改变地图视野。 */
+    focusEntry(entry) {
+        if (this.selectedIndex === entry.index) {
+            this.selectedIndex = -1;
+            this.setActive(-1);
 
-    if (entry.cluster) {
-        this.view.fit(entry.cluster.members.map((member) => member.marker.point));
+            return;
+        }
 
-        return;
-    }
+        this.selectedIndex = entry.index;
+        this.setActive(entry.index);
 
-    if (!entry.visible) {
+        if (entry.cluster) {
+            this.view.fit(entry.cluster.members.map((member) => member.marker.point));
+
+            return;
+        }
+
         this.view.focus(entry.marker.point);
     }
-}
 
     /** 仅成员变化时调整标签容器；原按钮复用，普通拖动不会触发 DOM 重排。 */
     updateClusterLayout(groups) {

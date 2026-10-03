@@ -1,10 +1,11 @@
 /** 两种 SDK 统一提供地图容器中的像素坐标,不使用经纬度比例猜测屏幕位置。 */
 export class NexoraMapView {
-    constructor(map, createPoint, projectPoint, events) {
+    constructor(map, createPoint, projectPoint, events, createArray = (points) => points) {
         this.map = map;
         this.createPoint = createPoint;
         this.projectPoint = projectPoint;
         this.events = events;
+        this.createArray = createArray;
     }
 
     project(point) {
@@ -23,7 +24,7 @@ export class NexoraMapView {
 
     /** 点击合并圈时让 SDK 放大到成员范围，下一帧按实际点距拆开。 */
     fit(points) {
-        this.map.setViewport(points.map((point) => this.createPoint(point)));
+        this.map.setViewport(this.createArray(points.map((point) => this.createPoint(point))));
     }
 
     /** SDK 在缩放中间未必逐帧发事件,从开始到结束持续同步真实投影坐标。 */
@@ -56,12 +57,13 @@ export class NexoraMapView {
 }
 
 export class BaiduMapView extends NexoraMapView {
-    constructor(BMapGL, map) {
+    constructor(BMapGL, map, host) {
         super(
             map,
             (point) => new BMapGL.Point(point.lng, point.lat),
             (point) => map.pointToPixel(point),
             ['moving', 'moveend', 'zoomend', 'resize', 'tilesloaded'],
+            (points) => host.Array.from(points),
         );
     }
 }

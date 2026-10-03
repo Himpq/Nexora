@@ -1,14 +1,12 @@
 import { NexoraMapCallouts } from './nexora_map_callouts.js';
-import { BaiduMapView, TiandituMapView } from './nexora_map_view.js';
-import { loadBaiduMapGl, loadTiandituMap } from './nexora_map_sdk_loader.js';
+import { NexoraMapPool } from './nexora_map_pool.js';
+import { BAIDU_PROVIDER, isSupportedMapProvider, mountMapProvider, releaseMapProvider } from './nexora_map_providers.js';
+import { TOOL_STAGE_OPEN_EVENT, TOOL_STAGE_RESIZE_EVENT } from '@/ui/toolStage';
 import './nexora_map_callouts.css';
 import './nexora_map_clusters.css';
 
 (function () {
     'use strict';
-
-    const TOOL_STAGE_OPEN_EVENT = 'nexora:tool-stage-open';
-    const TOOL_STAGE_RESIZE_EVENT = 'nexora:tool-stage-resize';
 
     const MAP_SELECTOR = [
         'pre > code.language-nexora-map',
@@ -21,11 +19,19 @@ import './nexora_map_clusters.css';
 
     const MAP_KIND = 'nexora-map';
     const MAP_REF_KIND = 'nexora-map-ref';
-    const BAIDU_PROVIDER = 'baidu';
-    const TIANDITU_PROVIDER = 'tianditu';
-    const SUPPORTED_PROVIDERS = new Set([BAIDU_PROVIDER, TIANDITU_PROVIDER]);
     const MIN_ZOOM = 3;
     const MAX_ZOOM = 19;
+
+    /**
+     * 同时存活的地图实例上限。
+     *
+     * 一张 WebGL 地图实测占用 200MB 以上:
+     * 两个名额优先给当前可见和最近离屏的地图,长会话的实例数仍保持常数级。
+     */
+    const MAX_LIVE_MAPS = 2;
+
+    /** 提前建图距离覆盖一次常见快速滚动,让 iframe 初始化在进入视口前完成。 */
+    const MAP_ENTER_MARGIN = '900px 0px';
 
     let mapSeq = 0;
     let scanTimer = null;
@@ -225,20 +231,17 @@ import './nexora_map_clusters.css';
 
         const provider = String(payload.provider || BAIDU_PROVIDER).trim().toLowerCase();
 
-        if (!SUPPORTED_PROVIDERS.has(provider)) {
+        if (!isSupportedMapProvider(provider)) {
             throw new Error(`当前地图渲染器不支持 ${provider}`);
         }
 
         const markers = normalizeMarkers(payload);
         const polylines = normalizePolylines(payload);
-        const viewportPoints = [];
-
-        markers.forEach((marker) => viewportPoints.push(marker.point));
-        polylines.forEach((polyline) => viewportPoints.push(...polyline.points));
+        const viewportBounds = readViewportBounds(markers, polylines);
 
         const center = payload.center
             ? normalizeCoordinate(payload.center, 'center')
-            : viewportPoints[0];
+            : readBoundsCenter(viewportBounds);
 
         if (!center) {
             throw new Error('地图 payload 缺少 center 或可渲染坐标');
@@ -253,9 +256,35 @@ import './nexora_map_clusters.css';
             zoom: normalizeZoom(payload.zoom),
             markers,
             polylines,
-            viewportPoints,
+            viewportBounds,
             fitViewport: payload.fitViewport !== false && (!payload.viewport || payload.viewport.fitBounds !== false)
         };
+    }
+
+    /**
+     * 只保留外接矩形。
+     *
+     * 原实现把所有标记点和路线点的引用拼成平铺数组;取景只需要矩形的两个角点,
+     * 不必保留额外的引用数组或为取景再次构造全部 SDK 坐标。
+     */
+    function readViewportBounds(markers, polylines) {
+        const bounds = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
+
+        const include = (point) => {
+            bounds.west = Math.min(bounds.west, point.lng);
+            bounds.east = Math.max(bounds.east, point.lng);
+            bounds.south = Math.min(bounds.south, point.lat);
+            bounds.north = Math.max(bounds.north, point.lat);
+        };
+
+        markers.forEach((marker) => include(marker.point));
+        polylines.forEach((polyline) => polyline.points.forEach(include));
+
+        return Number.isFinite(bounds.west) ? bounds : null;
+    }
+
+    function readBoundsCenter(bounds) {
+        return bounds ? { lng: (bounds.west + bounds.east) / 2, lat: (bounds.south + bounds.north) / 2 } : null;
     }
 
     function getCodeLanguage(codeEl) {
@@ -329,7 +358,7 @@ import './nexora_map_clusters.css';
         ).trim();
     }
 
-    async function resolveMapPayload(payload) {
+    async function resolveMapPayload(payload, signal) {
         const kind = String((payload && (payload.type || payload.kind || payload.renderer)) || '').trim().toLowerCase();
 
         if (kind !== MAP_REF_KIND) {
@@ -349,6 +378,7 @@ import './nexora_map_clusters.css';
 
         const response = await fetch(`/api/map/conversations/${encodeURIComponent(conversationId)}/maps/${encodeURIComponent(mapId)}/scene`, {
             method: 'GET',
+            signal,
             credentials: 'same-origin',
             headers: {
                 'Accept': 'application/json'
@@ -378,7 +408,6 @@ import './nexora_map_clusters.css';
 
         const status = document.createElement('div');
         status.className = 'nexora-map-card-status';
-        status.textContent = '加载中';
 
         const body = document.createElement('div');
         body.className = 'nexora-map-card-body';
@@ -390,27 +419,29 @@ import './nexora_map_clusters.css';
         const footer = document.createElement('div');
         footer.className = 'nexora-map-card-footer';
 
-        body.appendChild(canvas);
-        header.appendChild(title);
-        header.appendChild(status);
-        shell.appendChild(header);
-        shell.appendChild(body);
-        shell.appendChild(footer);
+        body.append(canvas);
+        header.append(title, status);
+        shell.append(header, body, footer);
 
-        return {
-            shell,
-            header,
-            title,
-            status,
-            body,
-            canvas,
-            footer
-        };
+        const parts = { shell, header, title, status, body, canvas, footer };
+        const expand = createToolStageButton(parts);
+
+        // 放大入口必须常驻:挂起状态的卡片没有 SDK 实例,但它仍然是可放大的地图结果。
+        footer.append(expand);
+        setCardState(parts, 'suspended');
+        setStatus(parts, '待加载');
+
+        return { ...parts, expand };
     }
 
-    function setStatus(parts, text, state) {
+    function setStatus(parts, text) {
         parts.status.textContent = text;
-        parts.status.classList.toggle('is-error', state === 'error');
+        parts.status.classList.remove('is-error');
+    }
+
+    /** 卡片状态统一由壳属性驱动:状态标签和占位提示的样式都挂在这一处。 */
+    function setCardState(parts, state) {
+        parts.shell.dataset.nexoraMapState = state;
     }
 
     function createToolStageButton(parts) {
@@ -464,12 +495,13 @@ import './nexora_map_clusters.css';
             items.push(config.subtitle);
         }
 
-        parts.footer.replaceChildren(...items.map((item) => {
+        const stats = items.map((item) => {
             const span = document.createElement('span');
             span.textContent = item;
             return span;
-        }));
-        parts.footer.appendChild(createToolStageButton(parts));
+        });
+
+        parts.footer.replaceChildren(...stats, parts.expand);
     }
 
     function renderError(parts, error) {
@@ -481,69 +513,23 @@ import './nexora_map_clusters.css';
 
         parts.body.appendChild(errorEl);
         parts.footer.replaceChildren();
-        setStatus(parts, '失败', 'error');
+        parts.status.classList.add('is-error');
+        parts.status.textContent = '失败';
+        setCardState(parts, 'error');
     }
 
-    function toBaiduPoint(BMapGL, point) {
-        return new BMapGL.Point(point.lng, point.lat);
-    }
-
-    function addPolyline(BMapGL, map, polylineConfig) {
-        const points = polylineConfig.points.map((point) => toBaiduPoint(BMapGL, point));
-        const overlays = [];
-
-        if (polylineConfig.outlineColor && Number.isFinite(polylineConfig.outlineWeight) && polylineConfig.outlineWeight > polylineConfig.weight) {
-            const outline = new BMapGL.Polyline(points, {
-                strokeColor: polylineConfig.outlineColor,
-                strokeWeight: polylineConfig.outlineWeight,
-                strokeOpacity: 0.86
-            });
-
-            map.addOverlay(outline);
-            overlays.push(outline);
-        }
-
-        const polyline = new BMapGL.Polyline(points, {
-            strokeColor: polylineConfig.color,
-            strokeWeight: polylineConfig.weight,
-            strokeOpacity: polylineConfig.opacity
-        });
-
-        map.addOverlay(polyline);
-        overlays.push(polyline);
-
-        return overlays;
-    }
-
-    function toTiandituPoint(T, point) {
-        return new T.LngLat(point.lng, point.lat);
-    }
-
-    function addTiandituPolyline(T, map, polylineConfig) {
-        const points = polylineConfig.points.map((point) => toTiandituPoint(T, point));
-        const overlays = [];
-
-        if (polylineConfig.outlineColor && Number.isFinite(polylineConfig.outlineWeight) && polylineConfig.outlineWeight > polylineConfig.weight) {
-            const outline = new T.Polyline(points, {
-                color: polylineConfig.outlineColor,
-                weight: polylineConfig.outlineWeight,
-                opacity: 0.86
-            });
-
-            map.addOverLay(outline);
-            overlays.push(outline);
-        }
-
-        const polyline = new T.Polyline(points, {
-            color: polylineConfig.color,
-            weight: polylineConfig.weight,
-            opacity: polylineConfig.opacity
-        });
-
-        map.addOverLay(polyline);
-        overlays.push(polyline);
-
-        return overlays;
+    /**
+     * 挂起态:清掉 SDK 留下的瓦片与控件节点,卡片只保留标题、统计和重新进入视野的提示。
+     * canvas 必须清空,否则已销毁实例的 DOM 会一直占着内存。
+     */
+    function renderSuspended(parts) {
+        parts.canvas.replaceChildren();
+        parts.body.replaceChildren(parts.canvas);
+        parts.body.classList.remove('has-map-callouts');
+        parts.footer.append(parts.expand);
+        delete parts.canvas.dataset.mapProvider;
+        setStatus(parts, '待加载');
+        setCardState(parts, 'suspended');
     }
 
     function bindToolStageResize(parts, map) {
@@ -560,105 +546,131 @@ import './nexora_map_clusters.css';
         return () => parts.shell.removeEventListener(TOOL_STAGE_RESIZE_EVENT, resize);
     }
 
-    async function renderBaiduMap(parts, resolvedPayload, config, callouts) {
-        const BMapGL = await loadBaiduMapGl(getRendererConfig());
-        const center = toBaiduPoint(BMapGL, config.center);
-        const map = new BMapGL.Map(parts.canvas.id);
-
-        parts.canvas.dataset.mapProvider = BAIDU_PROVIDER;
-        map.centerAndZoom(center, config.zoom);
-        map.enableScrollWheelZoom(true);
-        map.addControl(new BMapGL.ScaleControl());
-        map.addControl(new BMapGL.ZoomControl());
-
-        config.polylines.forEach((polyline) => addPolyline(BMapGL, map, polyline));
-
-        if (config.fitViewport && config.viewportPoints.length > 1) {
-            const viewportPoints = config.viewportPoints.map((point) => toBaiduPoint(BMapGL, point));
-            map.setViewport(viewportPoints);
-        }
-
-        callouts?.connect(new BaiduMapView(BMapGL, map));
-        instances.set(parts.canvas.id, {
-            map,
-            parts,
-            callouts,
-            unbindResize: bindToolStageResize(parts, map),
-            payload: resolvedPayload,
-            config
-        });
-    }
-
-    async function renderTiandituMap(parts, resolvedPayload, config, callouts) {
-        const T = await loadTiandituMap(getRendererConfig());
-        const center = toTiandituPoint(T, config.center);
-        const map = new T.Map(parts.canvas.id);
-
-        parts.canvas.dataset.mapProvider = TIANDITU_PROVIDER;
-        map.centerAndZoom(center, config.zoom);
-        map.enableScrollWheelZoom();
-        map.addControl(new T.Control.Zoom());
-        map.addControl(new T.Control.Scale());
-
-        config.polylines.forEach((polyline) => addTiandituPolyline(T, map, polyline));
-
-        if (config.fitViewport && config.viewportPoints.length > 1) {
-            const viewportPoints = config.viewportPoints.map((point) => toTiandituPoint(T, point));
-            map.setViewport(viewportPoints);
-        }
-
-        callouts?.connect(new TiandituMapView(T, map));
-        instances.set(parts.canvas.id, {
-            map,
-            parts,
-            callouts,
-            unbindResize: bindToolStageResize(parts, map),
-            payload: resolvedPayload,
-            config
-        });
-    }
-
-    async function renderMap(parts, payload) {
+    /**
+     * 按实例预算建图。
+     *
+     * 只有进入预算的卡片才会走到这里,服务端返回的场景也只在这一轮构建期间存在:
+     * 地图引用每次激活都重新拉取,挂起时不保留那份可能很大的对象。
+     */
+    async function buildLiveMap(entry, { isCurrent, signal, onContextReload }) {
+        const { parts, payload } = entry;
         let callouts = null;
+        let mounted = null;
+        let config = null;
 
         try {
-            const resolvedPayload = await resolveMapPayload(payload);
-            const config = normalizePayload(resolvedPayload);
+            const resolvedPayload = await resolveMapPayload(payload, signal);
+
+            if (!isCurrent()) {
+                return null;
+            }
+
+            config = normalizePayload(resolvedPayload);
+            // 上一轮失败会移除 canvas;每次建图先恢复完整容器和放大入口。
+            renderSuspended(parts);
+            setCardState(parts, 'loading');
+            setStatus(parts, '加载中');
 
             parts.title.textContent = config.title;
             renderFooter(parts, config);
+            mounted = await mountMapProvider(
+                config.provider,
+                getRendererConfig(),
+                parts.canvas,
+                config,
+                isCurrent,
+                signal,
+                onContextReload
+            );
+
+            if (!mounted) {
+                renderSuspended(parts);
+
+                return null;
+            }
+
+            if (!isCurrent()) {
+                releaseMapProvider(config.provider, mounted.map, mounted.frame);
+                renderSuspended(parts);
+
+                return null;
+            }
 
             if (config.markers.length > 0) {
                 // 标签覆盖地图,不改变 SDK 画布尺寸;首次适配使用完整地图范围。
                 callouts = new NexoraMapCallouts(parts.body, parts.canvas, config.markers);
             }
 
-            if (config.provider === TIANDITU_PROVIDER) {
-                await renderTiandituMap(parts, resolvedPayload, config, callouts);
-            } else {
-                await renderBaiduMap(parts, resolvedPayload, config, callouts);
+            callouts?.connect(mounted.view);
+            setCardState(parts, 'live');
+
+            const live = {
+                map: mounted.map,
+                frame: mounted.frame,
+                parts,
+                callouts,
+                provider: config.provider,
+                unbindResize: bindToolStageResize(parts, mounted.map)
+            };
+
+            instances.set(parts.canvas.id, live);
+            console.info('[NexoraMapRenderer] Map instance mounted', JSON.stringify({
+                canvasId: parts.canvas.id,
+                provider: config.provider,
+                markers: config.markers.length,
+                polylines: config.polylines.length,
+                live: instances.size
+            }));
+
+            return live;
+        } catch (error) {
+            callouts?.destroy();
+
+            if (mounted) {
+                releaseMapProvider(config.provider, mounted.map, mounted.frame);
             }
 
-            // 成功后移除加载状态标签,顶栏只保留地图标题与放大状态的退出入口。
-            parts.status.remove();
-        } catch (error) {
-            console.error('[NexoraMapRenderer] Map render failed', { message: error.message });
-            callouts?.destroy();
-            renderError(parts, error);
+            if (isCurrent()) {
+                console.error('[NexoraMapRenderer] Map render failed', { message: error.message });
+                renderError(parts, error);
+            } else {
+                renderSuspended(parts);
+            }
+
+            return null;
         }
     }
 
-    /** 移动到工具舞台的地图仍在页面中;真正删除卡片时才清理标注事件和实例引用。 */
-    function releaseDisconnectedInstances() {
-        instances.forEach((instance, id) => {
+    /**
+     * 销毁地图实例。
+     *
+     * 顺序固定为:标注 → 舞台缩放监听 → SDK 上下文 → 残留 DOM → 实例登记。
+     * 少任何一步都会留下事件监听或瓦片节点,地图反复进出视野时内存只增不减。
+     */
+    function destroyLiveMap(live) {
+        if (!live) {
+            return;
+        }
 
-            if (!instance.parts.shell.isConnected) {
-                instance.callouts?.destroy();
-                instance.unbindResize();
-                instances.delete(id);
-            }
-        });
+        live.callouts?.destroy();
+        live.unbindResize();
+        releaseMapProvider(live.provider, live.map, live.frame);
+        instances.delete(live.parts.canvas.id);
+        renderSuspended(live.parts);
+        console.info('[NexoraMapRenderer] Map instance released', JSON.stringify({
+            canvasId: live.parts.canvas.id,
+            focused: Boolean(live.parts.shell.closest('.tool-stage-focus__surface')),
+            live: instances.size
+        }));
     }
+
+    /** 实例预算池:限制地图实例总数,并短暂保留离屏地图以复用上下文。 */
+    const pool = new NexoraMapPool({
+        maxLive: MAX_LIVE_MAPS,
+        enterMargin: MAP_ENTER_MARGIN,
+        build: buildLiveMap,
+        destroy: destroyLiveMap
+    });
 
     function renderCodeBlock(codeEl) {
         if (!codeEl || codeEl.dataset.nexoraMapProcessed === '1') {
@@ -693,7 +705,7 @@ import './nexora_map_clusters.css';
 
         const parts = createMapShell(payload);
         pre.replaceWith(parts.shell);
-        renderMap(parts, payload);
+        pool.attach({ element: parts.shell, parts, payload });
     }
 
     function scan(root) {
@@ -729,7 +741,7 @@ import './nexora_map_clusters.css';
         const lifecycle = new MutationObserver((records) => {
 
             if (records.some((record) => record.removedNodes.length > 0)) {
-                releaseDisconnectedInstances();
+                pool.detachDisconnected();
             }
         });
         lifecycle.observe(document.body, { childList: true, subtree: true });
@@ -741,8 +753,8 @@ import './nexora_map_clusters.css';
         }
 
         const parts = createMapShell(payload);
-        container.appendChild(parts.shell);
-        renderMap(parts, payload);
+        container.append(parts.shell);
+        pool.attach({ element: parts.shell, parts, payload });
 
         return parts.shell;
     }
@@ -750,7 +762,8 @@ import './nexora_map_clusters.css';
     window.NexoraMapRenderer = {
         renderAll: scan,
         renderPayload,
-        instances
+        instances,
+        pool
     };
 
     if (document.readyState === 'loading') {

@@ -10,6 +10,8 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    /* 卡片自带固定高度画布,放进纵向 flex 容器时不允许被压缩。 */
+    flex: 0 0 auto;
     margin: 12px auto;
     overflow: hidden;
     border: 1px solid var(--color-border);
@@ -58,6 +60,30 @@
     border-color: var(--color-danger-border);
     color: var(--color-danger-text);
     background: var(--color-danger-surface);
+}
+
+/*
+ * 地图实例按视口预算创建:挂起状态的卡片不持有 WebGL 上下文,
+ * 顶栏隐藏状态标签,画布位置改为占位提示,滚入视野后立刻换成真实地图。
+ */
+.nexora-map-card[data-nexora-map-state="live"] .nexora-map-card-status {
+    display: none;
+}
+
+.nexora-map-card[data-nexora-map-state="suspended"] .nexora-map-canvas {
+    display: grid;
+    place-items: center;
+}
+
+.nexora-map-card[data-nexora-map-state="suspended"] .nexora-map-canvas::after {
+    content: "滚动到此处加载地图";
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.nexora-map-card[data-nexora-map-state="error"] .nexora-map-card-status {
+    display: inline-flex;
 }
 
 .nexora-map-card-body {
@@ -276,4 +302,10 @@
 .nexora-map-card-footer .nexora-map-expand:focus-visible {
     outline: 2px solid var(--color-accent-text);
     outline-offset: 2px;
+}
+.nexora-map-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
 }
