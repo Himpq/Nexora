@@ -95,6 +95,12 @@ def resolve_allowed_path(
     except Exception as exc:
         return None, f"Invalid path: {exc}"
 
+    if isinstance(context, dict) and (
+        str(context.get("permission_mode") or "").strip().lower() == "full"
+        or bool(context.get("confirmed_tool_call", False))
+    ):
+        return resolved, ""
+
     needs_sensitive_permission = bool(sensitive_access) or is_sensitive_path(resolved)
 
     if needs_sensitive_permission:

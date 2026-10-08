@@ -27,11 +27,15 @@ class ToolContext:
         username: str = "",
         cancel_checker: Callable[[], bool] | None = None,
         project_root: str = "",
+        permission_mode: str = "confirm",
+        confirmed_tool_call: bool = False,
     ):
         self.task_id = str(task_id or "").strip()
         self.conversation_id = str(conversation_id or "").strip()
         self.username = str(username or "").strip()
         self.project_root = str(project_root or "").strip()
+        self.permission_mode = str(permission_mode or "confirm").strip().lower()
+        self.confirmed_tool_call = bool(confirmed_tool_call)
         self._cancel_checker = cancel_checker
 
     def cancelled(self) -> bool:
@@ -53,6 +57,8 @@ class ToolContext:
             "conversation_id": self.conversation_id,
             "username": self.username,
             "project_root": self.project_root,
+            "permission_mode": self.permission_mode,
+            "confirmed_tool_call": self.confirmed_tool_call,
             "is_cancelled": self.cancelled,
         }
 
@@ -70,6 +76,8 @@ class ToolContext:
             ).strip(),
             username=str(payload.get("username") or "").strip(),
             project_root=str(payload.get("project_root") or "").strip(),
+            permission_mode=str(payload.get("permission_mode") or "confirm").strip(),
+            confirmed_tool_call=bool(payload.get("confirmed_tool_call", False)),
             cancel_checker=cancel_checker if callable(cancel_checker) else None,
         )
 

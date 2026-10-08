@@ -55,19 +55,20 @@ class ShellExecTool(LocalTool):
         if not command:
             return {"success": False, "error": "command is required."}
 
-        cmd_lower = command.lower()
+        if context.permission_mode != "full" and not context.confirmed_tool_call:
+            cmd_lower = command.lower()
 
-        for marker in _BLACKLIST:
-            if marker in cmd_lower:
-                return {"success": False, "error": f"Command blocked by security policy: contains '{marker}'"}
+            for marker in _BLACKLIST:
+                if marker in cmd_lower:
+                    return {"success": False, "error": f"Command blocked by security policy: contains '{marker}'"}
 
-        whitelist: list = config.get("shell_whitelist", [])
+            whitelist: list = config.get("shell_whitelist", [])
 
-        if whitelist:
-            allowed = any(command.startswith(prefix) for prefix in whitelist)
+            if whitelist:
+                allowed = any(command.startswith(prefix) for prefix in whitelist)
 
-            if not allowed:
-                return {"success": False, "error": f"Command not in whitelist. Allowed prefixes: {whitelist}"}
+                if not allowed:
+                    return {"success": False, "error": f"Command not in whitelist. Allowed prefixes: {whitelist}"}
 
         work_dir = str(args.get("cwd") or "").strip() or str(Path.home())
         resolved = Path(work_dir).resolve()

@@ -378,6 +378,12 @@
     /** 统一保存入口：写回 state → 持久化 → 刷新 → 同步主窗口。 */
     async function save() {
         var btn = $("btn-save");
+
+        if (!window.NexoraToolPermissions.isReady()) {
+            setStatus("工具权限设置仍在加载，请稍后保存", false);
+            return;
+        }
+
         btn.disabled = true;
         setStatus("保存中…", true);
 
@@ -388,10 +394,17 @@
         var ok = await persist();
 
         if (ok) {
-            await reload();
-            setStatus("已保存 ✓", true);
-            $("pf-api-key").value = "";
-            syncMainWindow();
+            try {
+                await window.NexoraToolPermissions.refreshModels();
+                await window.NexoraToolPermissions.save();
+                await reload();
+                await window.NexoraToolPermissions.reload();
+                setStatus("已保存 ✓", true);
+                $("pf-api-key").value = "";
+                syncMainWindow();
+            } catch (error) {
+                setStatus(String((error && error.message) || error || "设置保存失败"), false);
+            }
         }
 
         btn.disabled = false;
@@ -409,6 +422,9 @@
         $("pf-save").addEventListener("click", save);
 
         reload();
+        window.NexoraToolPermissions.reload().catch(function (error) {
+            setStatus(String((error && error.message) || error || "无法读取工具权限设置"), false);
+        });
     }
 
     document.addEventListener("DOMContentLoaded", init);

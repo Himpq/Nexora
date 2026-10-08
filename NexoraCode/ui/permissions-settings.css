@@ -1,0 +1,117 @@
+.permission-mode-list,
+.permission-approval-panel {
+    max-width: 620px;
+}
+
+.permission-mode-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.permission-mode-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    padding: 13px 15px;
+    background: var(--bg-main);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.permission-mode-option:has(input:checked) {
+    border-color: var(--accent);
+    background: #f8faff;
+}
+
+.permission-mode-option input {
+    margin: 3px 0 0;
+    accent-color: var(--accent-strong);
+}
+
+.permission-mode-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.permission-mode-copy strong {
+    color: var(--text-main);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.permission-mode-copy small,
+.permission-note {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.permission-approval-panel {
+    margin-top: 18px;
+    padding: 16px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+}
+
+.permission-approval-panel h2 {
+    margin: 0;
+    font-size: 14px;
+}
+
+.permission-note {
+    margin: 5px 0 12px;
+    line-height: 1.6;
+}
+
+.permission-model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.permission-model-option {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--border-input);
+    border-radius: 6px;
+    background: var(--bg-main);
+    color: var(--text-main);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+}
+
+.permission-model-option:hover {
+    border-color: var(--accent);
+}
+
+.permission-model-option[aria-pressed="true"] {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(91, 141, 239, 0.1);
+}
+
+.permission-model-name {
+    display: block;
+    font-weight: 600;
+}
+
+.permission-model-provider {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.permission-model-empty {
+    padding: 12px;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border-light);
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.permission-approval-panel.is-disabled {
+    opacity: 0.55;
+}

@@ -22,6 +22,11 @@ from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
 from .ConversationStore import ConversationStore
 from .ContextManager import ContextManager
+from .ToolPermissionPolicy import (
+    build_tool_permission_question,
+    create_pending_tool_action,
+    evaluate_tool_call,
+)
 
 
 # 本地 agent 单次请求的工具轮次硬上限（一轮可含多个并行工具调用），
@@ -346,11 +351,89 @@ class AgentLoop:
 
                 yield {"type": "function_call", "name": tool_name, "call_id": call_id, "arguments": arguments}
 
-                result = self._execute_tool(tool_name, arguments, conversation_id, project_path, cancel_checker)
+                authorization = evaluate_tool_call(self.executor, tool_name, arguments, cancel_checker)
+
+                if self._is_cancelled(cancel_checker):
+                    authorization = {
+                        "decision": "deny",
+                        "mode": authorization.get("mode", ""),
+                        "call": authorization.get("call", {}),
+                        "message": "任务已停止，本次工具操作未执行。",
+                    }
+
+                if authorization["decision"] == "confirm":
+                    try:
+                        pending_request = create_pending_tool_action(
+                            conversation_id=conversation_id,
+                            tool_call_id=call_id,
+                            tool_name=authorization["call"]["tool_name"],
+                            arguments=authorization["call"]["arguments"],
+                            operation=authorization["call"]["operation"],
+                            project_root=project_path,
+                        )
+                        result = {
+                            "success": False,
+                            "permission_required": True,
+                            "deferred_tool_call": True,
+                            "permission_question": build_tool_permission_question(pending_request),
+                            "content": "等待用户确认后执行本次工具操作。",
+                        }
+                    except Exception as exc:
+                        result = {
+                            "success": False,
+                            "content": f"未能创建权限确认请求，操作未执行：{exc}",
+                        }
+                elif authorization["decision"] == "deny":
+                    result = {"success": False, "content": authorization["message"]}
+                else:
+                    result = self._execute_tool(
+                        tool_name,
+                        arguments,
+                        conversation_id,
+                        project_path,
+                        cancel_checker,
+                        permission_mode=authorization["mode"],
+                        confirmed_tool_call=bool(authorization.get("approved_once", False)),
+                    )
+
                 tool_content = result.get("content")
                 success = result.get("success")
 
                 if result.get("permission_required"):
+                    if result.get("deferred_tool_call"):
+                        # 先补齐 Provider 要求的工具结果；审批路由会在执行后替换这条占位结果。
+                        self.store.append_message(
+                            conversation_id,
+                            {
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "content": "等待用户确认；本次工具操作尚未执行。",
+                                "timestamp": _now(),
+                            },
+                        )
+
+                        if not question_sent:
+                            question_sent = True
+                            yield {
+                                "type": "question",
+                                "question": result.get("permission_question"),
+                                "conversation_id": conversation_id,
+                            }
+
+                        for remaining in grouped_tool_calls[tool_index + 1:]:
+                            self.store.append_message(
+                                conversation_id,
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": str(remaining.get("id") or ""),
+                                    "content": "已跳过：等待用户确认期间不执行其余工具调用。",
+                                    "timestamp": _now(),
+                                },
+                            )
+
+                        permission_blocked = True
+                        break
+
                     # 权限不足：弹卡后立即终止本轮，等待用户授权后再续流，避免模型循环重试同一路径。
                     question_payload = result.get("permission_question") or {}
                     request_path = str((question_payload.get("permission_request") or {}).get("path") or "")
@@ -595,7 +678,17 @@ class AgentLoop:
 
         return self.context_manager.build_messages(conversation, system_prompt)
 
-    def _execute_tool(self, tool_name: str, arguments: Any, conversation_id: str, project_root: str = "", cancel_checker=None) -> dict:
+    def _execute_tool(
+        self,
+        tool_name: str,
+        arguments: Any,
+        conversation_id: str,
+        project_root: str = "",
+        cancel_checker=None,
+        *,
+        permission_mode: str = "confirm",
+        confirmed_tool_call: bool = False,
+    ) -> dict:
         args = arguments if isinstance(arguments, dict) else {}
 
         if isinstance(arguments, str):
@@ -613,6 +706,8 @@ class AgentLoop:
             context={
                 "conversation_id": conversation_id,
                 "project_root": project_root,
+                "permission_mode": permission_mode,
+                "confirmed_tool_call": confirmed_tool_call,
                 "is_cancelled": cancel_checker,
             },
         )

@@ -25,6 +25,8 @@ _DEFAULTS = {
     "nexora_url": "https://chat.himpqblog.cn",
     "allowed_dirs": [],
     "shell_whitelist": [],
+    "local_tool_permission_mode": "confirm",
+    "local_tool_approval_model_id": "",
     "local_text_search_max_results": 100,
     "local_file_tree_max_entries": 500,
     "local_process_output_max_chars": 20000,

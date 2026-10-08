@@ -18,7 +18,7 @@ import time
 import threading
 from typing import Any, Generator
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from core.config import config, get_app_root
 from local import build_default_executor
@@ -34,6 +34,16 @@ from .StreamRuntime import (
     request_cancel,
     start_session,
 )
+from .ToolPermissionPolicy import (
+    PERMISSION_MODES,
+    get_resolved_tool_action,
+    get_permission_settings,
+    list_approval_models,
+    log_tool_permission_event,
+    remember_resolved_tool_action,
+    save_permission_settings,
+    take_pending_tool_action,
+)
 
 
 _local_bp = Blueprint("local_agent", __name__)
@@ -45,6 +55,16 @@ def _local_no_store(resp):
     """本地动态 API 一律不缓存，避免模型/会话修改后拉到旧数据。"""
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@_local_bp.route("/permissions-settings.css", methods=["GET"])
+def local_permissions_settings_css():
+    return send_file(get_app_root() / "ui" / "permissions-settings.css", mimetype="text/css")
+
+
+@_local_bp.route("/permissions-settings.js", methods=["GET"])
+def local_permissions_settings_js():
+    return send_file(get_app_root() / "ui" / "permissions-settings.js", mimetype="application/javascript")
 
 
 def set_default_executor(executor) -> None:
@@ -740,6 +760,134 @@ def local_agent_grant_permission():
 
     print(f"[LocalAgent] grant OK: path={result.get('permission', {}).get('path')}")
     return jsonify({"success": True, "message": "已允许本次对话临时访问该路径", "permission": result.get("permission")})
+
+
+@_local_bp.route("/api/local/permissions", methods=["GET", "POST"])
+def local_agent_permission_settings():
+    """读取或保存本地 Agent 工具权限模式与自动审批模型。"""
+    if request.method == "GET":
+        settings = get_permission_settings()
+        return jsonify({
+            "success": True,
+            "mode": settings["mode"],
+            "approval_model_id": settings["approval_model_id"],
+            "models": list_approval_models(),
+        })
+
+    raw_body = request.get_json(silent=True)
+    body = raw_body if isinstance(raw_body, dict) else {}
+
+    try:
+        save_permission_settings(
+            mode=str(body.get("mode") or ""),
+            approval_model_id=str(body.get("approval_model_id") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    return jsonify({"success": True, "message": "工具权限设置已保存"})
+
+
+@_local_bp.route("/api/agent/tool-permission/resolve", methods=["POST"])
+def local_agent_resolve_tool_permission():
+    """对确认卡绑定的原始工具调用执行一次性批准或拒绝。"""
+    raw_body = request.get_json(silent=True)
+    body = raw_body if isinstance(raw_body, dict) else {}
+    request_payload = body.get("tool_permission_request") if isinstance(body.get("tool_permission_request"), dict) else {}
+    request_id = str(request_payload.get("request_id") or body.get("request_id") or "").strip()
+    conversation_id = str(body.get("conversation_id") or "").strip()
+    decision = str(body.get("decision") or "").strip().lower()
+
+    if not request_id or not conversation_id:
+        return jsonify({"success": False, "message": "授权请求信息不完整"}), 400
+
+    if decision not in {"allow", "deny"}:
+        return jsonify({"success": False, "message": "授权决定无效"}), 400
+
+    store = ConversationStore()
+
+    if store.get(conversation_id) is None:
+        return jsonify({"success": False, "message": "本地会话不存在"}), 404
+
+    pending = take_pending_tool_action(request_id, conversation_id)
+
+    if pending is None:
+        resolved = get_resolved_tool_action(request_id, conversation_id)
+
+        if resolved is not None:
+            return jsonify(resolved)
+
+        return jsonify({"success": False, "message": "授权请求已过期或已处理"}), 404
+
+    allowed = decision == "allow"
+    mode = get_permission_settings()["mode"]
+    execution_success = False
+
+    if allowed and mode not in PERMISSION_MODES:
+        tool_content = "操作未执行：当前权限模式配置无效。"
+        message_text = "权限模式配置无效，本次操作未执行。"
+        allowed = False
+    elif allowed and mode == "read_only":
+        tool_content = "操作未执行：当前权限模式已切换为只读。"
+        message_text = "权限模式已切换为只读，本次操作未执行。"
+        allowed = False
+    elif not allowed:
+        tool_content = "用户拒绝执行本次工具操作。"
+        message_text = "已拒绝本次工具操作。"
+    else:
+        executor = _EXECUTOR if _EXECUTOR is not None else build_default_executor()
+
+        try:
+            execution = executor.execute(
+                pending["tool_name"],
+                pending["arguments"],
+                context={
+                    "conversation_id": conversation_id,
+                    "project_root": pending["project_root"],
+                    "permission_mode": mode,
+                    "confirmed_tool_call": True,
+                },
+            )
+            execution_success = bool(execution.get("success", False))
+            detail = execution.get("result") if isinstance(execution.get("result"), dict) else execution
+
+            if execution_success:
+                from .Present import present_tool_result
+
+                tool_content = present_tool_result(detail)
+                message_text = "本次工具操作已执行。"
+            else:
+                tool_content = str(execution.get("error") or detail.get("error") or "工具执行失败")
+                message_text = "本次操作已确认，但工具执行失败。"
+        except Exception as exc:
+            tool_content = f"工具执行失败：{exc}"
+            message_text = "本次操作已确认，但工具执行失败。"
+
+    log_tool_permission_event(
+        tool_name=pending["tool_name"],
+        operation=pending["operation"],
+        mode=mode,
+        decision="allow" if allowed else "deny",
+        stage="manual_resolution",
+        user_decision=decision,
+        tool_success=execution_success,
+    )
+
+    appended = store.replace_tool_result(conversation_id, pending["tool_call_id"], tool_content)
+
+    if not appended:
+        failure = {"success": False, "message": "工具结果未能写入本地会话"}
+        remember_resolved_tool_action(request_id, conversation_id, failure)
+        return jsonify(failure), 409
+
+    response = {
+        "success": True,
+        "message": message_text,
+        "executed": allowed,
+        "tool_success": execution_success,
+    }
+    remember_resolved_tool_action(request_id, conversation_id, response)
+    return jsonify(response)
 
 
 @_local_bp.route("/api/user/info", methods=["GET"])

@@ -168,7 +168,7 @@ import {
     updateLearningFeedMentionCandidates,
     updateMobileMessageInputViewportBaseline,
     updateMobileSelectionQuickAdd,
-} from './chat.js?v=20260731_profile_center_01';
+} from './chat.js?v=20261008_permission_model_default_01';
 
 // 设置弹窗 Esc 关闭处理器是否已绑定：唯一读写方为本模块，状态收敛于此。
 let settingsModalEscapeHandlerBound = false;

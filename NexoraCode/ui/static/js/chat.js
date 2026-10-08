@@ -1761,6 +1761,7 @@ function getLearningSidebarMessages() {
                         .filter(Boolean);
                     const allowOther = !!item.querySelector('.question-other-input');
                     const permissionRequest = getQuestionCardPermissionRequest(item);
+                    const toolPermissionRequest = getQuestionCardToolPermissionRequest(item);
                     const resolved = (
                         String(item.dataset.resolved || '').trim().toLowerCase() === 'true'
                         || !!(questionBody && questionBody.classList.contains('answered'))
@@ -1784,6 +1785,7 @@ function getLearningSidebarMessages() {
                             choices,
                             allow_other: allowOther,
                             permission_request: permissionRequest || undefined,
+                            tool_permission_request: toolPermissionRequest || undefined,
                             resolved,
                             answer: answerText
                         }
@@ -10776,6 +10778,26 @@ function getQuestionCardPermissionRequest(questionCard) {
     }
 }
 
+function getQuestionCardToolPermissionRequest(questionCard) {
+    if (!questionCard) return null;
+
+    const raw = String((questionCard.dataset && questionCard.dataset.toolPermissionRequest) || '').trim();
+    if (!raw) return null;
+
+    try {
+        const request = JSON.parse(raw);
+        const requestId = String((request && request.request_id) || '').trim();
+        if (!requestId) return null;
+        return {
+            request_id: requestId,
+            operation: String(request.operation || '').trim(),
+        };
+    } catch (err) {
+        console.warn('[QuestionTool] invalid tool permission request payload', err);
+        return null;
+    }
+}
+
 function isPermissionDenyAnswer(answerText) {
     const text = String(answerText || '').trim();
     return text.includes('拒绝') || /^deny\b/i.test(text);
@@ -10787,6 +10809,58 @@ function isPermissionAllowAnswer(answerText) {
 }
 
 async function resolvePermissionQuestionSubmission(questionCard, answerText) {
+    const toolPermissionRequest = getQuestionCardToolPermissionRequest(questionCard);
+
+    if (toolPermissionRequest) {
+        const allow = isPermissionAllowAnswer(answerText);
+        const deny = isPermissionDenyAnswer(answerText);
+
+        if (!allow && !deny) {
+            return { success: false, message: '请选择允许或拒绝本次操作' };
+        }
+
+        const conversationId = String(currentConversationId || '').trim();
+
+        if (!conversationId) {
+            return { success: false, message: '当前对话 ID 为空，无法处理授权请求' };
+        }
+
+        try {
+            const res = await fetch('/api/agent/tool-permission/resolve', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversation_id: conversationId,
+                    tool_permission_request: toolPermissionRequest,
+                    decision: allow ? 'allow' : 'deny',
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok || !data || data.success === false) {
+                return {
+                    success: false,
+                    message: String((data && data.message) || '处理工具授权失败').trim()
+                };
+            }
+
+            if (typeof showToast === 'function') {
+                showToast(String(data.message || '工具授权已处理'));
+            }
+
+            return {
+                success: true,
+                answer: String(data.message || (allow ? '已允许并执行本次操作' : '已拒绝本次操作'))
+            };
+        } catch (err) {
+            return {
+                success: false,
+                message: String((err && err.message) || err || '处理工具授权失败')
+            };
+        }
+    }
+
     const permissionRequest = getQuestionCardPermissionRequest(questionCard);
 
     if (!permissionRequest) {
@@ -10849,10 +10923,20 @@ function createQuestionCardNode(question, options = {}) {
     wrap.dataset.pending = 'true';
     wrap.dataset.resolved = 'false';
     const permissionRequest = normalizeQuestionPermissionRequest(payload.permission_request);
-    const isPermissionCard = !!permissionRequest;
+    const toolPermissionRequest = payload.tool_permission_request && typeof payload.tool_permission_request === 'object'
+        ? payload.tool_permission_request
+        : null;
+    const isToolPermissionCard = !!String((toolPermissionRequest && toolPermissionRequest.request_id) || '').trim();
+    const isPermissionCard = !!permissionRequest || isToolPermissionCard;
     wrap.dataset.toolName = isPermissionCard ? 'ask_for_permission' : 'question';
     if (permissionRequest) {
         wrap.dataset.permissionRequest = JSON.stringify(permissionRequest);
+    }
+    if (isToolPermissionCard) {
+        wrap.dataset.toolPermissionRequest = JSON.stringify({
+            request_id: String(toolPermissionRequest.request_id || '').trim(),
+            operation: String(toolPermissionRequest.operation || '').trim(),
+        });
     }
     const title = escapeHtml(String(payload.question_title || 'Question').trim());
     const content = escapeHtml(String(payload.question_content || '').trim());
@@ -16847,6 +16931,8 @@ function renderCustomModelSelect(models, defaultModel) {
     const isValidDefault = models.find(m => m.id === defaultModel);
     
     selectedModelId = (isValidStored ? stored : (isValidDefault ? defaultModel : models[0].id));
+    // 保存初始化后真正生效的当前模型，供独立权限设置窗口作为审批模型默认值。
+    localStorage.setItem('selectedModel', selectedModelId);
 
     getNexoraChatModelSelect().render({
         root: els.modelOptions,

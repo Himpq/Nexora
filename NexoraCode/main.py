@@ -1625,13 +1625,17 @@ class NexoraWindowApi:
             return {"success": False, "message": str(e)}
 
     def refresh_main_window(self):
-        """设置保存后刷新主窗口模型列表：优先热调用 loadModels，失败再整页重载。"""
+        """设置保存后刷新主窗口模型列表与工具权限状态。"""
         if not self._window:
             return {"success": False, "message": "main window not found"}
         try:
             reloaded = bool(
                 self._window.evaluate_js(
-                    "(function(){ if (window.__ncLoadModels) { window.__ncLoadModels(); return true; } return false; })();"
+                    "(function(){"
+                    "if (window.__ncLoadModels) { window.__ncLoadModels(); }"
+                    "if (window.__ncRefreshToolPermissions) { window.__ncRefreshToolPermissions(); }"
+                    "return !!(window.__ncLoadModels && window.__ncRefreshToolPermissions);"
+                    "})();"
                 )
             )
 

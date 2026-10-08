@@ -38,6 +38,7 @@
     <link rel="stylesheet" href="/static/css/chat_papi_keys.css?v=20260728_papi_list_08">
     <link rel="stylesheet" href="/static/css/chat_settings_dialog.css?v=20260727_settings_dialog_07">
     <link rel="stylesheet" href="/static/css/chat_settings_management.css?v=20260728_settings_management_06">
+    <link rel="stylesheet" href="/static/css/tool_permission_switcher.css?v=20261008_permission_switcher_01">
     <link rel="stylesheet" href="/static/css/knowledge_collab.css?v=20260708_04">
     <style>
         /* ===== NexoraCode 项目模式精简 ===== */
@@ -230,6 +231,32 @@
                                         <span class="check-label check-label-text">Thinking</span>
                                     </span>
                                 </label>
+                            </div>
+                        </div>
+                        <div class="permission-switcher" id="toolPermissionSwitcher">
+                            <button type="button" class="permission-switcher-trigger" id="toolPermissionSwitcherTrigger" aria-label="工具权限" aria-haspopup="menu" aria-expanded="false" aria-controls="toolPermissionSwitcherMenu" title="工具权限：正在加载">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3 20 6v5c0 5.1-3.4 8.4-8 10-4.6-1.6-8-4.9-8-10V6l8-3Z"></path><path d="m9 12 2 2 4-4"></path></svg>
+                            </button>
+                            <div class="permission-switcher-menu" id="toolPermissionSwitcherMenu" role="menu" aria-label="工具权限模式" hidden>
+                                <div class="permission-switcher-heading">工具权限</div>
+                                <button type="button" class="permission-switcher-option" role="menuitemradio" data-permission-mode="read_only" aria-checked="false" tabindex="-1">
+                                    <span class="permission-switcher-option-copy"><strong>只读</strong><small>允许读取和查看操作</small></span>
+                                    <svg class="permission-switcher-check" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                </button>
+                                <button type="button" class="permission-switcher-option" role="menuitemradio" data-permission-mode="confirm" aria-checked="false" tabindex="-1">
+                                    <span class="permission-switcher-option-copy"><strong>写入 / 命令确认</strong><small>写入和命令执行前逐次确认</small></span>
+                                    <svg class="permission-switcher-check" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                </button>
+                                <button type="button" class="permission-switcher-option" role="menuitemradio" data-permission-mode="auto" aria-checked="false" tabindex="-1">
+                                    <span class="permission-switcher-option-copy"><strong>自动审批</strong><small>使用设置模型；未设置时默认当前模型</small></span>
+                                    <svg class="permission-switcher-check" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                </button>
+                                <div class="permission-switcher-note" id="toolPermissionSwitcherAutoNote" hidden>当前模型不可用于审批，请先在设置中检查模型 Provider。</div>
+                                <button type="button" class="permission-switcher-option" role="menuitemradio" data-permission-mode="full" aria-checked="false" tabindex="-1">
+                                    <span class="permission-switcher-option-copy"><strong>完全访问</strong><small>不限制 NexoraCode 工具权限</small></span>
+                                    <svg class="permission-switcher-check" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                </button>
+                                <div class="permission-switcher-feedback" id="toolPermissionSwitcherFeedback" role="status" aria-live="polite" hidden></div>
                             </div>
                         </div>
                         <button type="button" class="btn-icon-small input-collapse-btn" id="inputCollapseBtn" title="折叠输入框" aria-label="折叠输入框" aria-expanded="true">
@@ -734,6 +761,7 @@
     <script type="module" src="/static/js/chat_user_api_keys.js?v=20260728_papi_list_metadata_12"></script>
     <script type="module" src="/static/js/chat_admin_papi_scope.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/sidebar_brand_navigation.js?v=20260809_learning_tab_hide_01"></script>
+    <script type="module" src="/static/js/chat_tool_permissions.js?v=20261008_permission_switcher_02"></script>
     <script type="module" src="/static/js/chat_input.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_image_viewer.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_render.js?v=20260810_chatjs_split_01"></script>
@@ -744,7 +772,7 @@
     <script type="module" src="/static/js/chat_wss_sync.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_lifecycle.js?v=20260810_chatjs_split_01"></script>
     <script type="module" src="/static/js/chat_app.js?v=20260810_chatjs_split_01"></script>
-    <script type="module" src="/static/js/chat.js?v=20260731_profile_center_01"></script>
+    <script type="module" src="/static/js/chat.js?v=20261008_cache_hit_badge_01"></script>
     <script type="module" src="/static/js/chat_token_details.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/global_search.js?v=20260726_esm_01"></script>
     <script type="module" src="/static/js/workspace.js?v=20260726_esm_01"></script>

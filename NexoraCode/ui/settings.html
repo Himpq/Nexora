@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>NexoraCode 设置</title>
     <link rel="stylesheet" href="/settings.css"/>
+    <link rel="stylesheet" href="/permissions-settings.css"/>
 </head>
 <body>
     <div class="titlebar" id="nc-titlebar">
@@ -31,6 +32,7 @@
             <nav class="nav-list">
                 <button type="button" class="nav-item active" data-view="provider">模型 Provider</button>
                 <button type="button" class="nav-item" data-view="general">对话</button>
+                <button type="button" class="nav-item" data-view="permissions">工具权限</button>
                 <button type="button" class="nav-item" data-view="remote">远程连接</button>
                 <button type="button" class="nav-item" data-view="about">关于</button>
             </nav>
@@ -106,6 +108,19 @@
                 </label>
             </section>
 
+            <section id="view-permissions" class="view">
+                <h1>工具权限</h1>
+                <p class="sub">选择 NexoraCode 执行本地文件、命令和网页操作时使用的权限模式。</p>
+
+                <div id="tool-permission-mode-list" class="permission-mode-list"></div>
+
+                <div id="tool-permission-approval" class="permission-approval-panel">
+                    <h2>自动审批模型</h2>
+                    <p class="permission-note">审批请求会把工具名称和完整参数发送给所选 Provider，包括命令、脚本或待写入内容。模型拒绝、请求失败或返回格式无效时，该操作会被拦截。</p>
+                    <div id="tool-permission-model-list" class="permission-model-list"></div>
+                </div>
+            </section>
+
             <!-- About -->
             <section id="view-remote" class="view">
                 <h1>远程连接</h1>
@@ -138,6 +153,7 @@
     </div>
 
     <script src="/settings.js"></script>
+    <script src="/permissions-settings.js?v=20261008_permission_model_default_01"></script>
     <script src="/remote-settings.js"></script>
 </body>
 </html>
