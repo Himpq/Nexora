@@ -17,7 +17,6 @@ import time
 import uuid
 from typing import Any, Generator, Optional
 
-from core.config import config
 from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
 from .ConversationStore import ConversationStore
@@ -26,23 +25,9 @@ from .ToolPermissionPolicy import (
     build_tool_permission_question,
     create_pending_tool_action,
     evaluate_tool_call,
+    get_permission_settings,
 )
 
-
-# 本地 agent 单次请求的工具轮次硬上限（一轮可含多个并行工具调用），
-# 可通过 config.json 的 local_agent_max_tool_rounds 覆盖。
-MAX_TOOL_ROUNDS = 12
-
-
-def _max_tool_rounds() -> int:
-    """读取配置的工具轮次上限；非法值回退到默认上限。"""
-
-    try:
-        value = int(config.get("local_agent_max_tool_rounds", MAX_TOOL_ROUNDS) or 0)
-    except (TypeError, ValueError):
-        value = 0
-
-    return value if value > 0 else MAX_TOOL_ROUNDS
 
 # 会话级已询问过的权限路径记忆（path 归一化），避免授权后模型重试同路径时反复弹卡。
 _PERMISSION_ASKED_LOCK = threading.Lock()
@@ -56,6 +41,16 @@ DEFAULT_SYSTEM_PROMPT = (
     "不确定目录结构时先 local_file_list 项目根路径。"
     "需要用户授权访问路径时，系统会自动向用户发起权限询问，无需额外调用权限工具。"
 )
+
+
+def _truncate_approval_context(value: Any, max_chars: int = 1600) -> str:
+    """限制附加给审批模型的历史上下文长度，并明确标记截断。"""
+    text = str(value or "")
+
+    if len(text) <= max_chars:
+        return text
+
+    return text[:max_chars] + "\n[审批上下文已截断]"
 
 
 class AgentLoop:
@@ -79,6 +74,13 @@ class AgentLoop:
         conversation_id = str(conversation.get("conversation_id") or "")
         project_path = _project_path_from_conversation(conversation)
         model_name = self._model_name()
+        conversation_messages = conversation.get("messages")
+        conversation_messages = conversation_messages if isinstance(conversation_messages, list) else []
+        previous_user_requests = [
+            _truncate_approval_context(message.get("content"))
+            for message in conversation_messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        ][-4:]
         print(f"[LocalAgent] stream_send start: conversation_id={conversation_id} user_text={user_text[:60]!r} project_root={project_path or '(none)'}")
 
         yield {"type": "conversation_id", "conversation_id": conversation_id}
@@ -88,10 +90,15 @@ class AgentLoop:
 
         effective_system = str(system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
-        tool_calls_seen = 0
+        if get_permission_settings()["mode"] == "auto":
+            effective_system += (
+                "\n\n自动审批协作要求：调用写入、命令或进程变更工具前，先在普通回复中用一句简短的话说明"
+                "准备执行什么操作，以及它如何对应当前用户请求；不要输出内部推理。"
+            )
+
         question_sent = False
         permission_blocked = False
-        max_tool_rounds = _max_tool_rounds()
+        approval_action_history: list[dict] = []
         # 一次 stream_send = 一个 trace，跨工具轮次的所有 usage 记录都挂在它下面，
         # 便于把预估与实测、对话记录与压缩调用对应起来（对齐云端 response_trace_id）。
         response_trace_id = uuid.uuid4().hex
@@ -139,6 +146,7 @@ class AgentLoop:
             if ended:
                 badge_timing["endedAt"] = int(time.time() * 1000)
 
+        # 工具轮次不设上限，由取消、权限阻断、模型错误或模型最终答复结束。
         while True:
             if self._is_cancelled(cancel_checker):
                 # 用户中断：若上一轮是纯文本轮且尚未落盘最终消息，落盘为最终消息，
@@ -166,11 +174,6 @@ class AgentLoop:
                         },
                     )
                     yield {"type": "done", "conversation_id": conversation_id}
-
-                break
-
-            if tool_calls_seen >= max_tool_rounds:
-                yield {"type": "error", "message": f"工具调用轮次超过上限（{max_tool_rounds}）"}
 
                 break
 
@@ -312,7 +315,7 @@ class AgentLoop:
 
                 break
 
-            print(f"[LocalAgent] round {tool_calls_seen + 1}: assistant tool_calls={len(grouped_tool_calls)} content_len={len(content_text)}")
+            print(f"[LocalAgent] round {round_index}: assistant tool_calls={len(grouped_tool_calls)} content_len={len(content_text)}")
             # 中间工具轮的 assistant 消息不带 badge_timing：此时 endedAt 尚未确定（为 0），
             # 若落盘，前端历史渲染会 fallback 到 Date.now() 显示错误且持续增长的耗时。
             assistant_message = {
@@ -351,7 +354,18 @@ class AgentLoop:
 
                 yield {"type": "function_call", "name": tool_name, "call_id": call_id, "arguments": arguments}
 
-                authorization = evaluate_tool_call(self.executor, tool_name, arguments, cancel_checker)
+                authorization = evaluate_tool_call(
+                    self.executor,
+                    tool_name,
+                    arguments,
+                    cancel_checker,
+                    approval_context={
+                        "user_intent": user_text,
+                        "previous_user_requests": previous_user_requests,
+                        "assistant_explanation": _truncate_approval_context(content_text),
+                        "previous_actions": approval_action_history[-8:],
+                    },
+                )
 
                 if self._is_cancelled(cancel_checker):
                     authorization = {
@@ -398,6 +412,13 @@ class AgentLoop:
 
                 tool_content = result.get("content")
                 success = result.get("success")
+                authorized_call = authorization.get("call") or {}
+                approval_action_history.append({
+                    "tool_name": str(authorized_call.get("tool_name") or tool_name),
+                    "operation": str(authorized_call.get("operation") or ""),
+                    "decision": str(authorization.get("decision") or ""),
+                    "success": bool(success),
+                })
 
                 if result.get("permission_required"):
                     if result.get("deferred_tool_call"):
@@ -495,8 +516,6 @@ class AgentLoop:
                         "timestamp": _now(),
                     },
                 )
-
-            tool_calls_seen += 1
 
             # 每轮工具调用结束后立即推送 token 统计（本轮窗口口径，前端 CTX / badge / token mini 实时更新）
             token_usage_event = self._emit_token_usage(last_round_io)
