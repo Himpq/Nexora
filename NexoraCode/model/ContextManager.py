@@ -6,7 +6,7 @@ import json
 import math
 import time
 
-from .Provider import _extract_usage_io
+from .ShortRequest import run_short_request
 
 
 class ContextLimitError(ValueError):
@@ -247,52 +247,45 @@ class ContextManager:
                 raise ContextLimitError("单个历史轮次超过摘要请求预算；请使用更大窗口模型处理该会话")
 
             self.validate_tools(candidate)
-            parts = []
-            usage = None
-            finish_reason = ""
             # 摘要请求与主请求共用同一份 tools：tools 块渲染在提示词开头，
             # 不传就会让两次请求的提示词前缀分叉，压缩调用全价冷读。
             # 摘要只需要文本输出，因此 tool_choice 固定为 none，真出现工具调用直接判错。
-            stream = self.provider.stream_chat(candidate + [instruction], tools=tools, tool_choice="none", max_tokens=summary_output)
+            result = None
 
             try:
-                for event in stream:
-                    if callable(cancel_checker) and cancel_checker():
-                        self.provider.cancel()
-                        raise RuntimeError("__STREAM_CANCELLED__")
-
-                    if event.get("type") == "content":
-                        parts.append(str(event.get("delta") or ""))
-                    elif event.get("type") == "usage":
-                        usage = event.get("usage")
-                    elif event.get("type") == "tool_call":
-                        raise ValueError("摘要请求返回了工具调用")
-                    elif event.get("type") == "finish":
-                        finish_reason = str(event.get("finish_reason") or "")
+                result = run_short_request(
+                    self.provider,
+                    candidate + [instruction],
+                    tools=tools,
+                    tool_choice="none",
+                    max_tokens=summary_output,
+                    cancel_checker=cancel_checker,
+                    cancel_message="__STREAM_CANCELLED__",
+                    tool_call_message="摘要请求返回了工具调用",
+                )
             finally:
-                stream.close()
-                if usage:
+                if result is not None and result.has_usage:
                     # 压缩调用挂在触发它的请求 trace 下，round_index 固定 0 表示请求正文之前发生。
                     self.store.record_compression_call(conversation_id, {
                         "model_name": self.provider.config.model,
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "usage": _extract_usage_io(usage),
-                        "summary": "".join(parts),
-                        "finish_reason": finish_reason,
+                        "usage": result.usage,
+                        "summary": result.text,
+                        "finish_reason": result.finish_reason,
                         "response_trace_id": str(response_trace_id or ""),
                         "round_index": 0,
                     })
 
-            if finish_reason == "length":
+            if result.finish_reason == "length":
                 raise ContextLimitError("摘要输出达到上限，未保存不完整摘要")
 
-            summary = "".join(parts).strip()
+            summary = result.text.strip()
 
             if not summary:
                 raise ValueError("模型未返回上下文摘要，原始历史保持完整")
 
-            if usage:
-                usages.append(_extract_usage_io(usage))
+            if result.has_usage:
+                usages.append(result.usage)
             else:
                 print(f"[LocalContext] usage_missing conversation={conversation_id} cut={boundary}")
 

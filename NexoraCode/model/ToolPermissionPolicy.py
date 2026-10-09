@@ -10,7 +10,8 @@ import uuid
 from typing import Any
 
 from core.config import config, get_app_root
-from .Provider import ProviderClient, _extract_usage_io, load_providers
+from .Provider import ProviderClient, load_providers
+from .ShortRequest import run_short_request
 
 
 DEFAULT_PERMISSION_MODE = "confirm"
@@ -350,29 +351,22 @@ def _request_model_approval(
             "content": "请根据用户意图和风险评估以下数据：\n" + operation_data,
         },
     ]
-    response = ""
-    client = ProviderClient(provider)
+    result_short = run_short_request(
+        ProviderClient(provider),
+        messages,
+        tools=None,
+        tool_choice=None,
+        max_tokens=180,
+        cancel_checker=cancel_checker,
+        cancel_message="自动审批已取消",
+        tool_call_message="审批模型返回了工具调用",
+    )
 
-    for event in client.stream_chat(messages, tools=None, tool_choice=None, max_tokens=180):
-        if callable(cancel_checker) and cancel_checker():
-            client.cancel()
-            raise RuntimeError("自动审批已取消")
+    if usage_capture is not None:
+        usage_capture.clear()
+        usage_capture.update(result_short.usage)
 
-        if str(event.get("type") or "") == "usage":
-            if usage_capture is not None:
-                # 流结束时 Provider 用量是整次请求快照，保留最后一次返回值。
-                usage_capture.clear()
-                usage_capture.update(_extract_usage_io(event.get("usage")))
-
-            continue
-
-        if str(event.get("type") or "") == "content":
-            response += str(event.get("delta") or "")
-
-    if callable(cancel_checker) and cancel_checker():
-        raise RuntimeError("自动审批已取消")
-
-    result = json.loads(response.strip())
+    result = json.loads(result_short.text.strip())
 
     if not isinstance(result, dict) or result.get("decision") not in {"approve", "reject"}:
         raise ValueError("审批模型返回格式无效")
