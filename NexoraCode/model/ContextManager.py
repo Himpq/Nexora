@@ -555,6 +555,33 @@ class ContextManager:
         post_estimate = self._measure_request_basis(updated, messages, tools)
 
         if post_estimate + output >= window:
+            # 压缩历史后仍超窗，说明超窗的是「当前轮自己」（通常是大量工具结果）：
+            # 历史已无可压缩空间，此时再抛错会让对话彻底卡死。
+            # 与 end<=start 分支同一套兜底：降级裁剪当前轮的超长工具结果，
+            # 只改本次发送副本，落盘历史保持完整。
+            trimmed = self._trim_oversized_tool_results(messages, tools, window - output, output)
+
+            if trimmed is not None:
+                print(f"[LocalContext] post_compression_trimmed conversation={conversation_id} "
+                      f"post_basis={post_estimate} hard_limit={window - output}")
+                record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}
+                self.store.save_context(conversation_id, record, history[:end])
+                trimmed_estimate = self.estimate_tokens({"messages": trimmed, "tools": tools})
+                yield {
+                    "type": "context_compression_status",
+                    "status": "done",
+                    "content": "上下文压缩完成（当前轮工具结果已降级裁剪）",
+                    "history_cut_index": end,
+                    "summary_chars": len(summary),
+                    "summary_text": summary,
+                    "raw_input_tokens": measured_estimate,
+                    "post_raw_input_tokens": trimmed_estimate,
+                    "saved_tokens": max(0, measured_estimate - trimmed_estimate),
+                    "saved_ratio": (max(0, measured_estimate - trimmed_estimate) / measured_estimate) if measured_estimate > 0 else 0.0,
+                    "context_window": window,
+                }
+                return trimmed
+
             raise ContextLimitError("摘要与当前任务仍超过模型窗口，未修改摘要边界")
 
         record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}

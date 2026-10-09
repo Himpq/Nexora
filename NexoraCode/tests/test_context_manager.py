@@ -124,6 +124,29 @@ class ContextTests(unittest.TestCase):
             self.consume(self.manager.prepare(self.cid, "system", []))
         self.assertEqual(len(self.store.get(self.cid)["messages"]), 1)
 
+    def test_post_compression_overflow_trims_active_turn_instead_of_failing(self):
+        """压缩历史后仍超窗时，应降级裁剪当前轮工具结果，而不是报错。
+
+        场景：历史有可压缩轮次（触发压缩），但当前轮本身带大量工具结果，
+        压缩历史后仍装不下。旧行为直接抛 ContextLimitError 让对话卡死。
+        """
+        for _ in range(5):
+            self.add("user", "旧任务" * 100)
+            self.add("assistant", "验证记录" * 100)
+        self.add("user", "读一下大文件")
+        self.add("assistant", "", tool_calls=[{"id": "a", "name": "read", "arguments": {"path": "big"}}])
+        self.add("tool", "正文内容" * 3000, tool_call_id="a")
+        tools = [{"type": "function", "function": {"name": "local_file_read", "parameters": {}}}]
+        before = self.store.get(self.cid)["messages"]
+        events, messages = self.consume(self.manager.prepare(self.cid, "system", tools, force=True))
+        # 不报错，且压缩边界已推进。
+        self.assertEqual(events[-1]["status"], "done")
+        self.assertIn("context_state", self.store.get(self.cid))
+        # 落盘历史保持完整，裁剪只作用于本次发送副本。
+        self.assertEqual(self.store.get(self.cid)["messages"], before)
+        # 工具配对关系不能被裁剪破坏。
+        self.manager.validate_tools(messages)
+
     def test_oversized_tool_result_is_trimmed_instead_of_failing(self):
         """当前轮工具结果超窗时降级裁剪，而不是让对话彻底失败。"""
 
