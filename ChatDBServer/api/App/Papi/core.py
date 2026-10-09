@@ -936,37 +936,41 @@ def _papi_merge_usage_extra(result: Dict[str, Any], usage_obj: Any) -> None:
     对齐 NexoraCode 本地 Provider 的提取口径：
     - 缓存命中：prompt_tokens_details.cached_tokens / input_tokens_details.cached_tokens /
       prompt_cache_hit_tokens / cache_read_input_tokens / cache_read_tokens / 顶层 cached_tokens
+    - 缓存创建：created_cache_tokens / cache_creation_input_tokens / cache_write_input_tokens
     - 成本：total_cost / cost
+
+    OpenAI SDK 会把 usage 解码成 Pydantic 对象，因此字段读取必须同时支持对象和字典。
     """
-    raw = usage_obj if isinstance(usage_obj, dict) else {}
 
     def _pick_int(*keys: str) -> int:
         for key in keys:
-            value = raw.get(key)
+            value = _papi_read_obj_field(usage_obj, key)
             if value is None:
                 continue
             try:
-                return int(value)
+                number = int(value)
             except (TypeError, ValueError):
                 continue
+            if number > 0:
+                return number
         return 0
 
     def _pick_nested_int(source: Any, *keys: str) -> int:
-        if not isinstance(source, dict):
-            return 0
         for key in keys:
-            value = source.get(key)
+            value = _papi_read_obj_field(source, key)
             if value is None:
                 continue
             try:
-                return int(value)
+                number = int(value)
             except (TypeError, ValueError):
                 continue
+            if number > 0:
+                return number
         return 0
 
     def _pick_number(*keys: str):
         for key in keys:
-            value = raw.get(key)
+            value = _papi_read_obj_field(usage_obj, key)
             if value is None:
                 continue
             try:
@@ -975,23 +979,67 @@ def _papi_merge_usage_extra(result: Dict[str, Any], usage_obj: Any) -> None:
                 continue
         return None
 
-    prompt_details = raw.get('prompt_tokens_details')
-    input_details = raw.get('input_tokens_details')
+    prompt_details = _papi_read_obj_field(usage_obj, 'prompt_tokens_details')
+    input_details = _papi_read_obj_field(usage_obj, 'input_tokens_details')
     cached = 0
-    if isinstance(prompt_details, dict):
-        cached = _pick_nested_int(prompt_details, 'cached_tokens', 'cache_read_input_tokens', 'cached_input_tokens')
+    if prompt_details is not None:
+        cached = _pick_nested_int(
+            prompt_details,
+            'cached_tokens',
+            'cache_read_input_tokens',
+            'cache_read_tokens',
+            'cached_input_tokens',
+        )
     if cached <= 0:
         cached = _pick_int('prompt_cache_hit_tokens')
-    if cached <= 0 and isinstance(input_details, dict):
-        cached = _pick_nested_int(input_details, 'cached_tokens', 'cache_read_input_tokens', 'cached_input_tokens')
+    if cached <= 0 and input_details is not None:
+        cached = _pick_nested_int(
+            input_details,
+            'cached_tokens',
+            'cache_read_input_tokens',
+            'cache_read_tokens',
+            'cached_input_tokens',
+        )
     if cached <= 0:
         cached = _pick_int('cached_tokens', 'input_cached_tokens', 'cache_read_input_tokens', 'cache_read_tokens')
     if cached > 0:
         result['cached_tokens'] = cached
 
-    uncached = _pick_int('prompt_cache_miss_tokens', 'cache_creation_input_tokens', 'cache_write_input_tokens')
-    if uncached > 0:
-        result['uncached_tokens'] = uncached
+    cache_creation = 0
+    if prompt_details is not None:
+        cache_creation = _pick_nested_int(
+            prompt_details,
+            'created_cache_tokens',
+            'cache_creation_input_tokens',
+            'cache_write_input_tokens',
+        )
+    if cache_creation <= 0 and input_details is not None:
+        cache_creation = _pick_nested_int(
+            input_details,
+            'created_cache_tokens',
+            'cache_creation_input_tokens',
+            'cache_write_input_tokens',
+        )
+    if cache_creation <= 0:
+        cache_creation = _pick_int(
+            'created_cache_tokens',
+            'cache_creation_input_tokens',
+            'cache_write_input_tokens',
+            'cache_creation_tokens',
+        )
+    if cache_creation > 0:
+        result['cache_creation_input_tokens'] = cache_creation
+
+    cache_miss = 0
+    if prompt_details is not None:
+        cache_miss = _pick_nested_int(prompt_details, 'prompt_cache_miss_tokens', 'cache_miss_input_tokens')
+    if cache_miss <= 0 and input_details is not None:
+        cache_miss = _pick_nested_int(input_details, 'prompt_cache_miss_tokens', 'cache_miss_input_tokens')
+    if cache_miss <= 0:
+        cache_miss = _pick_int('prompt_cache_miss_tokens', 'cache_miss_input_tokens')
+    if cache_miss > 0:
+        result['prompt_cache_miss_tokens'] = cache_miss
+        result['uncached_tokens'] = cache_miss
 
     cost = _pick_number('total_cost', 'cost')
     if cost is not None:
@@ -999,22 +1047,13 @@ def _papi_merge_usage_extra(result: Dict[str, Any], usage_obj: Any) -> None:
 
 
 def _papi_extract_usage(response_obj: Any) -> Dict[str, Any]:
-    usage_obj = None
-    if isinstance(response_obj, dict):
-        usage_obj = response_obj.get('usage')
-    if usage_obj is None:
-        usage_obj = getattr(response_obj, 'usage', None)
+    usage_obj = _papi_read_obj_field(response_obj, 'usage')
     if usage_obj is None:
         return {}
 
     def _read_usage(key: str, default: int = 0) -> int:
-        if isinstance(usage_obj, dict):
-            try:
-                return int(usage_obj.get(key, default) or default)
-            except Exception:
-                return default
         try:
-            return int(getattr(usage_obj, key, default) or default)
+            return int(_papi_read_obj_field(usage_obj, key, default) or default)
         except Exception:
             return default
 
@@ -1029,6 +1068,32 @@ def _papi_extract_usage(response_obj: Any) -> Dict[str, Any]:
     # 透传缓存命中与成本等增强字段，供下游（NexoraCode 本地 Agent）展示缓存命中率/费用。
     _papi_merge_usage_extra(result, usage_obj)
     return result
+
+
+def _papi_build_responses_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """将统一用量字段映射到 Responses API，并保留缓存字段。"""
+    responses_usage: Dict[str, Any] = {
+        'input_tokens': int(usage.get('prompt_tokens', usage.get('input_tokens', 0)) or 0),
+        'output_tokens': int(usage.get('completion_tokens', usage.get('output_tokens', 0)) or 0),
+        'total_tokens': int(usage.get('total_tokens', 0) or 0),
+    }
+    input_details: Dict[str, int] = {}
+    cached = int(usage.get('cached_tokens', 0) or 0)
+    cache_creation = int(usage.get('cache_creation_input_tokens', 0) or 0)
+    if cached > 0:
+        input_details['cached_tokens'] = cached
+    if cache_creation > 0:
+        input_details['cache_creation_input_tokens'] = cache_creation
+    if input_details:
+        responses_usage['input_tokens_details'] = input_details
+
+    cache_miss = int(usage.get('prompt_cache_miss_tokens', 0) or 0)
+    if cache_miss > 0:
+        responses_usage['prompt_cache_miss_tokens'] = cache_miss
+    if usage.get('cost') is not None:
+        responses_usage['cost'] = usage['cost']
+
+    return responses_usage
 
 
 def _papi_extract_finish_reason(response_obj: Any) -> str:
@@ -1899,11 +1964,7 @@ def _papi_build_responses_payload(
         payload['reasoning_content'] = reasoning_content
 
     if usage:
-        payload['usage'] = {
-            'input_tokens': int(usage.get('prompt_tokens', usage.get('input_tokens', 0)) or 0),
-            'output_tokens': int(usage.get('completion_tokens', usage.get('output_tokens', 0)) or 0),
-            'total_tokens': int(usage.get('total_tokens', 0) or 0),
-        }
+        payload['usage'] = _papi_build_responses_usage(usage)
 
     return payload
 
@@ -2736,11 +2797,7 @@ def _papi_stream_openai_responses(
             completed['response']['reasoning_content'] = reasoning_text
 
         if usage_payload:
-            completed['response']['usage'] = {
-                'input_tokens': int(usage_payload.get('input_tokens', 0) or 0),
-                'output_tokens': int(usage_payload.get('output_tokens', 0) or 0),
-                'total_tokens': int(usage_payload.get('total_tokens', 0) or 0),
-            }
+            completed['response']['usage'] = _papi_build_responses_usage(usage_payload)
             if callable(usage_recorder):
                 usage_recorder(
                     usage_payload,
