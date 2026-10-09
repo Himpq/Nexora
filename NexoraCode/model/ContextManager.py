@@ -358,6 +358,25 @@ class ContextManager:
 
         if end <= start:
             if measured_estimate >= hard_limit:
+                # 历史里没有可压缩的轮次，说明超窗的是「当前轮自己」（通常是超长工具结果）。
+                # 直接抛错会让对话彻底卡死，因此先尝试对当前轮的超大工具结果做降级裁剪：
+                # 只改本次发送副本，落盘历史保持原文完整，用户随时可回看。
+                trimmed = self._trim_oversized_tool_results(
+                    messages, tools, hard_limit, output
+                )
+
+                if trimmed is not None:
+                    print(f"[LocalContext] active_turn_trimmed conversation={conversation_id} "
+                          f"input_estimate={measured_estimate} hard_limit={hard_limit}")
+                    yield {
+                        "type": "context_compression_status",
+                        "status": "trimmed",
+                        "content": "当前任务过大，已截断超长工具结果",
+                        "raw_input_tokens": measured_estimate,
+                        "context_window": window,
+                    }
+                    return trimmed
+
                 raise ContextLimitError("当前任务或工具结果超过模型输入预算；没有可压缩的历史轮次")
 
             yield {"type": "context_compression_status", "status": "skipped", "content": "没有可压缩的历史轮次"}
@@ -398,6 +417,7 @@ class ContextManager:
             if boundary == cursor:
                 raise ContextLimitError("单个历史轮次超过摘要请求预算；请使用更大窗口模型处理该会话")
 
+            candidate = self.repair_tools(candidate)
             self.validate_tools(candidate)
             # 摘要请求与主请求共用同一份 tools：tools 块渲染在提示词开头，
             # 不传就会让两次请求的提示词前缀分叉，压缩调用全价冷读。

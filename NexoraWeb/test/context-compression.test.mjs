@@ -209,6 +209,25 @@ function testOutputText() {
     assert.equal(skippedText, '触发原因：条件不满足', 'skipped 正文应仅含触发原因')
 }
 
+/** 场景 7:trimmed 状态(当前轮超长工具结果降级裁剪)可解析并给出专用正文 */
+function testTrimmedStep() {
+    const trimmed = parseContextCompressionStep({
+        type: 'context_compression_status',
+        status: 'trimmed',
+        content: '当前任务过大，已截断超长工具结果',
+        raw_input_tokens: 300000,
+        context_window: 200000,
+    })
+
+    assert.ok(trimmed, 'trimmed 块应解析成功')
+    assert.equal(trimmed.status, 'trimmed', 'status 应保留 trimmed')
+
+    const text = buildContextCompressionOutputText(trimmed)
+
+    assert.ok(text.includes('降级裁剪'), 'trimmed 正文应说明降级裁剪')
+    assert.ok(text.includes('压缩前输入'), 'trimmed 正文应透传 token 统计')
+}
+
 /** 汇总运行 */
 function main() {
     const cases = [
@@ -218,6 +237,7 @@ function main() {
         ['resolve:优先级与历史回放', testResolvePriority],
         ['hint:触发原因文案', testTriggerHint],
         ['output:展开正文', testOutputText],
+        ['parse:trimmed 降级裁剪', testTrimmedStep],
     ]
 
     for (const [name, run] of cases) {

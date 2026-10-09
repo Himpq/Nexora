@@ -113,6 +113,38 @@ class ContextTests(unittest.TestCase):
             self.consume(self.manager.prepare(self.cid, "system", []))
         self.assertEqual(len(self.store.get(self.cid)["messages"]), 1)
 
+    def test_oversized_tool_result_is_trimmed_instead_of_failing(self):
+        """当前轮工具结果超窗时降级裁剪，而不是让对话彻底失败。"""
+
+        self.add("user", "读一下大文件")
+        self.add("assistant", "", tool_calls=[{"id": "a", "name": "read", "arguments": {"path": "big"}}])
+        self.add("tool", "正文内容" * 3000, tool_call_id="a")
+        tools = [{"type": "function", "function": {"name": "local_file_read", "parameters": {}}}]
+        before = self.store.get(self.cid)["messages"]
+        events, messages = self.consume(self.manager.prepare(self.cid, "system", tools))
+        # 落盘历史保持原文完整，裁剪只作用于本次发送副本。
+        self.assertEqual(self.store.get(self.cid)["messages"], before)
+        self.assertEqual(events[-1]["status"], "trimmed")
+        trimmed = messages[-1]["content"]
+        self.assertLess(len(trimmed), len("正文内容" * 3000))
+        self.assertIn("已省略中间", trimmed)
+        # 工具配对关系不能被裁剪破坏。
+        self.manager.validate_tools(messages)
+
+    def test_volatile_instructions_go_to_tail_and_head_stays_constant(self):
+        """tail 注入块插在历史之后；head 不因注入内容变化。"""
+
+        self.add("user", "任务")
+        head = "恒定 head"
+        blocks = ["## Custom instructions\n自定义要求"]
+        messages = self.manager.build_messages(self.store.get(self.cid), head, blocks)
+        self.assertEqual(messages[0], {"role": "system", "content": head})
+        self.assertEqual(messages[-1], {"role": "system", "content": blocks[0]})
+        # 同一 head 在有无注入时逐字节相同，前缀缓存才可能命中。
+        plain = self.manager.build_messages(self.store.get(self.cid), head)
+        self.assertEqual(plain[0], messages[0])
+        self.assertEqual(plain[-1]["content"], "任务")
+
     def test_cancel_does_not_commit_summary(self):
         self.add("user", "旧任务")
         self.add("assistant", "结果")

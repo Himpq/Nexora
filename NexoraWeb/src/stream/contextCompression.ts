@@ -73,7 +73,8 @@ export function parseContextCompressionStep(raw: unknown): ContextCompressionSte
 
     const status = String(record.status || '').trim().toLowerCase()
 
-    if (status !== 'start' && status !== 'progress' && status !== 'done' && status !== 'skipped') {
+    // trimmed:当前轮超长工具结果被降级裁剪(历史无可压缩轮次时的兜底),同样以压缩卡片呈现。
+    if (status !== 'start' && status !== 'progress' && status !== 'done' && status !== 'skipped' && status !== 'trimmed') {
         return null
     }
 
@@ -98,13 +99,23 @@ export function parseContextCompressionStep(raw: unknown): ContextCompressionSte
     }
 }
 
-/** 从 v4 trace.events 中提取全部上下文压缩步骤，兼容旧 metadata.process_steps。 */
+/** 从 v4 trace.events 中提取全部上下文压缩步骤，兼容旧 metadata.process_steps。
+ *
+ * 入参既可以是 message 本身，也可以是 message.metadata：
+ *   - resolveActiveContextCompressionStep 传整个 message，需要先下钻一层 metadata；
+ *   - 其他调用点直接传 metadata，保持原有行为。
+ * 兼容两种形态可避免历史回放时因层级不匹配读不到 process_steps（卡片重载后消失）。
+ */
 export function contextCompressionStepsFromMetadata(metadata: unknown): ContextCompressionStep[] {
     if (!metadata || typeof metadata !== 'object') {
         return []
     }
 
-    const record = metadata as Record<string, unknown>
+    const outer = metadata as Record<string, unknown>
+    // message 形态：自带 metadata 字段时下钻一层；metadata 形态：直接用自身。
+    const record = (outer.metadata && typeof outer.metadata === 'object')
+        ? outer.metadata as Record<string, unknown>
+        : outer
     const trace = record.trace && typeof record.trace === 'object'
         ? record.trace as Record<string, unknown>
         : {}
@@ -235,6 +246,9 @@ export function buildContextCompressionOutputText(step: ContextCompressionStep):
     } else if (step.status === 'start' || step.status === 'progress') {
         lines.push('')
         lines.push('压缩任务已开始，等待模型生成摘要...')
+    } else if (step.status === 'trimmed') {
+        lines.push('')
+        lines.push('历史中没有可压缩的轮次，已对当前轮的超长工具结果做降级裁剪（仅影响本次发送，历史原文保持完整）。')
     }
 
     return lines.join('\n').trim()

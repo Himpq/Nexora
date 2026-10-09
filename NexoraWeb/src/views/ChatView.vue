@@ -1474,6 +1474,8 @@
         firstTokenAt: number
         endedAt: number
         outputTokens: number
+        /** 后端累计的净生成时长(不含工具执行/审批),速率分母;老数据为 0 */
+        providerMs: number
         memoryInputTokens: number
         memoryOutputTokens: number
     }
@@ -1489,6 +1491,12 @@
         staleIndexPending: boolean
         /** 本轮流是否已通过 error chunk 弹过错误提示,避免终帧/断线重复弹 */
         errorToastShown: boolean
+        /**
+         * 当前模型生成轮的起始时间戳(0 = 不在生成中)。
+         * 用于流式期间本地估算净生成时长:轮内首帧置位、轮末(usage/工具结果)结算, 
+         * 工具执行与审批等待不计入,与后端 badge_timing.providerMs 口径一致。
+         */
+        generationStartedAt: number
         timing: LocalBadgeTiming
     }
 
@@ -1500,6 +1508,7 @@
             phase: 'connecting',
             staleIndexPending: false,
             errorToastShown: false,
+            generationStartedAt: 0,
             timing: readLocalBadgeTiming(conversationStore.pendingStreams[conversationId]?.assistant),
         }
 
@@ -1527,6 +1536,7 @@
             firstTokenAt: Number(saved.firstTokenAt) || 0,
             endedAt: Number(saved.endedAt) || 0,
             outputTokens: Number(saved.outputTokens) || 0,
+            providerMs: Math.max(0, Number(saved.providerMs) || 0),
             memoryInputTokens: Number(memory.input) || 0,
             memoryOutputTokens: Number(memory.output) || 0,
         }
@@ -1555,6 +1565,9 @@
         const outputTokens = Math.max(state.timing.outputTokens, io.cumulative.output, io.round.output)
         const badgeIo = Object.values(io.cumulative).some((value) => value > 0) ? io.cumulative : io.round
         state.timing.outputTokens = outputTokens
+        // 进行中的生成轮尚未结算,把已生成时长一并计入,避免流式期间速率虚高。
+        const liveProviderMs = state.timing.providerMs
+            + (state.generationStartedAt > 0 ? Math.max(0, Date.now() - state.generationStartedAt) : 0)
 
         const updatedMetadata: Record<string, unknown> = {
             ...metadata,
@@ -1565,6 +1578,7 @@
                 cachedInput: badgeIo.cachedInput,
                 rawInput: badgeIo.rawInput,
                 outputTokens,
+                providerMs: liveProviderMs,
             },
         }
 
@@ -1584,11 +1598,34 @@
         }
     }
 
+    /** 标记模型生成轮开始(轮内首帧调用;已在生成中则保持原起点) */
+    function beginLocalGenerationRound(state: LiveStreamState): void {
+        if (!isNexoraCode || state.generationStartedAt > 0) {
+            return
+        }
+
+        state.generationStartedAt = Date.now()
+    }
+
+    /**
+     * 结算当前生成轮:把本轮净生成时长累加进 timing.providerMs。
+     * 轮末(usage 帧 / 工具结果 / 收尾)调用,重复调用安全(无进行中轮次时直接返回)。
+     */
+    function settleLocalGenerationRound(state: LiveStreamState): void {
+        if (!isNexoraCode || state.generationStartedAt <= 0) {
+            return
+        }
+
+        state.timing.providerMs += Math.max(0, Date.now() - state.generationStartedAt)
+        state.generationStartedAt = 0
+    }
+
     function finalizeLocalBadgeTiming(state: LiveStreamState, message?: ChatMessage): void {
         if (!isNexoraCode) {
             return
         }
 
+        settleLocalGenerationRound(state)
         state.timing.endedAt = Date.now()
         updateLocalBadgeTiming(state, message)
     }
@@ -1660,6 +1697,8 @@
 
         // 流式 usage:驱动输入区 TK mini 增量展示 + 同步到消息 model badge（I/O / E/C 立即显示，无需刷新）
         if (chunk.type === 'token_usage') {
+            // usage 帧代表本轮模型流结束:先结算净生成时长,再刷新 badge。
+            settleLocalGenerationRound(state)
             conversationStore.accumulateStreamUsage(state.conversationId, chunk as unknown as Record<string, unknown>)
             conversationStore.patchStreamingIoTokens(state.conversationId, chunk as unknown as Record<string, unknown>)
 
@@ -1737,6 +1776,7 @@
 
             if (delta) {
                 noteLocalFirstToken(state)
+                beginLocalGenerationRound(state)
             }
 
             conversationStore.appendStreamText(state.conversationId, delta)
@@ -1751,6 +1791,7 @@
 
             if (delta) {
                 noteLocalFirstToken(state)
+                beginLocalGenerationRound(state)
             }
 
             conversationStore.appendStreamReasoning(state.conversationId, delta)
@@ -1767,6 +1808,11 @@
             || chunk.type === 'function_result'
             || chunk.type === 'question'
         ) {
+            // 工具结果意味本轮模型流已结束(工具执行/审批不计入生成时长)。
+            if (chunk.type === 'function_result') {
+                settleLocalGenerationRound(state)
+            }
+
             noteLocalFirstToken(state)
             conversationStore.appendStreamToolStep(state.conversationId, chunk as unknown as Record<string, unknown>)
             updateLocalBadgeTiming(state)

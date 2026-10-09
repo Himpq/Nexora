@@ -1358,6 +1358,10 @@
         const endedAt = Number(savedTiming.endedAt) || (props.streaming ? Date.now() : 0)
         const elapsedMs = startedAt > 0 && endedAt > 0 ? Math.max(0, endedAt - startedAt) : 0
         const outputTokens = Number(savedTiming.outputTokens) || tokens.output
+        // 速率分母优先用后端累计的「净生成时长」（不含工具执行/审批等待）；
+        // 老数据无 providerMs 时回退到整次请求墙钟时间，保持向后兼容。
+        const providerMs = Math.max(0, Number(savedTiming.providerMs) || 0)
+        const rateMs = providerMs > 0 ? providerMs : elapsedMs
         const { raw, cached } = normalizeBadgeRawCached(
             Number(savedTiming.rawInput) || tokens.rawInput,
             Number(savedTiming.cachedInput) || tokens.cachedInput,
@@ -1370,7 +1374,7 @@
             cacheRate: raw > 0 ? (cached / raw) * 100 : null,
             elapsedMs,
             firstTokenMs: startedAt > 0 && firstTokenAt > 0 ? Math.max(0, firstTokenAt - startedAt) : 0,
-            tokensPerSecond: elapsedMs > 0 ? outputTokens / (elapsedMs / 1000) : 0,
+            tokensPerSecond: rateMs > 0 ? outputTokens / (rateMs / 1000) : 0,
             memoryReady: !!memoryPayload && typeof memoryPayload === 'object',
             memoryInput: Number(savedMemory.input) || 0,
             memoryOutput: Number(savedMemory.output) || 0,

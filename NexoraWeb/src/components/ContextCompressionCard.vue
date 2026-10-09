@@ -58,8 +58,8 @@
 
     const expanded = ref(false)
 
-    /** 完成态:非 start/progress 即视为已结束(对齐原版 status !== 'start' 时挂 .done) */
-    const done = computed(() => props.step.status === 'done')
+    /** 完成态:done 或 trimmed(裁剪已完成),对齐原版 status !== 'start' 时挂 .done */
+    const done = computed(() => props.step.status === 'done' || props.step.status === 'trimmed')
 
     /** 跳过态:跳过时卡片整体走中性灰视觉 */
     const skipped = computed(() => props.step.status === 'skipped')
@@ -84,6 +84,10 @@
 
         if (props.step.status === 'done') {
             return '上下文压缩完成'
+        }
+
+        if (props.step.status === 'trimmed') {
+            return '已截断超长工具结果'
         }
 
         if (props.step.status === 'skipped') {
