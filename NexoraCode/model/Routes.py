@@ -197,6 +197,85 @@ def _normalize_history_messages(messages: list) -> list:
     return out
 
 
+def _merge_agent_response_rounds(messages: list) -> list:
+    """Merge adjacent assistant rounds sharing one request trace for history display."""
+    merged = []
+
+    for raw in messages or []:
+        if not isinstance(raw, dict):
+            continue
+
+        current = dict(raw)
+
+        if current.get("role") != "assistant":
+            merged.append(current)
+            continue
+
+        raw_metadata = current.get("metadata")
+
+        if not isinstance(raw_metadata, dict):
+            merged.append(current)
+            continue
+
+        current_metadata = dict(raw_metadata)
+        current["metadata"] = current_metadata
+        response_trace_id = str(current_metadata.get("response_trace_id") or "").strip()
+
+        if not response_trace_id or not merged:
+            merged.append(current)
+            continue
+
+        previous = merged[-1]
+        raw_previous_metadata = previous.get("metadata")
+        previous_metadata = dict(raw_previous_metadata) if isinstance(raw_previous_metadata, dict) else {}
+        previous_trace_id = str(previous_metadata.get("response_trace_id") or "").strip()
+
+        if previous.get("role") != "assistant" or previous_trace_id != response_trace_id:
+            merged.append(current)
+            continue
+
+        previous_steps = previous_metadata.get("process_steps")
+        current_steps = current_metadata.get("process_steps")
+        combined_steps = list(previous_steps) if isinstance(previous_steps, list) else []
+
+        if isinstance(current_steps, list):
+            combined_steps.extend(current_steps)
+
+        previous_calls = previous.get("tool_calls")
+        current_calls = current.get("tool_calls")
+        combined_calls = list(previous_calls) if isinstance(previous_calls, list) else []
+
+        if isinstance(current_calls, list):
+            combined_calls.extend(current_calls)
+
+        previous_reasoning = str(previous_metadata.get("reasoning_content") or "")
+        current_reasoning = str(current_metadata.get("reasoning_content") or "")
+        combined_content = (
+            _message_content_text(previous.get("content"))
+            + _message_content_text(current.get("content"))
+        )
+
+        previous.update(current)
+        previous["content"] = combined_content
+
+        if combined_calls:
+            previous["tool_calls"] = combined_calls
+        else:
+            previous.pop("tool_calls", None)
+
+        combined_metadata = {**previous_metadata, **current_metadata}
+
+        if combined_steps:
+            combined_metadata["process_steps"] = combined_steps
+
+        if previous_reasoning or current_reasoning:
+            combined_metadata["reasoning_content"] = previous_reasoning + current_reasoning
+
+        previous["metadata"] = combined_metadata
+
+    return merged
+
+
 def _sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
@@ -694,6 +773,9 @@ def local_agent_get_messages(conv_id: str):
 
     normalized = _normalize_history_messages(conversation.get("messages", []))
 
+    if request.args.get("merge_agent_rounds") == "1":
+        normalized = _merge_agent_response_rounds(normalized)
+
     return jsonify({
         "success": True,
         "messages": normalized,
@@ -711,6 +793,10 @@ def local_agent_get_turns(conv_id: str):
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
     normalized = _normalize_history_messages(conversation.get("messages", []))
+
+    if request.args.get("merge_agent_rounds") == "1":
+        normalized = _merge_agent_response_rounds(normalized)
+
     turns = []
 
     for index, message in enumerate(normalized):
