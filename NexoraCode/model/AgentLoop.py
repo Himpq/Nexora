@@ -19,8 +19,9 @@ from typing import Any, Generator, Optional
 
 from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
-from .ConversationStore import ConversationStore
+from .ConversationStore import ConversationStore, is_placeholder_title
 from .ContextManager import ContextManager
+from .TitleGenerator import maybe_generate_title
 from .ToolPermissionPolicy import (
     build_tool_permission_question,
     create_pending_tool_action,
@@ -111,7 +112,13 @@ class AgentLoop:
         yield {"type": "conversation_id", "conversation_id": conversation_id}
         yield {"type": "model_info", "model_name": model_name, "provider": self._provider_name(), "search_enabled": False}
 
+        # 首条消息落盘前先取原标题：append_message 会把占位标题替换为截断标题，
+        # 只有此刻仍是占位值才说明这是首条消息，值得异步生成智能标题。
+        title_before_append = str(conversation.get("title") or "")
         self.store.append_message(conversation_id, {"role": "user", "content": user_text, "timestamp": _now()})
+
+        if is_placeholder_title(title_before_append):
+            maybe_generate_title(conversation_id, user_text, title_before_append)
 
         effective_system = str(system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
@@ -151,6 +158,8 @@ class AgentLoop:
         context_window = self._context_window()
 
         # 本次请求的 badge timing：落盘进消息 metadata，重进对话后前端可从快照恢复。
+        # providerMs 为跨全部工具轮次的「净模型生成时长」累计（不含工具执行/权限审批/
+        # 网络往返等待），前端 token 速率以此为分母，避免工具轮把速率摊薄。
         badge_timing = {
             "startedAt": int(time.time() * 1000),
             "firstTokenAt": 0,
@@ -158,10 +167,11 @@ class AgentLoop:
             "cachedInput": 0,
             "rawInput": 0,
             "outputTokens": 0,
+            "providerMs": 0,
         }
 
         def _snapshot_timing(ended: bool = False) -> None:
-            """写入请求级用量快照（缓存命中 / 原始输入 / 输出）。
+            """写入请求级用量快照（缓存命中 / 原始输入 / 输出 / 净生成时长）。
 
             中断与模型异常路径同样要带上缓存数据，否则徽标上只有输出没有命中率。
             """
@@ -312,6 +322,9 @@ class AgentLoop:
                     round_index,
                     detail=f"first_event={int(provider_first_event_logged)}",
                 )
+                # 累计本轮净生成时长（含首 token 等待，不含工具执行/审批），
+                # 供 badge 速率以生成口径为分母，而非整次请求墙钟时间。
+                badge_timing["providerMs"] += max(0, int((time.monotonic() - provider_started) * 1000))
 
             content_text = "".join(assistant_parts)
             reasoning_text += "".join(assistant_reasoning_parts)
@@ -736,6 +749,7 @@ class AgentLoop:
                 "cachedInput": int(badge_timing.get("cachedInput") or 0),
                 "rawInput": int(badge_timing.get("rawInput") or 0),
                 "outputTokens": int(badge_timing.get("outputTokens") or 0),
+                "providerMs": int(badge_timing.get("providerMs") or 0),
             }
 
         if last_round_io:
