@@ -13,15 +13,23 @@ NexoraCode.model.TitleGenerator — 会话标题自动生成
 
 对外提供：
 - maybe_generate_title(): 若标题仍是占位值则异步生成
+- wait_for_title(): 等待进行中的标题生成结束（worker 收尾前调用，保证标题帧先于流结束）
+- set_title_listener(): 注册生成完成回调，供宿主把新标题推给前端即时刷新
 """
 
 from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Optional
 
-from .ConversationStore import ConversationStore, is_placeholder_title
+from .ConversationStore import (
+    ConversationStore,
+    TITLE_SOURCE_AUTO,
+    can_overwrite_title,
+    is_placeholder_title,
+)
 from .Provider import ProviderClient, load_provider
 from .ShortRequest import ShortRequestError, run_short_request
 
@@ -33,6 +41,34 @@ _TITLE_MAX_TOKENS = 48
 # 同一会话只保留一个进行中的生成任务，避免重复请求。
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT: set[str] = set()
+
+# 标题生成完成后的通知回调（由宿主注册，用于把新标题推给前端即时刷新）。
+# 回调在后台线程内同步执行，实现方必须自行保证线程安全与异常隔离。
+_LISTENER_LOCK = threading.Lock()
+_LISTENER = None
+
+
+def set_title_listener(listener) -> None:
+    """注册标题生成完成回调：listener(conversation_id, title)。传 None 解除。"""
+    global _LISTENER
+
+    with _LISTENER_LOCK:
+        _LISTENER = listener
+
+
+def _notify_title_generated(conversation_id: str, title: str) -> None:
+    """通知宿主标题已更新；回调异常不得影响标题生成主流程。"""
+    with _LISTENER_LOCK:
+        listener = _LISTENER
+
+    if listener is None:
+        return
+
+    try:
+        listener(conversation_id, title)
+    except Exception as exc:
+        print(f"[LocalTitle] listener failed conversation={conversation_id} reason={type(exc).__name__}: {exc}")
+
 
 _TITLE_SYSTEM_PROMPT = (
     "你是会话标题生成器。根据用户的第一条消息，生成一个简短的中文标题，"
@@ -76,7 +112,7 @@ def _generate_title_text(user_text: str) -> str:
 
 
 def _run_generation(conversation_id: str, user_text: str) -> None:
-    """后台任务：生成标题并在仍为占位值时写回。"""
+    """后台任务：生成标题并在可覆盖时写回。"""
     try:
         title = _generate_title_text(user_text)
 
@@ -89,18 +125,47 @@ def _run_generation(conversation_id: str, user_text: str) -> None:
         if conversation is None:
             return
 
-        # 二次确认：仅当标题仍是占位值时写回，避免覆盖用户手动改名。
-        if not is_placeholder_title(conversation.get("title")):
+        # 二次确认：占位值或来源为 auto（截断标题 / 上一次自动标题）才写回，
+        # 用户手动改写的标题（title_source=user）绝不覆盖。
+        state = store.get_title_state(conversation_id)
+
+        if not can_overwrite_title(state.get("title"), state.get("title_source")):
             return
 
-        store.set_title(conversation_id, title)
+        store.set_title(conversation_id, title, source=TITLE_SOURCE_AUTO)
         print(f"[LocalTitle] generated conversation={conversation_id} title={title!r}")
+
+        _notify_title_generated(conversation_id, title)
     except Exception as exc:
         # 标题是锦上添花：任何失败都静默降级，保留原有截断标题。
         print(f"[LocalTitle] skipped conversation={conversation_id} reason={type(exc).__name__}: {exc}")
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(conversation_id)
+
+
+def wait_for_title(conversation_id: str, timeout: float = 8.0) -> bool:
+    """等待该会话进行中的标题生成结束；返回是否在超时前结束。
+
+    worker 收尾前调用：标题帧必须赶在流结束前推送，否则读取端退出后就收不到了。
+    """
+    clean_id = str(conversation_id or "").strip()
+
+    if not clean_id:
+        return True
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+
+    while time.monotonic() < deadline:
+        with _INFLIGHT_LOCK:
+            running = clean_id in _INFLIGHT
+
+        if not running:
+            return True
+
+        time.sleep(0.02)
+
+    return False
 
 
 def maybe_generate_title(conversation_id: str, user_text: str, current_title: str = "") -> bool:

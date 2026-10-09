@@ -662,6 +662,8 @@ def _stream_worker_factory(body: dict):
         print(f"[LocalAgent] /api/local/tasks provider: (default) model_name={model_name or '(unset)'}")
 
     def _worker(push_chunk, set_conversation_id, set_stage, is_cancel_requested) -> None:
+        from .TitleGenerator import wait_for_title
+
         if not message:
             push_chunk({"type": "error", "message": "消息不能为空"})
 
@@ -669,6 +671,8 @@ def _stream_worker_factory(body: dict):
 
         loop = _build_agent_loop(ProviderClient(target_config) if target_config is not None else None)
         finished = threading.Event()
+        # 会话 ID 可能由 stream_send 内部新建（body 未带时），用可变容器跟踪实际值。
+        active_conversation_id = [str(conversation_id or "").strip()]
 
         def _watch_cancel():
             while not finished.wait(0.2):
@@ -691,7 +695,8 @@ def _stream_worker_factory(body: dict):
                 print(f"[LocalAgent] sse event: {event_type}")
 
                 if event_type == "conversation_id" and event.get("conversation_id"):
-                    set_conversation_id(str(event.get("conversation_id") or ""))
+                    active_conversation_id[0] = str(event.get("conversation_id") or "")
+                    set_conversation_id(active_conversation_id[0])
 
                 push_chunk(_translate_event(event))
         except Exception as exc:
@@ -700,6 +705,11 @@ def _stream_worker_factory(body: dict):
             raise
         finally:
             finished.set()
+
+        # 标题帧必须赶在流结束前推送：读取端在 status 变为 done 后就会退出。
+        # 超时后不再等待（标题生成慢于回复时放弃即时推送，前端下次拉列表仍会取到新标题）。
+        if active_conversation_id[0]:
+            wait_for_title(active_conversation_id[0], timeout=8.0)
 
         print("[LocalAgent] worker loop finished")
 
@@ -1400,14 +1410,25 @@ def local_agent_token_detail():
     })
 
 
+def _on_title_generated(conversation_id: str, title: str) -> None:
+    """标题生成完成后的即时推送：把新标题塞进该会话活跃流，前端无需刷新即可看到。"""
+    append_chunk_to_conversation(conversation_id, {
+        "type": "conversation_title",
+        "conversation_id": str(conversation_id or ""),
+        "title": str(title or ""),
+    })
+
+
 def register_local_routes(app, executor=None) -> None:
     if executor is not None:
         set_default_executor(executor)
 
     app.register_blueprint(_local_bp)
     from .TaskService import task_bp, set_worker_factory
+    from .TitleGenerator import set_title_listener
 
     set_worker_factory(_stream_worker_factory)
+    set_title_listener(_on_title_generated)
     app.register_blueprint(task_bp)
 
 

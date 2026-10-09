@@ -60,6 +60,8 @@ export interface ChatStreamChunk {
     error_code?: string
     model_name?: string
     provider?: string
+    /** 会话标题:后台 AI 生成完成后即时下发(type=conversation_title 帧) */
+    title?: string
     search_enabled?: boolean
     /** 断点续播游标:后端每块自增,层据此记录 consumedSeq */
     _stream_seq?: number

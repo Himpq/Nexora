@@ -36,6 +36,26 @@ def is_placeholder_title(title: Any) -> bool:
     return not str(title or "").strip() or str(title or "").strip() in _PLACEHOLDER_TITLES
 
 
+# 标题来源标记：区分「用户手动改名」与「系统自动写入」。
+# append_message 的截断标题与 TitleGenerator 的智能标题都属 auto，
+# 用户通过改名接口写入的属 user。自动标题只允许覆盖 auto，绝不覆盖 user。
+TITLE_SOURCE_AUTO = "auto"
+TITLE_SOURCE_USER = "user"
+
+
+def can_overwrite_title(title: Any, title_source: Any) -> bool:
+    """判断自动标题是否允许覆盖当前标题：占位值或来源为 auto 时可覆盖。"""
+    if is_placeholder_title(title):
+        return True
+
+    return str(title_source or "").strip() == TITLE_SOURCE_AUTO
+
+
+# 悬空工具调用的占位结果文案：进程被外部终止（工具命令杀掉自身、崩溃、断电）时，
+# 历史会停在 assistant.tool_calls 而没有对应的 tool 结果。补齐这条结果即恢复协议。
+INTERRUPTED_TOOL_RESULT = "该工具调用未返回结果（进程中断或任务被终止），请勿重复执行。"
+
+
 def write_json_atomic(path: Path, data: dict) -> None:
     """同目录临时文件 + os.replace 原子写入，读取方不会看到写到一半的 JSON。
 
@@ -199,6 +219,7 @@ class ConversationStore:
 
                 if title:
                     meta["title"] = title
+                    meta["title_source"] = TITLE_SOURCE_AUTO
                     conversation["title"] = title
                     self._save_conversation(conversation)
 
@@ -206,12 +227,18 @@ class ConversationStore:
             self._save_index(index)
             return True
 
-    def set_title(self, conversation_id: str, title: str) -> bool:
-        """更新会话标题（会话文件与索引同步写入）。空标题视为无效，返回 False。"""
+    def set_title(self, conversation_id: str, title: str, source: str = TITLE_SOURCE_USER) -> bool:
+        """更新会话标题（会话文件与索引同步写入）。空标题视为无效，返回 False。
+
+        source 标记标题来源：默认 user（手动改名）；TitleGenerator 回写时传 auto，
+        便于后续自动标题判断能否覆盖。
+        """
         clean_title = str(title or "").strip()
 
         if not clean_title:
             return False
+
+        clean_source = str(source or "").strip() or TITLE_SOURCE_USER
 
         with self._lock:
             conversation = self.get(conversation_id)
@@ -225,8 +252,32 @@ class ConversationStore:
             index = self._load_index()
             meta = index.setdefault(conversation_id, {})
             meta["title"] = clean_title
+            meta["title_source"] = clean_source
             self._save_index(index)
             return True
+
+    def get_title_state(self, conversation_id: str) -> dict:
+        """读取会话标题状态：返回 {title, title_source}。
+
+        标题来源仅记录在索引中（会话文件只存标题文本），自动标题回写前
+        需要据此判断能否覆盖用户手动改写的标题。
+        """
+        clean_id = str(conversation_id or "").strip()
+
+        if not clean_id:
+            return {"title": "", "title_source": ""}
+
+        with self._lock:
+            index = self._load_index()
+            meta = index.get(clean_id)
+
+            if not isinstance(meta, dict):
+                return {"title": "", "title_source": ""}
+
+            return {
+                "title": str(meta.get("title") or ""),
+                "title_source": str(meta.get("title_source") or ""),
+            }
 
     def replace_tool_result(self, conversation_id: str, tool_call_id: str, content: str) -> bool:
         """更新权限确认占位结果，批准后仍保留原工具调用的协议位置。"""

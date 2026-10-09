@@ -1631,6 +1631,17 @@
             return
         }
 
+        // 会话标题:后台 AI 生成完成后即时下发,直接改本地列表标题(无需刷新)
+        if (chunk.type === 'conversation_title') {
+            const title = String(chunk.title || '').trim()
+
+            if (title) {
+                conversationStore.setConversationTitleLocal(state.conversationId, title)
+            }
+
+            return
+        }
+
         // 模型信息:同步到该流归属会话的助手消息(model-badge 数据源)
         if (chunk.type === 'model_info') {
             if (chunk.model_name) {

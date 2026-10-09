@@ -26,6 +26,9 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 _SESSIONS_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
+# stream_id -> SessionJournal：worker 外部（如标题生成回调）也要能落盘事件，
+# 但 journal 不能塞进 session（save_meta 会序列化 session 内容）。
+_JOURNALS: Dict[str, Any] = {}
 
 _MAX_CHUNKS_PER_SESSION = 12000
 # 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
@@ -38,6 +41,7 @@ _ACCUMULATED_RENDER_CHUNK_TYPES = {
     "web_search",
     "search_meta",
     "context_compression_status",
+    "context_injection",
     "function_call_delta",
     "function_call",
     "function_call_running",
@@ -88,6 +92,123 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
     }
 
 
+def _flush_session_journal(session: Dict[str, Any], force: bool = False) -> None:
+    """把 session 攒下的事件批量落盘。
+
+    逐条开文件写会在持有 session 条件锁时做文件 I/O，长回复几千个 chunk
+    就是几千次 open/write/close。攒到阈值或任务收尾时一次写完，
+    代价是进程异常退出最多丢最后未落盘的那一批（该任务本就会标记 interrupted）。
+    """
+    lock = session["cond"]
+
+    with lock:
+        pending = session["journal_pending"]
+        should_flush = bool(pending) and (force or len(pending) >= _JOURNAL_FLUSH_CHUNKS)
+
+        if should_flush:
+            session["journal_pending"] = []
+
+    if should_flush:
+        journal = _JOURNALS.get(str(session.get("stream_id") or ""))
+
+        if journal is not None:
+            journal.append(str(session.get("stream_id") or ""), pending)
+
+
+def _append_chunk_to_session(session: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """把已构造好的 chunk 追加进 session（调用方需已持有 session["cond"]）。
+
+    抽取自 _push_chunk 的核心追加逻辑，供 worker 推送与外部按会话推送共用，
+    避免两处各写一遍序号/裁剪/落盘待写队列。
+    """
+    chunk_type = str(payload.get("type") or "").strip()
+    cid = str(payload.get("conversation_id") or "").strip()
+
+    if cid:
+        session["conversation_id"] = cid
+
+    if chunk_type:
+        session["last_chunk_type"] = chunk_type
+
+    if chunk_type == "stream_session":
+        payload["stream_id"] = str(payload.get("stream_id") or session.get("stream_id") or "")
+
+        if not cid:
+            payload["conversation_id"] = str(session.get("conversation_id") or "")
+
+        if "assistant_index" in payload:
+            session["assistant_index"] = payload.get("assistant_index")
+
+        if "regenerate_index" in payload:
+            session["regenerate_index"] = payload.get("regenerate_index")
+
+        if "is_regenerate" in payload:
+            session["is_regenerate"] = bool(payload.get("is_regenerate", False))
+
+    session["last_seq"] = int(session["last_seq"]) + 1
+    payload["_stream_seq"] = int(session["last_seq"])
+    session["chunks"].append(payload)
+
+    if chunk_type in {"function_call", "function_result"}:
+        session["tool_chunk_push_times"][int(session["last_seq"])] = time.monotonic()
+
+    if len(session["chunks"]) > _MAX_CHUNKS_PER_SESSION:
+        dropped = session["chunks"].pop(0)
+        dropped_seq = int(dropped.get("_stream_seq") or 0)
+        session["tool_chunk_push_times"].pop(dropped_seq, None)
+        session["head_seq"] = int(session["head_seq"]) + 1
+
+    session["updated_at"] = time.time()
+    # 收尾帧先落盘，保证「完成」这件事不会因为攒批而延后到下一个 chunk。
+    session["journal_pending"].append(payload)
+    session["cond"].notify_all()
+
+
+def append_chunk_to_conversation(conversation_id: str, chunk: Dict[str, Any]) -> bool:
+    """向该会话当前活跃的 session 追加一个 chunk（标题生成等异步事件的即时推送）。
+
+    标题在独立后台线程生成，此时可能已晚于 worker 的收尾帧；只要 session 仍在
+    内存中就把事件追加进去，SSE 读取端会照常带出。找不到活跃 session 时返回 False，
+    调用方据此回退到「下次拉列表」的常规刷新。
+    """
+    clean_id = str(conversation_id or "").strip()
+
+    if not clean_id or not isinstance(chunk, dict):
+        return False
+
+    cleanup_sessions()
+
+    with _SESSIONS_LOCK:
+        sessions = list(_SESSIONS.values())
+
+    target = None
+
+    for session in sessions:
+        if str(session.get("conversation_id") or "").strip() != clean_id:
+            continue
+
+        # 同一会话可能有多个历史 session，取最近更新的那个。
+        if target is None or float(session.get("updated_at") or 0) > float(target.get("updated_at") or 0):
+            target = session
+
+    if target is None:
+        return False
+
+    payload = copy.deepcopy(chunk)
+    payload["conversation_id"] = clean_id
+    cond = target["cond"]
+
+    with cond:
+        if bool(target.get("cancel_requested", False)):
+            return False
+
+        _append_chunk_to_session(target, payload)
+
+    _flush_session_journal(target, force=True)
+
+    return True
+
+
 def cleanup_sessions() -> None:
     now = time.time()
 
@@ -107,6 +228,7 @@ def cleanup_sessions() -> None:
 
         for sid in remove_ids:
             _SESSIONS.pop(sid, None)
+            _JOURNALS.pop(sid, None)
 
 
 def start_session(
@@ -134,6 +256,10 @@ def start_session(
     # 每次开新任务顺带清一次过期事件日志：电脑长时间不关时目录会一直涨。
     journal.purge_expired()
     journal.save_meta(session)
+    # 外部按会话推送（如标题生成）需要复用同一个 journal 落盘；journal 不可放进
+    # session（save_meta 会序列化 session 内容），故单独登记在模块级映射里。
+    with _SESSIONS_LOCK:
+        _JOURNALS[stream_id] = journal
 
     with _SESSIONS_LOCK:
         _SESSIONS[stream_id] = session
@@ -174,27 +300,10 @@ def start_session(
             return bool(session.get("cancel_requested", False))
 
     def _flush_journal(force: bool = False) -> None:
-        """把攒下的事件批量落盘。
-
-        逐条开文件写会在持有 session 条件锁时做文件 I/O，长回复几千个 chunk
-        就是几千次 open/write/close。攒到阈值或任务收尾时一次写完，
-        代价是进程异常退出最多丢最后未落盘的那一批（该任务本就会标记 interrupted）。
-        """
-        lock = session["cond"]
-
-        with lock:
-            pending = session["journal_pending"]
-            should_flush = bool(pending) and (force or len(pending) >= _JOURNAL_FLUSH_CHUNKS)
-
-            if should_flush:
-                session["journal_pending"] = []
-
-        if should_flush:
-            journal.append(stream_id, pending)
+        _flush_session_journal(session, force=force)
 
     def _push_chunk(chunk: Dict[str, Any]) -> None:
         payload = copy.deepcopy(chunk) if isinstance(chunk, dict) else {"type": "message", "content": str(chunk)}
-        cid = str(payload.get("conversation_id") or "").strip()
         chunk_type = str(payload.get("type") or "").strip()
         cond = session["cond"]
 
@@ -202,44 +311,7 @@ def start_session(
             if bool(session.get("cancel_requested", False)):
                 raise StreamCancelled(_CANCEL_SENTINEL)
 
-            if cid:
-                session["conversation_id"] = cid
-
-            if chunk_type:
-                session["last_chunk_type"] = chunk_type
-
-            if chunk_type == "stream_session":
-                payload["stream_id"] = str(payload.get("stream_id") or session.get("stream_id") or "")
-
-                if not cid:
-                    payload["conversation_id"] = str(session.get("conversation_id") or "")
-
-                if "assistant_index" in payload:
-                    session["assistant_index"] = payload.get("assistant_index")
-
-                if "regenerate_index" in payload:
-                    session["regenerate_index"] = payload.get("regenerate_index")
-
-                if "is_regenerate" in payload:
-                    session["is_regenerate"] = bool(payload.get("is_regenerate", False))
-
-            session["last_seq"] = int(session["last_seq"]) + 1
-            payload["_stream_seq"] = int(session["last_seq"])
-            session["chunks"].append(payload)
-
-            if chunk_type in {"function_call", "function_result"}:
-                session["tool_chunk_push_times"][int(session["last_seq"])] = time.monotonic()
-
-            if len(session["chunks"]) > _MAX_CHUNKS_PER_SESSION:
-                dropped = session["chunks"].pop(0)
-                dropped_seq = int(dropped.get("_stream_seq") or 0)
-                session["tool_chunk_push_times"].pop(dropped_seq, None)
-                session["head_seq"] = int(session["head_seq"]) + 1
-
-            session["updated_at"] = time.time()
-            # 收尾帧先落盘，保证「完成」这件事不会因为攒批而延后到下一个 chunk。
-            session["journal_pending"].append(payload)
-            cond.notify_all()
+            _append_chunk_to_session(session, payload)
 
         _flush_journal(force=chunk_type == "finish")
 
