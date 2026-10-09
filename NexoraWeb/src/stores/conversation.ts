@@ -27,6 +27,7 @@ import {
 } from '@/api/conversations'
 import { chatStream, type ChatStreamSnapshot, type ChatStreamSnapshotContext } from '@/network/chatStream'
 import { parseContextCompressionStep, type ContextCompressionStep } from '@/stream/contextCompression'
+import { parseContextInjectionStep } from '@/stream/contextInjection'
 import { readExaImageGallery } from '@/stream/exaMedia'
 import type { QuestionPayload } from '@/stream/questionCard'
 import {
@@ -570,6 +571,7 @@ export const useConversationStore = defineStore('conversation', {
             assistant.pending = true
             assistant.outputFinished = false
             assistant.compressionStep = null
+            assistant.injectionStep = null
 
             // 新一轮流开始:清空上一轮的流式增量估算,当前会话累计基数继续沿用
             tokenMiniRefreshSeq += 1
@@ -965,6 +967,7 @@ export const useConversationStore = defineStore('conversation', {
 
                 // 服务器终帧携带 v4 trace 后，压缩卡片以服务器持久化数据为准。
                 assistant.compressionStep = null
+                assistant.injectionStep = null
             }
 
             // 终帧覆盖后按 v4 trace.events 重建分段，保留工具链与 diff 展示数据。
@@ -1181,6 +1184,22 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this._updateStreamingAssistant(conversationId, { compressionStep: parsed })
+        },
+
+        /**
+         * 记录 Modified Injection 诊断到指定会话的助手消息(数据源:context_injection chunk)
+         *
+         * 后端在请求首轮推送一次:head_chars + tail volatile 块列表(名称/字符数)。
+         * 直接覆盖即可——同一请求内 head 恒定、volatile 块集合固定,不需要累积合并。
+         */
+        setStreamingContextInjection(conversationId: string, step: Record<string, unknown>): void {
+            const parsed = parseContextInjectionStep(step)
+
+            if (!parsed) {
+                return
+            }
+
+            this._updateStreamingAssistant(conversationId, { injectionStep: parsed })
         },
 
         // ── TK mini(输入区 tokenDisplay)──────────

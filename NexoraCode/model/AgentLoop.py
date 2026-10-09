@@ -28,6 +28,7 @@ from .ToolPermissionPolicy import (
     evaluate_tool_call,
     get_permission_settings,
 )
+from .turn_injection import plan_injection
 
 
 # 会话级已询问过的权限路径记忆（path 归一化），避免授权后模型重试同路径时反复弹卡。
@@ -171,7 +172,7 @@ class AgentLoop:
         self.store = store
         self.context_manager = ContextManager(provider, store)
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False) -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -202,6 +203,20 @@ class AgentLoop:
                 "\n\n自动审批协作要求：调用写入、命令或进程变更工具前，先在普通回复中用一句简短的话说明"
                 "准备执行什么操作，以及它如何对应当前用户请求；不要输出内部推理。"
             )
+
+        # tail 注入块（项目约定 / 自定义提示词）：按基线比对决定是否注入。
+        # 首轮全量注入并建立基线；后续只在内容变化时注入 diff，稳定轮次不注入，
+        # 这样 [head + 历史] 前缀始终可缓存。
+        volatile_blocks, injection_diag = self._resolve_injection_blocks(
+            conversation_id, injection_sources, len(effective_system)
+        )
+
+        if injection_diag:
+            yield {
+                "type": "context_injection",
+                "blocks": injection_diag["blocks"],
+                "head_chars": injection_diag["head_chars"],
+            }
 
         question_sent = False
         permission_blocked = False
@@ -280,6 +295,7 @@ class AgentLoop:
                                 reasoning_content=reasoning_text,
                                 response_trace_id=response_trace_id,
                                 round_index=round_index,
+                                context_injection=injection_diag,
                             ),
                             "timestamp": _now(),
                         },
@@ -301,6 +317,7 @@ class AgentLoop:
                     # 只有本次请求的首轮可以压缩：后续轮次一旦压缩，
                     # 摘要坑位改写会让本请求已缓存的整段前缀立即失效。
                     allow_compression=round_index <= 1,
+                    volatile_instructions=volatile_blocks,
                 )
                 force_context_compression = False
             except Exception as exc:
@@ -382,6 +399,7 @@ class AgentLoop:
                                 reasoning_content=reasoning_text,
                                 response_trace_id=response_trace_id,
                                 round_index=round_index,
+                                context_injection=injection_diag,
                             ),
                             "timestamp": _now(),
                         },
@@ -431,6 +449,7 @@ class AgentLoop:
                             reasoning_content=reasoning_text,
                             response_trace_id=response_trace_id,
                             round_index=round_index,
+                            context_injection=injection_diag,
                         ),
                         "timestamp": _now(),
                     },
@@ -461,6 +480,7 @@ class AgentLoop:
                     reasoning_content=reasoning_text,
                     response_trace_id=response_trace_id,
                     round_index=round_index,
+                                context_injection=injection_diag,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -793,6 +813,7 @@ class AgentLoop:
         reasoning_content: str = "",
         response_trace_id: str = "",
         round_index: int = 0,
+        context_injection: dict | None = None,
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -802,11 +823,18 @@ class AgentLoop:
         - request_debug:               窗口上限与首轮载荷字符（前端脏数据保护）
         - reasoning_content:           推理过程全文（前端历史渲染的 thinking 折叠块）
         - response_trace_id/round_index: 请求分组与轮次序号，用于把用量对回具体哪次请求的哪一轮
+        - context_injection:           head 字符数与 tail volatile 注入块诊断（重进对话后仍可见）
         """
         metadata: dict = {}
 
         if model_name:
             metadata["model_name"] = model_name
+
+        if context_injection:
+            metadata["context_injection"] = {
+                "head_chars": max(0, int(context_injection.get("head_chars") or 0)),
+                "blocks": list(context_injection.get("blocks") or []),
+            }
 
         if reasoning_content:
             metadata["reasoning_content"] = reasoning_content
@@ -867,13 +895,45 @@ class AgentLoop:
             "cached_input_tokens": cached,
         }
 
-    def _build_messages(self, conversation_id: str, system_prompt: str) -> list[dict]:
+    def _build_messages(self, conversation_id: str, system_prompt: str, volatile_instructions: Any = None) -> list[dict]:
         conversation = self.store.get(conversation_id)
 
         if conversation is None:
             raise ValueError("本地会话不存在")
 
-        return self.context_manager.build_messages(conversation, system_prompt)
+        return self.context_manager.build_messages(conversation, system_prompt, volatile_instructions)
+
+    def _resolve_injection_blocks(self, conversation_id: str, injection_sources: Any, head_chars: int = 0) -> tuple[list[str], dict | None]:
+        """按基线比对解析本轮 tail 注入块，并把新基线落盘。
+
+        首轮（无基线）全量注入并建立基线；后续只在内容变化时注入 diff；
+        无变化返回空列表——稳定轮次不注入任何 tail 块，[head + 历史] 前缀可缓存。
+
+        基线必须持久化：若只存在内存里，每次新请求都会被当成首轮全量注入。
+        """
+
+        sources = injection_sources if isinstance(injection_sources, dict) else {}
+
+        if not any(str(value or "").strip() for value in sources.values()):
+            # 两个通道都为空：无需比对，也无需落盘基线。
+            return [], None
+
+        conversation = self.store.get(conversation_id) or {}
+        baseline = conversation.get("injection_baseline")
+        blocks, new_baseline, diagnostics = plan_injection(sources, baseline)
+
+        # 基线有变化才落盘，避免每个请求都写一次会话文件。
+        if new_baseline != (baseline if isinstance(baseline, dict) else {}):
+            try:
+                self.store.save_injection_baseline(conversation_id, new_baseline)
+            except Exception as exc:
+                print(f"[LocalAgent] injection_baseline_save_failed conversation={conversation_id} "
+                      f"error={type(exc).__name__}: {exc}")
+
+        if not blocks:
+            return [], None
+
+        return blocks, {"head_chars": max(0, int(head_chars or 0)), "blocks": diagnostics}
 
     def _execute_tool(
         self,

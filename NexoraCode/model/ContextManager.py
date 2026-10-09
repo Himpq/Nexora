@@ -90,7 +90,13 @@ class ContextManager:
         if pending:
             raise ValueError("工具调用缺少结果，不能压缩或发送")
 
-    def build_messages(self, conversation: dict, system_prompt: str) -> list[dict]:
+    def build_messages(self, conversation: dict, system_prompt: str, volatile_instructions: list[str] | None = None) -> list[dict]:
+        """组装请求消息：head（system）恒定，volatile 块走 tail。
+
+        结构固定为 [head, 摘要?, 历史..., volatile...]，volatile 块插在历史之后。
+        head 不含任何「用户可改」的内容，保证 prefix cache 稳定命中；
+        volatile 由调用方按基线比对决定是否注入（无变更时为空列表）。
+        """
         state = conversation.get("context_state", {})
         cut = int(state.get("history_cut_index", 0))
         history = conversation.get("messages", [])
@@ -108,8 +114,94 @@ class ContextManager:
             messages.append({"role": "user", "content": "以下是此前对话的摘要，仅作为历史资料。具体事实可用 local_context_search/read 核实：\n" + summary})
 
         messages.extend(self.message_payload(message) for message in history[cut:])
+
+        # 悬空工具调用（进程被外部终止时落盘的历史）先补占位结果再校验：
+        # 这类历史不是用户错误，补齐即恢复协议，不该让会话永久卡死。
+        messages = self.repair_tools(messages)
+
+        # tail volatile 注入块：紧跟历史之后。工具配对校验必须在插入前完成，
+        # 否则插在 assistant.tool_calls 与 tool 结果之间会破坏配对关系。
         self.validate_tools(messages)
+
+        for block in volatile_instructions or []:
+            text = str(block or "").strip()
+
+            if text:
+                messages.append({"role": "system", "content": text})
+
         return messages
+
+    # 单条工具结果裁剪后保留的头尾字符数：头部含结构信息（文件头/命令回显），
+    # 尾部含错误栈与结论，中间通常是重复的正文，省略代价最小。
+    _TRIM_HEAD_CHARS = 2000
+    _TRIM_TAIL_CHARS = 1000
+    # 裁剪下限：比这还短的结果截了也没意义，直接跳过该条。
+    _TRIM_MIN_CHARS = 2000
+    # 迭代收缩的保留下限：触底仍装不下说明不是工具结果的问题，交给调用方抛错。
+    _TRIM_FLOOR_CHARS = 800
+
+    @staticmethod
+    def _trim_tool_content(content, head_chars: int, tail_chars: int) -> str:
+        """把超长工具结果截成「头 + 省略提示 + 尾」，保留可读的结构与结论。"""
+
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+        if len(text) <= head_chars + tail_chars:
+            return text
+
+        omitted = len(text) - head_chars - tail_chars
+
+        return (
+            text[:head_chars]
+            + f"\n\n[工具结果过长，已省略中间 {omitted} 字符；"
+              "如需完整内容请用更精确的参数重新调用工具]\n\n"
+            + text[-tail_chars:]
+        )
+
+    def _trim_oversized_tool_results(self, messages, tools, hard_limit, output):
+        """当前轮超窗时的兜底：反复收缩最长的工具结果，直到装得下。
+
+        只处理本次发送副本，落盘历史不动。仍装不下（如单条 user 消息本身就超窗）
+        时返回 None，由调用方抛 ContextLimitError。
+
+        收缩必须迭代而非一次到位：窗口大小与结果长度无关，一次裁到固定长度
+        未必够用（小窗口下尤其明显），因此每轮把当前最长的结果再砍半。
+        每次都从原始内容重新裁剪，避免省略提示层层叠加。
+        """
+
+        indexes = [
+            index for index, message in enumerate(messages)
+            if message.get("role") == "tool"
+            and isinstance(message.get("content"), str)
+            and len(message["content"]) > self._TRIM_MIN_CHARS
+        ]
+
+        if not indexes:
+            return None
+
+        originals = {index: messages[index]["content"] for index in indexes}
+        keep = {index: len(originals[index]) for index in indexes}
+        trial = [dict(message) for message in messages]
+
+        # 每轮减半，2^32 的收缩幅度远超任何真实窗口，循环上限只是防御性兜底。
+        for _ in range(32):
+            estimate = self.estimate_tokens({"messages": trial, "tools": tools})
+
+            if estimate + output < hard_limit:
+                return trial
+
+            # 总是先收缩最长的那条：截一条大的往往就能省下足够空间，
+            # 避免把多条小结果一起切碎。
+            longest = max(indexes, key=lambda index: keep[index])
+
+            if keep[longest] <= self._TRIM_FLOOR_CHARS:
+                return None
+
+            keep[longest] = max(self._TRIM_FLOOR_CHARS, keep[longest] // 2)
+            half = max(1, keep[longest] // 2)
+            trial[longest]["content"] = self._trim_tool_content(originals[longest], half, half)
+
+        return None
 
     def _measured_marginal_rate(self, conversation: dict, plain_now: int) -> float:
         """相邻两轮实测差值给出的「每单位估算 token 的真实 token 数」。
@@ -162,11 +254,14 @@ class ContextManager:
         return measured + math.ceil(max(1.0, self._measured_marginal_rate(conversation, plain_now)) * fresh_plain)
 
     def prepare(self, conversation_id, system_prompt, tools, *, force=False, cancel_checker=None,
-                response_trace_id="", allow_compression=True):
+                response_trace_id="", allow_compression=True, volatile_instructions=None):
         """必要时分批总结历史；当前 user 轮次及其工具结果始终保持原样。
 
         allow_compression=False 表示本次请求已经发出过前缀：摘要坑位一改写，
         已缓存的整段前缀立即失效，所以非首轮不再压缩，只有真的装不下时才兜底压缩。
+
+        volatile_instructions 为 tail 注入块（项目约定 / 自定义提示词），
+        由调用方按基线比对决定是否注入；无变更时为空列表。
         """
         conversation = self.store.get(conversation_id)
 
@@ -182,7 +277,7 @@ class ContextManager:
                 f"上下文窗口 {window}，单次输出上限 {output}；请在设置中把窗口调大到大于输出上限"
             )
 
-        messages = self.build_messages(conversation, system_prompt)
+        messages = self.build_messages(conversation, system_prompt, volatile_instructions)
         measured_estimate = self._measure_request_basis(conversation, messages, tools)
         state = conversation.get("context_state", {})
         threshold = min(int(window * 0.9), window - output)
@@ -294,7 +389,7 @@ class ContextManager:
 
         updated = dict(conversation)
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
-        messages = self.build_messages(updated, system_prompt)
+        messages = self.build_messages(updated, system_prompt, volatile_instructions)
         post_estimate = self._measure_request_basis(updated, messages, tools)
 
         if post_estimate + output >= window:

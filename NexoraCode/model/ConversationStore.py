@@ -279,6 +279,21 @@ class ConversationStore:
             conversation.setdefault("context_compressions", []).append(record)
             self._save_conversation(conversation)
 
+    def save_injection_baseline(self, conversation_id: str, baseline: dict) -> None:
+        """落盘 tail 注入块的基线快照，供下一轮比对。
+
+        基线跨请求持久化是「无变化不注入」的前提：只存内存的话，
+        每次新请求都拿不到上一轮的基线，会被当成首轮全量注入。
+        """
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            conversation["injection_baseline"] = dict(baseline or {})
+            self._save_conversation(conversation)
+
     def record_context_usage(self, conversation_id: str, input_tokens: int, message_count: int,
                              estimated_tokens: int) -> None:
         """落盘上游实测输入与当时的消息条数，作为下一轮占用的锚点。

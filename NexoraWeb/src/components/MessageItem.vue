@@ -142,6 +142,14 @@
                     :step="compressionStep"
                 />
 
+                <!-- Modified Injection 卡片:显式展示本轮 tail volatile 注入块。
+                     仅 NexoraCode 本地模式渲染:网页版后端不发 context_injection,
+                     且此门控保证网页版渲染路径完全不变。 -->
+                <ContextInjectionCard
+                    v-if="nexoracode && injectionStep"
+                    :step="injectionStep"
+                />
+
                 <!--
                     内容分段顺序渲染(思考/正文/工具链按输出时序交错):
                     思考行与工具行共用执行流程时间线形态;
@@ -422,10 +430,13 @@
     import { showToast } from '@/stores/notify'
     import type { ContextCompressionStep } from '@/stream/contextCompression'
     import { resolveActiveContextCompressionStep } from '@/stream/contextCompression'
+    import type { ContextInjectionStep } from '@/stream/contextInjection'
+    import { resolveActiveContextInjectionStep } from '@/stream/contextInjection'
     import { hasAnyIo, readMessageIoTokens } from '@/stream/tokenBudget'
 
     import MarkdownView from './MarkdownView.vue'
     import ContextCompressionCard from './ContextCompressionCard.vue'
+    import ContextInjectionCard from './ContextInjectionCard.vue'
     import ExaImageGallery from './ExaImageGallery.vue'
     import GeneratedImageGallery from './GeneratedImageGallery.vue'
 
@@ -1467,6 +1478,15 @@
      */
     const compressionStep = computed<ContextCompressionStep | null>(() => {
         return resolveActiveContextCompressionStep(props.message)
+    })
+
+    /**
+     * 当前生效的 Modified Injection 诊断:
+     * 流式阶段优先读本地 injectionStep(store 由 context_injection 块驱动),
+     * 历史回放回退到 metadata.context_injection,保证重载/收尾后卡片不消失。
+     */
+    const injectionStep = computed<ContextInjectionStep | null>(() => {
+        return resolveActiveContextInjectionStep(props.message)
     })
 
     /** 读 metadata 字符串字段 */

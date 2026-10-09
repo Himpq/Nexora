@@ -1666,6 +1666,13 @@
             return
         }
 
+        // Modified Injection 诊断:更新该会话助手消息的注入卡片(仅 NexoraCode 本地后端推送)
+        if (chunk.type === 'context_injection') {
+            conversationStore.setStreamingContextInjection(state.conversationId, chunk as unknown as Record<string, unknown>)
+
+            return
+        }
+
         // 错误块:显式上报;不在块内中断流,由 done 终帧统一收尾并恢复目标消息(避免丢失流式目标索引)
         if (chunk.type === 'error') {
             const chunkCode = String(

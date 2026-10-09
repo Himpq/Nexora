@@ -46,6 +46,7 @@ from .ToolPermissionPolicy import (
     save_permission_settings,
     take_pending_tool_action,
 )
+from .turn_injection import plan_injection
 
 
 _local_bp = Blueprint("local_agent", __name__)
@@ -161,29 +162,37 @@ def _build_system_prompt(conversation: dict | None) -> str:
     else:
         lines.append("需要访问本地路径时，系统会自动向用户发起授权询问，无需额外调用权限工具。")
 
-    # 项目级约定（AGENTS.md）：仅在开启且项目内存在时追加，属于低频稳定内容，
-    # 放在 system prompt（head）里；同一会话内内容确定，不掺任何易变信息。
+    # 注意：head 必须恒定。AGENTS.md 与自定义提示词都属于「用户随时可改」的内容，
+    # 一旦拼进 head，用户改一次设置就会让已缓存的整段前缀失效。它们改由
+    # _collect_injection_sources 采样后，经基线比对决定是否作为 tail 注入。
+    return "\n".join(lines)
+
+
+def _collect_injection_sources(conversation: dict | None) -> dict:
+    """采样 tail 注入通道的当前文本：项目约定（AGENTS.md）与用户自定义提示词。
+
+    这里只负责「取当前值」，不做比对：基线读写需要落盘会话，统一交给
+    AgentLoop 在处理请求时完成（见 turn_injection.plan_injection）。
+    """
+
+    project = {}
+
+    if isinstance(conversation, dict):
+        metadata = conversation.get("metadata") if isinstance(conversation.get("metadata"), dict) else {}
+        project = metadata.get("nexoracode_project") if isinstance(metadata.get("nexoracode_project"), dict) else {}
+
+    project_path = str(project.get("path") or "").strip()
+    agents_text = ""
+
     if project_path and bool(config.get("local_read_agents_md", True)):
         agents_text = _read_project_agents_md(project_path)
 
-        if agents_text:
-            lines.extend([
-                "",
-                "以下是当前项目根目录 AGENTS.md 中的项目约定，请在本项目内遵守：",
-                agents_text,
-            ])
-
-    # 用户自定义提示词：全局、低频稳定，同样放在 head。
     custom_prompt = str(config.get("local_custom_system_prompt", "") or "").strip()
 
-    if custom_prompt:
-        lines.extend([
-            "",
-            "以下是用户自定义要求，请在不违反上述安全与路径规则的前提下遵守：",
-            custom_prompt[:_CUSTOM_PROMPT_MAX_CHARS],
-        ])
-
-    return "\n".join(lines)
+    return {
+        "project_conventions": agents_text,
+        "custom_instructions": custom_prompt[:_CUSTOM_PROMPT_MAX_CHARS],
+    }
 
 
 def _normalize_history_messages(messages: list) -> list:
@@ -607,6 +616,13 @@ def _translate_event(event: dict) -> dict:
             "cached_input_tokens": event.get("cached_input_tokens"),
         }
 
+    if event_type == "context_injection":
+        return {
+            "type": "context_injection",
+            "head_chars": event.get("head_chars"),
+            "blocks": event.get("blocks") or [],
+        }
+
     return event
 
 
@@ -624,6 +640,7 @@ def _stream_worker_factory(body: dict):
     store = ConversationStore()
     conversation = store.get(conversation_id) if conversation_id else None
     system_prompt = _build_system_prompt(conversation)
+    injection_sources = _collect_injection_sources(conversation)
 
     target_config = None
 
@@ -666,6 +683,7 @@ def _stream_worker_factory(body: dict):
                 conversation_id,
                 message,
                 system_prompt=system_prompt,
+                injection_sources=injection_sources,
                 cancel_checker=is_cancel_requested,
                 force_context_compression=body.get("force_context_compression") is True,
             ):
