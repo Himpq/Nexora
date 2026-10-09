@@ -21,13 +21,14 @@ from typing import Any, Generator
 
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
-from core.config import config, get_app_root
+from core.config import config, get_app_root, get_bundle_root
 from local import build_default_executor
 from local.PathGuard import grant_temporary_permission
 from .Provider import ProviderClient, load_provider, load_providers
 from .ConversationStore import ConversationStore
 from .AgentLoop import AgentLoop
 from .StreamRuntime import (
+    append_chunk_to_conversation,
     get_accumulated_content,
     get_session_meta,
     iter_session_chunks,
@@ -66,12 +67,12 @@ def _local_no_store(resp):
 
 @_local_bp.route("/permissions-settings.css", methods=["GET"])
 def local_permissions_settings_css():
-    return send_file(get_app_root() / "ui" / "permissions-settings.css", mimetype="text/css")
+    return send_file(get_bundle_root() / "ui" / "permissions-settings.css", mimetype="text/css")
 
 
 @_local_bp.route("/permissions-settings.js", methods=["GET"])
 def local_permissions_settings_js():
-    return send_file(get_app_root() / "ui" / "permissions-settings.js", mimetype="application/javascript")
+    return send_file(get_bundle_root() / "ui" / "permissions-settings.js", mimetype="application/javascript")
 
 
 def set_default_executor(executor) -> None:

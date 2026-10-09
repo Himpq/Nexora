@@ -24,7 +24,11 @@ from .SearchTool import FileSearchTreeTool, TextSearchTool
 from .CodeScanTool import CodeScanTool
 from .ContextTool import ContextLengthTool, ContextReadTool, ContextSearchTool
 from .PermissionTool import PermissionGrantTool, PermissionListTool
-from .ImageSearchTool import ImageSearchTool
+# ImageSearchTool 已停用：图片搜索不再在用户本机执行，后续计划接入 Exa Web Search。
+# 该模块顶部会导入 tools.imgspd → playwright / crawlee，属于重量级依赖；
+# 工具已不注册，这里同步断开导入，避免启动时加载无用依赖。
+# 后续接入 Exa 时新增独立工具，不要恢复本行。
+# from .ImageSearchTool import ImageSearchTool
 from .BrowserTool import (
     BrowserCloseTool,
     BrowserClickTool,

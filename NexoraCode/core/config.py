@@ -9,7 +9,28 @@ import sys
 from pathlib import Path
 
 def get_app_root() -> Path:
+    """可写数据根目录（data/、renderer_cookies.lwp 等）。
+
+    打包后为 exe 所在目录，保证 data/ 可写且升级时不被覆盖；
+    开发时为项目根目录。
+    """
     if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    else:
+        return Path(__file__).resolve().parent.parent
+
+
+def get_bundle_root() -> Path:
+    """只读资源根目录（ui/、asset_manifest.json 等随包分发的文件）。
+
+    PyInstaller onedir 模式下这些资源被放进 _internal/，与 exe 不同级；
+    因此不能复用 get_app_root()，否则打包后读不到资源（黑屏 / settings not built）。
+    开发时与 get_app_root() 相同。
+    """
+    if getattr(sys, 'frozen', False):
+        bundle = getattr(sys, '_MEIPASS', None)
+        if bundle:
+            return Path(bundle)
         return Path(sys.executable).parent
     else:
         return Path(__file__).resolve().parent.parent
@@ -22,13 +43,14 @@ _DEPRECATED_LOCAL_KEYS = {
     "preferred_model_id",
 }
 _DEFAULTS = {
-    "nexora_url": "https://chat.himpqblog.cn",
+    "nexora_url": "",
     "allowed_dirs": [],
     "shell_whitelist": [],
     "local_tool_permission_mode": "confirm",
     "local_tool_approval_model_id": "",
     "local_custom_system_prompt": "",
     "local_read_agents_md": True,
+    "local_agent": True,
     "local_text_search_max_results": 100,
     "local_file_tree_max_entries": 500,
     "local_process_output_max_chars": 20000,

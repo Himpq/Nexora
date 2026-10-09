@@ -17,6 +17,15 @@ ChatDBServer/api/localsearch
 NexoraCode/data/
 NexoraCode/temp/
 NexoraCode/renderer_cookies.lwp
+# 运行期自动生成的资源缓存清单（时间戳/churn，不入库）
+NexoraCode/asset_manifest.json
+# NexoraCode 打包产物与构建环境（不入库）
+NexoraCode/build/
+NexoraCode/dist/
+NexoraCode/.venv-build/
+NexoraCode/*.spec.bak
+NexoraCode/*.zip
+NexoraCode/release/
 todolist
 NexoraLearning/data/
 NEXORALEARNING_WORKING.md

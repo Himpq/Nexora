@@ -7,6 +7,7 @@
 import logging
 import re
 import mimetypes
+import socket
 import threading
 import time
 from pathlib import Path
@@ -28,13 +29,44 @@ except Exception as _ws_client_import_error:
     print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
 
 from local import build_default_executor
-from core.config import config, get_app_root
+from core.config import config, get_app_root, get_bundle_root
 
-LOCAL_PORT = 27700
+# 本地服务端口：启动时向系统申请一个空闲端口，不再固定 27700。
+# 固定端口会导致多实例互相抢占（Windows 上 Werkzeug 的 allow_reuse_address
+# 允许绑定已占用端口，后启动的实例服务实际不生效，页面会读到前一个实例的数据）。
+# _LOCAL_PORT 在 bind_local_port() 成功后才有值；未绑定前访问会抛错。
+_LOCAL_PORT: int | None = None
+
+
+def bind_local_port() -> int:
+    """向系统申请一个空闲端口并立即释放，供后续 app.run 使用。"""
+    global _LOCAL_PORT
+
+    if _LOCAL_PORT is not None:
+        return _LOCAL_PORT
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        _LOCAL_PORT = int(probe.getsockname()[1])
+
+    return _LOCAL_PORT
+
+
+def get_local_port() -> int:
+    """返回已绑定的本地端口；未绑定时现场申请。"""
+    if _LOCAL_PORT is None:
+        return bind_local_port()
+
+    return _LOCAL_PORT
+
+
+def local_base_url() -> str:
+    """本地服务基地址，统一供窗口 URL / 回调地址构造使用。"""
+    return f"http://127.0.0.1:{get_local_port()}"
 
 app = Flask(__name__, static_folder=None)
 # 本地精简云端前端模板（NexoraCode/ui/chat.html）
-app.template_folder = str(get_app_root() / "ui")
+app.template_folder = str(get_bundle_root() / "ui")
 _LOCAL_STATIC_ROOT = Path(__file__).resolve().parents[2] / "ChatDBServer" / "static"
 sock = _FlaskSock(app) if (_FlaskSock is not None and _ws_client_lib is not None) else None
 registry = build_default_executor()
@@ -74,7 +106,7 @@ def _get_vendor_roots():
     roots = []
 
     # 本地独立副本优先（拷贝自 ChatDBServer/static/vendor）
-    local_vendor = get_app_root() / "ui" / "static" / "vendor"
+    local_vendor = get_bundle_root() / "ui" / "static" / "vendor"
 
     if local_vendor.is_dir():
         roots.append(local_vendor)
@@ -250,9 +282,13 @@ def _check_token() -> bool:
 
 
 def _remote_base_url() -> str:
-    raw = str(config.get("nexora_url", "https://chat.himpqblog.cn") or "https://chat.himpqblog.cn").strip()
-    if not raw:
-        raw = "https://chat.himpqblog.cn"
+    """远端地址；未配置时返回空串。
+
+    不再回退到硬编码云端地址：打包版前端完全本地化，只有 RemoteControl
+    会主动外连（地址存在 remote_connection.json，与此无关）。
+    未配置时由调用方明确报错，而不是静默连到云端。
+    """
+    raw = str(config.get("nexora_url", "") or "").strip()
     raw = raw.rstrip("/")
     if raw.endswith("/chat"):
         raw = raw[:-5]
@@ -837,7 +873,7 @@ def local_cloud_static(filename: str):
         return Response(status=404)
 
     # 本地可改副本（如 chat.js）优先
-    local_root = get_app_root() / "ui" / "static"
+    local_root = get_bundle_root() / "ui" / "static"
     local_target = local_root.joinpath(*safe_parts)
 
     if str(local_target.resolve()).startswith(str(local_root.resolve())) and local_target.is_file():
@@ -879,7 +915,7 @@ def _local_agent_enabled_value() -> bool:
 def local_settings_asset():
     """本地设置页静态资源。"""
     name = str(request.path or "").lstrip("/")
-    target = get_app_root() / "ui" / name
+    target = get_bundle_root() / "ui" / name
     if not target.is_file():
         return Response(status=404)
     return _serve_file(target, cache_seconds=0)
@@ -888,7 +924,7 @@ def local_settings_asset():
 @app.route("/settings")
 def local_settings_page():
     """本地自绘设置页。"""
-    target = get_app_root() / "ui" / "settings.html"
+    target = get_bundle_root() / "ui" / "settings.html"
     if not target.is_file():
         return Response("settings not built", status=503, mimetype="text/plain")
     return _serve_file(target, cache_seconds=0)
@@ -1002,7 +1038,15 @@ def local_settings_save():
 
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def proxy_all(path: str):
-    # 已有精确路由会优先命中；其余统一走远端代理。
+    # 已有精确路由会优先命中；其余才落到这里。
+    # 未配置远端时明确报错，不静默回退到云端。
+    if not _remote_base_url():
+        return jsonify({
+            "success": False,
+            "error": "remote not configured",
+            "detail": f"no local route matched /{str(path or '').lstrip('/')} and nexora_url is empty",
+        }), 404
+
     return _proxy_request(path)
 
 
@@ -1010,4 +1054,7 @@ def start_local_server():
     _REMOTE_CONNECTION.start()
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
-    app.run(host="127.0.0.1", port=LOCAL_PORT, threaded=True)
+    port = get_local_port()
+    print(f"[NexoraProxy] local server listening on http://127.0.0.1:{port}")
+    # 端口已在 bind_local_port() 中确认空闲；此处不再复用被占用端口。
+    app.run(host="127.0.0.1", port=port, threaded=True)

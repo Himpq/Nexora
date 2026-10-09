@@ -4,7 +4,7 @@
 
 import sys
 from pathlib import Path
-from core.config import get_app_root
+from core.config import get_app_root, get_bundle_root
 
 def run_tray():
     try:
@@ -14,17 +14,9 @@ def run_tray():
         print("[Tray] pystray/Pillow not installed, tray disabled.")
         return
 
-    icon_path = get_app_root() / "assets" / "icon.png"
-    if not icon_path.exists() and getattr(sys, 'frozen', False):
-        # Fallback for local testing without bundled assets
-        fallback = get_app_root().parents[2] / "ChatDBServer" / "static" / "img" / "icon.png"
-        if fallback.exists():
-            icon_path = fallback
-
-    if not getattr(sys, 'frozen', False) and not icon_path.exists():
-        fallback_dev = get_app_root().parent / "ChatDBServer" / "static" / "img" / "icon.png"
-        if fallback_dev.exists():
-            icon_path = fallback_dev
+    # 图标随包分发，位于 bundle 内的 ui/static/img/；
+    # 不再用 assets/ 及跨项目 ChatDBServer 回退路径。
+    icon_path = get_bundle_root() / "ui" / "static" / "img" / "icon.png"
 
     if icon_path.exists():
         image = Image.open(icon_path)

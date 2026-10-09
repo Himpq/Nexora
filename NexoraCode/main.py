@@ -3,10 +3,9 @@ NexoraCode - 本地工具执行器
 入口：系统托盘 + PyWebView 窗口
 
 架构：
-- 在 WebView 中直接打开 Nexora 前端（https://chat.himpqblog.cn），避免本地 HTML 黑屏问题
-- 页面加载完成后通过 JS 注入 nexoracode_agent Cookie，并向服务器注册本地工具
-- 工具执行：NexoraCode 主动向服务器长轮询 pending 请求 → 本地执行 → POST 结果回去
-  （解决服务器无法反向连接用户 localhost 的问题）
+- 前端由本机 Flask 服务提供（ui/ 目录），不依赖云端页面
+- 工具执行：本地 AgentLoop 直接调用工具，结果写入本地 data/
+- 远程能力：仅 RemoteControl（core/remote_connection.py）会主动外连
 """
 
 import json
@@ -20,16 +19,16 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import requests
 import webview
 
-from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html, _local_agent_enabled_value
+from core.server import start_local_server, get_local_port, bind_local_port, local_base_url, set_shell_html, set_notes_shell_html, _local_agent_enabled_value
 from core.tray import run_tray
-from core.config import config, get_app_root
+from core.config import config, get_app_root, get_bundle_root
 from local import build_default_executor
 from core import wintitle
 
 # WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
 _STORAGE_PATH = get_app_root() / "data" / "webview_storage"
 
-DEFAULT_NEXORA_URL = "https://chat.himpqblog.cn"
+DEFAULT_NEXORA_URL = ""
 _STOP_POLL = threading.Event()
 _POLL_STARTED = threading.Event()
 _BOOTSTRAP_LOCK = threading.Lock()
@@ -39,13 +38,14 @@ _ASSET_WARM_STARTED = threading.Event()
 _FIRST_LAYOUT_NUDGED = threading.Event()
 _RUNTIME_STARTUP_ASSERTED = threading.Event()
 _RUNTIME_STARTUP_ASSERT_LOCK = threading.Lock()
-_ASSET_MANIFEST_PATH = get_app_root() / "asset_manifest.json"
+_ASSET_MANIFEST_PATH = get_bundle_root() / "asset_manifest.json"
 _PENDING_TOAST_LOCK = threading.Lock()
 _PENDING_TOAST_MESSAGE = ""
 _NOTES_TRACE = str(config.get("notes_trace", True)).strip().lower() not in {"0", "false", "off", "no"}
 _AUTH_TRACE_HEARTBEAT = str(config.get("auth_trace_heartbeat", False)).strip().lower() in {"1", "true", "on", "yes"}
 _TOOL_CANCEL_LOCK = threading.Lock()
 _CANCELLED_TOOL_TASKS = set()
+_SINGLE_INSTANCE_HANDLE = None
 
 
 def _mark_tool_task_cancelled(task_id: str) -> bool:
@@ -1015,7 +1015,7 @@ class NexoraWindowApi:
     def __init__(self):
         self._window = None
         self._maximized = False
-        self._runtime_base_url = DEFAULT_NEXORA_URL
+        self._runtime_base_url = local_base_url()
         self._notes_window = None
         self._notes_window_lock = threading.Lock()
         self._notes_pinned = bool(config.get("notes_window_pinned", False))
@@ -1026,7 +1026,7 @@ class NexoraWindowApi:
     def bind(self, window, runtime_base_url: str | None = None):
         self._window = window
         if runtime_base_url:
-            self._runtime_base_url = str(runtime_base_url).strip() or DEFAULT_NEXORA_URL
+            self._runtime_base_url = str(runtime_base_url).strip() or local_base_url()
 
     def log_auth_trace(self, message=""):
         try:
@@ -1304,7 +1304,7 @@ class NexoraWindowApi:
 
                 settings_kwargs = {
                     "title": "Nexora Settings",
-                    "url": f"http://127.0.0.1:{LOCAL_PORT}/settings",
+                    "url": f"{local_base_url()}/settings",
                     "width": settings_w,
                     "height": settings_h,
                     "min_size": (700, 520),
@@ -1625,16 +1625,41 @@ class NexoraWindowApi:
             return {"success": False, "message": str(e)}
 
     def refresh_main_window(self):
-        """设置保存后刷新主窗口模型列表与工具权限状态。"""
+        """设置保存后刷新主窗口模型列表与工具权限状态。
+
+        持久化外壳模式下真实页面在 iframe 内（nc_iframe_content=1），钩子挂在
+        iframe 的 window 上，必须在顶层 window 里解析出该 iframe 再调用，
+        否则 evaluate_js 恒为 false 并回退整页 load_url（外壳模式下被跳过，
+        表现为设置改了 Provider 但模型列表不更新）。
+        """
         if not self._window:
             return {"success": False, "message": "main window not found"}
         try:
             reloaded = bool(
                 self._window.evaluate_js(
                     "(function(){"
-                    "if (window.__ncLoadModels) { window.__ncLoadModels(); }"
-                    "if (window.__ncRefreshToolPermissions) { window.__ncRefreshToolPermissions(); }"
-                    "return !!(window.__ncLoadModels && window.__ncRefreshToolPermissions);"
+                    "function resolveView() {"
+                    "const ids = ['nc-app-iframe', 'nc-shell-iframe'];"
+                    "for (const id of ids) {"
+                    "const frame = document.getElementById(id);"
+                    "if (frame && frame.contentWindow) { return frame.contentWindow; }"
+                    "}"
+                    "const frames = Array.from(document.querySelectorAll('iframe'));"
+                    "for (const frame of frames) {"
+                    "try {"
+                    "const src = String(frame.getAttribute('src') || frame.src || '');"
+                    "if ((/nc_iframe_content=1/i.test(src) || /\\/chat([?#]|$)/i.test(src)) && frame.contentWindow) {"
+                    "return frame.contentWindow;"
+                    "}"
+                    "} catch (_) {}"
+                    "}"
+                    "return window;"
+                    "}"
+                    "let view = window;"
+                    "try { view = resolveView() || window; } catch (_) { view = window; }"
+                    "if (view.__ncLoadModels) { view.__ncLoadModels(); }"
+                    "if (view.__ncRefreshToolPermissions) { view.__ncRefreshToolPermissions(); }"
+                    "return !!(view.__ncLoadModels && view.__ncRefreshToolPermissions);"
                     "})();"
                 )
             )
@@ -2145,10 +2170,10 @@ class NexoraWindowApi:
 }})();"""
 
     def open_notes_companion(self):
-        base = str(self._runtime_base_url or DEFAULT_NEXORA_URL).strip() or DEFAULT_NEXORA_URL
+        base = str(self._runtime_base_url or local_base_url()).strip() or local_base_url()
         url = _build_entry_url(base, {"notes_companion": "1"})
         notes_use_custom = True
-        notes_shell_url = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell?_nc_ts={int(time.time() * 1000)}"
+        notes_shell_url = f"{local_base_url()}/nc/notes-shell?_nc_ts={int(time.time() * 1000)}"
         _notes_log(f"open request url={url} mode={_WINDOW_MODE} frameless={_USE_FRAMELESS}")
         try:
             with self._notes_window_lock:
@@ -2384,25 +2409,40 @@ def _inject_titlebar_with_retry(
 
 
 def _resolve_runtime_base_url() -> str:
+    """窗口加载地址。
+
+    本地代理开启（默认）时走本地服务；关闭时必须显式配置 nexora_url，
+    否则回退本地并提示，不再静默连到硬编码云端地址。
+    """
     if str(config.get("local_proxy_enabled", True)).strip().lower() in {"1", "true", "on", "yes"}:
-        return f"http://127.0.0.1:{LOCAL_PORT}"
-    raw = str(config.get("nexora_url", DEFAULT_NEXORA_URL) or DEFAULT_NEXORA_URL).strip()
+        return local_base_url()
+
+    raw = str(config.get("nexora_url", "") or "").strip()
+
     if not raw:
-        raw = DEFAULT_NEXORA_URL
+        _set_pending_toast("未配置远端地址，已使用本地页面")
+        return local_base_url()
+
     base = raw.rstrip("/")
+
     if base.endswith("/chat"):
         base = base[:-5]
+
     p = urlsplit(base)
     host = str(p.hostname or "").strip().lower()
+
     if host in {"localhost", "127.0.0.1"}:
         test_url = f"{base}/chat"
+
         try:
             resp = requests.get(test_url, timeout=2.2, allow_redirects=True)
+
             if int(resp.status_code or 0) >= 500:
                 raise RuntimeError(f"status={resp.status_code}")
         except Exception:
-            _set_pending_toast("本地地址不可达，已回退到线上地址")
-            return DEFAULT_NEXORA_URL
+            _set_pending_toast("配置的本地地址不可达，已回退到内置本地页面")
+            return local_base_url()
+
     return base
 
 
@@ -3403,7 +3443,66 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 print(f"[NexoraCode WSS] still disconnected from {base_url}, retrying every 30s")
 
 
+def _acquire_single_instance() -> bool:
+    """获取全局单实例互斥体；已有实例在运行时返回 False。
+
+    用命名互斥体而非端口探测：端口是随机的，无法用于判断实例是否已存在。
+    句柄保存在模块级变量，进程退出时由系统自动释放。
+    """
+    global _SINGLE_INSTANCE_HANDLE
+
+    if os.name != "nt":
+        return True
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+        handle = kernel32.CreateMutexW(None, False, "Global\\NexoraCode.SingleInstance")
+        last_error = ctypes.get_last_error()
+
+        if not handle:
+            # 互斥体创建失败不应阻断启动，退化为不做单实例限制。
+            print(f"[NexoraCode] single instance mutex unavailable, continue: err={last_error}")
+            return True
+
+        # ERROR_ALREADY_EXISTS = 183
+        if last_error == 183:
+            return False
+
+        _SINGLE_INSTANCE_HANDLE = handle
+        return True
+    except Exception as exc:
+        print(f"[NexoraCode] single instance check failed, continue: {exc}")
+        return True
+
+
+def _warn_already_running() -> None:
+    """提示已有实例在运行。用 Win32 弹窗，不依赖 GUI 已初始化。"""
+    message = "NexoraCode 已在运行中。\n\n请使用已打开的窗口，或先在托盘菜单退出后再启动。"
+
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "NexoraCode", 0x00000040)
+    except Exception:
+        print(f"[NexoraCode] {message}")
+
+
 def main():
+    if not _acquire_single_instance():
+        print("[NexoraCode] another instance is already running, exiting")
+        _warn_already_running()
+        return
+
+    # 先确定本地端口，后续窗口 URL / 回调地址都基于它构造。
+    bind_local_port()
+    print(f"[NexoraCode] local port resolved: {get_local_port()}")
+
     # 项目模式照搬云端页面：窗口直载本地代理 /chat（云端渲染），
     # 由 _PROJECT_MODE_PATCH_JS 裁剪掉与项目无关的 UI 模块，聚焦项目内容。
     global _USE_FRAMELESS, _USE_CUSTOM_TITLEBAR
@@ -3416,7 +3515,8 @@ def main():
     print(f"[NexoraWindow] mode={_WINDOW_MODE} frameless={_USE_FRAMELESS} custom_titlebar={_USE_CUSTOM_TITLEBAR}")
     runtime_base_url = _resolve_runtime_base_url()
     print(f"[NexoraProxy] runtime_base_url={runtime_base_url}")
-    runtime_host = str(urlsplit(runtime_base_url).hostname or "chat.himpqblog.cn").strip().lower()
+    # cookie 域作用域：本地代理模式下运行时地址即 127.0.0.1，不再回退云端域名。
+    runtime_host = str(urlsplit(runtime_base_url).hostname or "127.0.0.1").strip().lower()
     _allow_iframe_3p_cookie = str(config.get("allow_iframe_third_party_cookies", False)).strip().lower() in {"1", "true", "on", "yes"}
     _unsafe_disable_web_security = str(config.get("unsafe_disable_web_security", False)).strip().lower() in {"1", "true", "on", "yes"}
     _relax_iframe_samesite = str(config.get("relax_iframe_samesite", False)).strip().lower() in {"1", "true", "on", "yes"}
@@ -3504,7 +3604,7 @@ def main():
         _bootstrap_html = _bootstrap_html.replace("__NC_AUTH_TRACE_HEARTBEAT__", "true" if _AUTH_TRACE_HEARTBEAT else "false")
         if _PERSISTENT_OUTER_SHELL:
             set_shell_html(_bootstrap_html)
-            window_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/shell"
+            window_kwargs["url"] = f"{local_base_url()}/nc/shell"
             window_kwargs.pop("html", None)
         else:
             window_kwargs["html"] = _bootstrap_html
@@ -4953,7 +5053,7 @@ def main():
                     pass
         payload = {
             "token": agent_token,
-            "callback_url": f"http://localhost:{LOCAL_PORT}",
+            "callback_url": local_base_url(),
             "tools": tools,
         }
         payload_js_literal = json.dumps(payload, ensure_ascii=False)
@@ -5072,8 +5172,8 @@ def main():
                 except Exception:
                     pass
                 # 这里的 base_url 必须是远端地址，不能经过本地 Flask 代理（requests模块无法代理 websocket）
-                remote_base_url = str(config.get("nexora_url", DEFAULT_NEXORA_URL) or DEFAULT_NEXORA_URL).strip()
-                if not remote_base_url: remote_base_url = DEFAULT_NEXORA_URL
+                remote_base_url = str(config.get("nexora_url", "") or "").strip()
+                if not remote_base_url: remote_base_url = ""
                 
                 # local_agent 模式下对话由本地 AgentLoop 驱动，不需要连远端 WSS 工具隧道；
                 # 若仍去连云端地址（如 127.0.0.1:5000），云端未启动时会反复刷 WinError 10061。
