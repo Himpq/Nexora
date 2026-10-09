@@ -227,6 +227,28 @@ export class RemoteTaskStream {
         this.schedule(0)
     }
 
+    /** 把电脑上已运行的任务绑定到当前视图，并从事件头开始重放。 */
+    restore(session: RemoteTaskSession): void {
+        const state = toRemoteTaskState(session)
+
+        if (!session.stream_id || isTerminalRemoteTaskState(state)) {
+            throw new Error('只能恢复电脑上仍在运行的任务')
+        }
+
+        this.stopped = false
+        this.streamId = session.stream_id
+        this.conversationId = session.conversation_id || ''
+        this.cursor = 0
+        this.session = session
+        this.errorStreak = 0
+        this.lastEventAt = Date.now()
+        this.startedAt = Date.now()
+        this.pendingTerminal = null
+        this.drainCount = 0
+        this.setState(state, session)
+        this.schedule(0)
+    }
+
     /** 请求停止：发出取消后进入 stopping，终态由轮询确认。 */
     async stop(): Promise<void> {
         if (!this.streamId) {
@@ -251,13 +273,21 @@ export class RemoteTaskStream {
 
     /** 从保留的游标续读，不丢事件也不重复。 */
     attach(): void {
-        if (!this.streamId || this.stopped) {
+        if (!this.streamId) {
             return
         }
 
         if (isTerminalRemoteTaskState(this.state)) {
             return
         }
+
+        if (!this.stopped) {
+            return
+        }
+
+        this.stopped = false
+        this.startedAt = Date.now()
+        this.lastEventAt = Date.now()
 
         this.schedule(0)
     }
@@ -341,6 +371,10 @@ export class RemoteTaskStream {
 
             if (session) {
                 this.session = session
+
+                if (session.conversation_id) {
+                    this.conversationId = session.conversation_id
+                }
             }
 
             if (isTerminalRemoteTaskState(nextState)) {

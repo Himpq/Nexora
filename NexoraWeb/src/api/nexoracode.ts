@@ -204,6 +204,7 @@ export interface RemoteTaskSession {
     updated_at?: number
     stage?: string
     stage_detail?: string
+    message?: string
     error?: string
     cancel_requested?: boolean
     cancel_reason?: string

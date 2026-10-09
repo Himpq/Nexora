@@ -120,6 +120,18 @@ def tasks():
     from .SessionJournal import SessionJournal
     journal = SessionJournal()
     live = {row["stream_id"]: row for row in list_sessions()}
+
+    # 活动任务把本轮输入交给远端界面用于恢复缺失的用户气泡；输入只留在内存中，
+    # SessionJournal 不落盘保存请求正文。
+    for stream_id, row in live.items():
+        if row.get("status") not in {"running", "cancelling"}:
+            continue
+
+        meta = get_session_meta(stream_id, include_request_message=True)
+
+        if meta and meta.get("status") in {"running", "cancelling"}:
+            row["message"] = meta.get("message", "")
+
     # 只回看最近的落盘任务：电脑连开数月后事件目录会积累上万文件，
     # 全量扫描会让这个列表接口越来越慢，而近期任务之外的历史没有查询价值。
     archived = max(0, HISTORY_SCAN_LIMIT - len(live))

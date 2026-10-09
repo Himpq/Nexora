@@ -164,19 +164,18 @@ def _normalize_origin(value: str) -> str:
 
 
 def _public_origin() -> str:
-    """重建浏览器实际访问的来源。
+    """从反向代理头还原浏览器实际访问的来源。
 
-    反代把 Host 改写成本机地址（nginx: proxy_set_header Host 127.0.0.1:$server_port），
-    所以 request.host_url 拿到的是 http://127.0.0.1:5000/，与浏览器发来的 Origin 永远不等。
-
-    X-Scheme / X-Host 由 nginx 用 proxy_set_header 覆盖写入，客户端自带的同名头会被丢弃，
-    因此可信；没有这两个头时（直连部署）才退回 request.host_url。
-
-    注意：不能用 server.get_public_base_url()，它在 host 为本地地址时会反过来采信
-    Origin/Referer 还原域名；拿它做同源比对等于自己和自己比，检查会失效。
+    123 的 nginx 覆盖 Host，并用 X-Forwarded-Proto 传递外部协议；Flask 收到的连接
+    本身是 HTTP，因此只读 request.host_url 会把 HTTPS 页面误判成 HTTP。X-Scheme / X-Host
+    仍供使用这组自定义头的部署读取；没有代理协议头时按直连请求处理。
     """
-    scheme = str(request.headers.get("X-Scheme", "") or "").split(",")[0].strip()
-    host = str(request.headers.get("X-Host", "") or "").split(",")[0].strip()
+    scheme = str(
+        request.headers.get("X-Scheme")
+        or request.headers.get("X-Forwarded-Proto")
+        or ""
+    ).split(",")[0].strip()
+    host = str(request.headers.get("X-Host") or request.host or "").split(",")[0].strip()
 
     if scheme and host:
         return _normalize_origin(f"{scheme}://{host}")

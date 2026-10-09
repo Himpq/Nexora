@@ -15,7 +15,7 @@ import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
 import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory } from '../common/ChatTypes';
 import { Json } from '../common/JsonUtil';
-import { NexoraCodeApi, RemoteModel, RemoteTaskBody } from '../common/NexoraCodeApi';
+import { NexoraCodeApi, RemoteModel, RemoteTaskBody, RemoteTaskSession } from '../common/NexoraCodeApi';
 import { chatStream, ConversationModePayload, StreamListener, StreamOptions } from '../common/ChatStreamClient';
 import { ChatItemBuilder } from '../common/ChatItemBuilder';
 import { ChatItemDataSource } from '../common/ChatItemDataSource';
@@ -1241,6 +1241,21 @@ export struct MainChat {
             this.applyQuestionLocks(id, history);
             this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
             this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
+
+            const tasks: RemoteTaskSession[] = await NexoraCodeApi.tasks(deviceId);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId
+                || id !== this.conversationId) {
+                return;
+            }
+
+            const activeTask: RemoteTaskSession | undefined = tasks.find((task: RemoteTaskSession): boolean =>
+                task.conversationId === id && (task.status === 'running' || task.status === 'cancelling'));
+
+            if (activeTask !== undefined) {
+                this.restoreRemoteTask(activeTask);
+            }
+
             const catalog = await NexoraCodeApi.models(deviceId);
 
             if (epoch !== this.remoteSessionEpoch) {

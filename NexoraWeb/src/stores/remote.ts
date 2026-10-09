@@ -19,11 +19,13 @@ import {
     listRemoteConversationGroups,
     listRemoteMessages,
     listRemoteModels,
+    listRemoteTasks,
     type RemoteConversation,
     type RemoteConversationGroup,
     type RemoteDevice,
     type RemoteModelOption,
     type RemoteProjectRef,
+    type RemoteTaskSession,
 } from '@/api/nexoracode'
 import {
     RemoteTaskStream,
@@ -84,6 +86,8 @@ class RemoteStore {
 
     private devicePoller = 0
     private started = false
+    private historyLoads = new Map<string, Promise<void>>()
+    private syncingTaskDevices = new Set<string>()
     /** 终态收尾的 watch 不能放进响应式对象，按会话 id 单独存。 */
     private terminalWatchers = new Map<string, WatchStopHandle>()
 
@@ -194,6 +198,7 @@ class RemoteStore {
 
     async loadDevices(): Promise<void> {
         this.devices = (await fetchDevices()).devices
+        const selectedDeviceId = this.deviceId
 
         const current = this.devices.find(item => item.device_id === this.deviceId)
         const onlineDevices = this.devices.filter(item => item.online)
@@ -218,6 +223,10 @@ class RemoteStore {
             // 模型一起刷:电脑端改了 default_model 时顶栏要跟上,
             // loadModels 内部只在用户没手动选过时才覆盖选中项。
             await Promise.all([this.loadProjects(), this.loadModels()])
+
+            if (selectedDeviceId === this.deviceId) {
+                await this.syncActiveTasks(selectedDeviceId)
+            }
         }
     }
 
@@ -278,10 +287,135 @@ class RemoteStore {
             return
         }
 
-        const session = this.ensureSession(this.conversationId)
-        const { messages } = await listRemoteMessages(this.deviceId, this.conversationId)
+        await this.loadConversationHistory(this.deviceId, this.conversationId)
+    }
 
-        session.messages = remoteHistoryToMessages(messages || [])
+    /** 多个入口同时加载同一会话时共用一次请求，避免历史覆盖刚恢复的流式消息。 */
+    private async loadConversationHistory(deviceId: string, conversationId: string): Promise<void> {
+        const key = JSON.stringify([deviceId, conversationId])
+        const pending = this.historyLoads.get(key)
+
+        if (pending) {
+            await pending
+
+            return
+        }
+
+        const request = listRemoteMessages(deviceId, conversationId).then(({ messages }) => {
+            if (this.deviceId !== deviceId) {
+                return
+            }
+
+            this.ensureSession(conversationId).messages = remoteHistoryToMessages(messages || [])
+        })
+
+        this.historyLoads.set(key, request)
+
+        try {
+            await request
+        } finally {
+            if (this.historyLoads.get(key) === request) {
+                this.historyLoads.delete(key)
+            }
+        }
+    }
+
+    /** 查电脑当前任务并接管未完成会话，事件从游标零开始幂等重放。 */
+    private async syncActiveTasks(deviceId: string): Promise<void> {
+        if (!deviceId || deviceId !== this.deviceId || this.syncingTaskDevices.has(deviceId)) {
+            return
+        }
+
+        this.syncingTaskDevices.add(deviceId)
+
+        try {
+            const { sessions } = await listRemoteTasks(deviceId)
+
+            if (deviceId !== this.deviceId) {
+                return
+            }
+
+            const activeTasks: RemoteTaskSession[] = (sessions || []).filter(task =>
+                task.status === 'running' || task.status === 'cancelling'
+            )
+
+            // 等待本页任务受理期间还没有 stream_id，暂缓接管，避免并发创建第二条轮询流。
+            if (Object.values(this.sessions).some(session => session.busy && session.state === 'starting')) {
+                return
+            }
+
+            for (const task of activeTasks) {
+                const conversationId = String(task.conversation_id || '')
+
+                if (!conversationId || !task.stream_id) {
+                    continue
+                }
+
+                const existingStream = Object.entries(this.sessions).find(([, session]) =>
+                    session.stream?.getStreamId() === task.stream_id
+                )
+
+                if (existingStream) {
+                    this.adoptSessionId(existingStream[0], conversationId)
+                    existingStream[1].stream?.attach()
+
+                    continue
+                }
+
+                const session = this.ensureSession(conversationId)
+
+                // 当前页面正在等待自己的 start 响应时，不要抢先替换它创建的流实例。
+                if (session.busy && session.state === 'starting') {
+                    continue
+                }
+
+                if (session.stream?.getStreamId() === task.stream_id) {
+                    session.stream.attach()
+
+                    continue
+                }
+
+                if (session.stream) {
+                    session.stream.dispose()
+                    session.stream = null
+                }
+
+                await this.loadConversationHistory(deviceId, conversationId)
+
+                if (deviceId !== this.deviceId || this.sessions[conversationId] !== session) {
+                    return
+                }
+
+                const userCount = session.messages.filter(message => message.role === 'user').length
+                const historyUserCount = task.history_user_count
+                const lastUser = [...session.messages].reverse().find(message => message.role === 'user')
+                const currentUserSaved = typeof historyUserCount === 'number'
+                    ? userCount > historyUserCount
+                    : lastUser?.content === task.message
+
+                if (task.message && !task.is_regenerate && !currentUserSaved) {
+                    session.messages = [
+                        ...session.messages,
+                        createRemoteUserMessage(session.messages.length, task.message),
+                    ]
+                }
+
+                const lastMessage = session.messages[session.messages.length - 1]
+
+                if (lastMessage?.role !== 'assistant' || lastMessage.status !== 'streaming') {
+                    session.messages = [
+                        ...session.messages,
+                        createStreamingAssistant(session.messages.length),
+                    ]
+                }
+
+                session.notices = []
+                session.error = ''
+                this.ensureStream(conversationId).restore(task)
+            }
+        } finally {
+            this.syncingTaskDevices.delete(deviceId)
+        }
     }
 
     // ---------- 选择 ----------
@@ -304,6 +438,10 @@ class RemoteStore {
         void this.guard(async () => {
             await Promise.all([this.loadProjects(), this.loadModels()])
             await this.loadHistory()
+
+            if (this.deviceId === id) {
+                await this.syncActiveTasks(id)
+            }
         })
     }
 
@@ -317,12 +455,14 @@ class RemoteStore {
         this.conversationId = id
         this.ensureSession(id)
 
-        // 已经加载过就别重复拉历史，否则切来切去会一直打电脑。
-        if (this.sessions[id].messages.length) {
-            return
-        }
+        // 有缓存就复用；每次进入仍查询活动任务，接上电脑端已存在的事件流。
+        void this.guard(async () => {
+            if (!this.sessions[id].messages.length) {
+                await this.loadHistory()
+            }
 
-        void this.guard(() => this.loadHistory())
+            await this.syncActiveTasks(this.deviceId)
+        })
     }
 
     /** 在电脑上新建会话；project 为空表示不归属任何项目（根级平铺）。 */
@@ -563,6 +703,10 @@ class RemoteStore {
                 session.stageDetail = meta?.cancel_requested || next === 'stopping'
                     ? '已请求停止，等待电脑确认'
                     : meta?.stage_detail || ''
+
+                if (meta?.conversation_id) {
+                    this.adoptSessionId(key, meta.conversation_id)
+                }
             },
             onError: (cause) => {
                 session.error = cause.message

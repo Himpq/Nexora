@@ -29,7 +29,7 @@ class SessionJournal:
         return self.root / (sid + suffix)
 
     def save_meta(self, session):
-        metadata = {k: v for k, v in session.items() if k not in {"cond", "chunks"}}
+        metadata = {k: v for k, v in session.items() if k not in {"cond", "chunks", "_request_message"}}
 
         with _LOCK:
             self.root.mkdir(parents=True, exist_ok=True)

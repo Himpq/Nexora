@@ -64,6 +64,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
     return {
         "stream_id": uuid.uuid4().hex,
         "conversation_id": str(conversation_id or "").strip(),
+        "_request_message": str(meta.get("message") or "").strip(),
         "is_regenerate": bool(meta.get("is_regenerate", False)),
         "history_user_count": meta.get("history_user_count"),
         "assistant_index": meta.get("assistant_index"),
@@ -255,6 +256,7 @@ def start_session(
                 session["stage"] = "finished"
                 session["stage_detail"] = str(error or "")
 
+            session["_request_message"] = ""
             session["stage_updated_at"] = time.time()
             session["updated_at"] = time.time()
             journal.save_meta(session)
@@ -294,7 +296,7 @@ def start_session(
     return stream_id
 
 
-def get_session_meta(stream_id: str) -> Optional[Dict[str, Any]]:
+def get_session_meta(stream_id: str, *, include_request_message: bool = False) -> Optional[Dict[str, Any]]:
     sid = str(stream_id or "").strip()
 
     if not sid:
@@ -309,7 +311,7 @@ def get_session_meta(stream_id: str) -> Optional[Dict[str, Any]]:
     cond = s["cond"]
 
     with cond:
-        return {
+        meta = {
             "stream_id": sid,
             "conversation_id": str(s.get("conversation_id") or "").strip(),
             "is_regenerate": bool(s.get("is_regenerate", False)),
@@ -331,6 +333,11 @@ def get_session_meta(stream_id: str) -> Optional[Dict[str, Any]]:
             "cancel_requested": bool(s.get("cancel_requested", False)),
             "cancel_reason": str(s.get("cancel_reason") or ""),
         }
+
+        if include_request_message:
+            meta["message"] = str(s.get("_request_message") or "")
+
+        return meta
 
 
 def get_accumulated_content(stream_id: str) -> Optional[Dict[str, Any]]:

@@ -38,7 +38,7 @@ def allowed_request(method, path):
     """不转发任意 URL、设置、密钥、代理及原始工具执行接口。"""
     rules = {
         "GET": [r"/api/config", r"/api/conversations", r"/api/conversations/conv_[a-f0-9]{10}(?:/messages|/turns)?", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/events"],
-        "POST": [r"/api/conversations", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/cancel", r"/api/agent/permission/grant"],
+        "POST": [r"/api/conversations", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/cancel", r"/api/agent/permission/grant", r"/api/agent/tool-permission/resolve"],
     }
     return any(re.fullmatch(pattern, path) for pattern in rules.get(method, []))
 
