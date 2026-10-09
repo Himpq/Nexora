@@ -1825,6 +1825,8 @@ export struct MainChat {
             return;
         }
 
+        LiveViewController.shared.startGenerating();
+
         if (this.conversationId.length > 0) {
             this.dispatchSend(text, this.conversationId, false);
             return;
@@ -1842,6 +1844,10 @@ export struct MainChat {
             // 预创建失败：用本地临时键承载本次流，SSE 首帧带回真实 ID 后迁移（会话列表延后出现）
             hilog.warn(DOMAIN, TAG, 'pre-create failed (%{public}s), fallback to sse-head binding', created.message);
             this.dispatchSend(text, this.nextPendingKey(), stillOnBlank);
+        }).catch((error: Error) => {
+            LiveViewController.shared.stop();
+            hilog.error(DOMAIN, TAG, 'conversation pre-create failed: %{public}s', String(error));
+            this.notify('创建对话失败，请重试', 1800);
         });
     }
 
@@ -1928,6 +1934,7 @@ export struct MainChat {
             streamOptions.conversationModePayload = effectiveMode.payload;
         }
 
+        LiveViewController.shared.startGenerating();
         chatStream.start(targetKey, streamOptions, this.listenerFor(assistantMessage, targetKey));
     }
 
@@ -2018,6 +2025,7 @@ export struct MainChat {
         // 定位到目标消息位置，让用户看到正在重答的消息（以该消息的第一行为目标）
         this.startJumpToMessage(this.firstItemOfMessage(targetIndex), ScrollAlign.CENTER, 'regenerate', () => {});
 
+        LiveViewController.shared.startGenerating();
         chatStream.start(key, {
             message: question,
             conversationId: this.conversationId,
@@ -3002,6 +3010,7 @@ export struct MainChat {
             onContentDelta: (delta: string) => {
                 onUi(() => {
                     pendingContent += delta;
+                    LiveViewController.shared.updateContent(assistant.content + pendingContent);
                     scheduleDeltaFlush();
                 });
             },
