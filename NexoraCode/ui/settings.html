@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>NexoraCode 设置</title>
     <link rel="stylesheet" href="/settings.css"/>
-    <link rel="stylesheet" href="/permissions-settings.css"/>
+    <link rel="stylesheet" href="/permissions-settings.css?v=20261008_permission_dropdown_stats_01"/>
 </head>
 <body>
     <div class="titlebar" id="nc-titlebar">
@@ -117,7 +117,38 @@
                 <div id="tool-permission-approval" class="permission-approval-panel">
                     <h2>自动审批模型</h2>
                     <p class="permission-note">自动审批会将当前请求、最近最多 4 条用户请求、助手调用工具前的说明、本轮此前最多 8 个工具动作摘要和当前工具完整参数发送给所选 Provider。参数包括命令、脚本或待写入内容。模型拒绝、请求失败或返回格式无效时，该操作会被拦截。</p>
-                    <div id="tool-permission-model-list" class="permission-model-list"></div>
+                    <div id="tool-permission-model-select" class="permission-model-select">
+                        <button
+                            id="tool-permission-model-trigger"
+                            type="button"
+                            class="permission-model-trigger"
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            aria-controls="tool-permission-model-menu"
+                            title="请选择自动审批模型"
+                        >
+                            <span class="permission-model-trigger-copy">
+                                <strong id="tool-permission-model-name">正在读取模型…</strong>
+                                <small id="tool-permission-model-provider"></small>
+                            </span>
+                            <svg class="permission-model-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                        </button>
+                        <div id="tool-permission-model-menu" class="permission-model-menu" role="listbox" aria-label="自动审批模型" hidden></div>
+                    </div>
+                    <div id="tool-permission-model-empty" class="permission-model-empty" hidden></div>
+                </div>
+
+                <div class="permission-statistics-panel">
+                    <div class="permission-statistics-heading">
+                        <div>
+                            <h2>统计</h2>
+                            <p class="permission-note">自动审批判定与模型返回的 Token 用量，按时间倒序显示最近 50 条。</p>
+                        </div>
+                        <button id="tool-permission-events-refresh" type="button" class="secondary">刷新</button>
+                    </div>
+                    <div id="tool-permission-auto-events" class="permission-event-list permission-events-state" role="log" aria-live="polite">正在读取自动审批记录…</div>
                 </div>
             </section>
 
@@ -153,7 +184,7 @@
     </div>
 
     <script src="/settings.js"></script>
-    <script src="/permissions-settings.js?v=20261008_permission_model_default_01"></script>
+    <script src="/permissions-settings.js?v=20261008_permission_dropdown_stats_02"></script>
     <script src="/remote-settings.js"></script>
 </body>
 </html>

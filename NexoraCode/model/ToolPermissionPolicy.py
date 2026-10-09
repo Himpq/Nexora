@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections import deque
 import json
 import threading
 import time
 import uuid
 from typing import Any
 
-from core.config import config
-from .Provider import ProviderClient, load_providers
+from core.config import config, get_app_root
+from .Provider import ProviderClient, _extract_usage_io, load_providers
 
 
 DEFAULT_PERMISSION_MODE = "confirm"
@@ -19,6 +20,8 @@ _PENDING_MAX_ITEMS = 256
 _PENDING_LOCK = threading.RLock()
 _PENDING_ACTIONS: dict[str, dict] = {}
 _RESOLVED_ACTIONS: dict[str, dict] = {}
+_PERMISSION_EVENT_PATH = get_app_root() / "data" / "tool_permission_events.jsonl"
+_PERMISSION_EVENT_LOCK = threading.RLock()
 
 _READ_TOOL_NAMES = {
     "local_file_read",
@@ -136,6 +139,48 @@ def _clean_approval_reason(reason: Any) -> str:
     return " ".join(str(reason or "").split())[:300]
 
 
+def _append_permission_event(line: str) -> None:
+    """持久化一条已经序列化的自动审批事件。"""
+    with _PERMISSION_EVENT_LOCK:
+        _PERMISSION_EVENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        with _PERMISSION_EVENT_PATH.open("a", encoding="utf-8") as event_file:
+            event_file.write(line + "\n")
+
+
+def list_auto_approval_events(limit: int = 50) -> list[dict]:
+    """读取最新的自动审批模型判定记录，不返回其他权限模式的日志。"""
+    clean_limit = min(max(int(limit), 1), 100)
+
+    if not _PERMISSION_EVENT_PATH.exists():
+        return []
+
+    with _PERMISSION_EVENT_LOCK:
+        with _PERMISSION_EVENT_PATH.open("r", encoding="utf-8") as event_file:
+            recent_lines = deque(event_file, maxlen=5000)
+
+    events = []
+
+    for line in reversed(recent_lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(event, dict):
+            continue
+
+        if event.get("mode") != "auto" or event.get("stage") != "auto_model":
+            continue
+
+        events.append(event)
+
+        if len(events) >= clean_limit:
+            break
+
+    return events
+
+
 def log_tool_permission_event(
     *,
     tool_name: str,
@@ -149,6 +194,7 @@ def log_tool_permission_event(
     user_decision: str = "",
     tool_success: bool | None = None,
     reason: str = "",
+    token_usage: dict | None = None,
 ) -> None:
     """记录写入和命令权限决策，不记录命令正文、路径或工具参数。"""
     if operation not in {"command", "write"}:
@@ -183,7 +229,27 @@ def log_tool_permission_event(
     if clean_reason:
         event["reason"] = clean_reason
 
-    print(f"[LocalAgentApproval] {json.dumps(event, ensure_ascii=False, separators=(',', ':'))}")
+    if isinstance(token_usage, dict):
+        input_tokens = max(0, int(token_usage.get("raw_input") or 0))
+        output_tokens = max(0, int(token_usage.get("output") or 0))
+        total_tokens = max(0, int(token_usage.get("total") or 0))
+        usage_record = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens or input_tokens + output_tokens,
+        }
+
+        if token_usage.get("cached_tokens_source"):
+            usage_record["cached_input_tokens"] = max(0, int(token_usage.get("cached_input") or 0))
+
+        event["token_usage"] = usage_record
+
+    event_line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    if mode == "auto" and stage == "auto_model":
+        _append_permission_event(event_line)
+
+    print(f"[LocalAgentApproval] {event_line}")
 
 
 def _authorization_result(
@@ -198,6 +264,7 @@ def _authorization_result(
     duration_ms: int | None = None,
     error_type: str = "",
     reason: str = "",
+    token_usage: dict | None = None,
 ) -> dict:
     result = {"decision": decision, "mode": mode, "call": call}
     clean_reason = _clean_approval_reason(reason)
@@ -221,6 +288,7 @@ def _authorization_result(
         duration_ms=duration_ms,
         error_type=error_type,
         reason=clean_reason,
+        token_usage=token_usage,
     )
 
     return result
@@ -243,6 +311,7 @@ def _request_model_approval(
     model_id: str,
     approval_context: dict | None = None,
     cancel_checker=None,
+    usage_capture: dict | None = None,
 ) -> dict:
     provider = _find_approval_provider(model_id)
 
@@ -287,6 +356,14 @@ def _request_model_approval(
         if callable(cancel_checker) and cancel_checker():
             client.cancel()
             raise RuntimeError("自动审批已取消")
+
+        if str(event.get("type") or "") == "usage":
+            if usage_capture is not None:
+                # 流结束时 Provider 用量是整次请求快照，保留最后一次返回值。
+                usage_capture.clear()
+                usage_capture.update(_extract_usage_io(event.get("usage")))
+
+            continue
 
         if str(event.get("type") or "") == "content":
             response += str(event.get("delta") or "")
@@ -364,9 +441,11 @@ def evaluate_tool_call(
             "deny",
             stage="auto_model",
             message="自动审批模型未设置，此操作未执行。请到设置中选择审批模型。",
+            reason="自动审批模型未设置，操作已拦截。",
         )
 
     started_at = time.perf_counter()
+    approval_usage = {}
 
     try:
         approval = _request_model_approval(
@@ -376,6 +455,7 @@ def evaluate_tool_call(
             model_id,
             approval_context,
             cancel_checker,
+            approval_usage,
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started_at) * 1000)
@@ -389,6 +469,8 @@ def evaluate_tool_call(
             approval_model_id=model_id,
             duration_ms=duration_ms,
             error_type=type(exc).__name__,
+            reason="审批模型请求失败或返回格式无效。",
+            token_usage=approval_usage or None,
         )
 
     duration_ms = round((time.perf_counter() - started_at) * 1000)
@@ -405,6 +487,7 @@ def evaluate_tool_call(
             approval_model_id=model_id,
             duration_ms=duration_ms,
             reason=reason,
+            token_usage=approval_usage or None,
         )
 
     return _authorization_result(
@@ -416,6 +499,7 @@ def evaluate_tool_call(
         approval_model_id=model_id,
         duration_ms=duration_ms,
         reason=reason,
+        token_usage=approval_usage or None,
     )
 
 

@@ -1,5 +1,6 @@
 .permission-mode-list,
-.permission-approval-panel {
+.permission-approval-panel,
+.permission-statistics-panel {
     max-width: 620px;
 }
 
@@ -66,42 +67,156 @@
     line-height: 1.6;
 }
 
-.permission-model-list {
+.permission-model-select {
+    position: relative;
+    width: 100%;
+}
+
+.permission-model-trigger {
+    appearance: none;
     display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 54px;
+    padding: 9px 13px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius);
+    background: var(--bg-main);
+    color: var(--text-main);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.permission-model-trigger:hover,
+.permission-model-trigger.is-open {
+    border-color: var(--accent);
+}
+
+.permission-model-trigger:focus-visible {
+    outline: 2px solid rgba(91, 141, 239, 0.22);
+    outline-offset: 1px;
+}
+
+.permission-model-trigger:disabled {
+    cursor: default;
+    opacity: 0.7;
+}
+
+.permission-model-trigger-copy {
+    display: flex;
+    flex: 1;
     flex-direction: column;
-    gap: 6px;
+    min-width: 0;
+    gap: 1px;
+}
+
+.permission-model-trigger-copy strong {
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: 13px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.permission-model-trigger-copy small,
+.permission-model-option-provider {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.permission-model-chevron {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    color: var(--text-secondary);
+    transition: transform 0.15s ease;
+}
+
+.permission-model-trigger.is-open .permission-model-chevron {
+    transform: rotate(180deg);
+}
+
+.permission-model-menu {
+    position: fixed;
+    z-index: 250;
+    max-width: calc(100vw - 24px);
+    max-height: 360px;
+    padding: 7px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    background: var(--bg-main);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+    scrollbar-width: thin;
+}
+
+.permission-model-menu[hidden] {
+    display: none;
+}
+
+.permission-model-group + .permission-model-group {
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid var(--border-light);
+}
+
+.permission-model-group-label {
+    padding: 5px 9px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 650;
 }
 
 .permission-model-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
-    padding: 9px 11px;
-    border: 1px solid var(--border-input);
+    min-height: 36px;
+    padding: 7px 9px;
+    border: none;
     border-radius: 6px;
-    background: var(--bg-main);
+    background: transparent;
     color: var(--text-main);
     text-align: left;
     cursor: pointer;
     font: inherit;
 }
 
-.permission-model-option:hover {
-    border-color: var(--accent);
+.permission-model-option:hover,
+.permission-model-option[aria-selected="true"] {
+    background: #f3f6fc;
 }
 
-.permission-model-option[aria-pressed="true"] {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(91, 141, 239, 0.1);
+.permission-model-option:focus-visible {
+    outline: 2px solid rgba(91, 141, 239, 0.25);
+    outline-offset: -2px;
 }
 
-.permission-model-name {
-    display: block;
-    font-weight: 600;
+.permission-model-option-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.permission-model-provider {
-    display: block;
-    color: var(--text-secondary);
-    font-size: 11px;
+.permission-model-option-check {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--accent-strong);
+    opacity: 0;
+}
+
+.permission-model-option[aria-selected="true"] .permission-model-option-check {
+    opacity: 1;
 }
 
 .permission-model-empty {
@@ -114,4 +229,130 @@
 
 .permission-approval-panel.is-disabled {
     opacity: 0.55;
+}
+
+.permission-statistics-panel {
+    margin-top: 18px;
+    padding: 16px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+}
+
+.permission-statistics-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.permission-statistics-heading h2 {
+    margin: 0;
+    font-size: 14px;
+}
+
+.permission-statistics-heading .permission-note {
+    margin: 4px 0 0;
+}
+
+.permission-statistics-heading .secondary {
+    flex: none;
+    padding: 5px 11px;
+    font-size: 12px;
+}
+
+.permission-event-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.permission-events-state {
+    padding: 13px 12px;
+    border: 1px dashed var(--border-input);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.permission-events-state.is-error {
+    color: var(--danger);
+}
+
+.permission-event-item {
+    padding: 10px 11px;
+    border: 1px solid var(--border-light);
+    border-radius: 7px;
+    background: var(--bg-main);
+}
+
+.permission-event-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.permission-event-decision {
+    flex: none;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+}
+
+.permission-event-decision.is-approved {
+    background: #eaf6ee;
+    color: #287b42;
+}
+
+.permission-event-decision.is-denied {
+    background: #fff0ef;
+    color: var(--danger);
+}
+
+.permission-event-operation {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.permission-event-time,
+.permission-event-meta {
+    color: var(--text-secondary);
+    font-size: 10.5px;
+}
+
+.permission-event-time {
+    flex: none;
+}
+
+.permission-event-reason {
+    margin: 7px 0 3px;
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.permission-event-meta {
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 680px) {
+    .permission-statistics-heading {
+        align-items: center;
+    }
+
+    .permission-event-heading {
+        flex-wrap: wrap;
+    }
+
+    .permission-event-time {
+        width: 100%;
+        padding-left: 2px;
+    }
 }

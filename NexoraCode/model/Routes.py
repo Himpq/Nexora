@@ -39,6 +39,7 @@ from .ToolPermissionPolicy import (
     get_resolved_tool_action,
     get_permission_settings,
     list_approval_models,
+    list_auto_approval_events,
     log_tool_permission_event,
     remember_resolved_tool_action,
     save_permission_settings,
@@ -786,6 +787,12 @@ def local_agent_permission_settings():
         return jsonify({"success": False, "message": str(exc)}), 400
 
     return jsonify({"success": True, "message": "工具权限设置已保存"})
+
+
+@_local_bp.route("/api/local/permissions/auto-approval-events", methods=["GET"])
+def local_agent_auto_approval_events():
+    """读取设置页展示的自动审批模型判定记录。"""
+    return jsonify({"success": True, "events": list_auto_approval_events()})
 
 
 @_local_bp.route("/api/agent/tool-permission/resolve", methods=["POST"])

@@ -195,6 +195,38 @@ class ConversationStore:
             self._save_index(index)
             return True
 
+    def replace_tool_result(self, conversation_id: str, tool_call_id: str, content: str) -> bool:
+        """更新权限确认占位结果，批准后仍保留原工具调用的协议位置。"""
+        clean_call_id = str(tool_call_id or "").strip()
+
+        if not clean_call_id:
+            return False
+
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                return False
+
+            for message in reversed(conversation.get("messages") or []):
+                if (
+                    str(message.get("role") or "") == "tool"
+                    and str(message.get("tool_call_id") or "") == clean_call_id
+                ):
+                    updated_at = time.time()
+                    message["content"] = str(content or "")
+                    message["timestamp"] = updated_at
+                    conversation["updated_at"] = updated_at
+                    self._save_conversation(conversation)
+
+                    index = self._load_index()
+                    meta = index.setdefault(str(conversation_id), {})
+                    meta["updated_at"] = updated_at
+                    self._save_index(index)
+                    return True
+
+            return False
+
     def _save_conversation(self, conversation: dict) -> None:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
         write_json_atomic(path, conversation)
