@@ -52,12 +52,15 @@ def run_short_request(
     reject_tool_calls: bool = True,
     cancel_message: str = "短请求已取消",
     tool_call_message: str = "短请求返回了工具调用",
+    on_delta: Optional[Callable[[str, str], None]] = None,
 ) -> ShortRequestResult:
     """执行一次短请求，返回拼接文本与 usage。
 
     - cancel_checker: 每个事件前检查一次，命中即关闭上游流并抛 ShortRequestError。
     - reject_tool_calls: 为真时，模型若返回工具调用直接判错（短请求不应触发工具）。
     - usage: 取最后一次 usage 事件（Provider 在流结束时返回整次请求快照）。
+    - on_delta: 每收到一段正文增量时回调 (delta, accumulated_text)，
+      供调用方做流式展示（如上下文摘要边生成边推给前端）。
     """
     result = ShortRequestResult()
     stream = client.stream_chat(messages, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens)
@@ -71,7 +74,11 @@ def run_short_request(
             event_type = str(event.get("type") or "")
 
             if event_type == "content":
-                result.text += str(event.get("delta") or "")
+                delta = str(event.get("delta") or "")
+                result.text += delta
+
+                if callable(on_delta) and delta:
+                    on_delta(delta, result.text)
             elif event_type == "usage":
                 result.usage = _extract_usage_io(event.get("usage"))
             elif event_type == "tool_call":

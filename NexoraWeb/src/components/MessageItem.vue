@@ -135,13 +135,6 @@
                     </div>
                 </template>
 
-                <!-- 上下文压缩卡片(对齐原版:压缩先于正文执行,挂 assistant 首位;
-                     流式/历史回放均从此渲染,摘要输出随卡片走,不再沉底) -->
-                <ContextCompressionCard
-                    v-if="compressionStep"
-                    :step="compressionStep"
-                />
-
                 <!-- Modified Injection 卡片:显式展示本轮 tail volatile 注入块。
                      仅 NexoraCode 本地模式渲染:网页版后端不发 context_injection,
                      且此门控保证网页版渲染路径完全不变。 -->
@@ -157,8 +150,14 @@
                     工具行为时间线节点 + 中文动作标题。
                 -->
                 <template v-for="item in renderItems" :key="`${item.kind}-${item.sourceIndex}`">
+                    <!-- 上下文压缩卡片:按事件时序 append 进内容流(对齐原版 appendToolEvent) -->
+                    <ContextCompressionCard
+                        v-if="item.kind === 'compression'"
+                        :step="item.step"
+                    />
+
                     <div
-                        v-if="item.kind === 'reasoning'"
+                        v-else-if="item.kind === 'reasoning'"
                         class="thinking-block reasoning-thinking-block execution-flow-item"
                         :class="{ collapsed: isReasoningCollapsed(item.sourceIndex), 'is-live': isLiveReasoning(item.sourceIndex) }"
                     >
@@ -551,7 +550,14 @@
         payload: QuestionPayload
     }
 
-    type RenderItem = TextRenderItem | ToolRenderItem | QuestionRenderItem
+    /** 上下文压缩卡片渲染项:按事件时序 append 进内容流(对齐原版 appendToolEvent) */
+    interface CompressionRenderItem {
+        kind: 'compression'
+        sourceIndex: number
+        step: ContextCompressionStep
+    }
+
+    type RenderItem = TextRenderItem | ToolRenderItem | QuestionRenderItem | CompressionRenderItem
 
     /** 参数 JSON 美化(非 JSON 文本原样展示,对齐原版 formatToolArgsForOutput) */
     function prettyToolArgs(raw: string): string {
@@ -615,6 +621,12 @@
      */
     const renderItems = computed<Array<RenderItem>>(() => {
         const items: Array<RenderItem> = []
+
+        // 上下文压缩卡片：压缩在本轮首轮请求前执行，因此按事件时序 append 在
+        // 内容流最前（对齐原版 appendToolEvent 的追加语义，而非固定钉在回复顶部）。
+        if (compressionStep.value) {
+            items.push({ kind: 'compression', sourceIndex: -1, step: compressionStep.value })
+        }
 
         contentSegments.value.forEach((segment, sourceIndex) => {
             if (segment.type === 'function_call') {

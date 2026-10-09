@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import queue
+import threading
 import time
 
 from .ConversationStore import INTERRUPTED_TOOL_RESULT
@@ -423,18 +425,54 @@ class ContextManager:
             # 不传就会让两次请求的提示词前缀分叉，压缩调用全价冷读。
             # 摘要只需要文本输出，因此 tool_choice 固定为 none，真出现工具调用直接判错。
             result = None
+            # 摘要正文流式转发：run_short_request 是阻塞调用，无法在回调里 yield，
+            # 因此放到子线程执行，增量经队列回传，主生成器边收边 yield progress 事件，
+            # 前端压缩卡片即可看到摘要边生成边呈现（而不是等 done 才一次性出现）。
+            delta_queue: "queue.Queue" = queue.Queue()
+            worker_error: list = []
+
+            def _run_summary() -> None:
+                try:
+                    nonlocal result
+                    result = run_short_request(
+                        self.provider,
+                        candidate + [instruction],
+                        tools=tools,
+                        tool_choice="none",
+                        max_tokens=summary_output,
+                        cancel_checker=cancel_checker,
+                        cancel_message="__STREAM_CANCELLED__",
+                        tool_call_message="摘要请求返回了工具调用",
+                        on_delta=lambda _delta, accumulated: delta_queue.put(accumulated),
+                    )
+                except BaseException as exc:  # 原样回抛到主线程，保持原有异常语义
+                    worker_error.append(exc)
+                finally:
+                    delta_queue.put(None)
+
+            worker = threading.Thread(target=_run_summary, daemon=True)
+            worker.start()
 
             try:
-                result = run_short_request(
-                    self.provider,
-                    candidate + [instruction],
-                    tools=tools,
-                    tool_choice="none",
-                    max_tokens=summary_output,
-                    cancel_checker=cancel_checker,
-                    cancel_message="__STREAM_CANCELLED__",
-                    tool_call_message="摘要请求返回了工具调用",
-                )
+                while True:
+                    accumulated = delta_queue.get()
+
+                    if accumulated is None:
+                        break
+
+                    yield {
+                        "type": "context_compression_status",
+                        "status": "progress",
+                        "content": "正在整理历史上下文",
+                        "history_cut_index": cursor,
+                        "summary_text": accumulated,
+                        "summary_chars": len(accumulated),
+                    }
+
+                worker.join()
+
+                if worker_error:
+                    raise worker_error[0]
             finally:
                 if result is not None and result.has_usage:
                     # 压缩调用挂在触发它的请求 trace 下，round_index 固定 0 表示请求正文之前发生。
@@ -462,7 +500,6 @@ class ContextManager:
                 print(f"[LocalContext] usage_missing conversation={conversation_id} cut={boundary}")
 
             cursor = boundary
-            yield {"type": "context_compression_status", "status": "progress", "content": "正在整理历史上下文", "history_cut_index": cursor}
 
         updated = dict(conversation)
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
@@ -476,5 +513,17 @@ class ContextManager:
         self.store.save_context(conversation_id, record, history[:end])
         print(f"[LocalContext] compressed conversation={conversation_id} cut={end} "
               f"input_basis={measured_estimate} post_basis={post_estimate} batches={len(usages)}")
-        yield {"type": "context_compression_status", "status": "done", "content": "上下文压缩完成", "history_cut_index": end, "summary_chars": len(summary)}
+        yield {
+            "type": "context_compression_status",
+            "status": "done",
+            "content": "上下文压缩完成",
+            "history_cut_index": end,
+            "summary_chars": len(summary),
+            "summary_text": summary,
+            "raw_input_tokens": measured_estimate,
+            "post_raw_input_tokens": post_estimate,
+            "saved_tokens": max(0, measured_estimate - post_estimate),
+            "saved_ratio": (max(0, measured_estimate - post_estimate) / measured_estimate) if measured_estimate > 0 else 0.0,
+            "context_window": window,
+        }
         return messages

@@ -89,6 +89,17 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(messages[-1]["content"], "当前工具结果")
         self.assertFalse(any(m.get("content") == "当前问题" for request, _ in self.calls for m in request))
         self.assertEqual(events[-1]["status"], "done")
+        # 摘要正文流式展示：progress 事件应带 summary_text（边生成边推给前端）。
+        progress_events = [e for e in events if e.get("status") == "progress"]
+        self.assertTrue(progress_events, "应产生带摘要正文的 progress 事件")
+        self.assertTrue(any(str(e.get("summary_text") or "") for e in progress_events),
+                        "progress 事件应携带累积摘要正文")
+        # done 事件应带完整摘要与压缩统计（前端卡片展开区据此渲染）。
+        done_event = events[-1]
+        self.assertEqual(done_event["summary_text"], self.store.get(self.cid)["context_state"]["summary"])
+        self.assertGreater(done_event["raw_input_tokens"], 0)
+        self.assertIn("saved_tokens", done_event)
+        self.assertIn("saved_ratio", done_event)
         # 摘要请求必须带与主请求相同的 tools，否则 tools 块让两次请求的提示词前缀分叉。
         self.assertEqual(self.calls[0][1]["tools"], tools)
         # 摘要只需要文本输出，工具调用一律判错。

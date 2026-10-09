@@ -885,9 +885,13 @@ class AgentLoop:
                 "content": str(context_compression.get("content") or ""),
                 "forced": bool(context_compression.get("forced")),
                 "raw_input_tokens": int(context_compression.get("raw_input_tokens") or 0),
+                "post_raw_input_tokens": int(context_compression.get("post_raw_input_tokens") or 0),
+                "saved_tokens": int(context_compression.get("saved_tokens") or 0),
+                "saved_ratio": float(context_compression.get("saved_ratio") or 0.0),
                 "context_window": int(context_compression.get("context_window") or 0),
                 "history_cut_index": context_compression.get("history_cut_index"),
                 "summary_chars": int(context_compression.get("summary_chars") or 0),
+                "summary_text": str(context_compression.get("summary_text") or ""),
             }
 
         if reasoning_content:

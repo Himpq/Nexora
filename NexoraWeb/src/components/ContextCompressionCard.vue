@@ -47,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, ref, watch } from 'vue'
 
     import type { ContextCompressionStep } from '@/stream/contextCompression'
     import { buildContextCompressionOutputText } from '@/stream/contextCompression'
@@ -57,6 +57,8 @@
     }>()
 
     const expanded = ref(false)
+    // 用户是否手动切换过展开态:手动操作优先,不被自动策略覆盖(对齐原版 userToggled)
+    const userToggled = ref(false)
 
     /** 完成态:done 或 trimmed(裁剪已完成),对齐原版 status !== 'start' 时挂 .done */
     const done = computed(() => props.step.status === 'done' || props.step.status === 'trimmed')
@@ -106,8 +108,37 @@
             return
         }
 
+        userToggled.value = true
         expanded.value = !expanded.value
     }
+
+    // 摘要流式生成期间自动展开,让用户直接看到正文边生成边呈现;
+    // 用户手动切换过则尊重其选择,完成后自动收起(对齐原版 done 时移除 expanded)。
+    watch(
+        () => [props.step.status, props.step.summary_text] as const,
+        (current, previous) => {
+            const status = current[0]
+            const prevStatus = previous ? previous[0] : ''
+
+            if (userToggled.value) {
+                return
+            }
+
+            if (status === 'start' || status === 'progress') {
+                expanded.value = true
+
+                return
+            }
+
+            // 终态:从进行中转为完成时收起,与工具行“完成后收起”一致
+            if (status === 'done' || status === 'trimmed' || status === 'skipped') {
+                if (prevStatus === 'start' || prevStatus === 'progress') {
+                    expanded.value = false
+                }
+            }
+        },
+        { immediate: true }
+    )
 </script>
 
 <style scoped>
