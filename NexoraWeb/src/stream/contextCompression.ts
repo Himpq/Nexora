@@ -7,12 +7,14 @@
  *     buildContextCompressionOutputText,并复用 ChatMessage.metadata.process_steps 历史回放)
  *
  * 协议(见 ChatDBServer/api/App/Core/model.py):
- *   status: start | done | skipped
+ *   status: start | progress | done | skipped
  *   content: 状态标题(如"上下文压缩中(强制)")
  *   trigger_mode: force | overload
  *   raw_input_tokens / post_raw_input_tokens / saved_tokens / saved_ratio
  *   context_window / compression_threshold / masked_image_data_urls
  *   summary_text / summary_chars / history_cut_index
+ *
+ * 说明:后端多批摘要时每批推送一条 progress(带 history_cut_index),用于前端流式展示压缩推进。
  */
 
 /** 后端 context_compression_status 数据块(字段均可能缺失,读取必须容错) */
@@ -71,7 +73,7 @@ export function parseContextCompressionStep(raw: unknown): ContextCompressionSte
 
     const status = String(record.status || '').trim().toLowerCase()
 
-    if (status !== 'start' && status !== 'done' && status !== 'skipped') {
+    if (status !== 'start' && status !== 'progress' && status !== 'done' && status !== 'skipped') {
         return null
     }
 
@@ -230,7 +232,7 @@ export function buildContextCompressionOutputText(step: ContextCompressionStep):
         lines.push('')
         lines.push('压缩摘要:')
         lines.push(summaryText)
-    } else if (step.status === 'start') {
+    } else if (step.status === 'start' || step.status === 'progress') {
         lines.push('')
         lines.push('压缩任务已开始，等待模型生成摘要...')
     }

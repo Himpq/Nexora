@@ -26,7 +26,7 @@ import {
     type ConversationTurn,
 } from '@/api/conversations'
 import { chatStream, type ChatStreamSnapshot, type ChatStreamSnapshotContext } from '@/network/chatStream'
-import { parseContextCompressionStep } from '@/stream/contextCompression'
+import { parseContextCompressionStep, type ContextCompressionStep } from '@/stream/contextCompression'
 import { readExaImageGallery } from '@/stream/exaMedia'
 import type { QuestionPayload } from '@/stream/questionCard'
 import {
@@ -1151,14 +1151,33 @@ export const useConversationStore = defineStore('conversation', {
         /**
          * 记录上下文压缩状态到指定会话的助手消息(数据源:context_compression_status chunk)
          *
-         * 只保留最新一条:后端按 start → done/skipped 顺序推送,后到者覆盖前态,
-         * 与历史回放 process_steps 取最后一条的语义一致(对齐原版 upsertContextCompressionCard)。
+         * 后端按 start → progress* → done/skipped 顺序推送:
+         *   - progress 帧只带 history_cut_index,需保留 start 帧的 raw_input_tokens/context_window,
+         *     因此对 progress 做"累积合并",让卡片在流式期间持续显示压缩推进;
+         *   - done/skipped 为终态,直接覆盖(与历史回放 process_steps 取最后一条的语义一致)。
          */
         setStreamingContextCompression(conversationId: string, step: Record<string, unknown>): void {
-            const parsed = parseContextCompressionStep(step)
+            let parsed = parseContextCompressionStep(step)
 
             if (!parsed) {
                 return
+            }
+
+            if (parsed.status === 'progress') {
+                const prev = this._resolveStreamingAssistant(conversationId)?.compressionStep as ContextCompressionStep | null | undefined
+
+                if (prev && (prev.status === 'start' || prev.status === 'progress')) {
+                    parsed = {
+                        ...prev,
+                        ...parsed,
+                        // 合并时保留 start 帧的关键统计,避免 progress 覆盖后丢失。
+                        raw_input_tokens: parsed.raw_input_tokens || prev.raw_input_tokens,
+                        context_window: parsed.context_window || prev.context_window,
+                        compression_threshold: parsed.compression_threshold || prev.compression_threshold,
+                        trigger_mode: parsed.trigger_mode || prev.trigger_mode,
+                        forced: parsed.forced || prev.forced,
+                    }
+                }
             }
 
             this._updateStreamingAssistant(conversationId, { compressionStep: parsed })

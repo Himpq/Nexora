@@ -9,7 +9,7 @@
 -->
 
 <template>
-    <div class="context-compression-card" :class="{ done: done, skipped: skipped, expanded: expanded }">
+    <div class="context-compression-card" :class="{ done: done, skipped: skipped, running: running, expanded: expanded }">
         <div
             class="cc-card-head"
             role="button"
@@ -18,7 +18,17 @@
             @click="toggle"
             @keydown.enter.prevent="toggle"
         >
-            <svg class="cc-card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <svg
+                class="cc-card-icon"
+                :class="{ 'is-spinning': running }"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+            >
                 <polyline points="4 14 10 14 10 20"></polyline>
                 <polyline points="20 10 14 10 14 4"></polyline>
                 <line x1="14" y1="10" x2="21" y2="3"></line>
@@ -26,6 +36,7 @@
             </svg>
             <span class="cc-card-name">Context Compression</span>
             <span class="cc-card-status" :title="statusText">{{ statusText }}</span>
+            <span v-if="running" class="cc-card-progress" aria-hidden="true"></span>
             <svg class="cc-card-toggle" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
@@ -47,14 +58,26 @@
 
     const expanded = ref(false)
 
-    /** 完成态:非 start 即视为已结束(对齐原版 status !== 'start' 时挂 .done) */
-    const done = computed(() => props.step.status !== 'start')
+    /** 完成态:非 start/progress 即视为已结束(对齐原版 status !== 'start' 时挂 .done) */
+    const done = computed(() => props.step.status === 'done')
 
     /** 跳过态:跳过时卡片整体走中性灰视觉 */
     const skipped = computed(() => props.step.status === 'skipped')
 
+    /** 进行中态:start 或 progress,显示脉冲与旋转图标 */
+    const running = computed(() => props.step.status === 'start' || props.step.status === 'progress')
+
     /** 状态文案:优先后端 content,缺失时按状态兜底 */
     const statusText = computed(() => {
+        if (props.step.status === 'progress') {
+            // 流式推进:显示已压缩到的历史位置,直观体现"正在整理"。
+            const cut = Number(props.step.history_cut_index)
+
+            if (Number.isFinite(cut) && cut >= 0) {
+                return `正在整理历史上下文（已截断至第 ${cut} 条）`
+            }
+        }
+
         if (props.step.content) {
             return props.step.content
         }
@@ -114,6 +137,36 @@
     .cc-card-icon {
         flex: none;
         color: var(--color-text-secondary);
+    }
+
+    /* 进行中:图标轻微旋转,配合脉冲点提示"正在压缩" */
+    .cc-card-icon.is-spinning {
+        animation: cc-icon-spin 1.4s linear infinite;
+    }
+
+    @keyframes cc-icon-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    /* 进行中脉冲点:蓝色呼吸圆点,与未读蓝点色系一致 */
+    .cc-card-progress {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #2563eb;
+        animation: cc-progress-pulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes cc-progress-pulse {
+        0%, 100% { opacity: 0.35; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1.15); }
+    }
+
+    /* 进行中状态文案用蓝色强调 */
+    .context-compression-card.running .cc-card-status {
+        color: #2563eb;
     }
 
     .cc-card-name {
