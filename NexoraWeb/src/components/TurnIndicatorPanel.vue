@@ -26,7 +26,6 @@
                 v-for="(turn, turnIndex) in userTurns"
                 :key="turn.index"
                 class="turn-indicator-line"
-                :class="{ active: turnIndex === activeTurnIndex }"
                 :data-turn-index="turnIndex"
             ></div>
         </div>
@@ -39,15 +38,26 @@
                 :class="{ visible: popupVisible }"
                 @mouseenter="cancelPopupHide"
                 @mouseleave="scheduleHideTurnListPopup"
+                @scroll.passive="handlePopupScroll"
             >
                 <div
-                    v-for="(turn, turnIndex) in userTurns"
+                    class="turn-indicator-popup-spacer"
+                    :style="{ height: `${popupWindowStart * POPUP_ITEM_HEIGHT}px` }"
+                    aria-hidden="true"
+                ></div>
+                <div
+                    v-for="(turn, windowIndex) in visiblePopupTurns"
                     :key="turn.index"
                     class="turn-indicator-popup-item"
-                    :class="{ active: turnIndex === activeTurnIndex }"
+                    :data-turn-index="popupWindowStart + windowIndex"
                     :title="messagePreview(turn) || '(空消息)'"
-                    @click="jumpToUserMessage(turnIndex)"
+                    @click="jumpToUserMessage(popupWindowStart + windowIndex)"
                 >{{ messagePreview(turn) || '(空消息)' }}</div>
+                <div
+                    class="turn-indicator-popup-spacer"
+                    :style="{ height: `${Math.max(0, userTurns.length - popupWindowStart - visiblePopupTurns.length) * POPUP_ITEM_HEIGHT}px` }"
+                    aria-hidden="true"
+                ></div>
             </div>
         </Teleport>
     </div>
@@ -91,14 +101,18 @@
 
     /** 预览弹层显隐 */
     const popupVisible = ref(false)
+    const popupWindowStart = ref(0)
+    const POPUP_ITEM_HEIGHT = 34
+    const POPUP_OVERSCAN = 5
+    const POPUP_WINDOW_SIZE = 24
 
     /**
      * 非响应式运行时状态(对齐原版 turnIndicatorState)
      * DOM 测量/rAF/定时器不进入响应式系统,避免测量本身触发重渲染
      */
     const state = {
-        /** 各用户轮次在消息滚动区自身坐标中的中心点,null = 尚未渲染 */
-        centers: [] as (number | null)[],
+        /** 已渲染用户轮次的中心点，按消息顺序排列，滚动时用二分查找当前轮次。 */
+        centers: [] as Array<{ turnIndex: number; center: number }>,
         /** 布局脏标记:消息增删/内容变化时置位,实际重建合并到下次需要时的 rAF */
         layoutDirty: true,
         /** active 更新 rAF 句柄(合并同帧多次调度) */
@@ -109,8 +123,9 @@
         popupHideTimer: 0,
         /** 跳转中屏蔽滚动监听(对齐原版 _isJumping) */
         jumping: false,
-        /** messageIndex → DOM 元素缓存(对齐原版 domElement 复用,isConnected 校验失效) */
-        elementCache: new Map<number, HTMLElement>(),
+        /** 直接引用前一个高亮节点，滚动时避免在完整轮次列表中线性查找。 */
+        activeLineElement: null as Element | null,
+        activePopupElement: null as Element | null,
         layoutReady: null as boolean | null,
     }
     let layoutObserver: ChatScrollLayoutObserver | null = null
@@ -119,6 +134,12 @@
     const userTurns = computed(() => {
         return props.messages.filter((message) => message.role === 'user')
     })
+
+    /** 预览列表只保留视口附近的轮次，避免长会话 hover 时一次创建全部行。 */
+    const visiblePopupTurns = computed(() => userTurns.value.slice(
+        popupWindowStart.value,
+        popupWindowStart.value + POPUP_WINDOW_SIZE,
+    ))
 
     /**
      * 面板可见性(对齐原版 _shouldShowTurnIndicator + _syncTurnIndicatorVisibility):
@@ -152,30 +173,9 @@
         return document.getElementById('messagesContainer')
     }
 
-    /** 用户消息 DOM 元素解析(带缓存,对齐原版 bindTurnIndicatorDomElements 的 domElement 复用) */
-    function resolveMessageElement(messageIndex: number): HTMLElement | null {
-        const cached = state.elementCache.get(messageIndex)
-
-        if (cached && cached.isConnected) {
-            return cached
-        }
-
-        const container = getMessagesContainer()
-        const element = container
-            ? container.querySelector<HTMLElement>(`.message.user[data-index="${messageIndex}"]`)
-            : null
-
-        if (element) {
-            state.elementCache.set(messageIndex, element)
-        }
-
-        return element
-    }
-
     /**
      * 重建中心点缓存(对齐原版 rebuildTurnIndicatorLayoutCacheChunked 的单遍批量策略):
-     * 先解析全部元素(querySelector 不触发重排),再单遍读取相对于滚动区的矩形,
-     * 整轮只强制一次重排
+     * 一次查出当前已渲染的用户消息，再按消息顺序单遍读取矩形，避免每轮重复 querySelector。
      */
     function rebuildCentersCache(): boolean {
         const container = getMessagesContainer()
@@ -192,19 +192,26 @@
         }
 
         const viewport = readChatScrollViewport(container)
-        const elements: (HTMLElement | null)[] = new Array(turns.length)
+        const elementsByMessageIndex = new Map<number, HTMLElement>()
+
+        container.querySelectorAll<HTMLElement>('.message.user[data-index]').forEach((element) => {
+            const messageIndex = Number(element.dataset.index)
+
+            if (Number.isInteger(messageIndex)) {
+                elementsByMessageIndex.set(messageIndex, element)
+            }
+        })
+
+        const centers: Array<{ turnIndex: number; center: number }> = []
 
         for (let index = 0; index < turns.length; index++) {
-            elements[index] = resolveMessageElement(turns[index].index)
-        }
-
-        const centers: (number | null)[] = new Array(turns.length)
-
-        for (let index = 0; index < turns.length; index++) {
-            const element = elements[index]
+            const element = elementsByMessageIndex.get(turns[index].index)
 
             const bounds = element ? readChatScrollElementBounds(viewport, element) : null
-            centers[index] = bounds ? bounds.top + bounds.height / 2 : null
+
+            if (bounds) {
+                centers.push({ turnIndex: index, center: bounds.top + bounds.height / 2 })
+            }
         }
 
         state.centers = centers
@@ -214,8 +221,8 @@
     }
 
     /**
-     * 按视口位置查找激活轮次(对齐原版 findActiveTurnIndexByViewportMiddle):
-     * 取最后一个中心点 ≤ viewportMiddle 的轮次;全部在其下方时回落首个已加载轮次
+     * 按视口位置二分查找激活轮次：返回最后一个中心点不超过视口中线的轮次；
+     * 如果已加载的轮次都在中线下方，则返回首个已加载轮次。
      */
     function findActiveTurnIndex(viewportMiddle: number): number {
         const centers = state.centers
@@ -224,29 +231,22 @@
             return -1
         }
 
-        let firstLoadedIndex = -1
-        let activeIndex = -1
+        let low = 0
+        let high = centers.length
 
-        for (let index = 0; index < centers.length; index++) {
-            const center = centers[index]
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2)
 
-            if (center === null || !Number.isFinite(center)) {
-                continue
+            if (centers[middle].center <= viewportMiddle) {
+                low = middle + 1
+            } else {
+                high = middle
             }
-
-            if (firstLoadedIndex < 0) {
-                firstLoadedIndex = index
-            }
-
-            if (center <= viewportMiddle) {
-                activeIndex = index
-                continue
-            }
-
-            break
         }
 
-        return activeIndex >= 0 ? activeIndex : firstLoadedIndex
+        const activeCenterIndex = Math.max(0, low - 1)
+
+        return centers[activeCenterIndex].turnIndex
     }
 
     /**
@@ -304,16 +304,49 @@
                 return
             }
 
-            container.scrollTo({
-                top: targetTop,
-                behavior: animate ? 'smooth' : 'auto'
-            })
+            if (animate) {
+                container.scrollTo({ top: targetTop, behavior: 'smooth' })
+            } else {
+                // 被动跟随消息滚动时必须立即定位；CSS smooth 会让小型指示器反复追赶主滚动区。
+                container.scrollTop = targetTop
+            }
         })
+    }
+
+    /** 激活轮次变化只改前后两项的 class，避免每帧重渲染完整历史的两份列表。 */
+    function syncActiveTurnClasses(): void {
+        const lineContainer = linesEl.value
+        const popup = popupEl.value
+
+        state.activeLineElement?.classList.remove('active')
+        state.activePopupElement?.classList.remove('active')
+        state.activeLineElement = null
+        state.activePopupElement = null
+
+        const index = activeTurnIndex.value
+
+        if (index < 0) {
+            return
+        }
+
+        const line = lineContainer?.children.item(index)
+        const popupItem = popup?.querySelector(`[data-turn-index="${index}"]`)
+
+        if (line) {
+            line.classList.add('active')
+            state.activeLineElement = line
+        }
+
+        if (popupItem) {
+            popupItem.classList.add('active')
+            state.activePopupElement = popupItem
+        }
     }
 
     /** 设置激活轮次(更新高亮;跳转/新增走居中,滚动跟随走最小可见滚动) */
     function setActiveTurnLine(index: number, options: TurnUpdateOptions = {}): void {
         activeTurnIndex.value = index
+        syncActiveTurnClasses()
 
         if (options.forceScroll) {
             scrollActiveLineIntoView(!!options.animate, 'center')
@@ -421,6 +454,7 @@
 
     /** 显示预览弹层(对齐原版 showTurnListPopup:清除隐藏定时器 + 激活项滚动居中) */
     function showTurnListPopup(): void {
+        const renderStartedAt = performance.now()
         popupVisible.value = true
 
         // 激活项居中(对齐原版常量:项高 34px / 顶部留白 8px / 弹层高 360px)
@@ -431,14 +465,45 @@
                 return
             }
 
-            const ITEM_H = 34
-            const PAD = 8
-            const POPUP_HEIGHT = 360
-            const itemTop = PAD + activeTurnIndex.value * ITEM_H
+            popup.scrollTop = Math.max(
+                0,
+                8 + activeTurnIndex.value * POPUP_ITEM_HEIGHT
+                    + (POPUP_ITEM_HEIGHT / 2) - (popup.clientHeight / 2),
+            )
+            handlePopupScroll()
 
-            popup.scrollTop = itemTop - (POPUP_HEIGHT / 2) + (ITEM_H / 2)
+            if (userTurns.value.length >= 100) {
+                console.debug('[TurnIndicatorPanel] Preview rendered', {
+                    turnCount: userTurns.value.length,
+                    renderedItems: popup.querySelectorAll('.turn-indicator-popup-item').length,
+                    elapsedMs: Number((performance.now() - renderStartedAt).toFixed(2)),
+                })
+            }
         })
     }
+
+    /** 根据弹层滚动位置更新虚拟窗口，保留完整滚动高度与跳转索引。 */
+    function handlePopupScroll(): void {
+        const popup = popupEl.value
+
+        if (!popup) {
+            return
+        }
+
+        const firstVisibleIndex = Math.max(0, Math.floor((popup.scrollTop - 8) / POPUP_ITEM_HEIGHT))
+        const nextStart = Math.max(0, firstVisibleIndex - POPUP_OVERSCAN)
+
+        if (nextStart !== popupWindowStart.value) {
+            popupWindowStart.value = Math.min(
+                nextStart,
+                Math.max(0, userTurns.value.length - POPUP_WINDOW_SIZE),
+            )
+        }
+    }
+
+    watch(popupWindowStart, () => {
+        void nextTick(syncActiveTurnClasses)
+    })
 
     function hideTurnListPopup(): void {
         popupVisible.value = false
@@ -494,21 +559,6 @@
     }
 
     /**
-     * 消息内容变化(流式增长/编辑/删除):仅标记布局脏,不做 DOM 测量。
-     * 实际重建合并到下次 active 更新/轮次变化时的 rAF,避免流式期间逐帧重排。
-     * 注意:面板吃的是全量 turns,但中心点依赖"窗口化消息"的 DOM 元素;
-     * 仅监听 turns 会在向前补载(切换/跳转触发 conversationStore.messages 变化)时
-     * 漏掉重建,导致新加载区域的轮次中心点恒为 null、激活判定错位。故同时监听窗口消息。
-     */
-    watch(
-        () => [props.messages, conversationStore.messages],
-        () => {
-            state.layoutDirty = true
-        },
-        { deep: true }
-    )
-
-    /**
      * 轮次列表变化(对齐原版 appendTurnIndicatorLine / renderTurnIndicator 的分流):
      *   - 用户轮次增加:仍以实际阅读区域计算激活轮次,只让指示线居中(forceScroll)
      *   - 减少/替换(删除消息/切换会话):重建缓存后重算激活态
@@ -522,10 +572,12 @@
 
             if (!panelVisible.value) {
                 activeTurnIndex.value = -1
+                syncActiveTurnClasses()
                 hideTurnListPopup()
                 return
             }
 
+            syncActiveTurnClasses()
             scheduleLayoutRefresh({ animate: false, forceScroll: turns.length > previousLength })
         })
     })
@@ -534,6 +586,7 @@
     watch(panelVisible, (visible) => {
         if (!visible) {
             activeTurnIndex.value = -1
+            syncActiveTurnClasses()
             hideTurnListPopup()
             return
         }

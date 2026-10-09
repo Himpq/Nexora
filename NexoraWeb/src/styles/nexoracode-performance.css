@@ -1,0 +1,42 @@
+.nc-performance-report {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 20000;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: min(640px, calc(100vw - 32px));
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    font-size: 13px;
+}
+
+.nc-performance-report textarea {
+    width: 100%;
+    height: min(300px, 45vh);
+    resize: none;
+    padding: 10px;
+    border: 1px solid var(--color-border-input);
+    border-radius: 6px;
+    background: var(--color-bg-sunken);
+    color: var(--color-text-primary);
+    font: 12px/1.5 Consolas, monospace;
+}
+
+.nc-performance-report button {
+    align-self: flex-end;
+    padding: 6px 16px;
+    border: 1px solid var(--color-border-input);
+    border-radius: 6px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    cursor: pointer;
+}
+
+.nc-performance-report button:hover {
+    background: var(--color-bg-hover);
+}

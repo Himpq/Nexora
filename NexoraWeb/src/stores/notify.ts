@@ -7,15 +7,16 @@
  */
 
 type ToastType = 'info' | 'success' | 'warning' | 'error'
+type ToastAppearance = { color: string; icon: string }
 
-const TOAST_STYLE: Record<ToastType, { color: string; icon: string }> = {
+const TOAST_STYLE: Record<ToastType, ToastAppearance> = {
     info: { color: '#2080f0', icon: 'fa-circle-info' },
     success: { color: '#18a058', icon: 'fa-circle-check' },
     warning: { color: '#f0a020', icon: 'fa-triangle-exclamation' },
     error: { color: '#d03050', icon: 'fa-circle-xmark' },
 }
 
-export function showToast(content: string, type: ToastType = 'info'): void {
+export function showToast(content: string, type: ToastType = 'info', appearance?: ToastAppearance): void {
     const root = document.getElementById('nexora-toast-root')
 
     if (!root) {
@@ -25,14 +26,20 @@ export function showToast(content: string, type: ToastType = 'info'): void {
     }
 
     const toast = document.createElement('div')
+    const style = appearance || TOAST_STYLE[type]
 
     toast.className = 'nexora-toast'
-    toast.style.borderLeftColor = TOAST_STYLE[type].color
+    toast.style.borderLeftColor = style.color
 
-    toast.innerHTML = `
-        <i class="fa-solid ${TOAST_STYLE[type].icon}" aria-hidden="true" style="color:${TOAST_STYLE[type].color}"></i>
-        <span>${escapeHtml(content)}</span>
-    `
+    const icon = document.createElement('i')
+    icon.className = `fa-solid ${style.icon}`
+    icon.setAttribute('aria-hidden', 'true')
+    icon.style.color = style.color
+
+    const message = document.createElement('span')
+    message.textContent = content
+
+    toast.append(icon, message)
 
     root.appendChild(toast)
 
@@ -45,13 +52,4 @@ export function showToast(content: string, type: ToastType = 'info'): void {
 
 export function showError(content: string): void {
     showToast(content, 'error')
-}
-
-/** 基础 HTML 转义,防止 toast 内容注入 */
-function escapeHtml(text: string): string {
-    const div = document.createElement('div')
-
-    div.textContent = text
-
-    return div.innerHTML
 }

@@ -18,6 +18,10 @@
     pointer-events: none;
 }
 
+html.nc-titlebar-ready #nexora-toast-root {
+    top: calc(var(--nc-titlebar-h) + var(--gddp-header-height) + 16px);
+}
+
 .nexora-toast {
     display: flex;
     align-items: center;

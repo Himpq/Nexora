@@ -1615,7 +1615,6 @@ body.notes-companion-mode .sidebar,body.notes-companion-mode .chat-header{
     padding: 4px 7px;
     border-radius: 10px;
     background: var(--color-bg-elevated);
-    backdrop-filter: saturate(140%) blur(2px);
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
     transform: translateY(4px) scale(0.98);
     transition: opacity 0.16s ease, transform 0.16s ease;
@@ -2059,6 +2058,9 @@ body.learning-course-workspace-active .sidebar-header{
     color: var(--color-text-secondary);
     font-size: 13px;
     line-height: 1.65;
+    /* 权限摘要是包含命令、路径的多行纯文本，必须保留后端换行。 */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .question-card-choices{
@@ -2159,6 +2161,9 @@ body.learning-course-workspace-active .sidebar-header{
 }
 
 .turn-indicator-popup-item{
+    /* 与预览虚拟窗口的 34px 行高保持一致，避免累计滚动位置误差。 */
+    height: 34px;
+    box-sizing: border-box;
     padding: 8px 14px;
     font-size: 13px;
     color: var(--color-text-secondary);
@@ -2213,8 +2218,6 @@ body.learning-course-workspace-active .sidebar-header{
     overflow-x: hidden;
     scrollbar-width: none;
     -ms-overflow-style: none;
-    scroll-behavior: smooth;
-    scroll-snap-type: y proximity;
 }
 
 .turn-indicator-lines::-webkit-scrollbar{
@@ -2227,10 +2230,9 @@ body.learning-course-workspace-active .sidebar-header{
     height: 3px;
     background: var(--color-scrollbar-thumb);
     border-radius: 1px;
-    transition: background-color 0.4s ease;
+    transition: background-color 0.12s ease;
     cursor: pointer;
     flex: 0 0 auto;
-    scroll-snap-align: center;
 }
 
 .turn-indicator-line.active{
