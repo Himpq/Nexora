@@ -614,6 +614,25 @@
         }
     }
 
+    /** 内容分段(顺序结构:思考与正文按输出时序交错) */
+    const contentSegments = computed<MessageSegment[]>(() => {
+        const segments = props.message.segments
+
+        return Array.isArray(segments) ? segments : []
+    })
+
+    /**
+     * 当前生效的上下文压缩步骤:
+     * 流式阶段优先读本地 compressionStep(store 由 context_compression_status 块驱动),
+     * 历史回放回退到 metadata.process_steps 中的最后一条,保证重载/收尾后卡片不消失。
+     *
+     * 必须定义在 renderItems 之前:renderItems 会读取它，而 computed 首次求值
+     * 可能早于下方定义，导致 TDZ（Cannot access before initialization）。
+     */
+    const compressionStep = computed<ContextCompressionStep | null>(() => {
+        return resolveActiveContextCompressionStep(props.message)
+    })
+
     /**
      * 分段 → 渲染项:
      * 思考/正文逐段直出;function_call 开一行工具流程节点,function_result 按
@@ -929,13 +948,6 @@
         void submitQuestionAnswer(item, draft)
         setOtherDraft(item.sourceIndex, '')
     }
-
-    /** 内容分段(顺序结构:思考与正文按输出时序交错) */
-    const contentSegments = computed<MessageSegment[]>(() => {
-        const segments = props.message.segments
-
-        return Array.isArray(segments) ? segments : []
-    })
 
     /**
      * 正在输出的思考段索引(滚动窗口标题的判定依据):
@@ -1485,15 +1497,6 @@
         const tokens = ioTokens.value
 
         return tokens.input > 0 || tokens.output > 0 || tokens.rawInput > 0
-    })
-
-    /**
-     * 当前生效的上下文压缩步骤:
-     * 流式阶段优先读本地 compressionStep(store 由 context_compression_status 块驱动),
-     * 历史回放回退到 metadata.process_steps 中的最后一条,保证重载/收尾后卡片不消失。
-     */
-    const compressionStep = computed<ContextCompressionStep | null>(() => {
-        return resolveActiveContextCompressionStep(props.message)
     })
 
     /**
