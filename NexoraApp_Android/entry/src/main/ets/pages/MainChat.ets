@@ -1396,6 +1396,34 @@ export struct MainChat {
         }
     }
 
+    /** 本机任务在远端打开时重建当前轮消息，并从事件序号零接管进度。 */
+    private restoreRemoteTask(task: RemoteTaskSession): void {
+        const userCount: number = this.messages.filter((message: ChatMessage): boolean => message.isUser).length;
+        const lastUser: ChatMessage | undefined = [...this.messages].reverse()
+            .find((message: ChatMessage): boolean => message.isUser);
+        const currentUserSaved: boolean = task.historyUserCount !== null
+            ? userCount > task.historyUserCount
+            : lastUser?.content === task.message;
+
+        if (!task.isRegenerate && task.message.length > 0 && !currentUserSaved) {
+            const userMessage: ChatMessage = ChatMessage.createUser(task.message);
+            userMessage.index = this.messages.length;
+            this.messages = [...this.messages, userMessage];
+            this.itemSource.appendItems(this.buildItems([userMessage]));
+        }
+
+        const assistant: ChatMessage = ChatMessage.createAssistant();
+        assistant.index = this.messages.length;
+        this.messages = [...this.messages, assistant];
+        this.itemSource.appendItems(this.buildItems([assistant]));
+        this.rebuildItemIndex();
+        this.remoteStreamId = task.streamId;
+        this.remoteCursor = 0;
+        this.streaming = true;
+        this.startRemotePolling();
+        this.scrollToEnd('remote-task-restore', true);
+    }
+
     /** 远程任务的增量事件更新同一条 ChatMessage，并经主聊天的数据源刷新对应渲染块。 */
     private async sendRemoteMessage(text: string): Promise<void> {
         if (this.streaming || this.remoteDeviceId.length === 0) {
