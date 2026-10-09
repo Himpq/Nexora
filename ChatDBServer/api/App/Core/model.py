@@ -1954,7 +1954,7 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
             try:
                 pending_key = str(call_id or "").strip() or f"{function_name}:{int(time.time()*1000)}:{uuid.uuid4().hex[:6]}"
                 # 仅对需要展示的工具生成完整渲染，避免无谓开销
-                if function_name in {"exa_web_search", "search"}:
+                if function_name in {"exa_web_search", "exa_get_contents", "search"}:
                     full_args = args if isinstance(args, dict) else {}
                     display_md = self._model_visible_function_result(function_name, raw_result, full_args)
                     # 若渲染结果与原始不同且非空，则缓存为展示用
@@ -2456,6 +2456,7 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
             "memory_short_update",
             "memory_short_add",
             "exa_web_search",
+            "exa_get_contents",
             "knowledge_basis_create",
             "knowledge_basis_delete",
             "knowledge_basis_update",
@@ -2586,6 +2587,7 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
 
         no_truncate_tools = {
             "exa_web_search",
+            "exa_get_contents",
             "knowledge_basis_read",
             "knowledge_list",
             "search",

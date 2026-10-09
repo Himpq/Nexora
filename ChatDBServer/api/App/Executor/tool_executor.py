@@ -60,6 +60,7 @@ class ToolExecutor:
             "longterm_update": self._longterm_update,
             "search": self._unified_search,
             "exa_web_search": self._exa_web_search,
+            "exa_get_contents": self._exa_get_contents,
             "server_render_page": self._server_render_page,
             "generate_image": self._generate_image,
             "knowledge_search_keyword": self._search_keyword,
@@ -2039,14 +2040,8 @@ class ToolExecutor:
         include_domains = args.get("include_domains", args.get("includeDomains"))
         exclude_domains = args.get("exclude_domains", args.get("excludeDomains"))
 
-        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
-
         try:
-            from App.Search.config import get_provider_config
-            from App.Search.factory import create_search_provider
-
-            provider_cfg = get_provider_config(cfg, "exa")
-            provider = create_search_provider("exa", provider_cfg)
+            provider = self._create_exa_provider()
 
             kwargs: Dict[str, Any] = {"num_results": num_results}
 
@@ -2124,6 +2119,50 @@ class ToolExecutor:
         # 结构化输出透传（若提供方返回 output）
         if isinstance(result.raw, dict) and result.raw.get("output"):
             payload["output"] = result.raw.get("output")
+
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _create_exa_provider(self):
+        """Create the Exa provider from the current model configuration."""
+
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+
+        from App.Search.config import get_provider_config
+        from App.Search.factory import create_search_provider
+
+        provider_cfg = get_provider_config(cfg, "exa")
+
+        return create_search_provider("exa", provider_cfg)
+
+    def _exa_get_contents(self, args: Dict[str, Any]) -> str:
+        """Retrieve and return the full extracted text for one Exa page URL."""
+
+        target_url = str(args.get("url", "") or "").strip()
+
+        if not target_url:
+            return json.dumps({"success": False, "provider": "exa", "error": "url is required"}, ensure_ascii=False)
+
+        if len(target_url) > 2048:
+            return json.dumps({"success": False, "provider": "exa", "url": target_url, "error": "url exceeds 2048 characters"}, ensure_ascii=False)
+
+        try:
+            parsed_url = urlsplit(target_url)
+
+        except ValueError:
+            return json.dumps({"success": False, "provider": "exa", "url": target_url, "error": "invalid URL"}, ensure_ascii=False)
+
+        if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.hostname:
+            return json.dumps({"success": False, "provider": "exa", "url": target_url, "error": "url must be an absolute http or https URL"}, ensure_ascii=False)
+
+        if parsed_url.username or parsed_url.password:
+            return json.dumps({"success": False, "provider": "exa", "url": target_url, "error": "URL credentials are not allowed"}, ensure_ascii=False)
+
+        try:
+            provider = self._create_exa_provider()
+            payload = provider.get_contents(target_url)
+
+        except Exception as exc:
+            return json.dumps({"success": False, "provider": "exa", "url": target_url, "error": str(exc)}, ensure_ascii=False)
 
         return json.dumps(payload, ensure_ascii=False)
 

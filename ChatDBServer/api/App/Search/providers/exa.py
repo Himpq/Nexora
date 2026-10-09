@@ -249,6 +249,109 @@ class ExaSearchProvider(SearchProvider):
             },
         )
 
+    def get_contents(self, url: str) -> Dict[str, Any]:
+        """Use the official Exa SDK to retrieve a page's full extracted text."""
+
+        target_url = str(url or "").strip()
+
+        if not target_url:
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": target_url,
+                "error": "url is required",
+            }
+
+        cfg = self.provider_config if isinstance(self.provider_config, dict) else {}
+        api_key = resolve_exa_api_key(cfg)
+
+        if not api_key:
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": target_url,
+                "error": "missing EXA_API_KEY: 请在 web_search.providers.exa.api_key 或环境变量 EXA_API_KEY 中配置",
+            }
+
+        base_url = str(cfg.get("base_url") or "https://api.exa.ai").strip().rstrip("/")
+
+        try:
+            timeout_seconds = float(cfg.get("timeout", 20) or 20)
+
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": target_url,
+                "error": "invalid Exa timeout configuration",
+            }
+
+        livecrawl_timeout = int(max(1.0, min(timeout_seconds, 90.0)) * 1000)
+
+        try:
+            from exa_py import Exa
+
+            client = Exa(api_key=api_key, base_url=base_url)
+            response = client.get_contents(
+                target_url,
+                text={"verbosity": "full"},
+                max_age_hours=0,
+                livecrawl_timeout=livecrawl_timeout,
+            )
+
+        except Exception as exc:
+            logger.error(f"Exa get contents request failed: {exc}")
+
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": target_url,
+                "error": f"request failed: {exc}",
+            }
+
+        results = getattr(response, "results", None) or []
+        statuses = getattr(response, "statuses", None) or []
+        status = statuses[0] if statuses else None
+        status_value = str(getattr(status, "status", "") or "").strip()
+        source_value = str(getattr(status, "source", "") or "").strip()
+
+        if not results:
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": target_url,
+                "status": status_value,
+                "source": source_value,
+                "error": "Exa did not return page content",
+            }
+
+        page = results[0]
+        page_text = str(getattr(page, "text", "") or "")
+
+        if not page_text.strip():
+            return {
+                "success": False,
+                "provider": self.provider_name,
+                "url": str(getattr(page, "url", "") or target_url).strip(),
+                "title": str(getattr(page, "title", "") or "").strip(),
+                "status": status_value,
+                "source": source_value,
+                "error": "Exa returned empty page text",
+            }
+
+        return {
+            "success": True,
+            "provider": self.provider_name,
+            "url": str(getattr(page, "url", "") or target_url).strip(),
+            "title": str(getattr(page, "title", "") or "").strip(),
+            "author": str(getattr(page, "author", "") or "").strip(),
+            "published_date": str(getattr(page, "published_date", "") or "").strip(),
+            "status": status_value,
+            "source": source_value,
+            "content_length": len(page_text),
+            "text": page_text,
+        }
+
     def _build_contents(
         self,
         cfg: Dict[str, Any],

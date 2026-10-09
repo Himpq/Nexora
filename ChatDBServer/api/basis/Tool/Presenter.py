@@ -61,6 +61,7 @@ class ToolResultPresenter:
             "arxiv_search": self._render_arxiv_search,
             "search": self._render_unified_search,
             "exa_web_search": self._render_exa_web_search,
+            "exa_get_contents": self._render_exa_get_contents,
             "js_execute": self._render_js_execute,
             "client_js_exec": self._render_js_execute,
             "cloud_file_search_semantic": self._render_file_semantic_search,
@@ -3195,6 +3196,64 @@ class ToolResultPresenter:
         # 结构化输出（outputSchema）透传提示
         if isinstance(payload.get("output"), dict) and payload.get("output"):
             lines.extend(["", "### Structured Output", "", self._fenced_text(json.dumps(payload.get("output"), ensure_ascii=False, indent=2), language="json", limit=3000)])
+
+        return "\n".join(lines).strip()
+
+    def _render_exa_get_contents(self, args: Dict[str, Any], result: Any) -> str:
+        """Render the complete Exa page text with its source metadata."""
+
+        payload = self._load_payload(result)
+
+        if not isinstance(payload, dict):
+            return "\n".join([
+                "## Exa 网页全文读取失败",
+                "",
+                self._markdown_body(str(result or "").strip() or "未知错误", limit=4000),
+            ]).strip()
+
+        success = payload.get("success", True) is not False
+        title = str(payload.get("title") or "").strip()
+        url = str(payload.get("url") or args.get("url") or "").strip()
+        content = str(payload.get("text") or "")
+        lines = [
+            self._status_title(success, "## Exa 网页全文", "## Exa 网页全文读取失败"),
+            "",
+        ]
+
+        if title:
+            lines.append(f"- 标题：{title}")
+
+        if url:
+            lines.append(f"- 来源：{url}")
+
+        author = str(payload.get("author") or "").strip()
+        published_date = str(payload.get("published_date") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        source = str(payload.get("source") or "").strip()
+
+        if author:
+            lines.append(f"- 作者：{author}")
+
+        if published_date:
+            lines.append(f"- 发布日期：{published_date}")
+
+        if status or source:
+            lines.append(f"- Exa 状态：{' / '.join(value for value in (status, source) if value)}")
+
+        if not success:
+            error = str(payload.get("error") or payload.get("message") or "未知错误").strip()
+            lines.extend(["", f"- 原因：{error}"])
+
+            return "\n".join(lines).strip()
+
+        lines.extend(["", f"- 正文长度：{len(content)} 字符", "", "### 正文", ""])
+
+        if content:
+            lines.append("> 以下内容为网页提取正文，作为来源资料阅读。")
+            lines.extend(["", self._fenced_text(content, language="markdown", limit=len(content))])
+
+        else:
+            lines.append("(页面没有提取到正文)")
 
         return "\n".join(lines).strip()
 

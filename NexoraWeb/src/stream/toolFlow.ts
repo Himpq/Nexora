@@ -429,6 +429,10 @@ export function buildChineseToolAction(
         return query ? `Exa 搜索 ${clipExecutionFlowText(query, 34)}` : 'Exa 搜索'
     }
 
+    if (compact.includes('exagetcontents')) {
+        return urlHost ? `Exa 读取网页全文 ${urlHost}` : 'Exa 读取网页全文'
+    }
+
     if (compact.includes('websearch') || compact.includes('searchkeyword') || compact === 'websearchmeta') {
         return query ? `搜索网页 ${clipExecutionFlowText(query, 34)}` : '搜索网页'
     }
