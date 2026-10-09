@@ -135,14 +135,6 @@
                     </div>
                 </template>
 
-                <!-- Modified Injection 卡片:显式展示本轮 tail volatile 注入块。
-                     仅 NexoraCode 本地模式渲染:网页版后端不发 context_injection,
-                     且此门控保证网页版渲染路径完全不变。 -->
-                <ContextInjectionCard
-                    v-if="nexoracode && injectionStep"
-                    :step="injectionStep"
-                />
-
                 <!--
                     内容分段顺序渲染(思考/正文/工具链按输出时序交错):
                     思考行与工具行共用执行流程时间线形态;
@@ -150,9 +142,16 @@
                     工具行为时间线节点 + 中文动作标题。
                 -->
                 <template v-for="item in renderItems" :key="`${item.kind}-${item.sourceIndex}`">
-                    <!-- 上下文压缩卡片:按事件时序 append 进内容流(对齐原版 appendToolEvent) -->
+                    <!-- 上下文压缩卡片:append 到内容流末尾 -->
                     <ContextCompressionCard
                         v-if="item.kind === 'compression'"
+                        :step="item.step"
+                    />
+
+                    <!-- Modified Injection 卡片:仅 NexoraCode 本地模式渲染;
+                         网页版后端不发 context_injection,此门控保证网页版渲染路径不变。 -->
+                    <ContextInjectionCard
+                        v-else-if="item.kind === 'injection' && nexoracode"
                         :step="item.step"
                     />
 
@@ -550,14 +549,21 @@
         payload: QuestionPayload
     }
 
-    /** 上下文压缩卡片渲染项:按事件时序 append 进内容流(对齐原版 appendToolEvent) */
+    /** 上下文压缩卡片渲染项:按 append 语义追加到内容流末尾 */
     interface CompressionRenderItem {
         kind: 'compression'
         sourceIndex: number
         step: ContextCompressionStep
     }
 
-    type RenderItem = TextRenderItem | ToolRenderItem | QuestionRenderItem | CompressionRenderItem
+    /** Modified Injection 卡片渲染项:同样按 append 语义追加到内容流末尾 */
+    interface InjectionRenderItem {
+        kind: 'injection'
+        sourceIndex: number
+        step: ContextInjectionStep
+    }
+
+    type RenderItem = TextRenderItem | ToolRenderItem | QuestionRenderItem | CompressionRenderItem | InjectionRenderItem
 
     /** 参数 JSON 美化(非 JSON 文本原样展示,对齐原版 formatToolArgsForOutput) */
     function prettyToolArgs(raw: string): string {
@@ -634,18 +640,23 @@
     })
 
     /**
+     * 当前生效的 Modified Injection 诊断:
+     * 流式阶段优先读本地 injectionStep(store 由 context_injection 块驱动),
+     * 历史回放回退到 metadata.context_injection,保证重载/收尾后卡片不消失。
+     *
+     * 同样必须定义在 renderItems 之前,避免 TDZ。
+     */
+    const injectionStep = computed<ContextInjectionStep | null>(() => {
+        return resolveActiveContextInjectionStep(props.message)
+    })
+
+    /**
      * 分段 → 渲染项:
      * 思考/正文逐段直出;function_call 开一行工具流程节点,function_result 按
      * callId 回溯配对到最近的未填结果调用行(无匹配时独立成行,不丢数据)。
      */
     const renderItems = computed<Array<RenderItem>>(() => {
         const items: Array<RenderItem> = []
-
-        // 上下文压缩卡片：压缩在本轮首轮请求前执行，因此按事件时序 append 在
-        // 内容流最前（对齐原版 appendToolEvent 的追加语义，而非固定钉在回复顶部）。
-        if (compressionStep.value) {
-            items.push({ kind: 'compression', sourceIndex: -1, step: compressionStep.value })
-        }
 
         contentSegments.value.forEach((segment, sourceIndex) => {
             if (segment.type === 'function_call') {
@@ -764,6 +775,16 @@
 
             items.push({ kind: segment.type, segment, sourceIndex })
         })
+
+        // 压缩卡片与注入卡片：按 append 语义追加到内容流末尾（对齐原版 appendToolEvent
+        // 的追加行为），而不是固定钉在回复顶部。
+        if (compressionStep.value) {
+            items.push({ kind: 'compression', sourceIndex: Number.MAX_SAFE_INTEGER, step: compressionStep.value })
+        }
+
+        if (injectionStep.value) {
+            items.push({ kind: 'injection', sourceIndex: Number.MAX_SAFE_INTEGER - 1, step: injectionStep.value })
+        }
 
         return items
     })
@@ -1497,15 +1518,6 @@
         const tokens = ioTokens.value
 
         return tokens.input > 0 || tokens.output > 0 || tokens.rawInput > 0
-    })
-
-    /**
-     * 当前生效的 Modified Injection 诊断:
-     * 流式阶段优先读本地 injectionStep(store 由 context_injection 块驱动),
-     * 历史回放回退到 metadata.context_injection,保证重载/收尾后卡片不消失。
-     */
-    const injectionStep = computed<ContextInjectionStep | null>(() => {
-        return resolveActiveContextInjectionStep(props.message)
     })
 
     /** 读 metadata 字符串字段 */
