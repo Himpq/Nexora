@@ -607,7 +607,8 @@ def _stream_chat_generator(stream_id: str) -> Generator[str, None, None]:
 
 @_local_bp.route("/api/chat/stream", methods=["POST"])
 def local_agent_chat_stream():
-    body = request.get_json(silent=True) or {}
+    raw_body = request.get_json(silent=True)
+    body = raw_body if isinstance(raw_body, dict) else {}
     conversation_id = str(body.get("conversation_id") or "").strip()
     model_name = str(body.get("model_name") or "").strip()
     message = str(body.get("message") or "").strip()
