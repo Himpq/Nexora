@@ -49,7 +49,7 @@
             {{ centerTitle }}
         </div>
 
-        <div class="header-right">
+        <div v-if="!nexoracode" class="header-right">
             <!-- 右侧工具常驻,视图覆盖时仍可打开聊天快捷侧栏。 -->
                 <button class="btn-icon notes-toggle-btn" id="toggleNotesPanel" title="笔记" @click="emit('open-notes')">
                     <!-- transform 为光学校正:原图形 y3..21 且重心偏左(cx≈10),归一到 y≈3.5..20.5、水平居中 -->
@@ -154,6 +154,7 @@ const emit = defineEmits<{
 
     const props = withDefaults(defineProps<{
         models: ModelItem[]
+        nexoracode?: boolean
         knowledgeTitle?: string
         /** 当前视图:chat(默认) | files | workspaces | knowledge | knowledge-mgmt | mail | learning */
         view?: 'chat' | 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'
@@ -162,6 +163,7 @@ const emit = defineEmits<{
         /** 覆盖标题的悬停说明(如「只读共享 · @owner」) */
         overrideTitleTooltip?: string
     }>(), {
+        nexoracode: false,
         view: 'chat',
         knowledgeTitle: '',
         overrideTitle: '',

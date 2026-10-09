@@ -1,0 +1,137 @@
+/* Teleport 菜单直接继承 html 的 GDDP 令牌，与输入区使用同一套明暗色。 */
+.nc-permission-switcher {
+    position: relative;
+    z-index: 24;
+}
+
+.nc-permission-switcher .permission-switcher-trigger {
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.nc-permission-switcher .permission-switcher-trigger:hover,
+.nc-permission-switcher .permission-switcher-trigger[aria-expanded="true"] {
+    border-color: var(--color-border);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+}
+
+.nc-permission-switcher .permission-switcher-trigger:disabled {
+    cursor: wait;
+    opacity: 0.62;
+}
+
+.nc-permission-switcher-menu {
+    position: fixed;
+    z-index: 2000;
+    width: min(300px, calc(100vw - 32px));
+    max-height: min(360px, calc(100vh - 16px));
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    box-shadow: 0 12px 34px rgba(18, 28, 42, 0.16);
+}
+
+.nc-permission-switcher-menu .permission-switcher-heading {
+    padding: 6px 9px 8px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option {
+    display: flex;
+    width: 100%;
+    min-height: 48px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 9px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option:hover:not(:disabled),
+.nc-permission-switcher-menu .permission-switcher-option[aria-checked="true"] {
+    background: var(--color-bg-hover);
+}
+
+.nc-permission-switcher-menu .permission-switcher-option[aria-checked="true"] {
+    background: var(--permission-tint);
+}
+
+.nc-permission-switcher-menu .permission-switcher-option:disabled {
+    cursor: not-allowed;
+    opacity: 0.72;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option-copy {
+    display: grid;
+    flex: 1 1 auto;
+    gap: 3px;
+    min-width: 0;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option-icon {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background: var(--permission-tint);
+    color: var(--permission-accent);
+    font-size: 14px;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option-copy strong {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.nc-permission-switcher-menu .permission-switcher-option-copy small,
+.nc-permission-switcher-menu .permission-switcher-note,
+.nc-permission-switcher-menu .permission-switcher-feedback {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.nc-permission-switcher-menu .permission-switcher-note,
+.nc-permission-switcher-menu .permission-switcher-feedback {
+    margin: 6px 9px 4px;
+}
+
+.nc-permission-switcher-menu .permission-switcher-feedback {
+    color: var(--color-danger-text);
+}
+
+.nc-permission-switcher-menu .permission-switcher-check {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    color: var(--permission-accent);
+}
+
+.nexoracode-local-app .nc-brand-dot::after {
+    content: none;
+    animation: none;
+}

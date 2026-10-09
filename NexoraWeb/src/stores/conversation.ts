@@ -213,18 +213,19 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /** 确保存在会话 ID;为空时调用后端创建(发送路径使用) */
-        async ensureConversationId(): Promise<string> {
+        async ensureConversationId(metadata?: Record<string, unknown>): Promise<string> {
             if (this.currentId) {
                 return this.currentId
             }
 
-            const result = await createConversation()
+            const result = await createConversation({ metadata })
 
             this.currentId = result.conversation_id
 
             this.conversations.unshift({
                 id: result.conversation_id,
                 title: result.title,
+                metadata,
             })
 
             return this.currentId

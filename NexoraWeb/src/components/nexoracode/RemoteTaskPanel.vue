@@ -32,6 +32,7 @@
                 :key="message.index"
                 :message="message"
                 :streaming="message.status === 'streaming'"
+                nexoracode
                 :conversation-id="store.conversationId"
                 readonly
                 @question-answer="(item, questionId, answer) => store.answerQuestion(item, questionId, answer)"

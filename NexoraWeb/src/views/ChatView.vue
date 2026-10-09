@@ -7,14 +7,15 @@
 -->
 
 <template>
-    <div class="app-container">
+    <div class="app-container" :class="{ 'nexoracode-local-app': isNexoraCode }">
         <!-- 浏览器实时同步通道:进入聊天页自动连接 /ws/browser,接收模型配置/通知等推送 -->
-        <BrowserSyncConnector />
+        <BrowserSyncConnector v-if="!isNexoraCode" />
 
         <Sidebar
             :collapsed="sidebarCollapsed"
-            :learning-enabled="learningEnabled"
-            :brand-mode="sidebarBrandMode"
+            :nexoracode="isNexoraCode"
+            :learning-enabled="!isNexoraCode && learningEnabled"
+            :brand-mode="isNexoraCode ? 'nexora' : sidebarBrandMode"
             :learning-nav-state="learningDashboardState"
             :learning-sidebar-view="learningSidebarView"
             :course-workspace="learningCourseState"
@@ -26,6 +27,7 @@
             @toggle-mobile="handleToggleMobile"
             @open-settings="handleOpenSettings"
             @open-chat="handleOpenLearningChat"
+            @new-project-chat="handleNewNexoraCodeProjectChat"
             @open-workspaces="handleOpenWorkspaces"
             @open-projects="openView('projects')"
             @open-files="handleOpenFileCenter"
@@ -44,6 +46,7 @@
             <!-- 宿主顶栏常驻:Learning 视图下保留模型选择(返回走品牌栏,此处只做模型切换) -->
             <ChatHeader
                 :models="modelStore.models"
+                :nexoracode="isNexoraCode"
                 :view="activeView"
                 :knowledge-title="knowledgeTitle"
                 :override-title="headerOverrideTitle"
@@ -112,6 +115,7 @@
                                         :streaming="isStreamingMessage(message)"
                                         :is-last-user-message="isLastUserMessage(message)"
                                         :conversation-id="conversationStore.currentId"
+                                        :nexoracode="isNexoraCode"
                                         @delete="handleDeleteMessage"
                                         @edit-save="handleEditUserMessage"
                                         @regenerate="handleRegenerate"
@@ -145,7 +149,7 @@
                     </div>
                 </ToolStageFocus>
 
-                <div v-show="filesCenterOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="filesCenterOpen" class="gddp-content-view">
                     <FilesCenterView
                         v-if="fileDetail === null"
                         :open="filesCenterOpen"
@@ -159,7 +163,7 @@
                     </section>
                 </div>
 
-                <div v-show="workspacesOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="workspacesOpen" class="gddp-content-view">
                     <!--
                         他人共享对话只读视图:覆盖显示在 Workspaces 内容层(与 Files 的 fileDetail 同模式)。
                         两分支必须 v-show 共存:WorkspacesView 卸载会连带销毁输入槽位,
@@ -200,7 +204,7 @@
                     />
                 </div>
 
-                <div v-show="knowledgeMgmtOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="knowledgeMgmtOpen" class="gddp-content-view">
                     <KnowledgeManagementView
                         :open="knowledgeMgmtOpen"
                         @close="backToChat"
@@ -208,18 +212,18 @@
                     />
                 </div>
 
-                <div v-show="overlay.view === 'projects'" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="overlay.view === 'projects'" class="gddp-content-view">
                     <RemoteTaskPanel @open-image="imageViewerUrl = $event" />
                 </div>
 
-                <div v-show="scheduledTasksOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="scheduledTasksOpen" class="gddp-content-view">
                     <ScheduledTasksView
                         :open="scheduledTasksOpen"
                         @open-knowledge="handleOpenKnowledgeDocument"
                     />
                 </div>
 
-                <div v-show="knowledgeOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="knowledgeOpen" class="gddp-content-view">
                     <KnowledgeViewer
                         :open="knowledgeOpen"
                         :title="knowledgeTitle"
@@ -227,7 +231,7 @@
                     />
                 </div>
 
-                <div v-show="mailCenterOpen" class="gddp-content-view">
+                <div v-if="!isNexoraCode" v-show="mailCenterOpen" class="gddp-content-view">
                     <MailCenterView
                         ref="mailViewRef"
                         :open="mailCenterOpen"
@@ -236,6 +240,7 @@
                 </div>
 
                 <LearningFrameView
+                    v-if="!isNexoraCode"
                     v-show="learningOpen"
                     ref="learningFrameRef"
                     :open="learningOpen"
@@ -248,29 +253,31 @@
             </div>
         </main>
 
-        <FilesPanel :open="filesPanelOpen" @close="closePanel('files')" @attach="handleAttachFile" />
+        <FilesPanel v-if="!isNexoraCode" :open="filesPanelOpen" @close="closePanel('files')" @attach="handleAttachFile" />
 
         <KnowledgePanel
+            v-if="!isNexoraCode"
             :open="knowledgePanelOpen"
             @close="closePanel('knowledge')"
             @open-document="handleOpenKnowledgeDocument"
             @document-deleted="handleKnowledgeDocumentDeleted"
         />
 
-        <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
+        <SettingsModal v-if="!isNexoraCode" :open="settingsOpen" @close="settingsOpen = false" />
 
         <KnowledgeSettingsModal
+            v-if="!isNexoraCode"
             :open="knowledgeSettingsOpen"
             :title="knowledgeTitle"
             @close="knowledgeSettingsOpen = false"
             @saved="handleKnowledgeSettingsSaved"
         />
 
-        <ChangesModal :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
+        <ChangesModal v-if="!isNexoraCode" :open="changesOpen" @close="changesOpen = false" @restored="handleTrashRestored" />
     
-    <RemoteConnectionModal :open="remoteConnectionOpen" @close="remoteConnectionOpen = false" />
+    <RemoteConnectionModal v-if="!isNexoraCode" :open="remoteConnectionOpen" @close="remoteConnectionOpen = false" />
 
-        <TokenDetailModal :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
+        <TokenDetailModal v-if="!isNexoraCode" :open="tokenDetailOpen" :conversation-id="conversationStore.currentId" @close="tokenDetailOpen = false" />
 
         <ImageViewer
             :open="imageViewerUrl !== ''"
@@ -279,6 +286,7 @@
         />
 
         <NotesPanel
+            v-if="!isNexoraCode"
             ref="notesPanelRef"
             :open="notesOpen"
             @close="notesOpen = false"
@@ -286,12 +294,14 @@
         />
 
         <SelectionContextMenu
+            v-if="!isNexoraCode"
             ref="selectionMenuRef"
             @add-note="handleAddNote"
             @explain="handleExplainSelection"
         />
 
         <GlobalSearch
+            v-if="!isNexoraCode"
             @new-conversation="handleSearchNewConversation"
             @open-conversation="handleSearchOpenConversation"
             @jump-to-message="handleSearchJumpToMessage"
@@ -316,6 +326,8 @@
     import { useUserStore } from '@/stores/user'
     import { getConversationWorkspace, notifyWorkspaceChanged, setConversationWorkspace } from '@/stores/workspace'
     import { DRAFT_TOOL_NAME } from '@/stream/draftCall'
+    import { buildQuestionCardId, clearQuestionLock, normalizeQuestionPermissionRequest } from '@/stream/questionCard'
+    import { readMessageIoTokens } from '@/stream/tokenBudget'
     import { useBottomFollow } from '@/composables/useBottomFollow'
     import { CHAT_SCROLL_LAYOUT_READY_EVENT, getChatScrollCenterTarget, isChatScrollLayoutReady } from '@/ui/chatScrollGeometry'
     import { readConversationIdFromLocation, useConversationUrlSync } from '@/composables/useConversationUrlSync'
@@ -324,6 +336,12 @@
     import { collapseMobileSidebar, isMobileSidebarOpen, isMobileViewport } from '@/ui/viewport'
     import { useLearningViewSync } from '@/composables/useLearningViewSync'
     import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
+    import {
+        grantLocalPathPermission,
+        openLocalSettings,
+        resolveLocalToolPermission,
+        type NexoraCodeProject,
+    } from '@/api/nexoracodeLocal'
 
     import ChatHeader from '@/components/ChatHeader.vue'
     import BrowserSyncConnector from '@/components/BrowserSyncConnector.vue'
@@ -367,6 +385,7 @@
     const toolStageReply = useCurrentToolStageReply()
     const modelStore = useModelStore()
     const userStore = useUserStore()
+    const isNexoraCode = import.meta.env.MODE === 'nexoracode'
 
     // 网络层快照内容源:进行中流的缓冲消息上下文由 store 提供(层只负责序列化/存储)
     chatStream.attachSnapshotSource(() => conversationStore.buildStreamSnapshots())
@@ -434,7 +453,25 @@
     // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
     useConversationUrlSync()
     // Learning 视图 ↔ URL ?view=learning 同步（与 cid 互不干扰）
-    useLearningViewSync()
+    if (!isNexoraCode) {
+        useLearningViewSync()
+    }
+
+    watch(() => conversationStore.currentId, (conversationId) => {
+        if (!isNexoraCode) {
+            return
+        }
+
+        try {
+            if (conversationId) {
+                localStorage.setItem('nexoracode.currentConversationId', conversationId)
+            } else {
+                localStorage.removeItem('nexoracode.currentConversationId')
+            }
+        } catch {
+            // 当前选择仍由 Pinia 持有;浏览器存储不可用时不影响会话切换。
+        }
+    })
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */
     const fileDetail = ref<CloudFileItem | null>(null)
@@ -538,8 +575,8 @@
     }
 
     /** 内容级视图统一由浮层协调器(GDDP)单一状态机管理,切换时彼此互斥 */
-    const filesCenterOpen = computed(() => overlay.view === 'files')
-    const workspacesOpen = computed(() => overlay.view === 'workspaces')
+    const filesCenterOpen = computed(() => !isNexoraCode && overlay.view === 'files')
+    const workspacesOpen = computed(() => !isNexoraCode && overlay.view === 'workspaces')
 
     /**
      * Teleport 停靠开关:目标槽位真实出现在文档后的下一拍才置 true,
@@ -553,7 +590,10 @@
      * 监听器以 on* 键传入 v-bind,避免模板重复(AGENTS 严禁重复代码)。
      */
     const chatInputBindings = computed(() => ({
-        attachments: pendingAttachments.value,
+        attachments: isNexoraCode ? [] : pendingAttachments.value,
+        variant: isNexoraCode ? 'nexoracode' as const : 'cloud' as const,
+        streaming: conversationStore.currentConversationGenerating,
+        draftKey: isNexoraCode ? `nexoracode:${conversationStore.currentId}` : '',
         onSend: handleSend,
         onStop: handleStop,
         onRemoveAttachment: (index: number) => pendingAttachments.value.splice(index, 1),
@@ -636,6 +676,10 @@
     const learningFrameUrl = computed(() => String(learningFrontendUrl.value || '').trim())
 
     async function refreshLearningPreference(): Promise<void> {
+        if (isNexoraCode) {
+            return
+        }
+
         try {
             const payload = await fetchUserPreferencesPayload()
 
@@ -691,6 +735,8 @@
     }
 
     const sidebarBrandMode = computed<'nexora' | 'learning' | 'workspace'>(() => {
+        if (isNexoraCode) return 'nexora'
+
         // 课程 Workspace 接管时品牌栏切 Workspace 形态(对齐原版 sidebar_brand_navigation.render)
         if (learningOpen.value && learningCourseState.value.on) return 'workspace'
         if (learningOpen.value) return 'learning'
@@ -812,6 +858,20 @@
             } catch (error: unknown) {
                 showError(error instanceof Error ? error.message : '打开会话失败')
             }
+        }
+    }
+
+    /** 从 NexoraCode 项目新建会话，并将项目 metadata 持久化到本地会话索引。 */
+    async function handleNewNexoraCodeProjectChat(project: NexoraCodeProject): Promise<void> {
+        if (!isNexoraCode) {
+            return
+        }
+
+        try {
+            await conversationStore.newConversation()
+            await conversationStore.ensureConversationId({ nexoracode_project: project })
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '创建项目会话失败')
         }
     }
 
@@ -963,6 +1023,10 @@
 
     /** 当前顶栏视图(对齐原版 headerTitle 切换:Files / Workspaces / 会话标题) */
     const activeView = computed<'chat' | 'files' | 'workspaces' | 'projects' | 'knowledge' | 'knowledge-mgmt' | 'scheduled-tasks' | 'mail' | 'learning'>(() => {
+        if (isNexoraCode) {
+            return 'chat'
+        }
+
         return overlay.view || 'chat'
     })
 
@@ -1255,7 +1319,10 @@
         toolsMode: string
     }): Promise<void> {
         // 附件随消息快照,进入队列/发送后清空输入区附件条(对齐原版发送后 reset files)
-        const attachments = pendingAttachments.value.slice()
+        const attachments = isNexoraCode ? [] : pendingAttachments.value.slice()
+        const sendOptions = isNexoraCode
+            ? { ...options, enableWebSearch: false, enableTools: true, toolsMode: 'force' }
+            : options
 
         // 会话级排队:仅当当前查看的会话本身在流式时才入队;
         // 跨会话发送(已切到其他对话)直接发起新流,并发进行
@@ -1263,7 +1330,7 @@
             conversationStore.enqueueMessage({
                 conversationId: conversationStore.currentId,
                 content,
-                options,
+                options: sendOptions,
                 attachments,
             })
 
@@ -1282,7 +1349,7 @@
                 conversationStore.enqueueMessage({
                     conversationId: conversationStore.currentId,
                     content,
-                    options,
+                    options: sendOptions,
                     attachments,
                 })
 
@@ -1295,7 +1362,7 @@
         // 发送即清空附件条（乐观更新，对齐原版 uploadedFileIds = [] 即时清理）
         pendingAttachments.value = []
 
-        await doSend(content, options, attachments)
+        await doSend(content, sendOptions, attachments)
     }
 
     /** 执行一次真实发送(经网络层同步锁) */
@@ -1305,6 +1372,10 @@
         enableTools: boolean
         toolsMode: string
     }, attachments: AttachmentInput[] = []): Promise<void> {
+        const sendOptions = isNexoraCode
+            ? { ...options, enableWebSearch: false, enableTools: true, toolsMode: 'force' }
+            : options
+
         // 发送前确保会话存在
         const conversationId = await conversationStore.ensureConversationId()
 
@@ -1351,10 +1422,10 @@
             message: content,
             conversationId,
             modelName: modelStore.selectedId || undefined,
-            enableThinking: options.enableThinking,
-            enableWebSearch: options.enableWebSearch,
-            enableTools: options.enableTools,
-            toolMode: options.toolsMode,
+            enableThinking: sendOptions.enableThinking,
+            enableWebSearch: sendOptions.enableWebSearch,
+            enableTools: sendOptions.enableTools,
+            toolMode: isNexoraCode ? undefined : sendOptions.toolsMode,
             includeContext: true,
             attachments,
             conversationMode: learningComposerDocked.value ? 'learning' : undefined,
@@ -1398,6 +1469,15 @@
     )
 
     /** 单条流的本地状态:所有回调闭包持有它,多会话并发时各自独立、互不串台 */
+    interface LocalBadgeTiming {
+        startedAt: number
+        firstTokenAt: number
+        endedAt: number
+        outputTokens: number
+        memoryInputTokens: number
+        memoryOutputTokens: number
+    }
+
     interface LiveStreamState {
         /** 流实际归属的会话 ID(请求发出前已确定,后续回调全部按它路由) */
         conversationId: string
@@ -1409,6 +1489,7 @@
         staleIndexPending: boolean
         /** 本轮流是否已通过 error chunk 弹过错误提示,避免终帧/断线重复弹 */
         errorToastShown: boolean
+        timing: LocalBadgeTiming
     }
 
     /** 为一条流创建回调集合:闭包隔离状态,并让每个 store 调用都携带会话 ID */
@@ -1419,12 +1500,97 @@
             phase: 'connecting',
             staleIndexPending: false,
             errorToastShown: false,
+            timing: readLocalBadgeTiming(conversationStore.pendingStreams[conversationId]?.assistant),
         }
+
+        updateLocalBadgeTiming(state)
 
         return {
             onChunk: (chunk) => handleStreamChunk(chunk, state),
             onEnd: (reason, info) => handleStreamEnd(reason, info, state),
         }
+    }
+
+    function readLocalBadgeTiming(message?: ChatMessage): LocalBadgeTiming {
+        const metadata = message?.metadata && typeof message.metadata === 'object'
+            ? message.metadata as Record<string, unknown>
+            : {}
+        const saved = metadata.badge_timing && typeof metadata.badge_timing === 'object'
+            ? metadata.badge_timing as Record<string, unknown>
+            : {}
+        const memory = metadata.memory_io_tokens && typeof metadata.memory_io_tokens === 'object'
+            ? metadata.memory_io_tokens as Record<string, unknown>
+            : {}
+
+        return {
+            startedAt: Number(saved.startedAt) || Date.now(),
+            firstTokenAt: Number(saved.firstTokenAt) || 0,
+            endedAt: Number(saved.endedAt) || 0,
+            outputTokens: Number(saved.outputTokens) || 0,
+            memoryInputTokens: Number(memory.input) || 0,
+            memoryOutputTokens: Number(memory.output) || 0,
+        }
+    }
+
+    function updateLocalBadgeTiming(state: LiveStreamState, message?: ChatMessage): void {
+        if (!isNexoraCode) {
+            return
+        }
+
+        const target = message || conversationStore.pendingStreams[state.conversationId]?.assistant
+
+        if (!target) {
+            return
+        }
+
+        const metadata = target.metadata && typeof target.metadata === 'object'
+            ? target.metadata as Record<string, unknown>
+            : {}
+        const io = readMessageIoTokens({
+            ...metadata,
+            usage: target.usage,
+            io_tokens_window: target.io_tokens_window,
+            io_tokens_cumulative: target.io_tokens_cumulative,
+        })
+        const outputTokens = Math.max(state.timing.outputTokens, io.cumulative.output, io.round.output)
+        const badgeIo = Object.values(io.cumulative).some((value) => value > 0) ? io.cumulative : io.round
+        state.timing.outputTokens = outputTokens
+
+        const updatedMetadata: Record<string, unknown> = {
+            ...metadata,
+            badge_timing: {
+                startedAt: state.timing.startedAt,
+                firstTokenAt: state.timing.firstTokenAt,
+                endedAt: state.timing.endedAt,
+                cachedInput: badgeIo.cachedInput,
+                rawInput: badgeIo.rawInput,
+                outputTokens,
+            },
+        }
+
+        if (state.timing.memoryInputTokens > 0 || state.timing.memoryOutputTokens > 0) {
+            updatedMetadata.memory_io_tokens = {
+                input: state.timing.memoryInputTokens,
+                output: state.timing.memoryOutputTokens,
+            }
+        }
+
+        target.metadata = updatedMetadata
+    }
+
+    function noteLocalFirstToken(state: LiveStreamState): void {
+        if (isNexoraCode && !state.timing.firstTokenAt) {
+            state.timing.firstTokenAt = Date.now()
+        }
+    }
+
+    function finalizeLocalBadgeTiming(state: LiveStreamState, message?: ChatMessage): void {
+        if (!isNexoraCode) {
+            return
+        }
+
+        state.timing.endedAt = Date.now()
+        updateLocalBadgeTiming(state, message)
     }
 
     /**
@@ -1485,6 +1651,10 @@
         if (chunk.type === 'token_usage') {
             conversationStore.accumulateStreamUsage(state.conversationId, chunk as unknown as Record<string, unknown>)
             conversationStore.patchStreamingIoTokens(state.conversationId, chunk as unknown as Record<string, unknown>)
+
+            state.timing.memoryInputTokens = Math.max(0, Number(chunk.memory_input_tokens) || state.timing.memoryInputTokens)
+            state.timing.memoryOutputTokens = Math.max(0, Number(chunk.memory_output_tokens) || state.timing.memoryOutputTokens)
+            updateLocalBadgeTiming(state)
 
             return
         }
@@ -1547,7 +1717,12 @@
         if (chunk.type === 'content' || chunk.type === 'content_delta' || chunk.type === 'message') {
             const delta = String(chunk.content || chunk.delta || '')
 
+            if (delta) {
+                noteLocalFirstToken(state)
+            }
+
             conversationStore.appendStreamText(state.conversationId, delta)
+            updateLocalBadgeTiming(state)
 
             return
         }
@@ -1556,7 +1731,12 @@
         if (chunk.type === 'reasoning_content' || chunk.type === 'reasoning_delta') {
             const delta = String(chunk.content || chunk.delta || '')
 
+            if (delta) {
+                noteLocalFirstToken(state)
+            }
+
             conversationStore.appendStreamReasoning(state.conversationId, delta)
+            updateLocalBadgeTiming(state)
 
             return
         }
@@ -1569,7 +1749,9 @@
             || chunk.type === 'function_result'
             || chunk.type === 'question'
         ) {
+            noteLocalFirstToken(state)
             conversationStore.appendStreamToolStep(state.conversationId, chunk as unknown as Record<string, unknown>)
+            updateLocalBadgeTiming(state)
         }
 
         // 草稿写入完成:广播 Workspace 变更,打开中的草稿面板立即原位刷新(无需手动切换 tab)
@@ -1681,6 +1863,7 @@
             }
 
             // 后端已持久化错误信息到目标消息;优先用终帧消息恢复被清空的目标，显式传参确保重答定位准确
+            finalizeLocalBadgeTiming(state, detail?.finalMessage as unknown as ChatMessage | undefined)
             const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
             conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, targetIdx as number | null)
 
@@ -1704,6 +1887,7 @@
         // 用户终止:保留本地已流式接收的交错分段(多轮思考/工具链不塌缩);
         // 服务器取消终帧若携带已落盘的部分消息,用它恢复(含 process_steps)
         if (reason === 'aborted') {
+            finalizeLocalBadgeTiming(state, detail?.finalMessage as unknown as ChatMessage | undefined)
             const targetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
             conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, targetIdx as number | null)
 
@@ -1716,6 +1900,7 @@
 
         // done 终帧携带后端落盘结果(重答:覆盖后的消息含版本;发送:新消息),先本地更新再标记缓冲完成
         // 重答时必须显式指定 targetIndex，避免收尾阶段定位漂移到其他助手消息
+        finalizeLocalBadgeTiming(state, detail?.finalMessage as unknown as ChatMessage | undefined)
         const doneTargetIdx = Number.isFinite(detail?.regenerateIndex) ? detail?.regenerateIndex : detail?.assistantIndex
         conversationStore.applyFinalMessage(state.conversationId, detail?.finalMessage, doneTargetIdx as number | null)
 
@@ -1839,6 +2024,66 @@
         const content = String(answer || '').trim()
 
         if (!content) {
+            return
+        }
+
+        if (isNexoraCode) {
+            const conversationId = conversationStore.currentId
+            const questionSegment = (_message.segments || []).find((segment) => (
+                segment.type === 'question'
+                && segment.question
+                && String(segment.question.question_id || segment.question.question_card_id || '') === questionId
+            ))
+            const payload = questionSegment?.question as Record<string, unknown> | undefined
+
+            if (!payload || !conversationId) {
+                showError('找不到这条权限请求，请重新打开对话')
+
+                return
+            }
+
+            const denied = /拒绝|deny/i.test(content)
+
+            try {
+                const toolRequest = payload.tool_permission_request
+
+                if (toolRequest && typeof toolRequest === 'object') {
+                    const decision = denied
+                        ? 'deny'
+                        : /允许|同意|allow/i.test(content)
+                            ? 'allow'
+                            : ''
+
+                    if (!decision) {
+                        throw new Error('请选择允许或拒绝')
+                    }
+
+                    await resolveLocalToolPermission(
+                        conversationId,
+                        toolRequest as Record<string, unknown>,
+                        decision,
+                    )
+                } else {
+                    const permission = normalizeQuestionPermissionRequest(payload.permission_request)
+
+                    if (permission && !denied) {
+                        await grantLocalPathPermission(
+                            conversationId,
+                            permission as unknown as Record<string, unknown>,
+                        )
+                    } else if (!permission && !denied) {
+                        throw new Error('本地 Agent 暂不支持此类交互问题')
+                    }
+                }
+
+                payload.resolved = true
+                payload.answer = content
+                showToast(denied ? '已拒绝本次操作' : '权限请求已处理', 'success')
+            } catch (error) {
+                clearQuestionLock(conversationId, buildQuestionCardId(payload))
+                showError(error instanceof Error ? error.message : String(error))
+            }
+
             return
         }
 
@@ -2076,6 +2321,16 @@
     }
 
     function handleOpenSettings(): void {
+        if (isNexoraCode) {
+            try {
+                openLocalSettings()
+            } catch (error) {
+                showError(error instanceof Error ? error.message : String(error))
+            }
+
+            return
+        }
+
         settingsOpen.value = true
     }
 
@@ -2391,7 +2646,9 @@
         }
 
         // 地图渲染器:仅预取 provider 配置;脚本在消息出现真实地图结果时按需加载
-        primeNexoraMapRendererConfig()
+        if (!isNexoraCode) {
+            primeNexoraMapRendererConfig()
+        }
 
         chatInputRef.value?.focus()
 
@@ -2404,7 +2661,9 @@
         // 选区右键菜单:消息区域选中文本后右键显示(对齐原版 notesContextMenu)
         document.addEventListener('contextmenu', handleDocumentContextmenu)
         document.addEventListener('click', handleDocumentClick)
-        window.addEventListener('nexora:preferences-updated', handlePreferencesUpdated)
+        if (!isNexoraCode) {
+            window.addEventListener('nexora:preferences-updated', handlePreferencesUpdated)
+        }
 
         // 跨刷新恢复:必须先逐条重建分离缓冲,再打开会话(否则 openConversation 合并可见列表时
         // 缓冲还不存在,恢复内容既不上屏也不接续;顺序颠倒即"刷新后只有 Stop Generation")。
@@ -2449,6 +2708,21 @@
             })
         }
 
+        if (isNexoraCode && !urlConversationId && snapshots.length === 0) {
+            const savedConversationId = localStorage.getItem('nexoracode.currentConversationId') || ''
+            const savedConversationExists = conversationStore.conversations.some((item) => item.id === savedConversationId)
+
+            if (savedConversationExists) {
+                try {
+                    await conversationStore.openConversation(savedConversationId)
+                } catch (error) {
+                    showError(error instanceof Error ? error.message : '打开会话失败')
+                }
+            } else if (savedConversationId) {
+                localStorage.removeItem('nexoracode.currentConversationId')
+            }
+        }
+
         // 临时诊断钩子(复现完成后移除)
         ;(window as unknown as { __dbgConv?: () => Record<string, unknown> }).__dbgConv = () => ({
             currentId: conversationStore.currentId,
@@ -2476,7 +2750,9 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
-        window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)
+        if (!isNexoraCode) {
+            window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)
+        }
     })
 
     // 刷新/关闭前强制落盘活动流快照(节流窗口内的尾部增量不丢)

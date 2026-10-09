@@ -11,31 +11,37 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 
 import { useUserStore } from '@/stores/user'
 
+const isNexoraCode = import.meta.env.MODE === 'nexoracode'
+
+const chatRoute = {
+    path: '/',
+    name: 'chat',
+    // 懒加载:对话主界面独立 chunk
+    component: () => import('@/views/ChatView.vue'),
+}
+
 const router = createRouter({
     // hash 路由:避免与 Flask 后端路由(/login 等)冲突,刷新不丢失前端路由
     history: createWebHashHistory(),
-    routes: [
-        {
-            path: '/login',
-            name: 'login',
-            // 懒加载:登录页独立 chunk
-            component: () => import('@/views/LoginView.vue'),
-            meta: { public: true },
-        },
-        {
-            path: '/',
-            name: 'chat',
-            // 懒加载:对话主界面独立 chunk
-            component: () => import('@/views/ChatView.vue'),
-        },
-        {
-            // 公开读取码下载页:无需登录
-            path: '/share',
-            name: 'share',
-            component: () => import('@/views/ShareView.vue'),
-            meta: { public: true },
-        },
-    ],
+    routes: isNexoraCode
+        ? [chatRoute]
+        : [
+            {
+                path: '/login',
+                name: 'login',
+                // 懒加载:登录页独立 chunk
+                component: () => import('@/views/LoginView.vue'),
+                meta: { public: true },
+            },
+            chatRoute,
+            {
+                // 公开读取码下载页:无需登录
+                path: '/share',
+                name: 'share',
+                component: () => import('@/views/ShareView.vue'),
+                meta: { public: true },
+            },
+        ],
 })
 
 /** 全局守卫:非公开页要求登录 */

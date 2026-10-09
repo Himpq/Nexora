@@ -58,7 +58,7 @@
                         <div class="input-options-tools-inner" :class="{ 'tools-mode-menu-open': toolsMenuOpen }">
                             <!--
                                 云端专属控件整体隐去于 remote 形态:附件进的是云端沙箱,
-                                Thinking/Search/Tools 是云端 Agent 开关,电脑侧任务接口不认。
+                                Search/Tools 是云端 Agent 开关;Thinking 同时提供给 NexoraCode。
                             -->
                             <template v-if="isCloud">
                                 <label
@@ -71,18 +71,21 @@
                                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                                     </svg>
                                 </label>
+                            </template>
 
-                                <button
-                                    type="button"
-                                    class="composer-chip composer-chip-thinking"
-                                    :class="{ 'is-active': enableThinking }"
-                                    :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
-                                    :aria-pressed="enableThinking"
-                                    @click="enableThinking = !enableThinking"
-                                >
-                                    <i class="fa-solid fa-brain" aria-hidden="true"></i>
-                                </button>
+                            <button
+                                v-if="isCloud || isNexoraCode"
+                                type="button"
+                                class="composer-chip composer-chip-thinking"
+                                :class="{ 'is-active': enableThinking }"
+                                :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
+                                :aria-pressed="enableThinking"
+                                @click="enableThinking = !enableThinking"
+                            >
+                                <i class="fa-solid fa-brain" aria-hidden="true"></i>
+                            </button>
 
+                            <template v-if="isCloud">
                                 <button
                                     type="button"
                                     class="composer-chip composer-chip-search"
@@ -104,6 +107,10 @@
                                     prefix-icon="fa-solid fa-screwdriver-wrench"
                                 />
                             </template>
+                            <NexoraCodePermissionMenu
+                                v-if="isNexoraCode"
+                                :selected-model-id="modelStore.selectedId"
+                            />
                         </div>
                     </div>
                 </div>
@@ -240,6 +247,8 @@
     import { clearDraft, loadDraft, saveDraft } from '@/composables/useChatDraft'
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import TokenBudgetCard from '@/components/TokenBudgetCard.vue'
+    import NexoraCodePermissionMenu from '@/components/nexoracode/NexoraCodePermissionMenu.vue'
+    import '@/styles/nexoracode-permissions.css'
 
     const props = withDefaults(defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */
@@ -250,8 +259,9 @@
          *   remote —— 同一套输入坞,但内容下发给电脑,这些云端专属控件整体隐去
          *              (附件进的是云端沙箱,Thinking/Search/Tools 是云端 Agent 开关,
          *               电脑侧任务接口只认 message 与 model_name)。
+         *   nexoracode —— 使用电脑端 Agent,显示 Thinking 与本地工具权限菜单。
          */
-        variant?: 'cloud' | 'remote'
+        variant?: 'cloud' | 'remote' | 'nexoracode'
         /** remote 形态下由远程任务状态机驱动发送/停止按钮,不再看云端会话。 */
         streaming?: boolean
         /** 草稿命名空间:remote 传远程会话 id,避免与云端会话草稿串台。 */
@@ -287,6 +297,7 @@
 
     /** 是否云端形态:决定云端专属控件(工具簇/CTX 计数)是否渲染。 */
     const isCloud = computed(() => props.variant === 'cloud')
+    const isNexoraCode = computed(() => props.variant === 'nexoracode')
 
     /** 草稿命名空间:remote 用远程会话 id,云端沿用当前会话 id。 */
     const draftNamespace = computed(() => props.draftKey || conversationStore.currentId)
@@ -611,10 +622,18 @@
     const isDragOver = ref(false)
 
     function handleDragOver(): void {
+        if (!isCloud.value) {
+            return
+        }
+
         isDragOver.value = true
     }
 
     function handleDragLeave(event: DragEvent): void {
+        if (!isCloud.value) {
+            return
+        }
+
         // 仅当离开容器本身时清除，避免子元素间移动触发闪烁
         const related = event.relatedTarget as HTMLElement | null
 
@@ -625,6 +644,10 @@
 
     async function handleDrop(event: DragEvent): Promise<void> {
         isDragOver.value = false
+
+        if (!isCloud.value) {
+            return
+        }
 
         const files = Array.from(event.dataTransfer?.files || [])
 
@@ -676,6 +699,10 @@
         const files = Array.from(input.files || [])
 
         input.value = ''
+
+        if (!isCloud.value) {
+            return
+        }
 
         if (!files.length || uploadingFiles.value) {
             return
@@ -789,9 +816,9 @@
 
         emit('send', content, {
             enableThinking: enableThinking.value,
-            enableWebSearch: enableWebSearch.value,
-            enableTools: toolsMode.value !== 'off',
-            toolsMode: toolsMode.value,
+            enableWebSearch: !isNexoraCode.value && enableWebSearch.value,
+            enableTools: isNexoraCode.value || toolsMode.value !== 'off',
+            toolsMode: isNexoraCode.value ? 'force' : toolsMode.value,
         })
 
         // 发送成功后清除该会话草稿(避免刷新后旧草稿复活)
@@ -890,7 +917,7 @@
         line-height: 1;
         padding: 0;
         box-sizing: border-box;
-        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+        transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
     }
 
     .composer-chip:hover {
@@ -904,9 +931,9 @@
     }
 
     .composer-chip-thinking.is-active {
-        background: rgba(99, 102, 241, 0.14);
-        border-color: rgba(99, 102, 241, 0.42);
-        color: #6366f1;
+        background: var(--color-accent-surface);
+        border-color: var(--color-accent-border);
+        color: var(--color-accent-text);
     }
 
     .composer-chip-search.is-active {

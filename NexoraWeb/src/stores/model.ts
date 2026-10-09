@@ -11,11 +11,13 @@ import { defineStore } from 'pinia'
 
 import { fetchAppConfig, normalizeModelItems, type AppConfig, type ModelItem } from '@/api/config'
 
-/** localStorage 键:选中模型 */
-const SELECTED_MODEL_KEY = 'nexora.selectedModelId'
+const IS_NEXORACODE = import.meta.env.MODE === 'nexoracode'
 
-/** localStorage 键:/api/config 缓存 */
-const CONFIG_CACHE_KEY = 'nexora.config'
+/** 本地 Code 模式沿用旧前端的 selectedModel 键,避免覆盖 NexoraWeb 的模型选择。 */
+const SELECTED_MODEL_KEY = IS_NEXORACODE ? 'selectedModel' : 'nexora.selectedModelId'
+
+/** 两个应用使用独立配置缓存,防止模型目录串用。 */
+const CONFIG_CACHE_KEY = IS_NEXORACODE ? 'nexoracode.config' : 'nexora.config'
 
 /** config 缓存有效期(5 分钟) */
 const CONFIG_CACHE_TTL = 5 * 60 * 1000
@@ -116,6 +118,14 @@ export const useModelStore = defineStore('model', {
 
             if (cached && this.models.some((item) => item.id === cached)) {
                 this.selectedId = cached
+
+                return
+            }
+
+            const preferred = IS_NEXORACODE ? String(config.default_model || '').trim() : ''
+
+            if (preferred && this.models.some((item) => item.id === preferred)) {
+                this.selectModel(preferred)
 
                 return
             }

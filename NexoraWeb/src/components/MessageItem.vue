@@ -73,7 +73,7 @@
 
                 <div class="msg-actions">
                     <button
-                        v-if="isLastUserMessage && !readonly"
+                        v-if="isLastUserMessage && !readonly && !nexoracode"
                         class="btn-action"
                         :title="editing ? '保存修改' : '编辑提示词'"
                         @click="handleEditClick"
@@ -89,7 +89,7 @@
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                         </svg>
                     </button>
-                    <button v-if="!readonly" class="btn-action btn-del" title="删除" @click="handleDelete">
+                    <button v-if="!readonly && !nexoracode" class="btn-action btn-del" title="删除" @click="handleDelete">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
                         </svg>
@@ -102,11 +102,11 @@
                 <div
                     v-if="badgeText"
                     class="model-badge"
-                    :class="{ collapsed: !badgeExpanded || !hasIoData }"
+                    :class="{ collapsed: !badgeExpanded || !hasBadgeDetails }"
                     :title="badgeTitle"
                     @click="badgeExpanded = !badgeExpanded"
                 >
-                    {{ badgeExpanded && hasIoData ? badgeFullText : badgeText }}
+                    {{ badgeExpanded && hasBadgeDetails ? badgeFullText : (nexoracode ? badgeCompactText : badgeText) }}
                 </div>
 
                 <!-- 知识 diff 伪工具：挂在 assistant 首位，复用 tool-usage execution-flow 形态，避免独立 banner 时有时无 -->
@@ -335,7 +335,7 @@
                 -->
                 <div v-if="!streaming" class="msg-actions">
                     <!-- 版本切换器(对齐原版 buildVersionNavigation:多版本时显示 prev/next + 计数);只读模式隐藏 -->
-                    <div v-if="versionNav.total > 1 && !readonly" class="version-switcher">
+                    <div v-if="versionNav.total > 1 && !readonly && !nexoracode" class="version-switcher">
                         <button
                             class="btn-ver"
                             :title="'上一版本'"
@@ -364,13 +364,13 @@
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                         </svg>
                     </button>
-                    <button v-if="!readonly" class="btn-action" title="重新回答" @click="emit('regenerate', message)">
+                    <button v-if="!readonly && !nexoracode" class="btn-action" title="重新回答" @click="emit('regenerate', message)">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"></polyline>
                             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                         </svg>
                     </button>
-                    <button v-if="!readonly" class="btn-action" title="从这里创建分支" @click="handleFork">
+                    <button v-if="!readonly && !nexoracode" class="btn-action" title="从这里创建分支" @click="handleFork">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="6" cy="4" r="2"></circle>
                             <circle cx="18" cy="8" r="2"></circle>
@@ -435,6 +435,8 @@
         message: ChatMessage
         streaming?: boolean
         modelName?: string
+        /** NexoraCode 保留本地耗时、首 token、速率和缓存徽标。 */
+        nexoracode?: boolean
         isLastUserMessage?: boolean
         /** 当前会话 ID(地图 ref 结果组装 conversation_id 用) */
         conversationId?: string
@@ -444,6 +446,7 @@
         knowledgeEvents?: ConversationContextEvent[]
     }>(), {
         readonly: false,
+        nexoracode: false,
         knowledgeEvents: () => [],
     })
 
@@ -868,7 +871,7 @@
     }
 
     function isPermissionCard(item: QuestionRenderItem): boolean {
-        return !!item.payload.permission_request
+        return !!item.payload.permission_request || !!item.payload.tool_permission_request
     }
 
     async function submitQuestionAnswer(item: QuestionRenderItem, answerText: string): Promise<void> {
@@ -1217,7 +1220,7 @@
         emit('edit-save', props.message, content)
     }
 
-    /** 助手消息模型徽标(对齐原版:metadata.model_name 优先,仅流式中间轮隐藏,终态 completed/error 即使含 tool_calls 也展示) */
+    /** Show the model badge on assistant output, hiding NexoraCode tool-only rounds. */
     const badgeText = computed(() => {
         if (props.message.role !== 'assistant') {
             return ''
@@ -1226,13 +1229,35 @@
         const trace = props.message.trace && typeof props.message.trace === 'object'
             ? props.message.trace as Record<string, unknown>
             : {}
-        const hasToolCalls = (Array.isArray(trace.tool_calls) && trace.tool_calls.length > 0)
-            || (Array.isArray(trace.events) && trace.events.some((event) => (
-                event && typeof event === 'object' && String((event as Record<string, unknown>).type || '') === 'function_call'
-            )))
+        const metadata = props.message.metadata && typeof props.message.metadata === 'object'
+            ? props.message.metadata as Record<string, unknown>
+            : {}
+        const processSteps = Array.isArray(metadata.process_steps) ? metadata.process_steps : []
+        const traceEvents = Array.isArray(trace.events) ? trace.events : []
+        const hasOrderedPersistedToolSteps = processSteps.some((step) => isToolEventStep(step))
+            || traceEvents.some((step) => isToolEventStep(step))
+        const hasPersistedToolCalls = (Array.isArray(trace.tool_calls) && trace.tool_calls.length > 0)
+            || hasOrderedPersistedToolSteps
+        const badgeTiming = metadata.badge_timing && typeof metadata.badge_timing === 'object'
+            ? metadata.badge_timing as Record<string, unknown>
+            : {}
+        const hasFinalContentText = !!String(props.message.content || '').trim()
+        const hasPersistedFinalContent = hasContentAfterToolStep(processSteps)
+            || hasContentAfterToolStep(traceEvents)
+            || (hasPersistedToolCalls && Number(badgeTiming.endedAt) > 0 && hasFinalContentText)
+            || (!hasOrderedPersistedToolSteps && hasPersistedToolCalls && hasFinalContentText)
+        const hasToolCalls = hasPersistedToolCalls
 
         const status = String((props.message as Record<string, unknown>).status || '').trim()
-        const isIntermediate = !!props.streaming && hasToolCalls && status !== 'completed' && status !== 'error'
+        // v4 events and legacy process_steps preserve ordering, so a final content step keeps its badge.
+        const hasNexoraCodeFinalContent = hasPersistedFinalContent
+        // Keep the badge visible while the request is streaming; suppress only stored tool-only history rounds.
+        const isNexoraCodeToolRound = props.nexoracode
+            && !props.streaming
+            && hasPersistedToolCalls
+            && !hasNexoraCodeFinalContent
+        const isIntermediate = isNexoraCodeToolRound
+            || (!props.nexoracode && !!props.streaming && hasToolCalls && status !== 'completed' && status !== 'error')
 
         if (isIntermediate) {
             return ''
@@ -1246,6 +1271,39 @@
 
         return v4ModelName || metadataName || props.message.model_name || props.modelName || ''
     })
+
+    /** Identify tool boundaries in process_steps or v4 trace.events. */
+    function isToolEventStep(step: unknown): boolean {
+        if (!step || typeof step !== 'object') {
+            return false
+        }
+
+        const type = String((step as Record<string, unknown>).type || '')
+
+        return type === 'function_call' || type === 'function_result'
+    }
+
+    /** Keep the badge when a final assistant content event follows the last tool event. */
+    function hasContentAfterToolStep(steps: unknown[]): boolean {
+        const lastToolStepIndex = steps.reduce<number>((lastIndex, step, index) => (
+            isToolEventStep(step) ? index : lastIndex
+        ), -1)
+
+        if (lastToolStepIndex < 0) {
+            return false
+        }
+
+        return steps.some((step, index) => {
+            if (index <= lastToolStepIndex || !step || typeof step !== 'object') {
+                return false
+            }
+
+            const record = step as Record<string, unknown>
+
+            return String(record.type || '') === 'content'
+                && !!String(record.content ?? record.text ?? '').trim()
+        })
+    }
 
     /**
      * 归一化 badge 的 raw / cached 口径(对齐云端/原版: raw 为完整 prompt 含缓存命中,
@@ -1274,10 +1332,86 @@
         return { raw, cached }
     }
 
+    const localBadgeStats = computed(() => {
+        const tokens = ioTokens.value
+        const metadata = messageMetadata()
+        const savedTiming = metadata.badge_timing && typeof metadata.badge_timing === 'object'
+            ? metadata.badge_timing as Record<string, unknown>
+            : {}
+        const memoryPayload = metadata.memory_io_tokens
+        const savedMemory = metadata.memory_io_tokens && typeof metadata.memory_io_tokens === 'object'
+            ? metadata.memory_io_tokens as Record<string, unknown>
+            : {}
+        const startedAt = Number(savedTiming.startedAt) || 0
+        const firstTokenAt = Number(savedTiming.firstTokenAt) || 0
+        const endedAt = Number(savedTiming.endedAt) || (props.streaming ? Date.now() : 0)
+        const elapsedMs = startedAt > 0 && endedAt > 0 ? Math.max(0, endedAt - startedAt) : 0
+        const outputTokens = Number(savedTiming.outputTokens) || tokens.output
+        const { raw, cached } = normalizeBadgeRawCached(
+            Number(savedTiming.rawInput) || tokens.rawInput,
+            Number(savedTiming.cachedInput) || tokens.cachedInput,
+            tokens.input,
+        )
+
+        return {
+            raw,
+            cached,
+            cacheRate: raw > 0 ? (cached / raw) * 100 : null,
+            elapsedMs,
+            firstTokenMs: startedAt > 0 && firstTokenAt > 0 ? Math.max(0, firstTokenAt - startedAt) : 0,
+            tokensPerSecond: elapsedMs > 0 ? outputTokens / (elapsedMs / 1000) : 0,
+            memoryReady: !!memoryPayload && typeof memoryPayload === 'object',
+            memoryInput: Number(savedMemory.input) || 0,
+            memoryOutput: Number(savedMemory.output) || 0,
+        }
+    })
+
+    const badgeCompactText = computed(() => {
+        if (!props.nexoracode) {
+            return badgeText.value
+        }
+
+        const stats = localBadgeStats.value
+
+        return stats.cacheRate === null
+            ? badgeText.value
+            : `${badgeText.value} · 缓存 ${Math.round(stats.cacheRate)}%`
+    })
+
+    const hasBadgeDetails = computed(() => hasIoData.value || (props.nexoracode && localBadgeStats.value.elapsedMs > 0))
+
     /** 展开文本:模型名 - I/O: 输入/输出 + E/C 缓存命中(对齐原版 buildModelBadgeText + NexoraCode) */
     const badgeFullText = computed(() => {
         const model = badgeText.value || '-'
         const tokens = ioTokens.value
+
+        if (props.nexoracode) {
+            const stats = localBadgeStats.value
+            const parts = [model, `I/O: ${tokens.input.toLocaleString()}/${tokens.output.toLocaleString()}`]
+
+            if (stats.cacheRate !== null) {
+                parts.push(`缓存 ${stats.cacheRate.toFixed(1)}% ${stats.cached.toLocaleString()}/${stats.raw.toLocaleString()}`)
+            }
+
+            if (stats.memoryReady || stats.memoryInput || stats.memoryOutput) {
+                parts.push(`记忆 I/O: ${stats.memoryInput.toLocaleString()}/${stats.memoryOutput.toLocaleString()}`)
+            }
+
+            if (stats.elapsedMs > 0) {
+                parts.push(`总耗时 ${formatLocalDuration(stats.elapsedMs)}`)
+            }
+
+            if (stats.firstTokenMs > 0) {
+                parts.push(`首 token ${formatLocalDuration(stats.firstTokenMs)}`)
+            }
+
+            if (stats.tokensPerSecond > 0) {
+                parts.push(`速率 ${Math.round(stats.tokensPerSecond)} token/s`)
+            }
+
+            return parts.join('  ·  ')
+        }
+
         const input = tokens.input
         const output = tokens.output
         const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
@@ -1294,6 +1428,11 @@
     const badgeTitle = computed(() => {
         const model = badgeText.value || '-'
         const tokens = ioTokens.value
+
+        if (props.nexoracode) {
+            return badgeFullText.value.replace(/  ·  /g, '\n')
+        }
+
         const input = tokens.input
         const output = tokens.output
         const { raw, cached } = normalizeBadgeRawCached(tokens.rawInput, tokens.cachedInput, input)
@@ -1305,6 +1444,14 @@
         }
         return `模型: ${model}\n输入: ${input.toLocaleString()} | 输出: ${output.toLocaleString()}${ecLine}`
     })
+
+    function formatLocalDuration(milliseconds: number): string {
+        const seconds = milliseconds / 1000
+
+        return seconds < 60
+            ? `${seconds.toFixed(1)}s`
+            : `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(0)}s`
+    }
 
     /** 是否有真实 token 数据(无数据时折叠显示,避免 0/0 噪音) */
     const hasIoData = computed(() => {

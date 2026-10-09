@@ -23,6 +23,7 @@
     import { isThemePreference, setTheme, theme } from '@/ui/theme'
 
     const userStore = useUserStore()
+    const isNexoraCode = import.meta.env.MODE === 'nexoracode'
 
     /*
      * 主题偏好来源优先级:本地 localStorage(用户最新意图) > 服务器偏好。
@@ -33,7 +34,7 @@
     onMounted(async () => {
         await userStore.init()
 
-        if (!userStore.isLoggedIn) {
+        if (isNexoraCode || !userStore.isLoggedIn) {
             return
         }
 

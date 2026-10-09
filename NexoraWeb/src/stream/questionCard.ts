@@ -159,3 +159,26 @@ export function writeQuestionLock(conversationId: string, questionId: string, an
         // 存储失败不影响本次会话内的回答态,仅刷新后可能重新开放
     }
 }
+
+/** 删除失败提交的回答锁，允许用户再次处理同一张权限卡片。 */
+export function clearQuestionLock(conversationId: string, questionId: string): void {
+    const qid = String(questionId || '').trim()
+
+    if (!qid) {
+        return
+    }
+
+    try {
+        const store = readLockStore()
+        const key = lockScopeKey(conversationId, qid)
+
+        if (!(key in store)) {
+            return
+        }
+
+        delete store[key]
+        localStorage.setItem(QUESTION_LOCK_STORAGE_KEY, JSON.stringify(store))
+    } catch {
+        // 清理失败时由当前会话中的状态保持显示错误。
+    }
+}

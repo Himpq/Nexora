@@ -12,6 +12,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import { initTheme } from '@/ui/theme'
+import { startNexoraCodePerformance } from '@/ui/nexoracodePerformance'
 
 // 设计资产加载顺序:原版 CSS(legacy)在前,GDDP 在后 —— 与收编前入口页的层叠顺序一致
 import './styles/legacy.css'
@@ -48,6 +49,10 @@ app.use(router)
 
 // 主题初始化必须在挂载前:首帧即落 data-theme,避免浅色闪屏
 initTheme()
+
+if (import.meta.env.MODE === 'nexoracode') {
+    startNexoraCodePerformance()
+}
 
 // 全局错误面板:渲染/回调异常直接浮层展示组件栈与原始错误,
 // 用于快速定位"切特定会话即崩溃"这类问题(同时保留 console 完整堆栈)

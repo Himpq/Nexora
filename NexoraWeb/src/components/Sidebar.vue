@@ -24,10 +24,11 @@
                     :aria-pressed="brandMode === 'nexora' ? 'true' : 'false'"
                     @click="handleBrandClick('nexora')"
                 >
-                    <span class="logo">Nexora<span class="dot"></span></span>
+                    <span v-if="nexoracode" class="logo">Nexora<span class="dot nc-brand-dot"></span>Code</span>
+                    <span v-else class="logo">Nexora<span class="dot"></span></span>
                 </button>
                 <button
-                    v-show="learningEnabled"
+                    v-show="!nexoracode && learningEnabled"
                     id="sidebarBrandLearningTab"
                     type="button"
                     class="sidebar-brand-tab"
@@ -39,7 +40,7 @@
                     <span class="sidebar-brand-learning-text">Learning</span>
                 </button>
                 <button
-                    v-show="courseAvailable && brandMode !== 'nexora'"
+                    v-show="!nexoracode && courseAvailable && brandMode !== 'nexora'"
                     id="sidebarBrandWorkspaceTab"
                     type="button"
                     class="sidebar-brand-tab sidebar-brand-tab-workspace"
@@ -76,7 +77,7 @@
                         <span>New Chat</span>
                     </template>
                 </button>
-                <template v-if="!isLearningMode && !courseModeOn">
+                <template v-if="!nexoracode && !isLearningMode && !courseModeOn">
                     <button id="workspacesBtn" class="toolbar-item" type="button" @click="emit('open-workspaces')">
                         <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
                         <span>Workspaces</span>
@@ -99,7 +100,7 @@
                     navVisible = learning && view==='list',对话视图只保留返回按钮 + 侧栏聊天);
                     点击经 bridge 下发 dashboard 指令,iframe 回报 dashboard-state 驱动高亮
                 -->
-                <template v-else-if="learningSidebarView === 'list' && !courseModeOn">
+                <template v-else-if="!nexoracode && learningSidebarView === 'list' && !courseModeOn">
                     <button
                         id="learningProgressBtn"
                         class="toolbar-item learning-nav-item"
@@ -221,63 +222,32 @@
         </div>
 
         <div v-show="!isLearningMode && !courseModeOn" class="sidebar-content" id="conversationList">
-            <RemoteSidebarSection @open="emit('open-projects')" />
+            <RemoteSidebarSection v-if="!nexoracode" @open="emit('open-projects')" />
 
-            <div
-                v-for="row in store.branchRows"
+            <NexoraCodeProjectsSidebar
+                v-if="nexoracode"
+                :rows="store.branchRows"
+                :current-id="store.currentId"
+                @open-chat="emit('open-chat')"
+                @new-project-chat="emit('new-project-chat', $event)"
+                @open-conversation="handleOpen"
+                @delete-conversation="handleDelete"
+            />
+
+            <ConversationSidebarItem
+                v-for="row in sidebarRows"
                 :key="row.conversation.id"
-                class="conversation-item"
-                :class="{
-                    active: row.conversation.id === store.currentId,
-                    'is-streaming': isStreamingItem(row.conversation.id),
-                    'conversation-branch-item': isVisibleBranch(row.conversation),
-                }"
-                :data-conversation-id="row.conversation.id"
-                :data-pin="isPinned(row.conversation.id) ? '1' : '0'"
-                :style="branchOffsetStyle(row)"
-                :title="branchTooltip(row.conversation)"
-                @click="handleOpen(row.conversation.id)"
-                @contextmenu.prevent="handleContextMenu($event, row.conversation)"
-            >
-                <span class="title" :title="row.conversation.title">
-                    <i
-                        v-if="isVisibleBranch(row.conversation)"
-                        class="fa-solid fa-code-branch conversation-branch-icon"
-                        aria-hidden="true"
-                    ></i>
-                    <i
-                        v-if="isPinned(row.conversation.id)"
-                        class="fa-solid fa-thumbtack conversation-pin-icon"
-                        aria-hidden="true"
-                    ></i>
-                    {{ row.conversation.title }}
-                </span>
-                <span class="conversation-item-right">
-                    <!-- 原版 hover 删除按钮(.delete-chat,默认隐藏,hover 显示) -->
-                    <button
-                        class="btn-icon-small delete-chat"
-                        type="button"
-                        title="删除会话"
-                        aria-label="删除会话"
-                        @click.stop="handleDelete(row.conversation)"
-                    >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
-                    <span
-                        v-if="isStreamingItem(row.conversation.id)"
-                        class="conversation-stream-indicator is-loading"
-                        title="模型正在回复"
-                        aria-hidden="true"
-                    >
-                        <i class="fa-solid fa-circle-notch fa-spin"></i>
-                    </span>
-                </span>
-            </div>
+                :conversation="row.conversation"
+                :depth="row.depth"
+                :orphan="row.orphan"
+                :active="row.conversation.id === store.currentId"
+                :streaming="isStreamingItem(row.conversation.id)"
+                @open="handleOpen(row.conversation.id)"
+                @delete="handleDelete(row.conversation)"
+                @contextmenu="!nexoracode && handleContextMenu($event, row.conversation)"
+            />
 
-            <div v-if="!store.branchRows.length" class="sidebar-empty">
+            <div v-if="!sidebarRows.length && !store.branchRows.length" class="sidebar-empty">
                 暂无会话
             </div>
         </div>
@@ -416,6 +386,7 @@
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
+            v-if="!nexoracode"
             ref="contextMenuRef"
             target-type="conversation"
             :conversation-id="contextMenu.conversationId"
@@ -444,7 +415,7 @@
                 <i class="fa-solid fa-ellipsis" aria-hidden="true"></i>
 
                 <div ref="userMenuRef" class="user-menu" id="userMenu" :class="{ active: userMenuOpen }" @click.stop>
-                    <a href="/rank" class="menu-item" @click.prevent.stop="handleMenuAction('rank')">
+                    <a v-if="!nexoracode" href="/rank" class="menu-item" @click.prevent.stop="handleMenuAction('rank')">
                         <i class="fa-solid fa-gear" aria-hidden="true"></i>
                         <span>模型榜单</span>
                     </a>
@@ -452,19 +423,21 @@
                         <i class="fa-solid fa-gear" aria-hidden="true"></i>
                         <span>设置</span>
                     </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('changes')">
+                    <a v-if="!nexoracode" href="#" class="menu-item" @click.prevent.stop="handleMenuAction('changes')">
                         <i class="fa-solid fa-code-compare" aria-hidden="true"></i>
                         <span>变更</span>
                     </a>
-                    <a href="#" class="menu-item" @click.prevent.stop="handleMenuAction('remote')">
+                    <a v-if="!nexoracode" href="#" class="menu-item" @click.prevent.stop="handleMenuAction('remote')">
                         <i class="fa-solid fa-laptop-code" aria-hidden="true"></i>
                         <span>远程连接</span>
                     </a>
-                    <div class="menu-divider"></div>
-                    <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
-                        <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
-                        <span>退出</span>
-                    </a>
+                    <template v-if="!nexoracode">
+                        <div class="menu-divider"></div>
+                        <a href="#" class="menu-item logout" @click.prevent.stop="handleMenuAction('logout')">
+                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                            <span>退出</span>
+                        </a>
+                    </template>
                 </div>
             </div>
         </div>
@@ -477,23 +450,27 @@
     import { useRouter } from 'vue-router'
 
     import type { ConversationBranch, ConversationSummary } from '@/api/conversations'
-    import type { ConversationBranchRow } from '@/stores/conversation'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
     import { closePopover, openPopover, overlay } from '@/ui/overlay'
     import { collapseMobileSidebar } from '@/ui/viewport'
+    import type { NexoraCodeProject } from '@/api/nexoracodeLocal'
 
     import ContextMenu from './ContextMenu.vue'
+    import ConversationSidebarItem from './ConversationSidebarItem.vue'
     import MarkdownView from './MarkdownView.vue'
     import RemoteSidebarSection from './nexoracode/RemoteSidebarSection.vue'
+    import NexoraCodeProjectsSidebar from './nexoracode/NexoraCodeProjectsSidebar.vue'
+    import { readNexoraCodeProject } from './nexoracode/projectConversations'
 
     const emit = defineEmits<{
         'toggle-mobile': []
         'open-settings': []
         'open-remote': []
         'open-chat': []
+        'new-project-chat': [project: NexoraCodeProject]
         'open-workspaces': []
         'open-projects': []
         'open-files': []
@@ -514,6 +491,7 @@
 
     const props = defineProps<{
         collapsed?: boolean
+        nexoracode?: boolean
         learningEnabled?: boolean
         brandMode?: 'nexora' | 'learning' | 'workspace'
         /** iframe dashboard 状态回报(view/side_tab),驱动学习功能区入口高亮 */
@@ -527,6 +505,13 @@
     const router = useRouter()
     const store = useConversationStore()
     const userStore = useUserStore()
+    const sidebarRows = computed(() => {
+        if (!props.nexoracode) {
+            return store.branchRows
+        }
+
+        return store.branchRows.filter((row) => !readNexoraCodeProject(row.conversation))
+    })
 
     const userMenuRef = ref<HTMLElement | null>(null)
 
@@ -563,49 +548,9 @@
         return store.isConversationGenerating(conversationId)
     }
 
-    /** 是否为可见分支会话(有分支信息且非孤儿;对齐原版 visibleBranch) */
-    function isVisibleBranch(conversation: ConversationSummary): boolean {
-        const branch = readBranch(conversation)
-
-        return !!branch && !isOrphanBranch(conversation)
-    }
-
-    /** 分支缩进样式(对齐原版 --conversation-branch-offset,深度上限 6) */
-    function branchOffsetStyle(row: ConversationBranchRow): Record<string, string> | undefined {
-        if (!isVisibleBranch(row.conversation)) {
-            return undefined
-        }
-
-        return {
-            '--conversation-branch-offset': `${Math.max(1, row.depth) * 14}px`,
-        }
-    }
-
-    /** 分支悬停提示(对齐原版 row.title:分支自父会话的第 N 条消息) */
-    function branchTooltip(conversation: ConversationSummary): string | undefined {
-        const branch = readBranch(conversation)
-
-        if (!branch || isOrphanBranch(conversation)) {
-            return undefined
-        }
-
-        return `分支自会话 ${branch.parent_conversation_id} 的第 ${branch.parent_message_index + 1} 条消息`
-    }
-
     /** 读取会话分支信息 */
     function readBranch(conversation: ConversationSummary): ConversationBranch | null {
         return conversation.branch && typeof conversation.branch === 'object' ? conversation.branch : null
-    }
-
-    /** 孤儿分支:父会话在列表中不存在(对齐原版 branchOrphan) */
-    function isOrphanBranch(conversation: ConversationSummary): boolean {
-        const branch = readBranch(conversation)
-
-        if (!branch) {
-            return false
-        }
-
-        return !store.conversations.some((entry) => entry.id === branch.parent_conversation_id)
     }
 
     async function handleNewChat(): Promise<void> {

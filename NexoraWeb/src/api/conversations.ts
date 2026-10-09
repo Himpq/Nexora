@@ -9,6 +9,8 @@
 import { apiFetch } from './client'
 import type { MessageSegment } from '@/stream/messageSegments'
 
+const MERGE_AGENT_RESPONSE_ROUNDS = import.meta.env.MODE === 'nexoracode'
+
 /** 会话分支信息(对齐原版 readConversationBranch 读取的后端 branch 结构) */
 export interface ConversationBranch {
     root_conversation_id: string
@@ -21,6 +23,7 @@ export interface ConversationSummary {
     id: string
     title: string
     conversation_mode?: string
+    metadata?: Record<string, unknown>
     updated_at?: number
     created_at?: number
     /** 分支会话来源信息(非分支会话为 undefined) */
@@ -130,6 +133,9 @@ export async function listConversations(): Promise<ConversationSummary[]> {
         id: String(item.conversation_id || ''),
         title: String(item.title || '新对话'),
         conversation_mode: item.conversation_mode,
+        metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+            ? item.metadata as Record<string, unknown>
+            : undefined,
         updated_at: item.updated_at,
         created_at: item.created_at,
         // 置顶状态必须透传,否则前端无法排序/显示 pin 图标(后端已按 pin 排序)
@@ -167,12 +173,14 @@ function readConversationBranch(item: RawConversationItem): ConversationBranch |
 export async function createConversation(options: {
     title?: string
     conversationId?: string
+    metadata?: Record<string, unknown>
 } = {}): Promise<ConversationCreateResponse> {
     return apiFetch<ConversationCreateResponse>('/api/conversations', {
         method: 'POST',
         body: JSON.stringify({
             title: options.title || '新对话',
             conversation_id: options.conversationId || undefined,
+            metadata: options.metadata,
         }),
     })
 }
@@ -292,6 +300,10 @@ export async function fetchMessages(conversationId: string, options: {
         params.set('before', String(options.before))
     }
 
+    if (MERGE_AGENT_RESPONSE_ROUNDS) {
+        params.set('merge_agent_rounds', '1')
+    }
+
     const query = params.toString()
 
     return apiFetch<MessagesResponse>(
@@ -305,8 +317,15 @@ export async function fetchMessages(conversationId: string, options: {
  * 服务端返回条目映射为 { index, role, content } 以复用消息类型。
  */
 export async function fetchTurns(conversationId: string): Promise<ConversationTurn[]> {
+    const params = new URLSearchParams()
+
+    if (MERGE_AGENT_RESPONSE_ROUNDS) {
+        params.set('merge_agent_rounds', '1')
+    }
+
+    const query = params.toString()
     const data = await apiFetch<{ success: boolean; turns?: unknown[] }>(
-        `/api/conversations/${encodeURIComponent(conversationId)}/turns`
+        `/api/conversations/${encodeURIComponent(conversationId)}/turns${query ? `?${query}` : ''}`
     )
 
     const rawTurns = Array.isArray(data.turns) ? data.turns : []

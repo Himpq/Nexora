@@ -1,0 +1,90 @@
+.nexoracode-sidebar-section {
+    margin-bottom: 10px;
+}
+
+.nexoracode-sidebar-projects-subtitle {
+    display: flex;
+    min-height: 28px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 4px;
+    padding: 2px 6px 5px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.nexoracode-sidebar-projects-main {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nexoracode-sidebar-projects-title {
+    color: rgba(160, 160, 160, 0.75);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.nexoracode-sidebar-projects-subtitle:hover .nexoracode-sidebar-projects-title {
+    color: #fff;
+}
+
+.nexoracode-sidebar-project-list {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.26s ease;
+}
+
+.nexoracode-sidebar-section.is-collapsed .nexoracode-sidebar-project-list {
+    grid-template-rows: 0fr;
+}
+
+.nexoracode-sidebar-project-list-inner {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: 2px;
+    overflow: hidden;
+    opacity: 1;
+    transition: opacity 0.2s ease;
+}
+
+.nexoracode-sidebar-section.is-collapsed .nexoracode-sidebar-project-list-inner {
+    opacity: 0;
+}
+
+.nexoracode-sidebar-project-empty {
+    padding: 6px 12px;
+    color: rgba(160, 160, 160, 0.5);
+    font-size: 12px;
+}
+
+.nexoracode-sidebar-project-row:hover {
+    background-color: var(--bg-sidebar-hover);
+}
+
+.nexoracode-sidebar-project-row:hover .nexoracode-sidebar-project-icon,
+.nexoracode-sidebar-project-row:hover .nexoracode-sidebar-project-name {
+    color: #fff;
+}
+
+.nexoracode-sidebar-icon-btn:disabled {
+    cursor: wait;
+    opacity: 0.5;
+}
+
+.nexoracode-sidebar-icon-btn:focus-visible,
+.nexoracode-sidebar-projects-main:focus-visible,
+.nexoracode-sidebar-project-main:focus-visible {
+    outline: 2px solid rgba(104, 157, 255, 0.9);
+    outline-offset: 2px;
+}
