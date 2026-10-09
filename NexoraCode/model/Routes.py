@@ -763,6 +763,24 @@ def local_agent_delete_conversation(conv_id: str):
     return jsonify({"success": True, "conversation_id": conv_id})
 
 
+@_local_bp.route("/api/conversations/<conv_id>/title", methods=["PUT"])
+def local_agent_update_conversation_title(conv_id: str):
+    """手动更新会话标题（前端改名 / 智能标题回写）。"""
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "").strip()
+
+    if not title:
+        return jsonify({"success": False, "message": "标题不能为空"}), 400
+
+    store = ConversationStore()
+    updated = store.set_title(conv_id, title)
+
+    if not updated:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    return jsonify({"success": True, "conversation_id": conv_id, "title": title})
+
+
 @_local_bp.route("/api/conversations/<conv_id>/messages", methods=["GET"])
 def local_agent_get_messages(conv_id: str):
     store = ConversationStore()
