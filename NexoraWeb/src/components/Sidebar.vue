@@ -242,6 +242,7 @@
                 :orphan="row.orphan"
                 :active="row.conversation.id === store.currentId"
                 :streaming="isStreamingItem(row.conversation.id)"
+                :unread="store.unreadConversations.includes(row.conversation.id)"
                 @open="handleOpen(row.conversation.id)"
                 @delete="handleDelete(row.conversation)"
                 @contextmenu="!nexoracode && handleContextMenu($event, row.conversation)"

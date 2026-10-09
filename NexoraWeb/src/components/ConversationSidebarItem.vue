@@ -28,6 +28,12 @@
             {{ conversation.title }}
         </span>
         <span class="conversation-item-right">
+            <span
+                v-if="unread && !streaming"
+                class="conversation-stream-indicator is-unread"
+                title="有新回复"
+                aria-label="有新回复"
+            ></span>
             <button
                 class="btn-icon-small delete-chat"
                 type="button"
@@ -64,12 +70,15 @@
         active?: boolean
         streaming?: boolean
         projectItem?: boolean
+        /** NexoraCode:该会话有未读的新回复,侧栏显示蓝点 */
+        unread?: boolean
     }>(), {
         depth: 0,
         orphan: false,
         active: false,
         streaming: false,
         projectItem: false,
+        unread: false,
     })
 
     const emit = defineEmits<{

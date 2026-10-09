@@ -1906,6 +1906,12 @@
 
         conversationStore.endStream(state.conversationId, { finalContent: detail?.finalContent })
 
+        // NexoraCode:后台会话生成完成且用户不在该会话时,标记未读蓝点。
+        // 仅 done(正常完成)触发;aborted/error 分支已提前 return,不会误标。
+        if (isNexoraCode && conversationStore.currentId !== state.conversationId) {
+            conversationStore.markConversationUnread(state.conversationId)
+        }
+
         // 移除“终帧后全量 loadMessages”导致的闪空刷新：
         // applyFinalMessage 已用终帧 finalMessage 完成轻量覆盖（含 usage/trace/versions），
         // 全量窗口重载会瞬间替换 messages 数组，造成“内容变空再重现”的视觉刷新。

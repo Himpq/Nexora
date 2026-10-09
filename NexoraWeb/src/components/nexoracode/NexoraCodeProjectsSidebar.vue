@@ -96,6 +96,7 @@
                                 :orphan="row.orphan"
                                 :active="row.conversation.id === currentId"
                                 :streaming="store.isConversationGenerating(row.conversation.id)"
+                                :unread="store.unreadConversations.includes(row.conversation.id)"
                                 project-item
                                 @open="emit('open-conversation', row.conversation.id)"
                                 @delete="emit('delete-conversation', row.conversation)"

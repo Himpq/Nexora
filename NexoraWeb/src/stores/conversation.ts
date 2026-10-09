@@ -66,6 +66,11 @@ interface ConversationState {
     turns: ConversationTurn[]
     /** 加载序号:并发切换时丢弃过期结果,避免旧会话内容覆盖新会话 */
     loadSeq: number
+    /**
+     * 未读会话集合(NexoraCode 专用):后台流完成时,若用户不在该会话,
+     * 记为未读并在侧栏显示蓝点;切回该会话即清除。
+     */
+    unreadConversations: string[]
     /** 输入区「TK 输入/输出」mini 展示状态(对齐原版 tokenMiniState) */
     tokenMini: {
         /** 当前会话累计基数:会话统计接口的 input_total/output_total */
@@ -128,6 +133,7 @@ export const useConversationStore = defineStore('conversation', {
         messagesLoading: false,
         turns: [],
         loadSeq: 0,
+        unreadConversations: [],
         tokenMini: {
             baseInput: 0,
             baseOutput: 0,
@@ -266,6 +272,8 @@ export const useConversationStore = defineStore('conversation', {
             this.messagesLoading = true
             // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
             this.turns = []
+            // 切回即视为已读:清除该会话的未读蓝点
+            this.clearConversationUnread(conversationId)
 
             try {
                 await this.loadMessages(seq)
@@ -447,6 +455,7 @@ export const useConversationStore = defineStore('conversation', {
             this.conversations = this.conversations.filter((item) => item.id !== conversationId)
             delete this.pendingStreams[conversationId]
             chatStream.clearSnapshot(conversationId)
+            this.clearConversationUnread(conversationId)
 
             if (this.currentId === conversationId) {
                 this.currentId = ''
@@ -1392,6 +1401,24 @@ export const useConversationStore = defineStore('conversation', {
             const pending = this.pendingStreams[conversationId]
 
             return !!pending && !pending.finished
+        },
+
+        /** 标记会话未读(NexoraCode:后台流完成且用户不在该会话时显示蓝点) */
+        markConversationUnread(conversationId: string): void {
+            if (!conversationId || this.unreadConversations.includes(conversationId)) {
+                return
+            }
+
+            this.unreadConversations.push(conversationId)
+        },
+
+        /** 清除会话未读标记(切回该会话或删除会话时调用) */
+        clearConversationUnread(conversationId: string): void {
+            if (!conversationId) {
+                return
+            }
+
+            this.unreadConversations = this.unreadConversations.filter((id) => id !== conversationId)
         },
 
         /** 本地更新会话置顶状态并重排(置顶在前,对齐后端排序) */
