@@ -9043,7 +9043,7 @@ function getModelBadgeCacheStats(timing) {
     const raw = safeTokenInt(t.rawInput);
 
     // 上游没回报原始输入时无从判断命中率，此时不展示而不是显示 0%。
-    if (!(cached > 0) || !(raw > 0)) {
+    if (!(raw > 0)) {
         return { cached, raw, rate: null };
     }
 
@@ -9069,10 +9069,10 @@ function buildModelBadgeTimingText(timing) {
         : `缓存 ${cache.rate.toFixed(1)}% ${formatBadgeTokenAmount(cache.cached)}/${formatBadgeTokenAmount(cache.raw)}`;
 
     const parts = [];
+    if (cacheText) parts.push(cacheText);
     if (totalMs > 0) parts.push(`总耗时 ${formatBadgeDuration(totalMs)}`);
     if (firstTokenMs > 0) parts.push(`首token ${formatBadgeDuration(firstTokenMs)}`);
     if (tpsText) parts.push(`速率 ${tpsText}`);
-    if (cacheText) parts.push(cacheText);
 
     return parts.length ? ` - ${parts.join(' · ')}` : '';
 }
