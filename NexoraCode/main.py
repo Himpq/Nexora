@@ -2645,7 +2645,16 @@ def _titlebar_keepalive_loop(
 ) -> None:
     """周期性自愈：防止慢网或页面切换后标题栏丢失。"""
     while not _STOP_POLL.is_set():
-        _inject_titlebar_with_retry(win, titlebar_js, max_attempts=1, delay_s=0, marker_id=marker_id)
+        try:
+            ready_result = win.evaluate_js(
+                "!!(window.__ncTitlebarShellReady && window.__ncTitlebarShellReady())"
+            )
+            shell_ready = ready_result is True or str(ready_result).strip().lower() in {"1", "true"}
+        except Exception:
+            shell_ready = False
+
+        if not shell_ready:
+            _inject_titlebar_with_retry(win, titlebar_js, max_attempts=1, delay_s=0, marker_id=marker_id)
         try:
             wintitle.sync_max_state(win)
         except Exception:
@@ -3522,21 +3531,28 @@ def main():
     _iframe_shell_enabled = str(config.get("iframe_shell_enabled", False)).strip().lower() in {"1", "true", "on", "yes"}
 
     _TITLEBAR_JS = r"""(function() {
+    const WINDOW_MODE = "__NC_WINDOW_MODE__";
+    const IFRAME_SHELL_ENABLED = __NC_IFRAME_SHELL_ENABLED__;
     if (document.getElementById('nc-boot-bar')) {
         return;
     }
-    if (window.__ncTitlebarScriptActive && document.getElementById('nc-titlebar') && document.getElementById('nc-app-frame')) {
+    if (window.top !== window.self) {
+        return;
+    }
+    if (window.__ncTitlebarScriptActive
+        && typeof window.__ncEnsureTitlebarShell === 'function') {
+        if (window.__ncTitlebarIframeShellEnabled === IFRAME_SHELL_ENABLED) {
+            try {
+                window.__ncEnsureTitlebarShell();
+            } catch (_) {}
+        }
         return;
     }
     window.__ncTitlebarScriptActive = true;
-        if (window.top !== window.self) {
-            return;
-        }
-    const WINDOW_MODE = "__NC_WINDOW_MODE__";
+    window.__ncTitlebarIframeShellEnabled = IFRAME_SHELL_ENABLED;
         const FRAME_PARAM = 'nc_iframe_content';
         const NAV_TEXT_BOOTSTRAP = __NC_MSG_BOOTSTRAP__;
         const NAV_TEXT_LOGIN = __NC_MSG_LOGIN__;
-        const IFRAME_SHELL_ENABLED = __NC_IFRAME_SHELL_ENABLED__;
     const IS_CUSTOM_MODE = WINDOW_MODE === 'custom';
     const EDGE_CURSOR = {
         'top': 'ns-resize',
@@ -3577,7 +3593,7 @@ def main():
       s.id = 'nc-titlebar-style';
       document.head.appendChild(s);
     }
-    s.textContent = `
+    const styleText = `
             html, body {
                 margin: 0 !important;
                 height: 100% !important;
@@ -3869,6 +3885,9 @@ def main():
         overflow: hidden !important;
       }
     `;
+    if (s.textContent !== styleText) {
+      s.textContent = styleText;
+    }
     return true;
   }
 
@@ -3882,13 +3901,21 @@ def main():
   function setMaxIcon(isMax) {
     const btn = document.getElementById('nc-max-btn');
     if (!btn) return;
-    btn.innerHTML = isMax ? ICON_RESTORE : ICON_MAX;
-    btn.title = isMax ? '\u8fd8\u539f' : '\u6700\u5927\u5316';
-        if (document.documentElement) {
-            document.documentElement.classList.toggle('nc-win-maximized', !!isMax);
-        }
-        window.__ncWinMaximized = !!isMax;
-        applyResizeGripState();
+    const nextIsMax = !!isMax;
+    const nextIconState = nextIsMax ? 'maximized' : 'normal';
+
+    if (btn.dataset.ncMaxState !== nextIconState) {
+        btn.innerHTML = nextIsMax ? ICON_RESTORE : ICON_MAX;
+        btn.title = nextIsMax ? '还原' : '最大化';
+        btn.dataset.ncMaxState = nextIconState;
+    }
+
+    if (document.documentElement) {
+        document.documentElement.classList.toggle('nc-win-maximized', nextIsMax);
+    }
+
+    window.__ncWinMaximized = nextIsMax;
+    applyResizeGripState();
   }
   window._ncTitlebarSetMaximized = setMaxIcon;
 
@@ -4377,23 +4404,46 @@ def main():
         });
     }
 
-  function ensureAll() {
-    syncViewportMode();
-    const styleOk = ensureStyle();
-    const barOk = ensureBar();
+    // 顶层模式没有 app frame；只有 iframe 模式要求该节点就绪。
+    function isTitlebarShellReady() {
+        return !!(
+            document.getElementById('nc-titlebar')
+            && document.getElementById('nc-titlebar-style')
+            && document.getElementById('nc-resize-grips')
+            && (!IFRAME_SHELL_ENABLED || (
+                document.getElementById('nc-app-frame')
+                && document.getElementById('nc-app-iframe')
+            ))
+        );
+    }
+
+    function ensureAll() {
+        const wasReady = isTitlebarShellReady();
+        syncViewportMode();
+        const styleOk = ensureStyle();
+        const barOk = ensureBar();
         const shellOk = ensureIframeShell();
-    const gripsOk = ensureResizeGrips();
-    ensureNavVeil();
+        const gripsOk = ensureResizeGrips();
+        ensureNavVeil();
+
         if (styleOk && barOk && shellOk && gripsOk) syncState();
+
         if (styleOk && barOk && shellOk && gripsOk) {
             applyMobileOverlayFix();
-      // First-frame stabilization: some WebView2 builds need explicit relayout.
-      try { window.dispatchEvent(new Event('resize')); } catch (_) {}
-      setTimeout(function() { try { window.dispatchEvent(new Event('resize')); } catch (_) {} }, 60);
-      setTimeout(function() { try { window.dispatchEvent(new Event('resize')); } catch (_) {} }, 180);
-    }
+
+            if (!wasReady) {
+                // 首次就绪或修复后才派发窗口尺寸事件。
+                try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+                setTimeout(function() { try { window.dispatchEvent(new Event('resize')); } catch (_) {} }, 60);
+                setTimeout(function() { try { window.dispatchEvent(new Event('resize')); } catch (_) {} }, 180);
+            }
+        }
+
         return styleOk && barOk && shellOk && gripsOk;
-  }
+    }
+
+    window.__ncEnsureTitlebarShell = ensureAll;
+    window.__ncTitlebarShellReady = isTitlebarShellReady;
 
   if (!ensureAll()) {
     if (document.readyState === 'loading') {
@@ -4409,7 +4459,7 @@ def main():
                 const t = setInterval(function() {
                         n += 1;
                         try { ensureAll(); } catch (_) {}
-                        if ((document.getElementById('nc-titlebar') && document.getElementById('nc-app-frame')) || n >= 90) {
+                        if (isTitlebarShellReady() || n >= 90) {
                                 clearInterval(t);
                         }
                 }, 16);
