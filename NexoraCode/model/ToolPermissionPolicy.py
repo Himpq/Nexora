@@ -140,6 +140,77 @@ def _clean_approval_reason(reason: Any) -> str:
     return " ".join(str(reason or "").split())[:300]
 
 
+# 审批模型输出约定：首行为「1/0,reason」。
+# 1 = 允许，0 = 拒绝；逗号后为一句简短中文理由。为兼容模型偶发漂移，
+# 解析层额外接受常见同义词（yes/no、allow/deny、true/false、批准/拒绝 等）。
+_APPROVE_TOKENS = {"1", "yes", "y", "true", "allow", "approve", "approved", "批准", "允许", "通过"}
+_REJECT_TOKENS = {"0", "no", "n", "false", "deny", "reject", "rejected", "拒绝", "拦截", "不批准"}
+
+
+def _parse_approval_decision(text: Any) -> dict | None:
+    """把审批模型输出解析为 {approved, reason}；无法判定时返回 None。
+
+    首选格式为「1/0,reason」。为提升鲁棒性，这里做宽松解析：
+      - 允许模型输出 JSON（{"decision":"approve","reason":"..."}）；
+      - 允许首行前后有空白、代码块围栏或多余说明；
+      - 决策词大小写不敏感，并接受常见同义写法。
+    """
+    raw = str(text or "").strip()
+
+    if not raw:
+        return None
+
+    # 剥离 Markdown 代码块围栏，便于后续统一按文本解析。
+    if raw.startswith("```"):
+        stripped = raw.strip("`").strip()
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+        raw = stripped
+
+    # 兼容模型仍输出 JSON 的情况。
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            decision = str(parsed.get("decision") or "").strip().lower()
+            reason = _clean_approval_reason(parsed.get("reason"))
+            if decision in _APPROVE_TOKENS:
+                return {"approved": True, "reason": reason}
+            if decision in _REJECT_TOKENS:
+                return {"approved": False, "reason": reason}
+
+    # 取首个非空行，再按首个逗号（中英文）切分决策与理由。
+    first_line = ""
+    for line in raw.splitlines():
+        if line.strip():
+            first_line = line.strip()
+            break
+
+    if not first_line:
+        return None
+
+    decision_part, _, reason_part = first_line.partition(",")
+    if not reason_part:
+        # 允许用中文逗号或冒号分隔。
+        for sep in ("，", ":", "："):
+            if sep in decision_part:
+                decision_part, _, reason_part = decision_part.partition(sep)
+                break
+
+    token = decision_part.strip().lower()
+    reason = _clean_approval_reason(reason_part)
+
+    if token in _APPROVE_TOKENS:
+        return {"approved": True, "reason": reason}
+
+    if token in _REJECT_TOKENS:
+        return {"approved": False, "reason": reason}
+
+    return None
+
+
 def _append_permission_event(line: str) -> None:
     """持久化一条已经序列化的自动审批事件。"""
     with _PERMISSION_EVENT_LOCK:
@@ -264,6 +335,7 @@ def _authorization_result(
     approval_model_id: str = "",
     duration_ms: int | None = None,
     error_type: str = "",
+    error_code: str = "",
     reason: str = "",
     token_usage: dict | None = None,
 ) -> dict:
@@ -276,6 +348,9 @@ def _authorization_result(
     if message:
         result["message"] = message
 
+    if error_code:
+        result["error_code"] = error_code
+
     if clean_reason:
         result["reason"] = clean_reason
 
@@ -287,7 +362,7 @@ def _authorization_result(
         stage=stage,
         approval_model_id=approval_model_id,
         duration_ms=duration_ms,
-        error_type=error_type,
+        error_type=error_type or error_code,
         reason=clean_reason,
         token_usage=token_usage,
     )
@@ -342,8 +417,8 @@ def _request_model_approval(
                 "提交 Git 历史只有在用户明确要求且提交范围清楚时才批准。"
                 "若上下文不足、关键上下文被截断、用户意图与操作不匹配或风险无法判断，必须拒绝。"
                 "reason 用一句简短中文说明批准依据或主要风险；不要引用命令、路径、脚本、文件内容或秘密。"
-                "只返回 JSON 对象：{\"decision\":\"approve\",\"reason\":\"...\"} 或 "
-                "{\"decision\":\"reject\",\"reason\":\"...\"}，不要输出其他文字。"
+                "只输出一行，格式固定为：1,理由 或 0,理由。"
+                "1 表示批准，0 表示拒绝；逗号后紧跟一句简短中文理由，不要输出其他文字、不要换行。"
             ),
         },
         {
@@ -351,38 +426,48 @@ def _request_model_approval(
             "content": "请根据用户意图和风险评估以下数据：\n" + operation_data,
         },
     ]
-    result_short = run_short_request(
-        ProviderClient(provider),
-        messages,
-        tools=None,
-        tool_choice=None,
-        max_tokens=180,
-        cancel_checker=cancel_checker,
-        cancel_message="自动审批已取消",
-        tool_call_message="审批模型返回了工具调用",
-    )
 
-    if usage_capture is not None:
-        usage_capture.clear()
-        usage_capture.update(result_short.usage)
+    def _run_approval(messages_payload: list) -> dict | None:
+        result_short = run_short_request(
+            ProviderClient(provider),
+            messages_payload,
+            tools=None,
+            tool_choice=None,
+            max_tokens=180,
+            cancel_checker=cancel_checker,
+            cancel_message="自动审批已取消",
+            tool_call_message="审批模型返回了工具调用",
+        )
 
-    result = json.loads(result_short.text.strip())
+        if usage_capture is not None:
+            usage_capture.clear()
+            usage_capture.update(result_short.usage)
 
-    if not isinstance(result, dict) or result.get("decision") not in {"approve", "reject"}:
+        return _parse_approval_decision(result_short.text)
+
+    decision = _run_approval(messages)
+
+    if decision is None:
+        # 首次输出无法解析：把原始输出回灌，要求严格按「1/0,reason」重答一次。
+        retry_messages = messages + [
+            {
+                "role": "user",
+                "content": "上一次输出无法解析。请只输出一行：1,理由 或 0,理由，不要任何其他文字。",
+            },
+        ]
+        decision = _run_approval(retry_messages)
+
+    if decision is None:
         raise ValueError("审批模型返回格式无效")
 
-    raw_reason = result.get("reason")
-
-    if not isinstance(raw_reason, str):
-        raise ValueError("审批模型返回格式无效")
-
-    reason = _clean_approval_reason(raw_reason)
+    reason = decision["reason"]
 
     if not reason:
-        raise ValueError("审批模型未返回有效理由")
+        # 理由缺失不致命：按决策给出兜底理由，避免因缺理由整单拦截。
+        reason = "审批模型已批准" if decision["approved"] else "审批模型未给出理由"
 
     return {
-        "approved": result["decision"] == "approve",
+        "approved": decision["approved"],
         "reason": reason,
     }
 
@@ -412,6 +497,9 @@ def evaluate_tool_call(
     if mode == "full":
         return _authorization_result(call, mode, "allow", stage="policy", approved_once=True)
 
+    # 只读白名单短路：任何非 full 模式下，纯只读工具（含 local_file_patch 的 dry_run 预览、
+    # local_terminal/local_process_manager 的 read 动作）都直接放行，不进审批模型。
+    # 这样 auto 模式只对真正有副作用的写入/命令调用模型，既省调用也避免抖动误拦。
     if call["operation"] == "read":
         return _authorization_result(call, mode, "allow", stage="policy", approved_once=False)
 
@@ -454,16 +542,23 @@ def evaluate_tool_call(
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started_at) * 1000)
+        error_code = "approval_format_invalid" if isinstance(exc, ValueError) else "approval_request_failed"
+        message = (
+            "自动审批模型返回格式无效（已自动重试一次），此操作已拦截。"
+            if error_code == "approval_format_invalid"
+            else "自动审批模型请求失败（网络或服务异常），此操作已拦截。"
+        )
 
         return _authorization_result(
             call,
             mode,
             "deny",
             stage="auto_model",
-            message="自动审批模型请求失败或返回格式无效，此操作已拦截。",
+            message=message,
             approval_model_id=model_id,
             duration_ms=duration_ms,
             error_type=type(exc).__name__,
+            error_code=error_code,
             reason="审批模型请求失败或返回格式无效。",
             token_usage=approval_usage or None,
         )
