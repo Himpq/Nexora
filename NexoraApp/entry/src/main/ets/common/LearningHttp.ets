@@ -106,6 +106,10 @@ export class LearningHttp {
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
 
+        if (!LearningHttp.isCurrent(identity)) {
+            return { ok: false, message: '学习账号或服务已切换，请刷新后重试', payload: null, status: 0 };
+        }
+
         return LearningHttp.readBody(result);
     }
 
@@ -117,6 +121,10 @@ export class LearningHttp {
         const result: HttpResult = await HttpUtil.post(LearningHttp.requestUrl(path, identity), payload, LearningHttp.headers(identity), readTimeoutMs);
         hilog.info(DOMAIN, TAG, 'json response route=%{public}s code=%{public}d chars=%{public}d',
             HttpUtil.pathForLog(path), result.code, result.body.length);
+
+        if (!LearningHttp.isCurrent(identity)) {
+            return { ok: false, message: '学习账号或服务已切换，请刷新后重试', payload: null, status: 0 };
+        }
 
         return LearningHttp.readBody(result);
     }

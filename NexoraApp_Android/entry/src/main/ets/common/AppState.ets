@@ -86,6 +86,8 @@ export class AppState {
     // Learning 入口：运行时开关与前端工作区地址（管理端配置，随偏好接口下发）
     learningEnabled: boolean = false;
     learningFrontendUrl: string = '';
+    private learningRuntimeSequence: number = 0;
+    private sessionValidationSequence: number = 0;
 
     // 阅读器偏好（本地持久化，随启动恢复）：字号 / 行距档（0 紧凑 / 1 适中 / 2 疏松）/ 主题
     readerFontSize: number = 16;
@@ -165,16 +167,34 @@ export class AppState {
 
     // 已保存过 Cookie 才认为可能处于登录态，最终以服务端校验结果为准
     async validateSession(): Promise<boolean> {
+        const sequence: number = ++this.sessionValidationSequence;
+
         if (!HttpUtil.hasSession()) {
             this.loggedIn = false;
+            this.invalidateLearningRuntime();
             return false;
         }
 
-        this.loggedIn = await HttpUtil.checkSession();
+        const valid: boolean = await HttpUtil.checkSession();
+
+        if (sequence !== this.sessionValidationSequence) {
+            return this.loggedIn;
+        }
+
+        this.loggedIn = valid;
+
+        if (!valid) {
+            this.invalidateLearningRuntime();
+        }
+
         return this.loggedIn;
     }
 
     async signIn(backendUrl: string, username: string, password: string): Promise<string> {
+        this.sessionValidationSequence += 1;
+        this.loggedIn = false;
+        this.invalidateLearningRuntime();
+
         const result = await HttpUtil.login(backendUrl, username, password);
 
         if (!result.success) {
@@ -191,6 +211,9 @@ export class AppState {
     }
 
     async signOut(): Promise<void> {
+        this.sessionValidationSequence += 1;
+        this.loggedIn = false;
+        this.invalidateLearningRuntime();
         await HttpUtil.logout();
 
         if (this.context !== null) {
@@ -209,8 +232,6 @@ export class AppState {
         this.mailBox = 'inbox';
         this.mailList = [];
         this.mailError = '';
-        // 退出即失效 Learning 内容接口（用户标识清空，避免串到下个账号）
-        LearningApi.shared.configure('');
         this.notes = [];
         this.notesError = '';
         this.notesStore = null;
@@ -223,8 +244,14 @@ export class AppState {
 
     // ---------- 配置 ----------
     async updateBackendUrl(url: string): Promise<void> {
+        const previousBackendUrl: string = this.backendUrl;
         HttpUtil.setBackendUrl(url);
         this.backendUrl = HttpUtil.getBackendUrl();
+
+        if (previousBackendUrl !== this.backendUrl) {
+            this.sessionValidationSequence += 1;
+            this.invalidateLearningRuntime();
+        }
 
         if (this.context !== null) {
             await PreferencesUtil.saveBackendUrl(this.context, this.backendUrl);
@@ -576,21 +603,39 @@ export class AppState {
     }
 
     // ---------- Learning ----------
+    // Account and backend changes revoke all Learning requests and clear runtime configuration.
+    private invalidateLearningRuntime(): void {
+        this.learningRuntimeSequence += 1;
+        this.learningEnabled = false;
+        this.learningFrontendUrl = '';
+        LearningApi.shared.configure('');
+    }
+
     // 拉取 Learning 运行时配置，并把独立服务地址交给 Learning API 客户端。
     async refreshLearningRuntime(): Promise<void> {
+        if (!this.loggedIn) {
+            return;
+        }
+
+        const sequence: number = ++this.learningRuntimeSequence;
+        const username: string = this.username;
+        const backendUrl: string = this.backendUrl;
         const result: LearningRuntimeResult = await ApiService.fetchLearningRuntime();
 
+        if (sequence !== this.learningRuntimeSequence || !this.loggedIn || username !== this.username ||
+            backendUrl !== this.backendUrl || backendUrl !== HttpUtil.getBackendUrl()) {
+            return;
+        }
+
         if (!result.success) {
-            this.learningEnabled = false;
-            this.learningFrontendUrl = '';
-            LearningApi.shared.configure(this.username, '');
+            this.invalidateLearningRuntime();
             hilog.warn(DOMAIN, TAG, 'load learning runtime failed: %{public}s', result.message);
             return;
         }
 
         this.learningEnabled = result.enabled;
         this.learningFrontendUrl = result.frontendUrl;
-        LearningApi.shared.configure(this.username, result.frontendUrl);
+        LearningApi.shared.configure(username, result.enabled ? result.frontendUrl : '');
     }
 
     // ---------- 邮件 ----------

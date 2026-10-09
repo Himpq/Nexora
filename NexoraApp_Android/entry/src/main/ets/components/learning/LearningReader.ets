@@ -8,6 +8,8 @@
 //  3. 读到章末自动续载下一章、读到章首自动补载上一章，阅读不被章节边界打断。
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import MeasureText from '@ohos.measure';
 import { AppState } from '../../common/AppState';
 import {
@@ -19,6 +21,9 @@ import {
     NO_BOOK,
 } from '../../common/LearningApi';
 import { LearningFormat } from '../../common/LearningFormat';
+import { LearningHttp, LearningIdentity } from '../../common/LearningHttp';
+import { ReadingCheckpoint, ReadingSession } from '../../common/LearningReading';
+import { LearningReadingApi, LearningReadingTelemetryOptions } from '../../common/LearningReadingApi';
 import {
     ReaderBlock,
     ReaderBlockKind,
@@ -31,6 +36,7 @@ import {
 import { FontSize, Motion, Radius, ReaderPalette, ReaderTheme, Shadow, Size, Space } from '../../common/DesignToken';
 import { IconButton } from '../common/IconButton';
 import { RemoteImage } from '../chat/RemoteImage';
+import { MarkdownView } from '../chat/MarkdownBlock';
 import { LoadingBlock, Placeholder, ProgressTrack } from './LearningWidgets';
 
 const DOMAIN: number = 0x0001;
@@ -56,10 +62,20 @@ const TOC_COVER_WIDTH: number = 56;
 const TOC_COVER_HEIGHT: number = 76;
 const TOC_INTRO_LINES: number = 3;
 const TOC_INTRO_EXPANDED: number = 999;
+const COMPLETE_CARD_HEIGHT: number = 104;
+const COMPLETE_CARD_GAP: number = 16;
+const READING_HEARTBEAT_MS: number = 10000;
 
 export interface ReaderAnchor {
     chapterIndex: number;
     paragraphIndex: number;
+    readStart: number;
+    completion: boolean;
+}
+
+interface ReaderAskTurn {
+    question: string;
+    answer: string;
 }
 
 // 章节请求结果：失败原因随结果返回，由调用方决定是页面级错误还是仅记录日志
@@ -144,9 +160,13 @@ export struct LearningReader {
     @Prop book: LearningBook = NO_BOOK;
     @Prop chapters: LearningChapterSummary[] = [];
     @Prop startChapterIndex: number = 0;
+    @Prop initialParagraph: number = -1;
+    @Prop flowId: string = '';
+    @Prop flowChapterIndex: number = -1;
+    @Prop @Watch('onReadingVisibilityChanged') visible: boolean = true;
     // 本层在宿主导航中的层级：消费返回请求后把 navDepth 复位，避免宿主误判为退出本层
     @Prop navLevel: number = 0;
-    @Link navDepth: number;
+    @Link @Watch('onReadingVisibilityChanged') navDepth: number;
     // 浮层展开标记与返回请求令牌：由宿主统一编排返回键，阅读器只负责响应
     @Link readerOverlayOpen: boolean;
     @Link @Watch('onBackRequested') readerBackToken: number;
@@ -155,14 +175,23 @@ export struct LearningReader {
 
     // 沉浸式布局下贴底浮层自己让开手势区
     @StorageProp('insetBottom') private insetBottom: number = 0;
+    @StorageProp('appForeground') @Watch('onReadingVisibilityChanged') private appForeground: boolean = false;
+    @StorageProp('nxLearningIdentityRevision') @Watch('onReadingIdentityChanged') private identityRevision: number = 0;
 
     @State private pages: FlatPage[] = [];
     @State private currentIndex: number = 0;
     @State private chromeVisible: boolean = true;
-    @State private settingsOpen: boolean = false;
-    @State private tocOpen: boolean = false;
+    @State @Watch('onReadingVisibilityChanged') private settingsOpen: boolean = false;
+    @State @Watch('onReadingVisibilityChanged') private tocOpen: boolean = false;
+    @State @Watch('onReadingVisibilityChanged') private askOpen: boolean = false;
+    @State private questionText: string = '';
+    @State private askBusy: boolean = false;
+    @State private askError: string = '';
+    @State private askTurns: ReaderAskTurn[] = [];
+    @State private completedChapters: number[] = [];
+    @State private completingChapters: number[] = [];
     @State private tocIntroExpanded: boolean = false;
-    @State private opening: boolean = true;
+    @State @Watch('onReadingVisibilityChanged') private opening: boolean = true;
     @State private errorMessage: string = '';
     // 正文带可用尺寸（vp）：由 onBandResize 给出，是排版度量的唯一来源
     @State private layoutWidth: number = 0;
@@ -177,11 +206,25 @@ export struct LearningReader {
     // 已加载的章节原始内容与升序章号
     private contents: Map<number, LearningChapterContent> = new Map<number, LearningChapterContent>();
     private order: number[] = [];
-    // 正在请求中的章号（-1 表示空闲），避免预载重复发起
-    private fetching: number = -1;
+    private fetching: Set<number> = new Set<number>();
     // 上次写入持久化的章号
     private savedChapter: number = -1;
     private openSequence: number = 0;
+    private disposed: boolean = false;
+    private initialized: boolean = false;
+    private rebuilding: boolean = false;
+    private readingContext: common.UIAbilityContext | null = null;
+    private readingOwner: LearningIdentity | null = null;
+    private readingSession: ReadingSession | null = null;
+    private sessionPoint: ReadingCheckpoint | null = null;
+    private sessionPage: FlatPage | null = null;
+    private readingFocused: boolean = false;
+    private heartbeatId: number = -1;
+    private chapterRequestVersion: number = 0;
+    private flowReadingConfirmed: boolean = false;
+    private flowCompletionPoint: ReadingCheckpoint | null = null;
+    private flowDoneStarted: boolean = false;
+    private initialAnchor: ReaderAnchor | null = null;
 
     // 文本测量：输入按 vp，测量结果按 px 返回，换算回 vp 后参与排版
     private measure: ReaderMeasureText = (text: string, fontSize: number, lineHeight: number, width: number): number => {
@@ -204,14 +247,36 @@ export struct LearningReader {
     };
 
     aboutToAppear(): void {
+        this.disposed = false;
+        this.readingOwner = LearningHttp.captureIdentity();
+        this.initialized = true;
+        const host = this.getUIContext().getHostContext();
+        if (host !== undefined) {
+            this.readingContext = host as common.UIAbilityContext;
+        }
         this.openStartChapter();
+    }
+
+    aboutToDisappear(): void {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
+        this.openSequence += 1;
+        this.chapterRequestVersion += 1;
+        this.stopHeartbeat();
+        this.finishReadingSession();
+        this.readerOverlayOpen = false;
+        this.completeConfirmedFlow();
     }
 
     private openStartChapter(): void {
         const start: number = this.startChapterIndex < 0 ? 0 : this.startChapterIndex;
 
-        this.openChapter(start).then(() => {
-        });
+        this.initialAnchor = this.initialParagraph < 0 ? null : {
+            chapterIndex: start, paragraphIndex: this.initialParagraph, readStart: -1, completion: false,
+        };
+        void this.openChapter(start);
     }
 
     // 宿主转来的返回请求：优先关闭浮层，浮层全关时把 navDepth 复位（宿主随后按层级回退）
@@ -224,6 +289,10 @@ export struct LearningReader {
     }
 
     private closeOverlay(): boolean {
+        if (this.askOpen) {
+            this.closeAsk();
+            return true;
+        }
         if (this.settingsOpen) {
             this.closeSettings();
             return true;
@@ -239,31 +308,33 @@ export struct LearningReader {
 
     private openToc(): void {
         this.tocOpen = true;
-        this.readerOverlayOpen = true;
+        this.onReadingVisibilityChanged();
 
         const row: number = this.currentTocRow();
 
         if (row >= 0) {
             // 等抽屉滑入完成再滚动，避免滚动发生在动画中途肉眼看不出定位
             setTimeout(() => {
-                this.tocScroller.scrollToIndex(row, true);
+                if (!this.disposed && this.tocOpen) {
+                    this.tocScroller.scrollToIndex(row, true);
+                }
             }, Motion.durationBase);
         }
     }
 
     private closeToc(): void {
         this.tocOpen = false;
-        this.readerOverlayOpen = false;
+        this.onReadingVisibilityChanged();
     }
 
     private openSettings(): void {
         this.settingsOpen = true;
-        this.readerOverlayOpen = true;
+        this.onReadingVisibilityChanged();
     }
 
     private closeSettings(): void {
         this.settingsOpen = false;
-        this.readerOverlayOpen = false;
+        this.onReadingVisibilityChanged();
     }
 
     // 当前章在目录列表里的行号：目录顺序来自后端，行号不等于章号，必须按章号反查
@@ -288,6 +359,8 @@ export struct LearningReader {
     // ---------- 章节装载 ----------
     // 打开指定章节：清空当前阅读链，以该章为起点重新建链
     private async openChapter(chapterIndex: number): Promise<void> {
+        this.finishReadingSession();
+        this.clearChapterQuestions();
         this.openSequence += 1;
         const openId: number = this.openSequence;
         const startedAt: number = Date.now();
@@ -295,6 +368,10 @@ export struct LearningReader {
         this.errorMessage = '';
         this.contents.clear();
         this.order = [];
+        this.fetching.clear();
+        this.pages = [];
+        this.currentIndex = 0;
+        this.pageSource.replace([]);
 
         hilog.info(DOMAIN, TAG, 'open start id=%{public}d chapter=%{public}d chapters=%{public}d width=%{public}d height=%{public}d',
             openId, chapterIndex, this.chapters.length, this.layoutWidth, this.layoutHeight);
@@ -302,12 +379,19 @@ export struct LearningReader {
         let fetched: ChapterFetch;
 
         try {
-            fetched = await this.fetchChapter(chapterIndex);
+            fetched = await this.fetchChapter(chapterIndex, openId);
         } catch (err) {
+            if (this.disposed || openId !== this.openSequence) {
+                return;
+            }
             this.errorMessage = '章节请求异常，请重试';
             hilog.error(DOMAIN, TAG, 'open request threw id=%{public}d chapter=%{public}d elapsedMs=%{public}d error=%{public}s',
                 openId, chapterIndex, Date.now() - startedAt, JSON.stringify(err));
             this.opening = false;
+            return;
+        }
+
+        if (this.disposed || openId !== this.openSequence) {
             return;
         }
 
@@ -322,7 +406,7 @@ export struct LearningReader {
         try {
             hilog.info(DOMAIN, TAG, 'open layout start id=%{public}d chapter=%{public}d contents=%{public}d',
                 openId, chapterIndex, this.contents.size);
-            this.rebuild(null);
+            this.rebuild(this.initialAnchor);
             this.preloadNext();
             hilog.info(DOMAIN, TAG, 'open success id=%{public}d chapter=%{public}d pages=%{public}d elapsedMs=%{public}d',
                 openId, chapterIndex, this.pages.length, Date.now() - startedAt);
@@ -332,11 +416,12 @@ export struct LearningReader {
                 openId, chapterIndex, Date.now() - startedAt, JSON.stringify(err));
         } finally {
             this.opening = false;
+            this.enterCurrentPage();
         }
     }
 
-    private async fetchChapter(chapterIndex: number): Promise<ChapterFetch> {
-        if (chapterIndex < 0 || chapterIndex >= this.chapters.length) {
+    private async fetchChapter(chapterIndex: number, openId: number): Promise<ChapterFetch> {
+        if (!this.chapters.some((chapter: LearningChapterSummary) => chapter.index === chapterIndex)) {
             hilog.error(DOMAIN, TAG, 'fetch rejected chapter=%{public}d chapters=%{public}d reason=out of range',
                 chapterIndex, this.chapters.length);
             return { ok: false, message: '章节超出范围' };
@@ -350,6 +435,9 @@ export struct LearningReader {
         const startedAt: number = Date.now();
         hilog.info(DOMAIN, TAG, 'fetch chapter index=%{public}d', chapterIndex);
         const result = await LearningApi.shared.getBookChapter(this.lectureId, this.book.id, chapterIndex);
+        if (this.disposed || openId !== this.openSequence || !LearningHttp.isCurrent(this.readingOwner)) {
+            return { ok: false, message: '章节请求已失效' };
+        }
         hilog.info(DOMAIN, TAG, 'fetch chapter index=%{public}d success=%{public}s content=%{public}s message=%{public}s elapsedMs=%{public}d',
             chapterIndex, result.success ? 'true' : 'false', result.content === null ? 'null' : 'present', result.message, Date.now() - startedAt);
 
@@ -373,6 +461,12 @@ export struct LearningReader {
         return { ok: true, message: '' };
     }
 
+    private adjacentChapter(chapterIndex: number, step: number): number {
+        const row: number = this.chapters.findIndex((chapter: LearningChapterSummary) => chapter.index === chapterIndex);
+        const next: number = row + step;
+        return row < 0 || next < 0 || next >= this.chapters.length ? -1 : this.chapters[next].index;
+    }
+
     // 预载下一章：读到接近书末时补链，翻页不中断
     private preloadNext(): void {
         if (this.order.length === 0) {
@@ -380,15 +474,19 @@ export struct LearningReader {
         }
 
         const last: number = this.order[this.order.length - 1];
-        const next: number = last + 1;
+        const next: number = this.adjacentChapter(last, 1);
 
-        if (next >= this.chapters.length || this.contents.has(next) || this.fetching === next) {
+        if (next < 0 || this.contents.has(next) || this.fetching.has(next)) {
             return;
         }
 
-        this.fetching = next;
-        this.fetchChapter(next).then((fetched: ChapterFetch) => {
-            this.fetching = -1;
+        const openId: number = this.openSequence;
+        this.fetching.add(next);
+        this.fetchChapter(next, openId).then((fetched: ChapterFetch) => {
+            if (this.disposed || openId !== this.openSequence) {
+                return;
+            }
+            this.fetching.delete(next);
 
             if (!fetched.ok) {
                 hilog.warn(DOMAIN, TAG, 'preload next chapter failed: %{public}s', fetched.message);
@@ -397,7 +495,10 @@ export struct LearningReader {
 
             this.rebuild(this.captureAnchor());
         }).catch((err: Object) => {
-            this.fetching = -1;
+            if (this.disposed || openId !== this.openSequence) {
+                return;
+            }
+            this.fetching.delete(next);
             hilog.error(DOMAIN, TAG, 'preload next chapter threw chapter=%{public}d error=%{public}s', next, JSON.stringify(err));
         });
     }
@@ -408,15 +509,19 @@ export struct LearningReader {
             return;
         }
 
-        const previous: number = this.order[0] - 1;
+        const previous: number = this.adjacentChapter(this.order[0], -1);
 
-        if (previous < 0 || this.contents.has(previous) || this.fetching === previous) {
+        if (previous < 0 || this.contents.has(previous) || this.fetching.has(previous)) {
             return;
         }
 
-        this.fetching = previous;
-        this.fetchChapter(previous).then((fetched: ChapterFetch) => {
-            this.fetching = -1;
+        const openId: number = this.openSequence;
+        this.fetching.add(previous);
+        this.fetchChapter(previous, openId).then((fetched: ChapterFetch) => {
+            if (this.disposed || openId !== this.openSequence) {
+                return;
+            }
+            this.fetching.delete(previous);
 
             if (!fetched.ok) {
                 hilog.warn(DOMAIN, TAG, 'preload previous chapter failed: %{public}s', fetched.message);
@@ -426,7 +531,10 @@ export struct LearningReader {
             // 锚点按「章 + 段」定位，前置新章后当前页自然后移，读者不会看到跳变
             this.rebuild(this.captureAnchor());
         }).catch((err: Object) => {
-            this.fetching = -1;
+            if (this.disposed || openId !== this.openSequence) {
+                return;
+            }
+            this.fetching.delete(previous);
             hilog.error(DOMAIN, TAG, 'preload previous chapter threw chapter=%{public}d error=%{public}s', previous, JSON.stringify(err));
         });
     }
@@ -445,6 +553,9 @@ export struct LearningReader {
     }
 
     private rebuild(anchor: ReaderAnchor | null): void {
+        if (this.disposed) {
+            return;
+        }
         const startedAt: number = Date.now();
         hilog.info(DOMAIN, TAG, 'layout rebuild start chapters=%{public}d pages=%{public}d width=%{public}d height=%{public}d',
             this.order.length, this.pages.length, this.layoutWidth, this.layoutHeight);
@@ -477,6 +588,9 @@ export struct LearningReader {
                 throw new Error(JSON.stringify(err));
             }
 
+            // 章末空间不够时补一页放确认卡，避免卡片挤掉正文；自动跨章不触发完成。
+            this.reserveCompletionCard(chapterPages, chapterContent.chapterTitle);
+
             hilog.info(DOMAIN, TAG, 'layout chapter done chapter=%{public}d paragraphs=%{public}d pages=%{public}d',
                 chapterIndex, chapterContent.paragraphs.length, chapterPages.length);
             const progress: number = chapterContent.bookTotalChars <= 0
@@ -496,33 +610,39 @@ export struct LearningReader {
             }
         }
 
-        this.pages = pages;
-
+        this.rebuilding = true;
         try {
+            this.pages = pages;
             this.pageSource.replace(pages);
-        } catch (err) {
-            hilog.error(DOMAIN, TAG, 'layout source replace failed pages=%{public}d error=%{public}s',
-                pages.length, JSON.stringify(err));
-            throw new Error(JSON.stringify(err));
-        }
-
-        const target: number = this.anchorIndex(pages, anchor);
-
-        this.currentIndex = target;
-
-        try {
+            const target: number = this.anchorIndex(pages, anchor === null ? this.initialAnchor : anchor);
+            this.currentIndex = target;
             this.swiper.changeIndex(target, false);
-        } catch (err) {
-            hilog.error(DOMAIN, TAG, 'layout swiper change failed target=%{public}d pages=%{public}d error=%{public}s',
-                target, pages.length, JSON.stringify(err));
-            throw new Error(JSON.stringify(err));
+            if (pages.length > 0) {
+                this.initialAnchor = null;
+            }
+        } finally {
+            this.rebuilding = false;
         }
+        this.enterCurrentPage();
 
         hilog.info(DOMAIN, TAG, 'layout rebuild end chapters=%{public}d pages=%{public}d width=%{public}d height=%{public}d elapsedMs=%{public}d',
             this.order.length, pages.length, this.layoutWidth, this.layoutHeight, Date.now() - startedAt);
     }
 
-    // 锚点定位：同章内找首个「起始段落不早于锚点」的页；找不到则退回该章最后一页
+    private reserveCompletionCard(pages: ReaderPage[], chapterTitle: string): void {
+        const last: ReaderPage | undefined = pages.length === 0 ? undefined : pages[pages.length - 1];
+        let used: number = 0;
+        if (last !== undefined) {
+            for (const block of last.blocks) {
+                used += block.height + block.gap;
+            }
+        }
+        if (last === undefined || used + COMPLETE_CARD_HEIGHT + COMPLETE_CARD_GAP > this.layoutHeight) {
+            pages.push({ blocks: [], sectionTitle: last === undefined ? chapterTitle : last.sectionTitle });
+        }
+    }
+
+    // 码点锚点区分同一长段的多片，预载和重排不会回跳到该段第一页。
     private anchorIndex(pages: FlatPage[], anchor: ReaderAnchor | null): number {
         if (anchor === null) {
             return 0;
@@ -537,18 +657,20 @@ export struct LearningReader {
 
             fallback = i;
 
-            if (FlatPageSource === null) {
-                continue;
-            }
-
             const blocks: ReaderBlock[] = pages[i].page.blocks;
 
-            if (blocks.length === 0) {
+            if (anchor.completion && blocks.length === 0) {
                 return i;
             }
-
-            if (blocks[0].paragraphIndex >= anchor.paragraphIndex) {
-                return i;
+            if (anchor.completion) {
+                continue;
+            }
+            for (const block of blocks) {
+                if (block.paragraphIndex > anchor.paragraphIndex ||
+                    (block.paragraphIndex === anchor.paragraphIndex &&
+                    (anchor.readStart < 0 || block.readEnd > anchor.readStart))) {
+                    return i;
+                }
             }
         }
 
@@ -566,7 +688,9 @@ export struct LearningReader {
 
         return {
             chapterIndex: item.chapterIndex,
-            paragraphIndex: blocks.length === 0 ? 0 : blocks[0].paragraphIndex,
+            paragraphIndex: this.firstParagraph(item),
+            readStart: blocks.length === 0 ? -1 : blocks[0].readStart,
+            completion: blocks.length === 0,
         };
     }
 
@@ -602,6 +726,9 @@ export struct LearningReader {
     }
 
     private onPageChanged(index: number): void {
+        if (this.disposed || this.rebuilding || this.opening || index < 0 || index >= this.pages.length) {
+            return;
+        }
         this.currentIndex = index;
 
         const item: FlatPage | undefined = this.currentPage();
@@ -609,6 +736,7 @@ export struct LearningReader {
         if (item === undefined) {
             return;
         }
+        this.enterCurrentPage();
 
         if (index >= this.pages.length - PRELOAD_AHEAD) {
             this.preloadNext();
@@ -618,15 +746,13 @@ export struct LearningReader {
             this.prependPrev();
         }
 
-        if (item.chapterIndex !== this.savedChapter) {
-            this.savedChapter = item.chapterIndex;
-            this.persistPosition(item.chapterIndex);
-        }
     }
 
     // 阅读位置持久化：内存即时生效，落盘失败不影响当前阅读
     private persistPosition(chapterIndex: number): void {
         this.app.saveReadPosition(this.book.id, chapterIndex).then(() => {
+        }).catch((err: Object) => {
+            hilog.warn(DOMAIN, TAG, 'save position failed: %{public}s', JSON.stringify(err));
         });
     }
 
@@ -668,10 +794,8 @@ export struct LearningReader {
 
     private jumpToChapter(chapterIndex: number): void {
         this.closeToc();
-        this.savedChapter = chapterIndex;
-        this.persistPosition(chapterIndex);
-        this.openChapter(chapterIndex).then(() => {
-        });
+        this.initialAnchor = null;
+        void this.openChapter(chapterIndex);
     }
 
     // 小节跳转：按标题文本在扁平页中定位（小节区间来自后端存在偏移，不能作为定位依据）
@@ -723,6 +847,361 @@ export struct LearningReader {
 
     private palette(): ReaderPalette {
         return ReaderTheme.byName(this.app.readerTheme);
+    }
+
+    // ---------- 阅读证据 ----------
+    private canRecordReading(): boolean {
+        return !this.disposed && this.visible && this.navDepth === this.navLevel && this.appForeground &&
+            LearningHttp.isCurrent(this.readingOwner) &&
+            !this.opening && this.errorMessage.length === 0 && !this.tocOpen && !this.settingsOpen && !this.askOpen;
+    }
+
+    private onReadingIdentityChanged(): void {
+        if (!this.initialized || this.disposed || LearningHttp.isCurrent(this.readingOwner)) {
+            return;
+        }
+        // 旧内容与创建它的身份绑定；切账号/服务时停止旧会话，不能重绑给新身份。
+        this.openSequence += 1;
+        this.finishReadingSession();
+        this.clearChapterQuestions();
+        this.opening = false;
+        this.errorMessage = '学习身份或服务已变更，请返回后重新打开教材';
+    }
+
+    private firstParagraph(item: FlatPage): number {
+        if (item.page.blocks.length > 0) {
+            return item.page.blocks[0].paragraphIndex;
+        }
+        const content: LearningChapterContent | undefined = this.contents.get(item.chapterIndex);
+        return content === undefined || content.paragraphs.length === 0 ? 0 :
+            content.paragraphs[content.paragraphs.length - 1].index;
+    }
+
+    private pageSignature(item: FlatPage): string {
+        let key: string = String(item.chapterIndex);
+        for (const block of item.page.blocks) {
+            key += ':' + block.paragraphIndex + '/' + block.readStart + '-' + block.readEnd;
+        }
+        return key;
+    }
+
+    private pageReadRanges(item: FlatPage): number[][] {
+        const content: LearningChapterContent | undefined = this.contents.get(item.chapterIndex);
+        if (content === undefined || content.coordinateSpace !== 'plain') {
+            return [];
+        }
+        const bounds: string[] = content.chapterRange.split(':');
+        if (bounds.length !== 2) {
+            return [];
+        }
+        const start: number = Number(bounds[0]);
+        const length: number = Number(bounds[1]);
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || start < 0 || length < 0) {
+            return [];
+        }
+        const end: number = start + length;
+        const ranges: number[][] = [];
+        for (const block of item.page.blocks) {
+            // 后端可返回与章边界相交的完整段落，覆盖证据必须裁剪到本章。
+            const left: number = Math.max(start, block.readStart);
+            const right: number = Math.min(end, block.readEnd);
+            if (Number.isSafeInteger(left) && Number.isSafeInteger(right) && right > left) {
+                ranges.push([left, right]);
+            }
+        }
+        return ranges;
+    }
+
+    private enterCurrentPage(): void {
+        if (this.disposed || this.opening || this.rebuilding || this.errorMessage.length > 0 ||
+            !LearningHttp.isCurrent(this.readingOwner)) {
+            return;
+        }
+        const item: FlatPage | undefined = this.currentPage();
+        if (item === undefined) {
+            return;
+        }
+        if (item.chapterIndex !== this.savedChapter) {
+            this.savedChapter = item.chapterIndex;
+            this.persistPosition(item.chapterIndex);
+        }
+
+        if (this.sessionPoint !== null && this.sessionPoint.chapter_index !== item.chapterIndex) {
+            this.finishReadingSession();
+            this.clearChapterQuestions();
+        }
+        if (this.readingSession === null) {
+            const content: LearningChapterContent | undefined = this.contents.get(item.chapterIndex);
+            if (content === undefined || content.coordinateSpace !== 'plain' || content.chapterRange.length === 0) {
+                return;
+            }
+            const point: ReadingCheckpoint = new ReadingCheckpoint(this.readingOwner);
+            point.lecture_id = this.lectureId;
+            point.book_id = this.book.id;
+            point.chapter_index = item.chapterIndex;
+            point.chapter_name = content.chapterTitle;
+            point.chapter_range = content.chapterRange;
+            point.coordinate_space = 'plain';
+            point.started_at_ms = Date.now();
+            point.session_id = 'read_' + point.started_at_ms.toString(36) + '_' + Math.random().toString(36).slice(2);
+            this.sessionPoint = point;
+            this.sessionPage = item;
+            this.readingSession = new ReadingSession(point);
+            this.readingFocused = this.canRecordReading();
+            this.readingSession.enterPage(this.pageReadRanges(item), this.readingFocused, Date.now());
+            if (this.readingFocused) {
+                point.paragraph_index = this.firstParagraph(item);
+                point.page_index = item.pageInChapter - 1;
+                this.emitTelemetry(point, 'focus_in', { focus: 'reader' });
+            }
+        } else if (this.sessionPage === null || this.pageSignature(this.sessionPage) !== this.pageSignature(item)) {
+            // 先把旧页停留计入旧页，再替换当前页；跨章时上面的分支已结束旧会话。
+            this.checkpointReading();
+            this.sessionPage = item;
+            this.readingSession.enterPage(this.pageReadRanges(item), this.canRecordReading(), Date.now());
+        } else {
+            // 预载相邻章只改变全局下标，不重置当前页的两秒停留计时。
+            this.sessionPage = item;
+        }
+        this.onReadingVisibilityChanged();
+    }
+
+    onReadingVisibilityChanged(): void {
+        this.readerOverlayOpen = !this.disposed && (this.tocOpen || this.settingsOpen || this.askOpen);
+        const focused: boolean = this.canRecordReading();
+        if (this.readingSession !== null && focused !== this.readingFocused) {
+            this.readingSession.setActive(focused, Date.now());
+            this.readingFocused = focused;
+            const point: ReadingCheckpoint | null = this.checkpointReading();
+            if (point !== null) {
+                this.emitTelemetry(point, focused ? 'focus_in' : 'focus_out', { focus: focused ? 'reader' : 'blur' });
+            }
+        }
+        if (focused && this.readingSession !== null) {
+            this.startHeartbeat();
+        } else {
+            this.stopHeartbeat();
+        }
+    }
+
+    private startHeartbeat(): void {
+        if (this.heartbeatId >= 0) {
+            return;
+        }
+        this.heartbeatId = setInterval(() => {
+            if (!this.canRecordReading()) {
+                return;
+            }
+            const point: ReadingCheckpoint | null = this.checkpointReading();
+            const page: FlatPage | null = this.sessionPage;
+            if (point !== null && page !== null) {
+                this.emitTelemetry(point, 'snapshot', { scroll: page.pageInChapter / page.pageCountInChapter });
+            }
+        }, READING_HEARTBEAT_MS);
+    }
+
+    private stopHeartbeat(): void {
+        if (this.heartbeatId >= 0) {
+            clearInterval(this.heartbeatId);
+            this.heartbeatId = -1;
+        }
+    }
+
+    private checkpointReading(publish: boolean = true): ReadingCheckpoint | null {
+        if (this.readingSession === null || this.sessionPage === null) {
+            return null;
+        }
+        const point: ReadingCheckpoint = this.readingSession.snapshot(
+            this.firstParagraph(this.sessionPage), this.sessionPage.pageInChapter - 1, Date.now());
+        if (publish) {
+            this.publishReading(point);
+        }
+        return point;
+    }
+
+    private publishReading(point: ReadingCheckpoint): void {
+        if (this.readingContext === null || (point.active_duration_ms === 0 && point.read_ranges.length === 0)) {
+            return;
+        }
+        LearningReadingApi.queueReadingProgress(this.readingContext, point).catch((err: Object) => {
+            hilog.error(DOMAIN, TAG, 'reading checkpoint save failed: %{public}s', JSON.stringify(err));
+        });
+    }
+
+    private emitTelemetry(point: ReadingCheckpoint, event: string, options: LearningReadingTelemetryOptions = {}): void {
+        LearningReadingApi.postTelemetry(point, event, options).catch(() => {
+            // 遥测是尽力发送，阅读证据另有持久化队列。
+        });
+    }
+
+    private finishReadingSession(): void {
+        this.stopHeartbeat();
+        if (this.readingSession === null) {
+            return;
+        }
+        this.readingSession.setActive(false, Date.now());
+        const point: ReadingCheckpoint | null = this.checkpointReading();
+        this.readingSession = null;
+        this.sessionPoint = null;
+        this.sessionPage = null;
+        this.readingFocused = false;
+        if (point !== null) {
+            this.emitTelemetry(point, 'focus_out', { focus: 'blur' });
+            this.emitTelemetry(point, 'session_complete');
+        }
+    }
+
+    // ---------- 显式完成与复习闭环 ----------
+    private async completeChapter(chapterIndex: number): Promise<void> {
+        if (this.disposed || chapterIndex !== this.currentChapterIndex() ||
+            this.completingChapters.indexOf(chapterIndex) >= 0) {
+            return;
+        }
+        if (this.completedChapters.indexOf(chapterIndex) >= 0) {
+            this.toast('这一章已经记为读完');
+            return;
+        }
+        const point: ReadingCheckpoint | null = this.checkpointReading(false);
+        if (point === null || this.readingContext === null) {
+            this.toast('章节缺少有效阅读坐标，请重新加载');
+            return;
+        }
+        const requestVersion: number = this.chapterRequestVersion;
+        this.completingChapters = this.completingChapters.concat([chapterIndex]);
+        try {
+            const saved = await LearningReadingApi.saveReadingProgress(this.readingContext, point);
+            if (!saved.saved) {
+                if (!this.disposed && requestVersion === this.chapterRequestVersion) {
+                    this.toast('阅读记录还未保存，请重试');
+                }
+                return;
+            }
+            const result = await LearningReadingApi.postChapterComplete(point);
+            if (!result.ok) {
+                if (!this.disposed && requestVersion === this.chapterRequestVersion) {
+                    this.toast(result.message);
+                }
+                return;
+            }
+            const flowChapter: number = this.flowChapterIndex >= 0 ? this.flowChapterIndex : this.startChapterIndex;
+            if (this.flowId.length > 0 && chapterIndex === flowChapter) {
+                this.flowReadingConfirmed = true;
+                this.flowCompletionPoint = point;
+                // 点击后立即退出时，仍等待服务端确认再推进原流程。
+                if (this.disposed) {
+                    this.completeConfirmedFlow();
+                }
+            }
+            if (!this.disposed) {
+                this.completedChapters = this.completedChapters.concat([chapterIndex]);
+                if (requestVersion === this.chapterRequestVersion) {
+                    this.toast(result.alreadyCompleted ? '这一章已经记为读完' : '已记下这一章读完');
+                }
+            }
+        } catch (err) {
+            if (!this.disposed && requestVersion === this.chapterRequestVersion) {
+                this.toast('暂时没能记录读完，请重试');
+            }
+            hilog.warn(DOMAIN, TAG, 'chapter completion failed: %{public}s', JSON.stringify(err));
+        } finally {
+            if (!this.disposed) {
+                this.completingChapters = this.completingChapters.filter((index: number) => index !== chapterIndex);
+            }
+        }
+    }
+
+    private completeConfirmedFlow(): void {
+        if (!this.flowReadingConfirmed || this.flowCompletionPoint === null || this.flowDoneStarted || this.flowId.length === 0) {
+            return;
+        }
+        this.flowDoneStarted = true;
+        LearningReadingApi.postReadingDone(this.flowId, this.flowCompletionPoint.owner).then((result) => {
+            if (!result.ok) {
+                this.flowDoneStarted = false;
+                hilog.warn(DOMAIN, TAG, 'reading flow event failed: %{public}s', result.message);
+            }
+        }).catch((err: Object) => {
+            this.flowDoneStarted = false;
+            hilog.warn(DOMAIN, TAG, 'reading flow event failed: %{public}s', JSON.stringify(err));
+        });
+    }
+
+    // ---------- 当前页问答 ----------
+    private openAsk(): void {
+        if (this.opening || this.currentPage() === undefined) {
+            return;
+        }
+        this.askOpen = true;
+        this.onReadingVisibilityChanged();
+    }
+
+    private closeAsk(): void {
+        this.askOpen = false;
+        this.onReadingVisibilityChanged();
+    }
+
+    private clearChapterQuestions(): void {
+        this.chapterRequestVersion += 1;
+        this.askOpen = false;
+        this.askBusy = false;
+        this.askError = '';
+        this.questionText = '';
+        this.askTurns = [];
+    }
+
+    private currentPageText(): string {
+        const page: FlatPage | undefined = this.currentPage();
+        if (page === undefined) {
+            return '';
+        }
+        const paragraphs: string[] = [];
+        for (const block of page.page.blocks) {
+            if (block.kind !== ReaderBlockKind.IMAGE && block.text.trim().length > 0) {
+                paragraphs.push(block.text);
+            }
+        }
+        return paragraphs.join('\n');
+    }
+
+    private async submitQuestion(): Promise<void> {
+        const question: string = this.questionText.trim();
+        if (this.disposed || this.askBusy || question.length === 0) {
+            return;
+        }
+        const point: ReadingCheckpoint | null = this.checkpointReading();
+        if (point === null) {
+            this.askError = '章节尚未就绪，请稍后重试';
+            return;
+        }
+        const contextText: string = this.currentPageText();
+        const requestVersion: number = this.chapterRequestVersion;
+        this.askBusy = true;
+        this.askError = '';
+        this.emitTelemetry(point, 'ask', { selText: contextText });
+        try {
+            const result = await LearningReadingApi.askInContext(point, question, contextText);
+            if (this.disposed || requestVersion !== this.chapterRequestVersion) {
+                return;
+            }
+            if (!result.ok) {
+                this.askError = result.message;
+                return;
+            }
+            this.askTurns = this.askTurns.concat([{ question: question, answer: result.answer }]);
+            this.questionText = '';
+        } catch (err) {
+            if (!this.disposed && requestVersion === this.chapterRequestVersion) {
+                this.askError = '回答暂时不可用，请重试';
+            }
+        } finally {
+            if (!this.disposed && requestVersion === this.chapterRequestVersion) {
+                this.askBusy = false;
+            }
+        }
+    }
+
+    private toast(message: string): void {
+        promptAction.showToast({ message: message, duration: 2200 });
     }
 
     // ---------- 视图 ----------
@@ -792,6 +1271,8 @@ export struct LearningReader {
             this.TocLayer()
 
             this.SettingsLayer()
+
+            this.AskLayer()
         }
         .width('100%')
         .height('100%')
@@ -823,6 +1304,18 @@ export struct LearningReader {
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .layoutWeight(1)
                 .margin({ left: Space.sm });
+
+            Button('问 AI', { type: ButtonType.Normal })
+                .fontSize(FontSize.small)
+                .fontColor(this.palette().brand)
+                .backgroundColor(Color.Transparent)
+                .height(CONTROL_SIZE)
+                .padding({ left: Space.sm, right: Space.sm })
+                .enabled(!this.opening && this.pages.length > 0)
+                .id('learning_reader_ask')
+                .onClick(() => {
+                    this.openAsk();
+                });
 
             IconButton({
                 icon: $r('app.media.ic_list'),
@@ -921,6 +1414,10 @@ export struct LearningReader {
             ForEach(item.page.blocks, (block: ReaderBlock) => {
                 this.Block(block)
             }, (block: ReaderBlock, index: number) => block.paragraphIndex + '#' + index)
+
+            if (item.pageInChapter === item.pageCountInChapter) {
+                this.CompletionCard(item)
+            }
         }
         .width('100%')
         .height('100%')
@@ -931,6 +1428,133 @@ export struct LearningReader {
             bottom: PAGE_PADDING_V,
         })
         .alignItems(HorizontalAlign.Start);
+    }
+
+    @Builder
+    CompletionCard(item: FlatPage) {
+        Column({ space: Space.sm }) {
+            Button(this.completingChapters.indexOf(item.chapterIndex) >= 0 ? '正在记录…' :
+                (this.completedChapters.indexOf(item.chapterIndex) >= 0 ? '已记为读完' : '读完这一章'),
+                { type: ButtonType.Normal })
+                .width('100%')
+                .height(40)
+                .fontSize(FontSize.body)
+                .fontColor(this.palette().onBrand)
+                .backgroundColor(this.palette().brand)
+                .borderRadius(Radius.md)
+                .enabled(this.completingChapters.indexOf(item.chapterIndex) < 0)
+                .id('learning_complete_' + item.chapterIndex)
+                .hitTestBehavior(HitTestMode.Block)
+                .onClick(() => {
+                    void this.completeChapter(item.chapterIndex);
+                });
+
+            Text('确认读完后，AI 会据此安排后续学习')
+                .fontSize(FontSize.caption)
+                .fontColor(this.palette().secondary)
+                .maxLines(2)
+                .width('100%')
+                .textAlign(TextAlign.Center);
+        }
+        .width('100%')
+        .height(COMPLETE_CARD_HEIGHT)
+        .padding(Space.sm)
+        .margin({ top: COMPLETE_CARD_GAP })
+        .borderRadius(Radius.lg)
+        .backgroundColor(this.palette().sunken);
+    }
+
+    @Builder
+    AskLayer() {
+        Stack({ alignContent: Alignment.Bottom }) {
+            Column()
+                .width('100%')
+                .height('100%')
+                .backgroundColor($r('app.color.mask'))
+                .opacity(this.askOpen ? 1 : 0)
+                .hitTestBehavior(this.askOpen ? HitTestMode.Default : HitTestMode.None)
+                .onClick(() => {
+                    this.closeAsk();
+                });
+
+            Column({ space: Space.md }) {
+                Row() {
+                    Text('问 AI')
+                        .fontSize(FontSize.title)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.text_primary'))
+                        .layoutWeight(1);
+                    IconButton({
+                        icon: $r('app.media.ic_close'),
+                        iconSize: Size.icon,
+                        buttonSize: CONTROL_SIZE,
+                        onTap: () => { this.closeAsk(); }
+                    })
+                }
+                .width('100%');
+
+                Scroll() {
+                    Column({ space: Space.lg }) {
+                        if (this.askTurns.length === 0) {
+                            Text('围绕当前页提问，回答会结合教材内容。')
+                                .fontSize(FontSize.body)
+                                .fontColor($r('app.color.text_secondary'))
+                                .width('100%');
+                        }
+                        ForEach(this.askTurns, (turn: ReaderAskTurn) => {
+                            Column({ space: Space.sm }) {
+                                Text(turn.question)
+                                    .fontSize(FontSize.body)
+                                    .fontWeight(FontWeight.Medium)
+                                    .fontColor($r('app.color.text_primary'))
+                                    .width('100%');
+                                MarkdownView({ source: turn.answer })
+                            }
+                            .width('100%');
+                        }, (turn: ReaderAskTurn, index: number) => String(index));
+                        if (this.askBusy) {
+                            LoadingBlock({ label: '正在思考' })
+                        }
+                        if (this.askError.length > 0) {
+                            Text(this.askError)
+                                .fontSize(FontSize.small)
+                                .fontColor($r('app.color.text_secondary'))
+                                .width('100%');
+                        }
+                    }
+                    .width('100%')
+                    .alignItems(HorizontalAlign.Start);
+                }
+                .layoutWeight(1)
+                .width('100%');
+
+                Row({ space: Space.sm }) {
+                    TextInput({ text: this.questionText, placeholder: '输入你的问题' })
+                        .layoutWeight(1)
+                        .maxLength(2000)
+                        .enterKeyType(EnterKeyType.Send)
+                        .id('learning_reader_question')
+                        .onChange((value: string) => { this.questionText = value; })
+                        .onSubmit(() => { void this.submitQuestion(); });
+                    Button('发送')
+                        .enabled(!this.askBusy && this.questionText.trim().length > 0)
+                        .id('learning_reader_ask_send')
+                        .onClick(() => { void this.submitQuestion(); });
+                }
+                .width('100%');
+            }
+            .width('100%')
+            .height('56%')
+            .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md + this.insetBottom })
+            .backgroundColor($r('app.color.bg_page'))
+            .borderRadius({ topLeft: Radius.xl, topRight: Radius.xl })
+            .translate({ y: this.askOpen ? '0%' : '100%' })
+            .hitTestBehavior(this.askOpen ? HitTestMode.Default : HitTestMode.None)
+            .animation({ duration: Motion.durationBase, curve: Motion.easeOut });
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(this.askOpen ? HitTestMode.Default : HitTestMode.None);
     }
 
     @Builder

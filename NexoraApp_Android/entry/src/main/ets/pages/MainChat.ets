@@ -42,6 +42,7 @@ import { MailPage } from '../components/mail/MailPage';
 import { NotesEntryCard } from '../components/notes/NotesEntryCard';
 import { NotesPage } from '../components/notes/NotesPage';
 import { LearningPage } from '../components/learning/LearningPage';
+import { LearningAgent } from '../components/agent/LearningAgent';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMain';
@@ -196,6 +197,11 @@ export struct MainChat {
     @State private learningOpen: boolean = false;
     @State private learningNavDepth: number = 0;
 
+    // Agent 工作区与学习页并列；内部导航深度交给组件回报，切换模式时保留普通聊天现场。
+    @State private agentOpen: boolean = false;
+    @State private agentNavDepth: number = 0;
+    @State private agentInsightsToken: number = 0;
+
     // 回到底部按钮：滚动离开底部时显示，点击平滑回到底部
     @State private scrollOverlayState: ChatScrollOverlayState = new ChatScrollOverlayState();
 
@@ -307,6 +313,16 @@ export struct MainChat {
             return true;
         }
 
+        if (this.showSheet) {
+            this.showSheet = false;
+            return true;
+        }
+
+        if (this.sidebarOpen) {
+            this.closeSidebar();
+            return true;
+        }
+
         if (this.mailOpen) {
             if (this.mailDetailOpen) {
                 this.mailDetailOpen = false;
@@ -337,14 +353,13 @@ export struct MainChat {
             return true;
         }
 
-        if (this.sidebarOpen) {
-            this.closeSidebar();
-            return true;
-        }
+        if (this.agentOpen) {
+            if (this.agentNavDepth > 0) {
+                this.agentNavDepth -= 1;
+                return true;
+            }
 
-        if (this.showSheet) {
-            this.showSheet = false;
-            return true;
+            return false;
         }
 
         if (this.conversationId.length > 0) {
@@ -357,30 +372,63 @@ export struct MainChat {
 
     build() {
         Stack() {
-            // 主对话界面
+            // 普通聊天保持挂载，切回时保留草稿、消息和滚动现场。
             Column() {
-                this.TopBar();
-
-                this.ContentArea();
-
-                if (this.loadError.length > 0) {
-                    this.ErrorBar();
+                if (!this.agentOpen || this.agentNavDepth === 0) {
+                    this.TopBar();
                 }
 
-                ChatInputBar({
-                    draft: $draft,
-                    streaming: this.streaming,
-                    placeholder: this.inputPlaceholder(),
-                    onSend: () => {
-                        this.sendDraft();
-                    },
-                    onStop: () => {
-                        this.stopStreaming();
-                    },
-                    onPickModel: () => {
-                        this.openSheetModel();
+                Stack() {
+                    Column() {
+                        this.ContentArea();
+
+                        if (this.loadError.length > 0) {
+                            this.ErrorBar();
+                        }
+
+                        ChatInputBar({
+                            draft: $draft,
+                            streaming: this.streaming,
+                            placeholder: this.inputPlaceholder(),
+                            onSend: () => {
+                                this.sendDraft();
+                            },
+                            onStop: () => {
+                                this.stopStreaming();
+                            },
+                            onPickModel: () => {
+                                this.openSheetModel();
+                            }
+                        });
                     }
-                });
+                    .width('100%')
+                    .height('100%')
+                    .visibility(this.agentOpen ? Visibility.Hidden : Visibility.Visible)
+                    .hitTestBehavior(this.agentOpen ? HitTestMode.None : HitTestMode.Default);
+
+                    if (this.agentOpen) {
+                        LearningAgent({
+                            app: this.app,
+                            navDepth: $agentNavDepth,
+                            insightsToken: this.agentInsightsToken,
+                            visible: !this.mailOpen && !this.notesOpen && !this.learningOpen &&
+                                !this.sidebarOpen && !this.showSheet && this.viewerUrl.length === 0,
+                            onBack: () => {
+                                this.exitAgentMode();
+                            },
+                            onOpenLearning: () => {
+                                void this.openLearning();
+                            },
+                            onOpenImage: (url: string) => {
+                                this.viewerUrl = url;
+                            }
+                        })
+                            .width('100%')
+                            .height('100%');
+                    }
+                }
+                .width('100%')
+                .layoutWeight(1);
             }
             .width('100%')
             .height('100%')
@@ -425,6 +473,7 @@ export struct MainChat {
                 LearningPage({
                     app: this.app,
                     navDepth: $learningNavDepth,
+                    visible: this.learningOpen && this.viewerUrl.length === 0,
                     onBack: () => {
                         this.learningOpen = false;
                     },
@@ -504,7 +553,7 @@ export struct MainChat {
 
             // 标题 + 模型：整列可点，点按弹出模型选择
             Column({ space: Space.xxs }) {
-                Text(this.title)
+                Text(this.agentOpen ? 'Agent' : this.title)
                     .fontSize(FontSize.bodyLarge)
                     .fontWeight(FontWeight.Medium)
                     .fontColor($r('app.color.text_primary'))
@@ -512,19 +561,22 @@ export struct MainChat {
                     .textOverflow({ overflow: TextOverflow.Ellipsis });
 
                 Row({ space: Space.xxs }) {
-                    Text(this.remoteDeviceId.length > 0
-                        ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
-                        : this.modelLabel)
+                    Text(this.agentOpen ? '学习助手 · 时间线' :
+                        (this.remoteDeviceId.length > 0
+                            ? (this.remoteModelLabel.length > 0 ? this.remoteModelLabel : '电脑默认模型')
+                            : this.modelLabel))
                         .fontSize(FontSize.micro)
                         .fontColor($r('app.color.text_tertiary'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1);
 
-                    Image($r('app.media.ic_chevron_down'))
-                        .width(10)
-                        .height(10)
-                        .fillColor($r('app.color.icon_secondary'));
+                    if (!this.agentOpen) {
+                        Image($r('app.media.ic_chevron_down'))
+                            .width(10)
+                            .height(10)
+                            .fillColor($r('app.color.icon_secondary'));
+                    }
                 }
                 .constraintSize({ maxWidth: '100%' })
                 .alignItems(VerticalAlign.Center);
@@ -535,7 +587,7 @@ export struct MainChat {
             .backgroundColor(this.modelTitlePressed ? $r('app.color.bg_pressed') : Color.Transparent)
             .animation({ duration: Motion.durationPress, curve: Motion.press })
             .onTouch((event: TouchEvent) => {
-                if (event.type === TouchType.Down) {
+                if (event.type === TouchType.Down && !this.agentOpen) {
                     this.modelTitlePressed = true;
                 }
 
@@ -544,15 +596,24 @@ export struct MainChat {
                 }
             })
             .onClick(() => {
-                this.openSheetModel();
+                if (!this.agentOpen) {
+                    this.openSheetModel();
+                }
             });
 
             IconButton({
-                icon: $r('app.media.ic_plus'),
+                icon: this.agentOpen ? $r('app.media.ic_book') : $r('app.media.ic_plus'),
                 onTap: () => {
-                    this.startNewRound();
+                    if (this.agentOpen) {
+                        this.getUIContext().getFocusController().clearFocus();
+                        this.agentInsightsToken++;
+                    } else {
+                        this.startNewRound();
+                    }
                 }
-            });
+            })
+                .id('main_header_action')
+                .accessibilityText(this.agentOpen ? 'Agent 学习情况' : '新对话');
         }
         .width('100%')
         .padding({ left: Space.sm, right: Space.sm, top: Space.sm, bottom: Space.sm });
@@ -838,7 +899,8 @@ export struct MainChat {
             Column() {
                 SidebarPanel({
                     app: this.app,
-                    activeConversationId: this.conversationId,
+                    activeConversationId: this.agentOpen ? '' : this.conversationId,
+                    agentActive: this.agentOpen,
                     convList: this.convListSnapshot,
                     convEpoch: this.convEpoch,
                     streamingIds: this.streamingConvIds,
@@ -861,6 +923,9 @@ export struct MainChat {
                     },
                     onOpenLearning: () => {
                         void this.openLearning();
+                    },
+                    onOpenAgent: () => {
+                        void this.toggleAgentMode();
                     },
                     onOpenConversation: (conversationId: string, convTitle: string) => {
                         this.openConversation(conversationId, convTitle);
@@ -1045,17 +1110,71 @@ export struct MainChat {
     }
 
     // ---------- Learning 工作区 ----------
-    // 打开 Learning：先刷新运行时配置（管理端开关/地址可能刚变更），校验后进入全屏工作区
-    private async openLearning(): Promise<void> {
-        await this.app.refreshLearningRuntime();
+    // Agent 入口复用 Learning 运行时；确认当前账号与请求前一致后才挂载工作区。
+    private async toggleAgentMode(): Promise<void> {
+        this.closeSidebar();
+
+        if (this.agentOpen) {
+            this.exitAgentMode();
+            return;
+        }
+
+        if (!(await this.ensureLearningRuntimeReady())) {
+            return;
+        }
+
+        this.mailOpen = false;
+        this.notesOpen = false;
+        this.learningOpen = false;
+        this.showSheet = false;
+        this.viewerUrl = '';
+        this.agentNavDepth = 0;
+        this.agentOpen = true;
+    }
+
+    private exitAgentMode(): void {
+        this.agentOpen = false;
+        this.agentNavDepth = 0;
+        this.agentInsightsToken = 0;
+    }
+
+    // 两个学习入口共用此检查，避免 Agent 与学习工作区使用不同的账号或运行时配置。
+    private async ensureLearningRuntimeReady(): Promise<boolean> {
+        if (!this.app.loggedIn) {
+            this.notify('请先登录后使用学习服务', 1600);
+            return false;
+        }
+
+        const username: string = this.app.username;
+
+        try {
+            await this.app.refreshLearningRuntime();
+        } catch (error) {
+            hilog.warn(DOMAIN, TAG, 'learning runtime refresh failed');
+            this.notify('学习服务配置加载失败，请稍后重试', 2000);
+            return false;
+        }
+
+        if (!this.app.loggedIn || this.app.username !== username) {
+            return false;
+        }
 
         if (!this.app.learningEnabled) {
             this.notify('Learning 未启用', 1600);
-            return;
+            return false;
         }
 
         if (this.app.learningFrontendUrl.trim().length === 0) {
             this.notify('Learning 未配置前端地址', 1600);
+            return false;
+        }
+
+        return true;
+    }
+
+    // 打开 Learning：先刷新运行时配置（管理端开关/地址可能刚变更），校验后进入全屏工作区
+    private async openLearning(): Promise<void> {
+        if (!(await this.ensureLearningRuntimeReady())) {
             return;
         }
 
@@ -2016,6 +2135,7 @@ export struct MainChat {
     // 打开历史会话：切到目标会话并恢复现场，不中断任何进行中的流。
     // 目标会话正在生成时以本地缓冲为准（服务端尚未落盘），其余情况重新拉取权威历史
     private openConversation(conversationId: string, convTitle: string): void {
+        this.exitAgentMode();
         this.leaveRemoteConversation();
         this.conversationId = conversationId;
         this.streamUserScrolled = false;
@@ -2051,6 +2171,7 @@ export struct MainChat {
 
     // 新开一轮：切到空白视图回到空白态（顶栏 + 侧栏共用），不中断后台流
     private startNewRound(): void {
+        this.exitAgentMode();
         this.leaveRemoteConversation();
         this.conversationId = '';
         this.streamUserScrolled = false;

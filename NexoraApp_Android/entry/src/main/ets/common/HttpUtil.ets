@@ -92,8 +92,9 @@ export class HttpUtil {
         return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers, timeoutMs);
     }
 
-    static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.POST, pathOrUrl, payload, headers);
+    static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>,
+        readTimeoutMs?: number): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.POST, pathOrUrl, payload, headers, readTimeoutMs);
     }
 
     // 置顶等资源状态修改走 PUT，payload 为完整的变更请求体

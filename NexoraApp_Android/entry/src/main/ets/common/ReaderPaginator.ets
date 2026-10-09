@@ -11,6 +11,7 @@
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LearningParagraph } from './LearningApi';
+import { nxCodePointLength } from './LearningReading';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraPaginator';
@@ -28,6 +29,9 @@ export interface ReaderBlock {
     height: number;
     gap: number;
     paragraphIndex: number;
+    // 实际可上报的 plain 码点区间；修剪掉的空白归入相邻片段，避免覆盖缺口。
+    readStart: number;
+    readEnd: number;
 }
 
 // 一页正文：sectionTitle 为该页起始处所属的标题（章或节），供页眉显示
@@ -182,6 +186,10 @@ class ReaderPageFlow {
         const text: string = paragraph.text.trim();
 
         if (text.length === 0) {
+            if (paragraph.end > paragraph.start) {
+                this.append(ReaderHeading.NONE, paragraph.index, this.layout.fontSize, this.layout.lineHeight,
+                    0, 0, '', '', paragraph.start, paragraph.end);
+            }
             return;
         }
 
@@ -199,13 +207,16 @@ class ReaderPageFlow {
 
         let rest: string = text;
         let firstFragment: boolean = true;
+        // substring 的游标以 UTF-16 为单位，阅读区间以 Unicode 码点为单位，不能混用。
+        let plainCursor: number = nxCodePointLength(paragraph.text.substring(0, paragraph.text.indexOf(text)));
+        let readStart: number = paragraph.start;
 
         while (rest.length > 0) {
-            const gapNow: number = this.blocks.length === 0 ? 0 : gap;
+            const gapNow: number = this.blocks.length === 0 || !firstFragment ? 0 : gap;
             const available: number = this.layout.height - this.used - gapNow;
 
-            // 剩余空间连一行都放不下：先翻页再重算可用高度
-            if (available < lineHeight) {
+            // 剩余空间连一行都放不下：先翻页；空页仍须消费至少一个完整码点。
+            if (available < lineHeight && this.blocks.length > 0) {
                 this.flush();
                 continue;
             }
@@ -213,18 +224,28 @@ class ReaderPageFlow {
             const full: number = this.measure(rest, fontSize, lineHeight, this.layout.width);
 
             if (full <= available) {
-                this.append(level, paragraph.index, fontSize, lineHeight, full, firstFragment ? gap : 0, rest, '');
+                // 最后一片同时覆盖原段尾部被 trim 丢弃的空白。
+                this.append(level, paragraph.index, fontSize, lineHeight, full, gapNow, rest, '',
+                    readStart, paragraph.end);
                 return;
             }
 
             const cut: number = this.maxPrefix(rest, fontSize, lineHeight, available);
             const fragment: string = rest.substring(0, cut);
+            const remainder: string = rest.substring(cut);
+            const nextRest: string = remainder.trim();
+            const skipped: number = nextRest.length === 0 ? remainder.length : remainder.indexOf(nextRest);
+            plainCursor += nxCodePointLength(fragment) + nxCodePointLength(remainder.substring(0, skipped));
+            // 段首空白归首片、片间空白归前片，所有片段拼起来恰好覆盖整段。
+            const readEnd: number = nextRest.length === 0
+                ? paragraph.end : Math.min(paragraph.end, paragraph.start + plainCursor);
 
             this.append(level, paragraph.index, fontSize, lineHeight,
                 this.measure(fragment, fontSize, lineHeight, this.layout.width),
-                firstFragment ? gap : 0, fragment, '');
+                gapNow, fragment, '', readStart, readEnd);
             this.flush();
-            rest = rest.substring(cut).trim();
+            rest = nextRest;
+            readStart = readEnd;
             firstFragment = false;
         }
     }
@@ -261,22 +282,40 @@ class ReaderPageFlow {
         return this.layout.fontSize;
     }
 
-    // 二分找「在 available 高度内能放下的最长前缀」；至少返回 1，避免死循环
+    // 返回 UTF-16 切分下标，但只测量完整码点边界；至少消费一个码点，避免死循环。
     private maxPrefix(text: string, fontSize: number, lineHeight: number, available: number): number {
-        let low: number = 1;
+        let low: number = this.splitsSurrogatePair(text, 1) ? 2 : 1;
         let high: number = text.length;
 
         while (low < high) {
-            const mid: number = Math.floor((low + high + 1) / 2);
+            let mid: number = Math.floor((low + high + 1) / 2);
+
+            if (this.splitsSurrogatePair(text, mid)) {
+                mid++;
+            }
 
             if (this.measure(text.substring(0, mid), fontSize, lineHeight, this.layout.width) <= available) {
                 low = mid;
             } else {
                 high = mid - 1;
+
+                if (this.splitsSurrogatePair(text, high)) {
+                    high--;
+                }
             }
         }
 
         return low;
+    }
+
+    private splitsSurrogatePair(text: string, offset: number): boolean {
+        if (offset <= 0 || offset >= text.length) {
+            return false;
+        }
+
+        const previous: number = text.charCodeAt(offset - 1);
+        const next: number = text.charCodeAt(offset);
+        return previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF;
     }
 
     // ---------- 图片 ----------
@@ -289,12 +328,12 @@ class ReaderPageFlow {
         }
 
         this.append(ReaderHeading.NONE, paragraph.index, this.layout.fontSize, this.layout.lineHeight, height,
-            this.blocks.length === 0 ? 0 : gap, '', paragraph.imageId);
+            this.blocks.length === 0 ? 0 : gap, '', paragraph.imageId, paragraph.start, paragraph.end);
     }
 
     // ---------- 块 / 页 ----------
     private append(level: number, paragraphIndex: number, fontSize: number, lineHeight: number,
-        height: number, gap: number, text: string, imageId: string): void {
+        height: number, gap: number, text: string, imageId: string, readStart: number, readEnd: number): void {
         if (this.blocks.length === 0) {
             this.pageSectionTitle = this.sectionTitle;
         }
@@ -312,6 +351,8 @@ class ReaderPageFlow {
             height: height,
             gap: gap,
             paragraphIndex: paragraphIndex,
+            readStart: readStart,
+            readEnd: readEnd,
         });
         this.used += gap + height;
     }
