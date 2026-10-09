@@ -1,7 +1,8 @@
 import { BaiduMapView, TiandituMapView } from './nexora_map_view.js';
 import { loadBaiduMapGl, loadTiandituMap } from './nexora_map_sdk_loader.js';
 import { NexoraMapFrame } from './nexora_map_frame.js';
-import { applyMapStylePreview } from './nexora_map_style_preview.js';
+import { theme } from '../../ui/theme';
+import { applyBaiduMapTheme } from './nexora_map_theme.js';
 
 export const BAIDU_PROVIDER = 'baidu';
 export const TIANDITU_PROVIDER = 'tianditu';
@@ -85,7 +86,7 @@ class BaiduMapProvider extends NexoraMapProvider {
         map.enableScrollWheelZoom(true);
         map.addControl(new sdk.ScaleControl());
         map.addControl(new sdk.ZoomControl());
-        applyMapStylePreview(map);
+        applyBaiduMapTheme(map, theme.resolved);
     }
 
     addPolyline(sdk, map, polyline, frame) {

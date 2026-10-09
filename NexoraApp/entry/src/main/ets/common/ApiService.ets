@@ -11,6 +11,7 @@ import { TimeUtil } from './TimeUtil';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraApi';
+export const MAP_HTTP_TIMEOUT_MS: number = 30000;
 
 // 通用结果：success 表示业务成功，message 用于直接展示给用户的失败原因
 export interface ApiListResult<T> {
@@ -248,7 +249,7 @@ export class ApiService {
 
     // 地图渲染配置：GET /api/map/provider；渲染键嵌在 map_provider.map_renderer_config 一层之下
     static async fetchMapRendererConfig(): Promise<MapRendererConfigResult> {
-        const result: HttpResult = await HttpUtil.get('/api/map/provider');
+        const result: HttpResult = await HttpUtil.get('/api/map/provider', undefined, MAP_HTTP_TIMEOUT_MS);
         const payload: Record<string, Object> | null = ApiService.readPayload(result, '地图配置');
 
         if (payload === null) {
@@ -295,7 +296,7 @@ export class ApiService {
     static async fetchMapScene(conversationId: string, mapId: string): Promise<MapSceneResult> {
         const path: string = '/api/map/conversations/' + encodeURIComponent(conversationId)
             + '/maps/' + encodeURIComponent(mapId) + '/scene';
-        const result: HttpResult = await HttpUtil.get(path);
+        const result: HttpResult = await HttpUtil.get(path, undefined, MAP_HTTP_TIMEOUT_MS);
         const payload: Record<string, Object> | null = ApiService.readPayload(result, '地图记录');
 
         if (payload === null) {

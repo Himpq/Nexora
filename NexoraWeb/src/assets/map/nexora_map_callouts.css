@@ -1,9 +1,22 @@
-/* 地图保持完整尺寸;白底小标签集中在上方两角,容器背景透明。 */
+/* 地图保持完整尺寸;浅色下小标签为白底,暗色下切换为深色,容器背景透明。 */
 .nexora-map-card-body.has-map-callouts {
     --nexora-map-rail-width: clamp(132px, 25%, 260px);
     --nexora-map-callout-color: #d52239;
     --nexora-map-callout-text: #172338;
     --nexora-map-callout-muted: #8c949c;
+}
+
+html[data-theme='dark'] .nexora-map-card-body.has-map-callouts {
+    --nexora-map-callout-color: #f05b6b;
+    --nexora-map-callout-text: #e6e8ed;
+    --nexora-map-callout-muted: #9aa1ac;
+}
+
+html[data-theme='dark'] .nexora-map-tag,
+html[data-theme='dark'] .nexora-map-tag-group {
+    border-color: #454a54;
+    background: rgba(25, 28, 34, 0.96);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.42);
 }
 
 .has-map-callouts .nexora-map-canvas {

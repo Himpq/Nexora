@@ -420,6 +420,7 @@ export struct MapCard {
                     .domStorageAccess(true)
                     .zoomAccess(false)
                     .backgroundColor('#F1F2F6')
+                    .hitTestBehavior(HitTestMode.Block)
                     .nestedScroll({
                         scrollUp: NestedScrollMode.SELF_ONLY,
                         scrollDown: NestedScrollMode.SELF_ONLY,

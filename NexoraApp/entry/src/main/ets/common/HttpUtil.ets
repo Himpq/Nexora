@@ -88,8 +88,8 @@ export class HttpUtil {
     }
 
     // ---------- 传输 ----------
-    static async get(pathOrUrl: string, headers?: Record<string, string>): Promise<HttpResult> {
-        return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers);
+    static async get(pathOrUrl: string, headers?: Record<string, string>, timeoutMs?: number): Promise<HttpResult> {
+        return HttpUtil.send(http.RequestMethod.GET, pathOrUrl, undefined, headers, timeoutMs);
     }
 
     static async post(pathOrUrl: string, payload: Object, headers?: Record<string, string>,

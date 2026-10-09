@@ -5,7 +5,7 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
-import { ApiService } from '../../common/ApiService';
+import { ApiService, MAP_HTTP_TIMEOUT_MS } from '../../common/ApiService';
 import { FontSize, Motion, Radius, Size, Space } from '../../common/DesignToken';
 import { Json } from '../../common/JsonUtil';
 import { MapRendererConfig } from '../../common/MapRendererConfig';
@@ -15,24 +15,86 @@ const DOMAIN: number = 0x0001;
 const TAG: string = 'NexoraMapCard';
 
 const MAP_HEIGHT: number = 240;
-const RENDER_TIMEOUT_MS: number = 15000;
+const RENDER_TIMEOUT_MS: number = 30000;
+let mapTraceSequence: number = 0;
 
-// ArkWeb → ArkTS 回调桥：渲染器完成/失败时更新卡片状态
-class MapRenderBridge {
+class MapRenderBridgeCallbacks {
     private readyHandler: () => void;
     private errorHandler: (message: string) => void;
+    private progressHandler: (stage: string) => void;
 
-    constructor(readyHandler: () => void, errorHandler: (message: string) => void) {
+    constructor(
+        readyHandler: () => void,
+        errorHandler: (message: string) => void,
+        progressHandler: (stage: string) => void
+    ) {
         this.readyHandler = readyHandler;
         this.errorHandler = errorHandler;
+        this.progressHandler = progressHandler;
     }
 
     markReady(): void {
-        this.readyHandler();
+        setTimeout((): void => {
+            this.readyHandler();
+        }, 0);
     }
 
     markError(message: string): void {
-        this.errorHandler(message);
+        setTimeout((): void => {
+            this.errorHandler(message);
+        }, 0);
+    }
+
+    markProgress(stage: string): void {
+        setTimeout((): void => {
+            this.progressHandler(stage);
+        }, 0);
+    }
+}
+
+// Keep callback fields outside the JS proxy target; the registered target exposes methods only.
+class MapRenderBridge {
+    private static callbacks: Map<MapRenderBridge, MapRenderBridgeCallbacks> = new Map();
+
+    bind(
+        readyHandler: () => void,
+        errorHandler: (message: string) => void,
+        progressHandler: (stage: string) => void
+    ): void {
+        MapRenderBridge.callbacks.set(this,
+            new MapRenderBridgeCallbacks(readyHandler, errorHandler, progressHandler));
+    }
+
+    release(): void {
+        MapRenderBridge.callbacks.delete(this);
+    }
+
+    private getCallbacks(): MapRenderBridgeCallbacks | undefined {
+        return MapRenderBridge.callbacks.get(this);
+    }
+
+    markReady(): void {
+        const callbacks: MapRenderBridgeCallbacks | undefined = this.getCallbacks();
+
+        if (callbacks !== undefined) {
+            callbacks.markReady();
+        }
+    }
+
+    markError(message: string): void {
+        const callbacks: MapRenderBridgeCallbacks | undefined = this.getCallbacks();
+
+        if (callbacks !== undefined) {
+            callbacks.markError(message);
+        }
+    }
+
+    markProgress(stage: string): void {
+        const callbacks: MapRenderBridgeCallbacks | undefined = this.getCallbacks();
+
+        if (callbacks !== undefined) {
+            callbacks.markProgress(stage);
+        }
     }
 }
 
@@ -54,36 +116,70 @@ export struct MapCard {
     private webController: webview.WebviewController = new webview.WebviewController();
     private pageReady: boolean = false;
     private injected: boolean = false;
+    private bridgeRegistered: boolean = false;
     private renderTimer: number = -1;
-    private bridge: MapRenderBridge = new MapRenderBridge(
-        (): void => {
-            setTimeout((): void => {
-                this.markReady();
-            }, 0);
-        },
-        (message: string): void => {
-            setTimeout((): void => {
-                this.markError(message);
-            }, 0);
-        }
-    );
+    private traceId: string = '';
+    private bridgeObjectName: string = '';
+    private renderStartedAt: number = 0;
+    private activeStage: string = 'created';
+    private bridge: MapRenderBridge = new MapRenderBridge();
 
     aboutToAppear(): void {
+        this.bridge.bind(
+            (): void => {
+                this.markReady();
+            },
+            (message: string): void => {
+                this.markError(message);
+            },
+            (stage: string): void => {
+                this.markProgress(stage);
+            }
+        );
+        mapTraceSequence++;
+        this.traceId = 'map-' + mapTraceSequence.toString();
+        this.bridgeObjectName = 'nexoraMapBridge' + mapTraceSequence.toString();
+        this.renderStartedAt = Date.now();
+        this.beginStage('prepare');
         this.renderTimer = setTimeout((): void => {
             if (this.status === 'loading') {
+                this.logErrorEvent('timeout', this.activeStage,
+                    'limitMs=' + RENDER_TIMEOUT_MS.toString() + ' provider=' + this.provider);
                 this.markError('地图加载超时');
             }
         }, RENDER_TIMEOUT_MS);
-        this.prepare();
+        this.prepare().catch((error: BusinessError) => {
+            this.logErrorEvent('prepare_exception', this.activeStage,
+                'code=' + error.code.toString() + ' message=' + error.message);
+            this.markError('地图准备失败');
+        });
     }
 
     aboutToDisappear(): void {
+        this.logEvent('disappear', this.activeStage);
         this.clearRenderTimer();
+
+        if (this.bridgeRegistered) {
+            try {
+                this.webController.deleteJavaScriptRegister(this.bridgeObjectName);
+                this.logEvent('bridge_released', 'cleanup');
+            } catch (error) {
+                const businessError: BusinessError = error as BusinessError;
+                this.logErrorEvent('bridge_release_failed', 'cleanup',
+                    'code=' + businessError.code.toString() + ' message=' + businessError.message);
+            }
+
+            this.bridgeRegistered = false;
+        }
+
+        this.bridge.release();
     }
 
     // 解析工具结果 → 必要时拉取 scene → 拉取渲染配置 → 等待页面就绪后注入
     private async prepare(): Promise<void> {
+        const parseStartedAt: number = this.beginStage('parse_tool_result');
         const data: MapCardData | null = readMapCardData(this.rawResult);
+        this.completeStage('parse_tool_result', parseStartedAt, 'valid=' + (data !== null).toString());
 
         if (data === null) {
             this.markError('地图数据不可用');
@@ -91,6 +187,9 @@ export struct MapCard {
         }
 
         this.applyCardData(data);
+        this.logEvent('payload_ready', 'parse_tool_result', 'kind=' + data.kind +
+            ' provider=' + data.provider + ' markers=' + data.markerCount.toString() +
+            ' polylines=' + data.polylineCount.toString());
 
         if (data.kind === 'ref') {
             const resolved: boolean = await this.resolveMapRef(data);
@@ -102,7 +201,10 @@ export struct MapCard {
             this.payloadJson = data.payloadJson;
         }
 
+        const configStartedAt: number = this.beginStage('renderer_config',
+            'requestTimeoutMs=' + MAP_HTTP_TIMEOUT_MS.toString());
         const config: string = await MapRendererConfig.ensure();
+        this.completeStage('renderer_config', configStartedAt, 'available=' + (config.length > 0).toString());
 
         if (config.length === 0) {
             this.markError('地图渲染配置不可用');
@@ -124,14 +226,19 @@ export struct MapCard {
             return false;
         }
 
+        const requestStartedAt: number = this.beginStage('scene_request',
+            'requestTimeoutMs=' + MAP_HTTP_TIMEOUT_MS.toString());
         const scene = await ApiService.fetchMapScene(conversationId, mapId);
+        this.completeStage('scene_request', requestStartedAt, 'success=' + scene.success.toString());
 
         if (!scene.success || scene.sceneJson.length === 0) {
             this.markError(scene.message.length > 0 ? scene.message : '地图记录读取失败');
             return false;
         }
 
+        const parseStartedAt: number = this.beginStage('parse_scene');
         const sceneData: MapCardData | null = readSceneCardData(scene.sceneJson, data.title);
+        this.completeStage('parse_scene', parseStartedAt, 'valid=' + (sceneData !== null).toString());
 
         if (sceneData === null) {
             this.markError('地图记录解析失败');
@@ -140,6 +247,8 @@ export struct MapCard {
 
         this.applyCardData(sceneData);
         this.payloadJson = sceneData.payloadJson;
+        this.logEvent('scene_ready', 'parse_scene', 'provider=' + sceneData.provider +
+            ' markers=' + sceneData.markerCount.toString() + ' polylines=' + sceneData.polylineCount.toString());
         return true;
     }
 
@@ -154,28 +263,111 @@ export struct MapCard {
     // 页面与数据都就绪后注入一次（runJavaScript 在 onPageEnd 之前不可用）
     private injectIfReady(): void {
         if (!this.pageReady || this.injected || this.payloadJson.length === 0 || this.configJson.length === 0) {
+            const waitingFor: string[] = [];
+
+            if (!this.pageReady) {
+                waitingFor.push('web_page');
+            }
+
+            if (this.payloadJson.length === 0) {
+                waitingFor.push('payload');
+            }
+
+            if (this.configJson.length === 0) {
+                waitingFor.push('config');
+            }
+
+            this.activeStage = 'renderer_prerequisites';
+            this.logEvent('waiting', this.activeStage, waitingFor.join(','));
             return;
         }
 
         this.injected = true;
-        const script: string = 'window.NexoraMapBridge.render(' + this.payloadJson + ',' + this.configJson + ');';
+        // Return page and bridge state with the render call so missing Web assets or proxy methods are visible.
+        const script: string = '(function() {' +
+            'var bridge = window.' + this.bridgeObjectName + ';' +
+            'window.nexoraMapBridge = bridge;' +
+            'var renderer = window.NexoraMapBridge;' +
+            'var probe = {' +
+            'readyState: document.readyState,' +
+            'renderer: typeof renderer,' +
+            'render: renderer ? typeof renderer.render : "undefined",' +
+            'bridge: typeof bridge,' +
+            'progress: bridge ? typeof bridge.markProgress : "undefined",' +
+            'canvas: !!document.getElementById("nexora-map-canvas")' +
+            '};' +
+            'try {' +
+            'if (probe.progress === "function") {' +
+            'bridge.markProgress("renderer_probe");' +
+            'probe.bridgeCall = "returned";' +
+            '}' +
+            '} catch (error) {' +
+            'probe.bridgeCallError = String(error);' +
+            '}' +
+            'try {' +
+            'renderer.render(' + this.payloadJson + ',' + this.configJson + ');' +
+            'probe.renderCall = "returned";' +
+            '} catch (error) {' +
+            'probe.renderCallError = String(error);' +
+            '}' +
+            'return JSON.stringify(probe);' +
+            '})()';
+        const injectStartedAt: number = this.beginStage('inject_renderer',
+            'bridgeObjectName=' + this.bridgeObjectName);
 
-        this.webController.runJavaScript(script).catch((error: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'inject failed: %{public}s', JSON.stringify(error));
-            this.markError('地图脚本注入失败');
-        });
+        this.webController.runJavaScript(script)
+            .then((result): void => {
+                this.completeStage('inject_renderer', injectStartedAt);
+                this.logEvent('renderer_probe', 'inject_renderer', 'result=' + String(result).slice(0, 500));
+            })
+            .catch((error: BusinessError) => {
+                this.logErrorEvent('inject_failed', 'inject_renderer', JSON.stringify(error));
+                this.markError('地图脚本注入失败');
+            });
     }
 
     private markReady(): void {
         this.clearRenderTimer();
+        this.logEvent('ready', this.activeStage, 'provider=' + this.provider);
         this.status = 'ready';
     }
 
     private markError(message: string): void {
         this.clearRenderTimer();
+        this.logErrorEvent('failed', this.activeStage, 'message=' + message);
         this.status = 'error';
         this.errorMessage = message;
-        hilog.warn(DOMAIN, TAG, 'map render failed: %{public}s', message);
+    }
+
+    private markProgress(stage: string): void {
+        this.activeStage = stage;
+        this.logEvent('progress', stage);
+    }
+
+    private beginStage(stage: string, detail: string = ''): number {
+        this.activeStage = stage;
+        const startedAt: number = Date.now();
+        this.logEvent('start', stage, detail);
+        return startedAt;
+    }
+
+    private completeStage(stage: string, startedAt: number, detail: string = ''): void {
+        const duration: string = 'durationMs=' + (Date.now() - startedAt).toString();
+        this.logEvent('complete', stage, detail.length > 0 ? duration + ' ' + detail : duration);
+    }
+
+    private logEvent(event: string, stage: string, detail: string = ''): void {
+        const elapsedMs: number = this.renderStartedAt > 0 ? Date.now() - this.renderStartedAt : 0;
+        hilog.info(DOMAIN, TAG,
+            'trace=%{public}s event=%{public}s stage=%{public}s elapsedMs=%{public}d detail=%{public}s',
+            this.traceId, event, stage, elapsedMs, detail);
+    }
+
+    private logErrorEvent(event: string, stage: string, detail: string = ''): void {
+        const elapsedMs: number = this.renderStartedAt > 0 ? Date.now() - this.renderStartedAt : 0;
+        hilog.error(DOMAIN, TAG,
+            'trace=%{public}s event=%{public}s stage=%{public}s elapsedMs=%{public}d detail=%{public}s',
+            this.traceId, event, stage, elapsedMs, detail);
     }
 
     private clearRenderTimer(): void {
@@ -230,19 +422,46 @@ export struct MapCard {
                     .darkMode(WebDarkMode.Off)
                     .forceDarkAccess(false)
                     .backgroundColor('#F1F2F6')
-                    .javaScriptProxy({
-                        object: this.bridge,
-                        name: 'nexoraMapBridge',
-                        methodList: ['markReady', 'markError'],
-                        controller: this.webController
+                    .hitTestBehavior(HitTestMode.Block)
+                    .nestedScroll({
+                        scrollUp: NestedScrollMode.SELF_ONLY,
+                        scrollDown: NestedScrollMode.SELF_ONLY,
+                        scrollLeft: NestedScrollMode.SELF_ONLY,
+                        scrollRight: NestedScrollMode.SELF_ONLY
+                    })
+                    .onControllerAttached(() => {
+                        const registerStartedAt: number = this.beginStage('bridge_register');
+
+                        try {
+                            this.webController.registerJavaScriptProxy(
+                                this.bridge,
+                                this.bridgeObjectName,
+                                ['markReady', 'markError', 'markProgress']
+                            );
+                            this.bridgeRegistered = true;
+                            this.completeStage('bridge_register', registerStartedAt,
+                                'name=' + this.bridgeObjectName + ' methods=markReady,markError,markProgress');
+                        } catch (error) {
+                            const businessError: BusinessError = error as BusinessError;
+                            this.logErrorEvent('bridge_registration_failed', 'bridge_register',
+                                'code=' + businessError.code.toString() + ' message=' + businessError.message);
+                            this.markError('地图桥接注册失败');
+                        }
+                    })
+                    .onPageBegin(() => {
+                        this.activeStage = 'web_page_loading';
+                        this.logEvent('start', 'web_page');
                     })
                     .onPageEnd(() => {
                         this.pageReady = true;
+                        this.activeStage = 'web_page_ready';
+                        this.logEvent('complete', 'web_page', 'pageEnd=true');
                         this.injectIfReady();
                     })
                     .onErrorReceive((event: OnErrorReceiveEvent) => {
-                        hilog.error(DOMAIN, TAG, 'web error code=%{public}d info=%{public}s',
-                            event.error.getErrorCode(), event.error.getErrorInfo());
+                        this.activeStage = 'web_page_error';
+                        this.logErrorEvent('web_error', this.activeStage,
+                            'code=' + event.error.getErrorCode().toString() + ' info=' + event.error.getErrorInfo());
                     });
 
                 if (this.status === 'loading') {

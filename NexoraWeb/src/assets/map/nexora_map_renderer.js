@@ -1,6 +1,9 @@
 import { NexoraMapCallouts } from './nexora_map_callouts.js';
 import { NexoraMapPool } from './nexora_map_pool.js';
 import { BAIDU_PROVIDER, isSupportedMapProvider, mountMapProvider, releaseMapProvider } from './nexora_map_providers.js';
+import { watch } from 'vue';
+import { theme } from '../../ui/theme';
+import { applyBaiduMapTheme } from './nexora_map_theme.js';
 import { TOOL_STAGE_OPEN_EVENT, TOOL_STAGE_RESIZE_EVENT } from '@/ui/toolStage';
 import './nexora_map_callouts.css';
 import './nexora_map_clusters.css';
@@ -37,6 +40,20 @@ import './nexora_map_clusters.css';
     let scanTimer = null;
 
     const instances = new Map();
+
+    /** 只更新活百度地图；挂起地图重建时由 Provider 读取当前主题。 */
+    function applyThemeToLiveMaps(resolvedTheme) {
+        instances.forEach((live) => {
+
+            if (live.provider !== BAIDU_PROVIDER) {
+                return;
+            }
+
+            applyBaiduMapTheme(live.map, resolvedTheme);
+        });
+    }
+
+    watch(() => theme.resolved, applyThemeToLiveMaps, { flush: 'sync' });
 
     function getRendererConfig() {
         const config = window.NEXORA_MAP_RENDERER_CONFIG;
