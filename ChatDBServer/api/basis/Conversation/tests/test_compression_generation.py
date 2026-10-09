@@ -24,7 +24,11 @@ except Exception:
     pass
 
 from basis.Model.Context import ChatContextManager
-from basis.Model.turn_injection import PROFILE_UPDATED_MARKER, SKILLS_CHANGED_MARKER
+from basis.Model.turn_injection import (
+    PROFILE_UPDATED_MARKER,
+    SKILLS_CHANGED_MARKER,
+    USER_PERMISSION_UPDATED_MARKER,
+)
 
 
 class StubModel:
@@ -171,6 +175,50 @@ class TestCompressionGenerationRebuild(unittest.TestCase):
         self.assertNotIn("旧技能", joined)
         # 旧事件不得阻塞后续事件回放（单指针卡死回归）
         self.assertIn("新技能", joined)
+
+    def test_permission_diff_replays_history_and_appends_current_change(self):
+        self._seed({
+            "knowledge_events": [],
+            "profile_events": [],
+            "skill_events": [],
+            "permission_events": [
+                {"permission": "historical-role", "effective_from_message": 3},
+                {"permission": "current-role", "effective_from_message": 4},
+            ],
+        }, cut=2)
+
+        model = StubModel(self.service, self.cid, persist=True)
+        manager = ChatContextManager(model)
+        context = manager.build_initial_context(
+            user_msg="当前轮提问",
+            current_user_content="当前轮提问",
+            include_context=True,
+            system_prompt_text="SYS",
+            current_user_index=4,
+        )
+        messages = context.build()
+        permission_blocks = [
+            item["content"]
+            for item in messages
+            if item["role"] == "system" and USER_PERMISSION_UPDATED_MARKER in item["content"]
+        ]
+
+        self.assertEqual(len(permission_blocks), 2)
+        self.assertIn("historical-role", permission_blocks[0])
+        self.assertIn("current-role", permission_blocks[1])
+        self.assertLess(
+            next(index for index, item in enumerate(messages) if "historical-role" in str(item.get("content") or "")),
+            next(index for index, item in enumerate(messages) if item.get("content") == "m3"),
+        )
+
+        continuation = manager.build_current_turn_messages(current_user_content="当前轮提问")
+        continuation_permission_blocks = [
+            item["content"]
+            for item in continuation
+            if USER_PERMISSION_UPDATED_MARKER in item["content"]
+        ]
+        self.assertEqual(len(continuation_permission_blocks), 1)
+        self.assertIn("current-role", continuation_permission_blocks[0])
 
     def test_volatile_tail_and_current_user_after_history(self):
         """volatile 注入块与当前 user 位于历史之后，保持 head+history 前缀可缓存。"""

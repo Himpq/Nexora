@@ -102,7 +102,7 @@ class ConversationService:
         数据平移 / 清理，使 effective_from_message / history_cut_index 与幸存消息的
         新下标一致（回放契约：efm == 消息游标 精确匹配，见 Context.build_initial_context）。
 
-        - knowledge_events / profile_events / skill_events：efm < dropped 的事件其
+        - knowledge_events / profile_events / skill_events / permission_events：efm < dropped 的事件其
           生效消息已被删除、无回放落点，丢弃；efm >= dropped 的减 dropped。
         - system_snapshots：同规则（head 快照缓存，被删只触发一次重建，不影响正确性）。
         - compressions：history_cut_index < dropped 说明摘要覆盖点已随消息删除，
@@ -117,7 +117,7 @@ class ConversationService:
         if not isinstance(context, dict):
             return data
 
-        for key in ("knowledge_events", "profile_events", "skill_events"):
+        for key in ("knowledge_events", "profile_events", "skill_events", "permission_events"):
             events = context.get(key)
 
             if not isinstance(events, list):
@@ -367,6 +367,7 @@ class ConversationService:
         events = context.get("knowledge_events", [])
         profile_events = context.get("profile_events", [])
         skill_events = context.get("skill_events", [])
+        permission_events = context.get("permission_events", [])
         return {
             "messages": copy.deepcopy(data.get("messages", []) if isinstance(data.get("messages"), list) else []),
             "compression": copy.deepcopy(context_mod.get_latest_compression(data)),
@@ -374,6 +375,7 @@ class ConversationService:
             "knowledge_events": copy.deepcopy(events if isinstance(events, list) else []),
             "profile_events": copy.deepcopy(profile_events if isinstance(profile_events, list) else []),
             "skill_events": copy.deepcopy(skill_events if isinstance(skill_events, list) else []),
+            "permission_events": copy.deepcopy(permission_events if isinstance(permission_events, list) else []),
         }
 
     def get_current_knowledge_state(self, workspace_context: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -451,12 +453,12 @@ class ConversationService:
         """
         一个事务内完成：
         - 更新 system snapshot / knowledge snapshot（若提供）
-        - 采样画像 / 技能基线并与上一基线 diff（若提供）
+        - 采样画像 / 技能 / 权限基线并与上一基线 diff
         - 追加 user 消息
-        返回 {user_index, assistant_index, visible_count, knowledge_delta, profile_delta, skill_delta}
+        返回 user/assistant 索引、各类 delta；无变化时对应 delta 为 None。
         assistant_index 为预留位（下一条 assistant 将写入的位置），调用方据此流式写入。
         knowledge_delta / profile_delta / skill_delta 为本轮开头的变更采样，无变更时为 None；
-        user_index 为 0 表示本轮是首轮，此时 delta 是相对空基线算出的全量，调用方不应注入。
+        permission_delta 首轮建立一次权限事件，之后只有角色变化才产生事件，由 Context 追加到尾部。
         """
         with conversation_update_session(self.username, conversation_id) as (path, data):
             # 若为旧版，先迁移
@@ -555,6 +557,20 @@ class ConversationService:
                     emit_event=messages_before > 0,
                 )
 
+            from basis.Permission import get_user_permission_hint_by_username
+            from basis.User import load_users
+
+            permission_hint = get_user_permission_hint_by_username(
+                self.username,
+                loader=load_users,
+            )
+            permission_delta = turn_state_mod.record_permission_state(
+                data,
+                permission_hint,
+                effective_from_message=messages_before,
+                emit_event=True,
+            )
+
             user_index = messages_mod.append_user_message(
                 data,
                 content,
@@ -587,6 +603,7 @@ class ConversationService:
                 "knowledge_delta": knowledge_delta,
                 "profile_delta": profile_delta,
                 "skill_delta": skill_delta,
+                "permission_delta": permission_delta,
             }
 
     def finish_assistant_turn(
@@ -919,7 +936,7 @@ class ConversationService:
     def prune_turn_events_before(self, conversation_id: str, cut_index: int) -> int:
         """
         压缩换代：裁掉已被摘要覆盖的轮次事件（efm <= cut_index）。
-        knowledge / profile / skill 三类事件同规则裁剪，返回裁掉的数量。
+        knowledge / profile / skill / permission 事件同规则裁剪，返回裁掉的数量。
         efm > cut 的事件（含当前轮）保留；基线本身即为当前值，无需重置。
         """
         removed_total = 0
@@ -927,7 +944,7 @@ class ConversationService:
         with conversation_update_session(self.username, conversation_id) as (path, data):
             context = data.get("context") if isinstance(data.get("context"), dict) else {}
 
-            for key in ("knowledge_events", "profile_events", "skill_events"):
+            for key in ("knowledge_events", "profile_events", "skill_events", "permission_events"):
                 events = context.get(key)
 
                 if not isinstance(events, list):

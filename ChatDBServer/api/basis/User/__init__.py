@@ -93,7 +93,7 @@ from App.Utils import (
 SHORT_TIME = 0
 BASIS = 1
 USER_PROFILE_MAX_CHARS = 0
-USER_PROFILE_DEFAULT_TEMPLATE = "用户权限:{user_permission}，还没有写入其他信息。"
+LEGACY_USER_PERMISSION_PROFILE_LINE = re.compile(r"用户权限:.*，还没有写入其他信息。")
 
 
 def _detect_text_encoding_from_raw(raw_content):
@@ -133,11 +133,7 @@ class User:
     def _profile_memory_file(self):
         return os.path.join(self.path, "profile", "user_profile.txt")
 
-    def _default_user_profile_text(self, user_permission=""):
-        perm = str(user_permission or "").strip() or "member"
-        return USER_PROFILE_DEFAULT_TEMPLATE.replace("{user_permission}", perm)
-
-    def _normalize_user_profile_text(self, text, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+    def _normalize_user_profile_text(self, text, max_chars=USER_PROFILE_MAX_CHARS):
         try:
             max_len = int(max_chars or 0)
         except Exception:
@@ -145,49 +141,49 @@ class User:
 
         normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
         normalized_lines = []
+        first_content_line_seen = False
 
         for raw_line in normalized.split("\n"):
             line = re.sub(r"[\t\f\v ]+", " ", raw_line).strip()
 
             if line:
+                if not first_content_line_seen:
+                    first_content_line_seen = True
+
+                    if LEGACY_USER_PERMISSION_PROFILE_LINE.fullmatch(line):
+                        continue
+
                 normalized_lines.append(line)
 
         normalized = "\n".join(normalized_lines).strip()
-
-        if not normalized:
-            normalized = self._default_user_profile_text(user_permission=user_permission)
 
         if max_len > 0 and len(normalized) > max_len:
             normalized = normalized[:max_len].rstrip()
 
         return normalized
 
-    def get_user_profile_memory(self, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+    def get_user_profile_memory(self, user_permission=None, max_chars=USER_PROFILE_MAX_CHARS):
+        """Read persisted profile content; user_permission is accepted for old callers only."""
+
         lock = get_user_lock(self.user)
         with lock:
             file_path = self._profile_memory_file()
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            raw = ""
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        raw = str(f.read() or "")
-                except Exception:
-                    raw = ""
-            normalized = self._normalize_user_profile_text(
-                raw,
-                user_permission=user_permission,
-                max_chars=max_chars
-            )
-            if (not os.path.exists(file_path)) or (normalized != raw.strip()):
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(normalized)
+            if not os.path.exists(file_path):
+                return ""
+
+            raw, _, encoding = _read_utf8_text_with_raw(file_path)
+            normalized = self._normalize_user_profile_text(raw, max_chars=max_chars)
+
+            if normalized != raw.strip():
+                _write_text_with_encoding(file_path, normalized, encoding)
+
             return normalized
 
-    def set_user_profile_memory(self, profile_text, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+    def set_user_profile_memory(self, profile_text, user_permission=None, max_chars=USER_PROFILE_MAX_CHARS):
+        """Persist profile content; user_permission is accepted for old callers only."""
+
         normalized = self._normalize_user_profile_text(
             profile_text,
-            user_permission=user_permission,
             max_chars=max_chars
         )
         lock = get_user_lock(self.user)

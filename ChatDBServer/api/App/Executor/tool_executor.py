@@ -543,20 +543,9 @@ class ToolExecutor:
             return json.dumps(payload, ensure_ascii=False)
         return str(result)
 
-    def _resolve_user_permission_hint(self) -> str:
-        getter = getattr(self.model, "_get_user_permission_hint", None)
-        if callable(getter):
-            try:
-                return str(getter() or "").strip()
-            except Exception:
-                pass
-        return "member"
-
     def _get_user_profile_memory(self, args: Dict[str, Any]) -> str:
         _ = args if isinstance(args, dict) else {}
-        permission_hint = self._resolve_user_permission_hint()
         profile = self.model.user.get_user_profile_memory(
-            user_permission=permission_hint,
             max_chars=0
         )
         payload = {
@@ -569,12 +558,10 @@ class ToolExecutor:
 
     def _set_user_profile_memory(self, args: Dict[str, Any]) -> str:
         safe_args = args if isinstance(args, dict) else {}
-        permission_hint = self._resolve_user_permission_hint()
         reset = bool(safe_args.get("reset", False))
         profile_input = "" if reset else safe_args.get("profile", "")
         profile = self.model.user.set_user_profile_memory(
             profile_text=profile_input,
-            user_permission=permission_hint,
             max_chars=0
         )
         payload = {

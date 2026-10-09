@@ -652,9 +652,6 @@ class MemoryAnalysisQueue:
 
             next_memory = content
 
-            if current.startswith("用户权限:") and not next_memory.startswith("用户权限:"):
-                raise ValueError("memory_overwrite must preserve user permission prefix")
-
         else:
             raise ValueError(f"unknown memory action: {action}")
 

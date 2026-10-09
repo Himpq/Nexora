@@ -1,10 +1,10 @@
 """
-Nexora.basis.Conversation.turn_state — 画像/技能轮次基线采样与事件落库
+Nexora.basis.Conversation.turn_state — 画像/技能/权限轮次基线采样与事件落库
 
 职责（与 record_knowledge_state 完全同构的四件套模式）：
-- begin_user_turn 事务内采样当前画像 / 技能状态，与上一基线做 diff
-- 基线存 context.profile_state / context.skill_state（模型当前可见的版本）
-- 变更事件落 context.profile_events / context.skill_events（带 effective_from_message，
+- begin_user_turn 事务内采样当前画像 / 技能 / 权限状态，与上一基线做 diff
+- 基线存 context 下对应的 state 字段（模型当前可见的版本）
+- 变更事件落 context 下对应的 events 字段（带 effective_from_message，
   供 Context 层历史回放按位重建，保证任意轮次重建出的上下文与首次发送时一致）
 
 基线语义：head 由 turn-1 快照冻结后，基线代表「模型已经看到的版本」；
@@ -22,6 +22,8 @@ PROFILE_STATE_KEY = "profile_state"
 PROFILE_EVENTS_KEY = "profile_events"
 SKILL_STATE_KEY = "skill_state"
 SKILL_EVENTS_KEY = "skill_events"
+PERMISSION_STATE_KEY = "permission_state"
+PERMISSION_EVENTS_KEY = "permission_events"
 
 # 事件数量上限：画像/技能事件按轮产生，超限裁掉最旧事件，防止长会话文件无限膨胀。
 # 被裁掉的变更已累积体现在基线中；历史回放只覆盖保留区间，与压缩换代（step 2）衔接。
@@ -65,6 +67,51 @@ def _resolve_effective_from_message(
     if not isinstance(messages, list):
         messages = []
     return len(messages)
+
+
+def record_permission_state(
+    conversation_data: Dict[str, Any],
+    permission_hint: str,
+    *,
+    effective_from_message: int | None = None,
+    emit_event: bool = True,
+) -> Dict[str, str] | None:
+    """Save the role baseline and emit an initial or changed-role append event once."""
+
+    context = _ensure_context(conversation_data)
+    permission = str(permission_hint or "").strip()
+
+    if not permission:
+        raise ValueError("permission_hint is required")
+
+    state = context.get(PERMISSION_STATE_KEY)
+    old_permission = str(state.get("permission") or "") if isinstance(state, dict) else ""
+    event_initialized = bool(state.get("event_initialized")) if isinstance(state, dict) else False
+    permission_changed = permission != old_permission
+
+    if not permission_changed and (event_initialized or not emit_event):
+        return None
+
+    context[PERMISSION_STATE_KEY] = {
+        "permission": permission,
+        "updated_at": now_iso(),
+        "event_initialized": bool(emit_event),
+    }
+
+    if not emit_event:
+        return None
+
+    _append_event(context, PERMISSION_EVENTS_KEY, {
+        "permission": permission,
+        "effective_from_message": _resolve_effective_from_message(
+            conversation_data,
+            effective_from_message,
+        ),
+        "created_at": now_iso(),
+    })
+    conversation_data["updated_at"] = now_iso()
+
+    return {"permission": permission}
 
 
 def record_profile_state(

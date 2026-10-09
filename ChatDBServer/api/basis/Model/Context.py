@@ -41,8 +41,10 @@ from basis.index_codec import (
 from .turn_injection import (
     build_profile_update_block,
     build_skill_update_block,
+    build_user_permission_update_block,
     get_volatile_injection_name,
     is_volatile_injection,
+    USER_PERMISSION_UPDATED_MARKER,
 )
 
 
@@ -335,6 +337,7 @@ class ChatContextManager:
 
     def __init__(self, model: Any):
         self.model = model
+        self._current_turn_permission_block = ""
 
     def create_context(
         self,
@@ -395,14 +398,22 @@ class ChatContextManager:
     ) -> List[Dict[str, Any]]:
         """构建续接缓存命中时只发送的增量：仅尾部易变块 + 新用户，头稳定块已在缓存中。
 
-        消息顺序固定为「易变块（diff/沙箱/资源）→ 新用户」，配合 provider 的续接 ID，
+        消息顺序固定为「易变块（diff/权限/沙箱/资源）→ 新用户」，配合 provider 的续接 ID，
         实际语义为 SystemPrompt_001 + 历史 + Diff Inject + 新用户，head 不重建。
         """
 
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         volatile_injections = [
-            t for t in all_injections if is_volatile_injection(t)
+            t for t in all_injections
+            if is_volatile_injection(t) and USER_PERMISSION_UPDATED_MARKER not in t
         ]
+
+        permission_block = self._current_turn_permission_block
+        self._current_turn_permission_block = ""
+
+        if permission_block:
+            volatile_injections.append(permission_block)
+
         messages: List[Dict[str, Any]] = []
 
         for text in volatile_injections:
@@ -498,6 +509,7 @@ class ChatContextManager:
     ) -> ChatContext:
         """构建并返回可继续 add/prepare/build 的上下文对象。纯排序器，不做内容变换。"""
         model = self.model
+        self._current_turn_permission_block = ""
         # 纯排序器：compact 模式固定 off，内容已在外部归一化
         context_compact_mode = "off"
         effective_system_prompt = str(system_prompt_text or model.system_prompt or "").strip()
@@ -562,19 +574,22 @@ class ChatContextManager:
         # volatile 标记常量收口于 basis.Model.turn_injection，新增 volatile 通道只改那里
         all_injections = self._normalize_system_injection_texts(system_injection_texts)
         stable_injections = [
-            t for t in all_injections if not is_volatile_injection(t)
+            t for t in all_injections
+            if not is_volatile_injection(t) and USER_PERMISSION_UPDATED_MARKER not in t
         ]
         volatile_injections = [
-            t for t in all_injections if is_volatile_injection(t)
+            t for t in all_injections
+            if is_volatile_injection(t) and USER_PERMISSION_UPDATED_MARKER not in t
         ]
 
         # 尝试加载已存快照（LRU 命中关键）；仅主对话参与，避免子请求复用/污染 head
-        # 顺带读取 knowledge/profile/skill 事件，供历史回放时重建 tail 块（保证前缀稳定）
+        # 顺带读取 knowledge/profile/skill/permission 事件，供历史回放时重建 tail 块
         snapshot_content: Optional[str] = None
         snapshot_efm: Optional[int] = None
         knowledge_events_raw: List[Dict[str, Any]] = []
         profile_events_raw: List[Dict[str, Any]] = []
         skill_events_raw: List[Dict[str, Any]] = []
+        permission_events_raw: List[Dict[str, Any]] = []
         try:
             if model.persist_conversation and model.conversation_id:
                 if context_bundle is not None:
@@ -593,6 +608,9 @@ class ChatContextManager:
                     raw_skill_events = context_bundle.get("skill_events", [])
                     if isinstance(raw_skill_events, list):
                         skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
+                    raw_permission_events = context_bundle.get("permission_events", [])
+                    if isinstance(raw_permission_events, list):
+                        permission_events_raw = [e for e in raw_permission_events if isinstance(e, dict)]
                 else:
                     svc_snap = getattr(model, "conversation_service", None) or getattr(model, "conversation_manager", None)
                     if svc_snap and hasattr(svc_snap, "_load_v4"):
@@ -611,6 +629,9 @@ class ChatContextManager:
                         raw_skill_events = snap_data.get("context", {}).get("skill_events", [])
                         if isinstance(raw_skill_events, list):
                             skill_events_raw = [e for e in raw_skill_events if isinstance(e, dict)]
+                        raw_permission_events = snap_data.get("context", {}).get("permission_events", [])
+                        if isinstance(raw_permission_events, list):
+                            permission_events_raw = [e for e in raw_permission_events if isinstance(e, dict)]
         except Exception:
             snapshot_content = None
 
@@ -620,7 +641,7 @@ class ChatContextManager:
             compression_cut_index = parse_message_index(compression_marker.get("history_cut_index"))
 
         # 历史 diff 重建索引：按 effective_from_message 定位到生效的 user 消息前。
-        # knowledge / profile / skill 三类事件共用同一 (efm, block) 回放列表，
+        # knowledge / profile / skill / permission 事件共用同一 (efm, block) 回放列表，
         # 排序后按位插入，使任意轮次重建出的上下文与首次发送时一致。
         history_event_blocks: List[Tuple[int, str]] = []
         history_event_blocks.extend(
@@ -632,6 +653,24 @@ class ChatContextManager:
         history_event_blocks.extend(
             self._collect_replay_blocks(skill_events_raw, build_skill_update_block, compression_cut_index)
         )
+        permission_event_blocks = self._collect_replay_blocks(
+            permission_events_raw,
+            self._build_permission_event_block,
+            compression_cut_index,
+        )
+        history_event_blocks.extend(permission_event_blocks)
+
+        if current_user_index is not None:
+            current_permission_blocks = [
+                block
+                for effective_from_message, block in permission_event_blocks
+                if effective_from_message == current_user_index
+            ]
+
+            if current_permission_blocks:
+                self._current_turn_permission_block = current_permission_blocks[-1]
+                volatile_injections.append(self._current_turn_permission_block)
+
         history_event_blocks.sort(key=lambda item: item[0])
 
         # 快照过期判定（压缩换代）：快照生效点 <= 压缩 cut 说明 head 是压缩前构建的
@@ -738,7 +777,7 @@ class ChatContextManager:
             )
             history_msg_cursor += 1
 
-        # 尾部易变块：仅沙箱/资源索引等，紧跟历史之后、新用户之前
+        # 尾部易变块（含本轮权限变更），紧跟历史之后、新用户之前
         for text in volatile_injections:
             context.add("system", text)
 
@@ -800,6 +839,11 @@ class ChatContextManager:
                 blocks.append((efm, block))
 
         return blocks
+
+    def _build_permission_event_block(self, event: Dict[str, Any]) -> str:
+        """Render one persisted role change for history replay or the current turn."""
+
+        return build_user_permission_update_block(event.get("permission"))
 
     def _normalize_system_injection_texts(self, system_injection_texts: Optional[List[str]]) -> List[str]:
         """规整当前轮运行时 system 注入块。"""

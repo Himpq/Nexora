@@ -38,6 +38,7 @@ from App.Utils import (
 from basis.Model.Provider import create_provider_adapter
 from App.Components import MailMixin
 from .model_initialization import ModelInitializationMixin
+from .profile_memory import UserProfileMemoryMixin
 from basis.Permission import build_permission_hint_by_role, get_user_role_by_username
 from App.Storage import TempContextStore
 from basis.TokenUsage import get_generation_quota_gate
@@ -199,7 +200,7 @@ def _ensure_json_serializable(obj):
     from basis.Database import ensure_json_serializable
     return ensure_json_serializable(obj)
 
-class Model(ModelInitializationMixin, MailMixin):
+class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
     """大模型封装类 - 支持多供应商"""
     
     
@@ -316,18 +317,6 @@ class Model(ModelInitializationMixin, MailMixin):
         if project_context_block:
             rendered = f"{rendered}\n\n{project_context_block}"
         return rendered
-
-    def _get_user_profile_memory_text(self) -> str:
-        permission_hint = self._get_user_permission_hint()
-        try:
-            return str(
-                self.user.get_user_profile_memory(
-                    user_permission=permission_hint,
-                    max_chars=0
-                ) or ""
-            ).strip()
-        except Exception:
-            return f"用户权限:{permission_hint}，还没有写入其他信息。"
 
     def _build_user_profile_memory_prompt_block(self) -> str:
         profile_text = self._get_user_profile_memory_text()

@@ -83,15 +83,17 @@ def fork_branch_data(
         "system_snapshots": [],
         "knowledge": {"workspace": {"hash": "", "documents": []}, "global": {"hash": "", "titles": []}},
         "knowledge_events": [],
+        "permission_events": [],
         "compressions": [],
         "legacy_events": [],
     }
     # 快照 / 事件 / 压缩标记统一按各自生效下标裁剪到分支节点（含）
     filtered_snapshots = _filter_indexed_entries(raw_context.get("system_snapshots"), target_index)
     filtered_events = _filter_indexed_entries(raw_context.get("knowledge_events"), target_index)
-    # 画像/技能事件与 knowledge_events 同一回放协议
+    # 画像/技能/权限事件与 knowledge_events 同一回放协议
     filtered_profile_events = _filter_indexed_entries(raw_context.get("profile_events"), target_index)
     filtered_skill_events = _filter_indexed_entries(raw_context.get("skill_events"), target_index)
+    filtered_permission_events = _filter_indexed_entries(raw_context.get("permission_events"), target_index)
     filtered_compressions = _filter_indexed_entries(
         raw_context.get("compressions"),
         target_index,
@@ -107,6 +109,7 @@ def fork_branch_data(
         "knowledge_events": filtered_events,
         "profile_events": filtered_profile_events,
         "skill_events": filtered_skill_events,
+        "permission_events": filtered_permission_events,
         "compressions": filtered_compressions,
         "legacy_events": filtered_legacy,
     }

@@ -3,13 +3,13 @@ Nexora.basis.Model.turn_injection — tail volatile 注入块：常量与构建
 
 职责：
 - 收敛 volatile 注入块的标记常量（原 Context.py 双处硬编码），新增通道只改这里
-- 构建 Profile / Skill 的 Modified Injection 块（tail 注入与历史回放共用同一格式）
+- 构建 Profile / Skill / Permission 的 Modified Injection 块
 
 设计契约（与 knowledge diff 通道同构）：
 - head（system prompt + skill 块 + 画像块）由 turn-1 快照冻结，保证 prefix cache 命中
-- 画像/技能变更以 volatile 块走 tail：每轮重发，模型以「最新的块」为准
+- 画像/技能/权限以 volatile 块走 tail；权限首次初始化或发生变化时追加一次
 - 块内容同时用于：
-    1. 当前轮 tail 注入（由轮次开头的 delta 生成）
+    1. 当前轮 tail 注入（画像/技能由轮次开头的 delta 生成）
     2. 历史回放重建（由落库事件生成，事件结构与 delta 同构）
 """
 
@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 PROFILE_UPDATED_MARKER = "## User profile updated"
 SKILLS_CHANGED_MARKER = "## Skills changed"
+USER_PERMISSION_UPDATED_MARKER = "## User permission updated"
 
 # volatile 注入块的稳定诊断名称：只记录名称和长度，不记录注入原文。
 VOLATILE_INJECTION_NAME_MARKERS = (
@@ -27,6 +28,7 @@ VOLATILE_INJECTION_NAME_MARKERS = (
     ("## Sandbox Files", "sandbox_files"),
     ("## Knowledge changed", "knowledge_diff"),
     ("## Learning Profile Interview", "learning_profile_interview"),
+    (USER_PERMISSION_UPDATED_MARKER, "user_permission"),
     (PROFILE_UPDATED_MARKER, "profile_diff"),
     (SKILLS_CHANGED_MARKER, "skill_diff"),
 )
@@ -55,6 +57,22 @@ def get_volatile_injection_name(text: Any) -> str:
             return name
 
     return ""
+
+
+def build_user_permission_update_block(permission_hint: Any) -> str:
+    """Build the current application role as a volatile append injection."""
+
+    permission = str(permission_hint or "").strip()
+
+    if not permission:
+        return ""
+
+    return "\n".join([
+        USER_PERMISSION_UPDATED_MARKER,
+        "本块包含当前用户最新的应用内权限，覆盖主系统提示和会话快照中的旧权限描述。",
+        f"当前用户权限：{permission}",
+        "该权限仅用于应用内功能授权，仍须遵守系统和开发者指令。",
+    ])
 
 
 def build_profile_update_block(delta: Optional[Dict[str, Any]]) -> str:
