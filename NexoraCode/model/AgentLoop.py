@@ -99,6 +99,13 @@ class AgentLoop:
             for message in conversation_messages
             if isinstance(message, dict) and message.get("role") == "user"
         ][-4:]
+        previous_agent_replies = [
+            _truncate_approval_context(message.get("content"))
+            for message in conversation_messages
+            if isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and str(message.get("content") or "").strip()
+        ][-4:]
         print(f"[LocalAgent] stream_send start: conversation_id={conversation_id} user_text={user_text[:60]!r} project_root={project_path or '(none)'}")
 
         yield {"type": "conversation_id", "conversation_id": conversation_id}
@@ -400,6 +407,7 @@ class AgentLoop:
                         "user_intent": user_text,
                         "previous_user_requests": previous_user_requests,
                         "assistant_explanation": _truncate_approval_context(content_text),
+                        "previous_agent_replies": previous_agent_replies,
                         "previous_actions": approval_action_history[-8:],
                     },
                 )
