@@ -131,7 +131,7 @@ export async function listConversations(): Promise<ConversationSummary[]> {
 
     return data.conversations.map((item) => ({
         id: String(item.conversation_id || ''),
-        title: String(item.title || '新对话'),
+        title: String(item.title || '新会话'),
         conversation_mode: item.conversation_mode,
         metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
             ? item.metadata as Record<string, unknown>
@@ -169,6 +169,16 @@ function readConversationBranch(item: RawConversationItem): ConversationBranch |
     }
 }
 
+/** 未命名会话的占位标题:前端默认「新对话」、后端默认「新会话」/「未命名会话」。 */
+const PLACEHOLDER_TITLES = new Set(['新对话', '新会话', '未命名会话'])
+
+/** 判断标题是否为未命名占位值(空串或内置占位文案),与后端 is_placeholder_title 保持一致。 */
+export function isPlaceholderTitle(title: unknown): boolean {
+    const text = String(title ?? '').trim()
+
+    return !text || PLACEHOLDER_TITLES.has(text)
+}
+
 /** 创建新会话;传入 conversationId 可复用已存在会话 */
 export async function createConversation(options: {
     title?: string
@@ -178,7 +188,7 @@ export async function createConversation(options: {
     return apiFetch<ConversationCreateResponse>('/api/conversations', {
         method: 'POST',
         body: JSON.stringify({
-            title: options.title || '新对话',
+            title: options.title || '新会话',
             conversation_id: options.conversationId || undefined,
             metadata: options.metadata,
         }),

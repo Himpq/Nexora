@@ -16,6 +16,7 @@ import {
     fetchMessages,
     fetchTurns,
     INITIAL_MESSAGE_LIMIT,
+    isPlaceholderTitle,
     listConversations,
     PREVIOUS_MESSAGE_LIMIT,
     type ChatMessage,
@@ -528,7 +529,7 @@ export const useConversationStore = defineStore('conversation', {
             // 乐观更新会话标题(首条消息截断),等待后端自动生成标题时保持可辨识
             const current = this.conversations.find((item) => item.id === conversationId)
 
-            if (current && (!current.title || current.title === '新对话')) {
+            if (current && isPlaceholderTitle(current.title)) {
                 const title = userContent.replace(/\s+/g, ' ').slice(0, 20)
 
                 current.title = title || '新对话'

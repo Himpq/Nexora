@@ -26,6 +26,15 @@ from core.config import get_app_root
 # 多个本地/远程请求创建不同 Store 实例，共享锁才能避免文件读改写互相覆盖。
 _STORE_LOCK = threading.RLock()
 
+# 未命名会话的占位标题：前端默认「新对话」、后端默认「新会话」，
+# 以及读取兜底用的「未命名会话」。命中即视为尚未生成真实标题。
+_PLACEHOLDER_TITLES = {"新对话", "新会话", "未命名会话"}
+
+
+def is_placeholder_title(title: Any) -> bool:
+    """判断标题是否为未命名占位值（空串或内置占位文案）。"""
+    return not str(title or "").strip() or str(title or "").strip() in _PLACEHOLDER_TITLES
+
 
 def write_json_atomic(path: Path, data: dict) -> None:
     """同目录临时文件 + os.replace 原子写入，读取方不会看到写到一半的 JSON。
@@ -183,7 +192,9 @@ class ConversationStore:
             index = self._load_index()
             meta = index.setdefault(conversation_id, {})
 
-            if not str(meta.get("title") or "").strip() or str(meta.get("title") or "").strip() == "新会话":
+            # 占位标题（前端默认「新对话」、后端默认「新会话」）都视为未命名，
+            # 首条用户消息到达时用其开头生成可辨识标题并落盘。
+            if is_placeholder_title(meta.get("title")):
                 title = self._guess_title(message)
 
                 if title:
@@ -192,6 +203,28 @@ class ConversationStore:
                     self._save_conversation(conversation)
 
             meta["updated_at"] = conversation["updated_at"]
+            self._save_index(index)
+            return True
+
+    def set_title(self, conversation_id: str, title: str) -> bool:
+        """更新会话标题（会话文件与索引同步写入）。空标题视为无效，返回 False。"""
+        clean_title = str(title or "").strip()
+
+        if not clean_title:
+            return False
+
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                return False
+
+            conversation["title"] = clean_title
+            self._save_conversation(conversation)
+
+            index = self._load_index()
+            meta = index.setdefault(conversation_id, {})
+            meta["title"] = clean_title
             self._save_index(index)
             return True
 
@@ -279,7 +312,11 @@ class ConversationStore:
             self._save_conversation(conversation)
 
     def _guess_title(self, message: dict) -> str:
-        content = message.get("content") if isinstance(message, dict) else ""
+        # 仅用用户消息做标题：助手/工具消息的开头没有辨识度。
+        if not isinstance(message, dict) or str(message.get("role") or "") != "user":
+            return ""
+
+        content = message.get("content")
 
         if isinstance(content, list):
             parts = []
@@ -290,5 +327,6 @@ class ConversationStore:
 
             content = "".join(parts)
 
-        text = str(content or "").strip()
+        # 折叠换行与连续空白，避免标题里出现多行或超长空白。
+        text = re.sub(r"\s+", " ", str(content or "")).strip()
         return text[:24]
