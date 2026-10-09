@@ -102,6 +102,30 @@ function testResolvePriority() {
     assert.equal(resolveActiveContextCompressionStep({}), null, '无任何数据时返回 null')
 }
 
+/** 场景 4b:本地后端落盘形态 metadata.context_compression 应能回放 */
+function testResolvePersistedCompression() {
+    const message = {
+        metadata: {
+            context_compression: {
+                type: 'context_compression_status',
+                status: 'done',
+                content: '上下文压缩完成',
+                raw_input_tokens: 255730,
+                context_window: 262144,
+                history_cut_index: 661,
+                summary_chars: 4200,
+            },
+        },
+    }
+
+    const step = resolveActiveContextCompressionStep(message)
+
+    assert.ok(step, '落盘 context_compression 应解析出压缩步骤')
+    assert.equal(step.status, 'done', 'status 应保留 done')
+    assert.equal(step.raw_input_tokens, 255730, '压缩前 token 应透传')
+    assert.equal(step.history_cut_index, 661, '截断索引应透传')
+}
+
 /** 场景 5:触发原因提示(force / overload / skipped / 图片脱敏) */
 function testTriggerHint() {
     const force = parseContextCompressionStep({
@@ -235,6 +259,7 @@ function main() {
         ['parse:非法块拒绝', testParseInvalidStep],
         ['parse:数值容错', testParseNumberTolerance],
         ['resolve:优先级与历史回放', testResolvePriority],
+        ['resolve:落盘 context_compression 回放', testResolvePersistedCompression],
         ['hint:触发原因文案', testTriggerHint],
         ['output:展开正文', testOutputText],
         ['parse:trimmed 降级裁剪', testTrimmedStep],

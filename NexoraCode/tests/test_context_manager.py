@@ -226,6 +226,17 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(saved["context_state"]["history_cut_index"], 2)
         self.assertEqual(self.calls[-1][0][-1]["content"], "新任务")
         self.assertNotIn("此前任务", str(self.calls[-1][0]))
+        # 压缩终态必须落盘进 assistant metadata：否则重进对话后压缩卡片消失，
+        # 用户只看到 token 从接近满窗骤降却没有任何解释。
+        persisted = [
+            m.get("metadata", {}).get("context_compression")
+            for m in saved["messages"]
+            if m.get("role") == "assistant"
+        ]
+        persisted = [p for p in persisted if p]
+        self.assertTrue(persisted, "压缩终态应写入 assistant metadata.context_compression")
+        self.assertEqual(persisted[-1]["status"], "done")
+        self.assertEqual(persisted[-1]["history_cut_index"], 2)
 
     def test_invalid_context_budget_is_rejected_before_saving(self):
         config_class = self.provider_module.ProviderConfig

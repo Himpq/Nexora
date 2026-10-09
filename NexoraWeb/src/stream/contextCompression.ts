@@ -154,6 +154,17 @@ export function resolveActiveContextCompressionStep(
         return live
     }
 
+    // 本地后端落盘形态:metadata.context_compression(单条终态),优先于 process_steps 回放。
+    const metadata = (message.metadata && typeof message.metadata === 'object')
+        ? message.metadata as Record<string, unknown>
+        : {}
+
+    const persisted = parseContextCompressionStep(metadata.context_compression)
+
+    if (persisted) {
+        return persisted
+    }
+
     const history = contextCompressionStepsFromMetadata(message)
 
     return history.length > 0 ? history[history.length - 1] : null

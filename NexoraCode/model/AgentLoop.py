@@ -229,6 +229,10 @@ class AgentLoop:
                 "head_chars": injection_diag["head_chars"],
             }
 
+        # 本次请求首轮压缩的终态事件（start→progress*→done/skipped/trimmed 的最后一条）。
+        # 落盘进 assistant metadata，保证重进对话后压缩卡片仍可见（前端历史回放数据源）。
+        compression_step: dict | None = None
+
         question_sent = False
         permission_blocked = False
         approval_action_history: list[dict] = []
@@ -307,6 +311,7 @@ class AgentLoop:
                                 response_trace_id=response_trace_id,
                                 round_index=round_index,
                                 context_injection=injection_diag,
+                                context_compression=compression_step,
                             ),
                             "timestamp": _now(),
                         },
@@ -318,7 +323,10 @@ class AgentLoop:
             tools = self.executor.list_tools_llm_format()
 
             try:
-                messages = yield from self.context_manager.prepare(
+                # 显式转发 prepare 的压缩事件：yield from 无法在转发时拦截，
+                # 而压缩状态既需要推给前端流式展示，也需要落盘进 assistant metadata
+                # （否则重进对话后压缩卡片消失，用户只看到 token 骤降却无任何提示）。
+                prepared = self.context_manager.prepare(
                     conversation_id,
                     effective_system,
                     tools,
@@ -330,6 +338,22 @@ class AgentLoop:
                     allow_compression=round_index <= 1,
                     volatile_instructions=volatile_blocks,
                 )
+                messages = None
+
+                while True:
+                    try:
+                        event = next(prepared)
+                    except StopIteration as stop:
+                        messages = stop.value
+                        break
+
+                    if str(event.get("type") or "") == "context_compression_status":
+                        # 压缩事件按 start→progress*→done/skipped/trimmed 顺序产出，
+                        # 保留最后一条作为本轮压缩终态落盘（progress 会被后续终态覆盖）。
+                        compression_step = event
+
+                    yield event
+
                 force_context_compression = False
             except Exception as exc:
                 print(f"[LocalContext] prepare_failed conversation={conversation_id} error={type(exc).__name__}: {exc}")
@@ -411,6 +435,7 @@ class AgentLoop:
                                 response_trace_id=response_trace_id,
                                 round_index=round_index,
                                 context_injection=injection_diag,
+                                context_compression=compression_step,
                             ),
                             "timestamp": _now(),
                         },
@@ -461,6 +486,7 @@ class AgentLoop:
                             response_trace_id=response_trace_id,
                             round_index=round_index,
                             context_injection=injection_diag,
+                            context_compression=compression_step,
                         ),
                         "timestamp": _now(),
                     },
@@ -491,7 +517,8 @@ class AgentLoop:
                     reasoning_content=reasoning_text,
                     response_trace_id=response_trace_id,
                     round_index=round_index,
-                                context_injection=injection_diag,
+                    context_injection=injection_diag,
+                    context_compression=compression_step,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -825,6 +852,7 @@ class AgentLoop:
         response_trace_id: str = "",
         round_index: int = 0,
         context_injection: dict | None = None,
+        context_compression: dict | None = None,
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -835,6 +863,8 @@ class AgentLoop:
         - reasoning_content:           推理过程全文（前端历史渲染的 thinking 折叠块）
         - response_trace_id/round_index: 请求分组与轮次序号，用于把用量对回具体哪次请求的哪一轮
         - context_injection:           head 字符数与 tail volatile 注入块诊断（重进对话后仍可见）
+        - context_compression:         本轮首轮压缩终态（done/skipped/trimmed），
+                                       重进对话后压缩卡片据此恢复，避免 token 骤降无任何解释
         """
         metadata: dict = {}
 
@@ -845,6 +875,19 @@ class AgentLoop:
             metadata["context_injection"] = {
                 "head_chars": max(0, int(context_injection.get("head_chars") or 0)),
                 "blocks": list(context_injection.get("blocks") or []),
+            }
+
+        if context_compression:
+            # 只保留前端渲染所需字段，避免把整条事件原样落盘（含无关键）。
+            metadata["context_compression"] = {
+                "type": "context_compression_status",
+                "status": str(context_compression.get("status") or ""),
+                "content": str(context_compression.get("content") or ""),
+                "forced": bool(context_compression.get("forced")),
+                "raw_input_tokens": int(context_compression.get("raw_input_tokens") or 0),
+                "context_window": int(context_compression.get("context_window") or 0),
+                "history_cut_index": context_compression.get("history_cut_index"),
+                "summary_chars": int(context_compression.get("summary_chars") or 0),
             }
 
         if reasoning_content:
