@@ -188,6 +188,17 @@ class AgentLoop:
         yield {"type": "conversation_id", "conversation_id": conversation_id}
         yield {"type": "model_info", "model_name": model_name, "provider": self._provider_name(), "search_enabled": False}
 
+        # 历史自愈：进程被外部终止（工具命令杀掉自身、崩溃）时，落盘历史可能停在
+        # assistant.tool_calls 而没有对应的 tool 结果。补齐占位结果并落盘，
+        # 否则该会话此后每次请求都会在工具协议校验处失败、永久不可用。
+        repaired_count = self.store.repair_dangling_tool_calls(conversation_id)
+
+        if repaired_count:
+            print(f"[LocalAgent] repaired_dangling_tool_calls conversation={conversation_id} added={repaired_count}")
+            conversation = self.store.get(conversation_id) or conversation
+            conversation_messages = conversation.get("messages")
+            conversation_messages = conversation_messages if isinstance(conversation_messages, list) else []
+
         # 首条消息落盘前先取原标题：append_message 会把占位标题替换为截断标题，
         # 只有此刻仍是占位值才说明这是首条消息，值得异步生成智能标题。
         title_before_append = str(conversation.get("title") or "")

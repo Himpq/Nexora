@@ -311,6 +311,95 @@ class ConversationStore:
 
             return False
 
+    def repair_dangling_tool_calls(self, conversation_id: str) -> int:
+        """补齐历史里悬空的工具调用结果，返回修补条数。
+
+        进程被外部终止（工具命令杀掉自身、崩溃、断电）时，落盘历史会停在
+        assistant.tool_calls 而没有对应的 tool 结果。这类历史会让后续每次请求
+        都在协议校验处失败，会话永久不可用。这里就地补齐占位结果并落盘，
+        修补一次即长期有效，而不是每次请求都临时打补丁。
+        """
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                return 0
+
+            messages = conversation.get("messages")
+
+            if not isinstance(messages, list):
+                return 0
+
+            repaired = self._repair_tool_messages(messages)
+
+            if repaired is None:
+                return 0
+
+            conversation["messages"] = repaired
+            conversation["updated_at"] = time.time()
+            self._save_conversation(conversation)
+
+            index = self._load_index()
+            meta = index.setdefault(str(conversation_id), {})
+            meta["updated_at"] = conversation["updated_at"]
+            self._save_index(index)
+            return len(repaired) - len(messages)
+
+    @staticmethod
+    def _repair_tool_messages(messages: list) -> Optional[list]:
+        """按工具协议补齐悬空调用、丢弃孤儿结果；无需修补时返回 None。"""
+        repaired: list = []
+        pending: list[str] = []
+        changed = False
+
+        for message in messages:
+            if not isinstance(message, dict):
+                repaired.append(message)
+                continue
+
+            role = str(message.get("role") or "")
+
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "")
+
+                if call_id not in pending:
+                    # 孤儿结果：没有对应调用，丢弃。
+                    changed = True
+                    continue
+
+                pending.remove(call_id)
+                repaired.append(message)
+                continue
+
+            if pending:
+                for open_id in pending:
+                    repaired.append({
+                        "role": "tool",
+                        "tool_call_id": open_id,
+                        "content": INTERRUPTED_TOOL_RESULT,
+                        "timestamp": time.time(),
+                    })
+
+                changed = True
+                pending = []
+
+            calls = message.get("tool_calls") or []
+            pending.extend(str(call.get("id") or "") for call in calls if isinstance(call, dict))
+            repaired.append(message)
+
+        if pending:
+            for open_id in pending:
+                repaired.append({
+                    "role": "tool",
+                    "tool_call_id": open_id,
+                    "content": INTERRUPTED_TOOL_RESULT,
+                    "timestamp": time.time(),
+                })
+
+            changed = True
+
+        return repaired if changed else None
+
     def _save_conversation(self, conversation: dict) -> None:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
         write_json_atomic(path, conversation)

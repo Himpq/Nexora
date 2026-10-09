@@ -6,6 +6,7 @@ import json
 import math
 import time
 
+from .ConversationStore import INTERRUPTED_TOOL_RESULT
 from .ShortRequest import run_short_request
 
 
@@ -58,6 +59,62 @@ class ContextManager:
                     })
 
         return item
+
+    # 悬空工具调用的占位结果：进程被外部终止（如工具命令杀掉自身）时，
+    # 落盘历史会停在 assistant.tool_calls 而没有对应的 tool 结果。
+    # 补齐这条结果即可恢复协议完整，而不是让整个会话永久卡死。
+    _INTERRUPTED_TOOL_RESULT = INTERRUPTED_TOOL_RESULT
+
+    @classmethod
+    def repair_tools(cls, messages: list[dict]) -> list[dict]:
+        """补齐悬空工具调用的终止结果，使历史满足工具协议。
+
+        进程被外部杀死（工具命令杀掉自身、崩溃、断电）时，assistant 消息里的
+        tool_calls 可能永远等不到 tool 结果。这类悬空调用不是用户错误，也不该
+        让会话永久不可用：就地补一条明确的「未返回结果」占位结果即可。
+        孤儿 tool 结果（找不到对应调用）同样丢弃，避免污染请求。
+        """
+        repaired: list[dict] = []
+        pending: list[str] = []
+
+        for message in messages:
+            role = str(message.get("role") or "")
+
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "")
+
+                if call_id not in pending:
+                    # 孤儿结果：没有对应调用，丢弃。
+                    continue
+
+                pending.remove(call_id)
+                repaired.append(message)
+                continue
+
+            if pending:
+                # 上一条 assistant 的调用没等到结果：补占位结果后再继续。
+                for open_id in pending:
+                    repaired.append({
+                        "role": "tool",
+                        "tool_call_id": open_id,
+                        "content": cls._INTERRUPTED_TOOL_RESULT,
+                    })
+
+                pending = []
+
+            calls = message.get("tool_calls", [])
+            pending.extend(str(call.get("id") or "") for call in calls)
+            repaired.append(message)
+
+        if pending:
+            for open_id in pending:
+                repaired.append({
+                    "role": "tool",
+                    "tool_call_id": open_id,
+                    "content": cls._INTERRUPTED_TOOL_RESULT,
+                })
+
+        return repaired
 
     @staticmethod
     def validate_tools(messages: list[dict]) -> None:

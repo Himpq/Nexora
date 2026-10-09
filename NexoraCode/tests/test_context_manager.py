@@ -121,11 +121,43 @@ class ContextTests(unittest.TestCase):
             self.consume(self.manager.prepare(self.cid, "system", [], force=True, cancel_checker=lambda: True))
         self.assertNotIn("context_state", self.store.get(self.cid))
 
-    def test_missing_tool_result_rejected(self):
+    def test_missing_tool_result_is_repaired_not_rejected(self):
+        """悬空工具调用（进程被外部终止）应补占位结果，而不是让会话永久卡死。"""
         self.add("assistant", "", tool_calls=[{"id": "a", "name": "read", "arguments": {}}])
         self.add("user", "next")
-        with self.assertRaisesRegex(ValueError, "工具调用缺少结果"):
-            self.manager.build_messages(self.store.get(self.cid), "system")
+        messages = self.manager.build_messages(self.store.get(self.cid), "system")
+        # 补齐后协议完整，可正常校验通过。
+        self.manager.validate_tools(messages)
+        repaired = [m for m in messages if m.get("role") == "tool"]
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0]["tool_call_id"], "a")
+        self.assertIn("未返回结果", repaired[0]["content"])
+        # 占位结果必须紧跟在悬空调用之后，且 user 消息仍在其后。
+        roles = [m["role"] for m in messages]
+        self.assertEqual(roles, ["system", "assistant", "tool", "user"])
+
+    def test_dangling_tool_calls_are_persisted_repaired(self):
+        """落盘自愈：修补一次即长期有效，后续请求不再需要临时打补丁。"""
+        self.add("user", "任务")
+        self.add("assistant", "", tool_calls=[{"id": "a", "name": "read", "arguments": {}}])
+        self.add("user", "next")
+        added = self.store.repair_dangling_tool_calls(self.cid)
+        self.assertEqual(added, 1)
+        saved = self.store.get(self.cid)["messages"]
+        self.assertEqual([m["role"] for m in saved], ["user", "assistant", "tool", "user"])
+        self.assertEqual(saved[2]["tool_call_id"], "a")
+        # 已修复的历史再次调用不应重复插入。
+        self.assertEqual(self.store.repair_dangling_tool_calls(self.cid), 0)
+        self.assertEqual(len(self.store.get(self.cid)["messages"]), 4)
+
+    def test_orphan_tool_result_is_dropped(self):
+        """孤儿工具结果（找不到对应调用）应丢弃，避免污染请求。"""
+        self.add("user", "任务")
+        self.add("tool", "无主结果", tool_call_id="ghost")
+        self.add("assistant", "回答")
+        messages = self.manager.build_messages(self.store.get(self.cid), "system")
+        self.assertFalse(any(m.get("role") == "tool" for m in messages))
+        self.manager.validate_tools(messages)
 
     def test_truncated_summary_does_not_commit(self):
         self.add("user", "old")
