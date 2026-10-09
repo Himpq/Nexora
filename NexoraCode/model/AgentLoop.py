@@ -53,6 +53,24 @@ def _truncate_approval_context(value: Any, max_chars: int = 1600) -> str:
     return text[:max_chars] + "\n[审批上下文已截断]"
 
 
+def _log_elapsed_ms(
+    stage: str,
+    started_at: float,
+    round_index: int,
+    call_ordinal: Optional[int] = None,
+    detail: str = "",
+) -> None:
+    """记录本地 Agent 阶段耗时，不输出会话或工具调用内容。"""
+    identifiers = f"round={round_index}"
+
+    if call_ordinal is not None:
+        identifiers += f" call={call_ordinal}"
+
+    suffix = f" {detail}" if detail else ""
+    elapsed_ms = (time.monotonic() - started_at) * 1000
+    print(f"[LocalAgentTiming] {identifiers} {stage}_ms={elapsed_ms:.1f}{suffix}")
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -111,6 +129,7 @@ class AgentLoop:
         reasoning_text = ""
         last_round_io = None
         last_round_had_tool_calls = False
+        last_tool_result_yielded_at = 0.0
 
         # 本次请求跨工具轮次的 usage 累计（provider 每轮流式返回 usage 时更新）
         totals = {
@@ -210,9 +229,18 @@ class AgentLoop:
             assistant_tool_calls = []
             round_usage = None
             round_index += 1
+            provider_started = time.monotonic()
+            provider_first_event_logged = False
+
+            if last_tool_result_yielded_at:
+                _log_elapsed_ms("next_round_kickoff", last_tool_result_yielded_at, round_index)
 
             try:
                 for event in self.provider.stream_chat(messages, tools=tools):
+                    if not provider_first_event_logged:
+                        provider_first_event_logged = True
+                        _log_elapsed_ms("provider_first_event", provider_started, round_index)
+
                     event_type = event.get("type")
 
                     if event_type == "content":
@@ -270,6 +298,13 @@ class AgentLoop:
                 yield {"type": "error", "message": f"模型调用失败: {exc}"}
 
                 break
+            finally:
+                _log_elapsed_ms(
+                    "provider_wall",
+                    provider_started,
+                    round_index,
+                    detail=f"first_event={int(provider_first_event_logged)}",
+                )
 
             content_text = "".join(assistant_parts)
             reasoning_text += "".join(assistant_reasoning_parts)
@@ -351,9 +386,11 @@ class AgentLoop:
                 call_id = str(tool_call.get("id") or "")
                 tool_name = str(tool_call.get("name") or "")
                 arguments = tool_call.get("arguments")
+                call_ordinal = tool_index + 1
 
                 yield {"type": "function_call", "name": tool_name, "call_id": call_id, "arguments": arguments}
 
+                permission_started = time.monotonic()
                 authorization = evaluate_tool_call(
                     self.executor,
                     tool_name,
@@ -365,6 +402,13 @@ class AgentLoop:
                         "assistant_explanation": _truncate_approval_context(content_text),
                         "previous_actions": approval_action_history[-8:],
                     },
+                )
+                _log_elapsed_ms(
+                    "permission",
+                    permission_started,
+                    round_index,
+                    call_ordinal,
+                    detail=f"decision={authorization.get('decision', 'unknown')}",
                 )
 
                 if self._is_cancelled(cancel_checker):
@@ -400,14 +444,33 @@ class AgentLoop:
                 elif authorization["decision"] == "deny":
                     result = {"success": False, "content": authorization["message"]}
                 else:
-                    result = self._execute_tool(
-                        tool_name,
-                        arguments,
-                        conversation_id,
-                        project_path,
-                        cancel_checker,
-                        permission_mode=authorization["mode"],
-                        confirmed_tool_call=bool(authorization.get("approved_once", False)),
+                    tool_execution_started = time.monotonic()
+
+                    try:
+                        result = self._execute_tool(
+                            tool_name,
+                            arguments,
+                            conversation_id,
+                            project_path,
+                            cancel_checker,
+                            permission_mode=authorization["mode"],
+                            confirmed_tool_call=bool(authorization.get("approved_once", False)),
+                        )
+                    finally:
+                        _log_elapsed_ms(
+                            "tool_execution",
+                            tool_execution_started,
+                            round_index,
+                            call_ordinal,
+                            detail="executed=1",
+                        )
+
+                tool_execution_finished = time.monotonic()
+
+                if authorization["decision"] != "allow":
+                    print(
+                        f"[LocalAgentTiming] round={round_index} call={call_ordinal} "
+                        "tool_execution_ms=0.0 executed=0"
                     )
 
                 tool_content = result.get("content")
@@ -435,6 +498,12 @@ class AgentLoop:
 
                         if not question_sent:
                             question_sent = True
+                            _log_elapsed_ms(
+                                "result_processing",
+                                tool_execution_finished,
+                                round_index,
+                                call_ordinal,
+                            )
                             yield {
                                 "type": "question",
                                 "question": result.get("permission_question"),
@@ -464,6 +533,12 @@ class AgentLoop:
                     if not question_sent and not already_asked:
                         question_sent = True
                         print(f"[LocalAgent] emitting permission question: path={request_path}")
+                        _log_elapsed_ms(
+                            "result_processing",
+                            tool_execution_finished,
+                            round_index,
+                            call_ordinal,
+                        )
                         yield {
                             "type": "question",
                             "question": result.get("permission_question"),
@@ -498,6 +573,13 @@ class AgentLoop:
                     break
 
                 print(f"[LocalAgent] tool result: {tool_name} success={success} content_len={len(str(tool_content))}")
+                _log_elapsed_ms(
+                    "result_processing",
+                    tool_execution_finished,
+                    round_index,
+                    call_ordinal,
+                )
+                last_tool_result_yielded_at = time.monotonic()
 
                 yield {
                     "type": "function_result",

@@ -75,6 +75,7 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "head_seq": 1,
         "last_seq": 0,
         "chunks": [],
+        "tool_chunk_push_times": {},
         "journal_pending": [],
         "error": "",
         "stage": "created",
@@ -226,8 +227,13 @@ def start_session(
             payload["_stream_seq"] = int(session["last_seq"])
             session["chunks"].append(payload)
 
+            if chunk_type in {"function_call", "function_result"}:
+                session["tool_chunk_push_times"][int(session["last_seq"])] = time.monotonic()
+
             if len(session["chunks"]) > _MAX_CHUNKS_PER_SESSION:
-                session["chunks"].pop(0)
+                dropped = session["chunks"].pop(0)
+                dropped_seq = int(dropped.get("_stream_seq") or 0)
+                session["tool_chunk_push_times"].pop(dropped_seq, None)
                 session["head_seq"] = int(session["head_seq"]) + 1
 
             session["updated_at"] = time.time()
@@ -474,7 +480,9 @@ def request_cancel(stream_id: str, reason: str = "user_abort") -> bool:
             s["chunks"].append(payload)
 
             if len(s["chunks"]) > _MAX_CHUNKS_PER_SESSION:
-                s["chunks"].pop(0)
+                dropped = s["chunks"].pop(0)
+                dropped_seq = int(dropped.get("_stream_seq") or 0)
+                s["tool_chunk_push_times"].pop(dropped_seq, None)
                 s["head_seq"] = int(s.get("head_seq") or 1) + 1
 
         cond.notify_all()
@@ -530,6 +538,7 @@ def iter_session_chunks(
     while True:
         emit_seq = None
         emit_payload = None
+        tool_push_at = None
         should_break = False
         now = time.time()
 
@@ -549,6 +558,7 @@ def iter_session_chunks(
                     payload = chunks[idx]
                     emit_seq = int(payload.get("_stream_seq") or cursor)
                     emit_payload = copy.deepcopy(payload)
+                    tool_push_at = session["tool_chunk_push_times"].pop(emit_seq, None)
                     cursor = emit_seq + 1
                     session["updated_at"] = time.time()
                 else:
@@ -560,6 +570,13 @@ def iter_session_chunks(
                 cond.wait(timeout=timeout)
 
         if emit_payload is not None:
+            if tool_push_at is not None:
+                event_type = str(emit_payload.get("type") or "")
+                print(
+                    f"[LocalAgentTiming] event={event_type} "
+                    f"push_to_sse_yield_ms={(time.monotonic() - tool_push_at) * 1000:.1f}"
+                )
+
             yield emit_seq, emit_payload
             continue
 
