@@ -106,6 +106,18 @@
                     <span>本地用户名</span>
                     <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
                 </label>
+
+                <label class="field">
+                    <span>自定义提示词</span>
+                    <textarea id="g-custom-prompt" rows="6" placeholder="追加到系统提示词末尾的个性化要求，例如代码风格、回答语言、常用约定等。留空表示不追加。" spellcheck="false"></textarea>
+                    <small class="hint">作为稳定内容注入系统提示词（head），同一会话内保持一致以利于缓存命中；上限 8000 字符。</small>
+                </label>
+
+                <label class="field field-inline">
+                    <input id="g-read-agents-md" type="checkbox" checked/>
+                    <span>读取项目 AGENTS.md</span>
+                    <small class="hint">开启后，绑定项目根目录下的 AGENTS.md / NEXORA.md / .nexora/AGENTS.md 会作为项目约定注入系统提示词。</small>
+                </label>
             </section>
 
             <section id="view-permissions" class="view">

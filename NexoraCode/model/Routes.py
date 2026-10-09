@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 import threading
+from pathlib import Path
 from typing import Any, Generator
 
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
@@ -48,6 +49,10 @@ from .ToolPermissionPolicy import (
 
 
 _local_bp = Blueprint("local_agent", __name__)
+
+# 提示词注入长度上限：避免超长自定义内容挤占上下文窗口。
+_AGENTS_MD_MAX_CHARS = 8000
+_CUSTOM_PROMPT_MAX_CHARS = 8000
 _EXECUTOR = None
 
 
@@ -87,6 +92,52 @@ def _build_agent_loop(provider: ProviderClient | None = None) -> AgentLoop:
     )
 
 
+def _read_project_agents_md(project_path: str) -> str:
+    """读取项目根目录下的 AGENTS.md 作为项目级提示词约定。
+
+    仅读取项目根内的固定文件名，限长并静默跳过缺失/越界/读取失败的情况，
+    保证不会因为该文件而中断对话。返回空串表示无可用内容。
+    """
+    clean_root = str(project_path or "").strip()
+
+    if not clean_root:
+        return ""
+
+    try:
+        root = Path(clean_root).resolve()
+    except (OSError, ValueError):
+        return ""
+
+    candidates = [
+        root / "AGENTS.md",
+        root / "NEXORA.md",
+        root / ".nexora" / "AGENTS.md",
+    ]
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except (OSError, ValueError):
+            continue
+
+        # 只接受项目根内的文件，避免符号链接或相对路径逃逸。
+        if root not in resolved.parents:
+            continue
+
+        if not resolved.is_file():
+            continue
+
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+
+        if text:
+            return text[:_AGENTS_MD_MAX_CHARS]
+
+    return ""
+
+
 def _build_system_prompt(conversation: dict | None) -> str:
     lines = [
         "你是 NexoraCode，运行在用户本地电脑上的编程助手。",
@@ -109,6 +160,28 @@ def _build_system_prompt(conversation: dict | None) -> str:
         ])
     else:
         lines.append("需要访问本地路径时，系统会自动向用户发起授权询问，无需额外调用权限工具。")
+
+    # 项目级约定（AGENTS.md）：仅在开启且项目内存在时追加，属于低频稳定内容，
+    # 放在 system prompt（head）里；同一会话内内容确定，不掺任何易变信息。
+    if project_path and bool(config.get("local_read_agents_md", True)):
+        agents_text = _read_project_agents_md(project_path)
+
+        if agents_text:
+            lines.extend([
+                "",
+                "以下是当前项目根目录 AGENTS.md 中的项目约定，请在本项目内遵守：",
+                agents_text,
+            ])
+
+    # 用户自定义提示词：全局、低频稳定，同样放在 head。
+    custom_prompt = str(config.get("local_custom_system_prompt", "") or "").strip()
+
+    if custom_prompt:
+        lines.extend([
+            "",
+            "以下是用户自定义要求，请在不违反上述安全与路径规则的前提下遵守：",
+            custom_prompt[:_CUSTOM_PROMPT_MAX_CHARS],
+        ])
 
     return "\n".join(lines)
 

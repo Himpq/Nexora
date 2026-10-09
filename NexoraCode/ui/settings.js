@@ -336,7 +336,9 @@
                 default_id: state.defaultId
             },
             general: {
-                username: $("g-username").value.trim()
+                username: $("g-username").value.trim(),
+                custom_system_prompt: $("g-custom-prompt").value,
+                read_agents_md: $("g-read-agents-md").checked
             }
         };
     }
@@ -372,6 +374,8 @@
         state.providers = provider.providers || [];
         state.defaultId = provider.default_id || "";
         $("g-username").value = (res.data.general || {}).username || "local";
+        $("g-custom-prompt").value = (res.data.general || {}).custom_system_prompt || "";
+        $("g-read-agents-md").checked = (res.data.general || {}).read_agents_md !== false;
         renderProviderList();
     }
 

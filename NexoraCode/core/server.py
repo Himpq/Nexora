@@ -921,6 +921,8 @@ def local_settings_get():
         },
         "general": {
             "username": str(config.get("local_username", "local") or "local"),
+            "custom_system_prompt": str(config.get("local_custom_system_prompt", "") or ""),
+            "read_agents_md": bool(config.get("local_read_agents_md", True)),
         },
     }), 200, {"Cache-Control": "no-store"}
 
@@ -988,6 +990,12 @@ def local_settings_save():
 
     if "username" in general_payload and str(general_payload.get("username") or "").strip():
         config.set("local_username", str(general_payload.get("username") or "").strip())
+
+    if "custom_system_prompt" in general_payload:
+        config.set("local_custom_system_prompt", str(general_payload.get("custom_system_prompt") or "")[:8000])
+
+    if "read_agents_md" in general_payload:
+        config.set("local_read_agents_md", bool(general_payload.get("read_agents_md")))
 
     return jsonify({"success": True, "message": "设置已保存"})
 
