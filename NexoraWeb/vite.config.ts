@@ -3,48 +3,65 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// 单一前端源工程配置:
-// - dev 模式将 /api 代理到本地 ChatDBServer(默认 5000 端口),保证 cookie 同源
-// - 构建产物输出到 ChatDBServer/static/new/:
-//     * Flask 通过模板引用该目录资源(新页面 /new)
-//     * NexoraCode 的 /static 路由同样读到该目录 → 双端自动共享新前端
-// - base 在构建时指向 /static/new/,保证资源相对路径在 Flask 下正确
-export default defineConfig(({ command }) => ({
-    plugins: [vue()],
-    resolve: {
-        alias: {
-            '@': fileURLToPath(new URL('./src', import.meta.url)),
-        },
-    },
-    base: command === 'build' ? '/static/new/' : '/',
-    build: {
-        outDir: fileURLToPath(new URL('../ChatDBServer/static/new', import.meta.url)),
-        emptyOutDir: true,
-        rolldownOptions: {
-            output: {
-                // 第三方依赖统一进入 vendor,避免为已移除的 UI 框架保留无效 chunk。
-                manualChunks(id: string): string | undefined {
-                    if (id.includes('node_modules')) {
-                        return 'vendor'
-                    }
+// Same Vue source, separate builds and static directories for NexoraWeb and NexoraCode.
+// NexoraCode uses the nexoracode mode and proxies its local API to port 27700 in development.
+export default defineConfig(({ command, mode }) => {
+    const isNexoraCode = mode === 'nexoracode'
+    const staticBase = isNexoraCode ? '/static/nexoracode/' : '/static/new/'
+    const outputDirectory = isNexoraCode
+        ? '../NexoraCode/ui/static/nexoracode'
+        : '../ChatDBServer/static/new'
+    const apiTarget = isNexoraCode
+        ? 'http://127.0.0.1:27700'
+        : 'http://127.0.0.1:5000'
 
-                    return undefined
+    return {
+        plugins: [vue()],
+        resolve: {
+            alias: {
+                '@': fileURLToPath(new URL('./src', import.meta.url)),
+            },
+        },
+        base: command === 'build' ? staticBase : '/',
+        build: {
+            outDir: fileURLToPath(new URL(outputDirectory, import.meta.url)),
+            emptyOutDir: true,
+            cssCodeSplit: isNexoraCode ? false : undefined,
+            rolldownOptions: {
+                input: isNexoraCode
+                    ? fileURLToPath(new URL('./nexoracode.html', import.meta.url))
+                    : undefined,
+                output: {
+                    ...(isNexoraCode ? {
+                        entryFileNames: 'nexoracode.js',
+                        assetFileNames: (assetInfo) => assetInfo.name?.endsWith('.css')
+                            ? 'nexoracode.css'
+                            : 'assets/[name]-[hash][extname]',
+                    } : {}),
+                    // 保持两个构建产物的第三方依赖分组稳定。
+                    manualChunks(id: string): string | undefined {
+                        if (id.includes('node_modules')) {
+                            return 'vendor'
+                        }
+
+                        return undefined
+                    },
                 },
             },
         },
-    },
-    server: {
-        port: 5173,
-        proxy: {
-            '/api': {
-                target: 'http://127.0.0.1:5000',
-                changeOrigin: true,
-            },
-            // vendor 资产(字体/图标/高亮主题)仍由 Flask /static 托管,dev 下代理保证与构建产物一致
-            '/static/vendor': {
-                target: 'http://127.0.0.1:5000',
-                changeOrigin: true,
+        server: {
+            port: 5173,
+            proxy: {
+                '/api': {
+                    target: apiTarget,
+                    changeOrigin: true,
+                },
+                // vendor 资产(字体/图标/高亮主题)由本地 Flask 静态服务提供。
+                '/static/vendor': {
+                    target: apiTarget,
+                    changeOrigin: true,
+                },
             },
         },
-    },
-}))
+    }
+})
