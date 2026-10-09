@@ -202,7 +202,12 @@ class ContextTests(unittest.TestCase):
         self.assertFalse(any(m.get("role") == "tool" for m in messages))
         self.manager.validate_tools(messages)
 
-    def test_truncated_summary_does_not_commit(self):
+    def test_truncated_summary_is_kept_instead_of_failing(self):
+        """摘要被输出上限截断时保留已生成部分，而不是让整轮对话直接报错。
+
+        旧行为（finish_reason=length 即抛 ContextLimitError）会让小窗口模型
+        的会话彻底卡死：摘要需整合已有摘要与新历史，很容易触顶。
+        """
         self.add("user", "old")
         self.add("assistant", "old result")
         self.add("user", "new")
@@ -212,9 +217,11 @@ class ContextTests(unittest.TestCase):
             yield {"type": "finish", "finish_reason": "length"}
 
         self.provider.stream_chat = truncated
-        with self.assertRaises(self.context_module.ContextLimitError):
-            self.consume(self.manager.prepare(self.cid, "system", [], force=True))
-        self.assertNotIn("context_state", self.store.get(self.cid))
+        events, _messages = self.consume(self.manager.prepare(self.cid, "system", [], force=True))
+        # 截断摘要仍应提交，压缩边界推进，对话可继续。
+        self.assertEqual(events[-1]["status"], "done")
+        self.assertIn("context_state", self.store.get(self.cid))
+        self.assertEqual(self.store.get(self.cid)["context_state"]["summary"], "incomplete")
 
     def test_full_agent_uses_summary_and_accounts_compression_separately(self):
         local = types.ModuleType("local")

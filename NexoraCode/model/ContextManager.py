@@ -386,7 +386,15 @@ class ContextManager:
 
         yield {"type": "context_compression_status", "status": "start", "content": "上下文压缩中", "forced": force, "raw_input_tokens": measured_estimate, "context_window": window}
         summary = str(state.get("summary") or "")
-        summary_output = min(output, max(128, window // 8))
+        # 摘要输出预算：不能按 window//8 缩放——小窗口模型下会缩到 128，
+        # 而摘要需整合已有摘要（可能数千字符）与新历史，必然被截断。
+        # 对齐云端：摘要上限与窗口解耦，取输出上限的合理份额（至少 2048 token）。
+        summary_output = max(2048, min(output, 8192)) if output > 0 else 2048
+        # 预留空间不能吃满窗口，否则分批循环会因装不下任何轮次而直接报错。
+        summary_output = min(summary_output, max(256, window // 3))
+        # 摘要字符上限：超出即截断保存（对齐云端 final_text[:safe_max_chars]），
+        # 不因 finish_reason=length 直接判错——那会让对话彻底卡死。
+        summary_max_chars = max(2000, min(60000, summary_output * 3))
         instruction = {"role": "user", "content": (
             "请只输出供后续编程任务使用的上下文摘要。保留用户目标、项目路径、已确认约束、"
             "关键决策、修改与验证结果、错误线索和未完成事项。整合已有摘要；删除重复日志，"
@@ -453,12 +461,31 @@ class ContextManager:
             worker = threading.Thread(target=_run_summary, daemon=True)
             worker.start()
 
+            # 节流：逐 token 推送会产生几百条 SSE 事件（日志刷屏 + 前端频繁重渲染）。
+            # 每累积一定字符或距上次推送超过一定时长才发一条，兼顾流式观感与开销。
+            last_pushed_chars = 0
+            last_pushed_at = time.monotonic()
+            push_min_chars = 80
+            push_min_interval = 0.25
+
             try:
                 while True:
                     accumulated = delta_queue.get()
 
                     if accumulated is None:
                         break
+
+                    now = time.monotonic()
+                    should_push = (
+                        len(accumulated) - last_pushed_chars >= push_min_chars
+                        or now - last_pushed_at >= push_min_interval
+                    )
+
+                    if not should_push:
+                        continue
+
+                    last_pushed_chars = len(accumulated)
+                    last_pushed_at = now
 
                     yield {
                         "type": "context_compression_status",
@@ -467,6 +494,19 @@ class ContextManager:
                         "history_cut_index": cursor,
                         "summary_text": accumulated,
                         "summary_chars": len(accumulated),
+                    }
+
+                # 节流可能吞掉最后一段增量：补推一次完整摘要，避免流式末尾“跳变”。
+                final_text = str(getattr(result, "text", "") or "").strip()
+
+                if final_text and len(final_text) > last_pushed_chars:
+                    yield {
+                        "type": "context_compression_status",
+                        "status": "progress",
+                        "content": "正在整理历史上下文",
+                        "history_cut_index": cursor,
+                        "summary_text": final_text,
+                        "summary_chars": len(final_text),
                     }
 
                 worker.join()
@@ -486,10 +526,18 @@ class ContextManager:
                         "round_index": 0,
                     })
 
-            if result.finish_reason == "length":
-                raise ContextLimitError("摘要输出达到上限，未保存不完整摘要")
-
             summary = result.text.strip()
+
+            if result.finish_reason == "length":
+                # 摘要被输出上限截断：保留已生成部分并告警，而不是让整轮对话失败。
+                # 截断的摘要仍能大幅压缩历史，远优于“压缩失败→请求直接报错”。
+                print(f"[LocalContext] summary_truncated conversation={conversation_id} "
+                      f"chars={len(summary)} finish_reason=length")
+
+            if len(summary) > summary_max_chars:
+                summary = summary[:summary_max_chars]
+                print(f"[LocalContext] summary_clipped conversation={conversation_id} "
+                      f"max_chars={summary_max_chars}")
 
             if not summary:
                 raise ValueError("模型未返回上下文摘要，原始历史保持完整")
