@@ -54,6 +54,93 @@ def _truncate_approval_context(value: Any, max_chars: int = 1600) -> str:
     return text[:max_chars] + "\n[审批上下文已截断]"
 
 
+# 审批上下文预算：头/尾固定保留，中间历史按此字符预算裁剪。
+_APPROVAL_HEAD_KEEP = 1        # 固定保留会话最初 1 条用户请求，锚定任务大方向
+_APPROVAL_TAIL_USER_KEEP = 2   # 固定保留最近 2 条历史用户请求（当前请求单独保留）
+_APPROVAL_TAIL_REPLY_KEEP = 2  # 固定保留最近 2 条助手可见回复
+_APPROVAL_MIDDLE_BUDGET = 1200  # 中间历史允许占用的字符预算
+
+
+def _collect_role_texts(conversation_messages: list, role: str) -> list[str]:
+    """按时间顺序收集指定角色的可见文本（空内容跳过）。"""
+    texts: list[str] = []
+
+    for message in conversation_messages:
+        if not isinstance(message, dict) or message.get("role") != role:
+            continue
+
+        text = _truncate_approval_context(message.get("content"))
+
+        if text:
+            texts.append(text)
+
+    return texts
+
+
+def _build_approval_context(
+    user_text: str,
+    conversation_messages: list,
+    assistant_explanation: str,
+    previous_actions: list[dict],
+) -> dict:
+    """构造审批模型的上下文：头固定 + 尾固定 + 中间可裁并显式标注。
+
+    设计目标：让审批模型既能看清"任务最初要什么"（头），也能看清"此刻在做什么、
+    用户最近授权了什么"（尾）。中间的历史按字符预算裁剪，被裁掉的部分显式标注条数，
+    避免模型因"关键上下文被静默丢弃"而误判为意图不匹配。
+    """
+    user_history = _collect_role_texts(conversation_messages, "user")
+    reply_history = _collect_role_texts(conversation_messages, "assistant")
+
+    # 头：会话最初若干条用户请求（若与尾部重叠则不重复计入）。
+    head_user = user_history[:_APPROVAL_HEAD_KEEP]
+    # 尾：最近若干条历史用户请求，去掉与头重叠的部分。
+    tail_user = user_history[_APPROVAL_HEAD_KEEP:][-_APPROVAL_TAIL_USER_KEEP:]
+    tail_reply = reply_history[-_APPROVAL_TAIL_REPLY_KEEP:]
+
+    # 中间：剩余的用户请求与助手回复，按预算裁剪。
+    middle_user = user_history[_APPROVAL_HEAD_KEEP:][:-_APPROVAL_TAIL_USER_KEEP] if _APPROVAL_TAIL_USER_KEEP else user_history[_APPROVAL_HEAD_KEEP:]
+    middle_reply = reply_history[:-_APPROVAL_TAIL_REPLY_KEEP] if _APPROVAL_TAIL_REPLY_KEEP else reply_history
+
+    middle_kept_user: list[str] = []
+    middle_kept_reply: list[str] = []
+    used = 0
+    omitted = 0
+
+    # 中间历史从近到远保留，超出预算的部分计入省略条数。
+    for text in reversed(middle_user):
+        if used + len(text) > _APPROVAL_MIDDLE_BUDGET:
+            omitted += 1
+            continue
+        used += len(text)
+        middle_kept_user.insert(0, text)
+
+    for text in reversed(middle_reply):
+        if used + len(text) > _APPROVAL_MIDDLE_BUDGET:
+            omitted += 1
+            continue
+        used += len(text)
+        middle_kept_reply.insert(0, text)
+
+    omitted_note = ""
+    if omitted > 0:
+        omitted_note = f"（中间另有 {omitted} 条较早对话因长度限制已省略，仅作参考）"
+
+    return {
+        "user_intent": user_text,
+        "previous_user_requests": tail_user,
+        "assistant_explanation": assistant_explanation,
+        "previous_agent_replies": tail_reply,
+        "previous_actions": previous_actions,
+        # 头：任务最初的目标，用于理解整体方向。
+        "initial_user_request": head_user[0] if head_user else "",
+        # 中间：较早但仍可能相关的对话，已按预算裁剪并标注省略。
+        "earlier_user_requests": middle_kept_user,
+        "earlier_agent_replies": middle_kept_reply,
+        "omitted_history_note": omitted_note,
+    }
+
+
 def _log_elapsed_ms(
     stage: str,
     started_at: float,
@@ -95,18 +182,6 @@ class AgentLoop:
         model_name = self._model_name()
         conversation_messages = conversation.get("messages")
         conversation_messages = conversation_messages if isinstance(conversation_messages, list) else []
-        previous_user_requests = [
-            _truncate_approval_context(message.get("content"))
-            for message in conversation_messages
-            if isinstance(message, dict) and message.get("role") == "user"
-        ][-4:]
-        previous_agent_replies = [
-            _truncate_approval_context(message.get("content"))
-            for message in conversation_messages
-            if isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and str(message.get("content") or "").strip()
-        ][-4:]
         print(f"[LocalAgent] stream_send start: conversation_id={conversation_id} user_text={user_text[:60]!r} project_root={project_path or '(none)'}")
 
         yield {"type": "conversation_id", "conversation_id": conversation_id}
@@ -416,13 +491,12 @@ class AgentLoop:
                     tool_name,
                     arguments,
                     cancel_checker,
-                    approval_context={
-                        "user_intent": user_text,
-                        "previous_user_requests": previous_user_requests,
-                        "assistant_explanation": _truncate_approval_context(content_text),
-                        "previous_agent_replies": previous_agent_replies,
-                        "previous_actions": approval_action_history[-8:],
-                    },
+                    approval_context=_build_approval_context(
+                        user_text,
+                        conversation_messages,
+                        _truncate_approval_context(content_text),
+                        approval_action_history[-8:],
+                    ),
                 )
                 _log_elapsed_ms(
                     "permission",
