@@ -1146,8 +1146,7 @@
             if (command) {
                 const commandText = String(command || '').replace(/\s+/g, ' ').trim();
                 const shown = clipExecutionFlowText(commandText, 34);
-                const partial = commandText.length > 34 ? '（部分命令）' : '';
-                return `执行命令 ${shown}${partial}`;
+                return `执行命令 ${shown}`;
             }
 
             return '执行命令';
