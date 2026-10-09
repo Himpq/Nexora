@@ -232,6 +232,7 @@
                 @new-project-chat="emit('new-project-chat', $event)"
                 @open-conversation="handleOpen"
                 @delete-conversation="handleDelete"
+                @context-menu="handleContextMenu"
             />
 
             <ConversationSidebarItem
@@ -245,7 +246,7 @@
                 :unread="store.unreadConversations.includes(row.conversation.id)"
                 @open="handleOpen(row.conversation.id)"
                 @delete="handleDelete(row.conversation)"
-                @contextmenu="!nexoracode && handleContextMenu($event, row.conversation)"
+                @contextmenu="handleContextMenu($event, row.conversation)"
             />
 
             <div v-if="!sidebarRows.length && !store.branchRows.length" class="sidebar-empty">
@@ -387,9 +388,9 @@
 
         <!-- 会话右键菜单(对齐原版 pin-context-menu;显示由浮层协调器管理) -->
         <ContextMenu
-            v-if="!nexoracode"
             ref="contextMenuRef"
             target-type="conversation"
+            :nexoracode="nexoracode"
             :conversation-id="contextMenu.conversationId"
             :title="contextMenu.title"
             :pinned="contextMenu.pinned"

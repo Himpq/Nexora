@@ -100,6 +100,7 @@
                                 project-item
                                 @open="emit('open-conversation', row.conversation.id)"
                                 @delete="emit('delete-conversation', row.conversation)"
+                                @contextmenu="emit('context-menu', $event, row.conversation)"
                             />
                         </div>
                     </div>
@@ -134,6 +135,7 @@
         'new-project-chat': [project: NexoraCodeProject]
         'open-conversation': [conversationId: string]
         'delete-conversation': [conversation: ConversationSummary]
+        'context-menu': [event: MouseEvent, conversation: ConversationSummary]
     }>()
 
     const store = useConversationStore()

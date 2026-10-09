@@ -128,10 +128,13 @@
                 <!-- 上下文/队列状态簇:作为容器独立子级(桌面与 footer 同排视觉不变;
                     手机 Grid 布局放工具行右端作锚点,平衡整行)。
                     remote 形态隐藏:这里统计的是云端会话的 CTX/TK,电脑任务的用量
-                    由每条消息上的 token 徽标呈现。 -->
-                <div v-if="isCloud" class="token-footer-left">
+                    由每条消息上的 token 徽标呈现。
+                    nexoracode 形态只保留上下文窗口圆环 + CTX 文本(数据源为本地
+                    /api/config 的 context_window 与本地会话消息的 io_tokens_window),
+                    TK 累计计数仍仅云端显示。 -->
+                <div v-if="isCloud || isNexoraCode" class="token-footer-left">
                     <span
-                        v-if="conversationStore.queueCount > 0"
+                        v-if="isCloud && conversationStore.queueCount > 0"
                         class="queue-badge"
                         title="待发送消息数"
                     >
@@ -164,6 +167,7 @@
                         {{ ctxText }}
                     </button>
                     <button
+                        v-if="isCloud"
                         type="button"
                         class="token-mini"
                         id="tokenDisplay"

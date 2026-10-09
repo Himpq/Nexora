@@ -11,6 +11,7 @@ import { createPinia } from 'pinia'
 
 import App from './App.vue'
 import router from './router'
+import { registerDesktopRefreshBridge } from '@/bridge/desktopRefresh'
 import { initTheme } from '@/ui/theme'
 import { startNexoraCodePerformance } from '@/ui/nexoracodePerformance'
 
@@ -52,6 +53,9 @@ initTheme()
 
 if (import.meta.env.MODE === 'nexoracode') {
     startNexoraCodePerformance()
+    // 暴露桌面端设置保存后的刷新钩子(__ncLoadModels / __ncRefreshToolPermissions),
+    // 仅 nexoracode 构建注册,本体网页端不受影响。
+    registerDesktopRefreshBridge()
 }
 
 // 全局错误面板:渲染/回调异常直接浮层展示组件栈与原始错误,

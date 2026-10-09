@@ -302,13 +302,34 @@
         }
     }
 
+    /**
+     * 桌面端设置保存后由 __ncRefreshToolPermissions 派发的刷新事件。
+     * 仅 nexoracode 构建持有事件名,本体构建折叠为空串,避免该标识进入线上产物。
+     */
+    const DESKTOP_PERMISSION_REFRESH_EVENT =
+        import.meta.env.MODE === 'nexoracode' ? 'nexoracode:refresh-tool-permissions' : ''
+
+    /** 桌面端设置保存后由 __ncRefreshToolPermissions 触发,重新拉取权限设置。 */
+    function onDesktopPermissionRefresh(): void {
+        void refreshSettings()
+    }
+
     onMounted(() => {
         void refreshSettings()
         document.addEventListener('click', closeOnOutsideClick)
+
+        if (DESKTOP_PERMISSION_REFRESH_EVENT) {
+            window.addEventListener(DESKTOP_PERMISSION_REFRESH_EVENT, onDesktopPermissionRefresh)
+        }
     })
 
     onBeforeUnmount(() => {
         document.removeEventListener('click', closeOnOutsideClick)
+
+        if (DESKTOP_PERMISSION_REFRESH_EVENT) {
+            window.removeEventListener(DESKTOP_PERMISSION_REFRESH_EVENT, onDesktopPermissionRefresh)
+        }
+
         removePositionListeners()
     })
 

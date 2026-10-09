@@ -78,6 +78,8 @@
         branch?: ConversationBranch
         /** 打开时保留右侧栏面板(面板内触发的右键菜单,如知识库面板) */
         keepPanel?: boolean
+        /** NexoraCode 本地构建:后端仅有会话标题接口,菜单收敛为"修改标题" */
+        nexoracode?: boolean
     }>(), {
         targetType: 'conversation',
         conversationId: '',
@@ -85,6 +87,7 @@
         fileAlias: '',
         branch: undefined,
         keepPanel: false,
+        nexoracode: false,
     })
 
     const emit = defineEmits<{
@@ -113,6 +116,15 @@
     /** 菜单项:按目标类型拼装(危险态 / 子菜单由 key 驱动) */
     const menuItems = computed<ContextMenuItem[]>(() => {
         const items: ContextMenuItem[] = []
+
+        // NexoraCode 本地后端只提供会话标题接口,菜单收敛为"修改标题"一项
+        if (props.nexoracode) {
+            if (props.targetType === 'conversation') {
+                items.push({ key: 'rename', label: '修改标题', icon: 'fa-solid fa-pen' })
+            }
+
+            return items
+        }
 
         if (props.targetType !== 'cloud_file') {
             items.push({
@@ -154,6 +166,12 @@
     function open(x: number, y: number): void {
         gddpRef.value?.open(x, y)
         workspaces.value = []
+
+        // NexoraCode 本地构建无工作区接口,跳过拉取
+        if (props.nexoracode) {
+            return
+        }
+
         void ensureWorkspaceItems()
     }
 
