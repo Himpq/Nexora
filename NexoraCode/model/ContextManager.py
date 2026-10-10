@@ -10,6 +10,7 @@ import time
 
 from .ConversationStore import INTERRUPTED_TOOL_RESULT
 from .ShortRequest import run_short_request
+from .TokenEstimator import TokenEstimator
 
 
 class ContextLimitError(ValueError):
@@ -17,16 +18,56 @@ class ContextLimitError(ValueError):
 
 
 class ContextManager:
+    _MIN_REQUEST_OUTPUT_TOKENS = 256
+    _MAX_INPUT_SAFETY_MARGIN = 512
+
     def __init__(self, provider, store):
         self.provider = provider
         self.store = store
 
+    @classmethod
+    def _input_safety_margin(cls, window: int) -> int:
+        """Leave room for differences between serialized-token estimates and provider accounting."""
+        return min(cls._MAX_INPUT_SAFETY_MARGIN, max(64, math.ceil(window * 0.05)))
+
+    def _minimum_request_output_tokens(self) -> int:
+        configured = int(self.provider.config.max_tokens)
+
+        return min(configured, self._MIN_REQUEST_OUTPUT_TOKENS)
+
+    def request_output_limit(self, conversation_id, messages: list, tools: list) -> int:
+        """按本次输入占用动态分配输出，避免短窗口固定预留过多额度。"""
+        conversation = self.store.get(conversation_id)
+
+        if conversation is None:
+            raise ValueError("本地会话不存在")
+
+        window = int(self.provider.config.context_window)
+        configured = int(self.provider.config.max_tokens)
+        input_basis = self._measure_request_basis(conversation, messages, tools)
+        safety_margin = self._input_safety_margin(window)
+        available = window - input_basis - safety_margin
+        minimum = self._minimum_request_output_tokens()
+
+        if available < minimum:
+            raise ContextLimitError(
+                f"当前输入估算 {input_basis} token，无法在上下文窗口 {window} 内"
+                f"保留至少 {minimum} token 的回答空间"
+            )
+
+        output_limit = min(configured, available)
+
+        if output_limit < configured:
+            print(f"[LocalContext] output_budget_reduced conversation={conversation_id} "
+                  f"input_basis={input_basis} safety_margin={safety_margin} "
+                  f"configured_output={configured} request_output={output_limit} window={window}")
+
+        return output_limit
+
     @staticmethod
     def estimate_tokens(value) -> int:
-        """保守估算 JSON 输入；供应商实测用于后续校准，估算不冒充实测。"""
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        non_ascii = sum(ord(char) > 127 for char in text)
-        return non_ascii + math.ceil((len(text) - non_ascii) / 3)
+        """Estimate serialized JSON input; provider usage remains the source for calibration."""
+        return TokenEstimator.count(value)
 
     @staticmethod
     def message_payload(message: dict) -> dict:
@@ -217,8 +258,8 @@ class ContextManager:
             + text[-tail_chars:]
         )
 
-    def _trim_oversized_tool_results(self, messages, tools, hard_limit, output):
-        """当前轮超窗时的兜底：反复收缩最长的工具结果，直到装得下。
+    def _trim_oversized_tool_results(self, messages, tools, input_budget):
+        """当前轮超窗时反复收缩最长的工具结果，直到输入低于可用预算。
 
         只处理本次发送副本，落盘历史不动。仍装不下（如单条 user 消息本身就超窗）
         时返回 None，由调用方抛 ContextLimitError。
@@ -228,6 +269,7 @@ class ContextManager:
         每次都从原始内容重新裁剪，避免省略提示层层叠加。
         """
 
+        initial_estimate = self.estimate_tokens({"messages": messages, "tools": tools})
         indexes = [
             index for index, message in enumerate(messages)
             if message.get("role") == "tool"
@@ -236,6 +278,8 @@ class ContextManager:
         ]
 
         if not indexes:
+            print(f"[LocalContext] tool_result_trim_unavailable input_estimate={initial_estimate} "
+                  f"input_budget={input_budget} candidates=0")
             return None
 
         originals = {index: messages[index]["content"] for index in indexes}
@@ -246,7 +290,9 @@ class ContextManager:
         for _ in range(32):
             estimate = self.estimate_tokens({"messages": trial, "tools": tools})
 
-            if estimate + output < hard_limit:
+            if estimate < input_budget:
+                print(f"[LocalContext] tool_results_trimmed input_before={initial_estimate} "
+                      f"input_after={estimate} input_budget={input_budget} candidates={len(indexes)}")
                 return trial
 
             # 总是先收缩最长的那条：截一条大的往往就能省下足够空间，
@@ -254,6 +300,9 @@ class ContextManager:
             longest = max(indexes, key=lambda index: keep[index])
 
             if keep[longest] <= self._TRIM_FLOOR_CHARS:
+                print(f"[LocalContext] tool_result_trim_blocked input_estimate={estimate} "
+                      f"input_budget={input_budget} candidates={len(indexes)} "
+                      f"smallest_keep={keep[longest]}")
                 return None
 
             keep[longest] = max(self._TRIM_FLOOR_CHARS, keep[longest] // 2)
@@ -283,17 +332,7 @@ class ContextManager:
         return min(10.0, max(0.1, delta_real / delta_plain))
 
     def _measure_request_basis(self, conversation: dict, messages: list, tools: list) -> int:
-        """估算本轮输入占用：历史部分用上游实测值，未实测的增量保持保守。
-
-        字符启发式对同一份内容会系统性偏差（英文按 3 字符/token 高估约 33%），
-        反复对整段历史重估等于把这份偏差硬塞进触发判定。改成两段处理：
-        - 已发送过的部分：直接沿用上游实测的 prompt_tokens，一个字符都不重估；
-        - 尚未发送的新增消息：按实测边际速率折算，但不设下限——
-          宁可高估这几百个 token，也不能因为低估而让请求越窗。
-        偏差因此被限制在单轮增量上，历史再长也不会放大。
-
-        无实测基线（首轮 / 摘要换代后）时退回整体估算。
-        """
+        """Use measured provider usage as an anchor and tiktoken for new content."""
         state = conversation.get("context_state", {})
         measured = int(state.get("last_input_tokens") or 0)
         measured_count = int(state.get("last_measured_message_count") or 0)
@@ -341,6 +380,8 @@ class ContextManager:
         state = conversation.get("context_state", {})
         threshold = min(int(window * 0.9), window - output)
         hard_limit = window - output
+        minimum_output = min(output, self._MIN_REQUEST_OUTPUT_TOKENS)
+        adaptive_input_limit = window - minimum_output - self._input_safety_margin(window)
 
         if not force and measured_estimate < threshold:
             return messages
@@ -360,12 +401,23 @@ class ContextManager:
 
         if end <= start:
             if measured_estimate >= hard_limit:
+                if measured_estimate < adaptive_input_limit:
+                    print(f"[LocalContext] active_turn_output_reduction conversation={conversation_id} "
+                          f"input_estimate={measured_estimate} configured_input_limit={hard_limit} "
+                          f"minimum_output_input_limit={adaptive_input_limit}")
+                    yield {
+                        "type": "context_compression_status",
+                        "status": "output_limited",
+                        "content": "当前输入接近上下文窗口，本轮回答上限已调低",
+                        "raw_input_tokens": measured_estimate,
+                        "context_window": window,
+                    }
+                    return messages
+
                 # 历史里没有可压缩的轮次，说明超窗的是「当前轮自己」（通常是超长工具结果）。
                 # 直接抛错会让对话彻底卡死，因此先尝试对当前轮的超大工具结果做降级裁剪：
                 # 只改本次发送副本，落盘历史保持原文完整，用户随时可回看。
-                trimmed = self._trim_oversized_tool_results(
-                    messages, tools, hard_limit, output
-                )
+                trimmed = self._trim_oversized_tool_results(messages, tools, adaptive_input_limit)
 
                 if trimmed is not None:
                     print(f"[LocalContext] active_turn_trimmed conversation={conversation_id} "
@@ -379,7 +431,11 @@ class ContextManager:
                     }
                     return trimmed
 
-                raise ContextLimitError("当前任务或工具结果超过模型输入预算；没有可压缩的历史轮次")
+                raise ContextLimitError(
+                    f"当前任务或工具结果估算 {measured_estimate} token，超过可用输入预算 "
+                    f"{adaptive_input_limit}（窗口 {window}，至少保留回答 {minimum_output} token）；"
+                    "没有可压缩的历史轮次"
+                )
 
             yield {"type": "context_compression_status", "status": "skipped", "content": "没有可压缩的历史轮次"}
             return messages
@@ -553,45 +609,50 @@ class ContextManager:
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
         messages = self.build_messages(updated, system_prompt, volatile_instructions)
         post_estimate = self._measure_request_basis(updated, messages, tools)
+        trimmed = None
+        output_reduced = False
 
-        if post_estimate + output >= window:
-            # 压缩历史后仍超窗，说明超窗的是「当前轮自己」（通常是大量工具结果）：
-            # 历史已无可压缩空间，此时再抛错会让对话彻底卡死。
-            # 与 end<=start 分支同一套兜底：降级裁剪当前轮的超长工具结果，
-            # 只改本次发送副本，落盘历史保持完整。
-            trimmed = self._trim_oversized_tool_results(messages, tools, window - output, output)
+        if post_estimate >= hard_limit:
+            if post_estimate < adaptive_input_limit:
+                output_reduced = True
+            else:
+                # 输出额度已降到最小值仍放不下时，再裁剪当前轮工具结果。
+                # 这里只改本次发送副本，落盘历史保持完整。
+                trimmed = self._trim_oversized_tool_results(
+                    messages, tools, adaptive_input_limit
+                )
 
-            if trimmed is not None:
-                print(f"[LocalContext] post_compression_trimmed conversation={conversation_id} "
-                      f"post_basis={post_estimate} hard_limit={window - output}")
-                record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}
-                self.store.save_context(conversation_id, record, history[:end])
-                trimmed_estimate = self.estimate_tokens({"messages": trimmed, "tools": tools})
-                yield {
-                    "type": "context_compression_status",
-                    "status": "done",
-                    "content": "上下文压缩完成（当前轮工具结果已降级裁剪）",
-                    "history_cut_index": end,
-                    "summary_chars": len(summary),
-                    "summary_text": summary,
-                    "raw_input_tokens": measured_estimate,
-                    "post_raw_input_tokens": trimmed_estimate,
-                    "saved_tokens": max(0, measured_estimate - trimmed_estimate),
-                    "saved_ratio": (max(0, measured_estimate - trimmed_estimate) / measured_estimate) if measured_estimate > 0 else 0.0,
-                    "context_window": window,
-                }
-                return trimmed
+                if trimmed is None:
+                    raise ContextLimitError(
+                        f"摘要与当前任务估算 {post_estimate} token，超过可用输入预算 "
+                        f"{adaptive_input_limit}，未修改摘要边界"
+                    )
 
-            raise ContextLimitError("摘要与当前任务仍超过模型窗口，未修改摘要边界")
+                post_estimate = self.estimate_tokens({"messages": trimmed, "tools": tools})
 
         record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}
         self.store.save_context(conversation_id, record, history[:end])
+
+        if trimmed is not None:
+            print(f"[LocalContext] post_compression_trimmed conversation={conversation_id} "
+                  f"post_basis={post_estimate} input_budget={adaptive_input_limit}")
+        elif output_reduced:
+            print(f"[LocalContext] compressed_with_reduced_output conversation={conversation_id} "
+                  f"post_basis={post_estimate} configured_output={output} window={window}")
+
         print(f"[LocalContext] compressed conversation={conversation_id} cut={end} "
               f"input_basis={measured_estimate} post_basis={post_estimate} batches={len(usages)}")
+        if trimmed is not None:
+            status_content = "上下文压缩完成（当前轮工具结果已降级裁剪）"
+        elif output_reduced:
+            status_content = "上下文压缩完成（本轮输出上限已调整）"
+        else:
+            status_content = "上下文压缩完成"
+
         yield {
             "type": "context_compression_status",
             "status": "done",
-            "content": "上下文压缩完成",
+            "content": status_content,
             "history_cut_index": end,
             "summary_chars": len(summary),
             "summary_text": summary,
@@ -601,4 +662,4 @@ class ContextManager:
             "saved_ratio": (max(0, measured_estimate - post_estimate) / measured_estimate) if measured_estimate > 0 else 0.0,
             "context_window": window,
         }
-        return messages
+        return trimmed if trimmed is not None else messages

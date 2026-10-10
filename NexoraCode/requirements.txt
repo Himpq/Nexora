@@ -7,3 +7,4 @@ Pillow>=10.0
 trafilatura>=1.9
 websocket-client
 beautifulsoup4
+tiktoken>=0.8.0

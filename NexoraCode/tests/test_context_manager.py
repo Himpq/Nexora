@@ -28,6 +28,7 @@ class ContextTests(unittest.TestCase):
         core = types.ModuleType("core.config")
         core.get_app_root = lambda: Path(self.temp.name)
         core.config = {}
+        self.runtime_config = core.config
         sys.modules["core.config"] = core
         self.provider_module = module("test_model.Provider", ROOT / "model/Provider.py")
         self.store_module = module("test_model.ConversationStore", ROOT / "model/ConversationStore.py")
@@ -53,6 +54,79 @@ class ContextTests(unittest.TestCase):
         self.provider = Provider()
         self.manager = self.context_module.ContextManager(self.provider, self.store)
 
+    def test_provider_retries_errors_before_output_using_configured_limit(self):
+        provider_module = self.provider_module
+        config = provider_module.ProviderConfig(
+            name="test",
+            base_url="https://provider.test",
+            model="test-model",
+        )
+        client = provider_module.ProviderClient(config)
+        client._cancel_event.wait = lambda _delay: False
+
+        class Raw:
+            def stream(self, amt, decode_content=False):
+                yield (
+                    b'data: {"choices":[{"delta":{"content":"retried"},'
+                    b'"finish_reason":null}]}\n\n'
+                )
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                yield b"data: [DONE]\n\n"
+
+        class Response:
+            status_code = 200
+            raw = Raw()
+
+            def close(self):
+                pass
+
+        class ErrorRaw:
+            def stream(self, amt, decode_content=False):
+                yield b'data: {"error":{"code":"busy","message":"temporary upstream failure"}}\n\n'
+
+        class ErrorResponse:
+            status_code = 200
+            raw = ErrorRaw()
+
+            def close(self):
+                pass
+
+        class Session:
+            def __init__(self):
+                self.calls = 0
+
+            def post(self, *args, **kwargs):
+                self.calls += 1
+
+                if self.calls == 1:
+                    raise OSError("temporary connection failure")
+
+                if self.calls == 2:
+                    return ErrorResponse()
+
+                return Response()
+
+        session = Session()
+        client._session = session
+        self.runtime_config["local_auto_retry_count"] = 2
+
+        events = list(client.stream_chat([{"role": "user", "content": "hello"}]))
+
+        self.assertEqual(session.calls, 3)
+        self.assertEqual([event.get("delta") for event in events if event["type"] == "content"], ["retried"])
+        self.assertEqual(events[-1], {"type": "finish", "finish_reason": "stop"})
+
+    def test_retry_settings_use_requested_defaults_and_reject_invalid_values(self):
+        retry_settings = module("test_model.RetrySettings", ROOT / "model/RetrySettings.py")
+
+        self.assertEqual(retry_settings.DEFAULT_ERROR_RETRY_COUNT, 5)
+        self.assertEqual(retry_settings.DEFAULT_EMPTY_RESPONSE_RETRY_COUNT, 2)
+        self.assertEqual(retry_settings.configured_retry_count(self.runtime_config, "local_auto_retry_count", 5), 5)
+        self.assertEqual(retry_settings.configured_retry_count(self.runtime_config, "local_empty_response_retry_count", 2), 2)
+
+        with self.assertRaises(ValueError):
+            retry_settings.normalize_retry_count(11)
+
     def tearDown(self):
         for name in set(sys.modules) - set(self.saved_modules):
             del sys.modules[name]
@@ -71,6 +145,194 @@ class ContextTests(unittest.TestCase):
                 events.append(next(generator))
             except StopIteration as done:
                 return events, done.value
+
+    def build_agent_loop(self, provider):
+        local = types.ModuleType("local")
+        local.ToolExecutor = object
+        sys.modules["local"] = local
+        agent_module = module("test_model.AgentLoop", ROOT / "model/AgentLoop.py")
+
+        class Executor:
+            def list_tools_llm_format(self):
+                return [{
+                    "type": "function",
+                    "function": {"name": "local_test_tool", "parameters": {"type": "object"}},
+                }]
+
+        agent_module.evaluate_tool_call = lambda *args, **kwargs: {
+            "decision": "allow",
+            "mode": "auto",
+            "call": {"tool_name": "local_test_tool", "operation": "read"},
+        }
+        loop = agent_module.AgentLoop(provider, Executor(), self.store)
+        loop._execute_tool = lambda *args, **kwargs: {
+            "success": True,
+            "content": "工具结果",
+        }
+
+        return loop
+
+    @staticmethod
+    def tool_call_events():
+        return [
+            {"type": "content", "delta": "正在读取。"},
+            {
+                "type": "tool_call",
+                "index": 0,
+                "id": "call-1",
+                "name": "local_test_tool",
+                "arguments_delta": "{}",
+            },
+            {"type": "finish", "finish_reason": "tool_calls"},
+        ]
+
+    def test_empty_post_tool_response_retries_and_returns_body(self):
+        class Provider:
+            config = types.SimpleNamespace(context_window=8000, max_tokens=4096, model="test")
+
+            def __init__(self):
+                self.calls = []
+
+            def stream_chat(inner_self, messages, **kwargs):
+                inner_self.calls.append((messages, kwargs))
+                call_index = len(inner_self.calls)
+
+                if call_index == 1:
+                    events = self.tool_call_events()
+                elif call_index == 2:
+                    events = [
+                        {"type": "reasoning_content", "delta": "只有推理，没有正文。"},
+                        {"type": "usage", "usage": {"prompt_tokens": 500, "completion_tokens": 4096,
+                                                       "total_tokens": 4596}},
+                        {"type": "finish", "finish_reason": "length"},
+                    ]
+                else:
+                    events = [
+                        {"type": "content", "delta": "已根据工具结果完成回答。"},
+                        {"type": "finish", "finish_reason": "stop"},
+                    ]
+
+                yield from events
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        loop = self.build_agent_loop(provider)
+        events = list(loop.stream_send(self.cid, "请读取并回答", system_prompt="system"))
+
+        self.assertEqual(len(provider.calls), 3)
+        retry_messages = provider.calls[2][0]
+        self.assertTrue(any(message.get("role") == "tool" and message.get("content") == "工具结果"
+                            for message in retry_messages))
+        self.assertIn("上一轮工具结果已经返回", retry_messages[-1]["content"])
+        self.assertEqual(sum(event["type"] == "done" for event in events), 1)
+        self.assertFalse(any(event["type"] == "error" for event in events))
+
+        saved = self.store.get(self.cid)
+        empty_final_assistants = [
+            message for message in saved["messages"]
+            if message.get("role") == "assistant" and not message.get("tool_calls")
+            and not str(message.get("content") or "").strip()
+        ]
+        self.assertFalse(empty_final_assistants)
+        self.assertEqual(saved["messages"][-1]["content"], "已根据工具结果完成回答。")
+
+    def test_empty_post_tool_response_retry_is_bounded_and_reported(self):
+        class Provider:
+            config = types.SimpleNamespace(context_window=8000, max_tokens=4096, model="test")
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def stream_chat(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+
+                if inner_self.calls == 1:
+                    yield from self.tool_call_events()
+                else:
+                    yield {"type": "reasoning_content", "delta": "没有正文。"}
+                    yield {"type": "finish", "finish_reason": "length"}
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        events = list(self.build_agent_loop(provider).stream_send(
+            self.cid, "请读取并回答", system_prompt="system",
+        ))
+
+        self.assertEqual(provider.calls, 4)
+        self.assertFalse(any(event["type"] == "done" for event in events))
+        errors = [event for event in events if event["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("自动重试 2 次后仍没有生成正文", errors[0]["message"])
+
+    def test_empty_response_without_tool_is_reported_without_retry(self):
+        class Provider:
+            config = types.SimpleNamespace(context_window=8000, max_tokens=4096, model="test")
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def stream_chat(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+                yield {"type": "reasoning_content", "delta": "只有推理。"}
+                yield {"type": "finish", "finish_reason": "length"}
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        events = list(self.build_agent_loop(provider).stream_send(
+            self.cid, "新请求", system_prompt="system",
+        ))
+
+        self.assertEqual(provider.calls, 1)
+        self.assertFalse(any(event["type"] == "done" for event in events))
+        errors = [event for event in events if event["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("已达到单轮输出上限", errors[0]["message"])
+
+    def test_short_context_reduces_request_output_limit(self):
+        self.provider.config.context_window = 8192
+        self.provider.config.max_tokens = 4096
+        self.add("user", "短上下文问题" * 1000)
+        conversation = self.store.get(self.cid)
+        messages = self.manager.build_messages(conversation, "system")
+        events, prepared = self.consume(self.manager.prepare(self.cid, "system", []))
+
+        self.assertEqual(events[-1]["status"], "output_limited")
+        self.assertEqual(prepared, messages)
+
+        output_limit = self.manager.request_output_limit(self.cid, prepared, [])
+
+        self.assertLess(output_limit, self.provider.config.max_tokens)
+        self.assertGreaterEqual(output_limit, self.manager._MIN_REQUEST_OUTPUT_TOKENS)
+
+    def test_agent_passes_reduced_output_limit_to_provider(self):
+        class Provider:
+            config = types.SimpleNamespace(context_window=8192, max_tokens=4096, model="test")
+
+            def __init__(inner_self):
+                inner_self.request_limits = []
+
+            def stream_chat(inner_self, messages, **kwargs):
+                inner_self.request_limits.append(kwargs.get("max_tokens"))
+                yield {"type": "content", "delta": "已完成。"}
+                yield {"type": "finish", "finish_reason": "stop"}
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        loop = self.build_agent_loop(provider)
+
+        list(loop.stream_send(self.cid, "短上下文问题" * 1000, system_prompt="system"))
+
+        self.assertEqual(len(provider.request_limits), 1)
+        self.assertGreaterEqual(provider.request_limits[0], loop.context_manager._MIN_REQUEST_OUTPUT_TOKENS)
+        self.assertLess(provider.request_limits[0], provider.config.max_tokens)
 
     def test_batch_compression_preserves_history_and_active_tool_round(self):
         for _ in range(5):
@@ -163,6 +425,32 @@ class ContextTests(unittest.TestCase):
         self.assertLess(len(trimmed), len("正文内容" * 3000))
         self.assertIn("已省略中间", trimmed)
         # 工具配对关系不能被裁剪破坏。
+        self.manager.validate_tools(messages)
+
+    def test_tool_result_trim_uses_input_budget_once_for_short_context(self):
+        """输入预算已经扣除输出额度，裁剪不能再重复扣除一次。"""
+
+        self.provider.config.context_window = 8192
+        self.provider.config.max_tokens = 4096
+        self.add("user", "读一下大文件")
+        self.add("assistant", "", tool_calls=[{"id": "a", "name": "read", "arguments": {"path": "big"}}])
+        self.add("tool", "正文内容" * 5000, tool_call_id="a")
+        tools = [{"type": "function", "function": {"name": "local_file_read", "parameters": {}}}]
+
+        events, messages = self.consume(self.manager.prepare(self.cid, "system", tools))
+
+        self.assertEqual(events[-1]["status"], "trimmed")
+        input_estimate = self.manager.estimate_tokens({"messages": messages, "tools": tools})
+        self.assertLess(
+            input_estimate,
+            self.provider.config.context_window
+            - self.manager._minimum_request_output_tokens()
+            - self.manager._input_safety_margin(self.provider.config.context_window),
+        )
+        self.assertLess(
+            self.manager.request_output_limit(self.cid, messages, tools),
+            self.provider.config.max_tokens,
+        )
         self.manager.validate_tools(messages)
 
     def test_volatile_instructions_go_to_tail_and_head_stays_constant(self):
@@ -551,6 +839,39 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(history.length()["length"], len(history.text))
         with self.assertRaises(ValueError):
             history.read(-1)
+
+
+    def test_estimate_tokens_uses_cl100k_base(self):
+        import json
+        from unittest.mock import patch
+
+        value = {"messages": [{"role": "user", "content": "hello world"}], "tools": []}
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        encoding_names = []
+        encoded_texts = []
+
+        class FakeEncoding:
+            def encode_ordinary(self, text):
+                encoded_texts.append(text)
+
+                return list(text)
+
+        def get_encoding(name):
+            encoding_names.append(name)
+
+            return FakeEncoding()
+
+        fake_tiktoken = types.SimpleNamespace(get_encoding=get_encoding)
+        self.context_module.TokenEstimator._encoding.cache_clear()
+
+        with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
+            estimated = self.manager.estimate_tokens(value)
+
+        self.context_module.TokenEstimator._encoding.cache_clear()
+
+        self.assertEqual(encoding_names, ["cl100k_base"])
+        self.assertEqual(encoded_texts, [serialized])
+        self.assertEqual(estimated, len(serialized))
 
 
 if __name__ == "__main__":
