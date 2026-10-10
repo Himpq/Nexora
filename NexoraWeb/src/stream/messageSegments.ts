@@ -19,8 +19,22 @@ import type { ChatMessage } from '@/api/conversations'
 import type { QuestionPayload } from '@/stream/questionCard'
 import { readExaImageGallery, type ExaImageGalleryData } from '@/stream/exaMedia'
 
-/** 分段类型:思考过程 / 正文 / 工具调用 / 工具结果 / 交互问题 / 终态错误 */
-export type MessageSegmentType = 'reasoning' | 'content' | 'function_call' | 'function_result' | 'question' | 'error'
+/**
+ * 分段类型:思考过程 / 正文 / 工具调用 / 工具结果 / 交互问题 / 终态错误 /
+ * 上下文压缩卡片 / Modified Injection 卡片
+ *
+ * 压缩与注入卡片按事件到达时序作为普通分段插入,位置与工具链一致
+ * (对齐原版 appendToolEvent 的追加语义),而不是固定在消息顶部或末尾。
+ */
+export type MessageSegmentType =
+    | 'reasoning'
+    | 'content'
+    | 'function_call'
+    | 'function_result'
+    | 'question'
+    | 'error'
+    | 'compression'
+    | 'injection'
 
 /** 消息内容分段(渲染按数组顺序进行,文本追加只发生在末尾同类型分段) */
 export interface MessageSegment {
@@ -41,6 +55,8 @@ export interface MessageSegment {
     round?: number
     /** question 分段专用:问题载荷(question_title/content/choices/allow_other/permission_request 等) */
     question?: QuestionPayload
+    /** compression/injection 分段专用:原始事件载荷(由对应卡片组件解析) */
+    step?: Record<string, unknown>
 }
 
 /** 读取消息的扁平思考内容:流式期间写入顶层 reasoning,持久化消息存于 metadata.reasoning_content */
@@ -81,9 +97,20 @@ export function appendSegmentDelta(message: ChatMessage | undefined, type: Messa
     syncFlatFields(message)
 }
 
-/** 追加一个工具/问题事件分段(function_call / function_result / question 各占一段,保持真实时序) */
+/**
+ * 追加一个工具/问题/压缩/注入事件分段
+ * (function_call / function_result / question / compression / injection 各占一段,保持真实时序)
+ */
 export function appendToolSegment(message: ChatMessage | undefined, segment: MessageSegment): void {
-    if (!message || (segment.type !== 'function_call' && segment.type !== 'function_result' && segment.type !== 'question')) {
+    const allowed: MessageSegmentType[] = [
+        'function_call',
+        'function_result',
+        'question',
+        'compression',
+        'injection',
+    ]
+
+    if (!message || !allowed.includes(segment.type)) {
         return
     }
 
@@ -267,6 +294,16 @@ function stepToSegment(step: Record<string, unknown>): MessageSegment | null {
             callId: String(step.call_id || ''),
             question: payload,
         }
+    }
+
+    // 上下文压缩步骤:作为普通分段参与时序渲染(位置由 process_steps/trace 顺序决定)。
+    if (type === 'context_compression_status') {
+        return { type: 'compression', text: '', step }
+    }
+
+    // Modified Injection 步骤:同上,按事件时序插入内容流。
+    if (type === 'context_injection') {
+        return { type: 'injection', text: '', step }
     }
 
     return null

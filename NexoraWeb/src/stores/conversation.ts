@@ -1184,6 +1184,7 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this._updateStreamingAssistant(conversationId, { compressionStep: parsed })
+            this._upsertCardSegment(conversationId, 'compression', step)
         },
 
         /**
@@ -1200,6 +1201,37 @@ export const useConversationStore = defineStore('conversation', {
             }
 
             this._updateStreamingAssistant(conversationId, { injectionStep: parsed })
+            this._upsertCardSegment(conversationId, 'injection', step)
+        },
+
+        /**
+         * 把压缩/注入卡片作为普通分段插入内容流(对齐原版 appendToolEvent 的追加语义):
+         *   - 首次收到该类型事件时,在当前位置 append 一个分段(位置定格,后续内容排在其后);
+         *   - 后续事件(start→progress*→done)只更新已有分段的载荷,不改变位置。
+         * 这样卡片既不在消息顶部、也不在末尾,而是出现在它实际发生时的工具链位置。
+         */
+        _upsertCardSegment(
+            conversationId: string,
+            kind: 'compression' | 'injection',
+            rawStep: Record<string, unknown>
+        ): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
+
+            if (!assistant) {
+                return
+            }
+
+            const segments = Array.isArray(assistant.segments) ? assistant.segments : []
+            const existing = segments.find(segment => segment.type === kind)
+
+            if (existing) {
+                existing.step = rawStep
+                assistant.segments = segments
+
+                return
+            }
+
+            appendToolSegment(assistant, { type: kind, text: '', step: rawStep })
         },
 
         // ── TK mini(输入区 tokenDisplay)──────────

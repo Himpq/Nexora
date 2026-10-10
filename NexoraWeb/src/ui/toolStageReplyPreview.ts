@@ -40,6 +40,11 @@ export function readToolStageReplyPreview(source: ToolStageReplySource): ToolSta
 
         case 'question':
             return { phase: 'waiting', title: '等待你的回答', text: '', completed }
+
+        // 压缩/注入卡片不参与工具阶段预览:它们不是回复内容,也不代表等待状态。
+        case 'compression':
+        case 'injection':
+            return null
     }
 }
 

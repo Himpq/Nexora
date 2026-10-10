@@ -427,9 +427,9 @@
     import { ensureNexoraMapRendererAssets } from '@/stream/mapRenderer'
     import { showToast } from '@/stores/notify'
     import type { ContextCompressionStep } from '@/stream/contextCompression'
-    import { resolveActiveContextCompressionStep } from '@/stream/contextCompression'
+    import { parseContextCompressionStep, resolveActiveContextCompressionStep } from '@/stream/contextCompression'
     import type { ContextInjectionStep } from '@/stream/contextInjection'
-    import { resolveActiveContextInjectionStep } from '@/stream/contextInjection'
+    import { parseContextInjectionStep, resolveActiveContextInjectionStep } from '@/stream/contextInjection'
     import { hasAnyIo, readMessageIoTokens } from '@/stream/tokenBudget'
 
     import MarkdownView from './MarkdownView.vue'
@@ -657,8 +657,23 @@
      */
     const renderItems = computed<Array<RenderItem>>(() => {
         const items: Array<RenderItem> = []
+        const segments = contentSegments.value
 
-        contentSegments.value.forEach((segment, sourceIndex) => {
+        // 历史回放兜底：旧数据/无 process_steps 时，segments 里没有压缩/注入分段，
+        // 但 metadata 里仍有载荷。此时补插到最前（二者都在首轮请求前发生）。
+        // 有新数据（process_steps 含对应步骤）时此分支不生效，位置由分段顺序决定。
+        const hasCompressionSegment = segments.some(segment => segment.type === 'compression')
+        const hasInjectionSegment = segments.some(segment => segment.type === 'injection')
+
+        if (!hasInjectionSegment && injectionStep.value) {
+            items.push({ kind: 'injection', sourceIndex: -2, step: injectionStep.value })
+        }
+
+        if (!hasCompressionSegment && compressionStep.value) {
+            items.push({ kind: 'compression', sourceIndex: -1, step: compressionStep.value })
+        }
+
+        segments.forEach((segment, sourceIndex) => {
             if (segment.type === 'function_call') {
                 const rawName = segment.name || 'tool'
                 const args = parseToolArgsObject(segment.text)
@@ -749,6 +764,29 @@
                 return
             }
 
+            // 上下文压缩卡片:作为普通分段参与时序渲染,位置与工具链一致
+            // (对齐原版 appendToolEvent 的追加语义,而非固定在消息顶部/末尾)。
+            if (segment.type === 'compression') {
+                const step = parseContextCompressionStep(segment.step)
+
+                if (step) {
+                    items.push({ kind: 'compression', sourceIndex, step })
+                }
+
+                return
+            }
+
+            // Modified Injection 卡片:同上,按事件时序插入内容流。
+            if (segment.type === 'injection') {
+                const step = parseContextInjectionStep(segment.step)
+
+                if (step) {
+                    items.push({ kind: 'injection', sourceIndex, step })
+                }
+
+                return
+            }
+
             // 终态错误步骤(process_steps 中 type=error):渲染为红色错误条目,
             // 对齐原版 appendErrorEvent 的「节点圆点 + 发生错误 + 截断错误文本」;
             // 展开区保留完整错误内容,避免“只弹 toast、气泡全空”。
@@ -775,16 +813,6 @@
 
             items.push({ kind: segment.type, segment, sourceIndex })
         })
-
-        // 压缩卡片与注入卡片：按 append 语义追加到内容流末尾（对齐原版 appendToolEvent
-        // 的追加行为），而不是固定钉在回复顶部。
-        if (compressionStep.value) {
-            items.push({ kind: 'compression', sourceIndex: Number.MAX_SAFE_INTEGER, step: compressionStep.value })
-        }
-
-        if (injectionStep.value) {
-            items.push({ kind: 'injection', sourceIndex: Number.MAX_SAFE_INTEGER - 1, step: injectionStep.value })
-        }
 
         return items
     })

@@ -214,6 +214,20 @@ def _normalize_history_messages(messages: list) -> list:
             new_msg = dict(raw)
             process_steps = []
             content = raw.get("content")
+            metadata = dict(raw.get("metadata") or {})
+
+            # 压缩/注入卡片作为普通步骤参与时序渲染：二者都在本轮首轮请求前推送
+            # （注入先于压缩），因此插在 process_steps 最前，位置与工具链一致。
+            # 对齐云端 process_steps.append(ctx_status) 的语义。
+            injection_step = metadata.get("context_injection")
+
+            if isinstance(injection_step, dict):
+                process_steps.append({"type": "context_injection", **injection_step})
+
+            compression_step = metadata.get("context_compression")
+
+            if isinstance(compression_step, dict):
+                process_steps.append({"type": "context_compression_status", **compression_step})
 
             if isinstance(content, str) and content.strip():
                 process_steps.append({"type": "content", "content": content})
@@ -232,8 +246,6 @@ def _normalize_history_messages(messages: list) -> list:
                         "call_id": str(tool_call.get("id") or ""),
                         "index": index,
                     })
-
-            metadata = dict(raw.get("metadata") or {})
 
             if process_steps:
                 metadata["process_steps"] = process_steps
