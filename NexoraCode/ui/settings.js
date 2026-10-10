@@ -121,6 +121,24 @@
 
     // ===== Provider 表单 =====
 
+    function setThinkingProtocol(protocol) {
+        var container = $("pf-thinking-protocol");
+        var options = container.querySelectorAll("[data-protocol]");
+        var hasProtocol = Array.prototype.some.call(options, function (option) {
+            return option.dataset.protocol === protocol;
+        });
+
+        options.forEach(function (option) {
+            option.setAttribute("aria-pressed", String(hasProtocol && option.dataset.protocol === protocol));
+        });
+    }
+
+    function getThinkingProtocol() {
+        var selected = $("pf-thinking-protocol").querySelector('[aria-pressed="true"]');
+
+        return selected ? String(selected.dataset.protocol || "") : "";
+    }
+
     function openCreate() {
         var source = state.providers[0] || null;
         state.editingId = "";
@@ -137,6 +155,7 @@
             $("pf-temperature").value = source.temperature != null ? source.temperature : 0.7;
             $("pf-max-tokens").value = source.max_tokens || 4096;
             $("pf-context-window").value = source.context_window || 128000;
+            setThinkingProtocol(source.thinking_protocol || "none");
             $("pf-model").focus();
         } else {
             $("pf-name").value = "";
@@ -148,6 +167,7 @@
             $("pf-temperature").value = 0.7;
             $("pf-max-tokens").value = 4096;
             $("pf-context-window").value = 128000;
+            setThinkingProtocol("none");
             $("pf-name").focus();
         }
 
@@ -174,6 +194,7 @@
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
         $("pf-context-window").value = provider.context_window || 0;
+        setThinkingProtocol(provider.thinking_protocol || "none");
         $("provider-form").classList.remove("hidden");
         $("pf-name").focus();
     }
@@ -204,6 +225,7 @@
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
         $("pf-context-window").value = provider.context_window || 128000;
+        setThinkingProtocol(provider.thinking_protocol || "none");
         $("provider-form").classList.remove("hidden");
         $("pf-model").focus();
     }
@@ -224,7 +246,8 @@
             model: $("pf-model").value.trim(),
             temperature: parseFloat($("pf-temperature").value) || 0.7,
             max_tokens: parseInt($("pf-max-tokens").value, 10) || 4096,
-            context_window: parseInt($("pf-context-window").value, 10) || 0
+            context_window: parseInt($("pf-context-window").value, 10) || 0,
+            thinking_protocol: getThinkingProtocol()
         };
     }
 
@@ -249,7 +272,8 @@
                     model: edited.model,
                     temperature: edited.temperature,
                     max_tokens: edited.max_tokens,
-                    context_window: edited.context_window
+                    context_window: edited.context_window,
+                    thinking_protocol: edited.thinking_protocol
                 });
 
                 if (edited.api_key) {
@@ -446,6 +470,14 @@
         $("btn-add-provider").addEventListener("click", openCreate);
         $("pf-cancel").addEventListener("click", closeForm);
         $("pf-save").addEventListener("click", save);
+        $("pf-thinking-protocol").addEventListener("click", function (event) {
+            var target = event.target;
+            var button = target instanceof Element ? target.closest("[data-protocol]") : null;
+
+            if (button && $("pf-thinking-protocol").contains(button)) {
+                setThinkingProtocol(button.dataset.protocol || "");
+            }
+        });
 
         reload();
         window.NexoraToolPermissions.reload().catch(function (error) {

@@ -174,6 +174,7 @@ export interface RemoteModelOption {
     name: string
     provider: string
     context_window: number
+    thinking_protocol?: string
 }
 
 /**
@@ -391,6 +392,7 @@ export interface StartRemoteTaskParams {
     message: string
     /** 电脑上可用的模型 id(provider_id/model)，留空表示由电脑自己决定。 */
     modelName?: string
+    enableThinking?: boolean
     isRegenerate?: boolean
     assistantIndex?: number
     regenerateIndex?: number
@@ -406,6 +408,7 @@ export function startRemoteTask(deviceId: string, params: StartRemoteTaskParams)
             conversation_id: params.conversationId || '',
             message: params.message,
             model_name: params.modelName || '',
+            enable_thinking: params.enableThinking,
             is_regenerate: params.isRegenerate === true,
             assistant_index: params.assistantIndex,
             regenerate_index: params.regenerateIndex,

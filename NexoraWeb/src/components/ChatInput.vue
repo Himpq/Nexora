@@ -74,12 +74,13 @@
                             </template>
 
                             <button
-                                v-if="isCloud || isNexoraCode"
+                                v-if="isCloud || isNexoraCode || isRemote"
                                 type="button"
                                 class="composer-chip composer-chip-thinking"
                                 :class="{ 'is-active': enableThinking }"
-                                :title="enableThinking ? 'Deep Thinking: On' : 'Deep Thinking: Off'"
+                                :title="thinkingSwitchTitle"
                                 :aria-pressed="enableThinking"
+                                :disabled="thinkingSwitchDisabled"
                                 @click="enableThinking = !enableThinking"
                             >
                                 <i class="fa-solid fa-brain" aria-hidden="true"></i>
@@ -108,8 +109,10 @@
                                 />
                             </template>
                             <NexoraCodePermissionMenu
-                                v-if="isNexoraCode"
-                                :selected-model-id="modelStore.selectedId"
+                                v-if="isNexoraCode || (isRemote && remoteDeviceId)"
+                                :selected-model-id="permissionModelId"
+                                :remote-device-id="isRemote ? remoteDeviceId : undefined"
+                                :conversation-id="isNexoraCode ? activeConversationId : (isRemote ? remoteConversationId : undefined)"
                             />
                         </div>
                     </div>
@@ -127,12 +130,10 @@
 
                 <!-- 上下文/队列状态簇:作为容器独立子级(桌面与 footer 同排视觉不变;
                     手机 Grid 布局放工具行右端作锚点,平衡整行)。
-                    remote 形态隐藏:这里统计的是云端会话的 CTX/TK,电脑任务的用量
-                    由每条消息上的 token 徽标呈现。
-                    nexoracode 形态只保留上下文窗口圆环 + CTX 文本(数据源为本地
-                    /api/config 的 context_window 与本地会话消息的 io_tokens_window),
+                    RemoteControl 与 NexoraCode 形态只保留上下文窗口圆环 + CTX 文本，
+                    使用所选电脑模型的 context_window 与远程会话消息的 io_tokens_window；
                     TK 累计计数仍仅云端显示。 -->
-                <div v-if="isCloud || isNexoraCode" class="token-footer-left">
+                <div v-if="isCloud || isNexoraCode || isRemote" class="token-footer-left">
                     <span
                         v-if="isCloud && conversationStore.queueCount > 0"
                         class="queue-badge"
@@ -255,6 +256,15 @@
     import NexoraCodePermissionMenu from '@/components/nexoracode/NexoraCodePermissionMenu.vue'
     import '@/styles/nexoracode-permissions.css'
 
+    interface ContextUsageMessage {
+        role?: string
+        content?: unknown
+        metadata?: unknown
+        usage?: unknown
+        io_tokens_window?: unknown
+        io_tokens_cumulative?: unknown
+    }
+
     const props = withDefaults(defineProps<{
         /** 待发送附件列表(由 ChatView 管理,发送成功后清空) */
         attachments?: AttachmentInput[]
@@ -262,11 +272,22 @@
          * 输入坞形态:
          *   cloud  —— 走云端 Agent,附件/Thinking/Search/Tools 与 CTX 计数齐全;
          *   remote —— 同一套输入坞,但内容下发给电脑,这些云端专属控件整体隐去
-         *              (附件进的是云端沙箱,Thinking/Search/Tools 是云端 Agent 开关,
-         *               电脑侧任务接口只认 message 与 model_name)。
+         *              (附件/Search/Tools 不适用;Thinking、CTX 与权限由电脑端配置提供)。
          *   nexoracode —— 使用电脑端 Agent,显示 Thinking 与本地工具权限菜单。
          */
         variant?: 'cloud' | 'remote' | 'nexoracode'
+        /** RemoteControl 当前会话消息，用于按电脑侧 token_usage 计算上下文窗口。 */
+        contextMessages?: ContextUsageMessage[]
+        contextTokenProfile?: Record<string, unknown>
+        /** RemoteControl 当前模型的上下文窗口上限。 */
+        contextWindow?: number
+        /** NexoraCode 或 RemoteControl 当前模型的 Thinking 请求协议。 */
+        thinkingProtocol?: string
+        /** RemoteControl 目标电脑与模型，用于代理本地权限设置。 */
+        remoteDeviceId?: string
+        /** RemoteControl 当前远程会话 id：权限/模型按会话独立保存时用它定位。 */
+        remoteConversationId?: string
+        permissionModelId?: string
         /** remote 形态下由远程任务状态机驱动发送/停止按钮,不再看云端会话。 */
         streaming?: boolean
         /** 历史窗口初次载入时禁止发送，避免新消息索引早于尚未加载的历史。 */
@@ -277,6 +298,13 @@
     }>(), {
         attachments: undefined,
         variant: 'cloud',
+        contextMessages: undefined,
+        contextTokenProfile: undefined,
+        contextWindow: undefined,
+        thinkingProtocol: undefined,
+        remoteDeviceId: '',
+        remoteConversationId: '',
+        permissionModelId: '',
         streaming: false,
         sendDisabled: false,
         draftKey: '',
@@ -306,6 +334,13 @@
     /** 是否云端形态:决定云端专属控件(工具簇/CTX 计数)是否渲染。 */
     const isCloud = computed(() => props.variant === 'cloud')
     const isNexoraCode = computed(() => props.variant === 'nexoracode')
+    const isRemote = computed(() => props.variant === 'remote')
+    const remoteDeviceId = computed(() => String(props.remoteDeviceId || '').trim())
+    const remoteConversationId = computed(() => String(props.remoteConversationId || '').trim())
+    const permissionModelId = computed(() => props.permissionModelId || modelStore.selectedId)
+
+    /** 本地形态下当前会话 id：工具权限按会话独立保存，菜单据此读写本会话的设置。 */
+    const activeConversationId = computed(() => String(conversationStore.currentId || '').trim())
 
     /** 草稿命名空间:remote 用远程会话 id,云端沿用当前会话 id。 */
     const draftNamespace = computed(() => props.draftKey || conversationStore.currentId)
@@ -406,6 +441,24 @@
     const enableThinking = ref(typeof composerPrefs.thinking === 'boolean' ? composerPrefs.thinking : false)
     const enableWebSearch = ref(typeof composerPrefs.search === 'boolean' ? composerPrefs.search : true)
 
+    const thinkingProtocol = computed(() => {
+        if (isRemote.value) {
+            return String(props.thinkingProtocol || 'none')
+        }
+
+        return String(modelStore.selectedModel?.thinking_protocol || 'none')
+    })
+    const thinkingSwitchDisabled = computed(() =>
+        (isNexoraCode.value || isRemote.value) && thinkingProtocol.value === 'none'
+    )
+    const thinkingSwitchTitle = computed(() => {
+        if (thinkingSwitchDisabled.value) {
+            return '请先在电脑端 Provider 设置中选择 Thinking 协议'
+        }
+
+        return enableThinking.value ? 'Deep Thinking: On' : 'Deep Thinking: Off'
+    })
+
     /** 输入区折叠状态(容器与 wrapper 同步单段收缩,按钮随卡片右缘平滑滑入右下角,不会先居中再跳变) */
     const collapsed = ref(false)
     const inputContainerCollapsed = ref(false)
@@ -430,7 +483,25 @@
     })
 
     /** token 画像(prompt_token_profile 块,CTX/卡片数据源) */
-    const tokenProfile = computed(() => (conversationStore.streamTokenProfile || {}) as Record<string, unknown>)
+    const tokenProfile = computed(() => {
+        if (props.contextTokenProfile) {
+            return props.contextTokenProfile as Record<string, unknown>
+        }
+
+        if (isRemote.value) {
+            return {}
+        }
+
+        return (conversationStore.streamTokenProfile || {}) as Record<string, unknown>
+    })
+    const contextMessages = computed(() => props.contextMessages || conversationStore.messages)
+    const contextWindow = computed(() => {
+        if (isRemote.value) {
+            return normalizeContextWindow(props.contextWindow)
+        }
+
+        return normalizeContextWindow(props.contextWindow ?? modelStore.selectedModel?.context_window)
+    })
 
     /**
      * 本轮上下文真实占用:优先最后一条助手消息 io_tokens_window 的 raw_input
@@ -439,8 +510,8 @@
     const ctxUsed = computed(() => {
         const systemTokens = safeTokenInt(tokenProfile.value.system_tokens)
         const toolsTokens = safeTokenInt(tokenProfile.value.tools_tokens)
-        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
-        const historyText = conversationStore.messages.map((m) => String(m.content || '')).join('')
+        const ioTokens = readLastAssistantIoTokens(contextMessages.value)
+        const historyText = contextMessages.value.map((m) => String(m.content || '')).join('')
 
         // input 是缓存计费增量(命中缓存的历史不计入),不能代表窗口占用;
         // 只有 raw_input 缺失时才走"增量+固定部分"补全公式(responses 续接场景)。
@@ -455,15 +526,15 @@
 
     /** 是否估算口径(本轮无真实 usage 数据,展示"近似/上限估算"标注) */
     const usedEstimated = computed(() => {
-        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
+        const ioTokens = readLastAssistantIoTokens(contextMessages.value)
 
         return ioTokens.round.input <= 0 && ioTokens.round.rawInput <= 0
     })
 
     /** 上下文窗口卡片数据模型(对齐原版 buildTokenBudgetTooltipModel) */
     const tipModel = computed(() => {
-        const limit = normalizeContextWindow(modelStore.selectedModel?.context_window)
-        const ioTokens = readLastAssistantIoTokens(conversationStore.messages)
+        const limit = contextWindow.value
+        const ioTokens = readLastAssistantIoTokens(contextMessages.value)
 
         return buildTokenBudgetTooltipModel({
             limit,
@@ -512,7 +583,7 @@
 
     /** 上下文圆环:用量/预算 conic-gradient(对齐原版 renderTokenBudgetUi) */
     const tokenRing = computed(() => {
-        const limit = Number(modelStore.selectedModel?.context_window || 0)
+        const limit = contextWindow.value
         const used = ctxUsed.value
 
         if (limit <= 0) {

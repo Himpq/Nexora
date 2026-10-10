@@ -663,6 +663,8 @@ def _stream_worker_factory(body: dict):
     message = str(body.get("message") or "").strip()
     conversation_id = str(body.get("conversation_id") or "").strip()
     model_name = str(body.get("model_name") or "").strip()
+    requested_thinking = body.get("enable_thinking")
+    enable_thinking = requested_thinking if isinstance(requested_thinking, bool) else None
 
     store = ConversationStore()
     conversation = store.get(conversation_id) if conversation_id else None
@@ -724,6 +726,7 @@ def _stream_worker_factory(body: dict):
                 cancel_checker=is_cancel_requested,
                 force_context_compression=body.get("force_context_compression") is True,
                 skip_user_message=body.get("skip_user_message") is True,
+                enable_thinking=enable_thinking,
             ):
                 event_type = str(event.get("type") or "")
                 print(f"[LocalAgent] sse event: {event_type}")
@@ -1554,6 +1557,7 @@ def local_agent_config():
             "name": provider.model,
             "provider": provider.name,
             "context_window": provider.context_window,
+            "thinking_protocol": provider.thinking_protocol,
         })
 
     default = get_default_provider()

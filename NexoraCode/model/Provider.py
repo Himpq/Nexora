@@ -28,6 +28,7 @@ import requests
 
 from core.config import config, get_app_root
 from .RetrySettings import DEFAULT_ERROR_RETRY_COUNT, configured_retry_count
+from .ThinkingProtocol import apply_thinking_protocol, normalize_thinking_protocol
 
 
 def _infer_provider_name(base_url: str, model: str) -> str:
@@ -63,6 +64,7 @@ class ProviderConfig:
         max_tokens: int = 4096,
         context_window: int = 128000,
         timeout_seconds: float = 120.0,
+        thinking_protocol: str = "none",
     ):
         self.provider_id = str(provider_id or "").strip() or f"p_{uuid.uuid4().hex[:8]}"
         self.base_url = str(base_url or "").strip().rstrip("/")
@@ -73,6 +75,7 @@ class ProviderConfig:
         self.max_tokens = int(max_tokens or 4096)
         self.context_window = int(context_window or 0)
         self.timeout_seconds = float(timeout_seconds or 120.0)
+        self.thinking_protocol = normalize_thinking_protocol(thinking_protocol)
 
     def is_configured(self) -> bool:
         return bool(self.base_url) and bool(self.model)
@@ -88,6 +91,7 @@ class ProviderConfig:
             "max_tokens": self.max_tokens,
             "context_window": self.context_window,
             "timeout_seconds": self.timeout_seconds,
+            "thinking_protocol": self.thinking_protocol,
         }
 
     def to_public_dict(self) -> dict:
@@ -101,6 +105,7 @@ class ProviderConfig:
             "max_tokens": self.max_tokens,
             "context_window": self.context_window,
             "has_api_key": bool(self.api_key),
+            "thinking_protocol": self.thinking_protocol,
         }
 
     @classmethod
@@ -116,6 +121,7 @@ class ProviderConfig:
             max_tokens=payload.get("max_tokens", 4096),
             context_window=payload.get("context_window", 128000),
             timeout_seconds=payload.get("timeout_seconds", 120.0),
+            thinking_protocol=payload.get("thinking_protocol", "none"),
         )
 
 
@@ -546,6 +552,7 @@ class ProviderClient:
         tools: Optional[list[dict]] = None,
         tool_choice: Any = "auto",
         max_tokens: Optional[int] = None,
+        enable_thinking: bool | None = None,
     ) -> Generator[dict, None, None]:
         if not self.config.is_configured():
             raise ProviderError("Provider 未配置：请先在设置中填写 base_url / model")
@@ -558,6 +565,9 @@ class ProviderClient:
             "max_tokens": self.config.max_tokens if max_tokens is None else max_tokens,
             "stream_options": {"include_usage": True},
         }
+
+        if enable_thinking is not None:
+            apply_thinking_protocol(payload, self.config.thinking_protocol, enable_thinking)
 
         if tools:
             payload["tools"] = tools

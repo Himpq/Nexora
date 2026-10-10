@@ -72,6 +72,12 @@
             :streaming="store.running"
             :send-disabled="store.historyLoading"
             :draft-key="store.conversationId"
+            :context-messages="store.messages"
+            :context-window="selectedRemoteModel?.context_window"
+            :thinking-protocol="selectedRemoteModel?.thinking_protocol || 'none'"
+            :remote-device-id="store.deviceId"
+            :remote-conversation-id="store.conversationId"
+            :permission-model-id="store.modelName"
             :placeholder="store.online ? '向这台电脑上的 NexoraCode 下发任务' : '电脑离线，无法下发任务'"
             @send="send"
             @stop="store.stop()"
@@ -93,6 +99,7 @@
     const emit = defineEmits<{ 'open-image': [url: string] }>()
 
     const store = remoteStore
+    const selectedRemoteModel = computed(() => store.models.find(model => model.id === store.modelName))
 
     const scrollerRef = ref<HTMLElement | null>(null)
     const prepending = ref(false)
@@ -107,10 +114,15 @@
         }
     })
 
-    function send(text: string): void {
+    function send(text: string, options: {
+        enableThinking: boolean
+        enableWebSearch: boolean
+        enableTools: boolean
+        toolsMode: string
+    }): void {
         // 顶栏那个选择器(远程视图下已切为当前电脑的模型目录)的选中项。
         // 初始值就是电脑自己的 default_model,所以这里下发的永远是用户看得见的那个模型。
-        void store.send(text, store.modelName)
+        void store.send(text, store.modelName, options.enableThinking)
     }
 
     async function loadPreviousHistory(): Promise<void> {

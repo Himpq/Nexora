@@ -13,6 +13,7 @@ export interface ModelItem {
     provider: string
     status?: string
     context_window?: number
+    thinking_protocol?: string
 }
 
 export interface AppConfig {
@@ -51,6 +52,7 @@ export function normalizeModelItems(models: unknown): ModelItem[] {
             provider: String(source.provider || ''),
             status: source.status ? String(source.status) : undefined,
             context_window: typeof source.context_window === 'number' ? source.context_window : undefined,
+            thinking_protocol: source.thinking_protocol ? String(source.thinking_protocol) : undefined,
         }]
     })
 }

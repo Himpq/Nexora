@@ -76,6 +76,49 @@
     flex: 1;
 }
 
+.pf-thinking-protocol-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.pf-thinking-protocol-option {
+    display: flex;
+    min-width: 0;
+    min-height: 48px;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 3px;
+    padding: 7px 10px;
+    border: 1px solid var(--border-input);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-main);
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+}
+
+.pf-thinking-protocol-option[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: rgba(91, 141, 239, 0.08);
+}
+
+.pf-thinking-protocol-option:focus-visible {
+    outline: 2px solid rgba(63, 116, 216, 0.4);
+    outline-offset: 2px;
+}
+
+.pf-thinking-protocol-option strong {
+    font-size: 12px;
+}
+
+.pf-thinking-protocol-option small {
+    color: var(--text-secondary);
+    font-size: 10.5px;
+}
+
 button.secondary {
     padding: 8px 16px;
     border: 1px solid var(--border-input);

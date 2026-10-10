@@ -631,7 +631,7 @@ class RemoteStore {
     // ---------- 任务 ----------
 
     /** 下发任务。上下文压缩由电脑按自身阈值自动处理，Web 侧不提供手动开关。 */
-    async send(text: string, modelName: string): Promise<void> {
+    async send(text: string, modelName: string, enableThinking: boolean): Promise<void> {
         const key = this.conversationId
         const session = this.ensureSession(key)
         const userMessage = createRemoteUserMessage(this.takeNextMessageIndex(session), text)
@@ -644,6 +644,7 @@ class RemoteStore {
             message: text,
             conversationId: key,
             modelName,
+            enableThinking,
         }))
 
         // 新会话此时才有真实 id，把运行时状态迁过去，侧栏/历史才对得上。

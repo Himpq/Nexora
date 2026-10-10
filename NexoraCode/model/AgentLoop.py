@@ -253,7 +253,7 @@ class AgentLoop:
         self.store = store
         self.context_manager = ContextManager(provider, store)
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None, skip_user_message: bool = False) -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None, skip_user_message: bool = False, enable_thinking: bool | None = None) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -519,7 +519,10 @@ class AgentLoop:
 
             try:
                 for event in self.provider.stream_chat(
-                    messages, tools=tools, max_tokens=request_max_tokens
+                    messages,
+                    tools=tools,
+                    max_tokens=request_max_tokens,
+                    enable_thinking=enable_thinking,
                 ):
                     if not provider_first_event_logged:
                         provider_first_event_logged = True

@@ -1050,6 +1050,7 @@ def local_settings_save():
                 temperature=temperature,
                 max_tokens=max_tokens,
                 context_window=context_window,
+                thinking_protocol=item.get("thinking_protocol", "none"),
             ))
 
         default_id = str(provider_payload.get("default_id") or "").strip()
