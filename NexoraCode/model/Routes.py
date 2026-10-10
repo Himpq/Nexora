@@ -65,6 +65,19 @@ def _local_no_store(resp):
     return resp
 
 
+@_local_bp.route("/settings-controls.css", methods=["GET"])
+@_local_bp.route("/settings-sections.css", methods=["GET"])
+def local_settings_stylesheet():
+    """提供本地设置页拆分后的样式文件。"""
+    filename = request.path.rsplit("/", 1)[-1]
+    allowed_files = {"settings-controls.css", "settings-sections.css"}
+
+    if filename not in allowed_files:
+        return Response(status=404)
+
+    return send_file(get_bundle_root() / "ui" / filename, mimetype="text/css")
+
+
 @_local_bp.route("/permissions-settings.css", methods=["GET"])
 def local_permissions_settings_css():
     return send_file(get_bundle_root() / "ui" / "permissions-settings.css", mimetype="text/css")
@@ -703,6 +716,7 @@ def _stream_worker_factory(body: dict):
                 injection_sources=injection_sources,
                 cancel_checker=is_cancel_requested,
                 force_context_compression=body.get("force_context_compression") is True,
+                skip_user_message=body.get("skip_user_message") is True,
             ):
                 event_type = str(event.get("type") or "")
                 print(f"[LocalAgent] sse event: {event_type}")
@@ -956,12 +970,29 @@ def local_agent_grant_permission():
     access = str(request_payload.get("access") or request_payload.get("operation") or "read").strip().lower() or "read"
     reason = str(request_payload.get("reason") or "").strip()
     sensitive = bool(request_payload.get("sensitive", False))
+    decision = str(body.get("decision") or request_payload.get("decision") or "allow").strip().lower() or "allow"
 
     if not conversation_id:
         return jsonify({"success": False, "message": "conversation_id 不能为空"}), 400
 
     if not path:
         return jsonify({"success": False, "message": "授权路径不能为空"}), 400
+
+    if decision not in {"allow", "deny"}:
+        return jsonify({"success": False, "message": "授权决定无效"}), 400
+
+    # 拒绝：不写临时授权、不执行工具，只把「用户拒绝」写回并续跑本轮。
+    if decision == "deny":
+        print(f"[LocalAgent] deny permission: conversation_id={conversation_id} path={path}")
+        resume = _resume_after_permission_deny(conversation_id, path)
+
+        return jsonify({
+            "success": True,
+            "message": "已拒绝本次访问权限" + ("，正在继续" if resume.get("started") else ""),
+            "resumed": bool(resume.get("started")),
+            "resume_stream_id": str(resume.get("stream_id") or ""),
+            "resume_message": str(resume.get("message") or ""),
+        })
 
     print(f"[LocalAgent] grant permission: conversation_id={conversation_id} path={path} scope={scope} access={access}")
 
@@ -979,7 +1010,225 @@ def local_agent_grant_permission():
         return jsonify({"success": False, "message": result.get("error") or "授权失败"}), 502
 
     print(f"[LocalAgent] grant OK: path={result.get('permission', {}).get('path')}")
-    return jsonify({"success": True, "message": "已允许本次对话临时访问该路径", "permission": result.get("permission")})
+
+    # 授权成功后自动续跑被权限阻断的本轮：此前弹卡时本轮已 done，
+    # 若不续跑，用户必须手动再发一条消息，工具才会重试。
+    resume = _resume_after_permission_grant(conversation_id, path)
+
+    return jsonify({
+        "success": True,
+        "message": "已允许本次对话临时访问该路径" + ("，正在继续执行" if resume.get("started") else ""),
+        "permission": result.get("permission"),
+        "resumed": bool(resume.get("started")),
+        "resume_stream_id": str(resume.get("stream_id") or ""),
+        "resume_message": str(resume.get("message") or ""),
+    })
+
+
+def _execute_resumed_tool(
+    conversation_id: str,
+    tool_name: str,
+    arguments: dict,
+    project_root: str,
+) -> tuple[bool, str]:
+    """授权后续跑时直接执行被阻断的工具调用，返回 (是否成功, 结果文本)。
+
+    以 permission_mode="full" 执行：用户已经在授权卡片上明确允许了这次访问，
+    再走一遍审批只会重复弹卡。参数取自服务端登记，浏览器无法注入。
+    """
+    if not tool_name:
+        return False, ""
+
+    executor = _EXECUTOR if _EXECUTOR is not None else build_default_executor()
+
+    try:
+        execution = executor.execute(
+            tool_name,
+            arguments,
+            context={
+                "conversation_id": conversation_id,
+                "project_root": project_root,
+                "permission_mode": "full",
+                "confirmed_tool_call": True,
+            },
+        )
+    except Exception as exc:
+        print(f"[LocalAgent] resume tool execution raised conversation={conversation_id} "
+              f"tool={tool_name} error={type(exc).__name__}: {exc}")
+        return False, ""
+
+    detail = execution.get("result") if isinstance(execution.get("result"), dict) else execution
+    success = bool(execution.get("success", False))
+
+    if not success:
+        error_text = str(execution.get("error") or detail.get("error") or "工具执行失败")
+        print(f"[LocalAgent] resume tool failed conversation={conversation_id} "
+              f"tool={tool_name} error={error_text}")
+        return False, ""
+
+    from .Present import present_tool_result
+
+    return True, present_tool_result(detail)
+
+
+def _resolve_resume_model_name(conversation: dict) -> str:
+    """取续跑要用的模型名：会话 metadata 优先，兜底倒序扫最近 assistant 消息。
+
+    会话 metadata 通常只存项目信息，模型名要从最近一条 assistant 消息的
+    metadata 里取，否则续跑会回退到默认 provider，用错模型。
+    """
+    metadata = conversation.get("metadata") if isinstance(conversation.get("metadata"), dict) else {}
+    model_name = str(metadata.get("model_name") or "").strip()
+
+    if model_name:
+        return model_name
+
+    messages = conversation.get("messages") if isinstance(conversation.get("messages"), list) else []
+
+    for message in reversed(messages):
+        if str(message.get("role") or "") != "assistant":
+            continue
+
+        message_metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        candidate = str(message_metadata.get("model_name") or "").strip()
+
+        if candidate:
+            return candidate
+
+    return ""
+
+
+def _start_resume_stream(conversation_id: str, conversation: dict, resume_message: str) -> dict:
+    """启动一条续跑流（用户消息不落盘），返回 {started, stream_id, message}。"""
+    import uuid
+
+    model_name = _resolve_resume_model_name(conversation)
+
+    body = {
+        "message": resume_message,
+        "conversation_id": conversation_id,
+        "model_name": model_name,
+        "skip_user_message": True,
+        "request_id": uuid.uuid4().hex,
+    }
+
+    try:
+        from .TaskService import start_task
+
+        record = start_task(body)
+    except ValueError as exc:
+        print(f"[LocalAgent] resume failed conversation={conversation_id} error={exc}")
+        return {"started": False, "message": str(exc)}
+
+    print(f"[LocalAgent] resume started conversation={conversation_id} stream_id={record.get('stream_id')}")
+    return {
+        "started": True,
+        "stream_id": str(record.get("stream_id") or ""),
+        "message": "已自动续跑",
+    }
+
+
+def _take_resume_context(conversation_id: str) -> tuple[dict | None, dict | None, dict]:
+    """领取待续跑登记并做公共守卫，返回 (pending, conversation, 早退结果)。
+
+    早退结果非空时表示不满足续跑条件，调用方应直接返回它。
+    """
+    from .AgentLoop import take_pending_permission_resume
+
+    pending = take_pending_permission_resume(conversation_id)
+
+    if pending is None:
+        print(f"[LocalAgent] resume skipped: no pending permission block conversation={conversation_id}")
+        return None, None, {"started": False, "message": "没有等待授权的被阻断任务"}
+
+    conversation = ConversationStore().get(conversation_id)
+
+    if conversation is None:
+        print(f"[LocalAgent] resume skipped: conversation missing conversation={conversation_id}")
+        return None, None, {"started": False, "message": "会话不存在"}
+
+    # 会话已有运行中的任务时不重复启动：用户可能已手动重发。
+    if any(row["status"] in {"running", "cancelling"} for row in list_sessions(conversation_ids=[conversation_id])):
+        print(f"[LocalAgent] resume skipped: conversation busy conversation={conversation_id}")
+        return None, None, {"started": False, "message": "当前会话已有运行任务"}
+
+    return pending, conversation, {}
+
+
+def _resume_after_permission_deny(conversation_id: str, denied_path: str) -> dict:
+    """用户拒绝路径授权后自动续跑本轮。
+
+    拒绝不执行工具：把「用户拒绝」写回占位消息，再让模型基于这个结果继续
+    （说明情况或改换方案）。不续跑的话本轮停在「等待授权」，用户拒绝后对话就断了。
+    """
+    pending, conversation, early = _take_resume_context(conversation_id)
+
+    if pending is None:
+        return early
+
+    tool_call_id = str(pending.get("tool_call_id") or "").strip()
+    path_text = str(pending.get("path") or denied_path or "").strip()
+
+    ConversationStore().replace_tool_result(
+        conversation_id, tool_call_id, "用户拒绝了该次操作。"
+    )
+    print(f"[LocalAgent] resume after deny conversation={conversation_id} path={path_text}")
+
+    resume_message = "用户拒绝了该次操作。"
+    result = _start_resume_stream(conversation_id, conversation, resume_message)
+    print(f"[LocalAgent] resume result conversation={conversation_id} path={path_text} "
+          f"denied=1 started={result.get('started')}")
+    return result
+
+
+def _resume_after_permission_grant(conversation_id: str, granted_path: str) -> dict:
+    """授权后自动续跑被权限阻断的本轮。
+
+    关键点：先由服务端**直接执行**被阻断的那次工具调用，把真实结果写回历史里的
+    占位消息，再启动续跑让模型基于真实结果继续。不能只发一条「已授权，请重试」
+    的 user 消息——历史末尾是模型自己说的「等待用户授权」，模型会顺着继续说话，
+    而不是重新发起工具调用（实测确认）。
+    """
+    pending, conversation, early = _take_resume_context(conversation_id)
+
+    if pending is None:
+        return early
+
+    # 授权路径与被阻断路径不一致时仍续跑：用户可能授权的是父目录，
+    # 或模型同时请求了多个路径。续跑后模型会按最新权限继续。
+    if granted_path and pending.get("path") and str(granted_path).strip() != str(pending["path"]).strip():
+        print(f"[LocalAgent] resume with different path: granted={granted_path} blocked={pending.get('path')}")
+
+    tool_name = str(pending.get("tool_name") or "").strip()
+    path_text = str(pending.get("path") or "").strip()
+    tool_call_id = str(pending.get("tool_call_id") or "").strip()
+    arguments = pending.get("arguments") if isinstance(pending.get("arguments"), dict) else {}
+    project_root = str(pending.get("project_root") or "").strip()
+
+    # 第一步：直接执行被阻断的工具调用，把真实结果替换掉占位消息。
+    executed, tool_content = _execute_resumed_tool(
+        conversation_id, tool_name, arguments, project_root
+    )
+
+    if not executed:
+        print(f"[LocalAgent] resume aborted: tool re-execution failed conversation={conversation_id} "
+              f"tool={tool_name} path={path_text}")
+        return {"started": False, "message": "工具重新执行失败，请手动重试"}
+
+    ConversationStore().replace_tool_result(conversation_id, tool_call_id, tool_content)
+    print(f"[LocalAgent] resume tool executed conversation={conversation_id} tool={tool_name} "
+          f"call_id={tool_call_id} content_chars={len(tool_content)}")
+
+    # 第二步：续跑让模型基于真实工具结果继续。用户消息不落盘。
+    resume_message = (
+        f"用户已允许本次对话临时访问 {path_text}。{tool_name} 的执行结果已写入上一条工具消息，"
+        "请基于该结果继续完成用户请求。"
+    )
+
+    result = _start_resume_stream(conversation_id, conversation, resume_message)
+    print(f"[LocalAgent] resume result conversation={conversation_id} tool={tool_name} "
+          f"path={path_text} started={result.get('started')}")
+    return result
 
 
 @_local_bp.route("/api/local/permissions", methods=["GET", "POST"])
@@ -1058,7 +1307,7 @@ def local_agent_resolve_tool_permission():
         message_text = "权限模式已切换为只读，本次操作未执行。"
         allowed = False
     elif not allowed:
-        tool_content = "用户拒绝执行本次工具操作。"
+        tool_content = "用户拒绝了该次操作。"
         message_text = "已拒绝本次工具操作。"
     else:
         executor = _EXECUTOR if _EXECUTOR is not None else build_default_executor()
@@ -1106,11 +1355,34 @@ def local_agent_resolve_tool_permission():
         remember_resolved_tool_action(request_id, conversation_id, failure)
         return jsonify(failure), 409
 
+    # 工具已执行、结果已写回历史。允许与拒绝都要续跑本轮：
+    # 此前只写回结果不续跑，用户作答后模型不会继续，必须手动再发一条消息。
+    resume = {"started": False, "stream_id": "", "message": ""}
+    conversation = store.get(conversation_id)
+
+    if conversation is not None:
+        if any(row["status"] in {"running", "cancelling"} for row in list_sessions(conversation_ids=[conversation_id])):
+            print(f"[LocalAgent] tool-permission resume skipped: conversation busy conversation={conversation_id}")
+        else:
+            if allowed and execution_success:
+                resume_message = (
+                    f"用户已允许执行本次工具操作（{pending['tool_name']}）。"
+                    "该操作的执行结果已写入上一条工具消息，请基于该结果继续完成用户请求。"
+                )
+            else:
+                resume_message = "用户拒绝了该次操作。"
+
+            resume = _start_resume_stream(conversation_id, conversation, resume_message)
+            print(f"[LocalAgent] tool-permission resume conversation={conversation_id} "
+                  f"tool={pending['tool_name']} allowed={allowed} started={resume.get('started')}")
+
     response = {
         "success": True,
         "message": message_text,
         "executed": allowed,
         "tool_success": execution_success,
+        "resumed": bool(resume.get("started")),
+        "resume_stream_id": str(resume.get("stream_id") or ""),
     }
     remember_resolved_tool_action(request_id, conversation_id, response)
     return jsonify(response)

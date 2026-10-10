@@ -584,6 +584,37 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
+        /**
+         * 权限授权后的续跑流式:电脑端已直接执行被阻断的工具并写回结果,
+         * 本轮没有新的用户消息(请求正文不落盘),因此只追加一条空的助手消息并注册缓冲。
+         * 与 beginStream 的区别:不插入 user 气泡、不追加 turns、不改标题。
+         */
+        beginResumedStream(conversationId: string): void {
+            const lastIndex = this.messages.length > 0
+                ? Number(this.messages[this.messages.length - 1].index)
+                : -1
+            const nextIndex = Number.isFinite(lastIndex) ? lastIndex + 1 : 0
+
+            const assistantMessage: ChatMessage = {
+                index: nextIndex,
+                role: 'assistant',
+                content: '',
+                segments: [],
+                pending: true,
+                outputFinished: false,
+            }
+
+            this.messages.push(assistantMessage)
+
+            tokenMiniRefreshSeq += 1
+            this.resetTokenMiniStreamPart()
+
+            this.pendingStreams[conversationId] = {
+                targetIndex: assistantMessage.index,
+                assistant: assistantMessage,
+            }
+        },
+
         /** 流式增量追加正文分段(与思考分段按输出顺序交错排列) */
         appendStreamText(conversationId: string, delta: string): void {
             if (!delta) {

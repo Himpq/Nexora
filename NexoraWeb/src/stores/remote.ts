@@ -393,7 +393,8 @@ class RemoteStore {
                     ? userCount > historyUserCount
                     : lastUser?.content === task.message
 
-                if (task.message && !task.is_regenerate && !currentUserSaved) {
+                // 续跑任务的请求消息是内部提示（不落盘），补成用户气泡会污染对话。
+                if (task.message && !task.is_regenerate && !task.skip_user_message && !currentUserSaved) {
                     session.messages = [
                         ...session.messages,
                         createRemoteUserMessage(session.messages.length, task.message),
@@ -521,9 +522,10 @@ class RemoteStore {
     /**
      * 权限问卡作答。
      *
-     * 电脑端遇到未授权路径时，已经把工具结果落盘、补完剩余调用的占位结果并结束任务
-     * （AgentLoop 里 permission_blocked 后直接 break），所以不存在「拒绝后让电脑继续」的通道：
-     * 拒绝只是本地记录，只有允许才需要写临时授权。两种情况都要提示用户重新下发任务。
+     * 电脑端遇到未授权路径时会结束本轮任务，但会把「被阻断的调用」登记下来；
+     * 用户允许后，grant 接口写临时授权并自动续跑该轮，返回 resume_stream_id。
+     * 这里拿到续跑流后立即接管，用户无需再手动下发任务。
+     * 拒绝则只是本地记录，不触发续跑。
      */
     async answerQuestion(message: ChatMessage, questionId: string, answer: string): Promise<void> {
         const content = String(answer || '').trim()
@@ -545,17 +547,20 @@ class RemoteStore {
         }
 
         await this.guard(async () => {
-            if (allow) {
-                if (!request) {
-                    throw new Error('该问卡没有可授权的路径信息')
-                }
+            let resumed = false
 
-                await grantRemotePermission(this.deviceId, {
+            if (request) {
+                const result = await grantRemotePermission(this.deviceId, {
                     conversationId: String(request.conversation_id || this.conversationId),
                     path: String(request.path || ''),
                     scope: String(request.scope || 'file'),
                     access: String(request.access || request.operation || 'read'),
+                    decision: allow ? 'allow' : 'deny',
                 })
+
+                resumed = !!(result?.resumed && result?.resume_stream_id)
+            } else if (allow) {
+                throw new Error('该问卡没有可授权的路径信息')
             }
 
             // 标记已作答，卡片转为只读视图，不再重复弹锁。
@@ -566,7 +571,19 @@ class RemoteStore {
                     : '已拒绝本次访问权限。'
             }
 
-            showToast(allow ? '已授权，重新下发任务即可继续' : '已拒绝，重新下发任务时不会再询问', 'success')
+            if (resumed) {
+                showToast(allow ? '已授权，正在继续执行' : '已拒绝，正在继续', 'success')
+
+                // 续跑任务已在电脑上运行，交给既有的活动任务同步接管轮询。
+                await this.syncActiveTasks(this.deviceId)
+
+                return
+            }
+
+            showToast(
+                allow ? '已授权，重新下发任务即可继续' : '已拒绝，重新下发任务时不会再询问',
+                'success',
+            )
         })
     }
 

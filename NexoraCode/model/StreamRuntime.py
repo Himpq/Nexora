@@ -70,6 +70,9 @@ def _new_session(conversation_id: str = "", metadata: Optional[Dict[str, Any]] =
         "conversation_id": str(conversation_id or "").strip(),
         "_request_message": str(meta.get("message") or "").strip(),
         "is_regenerate": bool(meta.get("is_regenerate", False)),
+        # 权限授权后的自动续跑不落盘用户消息：前端据此跳过补用户气泡，
+        # 否则会把「用户已允许...请继续」这段内部文案当成用户发言渲染出来。
+        "skip_user_message": bool(meta.get("skip_user_message", False)),
         "history_user_count": meta.get("history_user_count"),
         "assistant_index": meta.get("assistant_index"),
         "regenerate_index": meta.get("regenerate_index"),
@@ -393,6 +396,7 @@ def get_session_meta(stream_id: str, *, include_request_message: bool = False) -
             "stream_id": sid,
             "conversation_id": str(s.get("conversation_id") or "").strip(),
             "is_regenerate": bool(s.get("is_regenerate", False)),
+            "skip_user_message": bool(s.get("skip_user_message", False)),
             "history_user_count": s.get("history_user_count"),
             "assistant_index": s.get("assistant_index"),
             "regenerate_index": s.get("regenerate_index"),

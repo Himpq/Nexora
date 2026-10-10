@@ -17,10 +17,12 @@ import time
 import uuid
 from typing import Any, Generator, Optional
 
+from core.config import config
 from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
 from .ConversationStore import ConversationStore, is_placeholder_title
 from .ContextManager import ContextManager
+from .RetrySettings import DEFAULT_EMPTY_RESPONSE_RETRY_COUNT, configured_retry_count
 from .TitleGenerator import maybe_generate_title
 from .ToolPermissionPolicy import (
     build_tool_permission_question,
@@ -34,6 +36,85 @@ from .turn_injection import plan_injection
 # 会话级已询问过的权限路径记忆（path 归一化），避免授权后模型重试同路径时反复弹卡。
 _PERMISSION_ASKED_LOCK = threading.Lock()
 _PERMISSION_ASKED: dict[str, set] = {}
+
+# 会话级「因权限不足被阻断」的待续跑登记：授权接口据此自动续跑本轮。
+# 保存恢复所需的完整信息（被阻断的 tool_call_id、工具名、原始参数、请求路径）：
+# 授权后由服务端直接执行这次调用，把真实结果写回占位消息，再让模型基于
+# 真实结果继续——比让模型自己重新发起调用可靠（模型常顺着"等待授权"的
+# 上下文继续说话，而不是重试工具）。
+_PENDING_RESUME_LOCK = threading.Lock()
+_PENDING_RESUME: dict[str, dict] = {}
+# 续跑登记的有效期：超过这个时间的授权不再自动续跑（用户早已离开该上下文）。
+_PENDING_RESUME_TTL_SECONDS = 30 * 60
+
+
+def register_pending_permission_resume(
+    conversation_id: str,
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    path: str,
+    operation: str,
+    arguments: Any = None,
+    project_root: str = "",
+) -> None:
+    """登记一次被权限阻断的续跑点，供授权成功后自动续跑。"""
+    clean_conversation_id = str(conversation_id or "").strip()
+
+    if not clean_conversation_id:
+        return
+
+    frozen_arguments = arguments if isinstance(arguments, dict) else {}
+
+    with _PENDING_RESUME_LOCK:
+        _cleanup_pending_resume_locked()
+        _PENDING_RESUME[clean_conversation_id] = {
+            "conversation_id": clean_conversation_id,
+            "tool_call_id": str(tool_call_id or "").strip(),
+            "tool_name": str(tool_name or "").strip(),
+            "path": str(path or "").strip(),
+            "operation": str(operation or "read").strip().lower() or "read",
+            "arguments": dict(frozen_arguments),
+            "project_root": str(project_root or "").strip(),
+            "created_at": time.time(),
+        }
+
+
+def take_pending_permission_resume(conversation_id: str) -> dict | None:
+    """原子领取并清除待续跑登记，避免并发授权导致重复续跑。"""
+    clean_conversation_id = str(conversation_id or "").strip()
+
+    if not clean_conversation_id:
+        return None
+
+    with _PENDING_RESUME_LOCK:
+        _cleanup_pending_resume_locked()
+        return _PENDING_RESUME.pop(clean_conversation_id, None)
+
+
+def peek_pending_permission_resume(conversation_id: str) -> dict | None:
+    """只读查询待续跑登记（不消费），用于判断是否存在被阻断的流。"""
+    clean_conversation_id = str(conversation_id or "").strip()
+
+    if not clean_conversation_id:
+        return None
+
+    with _PENDING_RESUME_LOCK:
+        _cleanup_pending_resume_locked()
+        item = _PENDING_RESUME.get(clean_conversation_id)
+        return dict(item) if item else None
+
+
+def _cleanup_pending_resume_locked() -> None:
+    now = time.time()
+    expired = [
+        conversation_id
+        for conversation_id, item in _PENDING_RESUME.items()
+        if now - float(item.get("created_at") or 0) > _PENDING_RESUME_TTL_SECONDS
+    ]
+
+    for conversation_id in expired:
+        _PENDING_RESUME.pop(conversation_id, None)
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是 NexoraCode，运行在用户本地电脑上的编程助手。"
@@ -172,7 +253,7 @@ class AgentLoop:
         self.store = store
         self.context_manager = ContextManager(provider, store)
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None) -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None, skip_user_message: bool = False) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -201,11 +282,15 @@ class AgentLoop:
 
         # 首条消息落盘前先取原标题：append_message 会把占位标题替换为截断标题，
         # 只有此刻仍是占位值才说明这是首条消息，值得异步生成智能标题。
+        # 权限授权后的自动续跑不落盘用户消息：本轮 user 消息与工具占位结果都已在历史里，
+        # 再写一条会让对话出现多余的「继续」气泡。
         title_before_append = str(conversation.get("title") or "")
-        self.store.append_message(conversation_id, {"role": "user", "content": user_text, "timestamp": _now()})
 
-        if is_placeholder_title(title_before_append):
-            maybe_generate_title(conversation_id, user_text, title_before_append)
+        if not skip_user_message:
+            self.store.append_message(conversation_id, {"role": "user", "content": user_text, "timestamp": _now()})
+
+            if is_placeholder_title(title_before_append):
+                maybe_generate_title(conversation_id, user_text, title_before_append)
 
         effective_system = str(system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
@@ -243,6 +328,15 @@ class AgentLoop:
         round_index = 0
         # 最终答复是否已落盘：正常完成/中断落盘都置位，避免中断路径重复落盘。
         final_persisted = False
+        # 工具结果已经返回但正文为空时，按设置次数额外请求模型回复。
+        tool_results_executed = 0
+        empty_post_tool_retry_count = 0
+        empty_post_tool_retry_limit = configured_retry_count(
+            config,
+            "local_empty_response_retry_count",
+            DEFAULT_EMPTY_RESPONSE_RETRY_COUNT,
+        )
+        retry_after_empty_post_tool_response = False
         # 上一轮产生的文本与 usage（中断落盘用，循环内每轮更新）。
         content_text = ""
         reasoning_text = ""
@@ -321,6 +415,13 @@ class AgentLoop:
                 break
 
             tools = self.executor.list_tools_llm_format()
+            round_volatile_instructions = list(volatile_blocks or [])
+
+            if retry_after_empty_post_tool_response:
+                round_volatile_instructions.append(
+                    "上一轮工具结果已经返回，但模型没有生成正文。请依据已有工具结果直接完成用户请求并给出简洁正文；"
+                    "只有结果不足时才继续调用工具，不要重复推理内容。"
+                )
 
             try:
                 # 显式转发 prepare 的压缩事件：yield from 无法在转发时拦截，
@@ -336,7 +437,7 @@ class AgentLoop:
                     # 只有本次请求的首轮可以压缩：后续轮次一旦压缩，
                     # 摘要坑位改写会让本请求已缓存的整段前缀立即失效。
                     allow_compression=round_index <= 1,
-                    volatile_instructions=volatile_blocks,
+                    volatile_instructions=round_volatile_instructions,
                 )
                 messages = None
 
@@ -355,12 +456,16 @@ class AgentLoop:
                     yield event
 
                 force_context_compression = False
+                retry_after_empty_post_tool_response = False
             except Exception as exc:
                 print(f"[LocalContext] prepare_failed conversation={conversation_id} error={type(exc).__name__}: {exc}")
                 raise
 
             # 本轮实际发出的消息条数与整体估算，落盘后作为下一轮占用的实测锚点。
             input_estimate = self.context_manager.estimate_tokens({"messages": messages, "tools": tools})
+            request_max_tokens = self.context_manager.request_output_limit(
+                conversation_id, messages, tools
+            )
 
             if request_first_round_chars <= 0:
                 try:
@@ -372,6 +477,7 @@ class AgentLoop:
             assistant_reasoning_parts = []
             assistant_tool_calls = []
             round_usage = None
+            finish_reason = ""
             round_index += 1
             provider_started = time.monotonic()
             provider_first_event_logged = False
@@ -380,7 +486,9 @@ class AgentLoop:
                 _log_elapsed_ms("next_round_kickoff", last_tool_result_yielded_at, round_index)
 
             try:
-                for event in self.provider.stream_chat(messages, tools=tools):
+                for event in self.provider.stream_chat(
+                    messages, tools=tools, max_tokens=request_max_tokens
+                ):
                     if not provider_first_event_logged:
                         provider_first_event_logged = True
                         _log_elapsed_ms("provider_first_event", provider_started, round_index)
@@ -406,7 +514,8 @@ class AgentLoop:
                         round_usage = event.get("usage")
 
                     elif event_type == "finish":
-                        yield {"type": "finish", "finish_reason": str(event.get("finish_reason") or "")}
+                        finish_reason = str(event.get("finish_reason") or "")
+                        yield {"type": "finish", "finish_reason": finish_reason}
             except Exception as exc:
                 # 模型流异常：打印完整错误（含 HTTP 状态与响应体），便于定位 4xx/5xx 配置问题。
                 print(f"[LocalAgent] provider stream error: {type(exc).__name__}: {exc}")
@@ -468,6 +577,56 @@ class AgentLoop:
             _snapshot_timing()
 
             if not grouped_tool_calls:
+                if not content_text.strip():
+                    token_usage_event = self._emit_token_usage(last_round_io)
+
+                    if token_usage_event:
+                        yield token_usage_event
+
+                    if self._is_cancelled(cancel_checker):
+                        break
+
+                    should_retry_after_tool = (
+                        tool_results_executed > 0
+                        and empty_post_tool_retry_count < empty_post_tool_retry_limit
+                        and finish_reason != "tool_calls"
+                    )
+                    print(
+                        f"[LocalAgent] empty_final_response conversation_id={conversation_id} "
+                        f"trace={response_trace_id} round={round_index} "
+                        f"finish_reason={finish_reason or 'missing'} content_chars=0 "
+                        f"reasoning_chars={sum(len(str(part)) for part in assistant_reasoning_parts)} "
+                        f"tool_results={tool_results_executed} "
+                        f"auto_retry={int(should_retry_after_tool)}"
+                    )
+
+                    if should_retry_after_tool:
+                        empty_post_tool_retry_count += 1
+                        retry_after_empty_post_tool_response = True
+
+                        continue
+
+                    _snapshot_timing(ended=True)
+                    finish_detail = {
+                        "length": "已达到单轮输出上限",
+                        "stop": "模型正常结束",
+                        "tool_calls": "模型要求调用工具但没有返回可执行调用",
+                    }.get(finish_reason, "模型流结束但没有结束原因")
+
+                    if finish_reason == "tool_calls":
+                        error_message = f"{finish_detail}，本轮已停止。"
+                    elif tool_results_executed > 0:
+                        error_message = (
+                            f"工具结果已返回，但模型自动重试 {empty_post_tool_retry_count} 次后仍没有生成正文"
+                            f"（{finish_detail}）。"
+                        )
+                    else:
+                        error_message = f"{finish_detail}，没有生成可见正文。"
+
+                    yield {"type": "error", "message": error_message}
+
+                    break
+
                 final_persisted = True
                 _snapshot_timing(ended=True)
                 self.store.append_message(
@@ -491,6 +650,7 @@ class AgentLoop:
                         "timestamp": _now(),
                     },
                 )
+
                 token_usage_event = self._emit_token_usage(last_round_io)
 
                 if token_usage_event:
@@ -677,11 +837,26 @@ class AgentLoop:
                         permission_blocked = True
                         break
 
-                    # 权限不足：弹卡后立即终止本轮，等待用户授权后再续流，避免模型循环重试同一路径。
+                    # 权限不足：弹卡后立即终止本轮，等待用户授权后由 grant 接口自动续跑，
+                    # 避免模型循环重试同一路径。
                     question_payload = result.get("permission_question") or {}
-                    request_path = str((question_payload.get("permission_request") or {}).get("path") or "")
+                    permission_request = question_payload.get("permission_request") or {}
+                    request_path = str(permission_request.get("path") or "")
+                    request_operation = str(permission_request.get("operation") or "read")
                     already_asked = _remember_permission_asked(conversation_id, request_path)
                     print(f"[LocalAgent] tool {tool_name} permission_required for conversation {conversation_id} path={request_path} already_asked={already_asked}")
+
+                    # 无论是否重复弹卡，都要登记续跑点：授权接口据此自动续跑本轮，
+                    # 否则「已询问过」的路径会静默失败，用户只看到工具不执行。
+                    register_pending_permission_resume(
+                        conversation_id,
+                        tool_call_id=call_id,
+                        tool_name=tool_name,
+                        path=request_path,
+                        operation=request_operation,
+                        arguments=arguments,
+                        project_root=project_path,
+                    )
 
                     if not question_sent and not already_asked:
                         question_sent = True
@@ -751,6 +926,9 @@ class AgentLoop:
                         "timestamp": _now(),
                     },
                 )
+
+                if authorization["decision"] == "allow":
+                    tool_results_executed += 1
 
             # 每轮工具调用结束后立即推送 token 统计（本轮窗口口径，前端 CTX / badge / token mini 实时更新）
             token_usage_event = self._emit_token_usage(last_round_io)

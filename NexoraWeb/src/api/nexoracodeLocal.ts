@@ -44,6 +44,14 @@ interface LocalPermissionResponse {
     message?: string
 }
 
+interface LocalSettingsResponse {
+    success: boolean
+    general?: {
+        tool_auto_expand?: unknown
+    }
+    message?: string
+}
+
 export function openLocalSettings(): void {
     const openSettings = readDesktopApi()?.open_settings
 
@@ -131,6 +139,17 @@ export async function fetchLocalPermissionSettings(): Promise<LocalPermissionSet
     }
 }
 
+/** 读取 NexoraCode 工具调用卡片自动展开偏好。 */
+export async function fetchLocalToolAutoExpand(): Promise<boolean> {
+    const data = await apiFetch<LocalSettingsResponse>('/api/local/settings')
+
+    if (!data.success || typeof data.general?.tool_auto_expand !== 'boolean') {
+        throw new Error(data.message || '读取工具调用自动展开设置失败')
+    }
+
+    return data.general.tool_auto_expand
+}
+
 export async function saveLocalPermissionSettings(
     mode: LocalPermissionMode,
     approvalModelId: string,
@@ -148,20 +167,39 @@ export async function saveLocalPermissionSettings(
     }
 }
 
+export interface LocalPathPermissionResult {
+    /** 授权成功后电脑端是否已自动续跑被权限阻断的本轮 */
+    resumed: boolean
+    /** 续跑流的 stream_id，前端据此接管 SSE 续播 */
+    resumeStreamId: string
+}
+
 export async function grantLocalPathPermission(
     conversationId: string,
     permissionRequest: Record<string, unknown>,
-): Promise<void> {
-    const data = await apiFetch<{ success: boolean; message?: string }>('/api/agent/permission/grant', {
+    decision: 'allow' | 'deny' = 'allow',
+): Promise<LocalPathPermissionResult> {
+    const data = await apiFetch<{
+        success: boolean
+        message?: string
+        resumed?: boolean
+        resume_stream_id?: string
+    }>('/api/agent/permission/grant', {
         method: 'POST',
         body: JSON.stringify({
             conversation_id: conversationId,
             permission_request: permissionRequest,
+            decision,
         }),
     })
 
     if (!data.success) {
         throw new Error(data.message || '授权失败')
+    }
+
+    return {
+        resumed: data.resumed === true,
+        resumeStreamId: String(data.resume_stream_id || ''),
     }
 }
 
@@ -169,8 +207,13 @@ export async function resolveLocalToolPermission(
     conversationId: string,
     request: Record<string, unknown>,
     decision: 'allow' | 'deny',
-): Promise<void> {
-    const data = await apiFetch<{ success: boolean; message?: string }>('/api/agent/tool-permission/resolve', {
+): Promise<LocalPathPermissionResult> {
+    const data = await apiFetch<{
+        success: boolean
+        message?: string
+        resumed?: boolean
+        resume_stream_id?: string
+    }>('/api/agent/tool-permission/resolve', {
         method: 'POST',
         body: JSON.stringify({
             conversation_id: conversationId,
@@ -181,5 +224,10 @@ export async function resolveLocalToolPermission(
 
     if (!data.success) {
         throw new Error(data.message || '处理工具审批失败')
+    }
+
+    return {
+        resumed: data.resumed === true,
+        resumeStreamId: String(data.resume_stream_id || ''),
     }
 }

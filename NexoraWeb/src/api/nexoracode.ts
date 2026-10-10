@@ -209,6 +209,8 @@ export interface RemoteTaskSession {
     cancel_requested?: boolean
     cancel_reason?: string
     is_regenerate?: boolean
+    /** 权限授权后的自动续跑：请求消息不落盘，前端不要补用户气泡。 */
+    skip_user_message?: boolean
     history_user_count?: number | null
     assistant_index?: number | null
     regenerate_index?: number | null
@@ -331,9 +333,16 @@ export function grantRemotePermission(
         scope?: string
         access?: string
         reason?: string
+        decision?: 'allow' | 'deny'
     }
 ) {
-    return remoteCall<{ success: boolean; message: string }>(
+    return remoteCall<{
+        success: boolean
+        message: string
+        /** 电脑端是否已自动续跑被权限阻断的本轮。 */
+        resumed?: boolean
+        resume_stream_id?: string
+    }>(
         deviceId,
         '/api/agent/permission/grant',
         'POST',
@@ -343,6 +352,7 @@ export function grantRemotePermission(
             scope: payload.scope || 'file',
             access: payload.access || 'read',
             reason: payload.reason || '',
+            decision: payload.decision || 'allow',
         }
     )
 }

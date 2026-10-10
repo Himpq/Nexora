@@ -113,6 +113,7 @@
                                         :knowledge-events="knowledgeByAssistant.get(Number(message.index))"
                                         :model-name="modelStore.selectedModel?.name"
                                         :streaming="isStreamingMessage(message)"
+                                        :auto-expand-tool-calls="autoExpandToolCalls"
                                         :is-last-user-message="isLastUserMessage(message)"
                                         :conversation-id="conversationStore.currentId"
                                         :nexoracode="isNexoraCode"
@@ -336,8 +337,10 @@
     import { collapseMobileSidebar, isMobileSidebarOpen, isMobileViewport } from '@/ui/viewport'
     import { useLearningViewSync } from '@/composables/useLearningViewSync'
     import { primeNexoraMapRendererConfig } from '@/stream/mapRenderer'
+    import { NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT } from '@/bridge/desktopRefresh'
     import {
         grantLocalPathPermission,
+        fetchLocalToolAutoExpand,
         openLocalSettings,
         resolveLocalToolPermission,
         type NexoraCodeProject,
@@ -386,6 +389,24 @@
     const modelStore = useModelStore()
     const userStore = useUserStore()
     const isNexoraCode = import.meta.env.MODE === 'nexoracode'
+    const autoExpandToolCalls = ref(!isNexoraCode)
+
+    /** 本地设置窗口保存后会刷新主窗口;启动时先读取它的工具卡片展开偏好。 */
+    async function loadLocalToolAutoExpand(): Promise<void> {
+        if (!isNexoraCode) {
+            return
+        }
+
+        try {
+            autoExpandToolCalls.value = await fetchLocalToolAutoExpand()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '读取工具调用自动展开设置失败')
+        }
+    }
+
+    function handleLocalToolAutoExpandRefresh(): void {
+        void loadLocalToolAutoExpand()
+    }
 
     // 网络层快照内容源:进行中流的缓冲消息上下文由 store 提供(层只负责序列化/存储)
     chatStream.attachSnapshotSource(() => conversationStore.buildStreamSnapshots())
@@ -2087,6 +2108,30 @@
     }
 
     /**
+     * 权限授权后接管电脑端的续跑流。
+     *
+     * 电脑端在用户允许后会直接执行被阻断/待确认的工具、把真实结果写回历史，
+     * 并另起一条续跑流（skip_user_message）。这里为它注册一条空的助手消息缓冲，
+     * 再通过 reconnect 接管该流的 SSE 续播，用户无需手动再发消息。
+     */
+    function attachResumeStream(conversationId: string, result: { resumed: boolean; resumeStreamId: string }): void {
+        if (!result.resumed || !result.resumeStreamId) {
+            return
+        }
+
+        conversationStore.beginResumedStream(conversationId)
+
+        void chatStream.resume(
+            {
+                streamId: result.resumeStreamId,
+                fromSeq: 0,
+                conversationId,
+            },
+            createStreamHandlers(conversationId, 'send'),
+        )
+    }
+
+    /**
      * question 卡片作答:回答作为普通用户消息进入会话
      * (上一条助手消息以 await 收尾,模型自然把该消息当作问题的回答继续执行)
      */
@@ -2128,20 +2173,28 @@
                         throw new Error('请选择允许或拒绝')
                     }
 
-                    await resolveLocalToolPermission(
+                    const resolved = await resolveLocalToolPermission(
                         conversationId,
                         toolRequest as Record<string, unknown>,
                         decision,
                     )
+
+                    // 电脑端已执行该工具并自动续跑本轮：接管续跑流的 SSE 续播。
+                    attachResumeStream(conversationId, resolved)
                 } else {
                     const permission = normalizeQuestionPermissionRequest(payload.permission_request)
 
-                    if (permission && !denied) {
-                        await grantLocalPathPermission(
+                    if (permission) {
+                        const granted = await grantLocalPathPermission(
                             conversationId,
                             permission as unknown as Record<string, unknown>,
+                            denied ? 'deny' : 'allow',
                         )
-                    } else if (!permission && !denied) {
+
+                        // 电脑端已处理本次授权（允许则执行工具、拒绝则记录拒绝）并自动续跑本轮：
+                        // 这里注册续跑缓冲并接管该流的 SSE 续播，用户无需再手动发消息。
+                        attachResumeStream(conversationId, granted)
+                    } else if (!denied) {
                         throw new Error('本地 Agent 暂不支持此类交互问题')
                     }
                 }
@@ -2699,6 +2752,12 @@
     )
 
     onMounted(async () => {
+        if (isNexoraCode) {
+            window.addEventListener(NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT, handleLocalToolAutoExpandRefresh)
+        }
+
+        void loadLocalToolAutoExpand()
+
         // Learning 偏好预取（不阻塞主流程，决定侧栏品牌栏是否显示 Learning）
         void refreshLearningPreference()
 
@@ -2820,6 +2879,9 @@
 
         document.removeEventListener('contextmenu', handleDocumentContextmenu)
         document.removeEventListener('click', handleDocumentClick)
+        if (isNexoraCode) {
+            window.removeEventListener(NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT, handleLocalToolAutoExpandRefresh)
+        }
         if (!isNexoraCode) {
             window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)
         }
