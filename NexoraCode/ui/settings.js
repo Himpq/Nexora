@@ -422,6 +422,21 @@
 
     // ===== 持久化 + 同步（统一机制，可复用） =====
 
+    var CUSTOM_PROMPT_LIMIT = 8000;
+
+    /** 刷新自定义提示词字符计数（nowLen / 8000）。 */
+    function updateCustomPromptCount() {
+        var field = $("g-custom-prompt");
+        var counter = $("g-custom-prompt-count");
+
+        if (!field || !counter) {
+            return;
+        }
+
+        counter.textContent = String(field.value.length);
+        counter.parentElement.classList.toggle("is-over-limit", field.value.length > CUSTOM_PROMPT_LIMIT);
+    }
+
     function persistPayload() {
         return {
             provider: {
@@ -472,6 +487,7 @@
         var general = res.data.general || {};
         $("g-username").value = general.username || "local";
         $("g-custom-prompt").value = general.custom_system_prompt || "";
+        updateCustomPromptCount();
         $("g-read-agents-md").checked = general.read_agents_md !== false;
         $("g-tool-auto-expand").checked = general.tool_auto_expand !== false;
         $("g-auto-retry-count").value = general.auto_retry_count != null ? general.auto_retry_count : 5;
@@ -547,6 +563,8 @@
                 setThinkingProtocol(button.dataset.protocol || "");
             }
         });
+
+        $("g-custom-prompt").addEventListener("input", updateCustomPromptCount);
 
         reload();
         window.NexoraToolPermissions.reload().catch(function (error) {

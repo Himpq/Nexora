@@ -22,8 +22,8 @@
 
 .field > span {
     color: var(--text-secondary);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
 }
 
 .field input,
@@ -34,11 +34,11 @@
     border: 1px solid var(--border-input);
     border-radius: 6px;
     outline: none;
-    background: var(--bg-surface);
+    background: var(--bg-input);
     color: var(--text-main);
-    font-size: 12.5px;
+    font-size: var(--settings-font-body);
     line-height: 1.5;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 
 .field input {
@@ -50,9 +50,14 @@
     resize: vertical;
 }
 
+#g-custom-prompt {
+    min-height: 200px;
+}
+
 .field input:hover,
 .field textarea:hover {
-    border-color: #c6c6c6;
+    border-color: var(--border-input-strong);
+    background: var(--bg-input-hover);
 }
 
 .field input:focus,
@@ -63,8 +68,18 @@
 
 .field .hint {
     color: var(--text-secondary);
-    font-size: 11.5px;
+    font-size: var(--settings-font-help);
     line-height: 1.55;
+}
+
+/* 自定义提示词字符计数：靠右显示 nowLen / 8000。 */
+.field .hint.prompt-counter {
+    align-self: flex-end;
+    font-variant-numeric: tabular-nums;
+}
+
+.field .hint.prompt-counter.is-over-limit {
+    color: var(--danger);
 }
 
 .row {
@@ -93,7 +108,7 @@
     padding: 7px 10px;
     border: 1px solid var(--border-input);
     border-radius: 6px;
-    background: var(--bg-surface);
+    background: var(--bg-input);
     color: var(--text-main);
     cursor: pointer;
     text-align: left;
@@ -111,12 +126,12 @@
 }
 
 .pf-thinking-protocol-option strong {
-    font-size: 12px;
+    font-size: var(--settings-font-body);
 }
 
 .pf-thinking-protocol-option small {
     color: var(--text-secondary);
-    font-size: 10.5px;
+    font-size: var(--settings-font-help);
 }
 
 button.secondary {
@@ -127,7 +142,7 @@ button.secondary {
     color: var(--text-main);
     cursor: pointer;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--settings-font-body);
 }
 
 button.secondary:hover {

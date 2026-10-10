@@ -32,6 +32,11 @@
     --border-input: #e0e0e0;
     --bg-panel: #fafbfc;
 
+    /* 输入控件暗色底：与浅色页面形成对比，突出可编辑区域。 */
+    --bg-input: #f2f3f5;
+    --bg-input-hover: #eceef1;
+    --border-input-strong: #d3d6db;
+
     --accent: #5b8def;
     --accent-strong: #3f74d8;
     --danger: #d64545;
