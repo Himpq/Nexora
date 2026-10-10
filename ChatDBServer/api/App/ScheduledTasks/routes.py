@@ -4,8 +4,8 @@ import os
 
 from flask import Blueprint, jsonify, request, session
 
-from .store import create_task, delete_task, list_runs, list_tasks, update_task
-from .worker import start_worker
+from .store import TaskRunConflictError, create_task, delete_task, list_runs, list_tasks, queue_manual_run, update_task
+from .worker import start_worker, wake_worker
 
 
 scheduled_tasks_bp = Blueprint("scheduled_tasks", __name__)
@@ -39,7 +39,9 @@ def _username():
 
 
 def _error_response(exc):
-    if isinstance(exc, PermissionError):
+    if isinstance(exc, TaskRunConflictError):
+        code = 409
+    elif isinstance(exc, PermissionError):
         code = 401
     elif isinstance(exc, LookupError):
         code = 404
@@ -77,6 +79,7 @@ def post_scheduled_task():
             payload.get("weekdays"),
             payload.get("hour"),
             payload.get("minute"),
+            payload.get("output_conversation_id"),
         )
         return jsonify({"success": True, "task": task}), 201
     except Exception as exc:
@@ -99,6 +102,16 @@ def remove_scheduled_task(task_id):
     try:
         delete_task(_username(), task_id)
         return jsonify({"success": True})
+    except Exception as exc:
+        return _error_response(exc)
+
+
+@scheduled_tasks_bp.route("/api/scheduled-tasks/<task_id>/run-now", methods=["POST"])
+def run_scheduled_task_now(task_id):
+    try:
+        run = queue_manual_run(_username(), task_id)
+        wake_worker()
+        return jsonify({"success": True, "run": run}), 202
     except Exception as exc:
         return _error_response(exc)
 

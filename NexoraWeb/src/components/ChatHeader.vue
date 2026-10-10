@@ -129,7 +129,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, onMounted, ref } from 'vue'
 
     import type { ModelItem } from '@/api/config'
     import { useConversationStore } from '@/stores/conversation'
@@ -173,6 +173,12 @@ const emit = defineEmits<{
     const conversationStore = useConversationStore()
     const notificationStore = useNotificationStore()
     const mailStore = useMailStore()
+
+    onMounted(() => {
+        void notificationStore.load().catch((error: unknown) => {
+            console.warn('[notification] initial load failed', error)
+        })
+    })
 
     const notificationBtnRef = ref<HTMLElement | null>(null)
 

@@ -3,7 +3,7 @@
         <header class="scheduled-head">
             <div>
                 <h1>定时任务</h1>
-                <p>按北京时间运行提示词，结果保存到知识库并发送通知。</p>
+                <p>结果会追加到创建任务时的对话；没有可复用对话或原对话已删除时，会自动新建任务输出会话。模型可按需调用知识库工具。</p>
             </div>
             <button class="scheduled-primary" type="button" @click="startCreate">新建任务</button>
         </header>
@@ -32,6 +32,9 @@
             <div class="scheduled-detail">
                 <form v-if="creating || editing" class="scheduled-form" @submit.prevent="saveTask">
                     <h2>{{ editing ? '编辑任务' : '新建任务' }}</h2>
+                    <p v-if="!editing" class="scheduled-form-hint">
+                        {{ draftOutputConversationId ? '执行结果会追加到打开任务表单时的当前对话。' : '当前没有可复用的对话，执行时会自动新建任务输出会话。' }}
+                    </p>
                     <label for="scheduled-title">任务标题</label>
                     <input id="scheduled-title" v-model.trim="draft.title" maxlength="120" required placeholder="例如：机器学习论文周报">
 
@@ -73,7 +76,24 @@
                         <span class="scheduled-state" :class="{ paused: !selectedTask.enabled }">{{ selectedTask.enabled ? '运行中' : '已暂停' }}</span>
                     </div>
 
+                    <div v-if="selectedTask.output_conversation_id" class="scheduled-output-channel">
+                        <div>
+                            <strong>当前输出会话</strong>
+                            <span>每次执行的结果会追加到这里；原会话删除后会自动新建输出会话</span>
+                        </div>
+                        <button
+                            type="button"
+                            @click="emit('open-conversation', selectedTask.output_conversation_id)"
+                        >打开会话</button>
+                    </div>
+
                     <div class="scheduled-actions">
+                        <button
+                            class="scheduled-primary"
+                            type="button"
+                            :disabled="saving || triggering || hasActiveRun"
+                            @click="triggerNow"
+                        >{{ triggering ? '触发中…' : hasActiveRun ? '任务执行中…' : '立即执行' }}</button>
                         <button class="scheduled-secondary" type="button" @click="startEdit">编辑</button>
                         <button class="scheduled-secondary" type="button" :disabled="saving" @click="toggleEnabled">{{ selectedTask.enabled ? '暂停' : '启用' }}</button>
                         <button class="scheduled-danger" type="button" :disabled="saving" @click="removeTask">删除</button>
@@ -93,15 +113,27 @@
                     <pre class="scheduled-prompt">{{ selectedTask.prompt }}</pre>
 
                     <h3>执行记录</h3>
-                    <div v-if="runsLoading" class="scheduled-empty">正在加载…</div>
-                    <div v-else-if="runs.length === 0" class="scheduled-empty">暂无执行记录</div>
-                    <div v-for="run in runs" :key="run.run_id" class="scheduled-run">
-                        <div>
-                            <strong>{{ formatTime(run.scheduled_at) }}</strong>
-                            <span>{{ statusLabel(run.status) }}</span>
+                    <div v-if="latestSummary" class="scheduled-summary">
+                        <strong>最近一次执行摘要</strong>
+                        <p>{{ latestSummary }}</p>
+                    </div>
+                    <div class="scheduled-runs">
+                        <div v-if="runsLoading" class="scheduled-empty">正在加载…</div>
+                        <div v-else-if="runs.length === 0" class="scheduled-empty">暂无执行记录</div>
+                        <div v-for="run in runs" :key="run.run_id" class="scheduled-run">
+                            <div>
+                                <strong>{{ formatTime(run.scheduled_at) }}</strong>
+                                <span>{{ run.trigger_type === 'manual' ? '手动触发' : '定时执行' }} · {{ statusLabel(run.status) }}</span>
+                            </div>
+                            <p v-if="run.summary" class="scheduled-run-summary">{{ run.summary }}</p>
+                            <button
+                                v-if="run.conversation_id"
+                                type="button"
+                                @click="emit('open-conversation', run.conversation_id)"
+                            >查看输出会话</button>
+                            <button v-if="run.knowledge_title" type="button" @click="emit('open-knowledge', run.knowledge_title)">{{ run.knowledge_title }}</button>
+                            <p v-if="run.error" class="scheduled-run-error">{{ run.error }}</p>
                         </div>
-                        <button v-if="run.knowledge_title" type="button" @click="emit('open-knowledge', run.knowledge_title)">{{ run.knowledge_title }}</button>
-                        <p v-if="run.error" class="scheduled-run-error">{{ run.error }}</p>
                     </div>
                 </template>
 
@@ -112,13 +144,14 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, reactive, ref, watch } from 'vue'
+    import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
     import {
         createScheduledTask,
         deleteScheduledTask,
         listScheduledTaskRuns,
         listScheduledTasks,
+        triggerScheduledTaskNow,
         updateScheduledTask,
         type ScheduledTask,
         type ScheduledTaskInput,
@@ -127,8 +160,11 @@
     import { showConfirm } from '@/stores/confirm'
     import { showToast } from '@/stores/notify'
 
-    const props = defineProps<{ open: boolean }>()
-    const emit = defineEmits<{ 'open-knowledge': [title: string] }>()
+    const props = defineProps<{ open: boolean; conversationId?: string }>()
+    const emit = defineEmits<{
+        'open-knowledge': [title: string]
+        'open-conversation': [conversationId: string]
+    }>()
     const weekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
     const tasks = ref<ScheduledTask[]>([])
     const runs = ref<ScheduledTaskRun[]>([])
@@ -138,10 +174,15 @@
     const loading = ref(false)
     const runsLoading = ref(false)
     const saving = ref(false)
+    const triggering = ref(false)
     const error = ref('')
+    const draftOutputConversationId = ref('')
     const draft = reactive<ScheduledTaskInput>({ title: '', prompt: '', weekdays: [0], hour: 9, minute: 0 })
+    let runPollingTimer: ReturnType<typeof window.setInterval> | undefined
 
     const selectedTask = computed(() => tasks.value.find((task) => task.task_id === selectedId.value) || null)
+    const latestSummary = computed(() => runs.value.find((run) => run.summary)?.summary || '')
+    const hasActiveRun = computed(() => runs.value.some((run) => run.status === 'queued' || run.status === 'running'))
 
     function formatTime(timestamp: number): string {
         if (!timestamp) return '暂无'
@@ -166,6 +207,8 @@
             success: '成功',
             failed: '失败',
             running: '执行中',
+            queued: '等待执行',
+            cancelled: '已取消',
         }
         return names[status] || '尚未执行'
     }
@@ -222,6 +265,7 @@
 
     function startCreate(): void {
         setDraft()
+        draftOutputConversationId.value = props.conversationId || ''
         creating.value = true
         editing.value = false
         error.value = ''
@@ -262,7 +306,13 @@
             if (editing.value && selectedTask.value) {
                 await updateScheduledTask(selectedTask.value.task_id, { ...draft, weekdays: [...draft.weekdays] })
             } else {
-                const created = await createScheduledTask({ ...draft, weekdays: [...draft.weekdays] })
+                const created = await createScheduledTask({
+                    ...draft,
+                    weekdays: [...draft.weekdays],
+                    ...(draftOutputConversationId.value
+                        ? { output_conversation_id: draftOutputConversationId.value }
+                        : {}),
+                })
                 selectedId.value = created.task_id
             }
 
@@ -290,13 +340,31 @@
         }
     }
 
+    async function triggerNow(): Promise<void> {
+        if (!selectedTask.value) return
+
+        const taskId = selectedTask.value.task_id
+        error.value = ''
+
+        try {
+            triggering.value = true
+            await triggerScheduledTaskNow(taskId)
+            await loadRuns(taskId)
+            showToast('任务已加入执行队列', 'success')
+        } catch (reason) {
+            error.value = reason instanceof Error ? reason.message : '触发任务失败'
+        } finally {
+            triggering.value = false
+        }
+    }
+
     async function removeTask(): Promise<void> {
         if (!selectedTask.value) return
 
         const task = selectedTask.value
         const confirmed = await showConfirm({
             title: '删除定时任务',
-            content: `确定删除「${task.title}」？已生成的知识库报告不会随任务删除。`,
+            content: `确定删除「${task.title}」？删除后会停止后续执行，已生成的会话和知识库内容会保留。`,
             confirmText: '删除',
             cancelText: '取消',
             danger: true,
@@ -320,6 +388,26 @@
     watch(() => props.open, (open) => {
         if (open) void loadTasks()
     }, { immediate: true })
+
+    watch(
+        () => [props.open, selectedId.value, hasActiveRun.value] as const,
+        ([open, taskId, active]) => {
+            if (runPollingTimer) {
+                window.clearInterval(runPollingTimer)
+                runPollingTimer = undefined
+            }
+
+            if (open && taskId && active) {
+                runPollingTimer = window.setInterval(() => {
+                    if (!runsLoading.value) void loadRuns(taskId)
+                }, 5000)
+            }
+        },
+    )
+
+    onBeforeUnmount(() => {
+        if (runPollingTimer) window.clearInterval(runPollingTimer)
+    })
 </script>
 
 <style scoped>
@@ -338,6 +426,10 @@
     .scheduled-detail-head { display: flex; justify-content: space-between; gap: 12px; }
     .scheduled-detail h2 { margin: 0 0 7px; font-size: 19px; }
     .scheduled-detail h3 { margin: 22px 0 10px; font-size: 14px; }
+    .scheduled-output-channel { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 16px; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-bg-sunken); }
+    .scheduled-output-channel div { display: grid; gap: 4px; }
+    .scheduled-output-channel span { color: var(--color-text-secondary); font-size: 12px; }
+    .scheduled-output-channel button { flex: none; border: 1px solid var(--color-border-input); border-radius: 6px; padding: 6px 10px; color: var(--color-text-primary); background: var(--color-bg-elevated); cursor: pointer; }
     .scheduled-state { align-self: flex-start; font-size: 12px; color: #167b4d; }
     .scheduled-state.paused { color: var(--color-text-secondary); }
     .scheduled-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
@@ -352,10 +444,15 @@
     .scheduled-run { padding: 12px 0; border-top: 1px solid var(--color-border); font-size: 12px; }
     .scheduled-run > div { display: flex; justify-content: space-between; gap: 12px; }
     .scheduled-run button { border: 0; background: transparent; padding: 6px 0 0; color: var(--color-text-primary); text-decoration: underline; cursor: pointer; text-align: left; }
+    .scheduled-run-summary { margin: 8px 0 2px; color: var(--color-text-secondary); line-height: 1.6; }
+    .scheduled-summary { margin: 0 0 12px; padding: 12px; border-left: 3px solid var(--color-accent-text); background: var(--color-bg-sunken); }
+    .scheduled-summary p { margin: 6px 0 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; }
+    .scheduled-runs { max-height: min(40vh, 400px); overflow-y: auto; overscroll-behavior: contain; }
     .scheduled-run-error, .scheduled-error { color: #b42318; font-size: 12px; }
     .scheduled-error { margin: 10px 0; }
     .scheduled-empty { padding: 18px; font-size: 13px; }
     .scheduled-form { display: flex; flex-direction: column; }
+    .scheduled-form-hint { margin: 0 0 8px; color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; }
     .scheduled-form label { margin: 13px 0 6px; font-size: 13px; font-weight: 600; }
     .scheduled-form input, .scheduled-form textarea { border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-bg-elevated); color: inherit; padding: 9px; font: inherit; font-size: 13px; }
     .scheduled-form textarea { min-height: 150px; resize: vertical; }

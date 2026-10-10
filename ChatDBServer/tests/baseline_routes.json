@@ -1502,6 +1502,12 @@
       ]
     ],
     [
+      "/api/scheduled-tasks/<task_id>/run-now",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/scheduled-tasks/<task_id>/runs",
       [
         "GET"

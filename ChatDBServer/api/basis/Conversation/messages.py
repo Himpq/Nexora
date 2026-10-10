@@ -21,6 +21,7 @@ from .errors import (
     ConversationTargetRoleError,
     ConversationValidationError,
 )
+from .message_display import get_persisted_user_message_display
 from .schema import normalize_assistant_message, normalize_user_message
 
 
@@ -79,7 +80,12 @@ def append_user_message(
     if not isinstance(messages, list):
         messages = []
         conversation_data["messages"] = messages
-    raw_content = str(content or "") if isinstance(content, str) else content
+    display_content = get_persisted_user_message_display()
+    raw_content = (
+        display_content
+        if display_content is not None
+        else (str(content or "") if isinstance(content, str) else content)
+    )
     # 剥离旧 [TIME] 前缀
     if isinstance(raw_content, str) and raw_content.lstrip().startswith(("[TIME]", "[历史消息时间:")):
         first_nl = raw_content.lstrip().find("\n")

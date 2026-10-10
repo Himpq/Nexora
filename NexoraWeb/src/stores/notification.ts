@@ -13,6 +13,29 @@ import { defineStore } from 'pinia'
 
 import type { NotificationItem } from '@/api/notifications'
 import { listNotifications, markNotificationRead, removeNotification } from '@/api/notifications'
+import { useConversationStore } from '@/stores/conversation'
+import { overlay } from '@/ui/overlay'
+
+/** Mark successful task output unread unless the user is viewing that chat. */
+function markScheduledTaskConversationUnread(item: NotificationItem): void {
+    if (item.source !== '定时任务' || item.level !== 'success' || item.read) {
+        return
+    }
+
+    const conversationId = String(item.meta?.conversation_id || '').trim()
+
+    if (!conversationId) {
+        return
+    }
+
+    const conversationStore = useConversationStore()
+
+    const isViewingOutputChat = conversationStore.currentId === conversationId && overlay.view === null
+
+    if (!isViewingOutputChat) {
+        conversationStore.markConversationUnread(conversationId)
+    }
+}
 
 interface NotificationState {
     items: NotificationItem[]
@@ -72,6 +95,10 @@ export const useNotificationStore = defineStore('notification', {
                 this.items = data.items
                 this.unreadCount = data.unread_count
                 this.loaded = true
+
+                for (const item of data.items) {
+                    markScheduledTaskConversationUnread(item)
+                }
             } finally {
                 this.loading = false
             }
@@ -90,6 +117,7 @@ export const useNotificationStore = defineStore('notification', {
             }
 
             this.unreadCount = unreadCount
+            markScheduledTaskConversationUnread(item)
         },
 
         /** 合入 notification_read 推送:按 id 标记已读 */

@@ -737,6 +737,7 @@ class ToolExecutor:
             args.get("weekdays"),
             args.get("hour"),
             args.get("minute"),
+            output_conversation_id=str(getattr(self.model, "conversation_id", "") or "").strip(),
         )
         return json.dumps({"success": True, "task": task}, ensure_ascii=False)
 

@@ -220,7 +220,9 @@
                 <div v-if="!isNexoraCode" v-show="scheduledTasksOpen" class="gddp-content-view">
                     <ScheduledTasksView
                         :open="scheduledTasksOpen"
+                        :conversation-id="conversationStore.currentId || ''"
                         @open-knowledge="handleOpenKnowledgeDocument"
+                        @open-conversation="handleOpenScheduledTaskConversation"
                     />
                 </div>
 
@@ -2433,7 +2435,7 @@
         openView('knowledge-mgmt')
     }
 
-    /** 定时任务与其他内容视图互斥；执行结果由知识库视图展示。 */
+    /** 定时任务与其他内容视图互斥。 */
     function handleOpenScheduledTasks(): void {
         if (scheduledTasksOpen.value) {
             backToChat()
@@ -2442,6 +2444,15 @@
         }
 
         openView('scheduled-tasks')
+    }
+
+    async function handleOpenScheduledTaskConversation(conversationId: string): Promise<void> {
+        try {
+            await conversationStore.openConversation(conversationId)
+            backToChat()
+        } catch (error) {
+            showError(error instanceof Error ? error.message : '打开任务输出会话失败')
+        }
     }
 
     /** 侧边栏 Files 按钮:打开/关闭文件中心视图(对齐原版 openFilesFrameView 的互斥切换) */

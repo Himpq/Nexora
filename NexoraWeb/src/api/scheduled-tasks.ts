@@ -14,6 +14,7 @@ export interface ScheduledTask {
     last_status: string
     last_error: string
     last_knowledge_title: string
+    output_conversation_id: string
     created_at: number
     updated_at: number
 }
@@ -24,7 +25,10 @@ export interface ScheduledTaskRun {
     started_at: number
     finished_at: number | null
     status: string
+    trigger_type: 'scheduled' | 'manual'
     knowledge_title: string
+    conversation_id: string
+    summary: string
     error: string
 }
 
@@ -36,6 +40,10 @@ export interface ScheduledTaskInput {
     minute: number
 }
 
+export interface CreateScheduledTaskInput extends ScheduledTaskInput {
+    output_conversation_id?: string
+}
+
 
 export async function listScheduledTasks(): Promise<ScheduledTask[]> {
     const data = await apiFetch<{ success: boolean; tasks: ScheduledTask[] }>('/api/scheduled-tasks')
@@ -43,7 +51,7 @@ export async function listScheduledTasks(): Promise<ScheduledTask[]> {
 }
 
 
-export async function createScheduledTask(input: ScheduledTaskInput): Promise<ScheduledTask> {
+export async function createScheduledTask(input: CreateScheduledTaskInput): Promise<ScheduledTask> {
     const data = await apiFetch<{ success: boolean; task: ScheduledTask }>('/api/scheduled-tasks', {
         method: 'POST',
         body: JSON.stringify(input),
@@ -69,4 +77,13 @@ export async function deleteScheduledTask(taskId: string): Promise<void> {
 export async function listScheduledTaskRuns(taskId: string): Promise<ScheduledTaskRun[]> {
     const data = await apiFetch<{ success: boolean; runs: ScheduledTaskRun[] }>(`/api/scheduled-tasks/${encodeURIComponent(taskId)}/runs`)
     return data.runs
+}
+
+
+export async function triggerScheduledTaskNow(taskId: string): Promise<ScheduledTaskRun> {
+    const data = await apiFetch<{ success: boolean; run: ScheduledTaskRun }>(
+        `/api/scheduled-tasks/${encodeURIComponent(taskId)}/run-now`,
+        { method: 'POST' },
+    )
+    return data.run
 }
