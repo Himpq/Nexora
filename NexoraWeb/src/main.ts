@@ -58,36 +58,42 @@ if (import.meta.env.MODE === 'nexoracode') {
     registerDesktopRefreshBridge()
 }
 
-// 全局错误面板:渲染/回调异常直接浮层展示组件栈与原始错误,
-// 用于快速定位"切特定会话即崩溃"这类问题(同时保留 console 完整堆栈)
-const errorOverlay = document.createElement('pre')
+// 云端正式包保留 console 错误记录,但不把异常堆栈覆盖在聊天界面。
+const showErrorOverlay = import.meta.env.DEV || import.meta.env.MODE === 'nexoracode'
+const errorOverlay = showErrorOverlay ? document.createElement('pre') : null
 
-errorOverlay.id = 'nexora-global-error-overlay'
-errorOverlay.style.cssText = [
-    'display:none',
-    'position:fixed',
-    'left:0',
-    'right:0',
-    'bottom:0',
-    'max-height:45vh',
-    'overflow:auto',
-    'z-index:99999',
-    'margin:0',
-    'padding:12px 16px',
-    'background:rgba(153,27,0,0.94)',
-    'color:#ffe4e6',
-    'font:12px/1.5 Consolas,monospace',
-    'white-space:pre-wrap',
-    'word-break:break-all',
-    'border-top:2px solid #fca5a5',
-].join(';')
+if (errorOverlay) {
+    errorOverlay.id = 'nexora-global-error-overlay'
+    errorOverlay.style.cssText = [
+        'display:none',
+        'position:fixed',
+        'left:0',
+        'right:0',
+        'bottom:0',
+        'max-height:45vh',
+        'overflow:auto',
+        'z-index:99999',
+        'margin:0',
+        'padding:12px 16px',
+        'background:rgba(153,27,0,0.94)',
+        'color:#ffe4e6',
+        'font:12px/1.5 Consolas,monospace',
+        'white-space:pre-wrap',
+        'word-break:break-all',
+        'border-top:2px solid #fca5a5',
+    ].join(';')
 
-document.body.appendChild(errorOverlay)
+    document.body.appendChild(errorOverlay)
+}
 
 function showGlobalError(kind: string, error: unknown): void {
     const stack = error instanceof Error ? (error.stack || error.message) : String(error)
 
     console.error(`[nexora:${kind}]`, error)
+
+    if (!errorOverlay) {
+        return
+    }
 
     errorOverlay.style.display = 'block'
     errorOverlay.textContent += `\n[${new Date().toLocaleTimeString()}][${kind}]\n${stack}\n`
