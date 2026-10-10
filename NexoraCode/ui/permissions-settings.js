@@ -10,22 +10,34 @@
         {
             id: "read_only",
             name: "只读",
-            description: "允许读文件、搜索、查看或滚动页面和查看工具状态；文件写入、命令、网页点击/输入/脚本执行和关闭页面会被拒绝。"
+            icon: "fa-book-open",
+            color: "#22c55e",
+            tint: "rgba(34, 197, 94, 0.12)",
+            description: "只允许读取和查看信息"
         },
         {
             id: "confirm",
             name: "写入 / 命令确认",
-            description: "读取和滚动页面无需确认；写文件、命令、管理进程、点击/输入/脚本执行和关闭页面前逐次询问。"
+            icon: "fa-eye",
+            color: "#3b82f6",
+            tint: "rgba(59, 130, 246, 0.12)",
+            description: "写入文件或执行命令前询问"
         },
         {
             id: "auto",
             name: "自动审批",
-            description: "把写入、命令、进程管理和网页状态变更交给下方模型逐次审批，通过后执行一次。"
+            icon: "fa-shield-halved",
+            color: "#eab308",
+            tint: "rgba(234, 179, 8, 0.14)",
+            description: "由设置中的模型判断每项操作"
         },
         {
             id: "full",
             name: "完全访问",
-            description: "关闭 NexoraCode 工具权限限制，包括项目路径限制；操作仍受当前 Windows 账户权限约束。"
+            icon: "fa-shield-halved",
+            color: "#ef4444",
+            tint: "rgba(239, 68, 68, 0.12)",
+            description: "直接执行 Agent 工具操作"
         }
     ];
 
@@ -36,6 +48,7 @@
         approvalEvents: [],
         eventsLoading: true,
         eventsError: "",
+        modeMenuOpen: false,
         modelMenuOpen: false,
         loaded: false
     };
@@ -67,25 +80,95 @@
     }
 
     function selectedMode() {
-        var selected = document.querySelector('input[name="tool-permission-mode"]:checked');
-        return selected ? String(selected.value || "") : "";
+        return String(state.mode);
     }
 
     function renderModes() {
         var container = $("tool-permission-mode-list");
+        var trigger = $("tool-permission-trigger");
+        var triggerIcon = $("tool-permission-trigger-icon");
+        var triggerName = $("tool-permission-mode-name");
+        var triggerDescription = $("tool-permission-mode-description");
+        var mode = modes.find(function (item) {
+            return item.id === state.mode;
+        });
 
-        if (!container) {
+        if (!container || !trigger || !triggerIcon || !triggerName || !triggerDescription || !mode) {
             return;
         }
 
-        container.innerHTML = modes.map(function (mode) {
-            var checked = state.mode === mode.id ? " checked" : "";
+        triggerIcon.innerHTML = "<i class=\"fa-solid " + mode.icon + "\" aria-hidden=\"true\"></i>";
+        triggerIcon.style.setProperty("--permission-accent", mode.color);
+        triggerIcon.style.setProperty("--permission-tint", mode.tint);
+        triggerName.textContent = mode.name;
+        triggerDescription.textContent = mode.description;
+        trigger.setAttribute("aria-label", "默认工具权限：" + mode.name + "，点击展开选项");
+        trigger.setAttribute("aria-expanded", state.modeMenuOpen ? "true" : "false");
+        trigger.classList.toggle("is-open", state.modeMenuOpen);
+        trigger.disabled = !state.loaded;
+        container.hidden = !state.modeMenuOpen;
 
-            return "<label class=\"permission-mode-option\">" +
-                "<input type=\"radio\" name=\"tool-permission-mode\" value=\"" + mode.id + "\"" + checked + ">" +
-                "<span class=\"permission-mode-copy\"><strong>" + escapeHtml(mode.name) + "</strong>" +
-                "<small>" + escapeHtml(mode.description) + "</small></span></label>";
+        container.innerHTML = "<div class=\"permission-mode-menu-heading\">工具权限</div>" + modes.map(function (item) {
+            var checked = state.mode === item.id ? "true" : "false";
+
+            return "<button class=\"permission-mode-option\" type=\"button\" data-mode=\"" + item.id + "\" role=\"menuitemradio\" aria-checked=\"" + checked + "\" style=\"--permission-accent:" + item.color + ";--permission-tint:" + item.tint + "\">" +
+                "<span class=\"permission-mode-option-icon\" aria-hidden=\"true\"><i class=\"fa-solid " + item.icon + "\"></i></span>" +
+                "<span class=\"permission-mode-option-copy\"><strong>" + escapeHtml(item.name) + "</strong>" +
+                "<small>" + escapeHtml(item.description) + "</small></span>" +
+                "<svg class=\"permission-mode-check\" viewBox=\"0 0 20 20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><path d=\"m4 10 4 4 8-8\"></path></svg></button>";
         }).join("");
+    }
+
+    function positionFloatingMenu(trigger, menu, preferredWidth) {
+        if (!trigger || !menu) {
+            return;
+        }
+
+        var rect = trigger.getBoundingClientRect();
+        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        var width = Math.min(preferredWidth || rect.width, viewportWidth - 24);
+        var maxHeight = Math.min(360, viewportHeight - 24);
+        var menuHeight = Math.min(menu.scrollHeight, maxHeight);
+        var spaceBelow = viewportHeight - rect.bottom - 6;
+        var spaceAbove = rect.top - 6;
+        var openAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+        var top = openAbove ? rect.top - menuHeight - 6 : rect.bottom + 6;
+        var left = Math.max(12, Math.min(rect.left, viewportWidth - width - 12));
+
+        menu.style.left = Math.round(left) + "px";
+        menu.style.top = Math.round(Math.max(12, Math.min(top, viewportHeight - menuHeight - 12))) + "px";
+        menu.style.width = Math.round(width) + "px";
+        menu.style.maxHeight = Math.round(maxHeight) + "px";
+    }
+
+    function positionPermissionMenu() {
+        if (!state.modeMenuOpen) {
+            return;
+        }
+
+        positionFloatingMenu($("tool-permission-trigger"), $("tool-permission-mode-list"), 300);
+    }
+
+    function openPermissionMenu() {
+        if (!state.loaded) {
+            return;
+        }
+
+        state.modeMenuOpen = true;
+        renderModes();
+        positionPermissionMenu();
+
+        var selected = $("tool-permission-mode-list").querySelector('[aria-checked="true"]');
+
+        if (selected) {
+            selected.focus();
+        }
+    }
+
+    function closePermissionMenu() {
+        state.modeMenuOpen = false;
+        renderModes();
     }
 
     function renderModels() {
@@ -123,14 +206,17 @@
         providerLabel.textContent = selected ? String(selected.provider || "") : "";
         trigger.title = selected ? String(selected.id || "") : "请选择自动审批模型";
 
+        var list = document.createElement("div");
+        list.className = "permission-model-list-scroll gddp-model-select-scroll";
+
         groupModels().forEach(function (group) {
             var section = document.createElement("section");
-            section.className = "permission-model-group";
+            section.className = "permission-model-group gddp-model-select-group";
             section.setAttribute("role", "group");
             section.setAttribute("aria-label", group.provider);
 
             var heading = document.createElement("div");
-            heading.className = "permission-model-group-label";
+            heading.className = "permission-model-group-label gddp-model-select-group-label";
             heading.textContent = group.provider;
             section.appendChild(heading);
 
@@ -138,40 +224,32 @@
                 var id = String(model.id || "");
                 var option = document.createElement("button");
                 option.type = "button";
-                option.className = "permission-model-option";
+                option.className = "permission-model-option gddp-model-select-option";
                 option.dataset.modelId = id;
                 option.setAttribute("role", "option");
                 option.setAttribute("aria-selected", state.approvalModelId === id ? "true" : "false");
                 option.tabIndex = 0;
 
                 var name = document.createElement("span");
-                name.className = "permission-model-option-name";
+                name.className = "permission-model-option-name gddp-model-select-option-name";
                 name.textContent = String(model.name || id);
 
                 var provider = document.createElement("span");
-                provider.className = "permission-model-option-provider";
+                provider.className = "permission-model-option-provider gddp-model-select-provider";
                 provider.textContent = String(model.provider || "");
 
-                var check = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                check.classList.add("permission-model-option-check");
-                check.setAttribute("viewBox", "0 0 20 20");
-                check.setAttribute("fill", "none");
-                check.setAttribute("aria-hidden", "true");
+                option.append(name, provider);
+                if (state.approvalModelId === id) {
+                    option.classList.add("active");
+                }
 
-                var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                path.setAttribute("d", "m4 10 4 4 8-8");
-                path.setAttribute("stroke", "currentColor");
-                path.setAttribute("stroke-width", "2");
-                path.setAttribute("stroke-linecap", "round");
-                path.setAttribute("stroke-linejoin", "round");
-                check.appendChild(path);
-
-                option.append(name, provider, check);
                 section.appendChild(option);
             });
 
-            menu.appendChild(section);
+            list.appendChild(section);
         });
+
+        menu.appendChild(list);
 
         trigger.setAttribute("aria-expanded", state.modelMenuOpen ? "true" : "false");
         trigger.classList.toggle("is-open", state.modelMenuOpen);
@@ -204,29 +282,7 @@
             return;
         }
 
-        var trigger = $("tool-permission-model-trigger");
-        var menu = $("tool-permission-model-menu");
-
-        if (!trigger || !menu) {
-            return;
-        }
-
-        var rect = trigger.getBoundingClientRect();
-        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-        var width = Math.min(rect.width, viewportWidth - 24);
-        var maxHeight = Math.min(360, viewportHeight - 24);
-        var menuHeight = Math.min(menu.scrollHeight, maxHeight);
-        var spaceBelow = viewportHeight - rect.bottom - 6;
-        var spaceAbove = rect.top - 6;
-        var openAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
-        var top = openAbove ? rect.top - menuHeight - 6 : rect.bottom + 6;
-        var left = Math.max(12, Math.min(rect.left, viewportWidth - width - 12));
-
-        menu.style.left = Math.round(left) + "px";
-        menu.style.top = Math.round(Math.max(12, Math.min(top, viewportHeight - menuHeight - 12))) + "px";
-        menu.style.width = Math.round(width) + "px";
-        menu.style.maxHeight = Math.round(maxHeight) + "px";
+        positionFloatingMenu($("tool-permission-model-trigger"), $("tool-permission-model-menu"));
     }
 
     function openModelMenu() {
@@ -259,6 +315,57 @@
         if (menu) {
             menu.hidden = true;
         }
+    }
+
+    function bindFloatingMenuBehavior(config) {
+        document.addEventListener("pointerdown", function (event) {
+            if (config.isOpen() && !config.picker.contains(event.target)) {
+                config.close();
+            }
+        });
+
+        document.addEventListener("keydown", function (event) {
+            if (!config.isOpen()) {
+                return;
+            }
+
+            if (event.key === "Escape") {
+                config.close();
+                config.trigger.focus();
+                event.preventDefault();
+                return;
+            }
+
+            if (event.key === "Tab") {
+                config.close();
+                return;
+            }
+
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+                return;
+            }
+
+            if (document.activeElement !== config.trigger && !config.menu.contains(document.activeElement)) {
+                return;
+            }
+
+            var options = Array.from(config.menu.querySelectorAll(config.optionSelector));
+
+            if (!options.length) {
+                return;
+            }
+
+            var currentIndex = options.indexOf(document.activeElement);
+            var nextIndex = currentIndex < 0
+                ? (event.key === "ArrowDown" ? 0 : options.length - 1)
+                : (currentIndex + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+
+            options[nextIndex].focus();
+            event.preventDefault();
+        });
+
+        window.addEventListener("resize", config.position);
+        window.addEventListener("scroll", config.position, true);
     }
 
     function renderApprovalEvents() {
@@ -460,18 +567,46 @@
     }
 
     function bind() {
+        var modePicker = $("tool-permission-picker");
+        var modeTrigger = $("tool-permission-trigger");
         var modeList = $("tool-permission-mode-list");
         var modelPicker = $("tool-permission-model-select");
         var modelTrigger = $("tool-permission-model-trigger");
         var modelMenu = $("tool-permission-model-menu");
         var eventsRefresh = $("tool-permission-events-refresh");
 
-        if (modeList) {
-            modeList.addEventListener("change", function (event) {
-                if (event.target && event.target.name === "tool-permission-mode") {
-                    state.mode = String(event.target.value || "");
-                    renderModels();
+        if (modePicker && modeTrigger && modeList) {
+            modeTrigger.addEventListener("click", function () {
+                if (state.modeMenuOpen) {
+                    closePermissionMenu();
+                } else {
+                    openPermissionMenu();
                 }
+            });
+
+            modeList.addEventListener("click", function (event) {
+                var button = event.target && event.target.closest ? event.target.closest("[data-mode]") : null;
+
+                if (!button) {
+                    return;
+                }
+
+                state.mode = String(button.dataset.mode || "");
+                renderModels();
+                closePermissionMenu();
+                modeTrigger.focus();
+            });
+
+            bindFloatingMenuBehavior({
+                picker: modePicker,
+                trigger: modeTrigger,
+                menu: modeList,
+                isOpen: function () {
+                    return state.modeMenuOpen;
+                },
+                close: closePermissionMenu,
+                position: positionPermissionMenu,
+                optionSelector: '[role="menuitemradio"]'
             });
         }
 
@@ -497,54 +632,17 @@
                 modelTrigger.focus();
             });
 
-            document.addEventListener("pointerdown", function (event) {
-                if (state.modelMenuOpen && !modelPicker.contains(event.target)) {
-                    closeModelMenu();
-                }
+            bindFloatingMenuBehavior({
+                picker: modelPicker,
+                trigger: modelTrigger,
+                menu: modelMenu,
+                isOpen: function () {
+                    return state.modelMenuOpen;
+                },
+                close: closeModelMenu,
+                position: positionModelMenu,
+                optionSelector: '[role="option"]'
             });
-
-            document.addEventListener("keydown", function (event) {
-                if (!state.modelMenuOpen) {
-                    return;
-                }
-
-                if (event.key === "Escape") {
-                    closeModelMenu();
-                    modelTrigger.focus();
-                    event.preventDefault();
-                    return;
-                }
-
-                if (event.key === "Tab") {
-                    closeModelMenu();
-                    return;
-                }
-
-                if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
-                    return;
-                }
-
-                if (document.activeElement !== modelTrigger && !modelMenu.contains(document.activeElement)) {
-                    return;
-                }
-
-                var options = Array.from(modelMenu.querySelectorAll('[role="option"]'));
-
-                if (!options.length) {
-                    return;
-                }
-
-                var currentIndex = options.indexOf(document.activeElement);
-                var nextIndex = currentIndex < 0
-                    ? (event.key === "ArrowDown" ? 0 : options.length - 1)
-                    : (currentIndex + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-
-                options[nextIndex].focus();
-                event.preventDefault();
-            });
-
-            window.addEventListener("resize", positionModelMenu);
-            window.addEventListener("scroll", positionModelMenu, true);
         }
 
         if (eventsRefresh) {
