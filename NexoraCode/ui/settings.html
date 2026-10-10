@@ -4,10 +4,11 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>NexoraCode 设置</title>
-    <link rel="stylesheet" href="/settings.css"/>
-    <link rel="stylesheet" href="/settings-controls.css"/>
-    <link rel="stylesheet" href="/settings-sections.css"/>
-    <link rel="stylesheet" href="/permissions-settings.css?v=20261008_permission_dropdown_stats_01"/>
+    <link rel="stylesheet" href="/settings.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/settings-controls.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/settings-sections.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/permissions-settings.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css"/>
 </head>
 <body>
     <div class="titlebar" id="nc-titlebar">
@@ -31,11 +32,31 @@
 
     <div class="app">
         <aside class="nav">
-            <nav class="nav-list">
-                <button type="button" class="nav-item active" data-view="provider">模型 Provider</button>
+            <nav class="nav-list" aria-label="设置栏目">
+                <button type="button" class="nav-item active" data-view="common" aria-current="location">通用</button>
+                <button type="button" class="nav-item" data-view="provider">模型 Provider</button>
                 <button type="button" class="nav-item" data-view="general">对话</button>
                 <button type="button" class="nav-item" data-view="error-handling">错误处理</button>
                 <button type="button" class="nav-item" data-view="permissions">工具权限</button>
+                <div class="nav-group" id="statistics-nav-group">
+                    <button
+                        id="statistics-nav-toggle"
+                        type="button"
+                        class="nav-item nav-group-toggle"
+                        aria-expanded="true"
+                        aria-controls="statistics-nav-subitems"
+                    >
+                        <span>统计</span>
+                        <svg class="nav-group-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                            <path d="m6 8 4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    </button>
+                    <div id="statistics-nav-subitems" class="nav-subitems">
+                        <div class="nav-subitems-inner">
+                            <button type="button" class="nav-subitem" data-view="statistics">自动审批统计</button>
+                        </div>
+                    </div>
+                </div>
                 <button type="button" class="nav-item" data-view="remote">远程连接</button>
                 <button type="button" class="nav-item" data-view="about">关于</button>
             </nav>
@@ -43,8 +64,21 @@
         </aside>
 
         <main class="content">
+            <!-- Common -->
+            <section id="view-common" class="view">
+                <h1>通用</h1>
+                <p class="sub">设置本地会话使用的用户名。</p>
+
+                <div class="settings-fields">
+                    <label class="field">
+                        <span>本地用户名</span>
+                        <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
+                    </label>
+                </div>
+            </section>
+
             <!-- Provider -->
-            <section id="view-provider" class="view active">
+            <section id="view-provider" class="view">
                 <h1>模型 Provider</h1>
                 <p class="sub">支持配置多个 Provider，对话使用默认 Provider。均通过 OpenAI 兼容接口直连。</p>
 
@@ -120,23 +154,13 @@
             <!-- General -->
             <section id="view-general" class="view">
                 <h1>对话</h1>
-                <p class="sub">NexoraCode 的对话与会话全部在本地运行与存储，不依赖云端引擎。</p>
-
-                <div class="info-box">
-                    <div class="info-title">本地 Agent 模式（已启用）</div>
-                    <div class="info-desc">消息由本地 Agent Loop 驱动，工具直接在本机执行，会话存于本地。</div>
-                </div>
+                <p class="sub">配置新会话的默认行为、项目约定和工具调用显示方式。</p>
 
                 <div class="settings-fields">
                     <label class="field">
-                        <span>本地用户名</span>
-                        <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
-                    </label>
-
-                    <label class="field">
                         <span>自定义提示词</span>
-                        <textarea id="g-custom-prompt" rows="6" placeholder="追加到系统提示词末尾的个性化要求，例如代码风格、回答语言、常用约定等。留空表示不追加。" spellcheck="false"></textarea>
-                        <small class="hint">作为稳定内容注入系统提示词（head），同一会话内保持一致以利于缓存命中；上限 8000 字符。</small>
+                        <textarea id="g-custom-prompt" rows="8" placeholder="追加到系统提示词末尾的个性化要求，例如代码风格、回答语言、常用约定等。留空表示不追加。" spellcheck="false"></textarea>
+                        <small class="hint prompt-counter"><span id="g-custom-prompt-count">0</span> / 8000</small>
                     </label>
                 </div>
 
@@ -178,38 +202,91 @@
                 <h1>默认工具权限</h1>
                 <p class="sub">这里设置的是<strong>新建会话的默认权限</strong>。每个会话都有自己独立的权限，进入会话后可在输入框旁的权限菜单里单独调整，互不影响；修改这里不会改变已有会话。</p>
 
-                <div id="tool-permission-mode-list" class="permission-mode-list"></div>
-
-                <div id="tool-permission-approval" class="permission-approval-panel">
-                    <h2>默认自动审批模型</h2>
-                    <p class="permission-note">自动审批会将当前请求、最近最多 4 条用户请求、助手调用工具前的说明、最近最多 4 条助手可见回复、本轮此前最多 8 个工具动作摘要和当前工具完整参数发送给所选 Provider。参数包括命令、脚本或待写入内容。纯只读工具（读取、探测、列目录、搜索、代码扫描、上下文读取、网页读取等）不会调用审批模型，直接放行。模型返回格式无效时会自动重试一次；仍无法判定、请求失败或模型拒绝时，该操作会被拦截。</p>
-                    <div id="tool-permission-model-select" class="permission-model-select">
+                <div class="permission-setting-row permission-mode-row">
+                    <div class="permission-setting-copy">
+                        <strong>权限模式</strong>
+                        <small>新建会话的初始工具权限。</small>
+                    </div>
+                    <div id="tool-permission-picker" class="permission-mode-picker">
                         <button
-                            id="tool-permission-model-trigger"
+                            id="tool-permission-trigger"
                             type="button"
-                            class="permission-model-trigger"
-                            aria-haspopup="listbox"
+                            class="permission-mode-trigger"
+                            aria-haspopup="menu"
                             aria-expanded="false"
-                            aria-controls="tool-permission-model-menu"
-                            title="请选择自动审批模型"
+                            aria-controls="tool-permission-mode-list"
+                            aria-label="展开默认工具权限选项"
+                            disabled
                         >
-                            <span class="permission-model-trigger-copy">
-                                <strong id="tool-permission-model-name">正在读取模型…</strong>
-                                <small id="tool-permission-model-provider"></small>
+                            <span id="tool-permission-trigger-icon" class="permission-mode-trigger-icon" aria-hidden="true">
+                                <i class="fa-solid fa-eye"></i>
                             </span>
-                            <svg class="permission-model-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                            <span class="permission-mode-trigger-copy">
+                                <strong id="tool-permission-mode-name">读取中…</strong>
+                                <small id="tool-permission-mode-description"></small>
+                            </span>
+                            <svg class="permission-mode-trigger-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                                 <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
                             </svg>
                         </button>
-                        <div id="tool-permission-model-menu" class="permission-model-menu" role="listbox" aria-label="自动审批模型" hidden></div>
+                        <div id="tool-permission-mode-list" class="permission-mode-list" role="menu" aria-label="工具权限" hidden></div>
+                    </div>
+                </div>
+
+                <div id="tool-permission-approval" class="permission-approval-panel">
+                    <div class="permission-setting-row permission-approval-row">
+                        <div class="permission-setting-copy">
+                            <div class="permission-setting-heading">
+                                <strong>默认自动审批模型</strong>
+                                <span class="permission-info">
+                                    <button
+                                        type="button"
+                                        class="permission-info-trigger"
+                                        aria-label="自动审批说明"
+                                        aria-describedby="tool-permission-model-help"
+                                    >
+                                        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                                            <path d="M8 7.1v3.35" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+                                            <circle cx="8" cy="4.95" r="0.8" fill="currentColor"></circle>
+                                        </svg>
+                                    </button>
+                                    <span id="tool-permission-model-help" class="permission-info-tooltip" role="tooltip">自动审批会将当前请求、最近最多 4 条用户请求、助手调用工具前的说明、最近最多 4 条助手可见回复、本轮此前最多 8 个工具动作摘要和当前工具完整参数发送给所选 Provider。参数包括命令、脚本或待写入内容。纯只读工具（读取、探测、列目录、搜索、代码扫描、上下文读取、网页读取等）不会调用审批模型，直接放行。模型返回格式无效时会自动重试一次；仍无法判定、请求失败或模型拒绝时，该操作会被拦截。</span>
+                                </span>
+                            </div>
+                            <small>用于判断工具操作是否允许执行。</small>
+                        </div>
+                        <div id="tool-permission-model-select" class="permission-model-select">
+                            <button
+                                id="tool-permission-model-trigger"
+                                type="button"
+                                class="permission-model-trigger gddp-model-select-trigger"
+                                aria-haspopup="listbox"
+                                aria-expanded="false"
+                                aria-controls="tool-permission-model-menu"
+                                title="请选择自动审批模型"
+                            >
+                                <span class="permission-model-trigger-copy">
+                                    <strong id="tool-permission-model-name">正在读取模型…</strong>
+                                    <small id="tool-permission-model-provider"></small>
+                                </span>
+                                <svg class="permission-model-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                    <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                                </svg>
+                            </button>
+                            <div id="tool-permission-model-menu" class="permission-model-menu gddp-model-select-menu" role="listbox" aria-label="自动审批模型" hidden></div>
+                        </div>
                     </div>
                     <div id="tool-permission-model-empty" class="permission-model-empty" hidden></div>
                 </div>
 
-                <div class="permission-statistics-panel">
+            </section>
+
+            <section id="view-statistics" class="view">
+                <h1>统计</h1>
+                <div id="permission-statistics-panel" class="permission-statistics-panel">
                     <div class="permission-statistics-heading">
                         <div>
-                            <h2>统计</h2>
+                            <h2>自动审批统计</h2>
                             <p class="permission-note">自动审批判定与模型返回的 Token 用量，按时间倒序显示最近 50 条。</p>
                         </div>
                         <button id="tool-permission-events-refresh" type="button" class="secondary">刷新</button>

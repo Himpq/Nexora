@@ -10,14 +10,14 @@
 
 .info-title {
     color: var(--text-main);
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
 }
 
 .info-desc {
     margin-top: 4px;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--settings-font-help);
 }
 
 .setting-list {
@@ -41,8 +41,8 @@
 
 .setting-toggle > span {
     color: var(--text-main);
-    font-size: 12.5px;
-    font-weight: 600;
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
     line-height: 1.45;
 }
 
@@ -86,6 +86,8 @@
     grid-column: 1;
     grid-row: 1;
     color: var(--text-main);
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
 }
 
 .retry-setting input {
@@ -95,6 +97,7 @@
     margin: 0;
     text-align: center;
     font-variant-numeric: tabular-nums;
+    font-size: 16px;
 }
 
 .retry-setting .hint {
@@ -117,7 +120,7 @@
     border-radius: var(--radius);
     background: var(--bg-panel);
     color: var(--text-secondary);
-    font-size: 12.5px;
+    font-size: var(--settings-font-help);
     text-align: center;
 }
 
@@ -146,22 +149,22 @@
 
 .pi-name {
     color: var(--text-main);
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
 }
 
 .pi-default {
     margin-left: 6px;
     color: var(--accent-strong);
-    font-size: 11px;
-    font-weight: 500;
+    font-size: var(--settings-font-meta);
+    font-weight: var(--settings-weight-medium);
 }
 
 .pi-model {
     margin-top: 2px;
     color: var(--accent-strong);
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: var(--settings-font-help);
 }
 
 .pi-url {
@@ -169,7 +172,7 @@
     margin-top: 1px;
     color: var(--text-secondary);
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: var(--settings-font-meta);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -188,7 +191,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     font: inherit;
-    font-size: 12px;
+    font-size: var(--settings-font-body);
 }
 
 .pi-btn:hover {
@@ -212,7 +215,8 @@
 
 .provider-form h2 {
     margin: 0 0 14px;
-    font-size: 15px;
+    font-size: var(--settings-font-section);
+    font-weight: var(--settings-weight-semibold);
 }
 
 .provider-form .form {
@@ -223,7 +227,7 @@
 .provider-form #pf-api-key,
 .provider-form #pf-model {
     font-family: var(--mono);
-    font-size: 12.5px;
+    font-size: var(--settings-font-help);
 }
 
 .pf-actions {
@@ -258,7 +262,7 @@
     max-width: 680px;
     padding-left: 18px;
     color: var(--text-secondary);
-    font-size: 12.5px;
+    font-size: var(--settings-font-help);
 }
 
 .about-list li {
@@ -268,10 +272,11 @@
 @media (max-width: 760px) {
     :root {
         --nav-width: 174px;
+        --settings-content-bottom: 84px;
     }
 
     .content {
-        padding: 25px 22px 84px;
+        padding: 25px 22px var(--settings-content-bottom);
     }
 
     .bar {
@@ -283,6 +288,7 @@
 @media (max-width: 720px) {
     :root {
         --nav-width: 150px;
+        --settings-content-bottom: 82px;
     }
 
     .nav {
@@ -293,11 +299,11 @@
     .nav-item {
         padding-right: 9px;
         padding-left: 9px;
-        font-size: 12px;
+        font-size: var(--settings-font-nav);
     }
 
     .content {
-        padding: 21px 16px 82px;
+        padding: 21px 16px var(--settings-content-bottom);
     }
 
     .bar {

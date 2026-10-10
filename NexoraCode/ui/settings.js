@@ -89,20 +89,89 @@
         });
     }
 
+    /** Keep the sidebar selection in sync with the shared scroll page. */
     function bindNav() {
-        document.querySelectorAll(".nav-item").forEach(function (item) {
+        var content = document.querySelector(".content");
+        var sections = Array.from(content.querySelectorAll(":scope > .view"));
+        var navItems = Array.from(document.querySelectorAll(".nav-item[data-view], .nav-subitem[data-view]"));
+        var currentView = "";
+
+        function expandStatisticsGroup() {
+            var statisticsGroup = $("statistics-nav-group");
+            var statisticsToggle = $("statistics-nav-toggle");
+
+            statisticsGroup.classList.remove("is-collapsed");
+            statisticsToggle.setAttribute("aria-expanded", "true");
+        }
+
+        function setActiveNav(view) {
+            navItems.forEach(function (item) {
+                var active = String(item.dataset.view || "") === view;
+
+                item.classList.toggle("active", active);
+
+                if (active) {
+                    item.setAttribute("aria-current", "location");
+                } else {
+                    item.removeAttribute("aria-current");
+                }
+            });
+        }
+
+        function scrollToView(view) {
+            var target = $("view-" + view);
+
+            if (view === "statistics") {
+                expandStatisticsGroup();
+            }
+
+            target.scrollIntoView({ behavior: "smooth", block: "start" });
+            setActiveNav(view);
+            currentView = view;
+        }
+
+        navItems.forEach(function (item) {
             item.addEventListener("click", function () {
-                var view = String(item.dataset.view || "");
-
-                document.querySelectorAll(".nav-item").forEach(function (n) {
-                    n.classList.toggle("active", n === item);
-                });
-
-                document.querySelectorAll(".view").forEach(function (v) {
-                    v.classList.toggle("active", v.id === "view-" + view);
-                });
+                scrollToView(String(item.dataset.view || ""));
             });
         });
+
+        document.querySelectorAll(".nav-group-toggle").forEach(function (trigger) {
+            trigger.addEventListener("click", function () {
+                var expanded = trigger.getAttribute("aria-expanded") === "true";
+
+                trigger.setAttribute("aria-expanded", expanded ? "false" : "true");
+                trigger.closest(".nav-group").classList.toggle("is-collapsed", expanded);
+            });
+        });
+
+        function updateActiveSection() {
+            var marker = content.getBoundingClientRect().top + 40;
+            var current = sections[0];
+
+            if (content.scrollTop + content.clientHeight >= content.scrollHeight - 1) {
+                current = sections[sections.length - 1];
+            } else {
+                sections.forEach(function (section) {
+                    if (section.getBoundingClientRect().top <= marker) {
+                        current = section;
+                    }
+                });
+            }
+
+            var view = current.id.slice("view-".length);
+
+            if (view === "statistics" && currentView !== "statistics") {
+                expandStatisticsGroup();
+            }
+
+            setActiveNav(view);
+            currentView = view;
+        }
+
+        content.addEventListener("scroll", updateActiveSection, { passive: true });
+        window.addEventListener("resize", updateActiveSection);
+        updateActiveSection();
     }
 
     // ===== 工具 =====

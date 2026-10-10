@@ -1,7 +1,18 @@
-/* NexoraCode 设置页：轻量导航、统一卡片和清晰表单层级。 */
+/* NexoraCode 设置页共享字体层级与颜色。 */
 :root {
-    --nc-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    --nc-font-sans: -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
     --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --settings-font-title: 28px;
+    --settings-font-section: 16px;
+    --settings-font-label: 14px;
+    --settings-font-body: 14px;
+    --settings-font-help: 13px;
+    --settings-font-meta: 12px;
+    --settings-font-nav: 13px;
+    --settings-weight-medium: 500;
+    --settings-weight-semibold: 600;
+    --settings-content-bottom: 90px;
+    --settings-scroll-margin: 24px;
 
     --tb-h: 36px;
     --nav-width: 200px;
@@ -41,7 +52,7 @@ body {
     overflow: hidden;
     background: var(--bg-main);
     color: var(--text-main);
-    font: 13px/1.6 var(--nc-font-sans);
+    font: var(--settings-font-body)/1.55 var(--nc-font-sans);
 }
 
 button,
@@ -72,8 +83,8 @@ textarea {
     gap: 7px;
     padding: 0 14px;
     color: #e0e3e9;
-    font-size: 13px;
-    font-weight: 650;
+    font-size: var(--settings-font-nav);
+    font-weight: var(--settings-weight-semibold);
     letter-spacing: -0.4px;
 }
 
@@ -89,7 +100,7 @@ textarea {
 .tb-title {
     flex: 1;
     color: #858b97;
-    font-size: 12px;
+    font-size: var(--settings-font-meta);
 }
 
 .tb-btns {
@@ -140,8 +151,12 @@ textarea {
 
 .nav-list {
     display: flex;
+    flex: 1;
+    min-height: 0;
     flex-direction: column;
     gap: 4px;
+    overflow-y: auto;
+    scrollbar-width: thin;
 }
 
 .nav-item {
@@ -155,7 +170,8 @@ textarea {
     text-align: left;
     cursor: pointer;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--settings-font-nav);
+    font-weight: var(--settings-weight-medium);
     transition: background-color 0.15s ease, color 0.15s ease;
 }
 
@@ -164,16 +180,78 @@ textarea {
     color: #ffffff;
 }
 
-.nav-item.active {
+.nav-item.active,
+.nav-subitem.active {
     background: #ffffff;
     color: #000000;
-    font-weight: 500;
+    font-weight: var(--settings-weight-semibold);
 }
 
 .nav-item:focus-visible,
+.nav-group-toggle:focus-visible,
+.nav-subitem:focus-visible,
 .tb-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+}
+
+.nav-group-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.nav-group-chevron {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    opacity: 0.75;
+    transition: transform 0.16s ease;
+}
+
+.nav-group-toggle[aria-expanded="false"] .nav-group-chevron {
+    transform: rotate(-90deg);
+}
+
+.nav-subitems {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.18s ease;
+}
+
+.nav-group.is-collapsed .nav-subitems {
+    grid-template-rows: 0fr;
+}
+
+.nav-subitems-inner {
+    min-height: 0;
+    margin: 2px 0 4px 17px;
+    padding-left: 10px;
+    overflow: hidden;
+    border-left: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.nav-subitem {
+    appearance: none;
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-sidebar);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--settings-font-nav);
+    font-weight: var(--settings-weight-medium);
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-subitem:hover {
+    background: var(--bg-sidebar-hover);
+    color: #ffffff;
 }
 
 .nav-foot {
@@ -181,14 +259,14 @@ textarea {
     padding: 12px 10px 2px;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     color: #777d88;
-    font-size: 11px;
+    font-size: var(--settings-font-meta);
 }
 
 /* ===== 内容区 ===== */
 .content {
     flex: 1;
     min-width: 0;
-    padding: 28px 34px 90px;
+    padding: 28px 34px var(--settings-content-bottom);
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -196,30 +274,34 @@ textarea {
 }
 
 .view {
-    display: none;
+    display: block;
     width: min(100%, 860px);
-    min-height: 100%;
+    /* Keep short sections alignable with the top edge of the scroll container. */
+    min-height: max(320px, calc(100vh - var(--tb-h) - var(--settings-content-bottom) - var(--settings-scroll-margin)));
+    scroll-margin-top: var(--settings-scroll-margin);
 }
 
-.view.active {
-    display: block;
+.view + .view {
+    margin-top: 28px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border-light);
 }
 
 .view > h1 {
-    margin: 0 0 5px;
+    margin: 0 0 8px;
     color: var(--text-main);
-    font-size: 21px;
-    font-weight: 650;
-    letter-spacing: -0.3px;
-    line-height: 1.35;
+    font-size: var(--settings-font-title);
+    font-weight: var(--settings-weight-medium);
+    letter-spacing: -0.35px;
+    line-height: 1.25;
 }
 
 .sub {
     max-width: 720px;
     margin: 0 0 22px;
     color: var(--text-secondary);
-    font-size: 12.5px;
-    line-height: 1.65;
+    font-size: var(--settings-font-help);
+    line-height: 1.6;
 }
 
 /* ===== 底部保存栏 ===== */
@@ -241,7 +323,7 @@ textarea {
 
 .status {
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--settings-font-meta);
 }
 
 .status.ok {
@@ -260,7 +342,7 @@ button.primary {
     color: #ffffff;
     cursor: pointer;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--settings-font-body);
     transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
