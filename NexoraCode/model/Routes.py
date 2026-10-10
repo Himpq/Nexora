@@ -243,6 +243,15 @@ def _normalize_history_messages(messages: list) -> list:
             if isinstance(compression_step, dict):
                 process_steps.append({"type": "context_compression_status", **compression_step})
 
+            # 自动重试提示：与压缩/注入卡片同属"本轮过程事件"，按发生顺序插在正文之前。
+            # 没有这一步，刷新页面后重试提示会消失（流式期间只在前端内存里）。
+            auto_retries = metadata.get("auto_retries")
+
+            if isinstance(auto_retries, list):
+                for retry in auto_retries:
+                    if isinstance(retry, dict):
+                        process_steps.append({"type": "auto_retry", **retry})
+
             if isinstance(content, str) and content.strip():
                 process_steps.append({"type": "content", "content": content})
 
@@ -621,6 +630,14 @@ def _translate_event(event: dict) -> dict:
 
     if event_type == "error":
         return {"type": "error", "message": event.get("message")}
+
+    if event_type == "auto_retry":
+        return {
+            "type": "auto_retry",
+            "reason": event.get("reason"),
+            "attempt": event.get("attempt"),
+            "limit": event.get("limit"),
+        }
 
     if event_type == "done":
         return {"type": "done"}

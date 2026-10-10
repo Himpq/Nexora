@@ -1746,6 +1746,14 @@
             return
         }
 
+        // 自动重试提示:后端在正文开始前的请求错误、或工具结果后无正文时重试。
+        // 渲染为消息内提示行(自动重试：原因 第N/MAX 次),不弹 toast——重试不是失败。
+        if (chunk.type === 'auto_retry') {
+            conversationStore.setStreamingAutoRetry(state.conversationId, chunk as unknown as Record<string, unknown>)
+
+            return
+        }
+
         // 上下文压缩状态:更新该会话助手消息的压缩卡片(对齐原版 updateMessageDivTools 的 context_compression_status 分支)
         if (chunk.type === 'context_compression_status') {
             conversationStore.setStreamingContextCompression(state.conversationId, chunk)

@@ -628,6 +628,16 @@ class ProviderClient:
                     f"error={type(exc).__name__}: {str(exc)[:240]}"
                 )
 
+                # 重试发生在正文/思考开始前，此时还没有可见输出，前端只有控制台日志。
+                # 显式推一条事件，让用户看到"正在重试"而不是干等。
+                yield {
+                    "type": "auto_retry",
+                    "reason": str(exc),
+                    "attempt": retry_index,
+                    "limit": retry_limit,
+                    "delay_ms": int(delay_seconds * 1000),
+                }
+
                 if self._cancel_event.wait(delay_seconds):
                     raise
 

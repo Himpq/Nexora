@@ -45,6 +45,10 @@ export function readToolStageReplyPreview(source: ToolStageReplySource): ToolSta
         case 'compression':
         case 'injection':
             return null
+
+        // 自动重试提示同上:它是过程提示,不代表正在生成正文或等待用户。
+        case 'auto_retry':
+            return null
     }
 }
 

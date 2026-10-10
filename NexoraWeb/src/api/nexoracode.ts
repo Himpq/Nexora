@@ -383,6 +383,10 @@ export interface RemoteTaskEvent {
     output_tokens?: number
     total_tokens?: number
     cached_input_tokens?: number
+    /** 自动重试帧(type=auto_retry):失败原因 + 第 N/MAX 次 */
+    reason?: string
+    attempt?: number
+    limit?: number
 }
 
 export interface StartRemoteTaskParams {

@@ -521,6 +521,15 @@
     background: var(--color-danger-border);
 }
 
+/* 自动重试提示:中性琥珀色节点 + 弱化文字,与终态错误的红色区分 */
+.message-content .tool-usage.execution-flow-item[data-flow-kind="auto_retry"] .execution-flow-node {
+    background: #d9a441;
+}
+
+.message-content .tool-usage.execution-flow-item[data-flow-kind="auto_retry"] .tool-name {
+    color: #8a6116;
+}
+
 /* 思考行节点:常态灰点 */
 .message-content .thinking-block.execution-flow-item .execution-flow-node {
     background: var(--color-scrollbar-thumb);

@@ -33,6 +33,7 @@ export type MessageSegmentType =
     | 'function_result'
     | 'question'
     | 'error'
+    | 'auto_retry'
     | 'compression'
     | 'injection'
 
@@ -98,8 +99,8 @@ export function appendSegmentDelta(message: ChatMessage | undefined, type: Messa
 }
 
 /**
- * 追加一个工具/问题/压缩/注入事件分段
- * (function_call / function_result / question / compression / injection 各占一段,保持真实时序)
+ * 追加一个工具/问题/压缩/注入/重试事件分段
+ * (function_call / function_result / question / compression / injection / auto_retry 各占一段,保持真实时序)
  */
 export function appendToolSegment(message: ChatMessage | undefined, segment: MessageSegment): void {
     const allowed: MessageSegmentType[] = [
@@ -108,6 +109,7 @@ export function appendToolSegment(message: ChatMessage | undefined, segment: Mes
         'question',
         'compression',
         'injection',
+        'auto_retry',
     ]
 
     if (!message || !allowed.includes(segment.type)) {
@@ -279,6 +281,18 @@ function stepToSegment(step: Record<string, unknown>): MessageSegment | null {
             text: String(step.content || step.message || ''),
             name: String(step.name || '').trim() || 'error',
             callId: String(step.call_id || ''),
+        }
+    }
+
+    // 自动重试步骤(正文开始前的请求错误 / 工具结果后无正文):渲染为消息内提示行,
+    // 与终态 error 区分——重试不是失败,只是过程提示。
+    if (type === 'auto_retry') {
+        return {
+            type: 'auto_retry',
+            text: String(step.reason || step.message || ''),
+            name: 'auto_retry',
+            callId: String(step.call_id || ''),
+            step,
         }
     }
 

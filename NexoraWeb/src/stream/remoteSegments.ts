@@ -360,6 +360,19 @@ export function applyRemoteEvent(
 
             return true
 
+        case 'auto_retry': {
+            // 电脑端自动重试提示：与本地通道一致，按事件顺序各占一段（不去重），
+            // 让用户看到重试了几次。重试不是失败，不并入 error 分段。
+            appendToolSegment(message, {
+                type: 'auto_retry',
+                text: String(event.reason || ''),
+                name: 'auto_retry',
+                step: event as unknown as Record<string, unknown>,
+            })
+
+            return true
+        }
+
         case 'token_usage': {
             // 电脑侧给的是本轮窗口口径，累加值由面板按轮次自行累计。
             message.io_tokens_window = {

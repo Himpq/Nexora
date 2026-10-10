@@ -814,6 +814,35 @@
                 return
             }
 
+            // 自动重试提示(process_steps 中 type=auto_retry):渲染为消息内提示条目。
+            // 与终态 error 区分——重试不是失败,用中性色而非红色,标题带 第N/MAX 次。
+            if (segment.type === 'auto_retry') {
+                const retryStep = (segment.step && typeof segment.step === 'object')
+                    ? segment.step as Record<string, unknown>
+                    : {}
+                const attempt = Number(retryStep.attempt) || 0
+                const limit = Number(retryStep.limit) || 0
+                const reasonText = String(segment.text || '')
+                const attemptText = limit > 0 ? `第 ${attempt}/${limit} 次` : `第 ${attempt} 次`
+
+                items.push({
+                    kind: 'tool',
+                    sourceIndex,
+                    callId: String(segment.callId || ''),
+                    rawName: 'AutoRetry',
+                    title: `自动重试：${attemptText}`,
+                    flowKind: 'auto_retry',
+                    status: clipExecutionFlowText(reasonText, 112),
+                    running: false,
+                    hasOutput: !!reasonText.trim(),
+                    args: {},
+                    outputText: reasonText,
+                    markdownMode: false,
+                })
+
+                return
+            }
+
             items.push({ kind: segment.type, segment, sourceIndex })
         })
 

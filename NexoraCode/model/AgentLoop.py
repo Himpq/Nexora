@@ -342,6 +342,9 @@ class AgentLoop:
             DEFAULT_EMPTY_RESPONSE_RETRY_COUNT,
         )
         retry_after_empty_post_tool_response = False
+        # 本次请求内的自动重试记录（正文开始前的请求错误 / 工具结果后无正文）。
+        # 落盘进 metadata.auto_retries，重进对话后仍能看到重试过程提示。
+        auto_retries: list[dict] = []
         # 上一轮产生的文本与 usage（中断落盘用，循环内每轮更新）。
         content_text = ""
         reasoning_text = ""
@@ -412,6 +415,7 @@ class AgentLoop:
                                 round_index=round_index,
                                 context_injection=injection_diag,
                                 context_compression=compression_step,
+                                auto_retries=auto_retries,
                             ),
                             "timestamp": _now(),
                         },
@@ -551,6 +555,19 @@ class AgentLoop:
                     elif event_type == "finish":
                         finish_reason = str(event.get("finish_reason") or "")
                         yield {"type": "finish", "finish_reason": finish_reason}
+
+                    elif event_type == "auto_retry":
+                        # Provider 层自动重试（正文开始前的请求错误）。透传给前端，
+                        # 否则用户只看到长时间无输出，不知道后端正在重试。
+                        retry_record = {
+                            "type": "auto_retry",
+                            "reason": str(event.get("reason") or ""),
+                            "attempt": int(event.get("attempt") or 0),
+                            "limit": int(event.get("limit") or 0),
+                            "round": max(0, int(round_index or 0)),
+                        }
+                        auto_retries.append(retry_record)
+                        yield retry_record
             except Exception as exc:
                 # 模型流异常：打印完整错误（含 HTTP 状态与响应体），便于定位 4xx/5xx 配置问题。
                 print(f"[LocalAgent] provider stream error: {type(exc).__name__}: {exc}")
@@ -580,6 +597,7 @@ class AgentLoop:
                                 round_index=round_index,
                                 context_injection=injection_diag,
                                 context_compression=compression_step,
+                                auto_retries=auto_retries,
                             ),
                             "timestamp": _now(),
                         },
@@ -637,6 +655,12 @@ class AgentLoop:
                         and empty_post_tool_retry_count < empty_post_tool_retry_limit
                         and finish_reason != "tool_calls"
                     )
+                    # 重试提示与终态错误文案共用同一份结束原因描述。
+                    finish_detail = {
+                        "length": "已达到单轮输出上限",
+                        "stop": "模型正常结束",
+                        "tool_calls": "模型要求调用工具但没有返回可执行调用",
+                    }.get(finish_reason, "模型流结束但没有结束原因")
                     print(
                         f"[LocalAgent] empty_final_response conversation_id={conversation_id} "
                         f"trace={response_trace_id} round={round_index} "
@@ -650,14 +674,20 @@ class AgentLoop:
                         empty_post_tool_retry_count += 1
                         retry_after_empty_post_tool_response = True
 
+                        # 工具结果已返回但正文为空：告知前端正在重试，避免界面静默卡住。
+                        retry_record = {
+                            "type": "auto_retry",
+                            "reason": f"工具结果已返回，但模型没有生成正文（{finish_detail}）",
+                            "attempt": empty_post_tool_retry_count,
+                            "limit": empty_post_tool_retry_limit,
+                            "round": max(0, int(round_index or 0)),
+                        }
+                        auto_retries.append(retry_record)
+                        yield retry_record
+
                         continue
 
                     _snapshot_timing(ended=True)
-                    finish_detail = {
-                        "length": "已达到单轮输出上限",
-                        "stop": "模型正常结束",
-                        "tool_calls": "模型要求调用工具但没有返回可执行调用",
-                    }.get(finish_reason, "模型流结束但没有结束原因")
 
                     if finish_reason == "tool_calls":
                         error_message = f"{finish_detail}，本轮已停止。"
@@ -692,6 +722,7 @@ class AgentLoop:
                             round_index=round_index,
                             context_injection=injection_diag,
                             context_compression=compression_step,
+                            auto_retries=auto_retries,
                         ),
                         "timestamp": _now(),
                     },
@@ -725,6 +756,7 @@ class AgentLoop:
                     round_index=round_index,
                     context_injection=injection_diag,
                     context_compression=compression_step,
+                    auto_retries=auto_retries,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -1078,6 +1110,7 @@ class AgentLoop:
         round_index: int = 0,
         context_injection: dict | None = None,
         context_compression: dict | None = None,
+        auto_retries: list | None = None,
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -1121,6 +1154,20 @@ class AgentLoop:
 
         if reasoning_content:
             metadata["reasoning_content"] = reasoning_content
+
+        if auto_retries:
+            # 只保留渲染所需字段，避免把整条事件原样落盘。
+            metadata["auto_retries"] = [
+                {
+                    "type": "auto_retry",
+                    "reason": str(item.get("reason") or ""),
+                    "attempt": max(0, int(item.get("attempt") or 0)),
+                    "limit": max(0, int(item.get("limit") or 0)),
+                    "round": max(0, int(item.get("round") or 0)),
+                }
+                for item in auto_retries
+                if isinstance(item, dict)
+            ]
 
         if response_trace_id:
             metadata["response_trace_id"] = response_trace_id

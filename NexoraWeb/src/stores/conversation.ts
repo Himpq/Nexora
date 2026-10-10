@@ -1282,6 +1282,28 @@ export const useConversationStore = defineStore('conversation', {
         },
 
         /**
+         * 记录自动重试提示到指定会话的助手消息(数据源:auto_retry chunk)
+         *
+         * 后端在正文开始前发生请求错误、或工具结果返回后模型没有生成正文时推送。
+         * 每次重试都是独立一条提示(带 第N/MAX 次),按事件顺序 append,不做去重合并——
+         * 用户需要看到重试了几次,而不是只看到最后一次。
+         */
+        setStreamingAutoRetry(conversationId: string, step: Record<string, unknown>): void {
+            const assistant = this._resolveStreamingAssistant(conversationId)
+
+            if (!assistant) {
+                return
+            }
+
+            appendToolSegment(assistant, {
+                type: 'auto_retry',
+                text: String(step.reason || ''),
+                name: 'auto_retry',
+                step,
+            })
+        },
+
+        /**
          * 记录 Modified Injection 诊断到指定会话的助手消息(数据源:context_injection chunk)
          *
          * 后端在请求首轮推送一次:head_chars + tail volatile 块列表(名称/字符数)。
