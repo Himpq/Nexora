@@ -197,6 +197,7 @@
                     <button
                         id="sendBtn"
                         class="btn-send"
+                        :disabled="sendDisabled && !streaming"
                         :class="{ 'stop-mode': streaming }"
                         :title="streaming ? 'Stop Generation' : 'Send Message'"
                         @click="handleSendOrStop"
@@ -268,6 +269,8 @@
         variant?: 'cloud' | 'remote' | 'nexoracode'
         /** remote 形态下由远程任务状态机驱动发送/停止按钮,不再看云端会话。 */
         streaming?: boolean
+        /** 历史窗口初次载入时禁止发送，避免新消息索引早于尚未加载的历史。 */
+        sendDisabled?: boolean
         /** 草稿命名空间:remote 传远程会话 id,避免与云端会话草稿串台。 */
         draftKey?: string
         placeholder?: string
@@ -275,6 +278,7 @@
         attachments: undefined,
         variant: 'cloud',
         streaming: false,
+        sendDisabled: false,
         draftKey: '',
         placeholder: '',
     })
@@ -806,6 +810,10 @@
     }
 
     function handleSend(): void {
+        if (props.sendDisabled) {
+            return
+        }
+
         // 生成中按 Enter 不发送、不清空输入(消息会进入队列,由 ChatView 处理)
         if (streaming.value) {
             return

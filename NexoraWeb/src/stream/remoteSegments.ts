@@ -5,19 +5,23 @@
  * thinking 折叠、token 徽标、提问卡），而不是再手搓一套纯文本渲染。
  *
  * 电脑端 AgentLoop 的事件类型与 MessageSegmentType 天然一一对应：
+ *   model_info        → message.model_name
  *   content            → content
  *   reasoning_content  → reasoning
  *   function_call      → function_call
  *   function_result    → function_result
  *   question           → question
  *   error              → error
- *   context_compression_status / token_usage 不进 segments，
- *   分别落到 message.notice 与 message.io_tokens_cumulative。
+ *   context_compression_status → compression
+ *   context_injection         → injection
+ *   token_usage               → message.io_tokens_window
  */
 
 import type { ChatMessage } from '@/api/conversations'
 import type { RemoteChatMessage, RemoteQuestion, RemoteTaskEvent } from '@/api/nexoracode'
-import { rebuildSegmentsForMessage, type MessageSegment } from '@/stream/messageSegments'
+import { parseContextCompressionStep, type ContextCompressionStep } from '@/stream/contextCompression'
+import { parseContextInjectionStep } from '@/stream/contextInjection'
+import { appendToolSegment, rebuildSegmentsForMessage, type MessageSegment } from '@/stream/messageSegments'
 
 /** 压缩状态等非正文事件，统一挂在这里由面板渲染成提示条。 */
 export interface RemoteTaskNotice {
@@ -92,6 +96,7 @@ function isToolOnlyAssistant(message: ChatMessage): boolean {
 function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
     const merged: ChatMessage[] = []
     let pendingSegments: MessageSegment[] = []
+    let pendingIndex: number | null = null
 
     const flushPending = (): void => {
         if (!pendingSegments.length) {
@@ -99,17 +104,22 @@ function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
         }
 
         merged.push({
-            index: merged.length,
+            index: pendingIndex ?? merged.length,
             role: 'assistant',
             content: '',
             status: 'completed',
             segments: pendingSegments,
         })
         pendingSegments = []
+        pendingIndex = null
     }
 
     for (const message of messages) {
         if (isToolOnlyAssistant(message)) {
+            if (!pendingSegments.length) {
+                pendingIndex = message.index
+            }
+
             pendingSegments = pendingSegments.concat(message.segments || [])
 
             continue
@@ -117,7 +127,9 @@ function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
 
         if (pendingSegments.length && message.role === 'assistant') {
             message.segments = pendingSegments.concat(message.segments || [])
+            message.index = pendingIndex ?? message.index
             pendingSegments = []
+            pendingIndex = null
             // 合并后 token 徽标取后一条（它的 io_tokens 才是这一轮之后的累计值）。
             merged.push(message)
 
@@ -130,7 +142,7 @@ function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
 
     flushPending()
 
-    return merged.map((message, index) => ({ ...message, index }))
+    return merged
 }
 
 /**
@@ -141,13 +153,13 @@ function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
  * _normalize_history_messages），所以这里只需按云端历史的口径建好 segments，
  * 再把逐工具轮落盘的消息合并回一轮，剩下交给 MessageItem。
  */
-export function remoteHistoryToMessages(rows: RemoteChatMessage[]): ChatMessage[] {
+export function remoteHistoryToMessages(rows: RemoteChatMessage[], startIndex = 0): ChatMessage[] {
     const messages: ChatMessage[] = []
 
-    for (const row of rows || []) {
+    for (const [offset, row] of (rows || []).entries()) {
         const role = String(row?.role || '')
         const message: ChatMessage = {
-            index: messages.length,
+            index: startIndex + offset,
             role: role === 'assistant' ? 'assistant' : role === 'system' ? 'system' : 'user',
             content: toText(row.content),
             status: 'completed',
@@ -191,17 +203,83 @@ export function createStreamingAssistant(index: number): ChatMessage {
 }
 
 /**
+ * 合并压缩状态帧。
+ *
+ * progress 帧只带增量信息，直接覆盖会丢掉 start 帧里的阈值/窗口等关键统计，
+ * 因此与已有 start/progress 合并；done/skipped 等终态直接覆盖。
+ */
+function mergeCompressionStep(
+    previous: unknown,
+    next: ContextCompressionStep
+): ContextCompressionStep {
+    const prev = parseContextCompressionStep(previous)
+
+    if (!prev || next.status !== 'progress' || (prev.status !== 'start' && prev.status !== 'progress')) {
+        return next
+    }
+
+    return {
+        ...prev,
+        ...next,
+        raw_input_tokens: next.raw_input_tokens || prev.raw_input_tokens,
+        context_window: next.context_window || prev.context_window,
+        compression_threshold: next.compression_threshold || prev.compression_threshold,
+        trigger_mode: next.trigger_mode || prev.trigger_mode,
+        forced: next.forced || prev.forced,
+    }
+}
+
+/** 原地更新消息里的压缩/注入卡片分段；没有则追加一段（保持与本地 _upsertCardSegment 同语义）。 */
+function upsertRemoteCardSegment(
+    message: ChatMessage,
+    kind: 'compression' | 'injection',
+    rawStep: Record<string, unknown>
+): void {
+    const segments = Array.isArray(message.segments) ? message.segments : []
+    const existing = segments.find(segment => segment.type === kind)
+
+    if (existing) {
+        existing.step = rawStep
+        message.segments = segments
+
+        return
+    }
+
+    appendToolSegment(message, { type: kind, text: '', step: rawStep })
+}
+
+/**
  * 把一条远程事件应用到消息上。
- * 返回 true 表示该事件改变了 segments，调用方据此决定是否重渲染。
+ * 返回 true 表示该事件改变了消息展示数据。
  */
 export function applyRemoteEvent(
     message: ChatMessage,
-    event: RemoteTaskEvent,
-    notices: RemoteTaskNotice[]
+    event: RemoteTaskEvent
 ): boolean {
     const segments = Array.isArray(message.segments) ? message.segments : []
 
     switch (event.type) {
+        case 'model_info': {
+            const modelName = String(event.model_name || '').trim()
+
+            if (!modelName) {
+                return false
+            }
+
+            message.model_name = modelName
+
+            const provider = String(event.provider || '').trim()
+
+            if (provider) {
+                message.model = {
+                    name: modelName,
+                    provider,
+                }
+            }
+
+            return true
+        }
+
         case 'content': {
             const delta = String(event.content || '')
 
@@ -295,17 +373,33 @@ export function applyRemoteEvent(
         }
 
         case 'context_compression_status': {
-            notices.push({
-                kind: 'context_compression',
-                status: String(event.status || ''),
-                content: String(event.content || ''),
-                forced: event.forced === true,
-                historyCutIndex: event.history_cut_index,
-                contextWindow: event.context_window,
-                rawInputTokens: event.raw_input_tokens,
-            })
+            // 与本地/云端会话一致：压缩状态写进消息的 compressionStep，由 MessageItem
+            // 渲染成一张原地更新的压缩卡片。此前这里是 notices.push，导致每来一条
+            // progress 帧就多一行提示，长压缩直接刷屏。
+            const parsed = parseContextCompressionStep(event)
 
-            return false
+            if (!parsed) {
+                return false
+            }
+
+            message.compressionStep = mergeCompressionStep(message.compressionStep, parsed)
+            upsertRemoteCardSegment(message, 'compression', event as unknown as Record<string, unknown>)
+
+            return true
+        }
+
+        case 'context_injection': {
+            const parsed = parseContextInjectionStep(event)
+
+            if (!parsed) {
+                return false
+            }
+
+            // 压缩重建后电脑会重发全量注入诊断；更新原卡片，避免同轮重复展示。
+            message.injectionStep = parsed
+            upsertRemoteCardSegment(message, 'injection', event as unknown as Record<string, unknown>)
+
+            return true
         }
 
         default:

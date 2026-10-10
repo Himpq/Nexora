@@ -1,15 +1,23 @@
 """桌面与远程共用的任务入口：请求去重、同会话串行执行、事件续读。"""
 import hashlib
 import json
+import queue
 import re
 import threading
 import time
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request, stream_with_context
 from core.config import get_app_root
 from .ConversationStore import ConversationStore, write_json_atomic
-from .StreamRuntime import get_session_meta, list_sessions, start_session, request_cancel
+from .StreamRuntime import (
+    get_session_meta,
+    list_sessions,
+    start_session,
+    request_cancel,
+    subscribe_task_events,
+    unsubscribe_task_events,
+)
 
 
 task_bp = Blueprint("local_tasks", __name__)
@@ -142,6 +150,64 @@ def tasks():
             live[path.stem] = metadata
 
     return jsonify({"sessions": sorted(live.values(), key=lambda row: row.get("updated_at", 0), reverse=True)})
+
+
+@task_bp.route("/api/local/tasks/watch", methods=["GET"])
+def watch_tasks():
+    """任务生命周期事件流（SSE）。
+
+    本地前端订阅后，可实时感知「电脑上正在运行哪些会话」——包括云端下发的任务，
+    这些任务本地前端没有流句柄，只能靠本事件流发现并在侧栏标出运行状态。
+    连接建立时先推一份当前活动任务快照（避免订阅前已启动的任务被漏掉），
+    之后增量推送 task_started / task_finished。
+    """
+    events: "queue.Queue" = queue.Queue()
+
+    def listener(payload):
+        events.put(payload)
+
+    subscribe_task_events(listener)
+
+    def generate():
+        try:
+            # 建连快照：当前仍在运行的任务一次性补齐，订阅前的任务不丢。
+            for row in list_sessions():
+                if str(row.get("status") or "") in {"running", "cancelling"}:
+                    meta = get_session_meta(row.get("stream_id"), include_request_message=True) or {}
+                    yield _sse_pack({
+                        "type": "task_started",
+                        "stream_id": str(row.get("stream_id") or ""),
+                        "conversation_id": str(row.get("conversation_id") or ""),
+                        "message": str(meta.get("message") or ""),
+                        "skip_user_message": bool(meta.get("skip_user_message", False)),
+                        "is_regenerate": bool(meta.get("is_regenerate", False)),
+                        "history_user_count": meta.get("history_user_count"),
+                        "snapshot": True,
+                    })
+
+            while True:
+                try:
+                    payload = events.get(timeout=15)
+                except queue.Empty:
+                    # 心跳：保持连接并让前端能感知服务端仍在线。
+                    yield ": keep-alive\n\n"
+                    continue
+
+                yield _sse_pack(payload)
+        finally:
+            unsubscribe_task_events(listener)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse_pack(payload):
+    """把任务事件序列化为一条 SSE 帧。"""
+
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
 @task_bp.route("/api/local/tasks/<stream_id>/events", methods=["GET"])

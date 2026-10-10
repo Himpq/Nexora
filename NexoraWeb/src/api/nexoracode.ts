@@ -74,6 +74,15 @@ export interface RemoteChatMessage {
     metadata?: Record<string, unknown>
 }
 
+export interface RemoteMessagesResponse {
+    messages: RemoteChatMessage[]
+    start_index: number
+    end_index: number
+    total: number
+    has_more_before: boolean
+    total_user_messages?: number
+}
+
 /** 电脑上可用的模型，id 形如 provider_id/model，与电脑侧解析模型的方式一致。 */
 export interface RemoteModelOption {
     id: string
@@ -163,9 +172,27 @@ export function getRemoteConversation(deviceId: string, conversationId: string) 
     )
 }
 
-export function listRemoteMessages(deviceId: string, conversationId: string) {
-    return remoteCall<{ success: boolean; messages: RemoteChatMessage[]; total: number }>(
-        deviceId, `/api/conversations/${conversationId}/messages`
+export function listRemoteMessages(
+    deviceId: string,
+    conversationId: string,
+    options: { limit?: number; before?: number } = {}
+) {
+    const query: Record<string, string> = {}
+
+    if (typeof options.limit === 'number') {
+        query.limit = String(options.limit)
+    }
+
+    if (typeof options.before === 'number') {
+        query.before = String(options.before)
+    }
+
+    return remoteCall<RemoteMessagesResponse>(
+        deviceId,
+        `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+        'GET',
+        undefined,
+        query,
     )
 }
 

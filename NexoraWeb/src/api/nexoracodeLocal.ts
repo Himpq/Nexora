@@ -231,3 +231,94 @@ export async function resolveLocalToolPermission(
         resumeStreamId: String(data.resume_stream_id || ''),
     }
 }
+
+/** 任务生命周期事件（本地 /api/local/tasks/watch）。 */
+export interface LocalTaskEvent {
+    type: 'task_started' | 'task_finished'
+    stream_id: string
+    conversation_id: string
+    status?: string
+    /** 本轮的请求正文（task_started 携带），用于本地接管时补用户气泡。 */
+    message?: string
+    /** 权限续跑这类内部任务不落盘用户消息，接管时不要补气泡。 */
+    skip_user_message?: boolean
+    is_regenerate?: boolean
+    /** 任务启动时该会话已有的用户消息数，用于判断请求正文是否已随历史加载。 */
+    history_user_count?: number | null
+    /** 建连快照补发的历史运行任务（订阅前已启动）。 */
+    snapshot?: boolean
+}
+
+/**
+ * 订阅本地任务生命周期事件流（SSE）。
+ *
+ * 云端下发的任务在本地前端没有流句柄，只能靠这条事件流发现：
+ * task_started 用于在侧栏标出运行中的会话，task_finished 用于清除标记。
+ * 返回一个取消订阅的函数；调用方负责在卸载时调用它。
+ */
+export function subscribeLocalTaskEvents(
+    onEvent: (event: LocalTaskEvent) => void,
+    onError?: (error: Error) => void,
+): () => void {
+    const controller = new AbortController()
+
+    void (async () => {
+        try {
+            const res = await fetch('/api/local/tasks/watch', {
+                method: 'GET',
+                credentials: 'include',
+                headers: { Accept: 'text/event-stream' },
+                signal: controller.signal,
+            })
+
+            if (!res.ok || !res.body) {
+                throw new Error(`任务事件流不可用（HTTP ${res.status}）`)
+            }
+
+            const reader = res.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+
+            while (true) {
+                const { done, value } = await reader.read()
+
+                if (done) {
+                    break
+                }
+
+                buffer += decoder.decode(value, { stream: true })
+
+                // SSE 帧以空行分隔；只消费完整帧，残帧留在 buffer 里等下一块。
+                let boundary = buffer.indexOf('\n\n')
+
+                while (boundary >= 0) {
+                    const frame = buffer.slice(0, boundary)
+                    buffer = buffer.slice(boundary + 2)
+                    boundary = buffer.indexOf('\n\n')
+
+                    const dataLine = frame
+                        .split('\n')
+                        .find((line) => line.startsWith('data:'))
+
+                    if (!dataLine) {
+                        continue
+                    }
+
+                    try {
+                        onEvent(JSON.parse(dataLine.slice(5).trim()) as LocalTaskEvent)
+                    } catch {
+                        // 单帧解析失败不影响后续帧。
+                    }
+                }
+            }
+        } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                return
+            }
+
+            onError?.(error instanceof Error ? error : new Error(String(error)))
+        }
+    })()
+
+    return () => controller.abort()
+}

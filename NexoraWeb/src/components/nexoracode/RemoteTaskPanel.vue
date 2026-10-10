@@ -23,21 +23,41 @@
 
         <p v-else-if="stateError" role="alert" class="remote-task-error">{{ stateError }}</p>
 
-        <div ref="scrollerRef" class="messages-area remote-task-messages">
-            <p v-if="!store.messages.length" class="remote-task-empty">
+        <div ref="scrollerRef" class="messages-area remote-task-messages" @scroll="handleMessagesScroll">
+            <div v-if="store.historyLoading && !store.messages.length" class="remote-history-loading" role="status">
+                <span class="remote-history-loading-spinner" aria-hidden="true"></span>
+                <span>加载中…</span>
+            </div>
+            <p v-else-if="!store.messages.length" class="remote-task-empty">
                 在左侧 Remote 列表里选一个会话查看历史，或直接给这台电脑下发任务。
             </p>
-            <MessageItem
-                v-for="message in store.messages"
-                :key="message.index"
-                :message="message"
-                :streaming="message.status === 'streaming'"
-                nexoracode
-                :conversation-id="store.conversationId"
-                readonly
-                @question-answer="(item, questionId, answer) => store.answerQuestion(item, questionId, answer)"
-                @open-image="(url) => emit('open-image', url)"
-            />
+            <template v-else>
+                <div class="remote-history-load">
+                    <button
+                        v-if="store.hasMoreBefore"
+                        type="button"
+                        class="remote-history-load-btn"
+                        :disabled="store.loadingBefore"
+                        @click="loadPreviousHistory"
+                    >
+                        <span v-if="store.loadingBefore" class="remote-history-page-spinner" aria-hidden="true"></span>
+                        {{ store.loadingBefore ? '加载中…' : '加载更早消息' }}
+                    </button>
+                    <span v-else class="remote-history-load-end">已到最早消息</span>
+                </div>
+
+                <MessageItem
+                    v-for="message in store.messages"
+                    :key="message.index"
+                    :message="message"
+                    :streaming="message.status === 'streaming' && !store.stopping"
+                    nexoracode
+                    :conversation-id="store.conversationId"
+                    readonly
+                    @question-answer="(item, questionId, answer) => store.answerQuestion(item, questionId, answer)"
+                    @open-image="(url) => emit('open-image', url)"
+                />
+            </template>
         </div>
 
         <ul v-if="store.notices.length" class="remote-task-notices">
@@ -50,6 +70,7 @@
         <ChatInput
             variant="remote"
             :streaming="store.running"
+            :send-disabled="store.historyLoading"
             :draft-key="store.conversationId"
             :placeholder="store.online ? '向这台电脑上的 NexoraCode 下发任务' : '电脑离线，无法下发任务'"
             @send="send"
@@ -64,6 +85,7 @@
     import ChatInput from '@/components/ChatInput.vue'
     import MessageItem from '@/components/MessageItem.vue'
     import { remoteStore } from '@/stores/remote'
+    import { showError } from '@/stores/notify'
 
     import '@/styles/remote-task-panel.css'
     import '@/styles/remote-task-banners.css'
@@ -73,6 +95,7 @@
     const store = remoteStore
 
     const scrollerRef = ref<HTMLElement | null>(null)
+    const prepending = ref(false)
 
     /** 终态异常才提示:执行中/成功由侧边栏的运行标记与消息内的状态承载,不占用主区。 */
     const stateError = computed(() => {
@@ -88,6 +111,41 @@
         // 顶栏那个选择器(远程视图下已切为当前电脑的模型目录)的选中项。
         // 初始值就是电脑自己的 default_model,所以这里下发的永远是用户看得见的那个模型。
         void store.send(text, store.modelName)
+    }
+
+    async function loadPreviousHistory(): Promise<void> {
+        const scroller = scrollerRef.value
+
+        if (!scroller || !store.hasMoreBefore || store.loadingBefore || prepending.value) {
+            return
+        }
+
+        const conversationId = store.conversationId
+        const previousScrollTop = scroller.scrollTop
+        const previousScrollHeight = scroller.scrollHeight
+        prepending.value = true
+
+        try {
+            await store.loadPreviousHistory()
+        } catch (cause) {
+            showError(cause instanceof Error ? cause.message : '加载更早消息失败')
+        } finally {
+            await nextTick()
+
+            if (scrollerRef.value === scroller && store.conversationId === conversationId) {
+                scroller.scrollTop = previousScrollTop + (scroller.scrollHeight - previousScrollHeight)
+            }
+
+            prepending.value = false
+        }
+    }
+
+    function handleMessagesScroll(): void {
+        const scroller = scrollerRef.value
+
+        if (scroller && scroller.scrollTop <= 40 && store.hasMoreBefore && !store.loadingBefore && !prepending.value) {
+            void loadPreviousHistory()
+        }
     }
 
     // 流式过程中始终贴底，用户手动上滚后不再强制拉回。

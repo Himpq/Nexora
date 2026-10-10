@@ -322,6 +322,7 @@
     import { chatStream, type ChatStreamChunk, type ChatStreamHandlers } from '@/network/chatStream'
     import { showConfirm } from '@/stores/confirm'
     import { useConversationStore } from '@/stores/conversation'
+    import { getRunningTask, registerTaskStartedHandler, startLocalTaskWatcher, stopLocalTaskWatcher, type RunningTaskInfo } from '@/stores/localTaskWatcher'
     import { useModelStore } from '@/stores/model'
     import { showError, showToast } from '@/stores/notify'
     import { useUserStore } from '@/stores/user'
@@ -491,6 +492,16 @@
             }
         } catch {
             // 当前选择仍由 Pinia 持有;浏览器存储不可用时不影响会话切换。
+        }
+
+        // 打开会话时若电脑端正在跑该会话、本地尚未接管（如云端下发的任务），
+        // 就地接管它的流，用户点进来即可看到实时输出与用户消息。
+        if (conversationId) {
+            const runningTask = getRunningTask(conversationId)
+
+            if (runningTask) {
+                attachLocalTaskStream(runningTask)
+            }
         }
     })
 
@@ -2132,6 +2143,43 @@
     }
 
     /**
+     * 接管电脑端正在运行、但本地尚未接管的流（如云端 RemoteControl 下发的任务）。
+     *
+     * 本地前端没有这类任务的流句柄，只能靠任务事件流发现。接管时机是「用户打开该会话」：
+     * 先注册缓冲（普通任务补用户气泡、内部续跑任务不补），再从 seq 0 续播——
+     * reconnect 幂等，重复接管同一条流会被 chatStream 按会话去重拒绝，因此这里先查
+     * pendingStreams 避免重复。
+     */
+    function attachLocalTaskStream(info: RunningTaskInfo): void {
+        const conversationId = info.conversationId
+
+        if (!conversationId || !info.streamId) {
+            return
+        }
+
+        // 已经接管过（本地自己发起或此前已接管）则不再重复建流。
+        if (conversationStore.pendingStreams[conversationId]) {
+            return
+        }
+
+        conversationStore.beginExternalStream(conversationId, {
+            message: info.message,
+            skipUserMessage: info.skipUserMessage,
+            isRegenerate: info.isRegenerate,
+            historyUserCount: info.historyUserCount,
+        })
+
+        void chatStream.resume(
+            {
+                streamId: info.streamId,
+                fromSeq: 0,
+                conversationId,
+            },
+            createStreamHandlers(conversationId, 'send'),
+        )
+    }
+
+    /**
      * question 卡片作答:回答作为普通用户消息进入会话
      * (上一条助手消息以 await 收尾,模型自然把该消息当作问题的回答继续执行)
      */
@@ -2754,6 +2802,15 @@
     onMounted(async () => {
         if (isNexoraCode) {
             window.addEventListener(NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT, handleLocalToolAutoExpandRefresh)
+
+            // 订阅本地任务事件流：发现云端下发等「本地没有流句柄」的任务，
+            // 侧栏标运行状态；当前会话开始运行时立即接管它的流。
+            registerTaskStartedHandler((info) => {
+                if (info.conversationId === conversationStore.currentId) {
+                    attachLocalTaskStream(info)
+                }
+            })
+            startLocalTaskWatcher()
         }
 
         void loadLocalToolAutoExpand()
@@ -2881,6 +2938,8 @@
         document.removeEventListener('click', handleDocumentClick)
         if (isNexoraCode) {
             window.removeEventListener(NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT, handleLocalToolAutoExpandRefresh)
+            registerTaskStartedHandler(null)
+            stopLocalTaskWatcher()
         }
         if (!isNexoraCode) {
             window.removeEventListener('nexora:preferences-updated', handlePreferencesUpdated)

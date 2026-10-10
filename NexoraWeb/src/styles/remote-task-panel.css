@@ -21,6 +21,78 @@
     padding-bottom: 24px;
 }
 
+.remote-history-load {
+    display: flex;
+    justify-content: center;
+    padding: 10px 0 2px;
+}
+
+.remote-history-load-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 14px;
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.remote-history-load-btn:hover:not(:disabled) {
+    background: #f9fafb;
+    border-color: #d1d5db;
+}
+
+.remote-history-load-btn:disabled {
+    opacity: 0.7;
+    cursor: default;
+}
+
+.remote-history-page-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid #d1d5db;
+    border-top-color: var(--color-text-secondary);
+    border-radius: 50%;
+    animation: remote-history-spin 0.8s linear infinite;
+}
+
+.remote-history-load-end {
+    padding: 5px 14px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+.remote-history-loading {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 240px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+}
+
+.remote-history-loading-spinner {
+    width: 22px;
+    height: 22px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-text-secondary);
+    border-radius: 50%;
+    animation: remote-history-spin 0.8s linear infinite;
+}
+
+@keyframes remote-history-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 .remote-task-empty {
     margin: auto;
     max-width: 320px;

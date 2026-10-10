@@ -352,7 +352,8 @@ class ContextManager:
         return measured + math.ceil(max(1.0, self._measured_marginal_rate(conversation, plain_now)) * fresh_plain)
 
     def prepare(self, conversation_id, system_prompt, tools, *, force=False, cancel_checker=None,
-                response_trace_id="", allow_compression=True, volatile_instructions=None):
+                response_trace_id="", allow_compression=True, volatile_instructions=None,
+                volatile_full_instructions=None):
         """必要时分批总结历史；当前 user 轮次及其工具结果始终保持原样。
 
         allow_compression=False 表示本次请求已经发出过前缀：摘要坑位一改写，
@@ -360,6 +361,10 @@ class ContextManager:
 
         volatile_instructions 为 tail 注入块（项目约定 / 自定义提示词），
         由调用方按基线比对决定是否注入；无变更时为空列表。
+
+        volatile_full_instructions 为忽略基线的全量注入块。压缩重建上下文时，
+        历史被摘要替换、此前的注入块已从窗口消失，此时必须改用全量块重新注入一次，
+        否则模型在重建后的上下文里看不到项目约定。未提供时退回 volatile_instructions。
         """
         conversation = self.store.get(conversation_id)
 
@@ -607,7 +612,9 @@ class ContextManager:
 
         updated = dict(conversation)
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
-        messages = self.build_messages(updated, system_prompt, volatile_instructions)
+        # 压缩重建后历史被摘要替换，此前的注入块已从窗口消失：改用全量块重新注入一次。
+        rebuild_instructions = volatile_full_instructions if volatile_full_instructions is not None else volatile_instructions
+        messages = self.build_messages(updated, system_prompt, rebuild_instructions)
         post_estimate = self._measure_request_basis(updated, messages, tools)
         trimmed = None
         output_reduced = False

@@ -11,7 +11,7 @@
 
 import { markRaw, reactive, watch, type WatchStopHandle } from 'vue'
 
-import type { ChatMessage } from '@/api/conversations'
+import { INITIAL_MESSAGE_LIMIT, PREVIOUS_MESSAGE_LIMIT, type ChatMessage } from '@/api/conversations'
 import {
     createRemoteConversation,
     fetchDevices,
@@ -20,6 +20,7 @@ import {
     listRemoteMessages,
     listRemoteModels,
     listRemoteTasks,
+    type RemoteChatMessage,
     type RemoteConversation,
     type RemoteConversationGroup,
     type RemoteDevice,
@@ -54,6 +55,15 @@ const DEVICE_POLL_MS = 5000
  */
 interface RemoteSession {
     messages: ChatMessage[]
+    historyRows: RemoteChatMessage[]
+    historyStartIndex: number
+    historyTotal: number
+    historyUserCount: number | null
+    historyLoaded: boolean
+    historyLoading: boolean
+    hasMoreBefore: boolean
+    loadingBefore: boolean
+    nextMessageIndex: number
     notices: RemoteTaskNotice[]
     state: RemoteTaskState
     stageDetail: string
@@ -102,6 +112,18 @@ class RemoteStore {
         return this.current.messages
     }
 
+    get historyLoading(): boolean {
+        return this.current.historyLoading
+    }
+
+    get hasMoreBefore(): boolean {
+        return this.current.hasMoreBefore
+    }
+
+    get loadingBefore(): boolean {
+        return this.current.loadingBefore
+    }
+
     get notices(): RemoteTaskNotice[] {
         return this.current.notices
     }
@@ -121,6 +143,16 @@ class RemoteStore {
     /** 当前会话是否正在执行（顶栏/输入坞的停止按钮与侧栏转圈都读它）。 */
     get running(): boolean {
         return !isTerminalRemoteTaskState(this.current.state) && this.current.state !== 'idle'
+    }
+
+    /**
+     * 当前会话是否处于「已请求停止、等待电脑确认」。
+     *
+     * 此时任务还在收尾，停止按钮仍要显示（running 为真），但消息尾部那个跳动的
+     * 输出小点应当停下——用户已经点了停止，再跳会让人以为没生效。
+     */
+    get stopping(): boolean {
+        return this.current.state === 'stopping'
     }
 
     /** 任意会话正在执行时为真：用于「电脑下线时不切走正在跑的任务」这类判断。 */
@@ -293,6 +325,12 @@ class RemoteStore {
     /** 多个入口同时加载同一会话时共用一次请求，避免历史覆盖刚恢复的流式消息。 */
     private async loadConversationHistory(deviceId: string, conversationId: string): Promise<void> {
         const key = JSON.stringify([deviceId, conversationId])
+        const session = this.ensureSession(conversationId)
+
+        if (session.historyLoaded) {
+            return
+        }
+
         const pending = this.historyLoads.get(key)
 
         if (pending) {
@@ -301,12 +339,46 @@ class RemoteStore {
             return
         }
 
-        const request = listRemoteMessages(deviceId, conversationId).then(({ messages }) => {
-            if (this.deviceId !== deviceId) {
+        session.historyLoading = true
+        session.error = ''
+
+        const request = listRemoteMessages(deviceId, conversationId, {
+            limit: INITIAL_MESSAGE_LIMIT,
+        }).then(data => {
+            if (this.deviceId !== deviceId || this.sessions[conversationId] !== session) {
                 return
             }
 
-            this.ensureSession(conversationId).messages = remoteHistoryToMessages(messages || [])
+            const rows = Array.isArray(data.messages) ? data.messages : []
+            const startIndex = Math.max(0, Number(data.start_index) || 0)
+            const total = Math.max(rows.length, Number(data.total) || 0)
+            const previousHistoryTotal = session.historyTotal
+            const runtimeMessages = session.messages.filter(message => Number(message.index) >= previousHistoryTotal)
+
+            session.historyRows = rows
+            session.historyStartIndex = startIndex
+            session.historyTotal = total
+            session.historyUserCount = typeof data.total_user_messages === 'number'
+                ? data.total_user_messages
+                : total <= rows.length
+                    ? rows.filter(row => String(row.role || '') === 'user').length
+                    : null
+            session.hasMoreBefore = data.has_more_before === true
+            session.historyLoaded = true
+            session.messages = [
+                ...remoteHistoryToMessages(rows, startIndex),
+                ...runtimeMessages,
+            ]
+            session.nextMessageIndex = Math.max(
+                session.nextMessageIndex,
+                total,
+                session.messages.reduce((next, message) => Math.max(next, Number(message.index) + 1), 0),
+            )
+        }).catch(cause => {
+            session.error = cause instanceof Error ? cause.message : String(cause)
+            throw cause
+        }).finally(() => {
+            session.historyLoading = false
         })
 
         this.historyLoads.set(key, request)
@@ -317,6 +389,56 @@ class RemoteStore {
             if (this.historyLoads.get(key) === request) {
                 this.historyLoads.delete(key)
             }
+        }
+    }
+
+    /** 按普通会话的游标语义向前拉一页，并保留当前视口位置。 */
+    async loadPreviousHistory(): Promise<boolean> {
+        const deviceId = this.deviceId
+        const conversationId = this.conversationId
+        const session = this.current
+
+        if (!deviceId || !conversationId || !session.hasMoreBefore || session.loadingBefore) {
+            return false
+        }
+
+        session.loadingBefore = true
+
+        try {
+            const data = await listRemoteMessages(deviceId, conversationId, {
+                limit: PREVIOUS_MESSAGE_LIMIT,
+                before: session.historyStartIndex,
+            })
+
+            if (this.deviceId !== deviceId || this.sessions[conversationId] !== session) {
+                return false
+            }
+
+            const olderRows = Array.isArray(data.messages) ? data.messages : []
+            const olderStartIndex = Math.max(0, Number(data.start_index) || 0)
+
+            if (!olderRows.length || olderStartIndex >= session.historyStartIndex) {
+                session.hasMoreBefore = false
+
+                return false
+            }
+
+            const runtimeMessages = session.messages.filter(message => Number(message.index) >= session.historyTotal)
+            session.historyRows = [...olderRows, ...session.historyRows]
+            session.historyStartIndex = olderStartIndex
+            session.hasMoreBefore = data.has_more_before === true
+            session.messages = [
+                ...remoteHistoryToMessages(session.historyRows, olderStartIndex),
+                ...runtimeMessages,
+            ]
+            session.nextMessageIndex = Math.max(
+                session.nextMessageIndex,
+                session.messages.reduce((next, message) => Math.max(next, Number(message.index) + 1), 0),
+            )
+
+            return true
+        } finally {
+            session.loadingBefore = false
         }
     }
 
@@ -386,18 +508,22 @@ class RemoteStore {
                     return
                 }
 
-                const userCount = session.messages.filter(message => message.role === 'user').length
                 const historyUserCount = task.history_user_count
                 const lastUser = [...session.messages].reverse().find(message => message.role === 'user')
-                const currentUserSaved = typeof historyUserCount === 'number'
-                    ? userCount > historyUserCount
+                const currentUserSaved = typeof historyUserCount === 'number' && typeof session.historyUserCount === 'number'
+                    ? session.historyUserCount > historyUserCount
                     : lastUser?.content === task.message
+                const currentUserAlreadyShown = !!task.message && session.messages.some(message =>
+                    message.role === 'user'
+                    && message.content === task.message
+                    && Number(message.index) >= session.historyTotal
+                )
 
                 // 续跑任务的请求消息是内部提示（不落盘），补成用户气泡会污染对话。
-                if (task.message && !task.is_regenerate && !task.skip_user_message && !currentUserSaved) {
+                if (task.message && !task.is_regenerate && !task.skip_user_message && !currentUserSaved && !currentUserAlreadyShown) {
                     session.messages = [
                         ...session.messages,
-                        createRemoteUserMessage(session.messages.length, task.message),
+                        createRemoteUserMessage(this.takeNextMessageIndex(session), task.message),
                     ]
                 }
 
@@ -406,7 +532,7 @@ class RemoteStore {
                 if (lastMessage?.role !== 'assistant' || lastMessage.status !== 'streaming') {
                     session.messages = [
                         ...session.messages,
-                        createStreamingAssistant(session.messages.length),
+                        createStreamingAssistant(this.takeNextMessageIndex(session)),
                     ]
                 }
 
@@ -454,15 +580,28 @@ class RemoteStore {
         // 不再 dispose 流：切走只是换个视图在瞧，正在跑的那个会话继续被轮询和渲染，
         // 回到它就能看到后续进度。多会话并行时这条尤其关键。
         this.conversationId = id
-        this.ensureSession(id)
+        const session = this.ensureSession(id)
 
-        // 有缓存就复用；每次进入仍查询活动任务，接上电脑端已存在的事件流。
+        // 先查询活动任务再加载历史：若该会话在电脑端正在跑，syncActiveTasks 会立即
+        // 接管它的流并追加 streaming 占位；若先加载历史，中间窗口里事件会因「最后一条
+        // 消息不是 streaming」被丢弃，表现为「点进去先看到历史、过一会才接上流」。
         void this.guard(async () => {
-            if (!this.sessions[id].messages.length) {
-                await this.loadHistory()
-            }
+            const deviceId = this.deviceId
+            session.historyLoading = !session.historyLoaded && !session.messages.length
 
-            await this.syncActiveTasks(this.deviceId)
+            try {
+                try {
+                    await this.syncActiveTasks(deviceId)
+                } finally {
+                    if (this.deviceId === deviceId && this.sessions[id] === session && !session.historyLoaded) {
+                        await this.loadConversationHistory(deviceId, id)
+                    }
+                }
+            } finally {
+                session.historyLoading = false
+            }
+        }).catch(cause => {
+            session.error = cause instanceof Error ? cause.message : String(cause)
         })
     }
 
@@ -476,7 +615,15 @@ class RemoteStore {
             const created = await createRemoteConversation(this.deviceId, '新会话', project || undefined)
 
             this.conversationId = created.conversation_id
-            this.ensureSession(created.conversation_id).messages = []
+            const session = this.ensureSession(created.conversation_id)
+            session.messages = []
+            session.historyRows = []
+            session.historyStartIndex = 0
+            session.historyTotal = 0
+            session.historyUserCount = 0
+            session.historyLoaded = true
+            session.hasMoreBefore = false
+            session.nextMessageIndex = 0
             await this.loadProjects()
         })
     }
@@ -487,8 +634,8 @@ class RemoteStore {
     async send(text: string, modelName: string): Promise<void> {
         const key = this.conversationId
         const session = this.ensureSession(key)
-        const userMessage = createRemoteUserMessage(session.messages.length, text)
-        const target = createStreamingAssistant(userMessage.index + 1)
+        const userMessage = createRemoteUserMessage(this.takeNextMessageIndex(session), text)
+        const target = createStreamingAssistant(this.takeNextMessageIndex(session))
 
         session.messages = [...session.messages, userMessage, target]
         const stream = this.ensureStream(key)
@@ -631,6 +778,15 @@ class RemoteStore {
 
         const session: RemoteSession = {
             messages: [],
+            historyRows: [],
+            historyStartIndex: 0,
+            historyTotal: 0,
+            historyUserCount: null,
+            historyLoaded: false,
+            historyLoading: false,
+            hasMoreBefore: false,
+            loadingBefore: false,
+            nextMessageIndex: 0,
             notices: [],
             state: 'idle',
             stageDetail: '',
@@ -640,9 +796,19 @@ class RemoteStore {
         }
 
         this.sessions[key] = session
-        this.watchTerminal(key, session)
+        // 通过响应式映射取回代理；watchTerminal 必须监听代理上的 state。
+        const reactiveSession = this.sessions[key]
+        this.watchTerminal(key, reactiveSession)
 
-        return session
+        return reactiveSession
+    }
+
+    /** 为当前会话分配单调递增的消息索引，避免窗口化历史下用数组长度产生重复 key。 */
+    private takeNextMessageIndex(session: RemoteSession): number {
+        const index = Math.max(session.nextMessageIndex, session.historyTotal)
+        session.nextMessageIndex = index + 1
+
+        return index
     }
 
     /**
@@ -713,7 +879,7 @@ class RemoteStore {
                     return
                 }
 
-                applyRemoteEvent(target, event, session.notices)
+                applyRemoteEvent(target, event)
             },
             onState: (next, meta) => {
                 session.state = next

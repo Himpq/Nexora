@@ -303,9 +303,14 @@ class AgentLoop:
         # tail 注入块（项目约定 / 自定义提示词）：按基线比对决定是否注入。
         # 首轮全量注入并建立基线；后续只在内容变化时注入 diff，稳定轮次不注入，
         # 这样 [head + 历史] 前缀始终可缓存。
-        volatile_blocks, injection_diag = self._resolve_injection_blocks(
+        # 另外准备一份忽略基线的全量块：上下文被压缩重建时历史被摘要替换，
+        # 此前的注入块已从窗口消失，必须用全量块重新注入一次。
+        # 基线不在这里落盘：首轮请求可能失败，失败前写基线会让重发不再注入，
+        # 因此推迟到首轮 provider 成功产出后再落盘。
+        volatile_blocks, volatile_full_blocks, injection_baseline, injection_diag, injection_full_diag = self._resolve_injection_blocks(
             conversation_id, injection_sources, len(effective_system)
         )
+        injection_baseline_saved = False
 
         if injection_diag:
             yield {
@@ -384,8 +389,9 @@ class AgentLoop:
         # 工具轮次不设上限，由取消、权限阻断、模型错误或模型最终答复结束。
         while True:
             if self._is_cancelled(cancel_checker):
-                # 用户中断：若上一轮是纯文本轮且尚未落盘最终消息，落盘为最终消息，
-                # 保证中断的回复在重进对话后有完整消息与 model badge。
+                # 用户中断：落盘当前回复为最终消息，保证中断的回复在重进对话后
+                # 有完整消息与 model badge。工具轮不在此落盘：中间轮 assistant 已落盘，
+                # 只需补工具结果（见下方循环）。
                 if content_text and not final_persisted and not last_round_had_tool_calls:
                     final_persisted = True
                     _snapshot_timing(ended=True)
@@ -410,12 +416,23 @@ class AgentLoop:
                             "timestamp": _now(),
                         },
                     )
+
+                # 中断也要推 token_usage：前端据此给这条消息补 model badge，
+                # 否则被停止的回复落盘了却没有用量徽标。无正文时同样推送——
+                # 前端用本地缓冲定稿占位，badge 数据仍来自这里。
+                token_usage_event = self._emit_token_usage(last_round_io)
+
+                if token_usage_event:
+                    yield token_usage_event
+
+                if final_persisted:
                     yield {"type": "done", "conversation_id": conversation_id}
 
                 break
 
             tools = self.executor.list_tools_llm_format()
             round_volatile_instructions = list(volatile_blocks or [])
+            round_volatile_full_instructions = list(volatile_full_blocks or [])
 
             if retry_after_empty_post_tool_response:
                 round_volatile_instructions.append(
@@ -438,6 +455,9 @@ class AgentLoop:
                     # 摘要坑位改写会让本请求已缓存的整段前缀立即失效。
                     allow_compression=round_index <= 1,
                     volatile_instructions=round_volatile_instructions,
+                    # 压缩重建路径改用全量块：历史被摘要替换后，此前的注入块
+                    # 已从窗口消失，必须重新全量注入一次。
+                    volatile_full_instructions=round_volatile_full_instructions,
                 )
                 messages = None
 
@@ -452,6 +472,18 @@ class AgentLoop:
                         # 压缩事件按 start→progress*→done/skipped/trimmed 顺序产出，
                         # 保留最后一条作为本轮压缩终态落盘（progress 会被后续终态覆盖）。
                         compression_step = event
+
+                        # 压缩重建（done）时历史被摘要替换，prepare 改用全量注入块，
+                        # 因此本轮注入诊断也切换到全量块，并补发一次注入事件——
+                        # 首轮注入事件在压缩前就已发出（那时还不知道会压缩），
+                        # 不补发前端卡片会与实际注入不一致。
+                        if str(event.get("status") or "") == "done" and injection_full_diag:
+                            injection_diag = injection_full_diag
+                            yield {
+                                "type": "context_injection",
+                                "blocks": injection_full_diag["blocks"],
+                                "head_chars": injection_full_diag["head_chars"],
+                            }
 
                     yield event
 
@@ -563,6 +595,17 @@ class AgentLoop:
                 # 累计本轮净生成时长（含首 token 等待，不含工具执行/审批），
                 # 供 badge 速率以生成口径为分母，而非整次请求墙钟时间。
                 badge_timing["providerMs"] += max(0, int((time.monotonic() - provider_started) * 1000))
+
+                # 首轮 provider 成功产出（收到过至少一个事件）后才落盘注入基线：
+                # 若请求彻底失败（连接错误、鉴权失败、无任何事件），基线不落盘，
+                # 用户重发时仍按首轮全量注入，不会因「基线已存在」而丢失项目约定。
+                if provider_first_event_logged and not injection_baseline_saved and injection_baseline is not None:
+                    try:
+                        self.store.save_injection_baseline(conversation_id, injection_baseline)
+                        injection_baseline_saved = True
+                    except Exception as exc:
+                        print(f"[LocalAgent] injection_baseline_save_failed conversation={conversation_id} "
+                              f"error={type(exc).__name__}: {exc}")
 
             content_text = "".join(assistant_parts)
             reasoning_text += "".join(assistant_reasoning_parts)
@@ -1139,37 +1182,45 @@ class AgentLoop:
 
         return self.context_manager.build_messages(conversation, system_prompt, volatile_instructions)
 
-    def _resolve_injection_blocks(self, conversation_id: str, injection_sources: Any, head_chars: int = 0) -> tuple[list[str], dict | None]:
-        """按基线比对解析本轮 tail 注入块，并把新基线落盘。
+    def _resolve_injection_blocks(self, conversation_id: str, injection_sources: Any, head_chars: int = 0) -> tuple[list[str], list[str], dict | None, dict | None, dict | None]:
+        """按基线比对解析本轮 tail 注入块，返回 diff 与 full 两套结果。
 
         首轮（无基线）全量注入并建立基线；后续只在内容变化时注入 diff；
         无变化返回空列表——稳定轮次不注入任何 tail 块，[head + 历史] 前缀可缓存。
 
-        基线必须持久化：若只存在内存里，每次新请求都会被当成首轮全量注入。
+        返回 (diff_blocks, full_blocks, new_baseline, diff_diag, full_diag)：
+        - diff_blocks: 按基线比对的结果，常规轮次注入。
+        - full_blocks: 忽略基线的全量结果，供「上下文压缩重建」轮次使用——
+          历史被摘要替换后，此前的注入块已从窗口消失，必须重新全量注入一次。
+        - new_baseline: 采样后的最新基线，由调用方在请求成功后再落盘。
+        - diff_diag / full_diag: 对应块的诊断信息（前端展示用）。
+
+        基线不在这里落盘：首轮请求可能失败（provider 报错），若失败前就写基线，
+        用户重发时会因「基线无变化」而不再注入。落盘时机交给调用方在请求成功后决定。
         """
 
         sources = injection_sources if isinstance(injection_sources, dict) else {}
 
         if not any(str(value or "").strip() for value in sources.values()):
             # 两个通道都为空：无需比对，也无需落盘基线。
-            return [], None
+            return [], [], None, None, None
 
         conversation = self.store.get(conversation_id) or {}
         baseline = conversation.get("injection_baseline")
-        blocks, new_baseline, diagnostics = plan_injection(sources, baseline)
+        diff_blocks, new_baseline, diagnostics = plan_injection(sources, baseline)
+        full_blocks, _, full_diagnostics = plan_injection(sources, baseline, force_full=True)
 
-        # 基线有变化才落盘，避免每个请求都写一次会话文件。
-        if new_baseline != (baseline if isinstance(baseline, dict) else {}):
-            try:
-                self.store.save_injection_baseline(conversation_id, new_baseline)
-            except Exception as exc:
-                print(f"[LocalAgent] injection_baseline_save_failed conversation={conversation_id} "
-                      f"error={type(exc).__name__}: {exc}")
+        diff_diag = None
 
-        if not blocks:
-            return [], None
+        if diff_blocks:
+            diff_diag = {"head_chars": max(0, int(head_chars or 0)), "blocks": diagnostics}
 
-        return blocks, {"head_chars": max(0, int(head_chars or 0)), "blocks": diagnostics}
+        full_diag = None
+
+        if full_blocks:
+            full_diag = {"head_chars": max(0, int(head_chars or 0)), "blocks": full_diagnostics}
+
+        return diff_blocks, full_blocks, new_baseline, diff_diag, full_diag
 
     def _execute_tool(
         self,

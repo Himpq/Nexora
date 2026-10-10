@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,37 @@ def allowed_request(method, path):
         "POST": [r"/api/conversations", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/cancel", r"/api/agent/permission/grant", r"/api/agent/tool-permission/resolve"],
     }
     return any(re.fullmatch(pattern, path) for pattern in rules.get(method, []))
+
+
+def _connection_failure_message(error, phase, settings):
+    """Report the failed connection stage and safe TLS diagnostics without credentials."""
+    parts = [f"phase={phase}", f"error={type(error).__name__}"]
+
+    if isinstance(error, ssl.SSLError):
+        reason = str(getattr(error, "reason", "") or "").strip()
+        verify_code = getattr(error, "verify_code", None)
+        verify_message = str(getattr(error, "verify_message", "") or "").strip()
+        detail = str(error).replace("\r", " ").replace("\n", " ").strip()
+        device_token = str((settings or {}).get("device_token") or "")
+
+        if device_token:
+            detail = detail.replace(device_token, "[redacted]")
+
+        detail = re.sub(r"(?:https?|wss?)://\S+", "[server-url]", detail)[:240]
+
+        if reason:
+            parts.append(f"ssl_reason={reason}")
+
+        if verify_code is not None:
+            parts.append(f"verify_code={verify_code}")
+
+        if verify_message:
+            parts.append(f"verify_message={json.dumps(verify_message, ensure_ascii=False)}")
+
+        if detail:
+            parts.append(f"detail={json.dumps(detail, ensure_ascii=False)}")
+
+    return " ".join(parts)
 
 
 class RemoteConnection:
@@ -154,17 +186,25 @@ class RemoteConnection:
         backoff = 1
 
         while not self.stop.is_set():
-            settings = self.settings()
+            settings = {}
             ws = None
+            phase = "load_settings"
 
             try:
+                settings = self.settings()
+                phase = "normalize_server_url"
                 url = normalize_server_url(settings["server_url"])
                 ws_url = ("wss" if url.startswith("https:") else "ws") + "://" + urlsplit(url).netloc + "/ws/nexoracode"
+
+                phase = "tls_connect"
                 ws = websocket.create_connection(ws_url, timeout=10)
                 self.ws = ws
                 send_lock = threading.Lock()
+
+                phase = "send_auth"
                 ws.send(json.dumps({"type": "auth", "device_id": settings["device_id"], "device_token": settings["device_token"]}))
 
+                phase = "receive_auth"
                 if json.loads(ws.recv()).get("type") != "auth_ok":
                     raise ValueError("设备认证失败，请重新配对")
 
@@ -181,18 +221,30 @@ class RemoteConnection:
                         print(f"[NexoraRemote] rpc_failed error={type(exc).__name__}")
                         result = {"status": 500, "body": {"message": "电脑处理请求失败，请查看本地日志"}}
 
-                    with send_lock:
-                        ws.send(json.dumps({"type": "rpc_result", "request_id": message["request_id"], "result": result}, ensure_ascii=False))
+                    try:
+                        with send_lock:
+                            ws.send(json.dumps({"type": "rpc_result", "request_id": message["request_id"], "result": result}, ensure_ascii=False))
+                    except Exception as exc:
+                        print("[NexoraRemote] rpc_result_send_failed " + _connection_failure_message(exc, "rpc_result_send", settings))
+
+                        try:
+                            with send_lock:
+                                ws.close()
+                        except Exception as close_exc:
+                            print("[NexoraRemote] close_failed " + _connection_failure_message(close_exc, "rpc_result_send_cleanup", settings))
 
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     while not self.stop.is_set():
                         if time.monotonic() - last_ping > 15:
+                            phase = "heartbeat_send"
+
                             with send_lock:
                                 ws.send(json.dumps({"type": "ping"}))
 
                             last_ping = time.monotonic()
 
                         try:
+                            phase = "receive_message"
                             raw = ws.recv()
                         except websocket.WebSocketTimeoutException:
                             continue
@@ -206,12 +258,15 @@ class RemoteConnection:
                             pool.submit(handle, message)
             except Exception as exc:
                 self.error = "远程连接中断，正在重连；请检查网络和设备配对"
-                print(f"[NexoraRemote] connection_failed error={type(exc).__name__}")
+                print("[NexoraRemote] connection_failed " + _connection_failure_message(exc, phase, settings))
             finally:
                 self.online = False
 
                 if ws:
-                    ws.close()
+                    try:
+                        ws.close()
+                    except Exception as exc:
+                        print("[NexoraRemote] close_failed " + _connection_failure_message(exc, "connection_cleanup", settings))
 
                 self.ws = None
 

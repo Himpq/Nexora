@@ -60,6 +60,13 @@ const MAX_ERROR_BACKOFF_MS = 15000
 const IDLE_AFTER_MS = 4000
 /** 单次任务最长跟踪时长，超过后停止轮询但保留游标。 */
 const MAX_TRACK_MS = 2 * 60 * 60 * 1000
+/**
+ * 停止请求的兜底上限。
+ *
+ * 正常情况电脑侧会很快结束并由轮询带回终态；但若模型流迟迟不中断，
+ * 界面会一直停在「正在输出」。超过这个时间就本地收敛，不再等电脑确认。
+ */
+const STOP_TIMEOUT_MS = 20000
 
 const TERMINAL_STATES: RemoteTaskState[] = ['done', 'failed', 'cancelled', 'interrupted', 'gone']
 
@@ -136,6 +143,14 @@ export class RemoteTaskStream {
      * 算同一个请求；一旦拿到 stream_id，后续每次 start 都是新任务，必须换 id。
      */
     private unconfirmed: { requestId: string; conversationId: string; message: string } | null = null
+    /**
+     * 停止请求的超时兜底定时器。
+     *
+     * stop() 只把状态切到 stopping，终态由轮询带回；但电脑侧可能因模型流未及时
+     * 中断而迟迟不结束，界面就会一直显示「正在输出」。这里给一个上限：超时后
+     * 本地直接收敛为 cancelled，停止轮询，避免小点永远转下去。
+     */
+    private stopTimer: number | null = null
 
     constructor(deviceId: string, handlers: RemoteTaskStreamHandlers) {
         this.deviceId = deviceId
@@ -249,19 +264,44 @@ export class RemoteTaskStream {
         this.schedule(0)
     }
 
-    /** 请求停止：发出取消后进入 stopping，终态由轮询确认。 */
+    /** 请求停止：发出取消后进入 stopping，终态由轮询确认；超时则本地兜底收敛。 */
     async stop(): Promise<void> {
         if (!this.streamId) {
             return
         }
 
         this.setState('stopping', this.session)
+        this.armStopTimeout()
 
         try {
             await cancelRemoteTask(this.deviceId, this.streamId)
         } catch (error) {
             // 取消失败不改变结论：轮询仍会带回电脑侧的真实状态。
             this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)))
+        }
+    }
+
+    /** 停止兜底：超过上限仍未收敛时，本地按 cancelled 收尾并停止轮询。 */
+    private armStopTimeout(): void {
+        this.clearStopTimer()
+
+        this.stopTimer = window.setTimeout(() => {
+            this.stopTimer = null
+
+            if (this.stopped || isTerminalRemoteTaskState(this.state)) {
+                return
+            }
+
+            this.setState('cancelled', this.session)
+            this.stopped = true
+            this.clearTimer()
+        }, STOP_TIMEOUT_MS)
+    }
+
+    private clearStopTimer(): void {
+        if (this.stopTimer !== null) {
+            window.clearTimeout(this.stopTimer)
+            this.stopTimer = null
         }
     }
 
@@ -296,6 +336,7 @@ export class RemoteTaskStream {
     dispose(): void {
         this.stopped = true
         this.clearTimer()
+        this.clearStopTimer()
         this.streamId = ''
         this.cursor = 0
         this.session = null
@@ -307,6 +348,11 @@ export class RemoteTaskStream {
 
     private setState(state: RemoteTaskState, session: RemoteTaskSession | null): void {
         this.state = state
+
+        // 一旦落到终态，停止兜底定时器就没有意义了，清掉避免它稍后再改一次状态。
+        if (isTerminalRemoteTaskState(state)) {
+            this.clearStopTimer()
+        }
 
         if (session) {
             this.session = session

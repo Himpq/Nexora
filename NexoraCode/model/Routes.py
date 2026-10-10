@@ -922,10 +922,50 @@ def local_agent_get_messages(conv_id: str):
     if request.args.get("merge_agent_rounds") == "1":
         normalized = _merge_agent_response_rounds(normalized)
 
+    total = len(normalized)
+    total_user_messages = sum(
+        1 for message in normalized
+        if str(message.get("role") or "").strip() == "user"
+    )
+    before_raw = request.args.get("before")
+    limit_raw = request.args.get("limit")
+
+    if limit_raw is None and before_raw is not None:
+        return jsonify({"success": False, "message": "before 必须与 limit 一起提供"}), 400
+
+    if limit_raw is None:
+        start_index = 0
+        before_index = total
+        limit = total
+    else:
+        try:
+            limit = int(str(limit_raw).strip())
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": "limit 必须是整数"}), 400
+
+        if limit <= 0 or limit > 200:
+            return jsonify({"success": False, "message": "limit 必须在 1 到 200 之间"}), 400
+
+        if before_raw is None or not str(before_raw).strip():
+            before_index = total
+        else:
+            try:
+                before_index = int(str(before_raw).strip())
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "before 必须是整数"}), 400
+
+        before_index = max(0, min(before_index, total))
+        start_index = max(0, before_index - limit)
+
     return jsonify({
         "success": True,
-        "messages": normalized,
-        "total": len(normalized),
+        "messages": normalized[start_index:before_index],
+        "start_index": start_index,
+        "end_index": before_index - 1 if before_index > 0 else -1,
+        "total": total,
+        "limit": limit,
+        "has_more_before": start_index > 0,
+        "total_user_messages": total_user_messages,
     })
 
 

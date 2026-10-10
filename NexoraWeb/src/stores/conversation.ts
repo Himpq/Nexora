@@ -72,6 +72,12 @@ interface ConversationState {
      * 记为未读并在侧栏显示蓝点;切回该会话即清除。
      */
     unreadConversations: string[]
+    /**
+     * 运行中的会话集合(NexoraCode 专用):由本地任务事件流维护,
+     * 覆盖「云端下发、本地前端没有流句柄」的任务,供侧栏标运行状态。
+     * 与 pendingStreams 的区别:后者是本地已接管的流,前者只表示电脑上在跑。
+     */
+    runningConversations: string[]
     /** 输入区「TK 输入/输出」mini 展示状态(对齐原版 tokenMiniState) */
     tokenMini: {
         /** 当前会话累计基数:会话统计接口的 input_total/output_total */
@@ -135,6 +141,7 @@ export const useConversationStore = defineStore('conversation', {
         turns: [],
         loadSeq: 0,
         unreadConversations: [],
+        runningConversations: [],
         tokenMini: {
             baseInput: 0,
             baseOutput: 0,
@@ -597,6 +604,62 @@ export const useConversationStore = defineStore('conversation', {
 
             const assistantMessage: ChatMessage = {
                 index: nextIndex,
+                role: 'assistant',
+                content: '',
+                segments: [],
+                pending: true,
+                outputFinished: false,
+            }
+
+            this.messages.push(assistantMessage)
+
+            tokenMiniRefreshSeq += 1
+            this.resetTokenMiniStreamPart()
+
+            this.pendingStreams[conversationId] = {
+                targetIndex: assistantMessage.index,
+                assistant: assistantMessage,
+            }
+        },
+
+        /**
+         * 接管电脑端已存在、但本地没有流句柄的任务（如云端 RemoteControl 下发）。
+         *
+         * 与 beginResumedStream 的区别：云端下发的普通任务有用户消息，需要在接管时补上
+         * 用户气泡（后端已落盘该消息，但本地可能还没加载到）。若该消息已在最后一条
+         * 用户消息里（历史已加载），则不重复追加，只补助手占位。
+         * skipUserMessage（权限续跑等内部任务）与重答场景不补用户气泡。
+         */
+        beginExternalStream(conversationId: string, options: { message?: string; skipUserMessage?: boolean; isRegenerate?: boolean; historyUserCount?: number | null }): void {
+            const userContent = String(options.message || '').trim()
+            const shouldAppendUser = !options.skipUserMessage && !options.isRegenerate && !!userContent
+            const lastIndex = this.messages.length > 0
+                ? Number(this.messages[this.messages.length - 1].index)
+                : -1
+            const nextIndex = Number.isFinite(lastIndex) ? lastIndex + 1 : 0
+
+            // 该用户消息可能已随历史加载。优先用后端给的「任务启动时已有用户消息数」判断
+            // （与云端 syncActiveTasks 同口径）；拿不到时退回比较最后一条用户消息内容。
+            const userCount = this.messages.filter((message) => message.role === 'user').length
+            const lastUser = [...this.messages].reverse().find((message) => message.role === 'user')
+            const userAlreadyPresent = typeof options.historyUserCount === 'number'
+                ? userCount > options.historyUserCount
+                : !!lastUser && String(lastUser.content || '') === userContent
+
+            if (shouldAppendUser && !userAlreadyPresent) {
+                this.messages.push({
+                    index: nextIndex,
+                    role: 'user',
+                    content: userContent,
+                })
+                this.turns.push({ index: nextIndex, role: 'user', content: userContent })
+            }
+
+            const assistantIndex = this.messages.length > 0
+                ? Number(this.messages[this.messages.length - 1].index) + 1
+                : 0
+            const assistantMessage: ChatMessage = {
+                index: Number.isFinite(assistantIndex) ? assistantIndex : 0,
                 role: 'assistant',
                 content: '',
                 segments: [],
@@ -1501,7 +1564,30 @@ export const useConversationStore = defineStore('conversation', {
         isConversationGenerating(conversationId: string): boolean {
             const pending = this.pendingStreams[conversationId]
 
-            return !!pending && !pending.finished
+            if (pending && !pending.finished) {
+                return true
+            }
+
+            // 电脑上在跑但本地尚未接管的会话(如云端下发)也算生成中:侧栏要标运行状态。
+            return this.runningConversations.includes(conversationId)
+        },
+
+        /** 标记会话在电脑端运行中(本地任务事件流 task_started 调用) */
+        markConversationRunning(conversationId: string): void {
+            if (!conversationId || this.runningConversations.includes(conversationId)) {
+                return
+            }
+
+            this.runningConversations.push(conversationId)
+        },
+
+        /** 清除会话运行中标记(本地任务事件流 task_finished 调用) */
+        clearConversationRunning(conversationId: string): void {
+            if (!conversationId) {
+                return
+            }
+
+            this.runningConversations = this.runningConversations.filter((id) => id !== conversationId)
         },
 
         /** 标记会话未读(NexoraCode:后台流完成且用户不在该会话时显示蓝点) */

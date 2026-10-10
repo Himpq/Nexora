@@ -30,6 +30,39 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 # 但 journal 不能塞进 session（save_meta 会序列化 session 内容）。
 _JOURNALS: Dict[str, Any] = {}
 
+# 任务生命周期事件监听器：任务启动/结束时广播，供本地前端实时感知
+# 「电脑上正在运行哪些会话」。云端下发的任务本地前端没有流句柄，
+# 靠这套事件才能及时在侧栏标出运行状态并按需接管。
+_TASK_EVENT_LOCK = threading.Lock()
+_TASK_EVENT_LISTENERS: set = set()
+
+
+def subscribe_task_events(listener: Callable[[Dict[str, Any]], None]) -> None:
+    """注册任务生命周期事件监听器（回调需自行保证线程安全）。"""
+
+    with _TASK_EVENT_LOCK:
+        _TASK_EVENT_LISTENERS.add(listener)
+
+
+def unsubscribe_task_events(listener: Callable[[Dict[str, Any]], None]) -> None:
+    """注销任务生命周期事件监听器。"""
+
+    with _TASK_EVENT_LOCK:
+        _TASK_EVENT_LISTENERS.discard(listener)
+
+
+def _broadcast_task_event(payload: Dict[str, Any]) -> None:
+    """向所有监听器广播一条任务事件；单个监听器异常不影响其他监听器。"""
+
+    with _TASK_EVENT_LOCK:
+        listeners = list(_TASK_EVENT_LISTENERS)
+
+    for listener in listeners:
+        try:
+            listener(payload)
+        except Exception as exc:
+            print(f"[LocalTaskEvent] listener_failed error={type(exc).__name__}: {exc}")
+
 _MAX_CHUNKS_PER_SESSION = 12000
 # 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
 _JOURNAL_FLUSH_CHUNKS = 64
@@ -342,6 +375,16 @@ def start_session(
             session["updated_at"] = time.time()
             journal.save_meta(session)
             cond.notify_all()
+            final_status = str(session.get("status") or "done")
+            final_conversation_id = str(session.get("conversation_id") or "").strip()
+
+        # 锁外广播：监听器可能做 IO，不应持有会话条件锁。
+        _broadcast_task_event({
+            "type": "task_finished",
+            "stream_id": str(session.get("stream_id") or ""),
+            "conversation_id": final_conversation_id,
+            "status": final_status,
+        })
 
     def _report_worker_error(error: BaseException) -> None:
         """业务 worker 已推送 error 事件时不再重复上报，只补记失败状态。"""
@@ -374,6 +417,18 @@ def start_session(
 
     thread = threading.Thread(target=_run, name=f"nc-stream-{stream_id[:8]}", daemon=True)
     thread.start()
+    # 任务已进入运行态，广播给本地前端：侧栏据此标出运行中的会话。
+    # 带上请求正文与 skip_user_message，本地接管时据此决定是否补用户气泡
+    # （云端下发的普通任务有用户消息；权限续跑这类内部任务没有）。
+    _broadcast_task_event({
+        "type": "task_started",
+        "stream_id": stream_id,
+        "conversation_id": str(conversation_id or "").strip(),
+        "message": str(session.get("_request_message") or ""),
+        "skip_user_message": bool(session.get("skip_user_message", False)),
+        "is_regenerate": bool(session.get("is_regenerate", False)),
+        "history_user_count": session.get("history_user_count"),
+    })
     return stream_id
 
 

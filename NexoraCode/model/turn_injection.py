@@ -196,6 +196,8 @@ def _build_channel_block(marker: str, full_lead: str, diff_lead: str,
 def plan_injection(
     sources: Dict[str, Any] | None,
     baseline: Dict[str, Any] | None,
+    *,
+    force_full: bool = False,
 ) -> Tuple[List[str], Dict[str, Any], List[Dict[str, Any]]]:
     """按基线比对生成本轮注入块，并返回新基线。
 
@@ -205,6 +207,10 @@ def plan_injection(
     - diagnostics: [{name, chars}]，只含名称与长度，不含原文
 
     sources 为各通道的当前文本（如 AGENTS.md 内容、自定义提示词）。
+
+    force_full=True 时忽略基线，所有通道按首轮全量注入。用于「上下文被压缩重建」
+    这类历史被摘要替换、此前注入块已从窗口消失的场景：此时必须重新全量注入一次，
+    否则模型在重建后的上下文里看不到项目约定。基线本身仍照常更新。
     """
 
     blocks: List[str] = []
@@ -217,6 +223,9 @@ def plan_injection(
         digest = lines_hash(lines)
         previous = baseline.get(key) if isinstance(baseline.get(key), dict) else {}
         old_lines = previous.get("lines") if isinstance(previous.get("lines"), list) else None
+
+        if force_full:
+            old_lines = None
 
         # 当前有内容才写基线：用户清空后该通道回到「下次有内容算首轮全量」。
         if lines:
