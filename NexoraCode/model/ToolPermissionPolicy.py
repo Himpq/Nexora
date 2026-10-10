@@ -43,11 +43,46 @@ _READ_TOOL_NAMES = {
 _READ_PROCESS_ACTIONS = {"list", "status", "read"}
 
 
-def get_permission_settings() -> dict:
-    """读取工具权限模式与自动审批模型。"""
+def get_global_permission_settings() -> dict:
+    """读取全局默认工具权限（新建会话时的初值，也是设置面板里展示的默认值）。"""
     return {
         "mode": str(config.get("local_tool_permission_mode", DEFAULT_PERMISSION_MODE) or "").strip().lower(),
         "approval_model_id": str(config.get("local_tool_approval_model_id", "") or "").strip(),
+    }
+
+
+def get_permission_settings(conversation_id: str = "") -> dict:
+    """读取指定会话的工具权限模式与自动审批模型。
+
+    每个会话独立持有一份设置：新建会话时从全局默认复制一份，之后互不影响。
+    传入 conversation_id 时读该会话的设置；老会话没有 settings 段则用当前全局
+    默认惰性补齐一次（此后它也就独立了）。不传 conversation_id 时返回全局默认，
+    供「新建会话取初值」与设置面板展示使用。
+    """
+    clean_id = str(conversation_id or "").strip()
+
+    if not clean_id:
+        return get_global_permission_settings()
+
+    try:
+        from .ConversationStore import ConversationStore
+
+        store = ConversationStore()
+        defaults = get_global_permission_settings()
+        settings = store.ensure_settings(clean_id, {
+            "permission_mode": defaults["mode"],
+            "approval_model_id": defaults["approval_model_id"],
+        })
+    except Exception:
+        # 会话不存在或读盘失败时退回全局默认，避免因设置读取失败阻断工具调用。
+        return get_global_permission_settings()
+
+    mode = str(settings.get("permission_mode") or "").strip().lower()
+    approval_model_id = str(settings.get("approval_model_id") or "").strip()
+
+    return {
+        "mode": mode if mode in PERMISSION_MODES else DEFAULT_PERMISSION_MODE,
+        "approval_model_id": approval_model_id,
     }
 
 
@@ -68,10 +103,14 @@ def list_approval_models() -> list[dict]:
     return models
 
 
-def save_permission_settings(mode: str, approval_model_id: str) -> None:
-    """校验并保存工具权限设置。"""
+def save_permission_settings(mode: str, approval_model_id: str, conversation_id: str = "") -> None:
+    """校验并保存工具权限设置。
+
+    带 conversation_id 时写入该会话的独立设置；不带则写全局默认（新建会话的初值）。
+    """
     clean_mode = str(mode or "").strip().lower()
     clean_model_id = str(approval_model_id or "").strip()
+    clean_id = str(conversation_id or "").strip()
 
     if clean_mode not in PERMISSION_MODES:
         raise ValueError("权限模式无效")
@@ -83,6 +122,15 @@ def save_permission_settings(mode: str, approval_model_id: str) -> None:
 
     if clean_mode == "auto" and not clean_model_id:
         raise ValueError("自动审批模式必须选择审批模型")
+
+    if clean_id:
+        from .ConversationStore import ConversationStore
+
+        ConversationStore().save_settings(clean_id, {
+            "permission_mode": clean_mode,
+            "approval_model_id": clean_model_id,
+        })
+        return
 
     config.set("local_tool_permission_mode", clean_mode)
     config.set("local_tool_approval_model_id", clean_model_id)
@@ -489,9 +537,13 @@ def evaluate_tool_call(
     cancel_checker=None,
     *,
     approval_context: dict | None = None,
+    conversation_id: str = "",
 ) -> dict:
-    """在唯一工具入口执行权限判断；自动审批失败时按拒绝处理。"""
-    settings = get_permission_settings()
+    """在唯一工具入口执行权限判断；自动审批失败时按拒绝处理。
+
+    conversation_id 决定用哪个会话的权限设置：每个会话独立持有，互不影响。
+    """
+    settings = get_permission_settings(conversation_id)
     mode = settings["mode"]
     call = classify_tool_call(executor, tool_name, arguments)
 

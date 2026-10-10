@@ -87,6 +87,28 @@
                             <input id="pf-context-window" type="number" step="1024" min="0" value="128000"/>
                             <small class="hint">模型的上下文窗口（token），用于 token 预算展示，0 表示不限制</small>
                         </label>
+                        <div class="field">
+                            <span>Thinking 协议</span>
+                            <div id="pf-thinking-protocol" class="pf-thinking-protocol-options" role="group" aria-label="Thinking 请求协议">
+                                <button type="button" class="pf-thinking-protocol-option" data-protocol="none" aria-pressed="false">
+                                    <strong>不控制</strong>
+                                    <small>不追加参数</small>
+                                </button>
+                                <button type="button" class="pf-thinking-protocol-option" data-protocol="deepseek" aria-pressed="false">
+                                    <strong>DeepSeek</strong>
+                                    <small>thinking.type</small>
+                                </button>
+                                <button type="button" class="pf-thinking-protocol-option" data-protocol="dashscope" aria-pressed="false">
+                                    <strong>DashScope</strong>
+                                    <small>enable_thinking</small>
+                                </button>
+                                <button type="button" class="pf-thinking-protocol-option" data-protocol="ollama" aria-pressed="false">
+                                    <strong>Ollama</strong>
+                                    <small>think</small>
+                                </button>
+                            </div>
+                            <small class="hint">设置对应服务商使用的请求字段；本地和 RemoteControl 共用此设置。</small>
+                        </div>
                     </div>
                     <div class="pf-actions">
                         <button id="pf-cancel" type="button" class="secondary">取消</button>
@@ -153,13 +175,13 @@
             </section>
 
             <section id="view-permissions" class="view">
-                <h1>工具权限</h1>
-                <p class="sub">选择 NexoraCode 执行本地文件、命令和网页操作时使用的权限模式。</p>
+                <h1>默认工具权限</h1>
+                <p class="sub">这里设置的是<strong>新建会话的默认权限</strong>。每个会话都有自己独立的权限，进入会话后可在输入框旁的权限菜单里单独调整，互不影响；修改这里不会改变已有会话。</p>
 
                 <div id="tool-permission-mode-list" class="permission-mode-list"></div>
 
                 <div id="tool-permission-approval" class="permission-approval-panel">
-                    <h2>自动审批模型</h2>
+                    <h2>默认自动审批模型</h2>
                     <p class="permission-note">自动审批会将当前请求、最近最多 4 条用户请求、助手调用工具前的说明、最近最多 4 条助手可见回复、本轮此前最多 8 个工具动作摘要和当前工具完整参数发送给所选 Provider。参数包括命令、脚本或待写入内容。纯只读工具（读取、探测、列目录、搜索、代码扫描、上下文读取、网页读取等）不会调用审批模型，直接放行。模型返回格式无效时会自动重试一次；仍无法判定、请求失败或模型拒绝时，该操作会被拦截。</p>
                     <div id="tool-permission-model-select" class="permission-model-select">
                         <button

@@ -503,6 +503,9 @@
                 attachLocalTaskStream(runningTask)
             }
         }
+
+        // 切换会话时同步该会话自己的模型选择：模型按会话独立保存，切走再切回要还原。
+        void modelStore.setActiveConversation(conversationId || '')
     })
 
     /** 文件中心:替换主内容区(对齐原版 openFilesFrameView);详情文件为 null 时显示列表 */

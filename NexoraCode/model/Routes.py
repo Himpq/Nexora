@@ -38,6 +38,7 @@ from .StreamRuntime import (
 )
 from .ToolPermissionPolicy import (
     PERMISSION_MODES,
+    get_global_permission_settings,
     get_resolved_tool_action,
     get_permission_settings,
     list_approval_models,
@@ -665,6 +666,12 @@ def _stream_worker_factory(body: dict):
 
     store = ConversationStore()
     conversation = store.get(conversation_id) if conversation_id else None
+
+    # 请求没带模型时回退到该会话自己的设置：会话级模型是「每个会话独立持有」，
+    # 云端下发等不带 model_name 的入口也能用对模型。
+    if not model_name and conversation_id:
+        model_name = str(store.get_settings(conversation_id).get("model_name") or "").strip()
+
     system_prompt = _build_system_prompt(conversation)
     injection_sources = _collect_injection_sources(conversation)
 
@@ -863,8 +870,22 @@ def local_agent_create_conversation():
 
     store = ConversationStore()
     conversation = store.create(title, metadata)
+    conversation_id = str(conversation.get("conversation_id") or "")
 
-    return jsonify({"success": True, "conversation_id": conversation.get("conversation_id"), "title": title})
+    # 新会话把当前全局默认复制成自己的独立设置：此后改这个会话不影响其他会话，
+    # 改全局也只影响之后新建的会话。
+    global_permission = get_global_permission_settings()
+
+    try:
+        store.save_settings(conversation_id, {
+            "model_name": str(data.get("model_name") or "").strip(),
+            "permission_mode": global_permission["mode"],
+            "approval_model_id": global_permission["approval_model_id"],
+        })
+    except Exception as exc:
+        print(f"[LocalAgent] init conversation settings failed: {exc}")
+
+    return jsonify({"success": True, "conversation_id": conversation_id, "title": title})
 
 
 @_local_bp.route("/api/conversations/<conv_id>", methods=["GET"])
@@ -878,6 +899,77 @@ def local_agent_get_conversation(conv_id: str):
     conversation["messages"] = _normalize_history_messages(conversation.get("messages", []))
 
     return jsonify({"success": True, "conversation": conversation})
+
+
+@_local_bp.route("/api/conversations/<conv_id>/settings", methods=["GET", "POST"])
+def local_agent_conversation_settings(conv_id: str):
+    """读取或保存单个会话的独立设置（模型 / 工具权限）。
+
+    每个会话独立持有：新建时从全局默认复制一份，之后改本会话不影响其他会话。
+    老会话没有 settings 段时用当前全局默认惰性补齐一次。
+    """
+    store = ConversationStore()
+
+    if store.get(conv_id) is None:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    if request.method == "GET":
+        global_permission = get_global_permission_settings()
+        settings = store.ensure_settings(conv_id, {
+            "permission_mode": global_permission["mode"],
+            "approval_model_id": global_permission["approval_model_id"],
+        })
+        permission = get_permission_settings(conv_id)
+
+        return jsonify({
+            "success": True,
+            "settings": {
+                "model_name": str(settings.get("model_name") or ""),
+                "permission_mode": permission["mode"],
+                "approval_model_id": permission["approval_model_id"],
+            },
+            "models": list_approval_models(),
+        })
+
+    raw_body = request.get_json(silent=True)
+    body = raw_body if isinstance(raw_body, dict) else {}
+    patch: dict = {}
+
+    if "model_name" in body:
+        patch["model_name"] = str(body.get("model_name") or "").strip()
+
+    if "permission_mode" in body or "approval_model_id" in body:
+        try:
+            save_permission_settings(
+                mode=str(body.get("permission_mode") or ""),
+                approval_model_id=str(body.get("approval_model_id") or ""),
+                conversation_id=conv_id,
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+
+    try:
+        if patch:
+            store.save_settings(conv_id, patch)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    global_permission = get_global_permission_settings()
+    settings = store.ensure_settings(conv_id, {
+        "permission_mode": global_permission["mode"],
+        "approval_model_id": global_permission["approval_model_id"],
+    })
+    permission = get_permission_settings(conv_id)
+
+    return jsonify({
+        "success": True,
+        "message": "会话设置已保存",
+        "settings": {
+            "model_name": str(settings.get("model_name") or ""),
+            "permission_mode": permission["mode"],
+            "approval_model_id": permission["approval_model_id"],
+        },
+    })
 
 
 @_local_bp.route("/api/conversations/<conv_id>", methods=["DELETE"])
@@ -1273,23 +1365,31 @@ def _resume_after_permission_grant(conversation_id: str, granted_path: str) -> d
 
 @_local_bp.route("/api/local/permissions", methods=["GET", "POST"])
 def local_agent_permission_settings():
-    """读取或保存本地 Agent 工具权限模式与自动审批模型。"""
+    """读取或保存工具权限模式与自动审批模型。
+
+    带 conversation_id 时读写该会话的独立设置；不带则读写全局默认
+    （全局默认只作为新建会话的初值）。会话设置与全局互不影响。
+    """
     if request.method == "GET":
-        settings = get_permission_settings()
+        conversation_id = str(request.args.get("conversation_id") or "").strip()
+        settings = get_permission_settings(conversation_id)
         return jsonify({
             "success": True,
             "mode": settings["mode"],
             "approval_model_id": settings["approval_model_id"],
             "models": list_approval_models(),
+            "scope": "conversation" if conversation_id else "global",
         })
 
     raw_body = request.get_json(silent=True)
     body = raw_body if isinstance(raw_body, dict) else {}
+    conversation_id = str(body.get("conversation_id") or "").strip()
 
     try:
         save_permission_settings(
             mode=str(body.get("mode") or ""),
             approval_model_id=str(body.get("approval_model_id") or ""),
+            conversation_id=conversation_id,
         )
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
@@ -1335,7 +1435,7 @@ def local_agent_resolve_tool_permission():
         return jsonify({"success": False, "message": "授权请求已过期或已处理"}), 404
 
     allowed = decision == "allow"
-    mode = get_permission_settings()["mode"]
+    mode = get_permission_settings(conversation_id)["mode"]
     execution_success = False
 
     if allowed and mode not in PERMISSION_MODES:

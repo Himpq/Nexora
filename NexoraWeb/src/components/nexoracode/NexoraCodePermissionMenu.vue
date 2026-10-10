@@ -77,15 +77,26 @@
     import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
     import {
+        fetchLocalConversationSettings,
         fetchLocalPermissionSettings,
+        saveLocalConversationSettings,
         saveLocalPermissionSettings,
         type LocalPermissionMode,
         type LocalPermissionSettings,
     } from '@/api/nexoracodeLocal'
+    import {
+        fetchRemoteConversationSettings,
+        fetchRemotePermissionSettings,
+        saveRemoteConversationSettings,
+        saveRemotePermissionSettings,
+    } from '@/api/nexoracode'
     import { showToast } from '@/stores/notify'
 
     const props = defineProps<{
         selectedModelId: string
+        remoteDeviceId?: string
+        /** 当前会话 id：本地形态下权限按会话独立保存，缺省时退回全局默认。 */
+        conversationId?: string
     }>()
 
     const emit = defineEmits<{
@@ -144,6 +155,7 @@
     const triggerRef = ref<HTMLButtonElement | null>(null)
     const menuRef = ref<HTMLDivElement | null>(null)
     const menuPosition = ref<Record<string, string>>({})
+    let settingsRequestId = 0
 
     const approvalModelId = computed(() => {
         if (!settings.value) {
@@ -176,20 +188,67 @@
     })
 
     async function refreshSettings(): Promise<void> {
-        if (loading.value) {
-            return
-        }
-
+        const requestId = ++settingsRequestId
+        const deviceId = String(props.remoteDeviceId || '').trim()
+        const conversationId = String(props.conversationId || '').trim()
         loading.value = true
         error.value = ''
 
         try {
-            settings.value = await fetchLocalPermissionSettings()
+            let nextSettings: LocalPermissionSettings
+
+            if (deviceId) {
+                if (conversationId) {
+                    // 云端形态：权限同样按会话独立保存；模型目录从全局接口取。
+                    const [conversation, global] = await Promise.all([
+                        fetchRemoteConversationSettings(deviceId, conversationId),
+                        fetchRemotePermissionSettings(deviceId),
+                    ])
+
+                    nextSettings = {
+                        mode: conversation.permission_mode,
+                        approval_model_id: conversation.approval_model_id,
+                        models: global.models,
+                    }
+                } else {
+                    nextSettings = await fetchRemotePermissionSettings(deviceId)
+                }
+            } else if (conversationId) {
+                // 本地形态：权限按会话独立保存；模型目录仍需从全局接口取。
+                const [conversation, global] = await Promise.all([
+                    fetchLocalConversationSettings(conversationId),
+                    fetchLocalPermissionSettings(),
+                ])
+
+                nextSettings = {
+                    mode: conversation.permission_mode,
+                    approval_model_id: conversation.approval_model_id,
+                    models: global.models,
+                }
+            } else {
+                nextSettings = await fetchLocalPermissionSettings()
+            }
+
+            if (requestId !== settingsRequestId
+                || deviceId !== String(props.remoteDeviceId || '').trim()
+                || conversationId !== String(props.conversationId || '').trim()) {
+                return
+            }
+
+            settings.value = nextSettings
             emit('ready', true)
         } catch (caught) {
+            if (requestId !== settingsRequestId) {
+                return
+            }
+
             error.value = caught instanceof Error ? caught.message : String(caught)
             emit('ready', false)
         } finally {
+            if (requestId !== settingsRequestId) {
+                return
+            }
+
             loading.value = false
 
             if (open.value) {
@@ -267,8 +326,25 @@
 
         try {
             const nextApprovalModelId = approvalModelId.value
+            const conversationId = String(props.conversationId || '').trim()
 
-            await saveLocalPermissionSettings(mode, nextApprovalModelId)
+            if (props.remoteDeviceId) {
+                if (conversationId) {
+                    await saveRemoteConversationSettings(props.remoteDeviceId, conversationId, {
+                        permission_mode: mode,
+                        approval_model_id: nextApprovalModelId,
+                    })
+                } else {
+                    await saveRemotePermissionSettings(props.remoteDeviceId, mode, nextApprovalModelId)
+                }
+            } else if (conversationId) {
+                await saveLocalConversationSettings(conversationId, {
+                    permission_mode: mode,
+                    approval_model_id: nextApprovalModelId,
+                })
+            } else {
+                await saveLocalPermissionSettings(mode, nextApprovalModelId)
+            }
             settings.value = {
                 ...settings.value,
                 mode,
@@ -324,6 +400,7 @@
     })
 
     onBeforeUnmount(() => {
+        settingsRequestId += 1
         document.removeEventListener('click', closeOnOutsideClick)
 
         if (DESKTOP_PERMISSION_REFRESH_EVENT) {
@@ -335,6 +412,33 @@
 
     watch(() => props.selectedModelId, () => {
         if (open.value) {
+            void refreshSettings()
+        }
+    })
+
+    watch(() => props.remoteDeviceId, (deviceId, previousDeviceId) => {
+        if (deviceId === previousDeviceId) {
+            return
+        }
+
+        settings.value = null
+        error.value = ''
+
+        if (deviceId) {
+            void refreshSettings()
+        }
+    })
+
+    // 切换会话时重新读取该会话自己的权限：每个会话独立，不能沿用上一个会话的值。
+    watch(() => props.conversationId, (conversationId, previousId) => {
+        if (conversationId === previousId) {
+            return
+        }
+
+        settings.value = null
+        error.value = ''
+
+        if (conversationId || props.remoteDeviceId) {
             void refreshSettings()
         }
     })

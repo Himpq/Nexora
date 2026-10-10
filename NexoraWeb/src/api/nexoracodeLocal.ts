@@ -153,17 +153,76 @@ export async function fetchLocalToolAutoExpand(): Promise<boolean> {
 export async function saveLocalPermissionSettings(
     mode: LocalPermissionMode,
     approvalModelId: string,
+    conversationId = '',
 ): Promise<void> {
     const data = await apiFetch<{ success: boolean; message?: string }>('/api/local/permissions', {
         method: 'POST',
         body: JSON.stringify({
             mode,
             approval_model_id: approvalModelId,
+            ...(conversationId ? { conversation_id: conversationId } : {}),
         }),
     })
 
     if (!data.success) {
         throw new Error(data.message || '保存工具权限失败')
+    }
+}
+
+/** 单个会话的独立设置（模型 / 工具权限）。 */
+export interface LocalConversationSettings {
+    model_name: string
+    permission_mode: LocalPermissionMode
+    approval_model_id: string
+}
+
+interface LocalConversationSettingsResponse {
+    success: boolean
+    settings?: LocalConversationSettings
+    models?: ModelItem[]
+    message?: string
+}
+
+/** 读取会话自己的设置；老会话没有时后端会用全局默认惰性补齐。 */
+export async function fetchLocalConversationSettings(
+    conversationId: string,
+): Promise<LocalConversationSettings> {
+    const data = await apiFetch<LocalConversationSettingsResponse>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/settings`,
+    )
+
+    if (!data.success || !data.settings) {
+        throw new Error(data.message || '读取会话设置失败')
+    }
+
+    return {
+        model_name: String(data.settings.model_name || ''),
+        permission_mode: data.settings.permission_mode,
+        approval_model_id: String(data.settings.approval_model_id || ''),
+    }
+}
+
+/** 保存会话自己的设置（只传要改的字段）。 */
+export async function saveLocalConversationSettings(
+    conversationId: string,
+    patch: Partial<LocalConversationSettings>,
+): Promise<LocalConversationSettings> {
+    const data = await apiFetch<LocalConversationSettingsResponse>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/settings`,
+        {
+            method: 'POST',
+            body: JSON.stringify(patch),
+        },
+    )
+
+    if (!data.success || !data.settings) {
+        throw new Error(data.message || '保存会话设置失败')
+    }
+
+    return {
+        model_name: String(data.settings.model_name || ''),
+        permission_mode: data.settings.permission_mode,
+        approval_model_id: String(data.settings.approval_model_id || ''),
     }
 }
 

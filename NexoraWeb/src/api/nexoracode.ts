@@ -11,6 +11,7 @@
  */
 
 import { apiFetch } from './client'
+import type { LocalPermissionMode, LocalPermissionSettings } from './nexoracodeLocal'
 
 // ---------- 设备与配对 ----------
 
@@ -37,6 +38,90 @@ export function remoteCall<T>(deviceId: string, path: string, method = 'GET', bo
     return apiFetch<T>(`/api/nexoracode/devices/${encodeURIComponent(deviceId)}/rpc`, {
         method: 'POST', body: JSON.stringify({ path, method, body, query }),
     })
+}
+
+/** 读取目标电脑的工具权限模式。 */
+export async function fetchRemotePermissionSettings(deviceId: string): Promise<LocalPermissionSettings> {
+    const data = await remoteCall<LocalPermissionSettings & { success: boolean; message?: string }>(
+        deviceId,
+        '/api/local/permissions',
+    )
+
+    if (!data.success) {
+        throw new Error(data.message || '读取工具权限失败')
+    }
+
+    return {
+        mode: data.mode,
+        approval_model_id: String(data.approval_model_id || ''),
+        models: Array.isArray(data.models) ? data.models : [],
+    }
+}
+
+/** 更新目标电脑的工具权限模式。 */
+export async function saveRemotePermissionSettings(
+    deviceId: string,
+    mode: LocalPermissionMode,
+    approvalModelId: string,
+    conversationId = '',
+): Promise<void> {
+    const data = await remoteCall<{ success: boolean; message?: string }>(
+        deviceId,
+        '/api/local/permissions',
+        'POST',
+        {
+            mode,
+            approval_model_id: approvalModelId,
+            ...(conversationId ? { conversation_id: conversationId } : {}),
+        },
+    )
+
+    if (!data.success) {
+        throw new Error(data.message || '保存工具权限失败')
+    }
+}
+
+/** 读取目标电脑上某个会话的独立设置（模型 / 工具权限）。 */
+export async function fetchRemoteConversationSettings(
+    deviceId: string,
+    conversationId: string,
+): Promise<{ model_name: string; permission_mode: LocalPermissionMode; approval_model_id: string }> {
+    const data = await remoteCall<{
+        success: boolean
+        settings?: { model_name?: string; permission_mode: LocalPermissionMode; approval_model_id?: string }
+        message?: string
+    }>(
+        deviceId,
+        `/api/conversations/${encodeURIComponent(conversationId)}/settings`,
+    )
+
+    if (!data.success || !data.settings) {
+        throw new Error(data.message || '读取会话设置失败')
+    }
+
+    return {
+        model_name: String(data.settings.model_name || ''),
+        permission_mode: data.settings.permission_mode,
+        approval_model_id: String(data.settings.approval_model_id || ''),
+    }
+}
+
+/** 保存目标电脑上某个会话的独立设置（只传要改的字段）。 */
+export async function saveRemoteConversationSettings(
+    deviceId: string,
+    conversationId: string,
+    patch: { model_name?: string; permission_mode?: LocalPermissionMode; approval_model_id?: string },
+): Promise<void> {
+    const data = await remoteCall<{ success: boolean; message?: string }>(
+        deviceId,
+        `/api/conversations/${encodeURIComponent(conversationId)}/settings`,
+        'POST',
+        patch,
+    )
+
+    if (!data.success) {
+        throw new Error(data.message || '保存会话设置失败')
+    }
 }
 
 // ---------- 电脑上的项目与会话 ----------

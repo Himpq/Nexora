@@ -434,6 +434,76 @@ class ConversationStore:
             conversation["injection_baseline"] = dict(baseline or {})
             self._save_conversation(conversation)
 
+    def get_settings(self, conversation_id: str) -> dict:
+        """读取会话级设置（模型 / 工具权限）。
+
+        会话设置是「每个会话独立持有」的一份完整值：新建会话时从全局默认复制一份，
+        之后各会话互不影响，全局改动只作用于新建会话。老会话可能没有 settings 段，
+        此时返回空字典，由调用方用 ensure_settings 惰性补齐。
+        """
+        conversation = self.get(conversation_id) or {}
+        settings = conversation.get("settings")
+        return dict(settings) if isinstance(settings, dict) else {}
+
+    def save_settings(self, conversation_id: str, patch: dict) -> dict:
+        """合并写入会话级设置，返回写入后的完整设置。
+
+        只接受白名单字段，避免前端塞入任意键污染会话文件。
+        """
+        if not isinstance(patch, dict):
+            raise ValueError("会话设置必须是对象")
+
+        allowed = {"model_name", "permission_mode", "approval_model_id"}
+
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            settings = conversation.get("settings")
+
+            if not isinstance(settings, dict):
+                settings = {}
+
+            for key in allowed:
+                if key not in patch:
+                    continue
+
+                settings[key] = str(patch.get(key) or "").strip()
+
+            conversation["settings"] = settings
+            self._save_conversation(conversation)
+
+            return dict(settings)
+
+    def ensure_settings(self, conversation_id: str, defaults: dict) -> dict:
+        """老会话惰性补齐设置：没有 settings 段时用给定默认值填一次并落盘。
+
+        这样老会话在首次被访问后也拥有独立设置，之后全局改动不再影响它。
+        已有 settings 段则原样返回，不覆盖用户改过的值。
+        """
+        with self._lock:
+            conversation = self.get(conversation_id)
+
+            if conversation is None:
+                raise ValueError("本地会话不存在")
+
+            settings = conversation.get("settings")
+
+            if isinstance(settings, dict) and settings:
+                return dict(settings)
+
+            merged = {
+                "model_name": str((defaults or {}).get("model_name") or "").strip(),
+                "permission_mode": str((defaults or {}).get("permission_mode") or "").strip(),
+                "approval_model_id": str((defaults or {}).get("approval_model_id") or "").strip(),
+            }
+            conversation["settings"] = merged
+            self._save_conversation(conversation)
+
+            return dict(merged)
+
     def record_context_usage(self, conversation_id: str, input_tokens: int, message_count: int,
                              estimated_tokens: int) -> None:
         """落盘上游实测输入与当时的消息条数，作为下一轮占用的锚点。

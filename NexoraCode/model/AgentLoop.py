@@ -294,7 +294,7 @@ class AgentLoop:
 
         effective_system = str(system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
-        if get_permission_settings()["mode"] == "auto":
+        if get_permission_settings(conversation_id)["mode"] == "auto":
             effective_system += (
                 "\n\n自动审批协作要求：调用写入、命令或进程变更工具前，先在普通回复中用一句简短的话说明"
                 "准备执行什么操作，以及它如何对应当前用户请求；不要输出内部推理。"
@@ -758,6 +758,7 @@ class AgentLoop:
                         _truncate_approval_context(content_text),
                         approval_action_history[-8:],
                     ),
+                    conversation_id=conversation_id,
                 )
                 _log_elapsed_ms(
                     "permission",

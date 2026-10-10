@@ -10,6 +10,7 @@
 import { defineStore } from 'pinia'
 
 import { fetchAppConfig, normalizeModelItems, type AppConfig, type ModelItem } from '@/api/config'
+import { fetchLocalConversationSettings, saveLocalConversationSettings } from '@/api/nexoracodeLocal'
 
 const IS_NEXORACODE = import.meta.env.MODE === 'nexoracode'
 
@@ -32,6 +33,17 @@ interface ModelState {
     selectedId: string
     /** 模型目录加载状态(供选择器显示读取中) */
     loading: boolean
+    /**
+     * 会话 id → 该会话选用的模型。
+     *
+     * 模型按会话独立保存：切到某会话时用它的模型，改模型只影响该会话。
+     * 全局 selectedId 仍保留，作为新建会话的初值。
+     */
+    conversationModels: Record<string, string>
+    /** 当前会话 id：selectModel 时据此决定写到哪个会话。 */
+    activeConversationId: string
+    /** 会话模型是否已从后端加载过（避免切会话时重复请求）。 */
+    conversationModelLoaded: Record<string, boolean>
 }
 
 /** 读取 config 缓存;有效则直接返回 */
@@ -76,6 +88,9 @@ export const useModelStore = defineStore('model', {
         models: [],
         selectedId: '',
         loading: false,
+        conversationModels: {},
+        activeConversationId: '',
+        conversationModelLoaded: {},
     }),
 
     getters: {
@@ -114,6 +129,12 @@ export const useModelStore = defineStore('model', {
         applyConfig(config: AppConfig): void {
             this.models = normalizeModelItems(config.models)
 
+            // 有活动会话时，selectedId 由 setActiveConversation 按会话设置决定，
+            // 此处不覆盖，避免 loadModels 与切会话并发时用全局默认冲掉会话模型。
+            if (IS_NEXORACODE && String(this.activeConversationId || '').trim()) {
+                return
+            }
+
             const cached = localStorage.getItem(SELECTED_MODEL_KEY)
 
             if (cached && this.models.some((item) => item.id === cached)) {
@@ -125,21 +146,108 @@ export const useModelStore = defineStore('model', {
             const preferred = IS_NEXORACODE ? String(config.default_model || '').trim() : ''
 
             if (preferred && this.models.some((item) => item.id === preferred)) {
-                this.selectModel(preferred)
+                // 仅作为全局初值写入本地缓存；不调用 selectModel，避免在有活动会话时
+                // 把全局默认模型误写进该会话（重启后覆盖会话自身模型）。
+                this.selectedId = preferred
+                localStorage.setItem(SELECTED_MODEL_KEY, preferred)
 
                 return
             }
 
             if (this.models.length > 0) {
-                this.selectModel(this.models[0].id)
+                this.selectedId = this.models[0].id
+                localStorage.setItem(SELECTED_MODEL_KEY, this.models[0].id)
             }
         },
 
-        /** 选中模型并持久化 */
+        /**
+         * 选中模型并持久化。
+         *
+         * 有当前会话时写该会话的独立设置（只影响本会话）；没有会话时更新全局默认
+         * （作为之后新建会话的初值）。
+         */
         selectModel(modelId: string): void {
             this.selectedId = modelId
 
+            const conversationId = IS_NEXORACODE ? String(this.activeConversationId || '').trim() : ''
+
+            if (conversationId) {
+                this.conversationModels[conversationId] = modelId
+                // 落盘到会话设置；失败不影响界面（下次进入会话会以服务端为准）。
+                void saveLocalConversationSettings(conversationId, { model_name: modelId }).catch(() => {
+                    // 静默：模型选择本身已生效，落盘失败只影响下次进入会话的默认值。
+                })
+
+                return
+            }
+
             localStorage.setItem(SELECTED_MODEL_KEY, modelId)
+        },
+
+        /**
+         * 切换当前会话：加载该会话的模型设置并应用到 selectedId。
+         *
+         * 会话模型按会话独立保存；老会话没有设置时后端会用全局默认补齐。
+         * 仅 NexoraCode 形态启用（云端会话的模型由云端自己的机制管理）。
+         */
+        async setActiveConversation(conversationId: string): Promise<void> {
+            const cleanId = IS_NEXORACODE ? String(conversationId || '').trim() : ''
+            this.activeConversationId = cleanId
+
+            if (!cleanId) {
+                return
+            }
+
+            if (this.conversationModelLoaded[cleanId]) {
+                this.applyConversationModel(this.conversationModels[cleanId])
+
+                return
+            }
+
+            try {
+                const settings = await fetchLocalConversationSettings(cleanId)
+                const modelName = String(settings.model_name || '').trim()
+
+                this.conversationModelLoaded[cleanId] = true
+
+                if (modelName) {
+                    this.conversationModels[cleanId] = modelName
+                }
+
+                this.applyConversationModel(modelName)
+            } catch {
+                // 读取失败回退全局初值，不阻断会话切换。
+                this.applyConversationModel('')
+            }
+        },
+
+        /**
+         * 应用某会话的模型到 selectedId。
+         *
+         * 会话有模型则用它（不校验模型目录是否已加载，避免与 loadModels 竞态）；
+         * 会话无模型（老会话）则回退全局初值（本地缓存 → 目录首项）。
+         * 只改 selectedId，不落盘、不写会话。
+         */
+        applyConversationModel(modelId: string): void {
+            const clean = String(modelId || '').trim()
+
+            if (clean) {
+                this.selectedId = clean
+
+                return
+            }
+
+            const cached = localStorage.getItem(SELECTED_MODEL_KEY)
+
+            if (cached) {
+                this.selectedId = cached
+
+                return
+            }
+
+            if (this.models.length > 0) {
+                this.selectedId = this.models[0].id
+            }
         },
     },
 })
