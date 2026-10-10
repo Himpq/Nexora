@@ -19,13 +19,15 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from typing import Any, Generator, List, Optional
 from urllib.parse import urlsplit
 
 import requests
 
-from core.config import get_app_root
+from core.config import config, get_app_root
+from .RetrySettings import DEFAULT_ERROR_RETRY_COUNT, configured_retry_count
 
 
 def _infer_provider_name(base_url: str, model: str) -> str:
@@ -563,6 +565,64 @@ class ProviderClient:
         if tools and tool_choice is not None:
             payload["tool_choice"] = tool_choice
 
+        retry_limit = configured_retry_count(
+            config,
+            "local_auto_retry_count",
+            DEFAULT_ERROR_RETRY_COUNT,
+        )
+        retry_index = 0
+
+        while True:
+            # 在正文或思考开始前暂存 usage/tool-call 元数据；若连接此时失败，
+            # 本次尝试的数据不会污染调用方，重试后只交付成功尝试的事件。
+            buffered_events = []
+            visible_output_started = False
+
+            try:
+                for event in self._stream_chat_once(payload):
+                    event_type = str(event.get("type") or "")
+                    has_visible_delta = (
+                        event_type in {"content", "reasoning_content"}
+                        and bool(str(event.get("delta") or ""))
+                    )
+
+                    if visible_output_started:
+                        yield event
+                        continue
+
+                    if has_visible_delta:
+                        visible_output_started = True
+
+                        for buffered_event in buffered_events:
+                            yield buffered_event
+
+                        buffered_events.clear()
+                        yield event
+                        continue
+
+                    buffered_events.append(event)
+
+                for buffered_event in buffered_events:
+                    yield buffered_event
+
+                return
+            except Exception as exc:
+                if self._cancel_event.is_set() or visible_output_started or retry_index >= retry_limit:
+                    raise
+
+                retry_index += 1
+                delay_seconds = min(0.25 * (2 ** (retry_index - 1)), 1.0)
+                print(
+                    f"[LocalProvider] auto_retry provider={self.config.name} model={self.config.model} "
+                    f"retry={retry_index}/{retry_limit} wait={delay_seconds:.2f}s "
+                    f"error={type(exc).__name__}: {str(exc)[:240]}"
+                )
+
+                if self._cancel_event.wait(delay_seconds):
+                    raise
+
+    def _stream_chat_once(self, payload: dict[str, Any]) -> Generator[dict, None, None]:
+        """执行一次上游流请求；重试与半截输出保护由 stream_chat 统一处理。"""
         try:
             upstream = self._session.post(
                 self._completions_url(),
@@ -573,7 +633,7 @@ class ProviderClient:
                 allow_redirects=False,
             )
         except Exception as exc:
-            raise ProviderError(f"Provider 请求失败: {exc}")
+            raise ProviderError(f"Provider 请求失败: {exc}") from exc
 
         status_code = int(upstream.status_code or 0)
 
@@ -582,9 +642,12 @@ class ProviderClient:
             raise ProviderError("Provider redirected; update the configured base_url to the final endpoint")
 
         if status_code >= 400:
-            raise ProviderError(f"Provider HTTP {upstream.status_code}: {read_provider_error_detail(upstream)}")
+            detail = read_provider_error_detail(upstream)
+            upstream.close()
+            raise ProviderError(f"Provider HTTP {upstream.status_code}: {detail}")
 
         if not getattr(upstream, "raw", None):
+            upstream.close()
             raise ProviderError("Provider 未返回流式响应")
 
         with self._response_lock:
@@ -640,6 +703,20 @@ class ProviderClient:
                         event = json.loads(data)
                     except Exception:
                         continue
+
+                    error_payload = event.get("error")
+
+                    if error_payload:
+                        if isinstance(error_payload, dict):
+                            error_details = [
+                                str(error_payload.get(key) or "").strip()
+                                for key in ("code", "type", "message")
+                            ]
+                            error_detail = " / ".join(part for part in error_details if part)
+                        else:
+                            error_detail = str(error_payload).strip()
+
+                        raise ProviderError(f"Provider 流式请求错误: {error_detail or '未提供错误详情'}")
 
                     usage = event.get("usage")
 

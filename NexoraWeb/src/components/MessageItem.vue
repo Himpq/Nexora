@@ -443,6 +443,8 @@
     const props = withDefaults(defineProps<{
         message: ChatMessage
         streaming?: boolean
+        /** 是否按流状态自动展开正在执行和最新工具结果。 */
+        autoExpandToolCalls?: boolean
         modelName?: string
         /** NexoraCode 保留本地耗时、首 token、速率和缓存徽标。 */
         nexoracode?: boolean
@@ -456,6 +458,7 @@
     }>(), {
         readonly: false,
         nexoracode: false,
+        autoExpandToolCalls: true,
         knowledgeEvents: () => [],
     })
 
@@ -866,11 +869,7 @@
         item.hasOutput = !!item.outputText.trim()
     }
 
-    /**
-     * 工具行展开状态:用户手动操作优先;
-     * 自动策略对齐原版「新结果到达展开当前行、更早的已完成行收起」——
-     * 仅最后一条已有结果的工具行默认展开。
-     */
+    /** 用户手动状态优先;设置允许时,流式期展开执行中的工具和最新结果。 */
     const lastResolvedToolIndex = computed<number>(() => {
         let last = -1
 
@@ -888,6 +887,10 @@
 
         if (userState !== undefined) {
             return userState
+        }
+
+        if (!props.autoExpandToolCalls) {
+            return false
         }
 
         // 自动展开仅限流式进行中(执行中行可见参数、最新完成行保持展开);

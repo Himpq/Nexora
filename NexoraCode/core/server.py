@@ -934,6 +934,11 @@ def local_settings_page():
 def local_settings_get():
     """读取本地设置（Provider 列表 + 对话配置）。api_key 不回显明文。"""
     from model.Provider import load_providers
+    from model.RetrySettings import (
+        DEFAULT_EMPTY_RESPONSE_RETRY_COUNT,
+        DEFAULT_ERROR_RETRY_COUNT,
+        configured_retry_count,
+    )
 
     providers = load_providers()
     default_id = ""
@@ -959,6 +964,17 @@ def local_settings_get():
             "username": str(config.get("local_username", "local") or "local"),
             "custom_system_prompt": str(config.get("local_custom_system_prompt", "") or ""),
             "read_agents_md": bool(config.get("local_read_agents_md", True)),
+            "tool_auto_expand": bool(config.get("local_tool_auto_expand", True)),
+            "auto_retry_count": configured_retry_count(
+                config,
+                "local_auto_retry_count",
+                DEFAULT_ERROR_RETRY_COUNT,
+            ),
+            "empty_response_retry_count": configured_retry_count(
+                config,
+                "local_empty_response_retry_count",
+                DEFAULT_EMPTY_RESPONSE_RETRY_COUNT,
+            ),
         },
     }), 200, {"Cache-Control": "no-store"}
 
@@ -967,10 +983,31 @@ def local_settings_get():
 def local_settings_save():
     """保存本地设置。api_key 留空表示保留原 key。"""
     from model.Provider import ProviderConfig, load_providers, save_providers, validate_context_budget
+    from model.RetrySettings import normalize_retry_count
 
     body = request.get_json(silent=True) or {}
     provider_payload = body.get("provider") if isinstance(body.get("provider"), dict) else {}
     general_payload = body.get("general") if isinstance(body.get("general"), dict) else {}
+    retry_settings = {
+        "auto_retry_count": "local_auto_retry_count",
+        "empty_response_retry_count": "local_empty_response_retry_count",
+    }
+    validated_retry_counts = {}
+
+    for payload_key, config_key in retry_settings.items():
+        if payload_key not in general_payload:
+            continue
+
+        try:
+            validated_retry_counts[config_key] = normalize_retry_count(general_payload[payload_key])
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+
+    if (
+        "tool_auto_expand" in general_payload
+        and not isinstance(general_payload["tool_auto_expand"], bool)
+    ):
+        return jsonify({"success": False, "message": "工具调用自动展开设置必须是布尔值"}), 400
 
     raw_providers = provider_payload.get("providers")
 
@@ -1032,6 +1069,12 @@ def local_settings_save():
 
     if "read_agents_md" in general_payload:
         config.set("local_read_agents_md", bool(general_payload.get("read_agents_md")))
+
+    if "tool_auto_expand" in general_payload:
+        config.set("local_tool_auto_expand", general_payload["tool_auto_expand"])
+
+    for config_key, retry_count in validated_retry_counts.items():
+        config.set(config_key, retry_count)
 
     return jsonify({"success": True, "message": "设置已保存"})
 

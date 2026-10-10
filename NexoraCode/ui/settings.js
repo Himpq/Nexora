@@ -338,7 +338,10 @@
             general: {
                 username: $("g-username").value.trim(),
                 custom_system_prompt: $("g-custom-prompt").value,
-                read_agents_md: $("g-read-agents-md").checked
+                read_agents_md: $("g-read-agents-md").checked,
+                tool_auto_expand: $("g-tool-auto-expand").checked,
+                auto_retry_count: Number($("g-auto-retry-count").value),
+                empty_response_retry_count: Number($("g-empty-response-retry-count").value)
             }
         };
     }
@@ -373,9 +376,15 @@
         var provider = res.data.provider || {};
         state.providers = provider.providers || [];
         state.defaultId = provider.default_id || "";
-        $("g-username").value = (res.data.general || {}).username || "local";
-        $("g-custom-prompt").value = (res.data.general || {}).custom_system_prompt || "";
-        $("g-read-agents-md").checked = (res.data.general || {}).read_agents_md !== false;
+        var general = res.data.general || {};
+        $("g-username").value = general.username || "local";
+        $("g-custom-prompt").value = general.custom_system_prompt || "";
+        $("g-read-agents-md").checked = general.read_agents_md !== false;
+        $("g-tool-auto-expand").checked = general.tool_auto_expand !== false;
+        $("g-auto-retry-count").value = general.auto_retry_count != null ? general.auto_retry_count : 5;
+        $("g-empty-response-retry-count").value = general.empty_response_retry_count != null
+            ? general.empty_response_retry_count
+            : 2;
         renderProviderList();
     }
 
@@ -385,6 +394,19 @@
 
         if (!window.NexoraToolPermissions.isReady()) {
             setStatus("工具权限设置仍在加载，请稍后保存", false);
+            return;
+        }
+
+        var invalidRetryField = [
+            $("g-auto-retry-count"),
+            $("g-empty-response-retry-count")
+        ].find(function (field) {
+            return !field.checkValidity();
+        });
+
+        if (invalidRetryField) {
+            setStatus("重试次数需要是 0 到 10 之间的整数", false);
+            invalidRetryField.focus();
             return;
         }
 

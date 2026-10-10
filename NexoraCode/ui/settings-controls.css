@@ -1,0 +1,99 @@
+.settings-fields {
+    display: flex;
+    max-width: 680px;
+    flex-direction: column;
+    gap: 18px;
+    margin-bottom: 20px;
+}
+
+.form {
+    display: flex;
+    max-width: 680px;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.field > span {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.field input,
+.field textarea {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border-input);
+    border-radius: 6px;
+    outline: none;
+    background: var(--bg-surface);
+    color: var(--text-main);
+    font-size: 12.5px;
+    line-height: 1.5;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.field input {
+    min-height: 36px;
+}
+
+.field textarea {
+    min-height: 90px;
+    resize: vertical;
+}
+
+.field input:hover,
+.field textarea:hover {
+    border-color: #c6c6c6;
+}
+
+.field input:focus,
+.field textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.12);
+}
+
+.field .hint {
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    line-height: 1.55;
+}
+
+.row {
+    display: flex;
+    gap: 14px;
+}
+
+.row .field {
+    flex: 1;
+}
+
+button.secondary {
+    padding: 8px 16px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius);
+    background: var(--bg-surface);
+    color: var(--text-main);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+}
+
+button.secondary:hover {
+    border-color: var(--accent);
+}
+
+button.secondary:focus-visible,
+button.primary:focus-visible,
+.pi-btn:focus-visible {
+    outline: 2px solid rgba(63, 116, 216, 0.4);
+    outline-offset: 2px;
+}

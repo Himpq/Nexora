@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>NexoraCode 设置</title>
     <link rel="stylesheet" href="/settings.css"/>
+    <link rel="stylesheet" href="/settings-controls.css"/>
+    <link rel="stylesheet" href="/settings-sections.css"/>
     <link rel="stylesheet" href="/permissions-settings.css?v=20261008_permission_dropdown_stats_01"/>
 </head>
 <body>
@@ -32,6 +34,7 @@
             <nav class="nav-list">
                 <button type="button" class="nav-item active" data-view="provider">模型 Provider</button>
                 <button type="button" class="nav-item" data-view="general">对话</button>
+                <button type="button" class="nav-item" data-view="error-handling">错误处理</button>
                 <button type="button" class="nav-item" data-view="permissions">工具权限</button>
                 <button type="button" class="nav-item" data-view="remote">远程连接</button>
                 <button type="button" class="nav-item" data-view="about">关于</button>
@@ -102,22 +105,51 @@
                     <div class="info-desc">消息由本地 Agent Loop 驱动，工具直接在本机执行，会话存于本地。</div>
                 </div>
 
-                <label class="field">
-                    <span>本地用户名</span>
-                    <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
-                </label>
+                <div class="settings-fields">
+                    <label class="field">
+                        <span>本地用户名</span>
+                        <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
+                    </label>
 
-                <label class="field">
-                    <span>自定义提示词</span>
-                    <textarea id="g-custom-prompt" rows="6" placeholder="追加到系统提示词末尾的个性化要求，例如代码风格、回答语言、常用约定等。留空表示不追加。" spellcheck="false"></textarea>
-                    <small class="hint">作为稳定内容注入系统提示词（head），同一会话内保持一致以利于缓存命中；上限 8000 字符。</small>
-                </label>
+                    <label class="field">
+                        <span>自定义提示词</span>
+                        <textarea id="g-custom-prompt" rows="6" placeholder="追加到系统提示词末尾的个性化要求，例如代码风格、回答语言、常用约定等。留空表示不追加。" spellcheck="false"></textarea>
+                        <small class="hint">作为稳定内容注入系统提示词（head），同一会话内保持一致以利于缓存命中；上限 8000 字符。</small>
+                    </label>
+                </div>
 
-                <label class="field field-inline">
-                    <input id="g-read-agents-md" type="checkbox" checked/>
-                    <span>读取项目 AGENTS.md</span>
-                    <small class="hint">开启后，绑定项目根目录下的 AGENTS.md / NEXORA.md / .nexora/AGENTS.md 会作为项目约定注入系统提示词。</small>
-                </label>
+                <div class="setting-list">
+                    <label class="field setting-toggle">
+                        <input id="g-read-agents-md" type="checkbox" checked/>
+                        <span>读取项目 AGENTS.md</span>
+                        <small class="hint">开启后，绑定项目根目录下的 AGENTS.md / NEXORA.md / .nexora/AGENTS.md 会作为项目约定注入系统提示词。</small>
+                    </label>
+
+                    <label class="field setting-toggle">
+                        <input id="g-tool-auto-expand" type="checkbox" checked/>
+                        <span>工具调用自动展开</span>
+                        <small class="hint">流式处理中自动展开正在执行和最新结果；关闭后工具内容默认收起，手动展开仍有效。</small>
+                    </label>
+                </div>
+            </section>
+
+            <section id="view-error-handling" class="view">
+                <h1>错误处理</h1>
+                <p class="sub">配置本地模型请求发生错误或工具返回后没有正文时的自动重试次数。</p>
+
+                <div class="form retry-grid">
+                    <label class="field retry-setting">
+                        <span>常规错误自动重试次数</span>
+                        <input id="g-auto-retry-count" type="number" min="0" max="10" step="1" value="5" required/>
+                        <small class="hint">正文或思考开始前发生模型请求错误时重试；0 表示关闭，最多 10 次。</small>
+                    </label>
+
+                    <label class="field retry-setting">
+                        <span>无输出自动重试次数</span>
+                        <input id="g-empty-response-retry-count" type="number" min="0" max="10" step="1" value="2" required/>
+                        <small class="hint">工具结果已返回但模型没有生成正文时重试；0 表示关闭。</small>
+                    </label>
+                </div>
             </section>
 
             <section id="view-permissions" class="view">
@@ -168,12 +200,14 @@
             <section id="view-remote" class="view">
                 <h1>远程连接</h1>
                 <p class="sub">在 Nexora 网页的 Projects 中生成配对码，再在这里绑定电脑。同账号设备可发送任务、查看历史和处理授权；云端只转发，历史与执行事件保存在本机。</p>
-                <label class="field"><span>服务器地址</span><input id="remote-url" type="url" placeholder="https://你的 Nexora 服务器"/></label>
-                <label class="field"><span>电脑名称</span><input id="remote-name" type="text" placeholder="我的电脑"/></label>
-                <label class="field"><span>一次性配对码</span><input id="remote-code" type="text" autocomplete="off"/></label>
-                <div class="pf-actions">
-                    <button id="remote-pair" type="button" class="primary">配对并启用</button>
-                    <button id="remote-toggle" type="button" class="secondary">启用远程连接</button>
+                <div class="remote-settings">
+                    <label class="field"><span>服务器地址</span><input id="remote-url" type="url" placeholder="https://你的 Nexora 服务器"/></label>
+                    <label class="field"><span>电脑名称</span><input id="remote-name" type="text" placeholder="我的电脑"/></label>
+                    <label class="field"><span>一次性配对码</span><input id="remote-code" type="text" autocomplete="off"/></label>
+                    <div class="pf-actions">
+                        <button id="remote-pair" type="button" class="primary">配对并启用</button>
+                        <button id="remote-toggle" type="button" class="secondary">启用远程连接</button>
+                    </div>
                 </div>
                 <p id="remote-status" role="status" class="sub"></p>
             </section>

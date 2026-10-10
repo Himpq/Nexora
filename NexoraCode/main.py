@@ -1625,7 +1625,7 @@ class NexoraWindowApi:
             return {"success": False, "message": str(e)}
 
     def refresh_main_window(self):
-        """设置保存后刷新主窗口模型列表与工具权限状态。
+        """设置保存后刷新主窗口模型列表、工具权限和工具卡片展开偏好。
 
         持久化外壳模式下真实页面在 iframe 内（nc_iframe_content=1），钩子挂在
         iframe 的 window 上，必须在顶层 window 里解析出该 iframe 再调用，
@@ -1659,6 +1659,7 @@ class NexoraWindowApi:
                     "try { view = resolveView() || window; } catch (_) { view = window; }"
                     "if (view.__ncLoadModels) { view.__ncLoadModels(); }"
                     "if (view.__ncRefreshToolPermissions) { view.__ncRefreshToolPermissions(); }"
+                    "if (view.__ncRefreshToolAutoExpand) { view.__ncRefreshToolAutoExpand(); }"
                     "return !!(view.__ncLoadModels && view.__ncRefreshToolPermissions);"
                     "})();"
                 )
