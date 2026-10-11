@@ -9,7 +9,7 @@
                 type="button"
                 class="nexoracode-sidebar-projects-main"
                 :aria-expanded="!projectsCollapsed"
-                @click="projectsCollapsed = !projectsCollapsed"
+                @click="toggleProjectsSection"
             >
                 <span class="nexoracode-sidebar-projects-title">Projects</span>
             </button>
@@ -30,7 +30,7 @@
                     title="展开 / 折叠项目"
                     aria-label="展开 / 折叠项目"
                     :aria-expanded="!projectsCollapsed"
-                    @click="projectsCollapsed = !projectsCollapsed"
+                    @click="toggleProjectsSection"
                 >
                     <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
                 </button>
@@ -121,6 +121,10 @@
     } from '@/api/nexoracodeLocal'
     import { showError } from '@/stores/notify'
     import { useConversationStore } from '@/stores/conversation'
+    import {
+        loadSidebarCollapseState,
+        saveSidebarCollapseState,
+    } from '@/composables/useSidebarCollapseState'
     import ConversationSidebarItem from '@/components/ConversationSidebarItem.vue'
     import { groupNexoraCodeProjectRows, type NexoraCodeProjectConversationGroup } from './projectConversations'
     import '@/styles/nexoracode-project-sidebar.css'
@@ -139,10 +143,26 @@
     }>()
 
     const store = useConversationStore()
-    const projectsCollapsed = ref(false)
+    const storedCollapse = loadSidebarCollapseState()
+    const projectsCollapsed = ref(storedCollapse.projects)
     const selectingProject = ref(false)
-    const collapseOverrides = ref(new Map<string, boolean>())
+    const collapseOverrides = ref(new Map<string, boolean>(
+        Object.entries(storedCollapse.projectOverrides),
+    ))
     const projectGroups = computed(() => groupNexoraCodeProjectRows(props.rows))
+
+    /** 折叠状态写入 localStorage,下次打开侧边栏时自动恢复 */
+    function persistCollapseState(): void {
+        saveSidebarCollapseState({
+            projects: projectsCollapsed.value,
+            projectOverrides: Object.fromEntries(collapseOverrides.value),
+        })
+    }
+
+    function toggleProjectsSection(): void {
+        projectsCollapsed.value = !projectsCollapsed.value
+        persistCollapseState()
+    }
 
     function isProjectCollapsed(group: NexoraCodeProjectConversationGroup): boolean {
         const override = collapseOverrides.value.get(group.project.project_id)
@@ -158,6 +178,7 @@
         const next = new Map(collapseOverrides.value)
         next.set(group.project.project_id, !isProjectCollapsed(group))
         collapseOverrides.value = next
+        persistCollapseState()
     }
 
     function handleNewProjectConversation(project: NexoraCodeProject): void {
