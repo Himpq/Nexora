@@ -1344,8 +1344,11 @@ def _resume_after_permission_grant(conversation_id: str, granted_path: str) -> d
     )
 
     if not executed:
-        print(f"[LocalAgent] resume aborted: tool re-execution failed conversation={conversation_id} "
-              f"tool={tool_name} path={path_text}")
+        _LOGGER.error(
+            "[LocalAgent] resume_aborted conversation=%s tool=%s",
+            conversation_id,
+            tool_name,
+        )
         return {"started": False, "message": "工具重新执行失败，请手动重试"}
 
     ConversationStore().replace_tool_result(conversation_id, tool_call_id, tool_content)
