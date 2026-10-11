@@ -294,6 +294,112 @@ function appendExecutionFlowCount(text: string, count: number | null, unit: stri
 }
 
 /**
+ * 搜索范围短标签：目录搜索显示目录名，单文件搜索显示文件名。
+ *
+ * 后端 local_text_search 返回 scope=file|directory 与 path（绝对路径）；
+ * 标题里只放末段，完整路径留在展开面板的 Path 字段里。
+ */
+function searchScopeLabel(path: string, scope: string): string {
+    const name = basenameForExecutionFlow(path)
+
+    if (!name) {
+        return ''
+    }
+
+    if (scope === 'file') {
+        return name
+    }
+
+    return `${name}/`
+}
+
+/**
+ * 旧格式搜索结果兜底解析：`query=ring match_count=20`。
+ *
+ * NexoraCode 早期 Present.py 只输出这一行，历史会话里仍存着这种结果；
+ * 没有它，回放旧对话时标题会退化成光秃秃的「搜索文本」。
+ */
+function parseLegacySearchStats(text: string): { query: string; matchCount: number | null } {
+    const source = String(text || '')
+
+    if (!source) {
+        return { query: '', matchCount: null }
+    }
+
+    const queryMatch = source.match(/(?:^|\n)query=(.+?)(?:\s+match_count=|\r?\n|$)/)
+    const countMatch = source.match(/(?:^|\n|\s)match_count=(\d+)/)
+
+    return {
+        query: queryMatch ? queryMatch[1].trim() : '',
+        matchCount: countMatch ? Number.parseInt(countMatch[1], 10) : null,
+    }
+}
+
+/**
+ * local_text_search 标题：`搜索文本 "query" · 命中 N 处 / 扫描 M 文件`。
+ *
+ * 查询词优先取调用参数（流式期没有结果也能显示），结果 markdown 的
+ * `- Query:` 字段作为历史回放兜底；命中数 / 扫描文件数来自后端标题头。
+ */
+function buildTextSearchAction(
+    query: string,
+    path: string,
+    markdownText: string,
+    resultText: string
+): string {
+    const markdown = String(markdownText || '')
+    const legacy = parseLegacySearchStats(`${resultText}\n${markdown}`)
+    const keyword = query || extractMarkdownField(markdown, 'Query') || legacy.query
+    const scope = extractMarkdownField(markdown, 'Scope')
+    const resultPath = extractMarkdownField(markdown, 'Path') || path
+    const matchCount = readExecutionFlowResultCount(markdown, resultText, ['Matches'], ['match_count'], ['matches'])
+        ?? legacy.matchCount
+    const fileCount = readExecutionFlowResultCount(markdown, resultText, ['Files'], ['scanned_files'], [])
+
+    const parts = ['搜索文本']
+
+    if (keyword) {
+        parts.push(`"${clipExecutionFlowText(keyword, 34)}"`)
+    }
+
+    const scopeLabel = searchScopeLabel(resultPath, scope)
+
+    if (scopeLabel) {
+        parts.push(scopeLabel)
+    }
+
+    let title = parts.join(' ')
+
+    if (matchCount !== null) {
+        title = `${title} · 命中 ${matchCount} 处`
+    }
+
+    if (fileCount !== null) {
+        title = `${title} / 扫描 ${fileCount} 文件`
+    }
+
+    return title
+}
+
+/** local_file_search_tree 标题：`查找文件 model/ · 24 项`。 */
+function buildFileSearchTreeAction(path: string, markdownText: string, resultText: string): string {
+    const markdown = String(markdownText || '')
+    const resultPath = extractMarkdownField(markdown, 'Path') || path
+    const label = basenameForExecutionFlow(resultPath)
+    const entryCount = readExecutionFlowResultCount(
+        markdown,
+        resultText,
+        ['Entries', 'Entry count'],
+        ['entry_count', 'scanned_entries'],
+        ['entries']
+    )
+
+    const base = label ? `查找文件 ${label}/` : '查找文件'
+
+    return entryCount !== null ? `${base} · ${entryCount} 项` : base
+}
+
+/**
  * 工具名 + 参数 → 中文动作标题(对齐原版 buildChineseToolAction 的分支顺序)
  *
  * @param toolName    原始工具名
@@ -383,6 +489,18 @@ export function buildChineseToolAction(
 
     if (compact.includes('filelist')) {
         return fileName ? `读取目录 ${fileName}` : '读取目录'
+    }
+
+    // local_text_search / local_file_search_tree：标题带查询词 + 命中数 + 扫描文件数，
+    // 让「搜索信息」这个兜底文案变成可读的具体动作。
+    // 必须排在 filefind/filesearch 之前：local_file_search_tree 的压缩名
+    // localfilesearchtree 也包含 filesearch，否则永远命中不到这里。
+    if (compact.includes('textsearch')) {
+        return buildTextSearchAction(query, path, markdown, result)
+    }
+
+    if (compact.includes('filesearchtree')) {
+        return buildFileSearchTreeAction(path, markdown, result)
     }
 
     if (compact.includes('filefind') || compact.includes('filesearch')) {

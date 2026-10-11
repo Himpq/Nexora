@@ -45,6 +45,16 @@
             class="input-wrapper"
             :class="{ 'input-wrapper-collapsed': inputWrapperCollapsed }"
         >
+            <NexoraCodeMessageQueue
+                v-if="(isNexoraCode || isRemote) && !collapsed"
+                :items="queueItems"
+                :paused="queuePaused"
+                :busy="queueBusy"
+                :streaming="streaming"
+                @edit="(id, message) => emit('queue-edit', id, message)"
+                @remove="(id) => emit('queue-remove', id)"
+                @steer="(id) => emit('queue-steer', id)"
+            />
             <div
                 class="input-container composer-compact"
                 :class="{ 'input-collapsed': inputContainerCollapsed, 'is-multiline': isMultiline, 'tools-mode-menu-open': toolsMenuOpen, 'file-drop-active': isDragOver }"
@@ -198,12 +208,12 @@
                     <button
                         id="sendBtn"
                         class="btn-send"
-                        :disabled="sendDisabled && !streaming"
-                        :class="{ 'stop-mode': streaming }"
-                        :title="streaming ? 'Stop Generation' : 'Send Message'"
+                        :disabled="(sendDisabled || queueBusy) && !stopMode"
+                        :class="{ 'stop-mode': stopMode }"
+                        :title="stopMode ? '停止生成' : (isNexoraCode && streaming ? '加入队列' : '发送消息')"
                         @click="handleSendOrStop"
                     >
-                        <template v-if="!streaming">
+                        <template v-if="!stopMode">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="22" y1="2" x2="11" y2="13"></line>
                                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -254,6 +264,8 @@
     import SettingSelect from '@/ui/settings/SettingSelect.vue'
     import TokenBudgetCard from '@/components/TokenBudgetCard.vue'
     import NexoraCodePermissionMenu from '@/components/nexoracode/NexoraCodePermissionMenu.vue'
+    import NexoraCodeMessageQueue from '@/components/nexoracode/NexoraCodeMessageQueue.vue'
+    import type { LocalQueueItem } from '@/api/nexoracodeQueue'
     import '@/styles/nexoracode-permissions.css'
 
     interface ContextUsageMessage {
@@ -290,6 +302,9 @@
         permissionModelId?: string
         /** remote 形态下由远程任务状态机驱动发送/停止按钮,不再看云端会话。 */
         streaming?: boolean
+        queueItems?: LocalQueueItem[]
+        queuePaused?: boolean
+        queueBusy?: boolean
         /** 历史窗口初次载入时禁止发送，避免新消息索引早于尚未加载的历史。 */
         sendDisabled?: boolean
         /** 草稿命名空间:remote 传远程会话 id,避免与云端会话草稿串台。 */
@@ -306,6 +321,9 @@
         remoteConversationId: '',
         permissionModelId: '',
         streaming: false,
+        queueItems: () => [],
+        queuePaused: false,
+        queueBusy: false,
         sendDisabled: false,
         draftKey: '',
         placeholder: '',
@@ -320,6 +338,10 @@
             toolsMode: string
         }]
         stop: []
+        'queue-edit': [id: string, message: string]
+        'queue-remove': [id: string]
+        'queue-steer': [id: string]
+        'queue-send': [content: string, thinking: boolean, complete: (accepted: boolean) => void]
         /** 移除某条待发送附件 */
         'remove-attachment': [index: number]
         /** 直选文件上传完成:父级并入待发送附件列表 */
@@ -476,6 +498,9 @@
     const streaming = computed(() => isCloud.value
         ? conversationStore.currentConversationGenerating
         : props.streaming)
+
+    // 本地生成中有文字时发送入队，清空文字后恢复停止按钮。
+    const stopMode = computed(() => streaming.value && !(isNexoraCode.value && draft.value.trim()))
 
     /** CTX 显示:当前模型上下文窗口(对齐原版 tokenBudgetUsage) */
     const ctxText = computed(() => {
@@ -871,7 +896,7 @@
     }
 
     function handleSendOrStop(): void {
-        if (streaming.value) {
+        if (stopMode.value) {
             emit('stop')
 
             return
@@ -881,12 +906,12 @@
     }
 
     function handleSend(): void {
-        if (props.sendDisabled) {
+        if (props.sendDisabled || props.queueBusy) {
             return
         }
 
-        // 生成中按 Enter 不发送、不清空输入(消息会进入队列,由 ChatView 处理)
-        if (streaming.value) {
+        // NexoraCode 与 RemoteControl 生成中允许回车排队，其余形态沿用现有发送入口。
+        if (streaming.value && !isNexoraCode.value && !isRemote.value) {
             return
         }
 
@@ -897,6 +922,20 @@
             return
         }
 
+        const submittedDraft = draft.value
+        const submittedNamespace = draftNamespace.value
+
+        // 入队确认后才清草稿，请求失败和期间新输入的文字都保留。
+        if ((isNexoraCode.value || isRemote.value) && streaming.value) {
+            emit('queue-send', content, enableThinking.value, (accepted) => {
+                if (accepted) {
+                    clearSubmittedDraft(submittedNamespace, submittedDraft)
+                }
+            })
+
+            return
+        }
+
         emit('send', content, {
             enableThinking: enableThinking.value,
             enableWebSearch: !isNexoraCode.value && enableWebSearch.value,
@@ -904,8 +943,18 @@
             toolsMode: isNexoraCode.value ? 'force' : toolsMode.value,
         })
 
-        // 发送成功后清除该会话草稿(避免刷新后旧草稿复活)
-        clearDraft(draftNamespace.value)
+        clearSubmittedDraft(submittedNamespace, submittedDraft)
+    }
+
+    /** 只清除已提交的草稿，不覆盖等待确认期间新写的内容。 */
+    function clearSubmittedDraft(namespace: string, submitted: string): void {
+        if (loadDraft(namespace) === submitted) {
+            clearDraft(namespace)
+        }
+
+        if (draftNamespace.value !== namespace || draft.value !== submitted) {
+            return
+        }
 
         draft.value = ''
 

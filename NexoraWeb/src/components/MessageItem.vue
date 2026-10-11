@@ -140,200 +140,48 @@
                     思考行与工具行共用执行流程时间线形态;
                     思考默认收起,流式输出时标题显示「思考中:末段字符滚动窗口」,点击展开完整内容;
                     工具行为时间线节点 + 中文动作标题。
+
+                    生成结束后,最终回复之前的全部内容(思考/工具/过程正文)由
+                    process-collapsed 类统一收起,只留最终回复平铺。
                 -->
-                <template v-for="item in renderItems" :key="`${item.kind}-${item.sourceIndex}`">
-                    <!-- 上下文压缩卡片:append 到内容流末尾 -->
-                    <ContextCompressionCard
-                        v-if="item.kind === 'compression'"
-                        :step="item.step"
-                    />
+                <button
+                    v-if="hasProcessSection"
+                    type="button"
+                    class="process-section-toggle"
+                    :class="{ expanded: processSectionExpanded }"
+                    :aria-expanded="processSectionExpanded"
+                    @click="toggleProcessSection"
+                >
+                    <span class="process-section-node" aria-hidden="true"></span>
+                    <span class="process-section-label">{{ processSectionExpanded ? '收起过程' : '已折叠过程' }}</span>
+                    <span v-if="processSectionSummary" class="process-section-summary">{{ processSectionSummary }}</span>
+                    <i class="fa-solid fa-chevron-right process-section-chevron" aria-hidden="true"></i>
+                </button>
 
-                    <!-- Modified Injection 卡片:仅 NexoraCode 本地模式渲染;
-                         网页版后端不发 context_injection,此门控保证网页版渲染路径不变。 -->
-                    <ContextInjectionCard
-                        v-else-if="item.kind === 'injection' && nexoracode"
-                        :step="item.step"
-                    />
-
-                    <div
-                        v-else-if="item.kind === 'reasoning'"
-                        class="thinking-block reasoning-thinking-block execution-flow-item"
-                        :class="{ collapsed: isReasoningCollapsed(item.sourceIndex), 'is-live': isLiveReasoning(item.sourceIndex) }"
-                    >
-                        <div class="thinking-header execution-flow-header" @click="toggleReasoning(item.sourceIndex)">
-                            <span class="execution-flow-node thinking-flow-node" aria-hidden="true"></span>
-                            <span class="execution-flow-main">
-                                <span
-                                    class="thinking-title execution-flow-title"
-                                    :ref="(el: unknown) => setReasoningTitleRef(item.sourceIndex, el)"
-                                >{{ reasoningTitle(item.segment, item.sourceIndex) }}</span>
-                            </span>
-                            <i class="fa-solid fa-chevron-down chevron-icon" aria-hidden="true"></i>
-                        </div>
-                        <div class="thinking-content">
-                            <MarkdownView
-                                :content="item.segment.text"
-                                @knowledge-reference="handleKnowledgeReference"
-                            />
-                            <!-- 展开态左下角收起按钮:与标题栏切换同一折叠状态 -->
-                            <button
-                                type="button"
-                                class="thinking-collapse-btn"
-                                title="收起思考过程"
-                                @click="toggleReasoning(item.sourceIndex)"
-                            >
-                                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
-                                <span>收起</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div v-else-if="item.kind === 'content'" class="content-body" :class="{ 'is-streaming-tail': isTailContent(item) }">
-                        <MarkdownView
-                            :content="item.segment.text"
-                            @knowledge-reference="handleKnowledgeReference"
+                <!--
+                    过程区:折叠容器只包过程项。
+                    最终回复必须渲染在容器之外 —— 容器收起时 grid-template-rows: 0fr
+                    会把内部所有内容压成 0 高度,若最终回复也在里面会一并消失。
+                -->
+                <div
+                    class="process-section-body"
+                    :class="{ 'is-collapsed': hasProcessSection && !processSectionExpanded }"
+                >
+                    <div class="process-section-inner">
+                        <MessageRenderItem
+                            v-for="item in processItems"
+                            :key="`${item.kind}-${item.sourceIndex}`"
+                            :item="item"
                         />
-                        <span v-if="isTailContent(item)" class="stream-caret" aria-hidden="true"></span>
                     </div>
+                </div>
 
-                    <!--
-                        交互问题卡片(question / ask_for_permission):
-                        等待回答时可选选项或自由输入;提交后锁定并作为普通消息发送;
-                        回答态持久化(localStorage nexora_question_locks_v1,与原版互操作)。
-                    -->
-                    <div
-                        v-else-if="item.kind === 'question'"
-                        class="question-tool-card"
-                        :data-question-card-id="questionCardIdOf(item)"
-                    >
-                        <div class="question-card-body" :class="{ answered: isQuestionAnswered(item) }">
-                            <div class="question-card-topline">
-                                <span class="question-card-kicker">{{ isPermissionCard(item) ? '权限请求' : '提问' }}</span>
-                                <span class="question-card-pill" :class="{ answered: isQuestionAnswered(item) }">
-                                    {{ isQuestionAnswered(item) ? '已回答' : (isPermissionCard(item) ? '等待授权' : '等待回答') }}
-                                </span>
-                            </div>
-
-                            <div class="question-card-title">{{ item.payload.question_title || '问题' }}</div>
-                            <div class="question-card-content">{{ item.payload.question_content }}</div>
-
-                            <!--
-                                readonly 只挡云端会话的删除/重答/分叉,不挡问卡作答:
-                                远程会话的答案由父组件转给电脑端(见 RemoteTaskPanel 的
-                                answer-question),把它一起藏掉会让权限请求永远无法授权。
-                            -->
-                            <template v-if="!isQuestionAnswered(item)">
-                                <div v-if="(item.payload.choices || []).length" class="question-card-choices">
-                                    <button
-                                        v-for="(choice, choiceIndex) in item.payload.choices"
-                                        :key="choiceIndex"
-                                        type="button"
-                                        class="question-choice-btn"
-                                        :disabled="questionSubmitting[item.sourceIndex] === true"
-                                        @click="submitQuestionAnswer(item, String(choice))"
-                                    >{{ choice }}</button>
-                                </div>
-
-                                <div v-if="item.payload.allow_other !== false" class="question-card-other">
-                                    <input
-                                        class="question-other-input"
-                                        type="text"
-                                        placeholder="其他…"
-                                        :value="otherDraftValue(item)"
-                                        :disabled="questionSubmitting[item.sourceIndex] === true"
-                                        @input="setOtherDraft(item.sourceIndex, ($event.target as HTMLInputElement).value)"
-                                        @keydown.enter.prevent="submitQuestionOther(item)"
-                                    >
-                                    <button
-                                        type="button"
-                                        class="question-other-submit"
-                                        :disabled="!otherDraftValue(item).trim() || questionSubmitting[item.sourceIndex] === true"
-                                        @click="submitQuestionOther(item)"
-                                    >提交</button>
-                                </div>
-                            </template>
-
-                            <div v-if="isQuestionAnswered(item)" class="question-card-answer">
-                                Your answer: {{ lockedAnswerText(item) }}
-                            </div>
-                        </div>
-                    </div>
-
-                    <template v-else-if="item.kind === 'tool'" :key="`tool-${item.sourceIndex}`">
-                        <!-- Workspace 草稿:内联小卡片,参数流式期间逐步呈现标题与正文,像正文内容一样直接展示 -->
-                        <div v-if="item.draft" class="draft-call-card" :data-call-id="item.callId || undefined">
-                            <div class="draft-call-head">
-                                <span class="draft-call-icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></span>
-                                <span class="draft-call-kicker">草稿</span>
-                                <span class="draft-call-title">{{ item.draft.title || '正在记录草稿…' }}</span>
-                                <span class="draft-call-state" :class="`is-${item.draft.state}`">
-                                    <i v-if="item.draft.state === 'streaming'" class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>
-                                    <i v-else-if="item.draft.state === 'success'" class="fa-solid fa-check" aria-hidden="true"></i>
-                                    <i v-else-if="item.draft.state === 'failed'" class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-                                    <span>{{ draftCallStateText(item.draft) }}</span>
-                                </span>
-                            </div>
-                            <MarkdownView
-                                v-if="item.draft.content"
-                                class="draft-call-content"
-                                :content="item.draft.content"
-                                @knowledge-reference="handleKnowledgeReference"
-                            />
-                            <div v-if="item.draft.state === 'failed' && item.draft.message" class="draft-call-error">{{ item.draft.message }}</div>
-                        </div>
-
-                        <div
-                            v-else
-                            class="tool-usage execution-flow-item"
-                            :class="{ expanded: isToolExpanded(item), 'has-output': item.hasOutput, 'is-running': item.running }"
-                            :data-flow-kind="item.flowKind"
-                        >
-                            <div class="tool-badge execution-flow-header" @click="toggleTool(item)">
-                                <span class="execution-flow-node" aria-hidden="true">
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
-                                </span>
-                                <span class="execution-flow-main">
-                                    <span class="tool-name execution-flow-title" :title="item.rawName">{{ item.title }}</span>
-                                </span>
-                                <span class="tool-status execution-flow-summary">{{ item.status }}</span>
-                                <span class="tool-toggle" aria-hidden="true">▸</span>
-                            </div>
-                            <div class="tool-output" :class="{ 'tool-output-markdown': item.markdownMode }">
-                                <MarkdownView
-                                    v-if="item.markdownMode && item.outputText"
-                                    :content="item.outputText"
-                                    @knowledge-reference="handleKnowledgeReference"
-                                />
-                                <template v-else>{{ item.outputText }}</template>
-                            </div>
-                        </div>
-
-                        <!-- Exa 图片直接贴在搜索工具行下方，不增加标题/数量/说明 -->
-                        <ExaImageGallery
-                            v-if="item.exaImageGallery"
-                            :gallery="item.exaImageGallery"
-                            @open-image="emit('open-image', $event)"
-                        />
-
-                        <GeneratedImageGallery
-                            v-if="item.generatedImageGallery"
-                            :gallery="item.generatedImageGallery"
-                            @open-image="emit('open-image', $event)"
-                        />
-
-                        <!-- 地图工具:独立渲染交互地图卡片(渲染器自动扫描 ```nexora-map* 围栏) -->
-                        <div
-                            v-if="item.mapMarkdown"
-                            class="content-body generated-map-result"
-                            :data-call-id="item.callId || undefined"
-                        >
-                            <MarkdownView
-                                :content="item.mapMarkdown"
-                                @knowledge-reference="handleKnowledgeReference"
-                            />
-                        </div>
-                    </template>
-                </template>
+                <!-- 最终回复:容器外,永不随过程区折叠 -->
+                <MessageRenderItem
+                    v-for="item in finalItems"
+                    :key="`${item.kind}-${item.sourceIndex}`"
+                    :item="item"
+                />
 
                 <!--
                     操作栏(对齐原版:助手消息无条件提供重答/分支,不依赖正文存在,
@@ -392,7 +240,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref, watch } from 'vue'
+    import { computed, provide, ref, watch } from 'vue'
 
     import type { ChatMessage } from '@/api/conversations'
     import type { MessageSegment } from '@/stream/messageSegments'
@@ -406,10 +254,8 @@
     } from '@/stream/toolFlow'
     import {
         buildStreamingDraftCall,
-        draftCallStateText,
         isDraftToolName,
         resolveDraftCallResult,
-        type DraftCallView,
     } from '@/stream/draftCall'
     import {
         isExaWebSearchToolName,
@@ -431,12 +277,18 @@
     import type { ContextInjectionStep } from '@/stream/contextInjection'
     import { parseContextInjectionStep, resolveActiveContextInjectionStep } from '@/stream/contextInjection'
     import { hasAnyIo, readMessageIoTokens } from '@/stream/tokenBudget'
+    import { buildProcessSectionSummary, resolveProcessItemIndexes } from '@/stream/processFold'
+    import {
+        MESSAGE_ITEM_RENDER_KEY,
+        type MessageItemRenderContext,
+        type RenderItem,
+        type TextRenderItem,
+        type ToolRenderItem,
+        type QuestionRenderItem,
+    } from './messageItemRenderContext'
 
     import MarkdownView from './MarkdownView.vue'
-    import ContextCompressionCard from './ContextCompressionCard.vue'
-    import ContextInjectionCard from './ContextInjectionCard.vue'
-    import ExaImageGallery from './ExaImageGallery.vue'
-    import GeneratedImageGallery from './GeneratedImageGallery.vue'
+    import MessageRenderItem from './MessageRenderItem.vue'
 
     import type { ConversationContextEvent } from '@/api/conversations'
 
@@ -506,67 +358,6 @@
             }
         }).filter((d) => d.rows.length > 0)
     })
-
-    /** 文本类渲染项(思考/正文,携带源分段索引用于折叠状态键) */
-    interface TextRenderItem {
-        kind: 'reasoning' | 'content'
-        segment: MessageSegment
-        sourceIndex: number
-    }
-
-    /** 工具行渲染项:一次调用与其结果配成一行执行流程节点(对齐原版 tool-usage 结构) */
-    interface ToolRenderItem {
-        kind: 'tool'
-        sourceIndex: number
-        callId: string
-        /** 原始工具名(title 提示用) */
-        rawName: string
-        /** 中文动作标题(对齐原版 buildChineseToolAction) */
-        title: string
-        /** 流程节点分类(file/shell/web/knowledge/...),驱动节点配色 */
-        flowKind: string
-        status: string
-        running: boolean
-        hasOutput: boolean
-        /** 调用参数对象(标题提取 subject/title 等字段用) */
-        args: Record<string, unknown>
-        /** 展开区内容:运行中为格式化参数,完成后为结果(markdown 或纯文本) */
-        outputText: string
-        /** 结果是否按 markdown 渲染(原版 model_visible_result 优先走 markdown) */
-        markdownMode: boolean
-        /** 地图工具:独立地图卡片 markdown(```nexora-map* 围栏,渲染器自动扫描) */
-        mapMarkdown?: string
-        /** Exa 工具:搜索行下方的独立图片画廊 */
-        exaImageGallery?: ExaImageGalleryData
-        /** 生图工具:生成行下方的独立图片画廊 */
-        generatedImageGallery?: GeneratedImageGalleryData
-        /** Workspace 草稿工具:内联小卡片视图(参数流式呈现,替代折叠工具行) */
-        draft?: DraftCallView
-    }
-
-    /** 交互问题渲染项:等待/已回答的 question 卡片 */
-    interface QuestionRenderItem {
-        kind: 'question'
-        sourceIndex: number
-        callId: string
-        payload: QuestionPayload
-    }
-
-    /** 上下文压缩卡片渲染项:按 append 语义追加到内容流末尾 */
-    interface CompressionRenderItem {
-        kind: 'compression'
-        sourceIndex: number
-        step: ContextCompressionStep
-    }
-
-    /** Modified Injection 卡片渲染项:同样按 append 语义追加到内容流末尾 */
-    interface InjectionRenderItem {
-        kind: 'injection'
-        sourceIndex: number
-        step: ContextInjectionStep
-    }
-
-    type RenderItem = TextRenderItem | ToolRenderItem | QuestionRenderItem | CompressionRenderItem | InjectionRenderItem
 
     /** 参数 JSON 美化(非 JSON 文本原样展示,对齐原版 formatToolArgsForOutput) */
     function prettyToolArgs(raw: string): string {
@@ -848,6 +639,119 @@
 
         return items
     })
+
+    /**
+     * 过程区折叠:
+     *
+     * 一条 assistant 消息常是「正文A → 工具 → 正文B → 工具 → 最终回复」。
+     * 收尾后,最后一个 content 分段之前的全部渲染项视为「过程」,
+     * 统一收进外层折叠区,只留最终回复平铺,避免中间过程淹没结论。
+     *
+     * 折叠条件(见 @/stream/processFold):
+     *   1. 最后一项必须是正文 —— 最后一项是工具/思考/错误都不折叠
+     *   2. 最后一项不能是错误
+     *   3. 流式中不折叠
+     *   4. 中断时最后一项是半截正文可折叠,是工具则不折叠(由条件 1 覆盖)
+     *
+     * 渲染上过程项与最终回复分成两个循环:过程项在折叠容器内,最终回复在
+     * 容器外。容器收起时 grid-template-rows 归零会让内部内容高度塌陷,
+     * 若最终回复也在容器内会被一并隐藏。
+     */
+    const processItemIndexes = computed<Set<number>>(() => {
+        return resolveProcessItemIndexes(renderItems.value, {
+            isStreaming: !!props.streaming || !!props.message.pending,
+            isQuestionAnswered: (item) => isQuestionAnswered(item as QuestionRenderItem),
+        })
+    })
+
+    /** 是否存在可折叠的过程内容(决定是否渲染折叠开关) */
+    const hasProcessSection = computed(() => processItemIndexes.value.size > 0)
+
+    /**
+     * 过程区折叠态:默认展开,仅在出现可折叠过程区后自动收起一次。
+     *
+     * 默认必须是 true —— 组件挂载瞬间若默认收起,流式期间整条内容都会被
+     * visibility:hidden 藏掉(只剩 model badge)。
+     */
+    const processSectionExpanded = ref(true)
+    const processSectionUserToggled = ref(false)
+
+    // 出现可折叠过程区时自动收起(仅在用户未手动干预过时)
+    watch(
+        () => hasProcessSection.value,
+        (hasProcess) => {
+            if (hasProcess && !processSectionUserToggled.value) {
+                processSectionExpanded.value = false
+            }
+        },
+        { immediate: true }
+    )
+
+    function toggleProcessSection(): void {
+        processSectionExpanded.value = !processSectionExpanded.value
+        processSectionUserToggled.value = true
+    }
+
+    /** 过程区摘要:统计折叠了多少次工具调用 / 思考 / 过程输出 */
+    const processSectionSummary = computed<string>(() => {
+        return buildProcessSectionSummary(renderItems.value, processItemIndexes.value)
+    })
+
+    /**
+     * 过程项与最终回复项分开渲染:
+     *
+     * 折叠容器收起时 grid-template-rows 归零,内部所有内容高度塌陷。
+     * 因此最终回复必须渲染在容器之外,否则会被一并隐藏。
+     *
+     * 切分依据是 processItemIndexes(存的是 sourceIndex),按数组位置切。
+     */
+    const processItems = computed<Array<RenderItem>>(() => {
+        const items = renderItems.value
+
+        if (processItemIndexes.value.size === 0) {
+            return []
+        }
+
+        // 折叠时最后一项(最终回复)始终留在容器外
+        return items.slice(0, Math.max(0, items.length - 1))
+    })
+
+    const finalItems = computed<Array<RenderItem>>(() => {
+        const items = renderItems.value
+
+        if (processItemIndexes.value.size === 0) {
+            return items
+        }
+
+        return items.slice(Math.max(0, items.length - 1))
+    })
+
+    /**
+     * 渲染上下文:子组件 MessageRenderItem 通过 inject 取用。
+     * 用 provide 而非逐项 props,避免十几个回调穿透。
+     */
+    provide(MESSAGE_ITEM_RENDER_KEY, {
+        get nexoracode() { return !!props.nexoracode },
+        get questionSubmitting() { return questionSubmitting.value },
+        isReasoningCollapsed,
+        isLiveReasoning,
+        toggleReasoning,
+        reasoningTitle,
+        setReasoningTitleRef,
+        isTailContent,
+        isToolExpanded,
+        toggleTool,
+        isQuestionAnswered,
+        isPermissionCard,
+        questionCardIdOf,
+        lockedAnswerText,
+        otherDraftValue,
+        setOtherDraft,
+        submitQuestionAnswer,
+        submitQuestionOther,
+        handleKnowledgeReference,
+        emitOpenImage: (url: string) => emit('open-image', url),
+    } as MessageItemRenderContext)
 
     /** 结果落位到工具行:更新标题/状态/输出(文件读取类不提供展开,对齐原版规则) */
     function applyToolResult(
@@ -2051,5 +1955,107 @@
         flex: 0 0 12px;
         font-weight: 700;
         text-align: center;
+    }
+
+    /* ---------- 过程折叠区 ----------
+     * 收尾后,最终回复之前的全部内容(思考/工具/过程正文)统一收起,
+     * 只留最终回复平铺。最终回复渲染在折叠容器之外,不受容器塌陷影响。
+     *
+     * 视觉沿用执行流程时间线语言(节点圆点 + 灰色标题 + 无边框透明底),
+     * 与思考行/工具行保持同一层级观感,而不是另起一套胶囊控件。
+     */
+    .process-section-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 100%;
+        margin: 7px 0 7px -16px;
+        padding: 2px 8px 2px 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 1.6;
+        cursor: pointer;
+        user-select: none;
+        transition: color 0.16s ease;
+    }
+
+    .process-section-toggle:hover {
+        color: var(--color-text-primary);
+    }
+
+    /* 节点圆点:与 execution-flow-node 同规格,左缩进对齐时间线竖线 */
+    .process-section-node {
+        position: relative;
+        z-index: 1;
+        flex: 0 0 8px;
+        width: 8px;
+        height: 8px;
+        margin-left: 4px;
+        border-radius: 50%;
+        background: var(--color-scrollbar-thumb);
+        transition: background 0.16s ease;
+    }
+
+    .process-section-toggle:hover .process-section-node,
+    .process-section-toggle.expanded .process-section-node {
+        background: var(--color-text-secondary);
+    }
+
+    .process-section-chevron {
+        flex: none;
+        font-size: 10px;
+        opacity: 0.7;
+        transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .process-section-toggle.expanded .process-section-chevron {
+        transform: rotate(90deg);
+    }
+
+    .process-section-label {
+        flex: none;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .process-section-summary {
+        min-width: 0;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* 折叠动画:用 grid-template-rows 0fr→1fr 过渡,无需测量内容高度,
+     * 长列表也不会像 max-height 那样出现过渡提前结束或撑爆的问题。
+     * inner 层 overflow: hidden 是 0fr 生效的必要条件(否则内容溢出仍可见)。
+     */
+    .process-section-body {
+        display: grid;
+        grid-template-rows: 1fr;
+        transition: grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .process-section-inner {
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .process-section-body.is-collapsed {
+        grid-template-rows: 0fr;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .process-section-body,
+        .process-section-chevron,
+        .process-section-node {
+            transition: none;
+        }
     }
 </style>

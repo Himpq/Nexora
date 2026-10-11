@@ -78,18 +78,26 @@
             :remote-device-id="store.deviceId"
             :remote-conversation-id="store.conversationId"
             :permission-model-id="store.modelName"
+            :queue-items="queue.items.value"
+            :queue-paused="queue.paused.value"
+            :queue-busy="queue.busy.value"
             :placeholder="store.online ? '向这台电脑上的 NexoraCode 下发任务' : '电脑离线，无法下发任务'"
             @send="send"
             @stop="store.stop()"
+            @queue-send="handleQueueSend"
+            @queue-edit="handleQueueEdit"
+            @queue-remove="handleQueueRemove"
+            @queue-steer="handleQueueSteer"
         />
     </section>
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, ref, watch } from 'vue'
+    import { computed, nextTick, ref, toRef, watch } from 'vue'
 
     import ChatInput from '@/components/ChatInput.vue'
     import MessageItem from '@/components/MessageItem.vue'
+    import { useNexoraCodeQueue } from '@/composables/useNexoraCodeQueue'
     import { remoteStore } from '@/stores/remote'
     import { showError } from '@/stores/notify'
 
@@ -100,6 +108,37 @@
 
     const store = remoteStore
     const selectedRemoteModel = computed(() => store.models.find(model => model.id === store.modelName))
+
+    /**
+     * 远程队列:与电脑端同一份数据,经云端网关白名单 RPC 转发。
+     * 电脑在线且有会话时才启用,避免离线时反复报错。
+     */
+    const queue = useNexoraCodeQueue(
+        toRef(store, 'conversationId'),
+        computed(() => store.online && !!store.conversationId),
+        toRef(store, 'deviceId'),
+    )
+
+    /** 入队:成功后把草稿清空交给 ChatInput 的确认回调处理。 */
+    async function handleQueueSend(
+        content: string,
+        thinking: boolean,
+        complete: (accepted: boolean) => void,
+    ): Promise<void> {
+        complete(await queue.enqueue(content, thinking))
+    }
+
+    function handleQueueEdit(id: string, message: string): void {
+        void queue.edit(id, message)
+    }
+
+    function handleQueueRemove(id: string): void {
+        void queue.remove(id)
+    }
+
+    function handleQueueSteer(id: string): void {
+        void queue.steer(id)
+    }
 
     const scrollerRef = ref<HTMLElement | null>(null)
     const prepending = ref(false)

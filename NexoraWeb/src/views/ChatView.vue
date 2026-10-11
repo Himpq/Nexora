@@ -315,7 +315,9 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+    import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+    import { useNexoraCodeQueue } from '@/composables/useNexoraCodeQueue'
+    import { saveDraft } from '@/composables/useChatDraft'
 
     import type { ChatMessage, ConversationContextEvent } from '@/api/conversations'
     import type { AttachmentInput } from '@/api/attachments'
@@ -392,6 +394,7 @@
     const modelStore = useModelStore()
     const userStore = useUserStore()
     const isNexoraCode = import.meta.env.MODE === 'nexoracode'
+    const localQueue = useNexoraCodeQueue(toRef(conversationStore, 'currentId'), isNexoraCode)
     const autoExpandToolCalls = ref(!isNexoraCode)
 
     /** 本地设置窗口保存后会刷新主窗口;启动时先读取它的工具卡片展开偏好。 */
@@ -630,6 +633,15 @@
         attachments: isNexoraCode ? [] : pendingAttachments.value,
         variant: isNexoraCode ? 'nexoracode' as const : 'cloud' as const,
         streaming: conversationStore.currentConversationGenerating,
+        queueItems: localQueue.items.value,
+        queuePaused: localQueue.paused.value,
+        queueBusy: localQueue.busy.value,
+        onQueueEdit: localQueue.edit,
+        onQueueRemove: localQueue.remove,
+        onQueueSteer: localQueue.steer,
+        onQueueSend: async (content: string, thinking: boolean, complete: (accepted: boolean) => void) => {
+            complete(await localQueue.enqueue(content, thinking))
+        },
         draftKey: isNexoraCode ? `nexoracode:${conversationStore.currentId}` : '',
         onSend: handleSend,
         onStop: handleStop,
@@ -1348,6 +1360,20 @@
         return message.role === 'assistant' && Number(message.index) === Number(pending.targetIndex)
     }
 
+    /** 本地入队失败时恢复输入，避免未受理的消息被清空。 */
+    async function enqueueLocalMessage(content: string, thinking: boolean): Promise<void> {
+        const conversationId = conversationStore.currentId
+        const queued = await localQueue.enqueue(content, thinking)
+
+        if (!queued) {
+            saveDraft(`nexoracode:${conversationId}`, content)
+
+            if (conversationId === conversationStore.currentId) {
+                chatInputRef.value?.fillDraft(content)
+            }
+        }
+    }
+
     /** 发送:唯一入口,经网络层同步锁防重入;生成中消息自动入队 */
     async function handleSend(content: string, options: {
         enableThinking: boolean
@@ -1364,6 +1390,12 @@
         // 会话级排队:仅当当前查看的会话本身在流式时才入队;
         // 跨会话发送(已切到其他对话)直接发起新流,并发进行
         if (conversationStore.currentConversationGenerating) {
+            if (isNexoraCode) {
+                await enqueueLocalMessage(content, options.enableThinking)
+
+                return
+            }
+
             conversationStore.enqueueMessage({
                 conversationId: conversationStore.currentId,
                 content,
@@ -1383,6 +1415,12 @@
             await conversationStore.ensureConversationId()
 
             if (conversationStore.currentConversationGenerating) {
+                if (isNexoraCode) {
+                    await enqueueLocalMessage(content, options.enableThinking)
+
+                    return
+                }
+
                 conversationStore.enqueueMessage({
                     conversationId: conversationStore.currentId,
                     content,
@@ -1483,7 +1521,7 @@
     watch(
         () => [conversationStore.currentConversationGenerating, conversationStore.currentId] as const,
         ([generating]) => {
-            if (generating) {
+            if (generating || isNexoraCode) {
                 return
             }
 
@@ -1696,6 +1734,30 @@
 
     /** 处理流式数据块:按类型分发增量正文/思考/会话元信息/错误;state 决定归属会话 */
     function handleStreamChunk(chunk: ChatStreamChunk, state: LiveStreamState): void {
+        if (isNexoraCode && localQueue.handleChunk(chunk)) {
+            return
+        }
+
+        if (isNexoraCode && chunk.type === 'queue_turn_end') {
+            const finalMessage = chunk.final_message as Record<string, unknown> | undefined
+
+            finalizeLocalBadgeTiming(state, finalMessage as ChatMessage | undefined)
+            conversationStore.applyFinalMessage(state.conversationId, finalMessage, Number(chunk.assistant_index))
+            conversationStore.finishStreamOutput(state.conversationId)
+
+            return
+        }
+
+        if (isNexoraCode && chunk.type === 'queue_turn_start') {
+            conversationStore.beginQueuedStream(state.conversationId, String(chunk.message || ''), Number(chunk.user_index), Number(chunk.assistant_index))
+            state.timing = readLocalBadgeTiming(conversationStore.pendingStreams[state.conversationId]?.assistant)
+            state.generationStartedAt = 0
+            state.phase = 'streaming'
+            chatStream.persistSnapshot(true)
+
+            return
+        }
+
         // 任何业务帧到达即视为流已建立(后端已过 begin_user_turn 落盘点)
         if (chunk && chunk.type && chunk.type !== 'error') {
             state.phase = 'streaming'
@@ -1899,6 +1961,10 @@
             regenerateIndex?: number
         } | undefined
 
+        if (isNexoraCode && !detail?.transportInterrupted) {
+            void localQueue.refresh(state.conversationId)
+        }
+
         if (Array.isArray(detail?.contextEvents)) {
             conversationStore.setContextEvents(state.conversationId, detail.contextEvents)
         }
@@ -2029,7 +2095,7 @@
         state.errorToastShown = false
     }
 
-    /** 停止生成:中断当前会话流并清空待发送队列 */
+    /** 停止生成：本地队列由后端暂停并保存，云端沿用既有队列行为。 */
     function handleStop(): void {
         // 仅发起取消;生成状态与流式目标索引由 onEnd('aborted') 收尾复位,
         // 保证取消终帧的 applyFinalMessage 仍能定位到正确的目标消息(重答场景)
@@ -2042,7 +2108,9 @@
             conversationStore.abortStream(conversationStore.currentId)
         }
 
-        conversationStore.clearQueue()
+        if (!isNexoraCode) {
+            conversationStore.clearQueue()
+        }
     }
 
     /** 删除单轮消息(用户消息 + 后续助手消息),同步后端 */

@@ -678,6 +678,60 @@ export const useConversationStore = defineStore('conversation', {
             }
         },
 
+        /** 同一传输流中的下一条队列消息：按服务端索引切换助手缓冲，不结束传输。 */
+        beginQueuedStream(conversationId: string, content: string, userIndex: number, assistantIndex: number): void {
+            const previous = this.pendingStreams[conversationId]
+
+            if (previous) {
+                previous.assistant.pending = false
+                previous.assistant.outputFinished = true
+            }
+
+            const userMessage: ChatMessage = { index: userIndex, role: 'user', content }
+            const assistant: ChatMessage = {
+                index: assistantIndex,
+                role: 'assistant',
+                content: '',
+                segments: [],
+                pending: true,
+                outputFinished: false,
+            }
+
+            if (conversationId === this.currentId) {
+                // 从头接管后台流时历史可能已有这些轮次，按索引重建而不重复追加。
+                if (previous && previous.targetIndex >= userIndex) {
+                    this.messages = this.messages.filter((message) => message !== previous.assistant)
+                }
+
+                const upsertMessage = (message: ChatMessage): void => {
+                    const index = this.messages.findIndex((item) => Number(item.index) === message.index)
+
+                    if (index >= 0) {
+                        this.messages[index] = message
+                    } else {
+                        this.messages.push(message)
+                    }
+                }
+
+                upsertMessage(userMessage)
+                upsertMessage(assistant)
+                this.messages.sort((left, right) => Number(left.index) - Number(right.index))
+
+                if (!this.turns.some((turn) => turn.index === userIndex)) {
+                    this.turns.push({ index: userIndex, role: 'user', content })
+                }
+
+                tokenMiniRefreshSeq += 1
+                this.resetTokenMiniStreamPart()
+            }
+
+            this.pendingStreams[conversationId] = {
+                targetIndex: assistant.index,
+                assistant,
+                userMessage,
+            }
+        },
+
         /** 流式增量追加正文分段(与思考分段按输出顺序交错排列) */
         appendStreamText(conversationId: string, delta: string): void {
             if (!delta) {
