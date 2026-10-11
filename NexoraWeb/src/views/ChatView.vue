@@ -1031,7 +1031,11 @@
         }
 
         const frame = learningFrameRef.value
-        if (!frame) return
+        if (!frame) {
+            // 早期是裸 return：点击无反应且无任何日志，排查时无法区分「消息发丢了」还是「压根没发」。
+            console.warn('[LearningNav] iframe 未挂载，导航命令已丢弃', { command })
+            return
+        }
 
         if (command.kind === 'studio') {
             frame.postCommand({ type: 'open-studio', studio: command.key })

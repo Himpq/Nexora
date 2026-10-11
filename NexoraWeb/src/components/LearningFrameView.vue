@@ -94,12 +94,15 @@ function getFrameOrigin(): string {
 function postToLearning(message: Record<string, unknown>): void {
     const frame = frameRef.value
     if (!frame || !frame.contentWindow) return
+    // 信封标识必须写在展开之后：command 里若带 protocol/version/source 会覆盖协议标识，
+    // 导致 iframe 侧 normalizeHostEnvelope 判定失败、消息被静默丢弃。
+    // 与 bridge/learningBridge.ts 的 createPostMessageAdapter 保持同款顺序。
     const envelope: LearningBridgeEnvelope = {
+        ...message,
         protocol: LEARNING_BRIDGE_PROTOCOL,
         version: LEARNING_BRIDGE_VERSION,
         source: 'host',
         type: String(message.type || ''),
-        ...message,
     }
     frame.contentWindow.postMessage(envelope, getFrameOrigin())
 }
