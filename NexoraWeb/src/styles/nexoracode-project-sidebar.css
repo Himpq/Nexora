@@ -77,6 +77,39 @@
     color: #fff;
 }
 
+/* 「展开更多」:默认 5 条之后的会话入口,与项目会话行保持同一缩进节奏 */
+.nexoracode-sidebar-project-more {
+    display: flex;
+    width: 100%;
+    min-height: 24px;
+    align-items: center;
+    gap: 6px;
+    margin-top: 1px;
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: rgba(160, 160, 160, 0.7);
+    font-size: 11.5px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nexoracode-sidebar-project-more:hover {
+    background-color: var(--bg-sidebar-hover);
+    color: #fff;
+}
+
+.nexoracode-sidebar-project-more i {
+    font-size: 9px;
+    transition: transform 0.2s ease;
+}
+
+.nexoracode-sidebar-project-more:focus-visible {
+    outline: 2px solid rgba(104, 157, 255, 0.9);
+    outline-offset: -1px;
+}
+
 .nexoracode-sidebar-icon-btn:disabled {
     cursor: wait;
     opacity: 0.5;

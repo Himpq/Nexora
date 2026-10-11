@@ -59,6 +59,40 @@ export function groupNexoraCodeProjectRows(rows: ConversationBranchRow[]): Nexor
     return Array.from(groups.values())
 }
 
+/** 项目默认展示的最新会话条数 */
+export const PROJECT_INITIAL_VISIBLE_ROWS = 5
+
+/** 每次点「展开更多」追加的条数 */
+export const PROJECT_REVEAL_STEP_ROWS = 10
+
+/**
+ * 计算项目当前应展示的会话条数。
+ *
+ * rows 已按后端顺序(置顶在前、其余按最近活动)排列,取前缀即「最新 N 条」。
+ * 未展开时返回 PROJECT_INITIAL_VISIBLE_ROWS;每次展开追加 PROJECT_REVEAL_STEP_ROWS,
+ * 上限为总条数,避免越界。
+ */
+export function resolveVisibleRowLimit(
+    totalRows: number,
+    expandedSteps = 0,
+): number {
+    const total = Math.max(0, Math.floor(Number(totalRows) || 0))
+    const steps = Math.max(0, Math.floor(Number(expandedSteps) || 0))
+
+    if (total <= PROJECT_INITIAL_VISIBLE_ROWS) {
+        return total
+    }
+
+    return Math.min(total, PROJECT_INITIAL_VISIBLE_ROWS + steps * PROJECT_REVEAL_STEP_ROWS)
+}
+
+/** 按当前可见条数截取会话行(不修改入参) */
+export function sliceVisibleRows<T>(rows: T[], expandedSteps = 0): T[] {
+    const list = Array.isArray(rows) ? rows : []
+
+    return list.slice(0, resolveVisibleRowLimit(list.length, expandedSteps))
+}
+
 function projectNameFromPath(path: string): string {
     const parts = path.split(/[\\/]/).filter(Boolean)
 

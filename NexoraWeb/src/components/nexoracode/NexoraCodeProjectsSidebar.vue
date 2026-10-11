@@ -89,7 +89,7 @@
                     <div class="nexoracode-sidebar-project-conversations">
                         <div class="nexoracode-sidebar-project-conversations-inner">
                             <ConversationSidebarItem
-                                v-for="row in group.rows"
+                                v-for="row in visibleRows(group)"
                                 :key="row.conversation.id"
                                 :conversation="row.conversation"
                                 :depth="row.depth"
@@ -102,6 +102,17 @@
                                 @delete="emit('delete-conversation', row.conversation)"
                                 @contextmenu="emit('context-menu', $event, row.conversation)"
                             />
+
+                            <button
+                                v-if="hasHiddenRows(group)"
+                                type="button"
+                                class="nexoracode-sidebar-project-more"
+                                :aria-label="`展开 ${group.project.name} 的更多会话`"
+                                @click="revealMore(group)"
+                            >
+                                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                <span>展开更多（剩余 {{ hiddenRowCount(group) }} 条）</span>
+                            </button>
                         </div>
                     </div>
                 </section>
@@ -126,7 +137,12 @@
         saveSidebarCollapseState,
     } from '@/composables/useSidebarCollapseState'
     import ConversationSidebarItem from '@/components/ConversationSidebarItem.vue'
-    import { groupNexoraCodeProjectRows, type NexoraCodeProjectConversationGroup } from './projectConversations'
+    import {
+        groupNexoraCodeProjectRows,
+        resolveVisibleRowLimit,
+        sliceVisibleRows,
+        type NexoraCodeProjectConversationGroup,
+    } from './projectConversations'
     import '@/styles/nexoracode-project-sidebar.css'
 
     const props = defineProps<{
@@ -150,6 +166,8 @@
         Object.entries(storedCollapse.projectOverrides),
     ))
     const projectGroups = computed(() => groupNexoraCodeProjectRows(props.rows))
+    /** 各项目已点「展开更多」的次数(未记录时视为 0,即默认只显示最新 5 条) */
+    const expandedSteps = ref(new Map<string, number>())
 
     /** 折叠状态写入 localStorage,下次打开侧边栏时自动恢复 */
     function persistCollapseState(): void {
@@ -179,6 +197,32 @@
         next.set(group.project.project_id, !isProjectCollapsed(group))
         collapseOverrides.value = next
         persistCollapseState()
+    }
+
+    /**
+     * 每个项目默认只展示最新 5 条会话,其余折叠为「展开更多」。
+     * rows 已按后端顺序(置顶在前、其余按最近活动)排列,取前缀即最新。
+     */
+    function visibleRows(group: NexoraCodeProjectConversationGroup): ConversationBranchRow[] {
+        return sliceVisibleRows(group.rows, expandedSteps.value.get(group.project.project_id) ?? 0)
+    }
+
+    function hiddenRowCount(group: NexoraCodeProjectConversationGroup): number {
+        const limit = resolveVisibleRowLimit(group.rows.length, expandedSteps.value.get(group.project.project_id) ?? 0)
+
+        return Math.max(0, group.rows.length - limit)
+    }
+
+    function hasHiddenRows(group: NexoraCodeProjectConversationGroup): boolean {
+        return hiddenRowCount(group) > 0
+    }
+
+    /** 展开更多:追加一批(默认 10 条),直到全部展开后按钮自动消失 */
+    function revealMore(group: NexoraCodeProjectConversationGroup): void {
+        const projectId = group.project.project_id
+        const next = new Map(expandedSteps.value)
+        next.set(projectId, (expandedSteps.value.get(projectId) ?? 0) + 1)
+        expandedSteps.value = next
     }
 
     function handleNewProjectConversation(project: NexoraCodeProject): void {
