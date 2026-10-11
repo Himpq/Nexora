@@ -10,6 +10,8 @@ export interface LocalQueueItem {
 
 export interface LocalQueueState {
     conversation_id: string
+    /** 状态归属设备:本地为空串,远程为电脑设备 id(共享缓存按它分桶) */
+    device_id?: string
     items: LocalQueueItem[]
     paused: boolean
     busy: boolean

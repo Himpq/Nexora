@@ -47,8 +47,14 @@ def _queue_snapshot(conversation_id: str) -> dict:
 
 
 def _publish_queue_state(conversation_id: str, state: dict) -> None:
-    if state.get("busy"):
-        append_chunk_to_conversation(conversation_id, {"type": "queue_state", **state})
+    """把最新队列状态推给该会话的活跃流。
+
+    不能按 busy 过滤:删除/编辑常发生在流已 detach(busy=False)的窗口,
+    此时不推事件,别的观察者(云端 Remote 面板)就永远看不到这次变更。
+    无活跃 session 时 append_chunk_to_conversation 返回 False,调用方已有
+    HTTP 响应兜底,这里无需再判一次。
+    """
+    append_chunk_to_conversation(conversation_id, {"type": "queue_state", **state})
 
 
 def _conversation_exists(conversation_id: str) -> bool:
