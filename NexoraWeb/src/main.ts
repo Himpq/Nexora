@@ -12,7 +12,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import { registerDesktopRefreshBridge } from '@/bridge/desktopRefresh'
-import { initializeDesktopErrorLogging, reportDesktopError } from '@/bridge/desktopErrorLogging'
+import { initializeDesktopErrorLogging } from '@/bridge/desktopErrorLogging'
 import { initTheme } from '@/ui/theme'
 import { startNexoraCodePerformance } from '@/ui/nexoracodePerformance'
 
@@ -91,7 +91,6 @@ if (errorOverlay) {
 function showGlobalError(kind: string, error: unknown): void {
     const stack = error instanceof Error ? (error.stack || error.message) : String(error)
 
-    reportDesktopError(kind, error)
     console.error(`[nexora:${kind}]`, error)
 
     if (!errorOverlay) {

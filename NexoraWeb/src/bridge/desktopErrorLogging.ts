@@ -38,6 +38,10 @@ function describeError(error: unknown): string {
     return Object.prototype.toString.call(error)
 }
 
+function describeConsoleError(values: unknown[]): string {
+    return values.map(describeError).join(' ')
+}
+
 function getDesktopApi(): DesktopErrorApi | null {
     const host = window as DesktopErrorWindow
     const api = host.pywebview?.api
@@ -81,25 +85,23 @@ export function initializeDesktopErrorLogging(): void {
 
     initialized = true
     window.addEventListener('pywebviewready', flushPendingReports)
+
+    const originalConsoleError = console.error.bind(console)
+    console.error = (...values: unknown[]) => {
+        originalConsoleError(...values)
+
+        const report = {
+            kind: 'console.error',
+            message: sanitizeErrorText(describeConsoleError(values)),
+        }
+        const api = getDesktopApi()
+
+        if (api) {
+            sendReport(api, report)
+        } else {
+            queueReport(report)
+        }
+    }
+
     flushPendingReports()
-}
-
-export function reportDesktopError(kind: string, error: unknown): void {
-    if (import.meta.env.MODE !== 'nexoracode') {
-        return
-    }
-
-    const report = {
-        kind: sanitizeErrorText(String(kind || 'frontend')).slice(0, 120),
-        message: sanitizeErrorText(describeError(error)),
-    }
-    const api = getDesktopApi()
-
-    if (!api) {
-        queueReport(report)
-
-        return
-    }
-
-    sendReport(api, report)
 }
