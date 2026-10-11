@@ -14,10 +14,13 @@ Provides:
 Only active on Windows; every function is a no-op on other platforms.
 """
 
+import logging
 import sys
 import threading
 import time
 import os
+
+_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "install",
@@ -1227,9 +1230,9 @@ else:
                     _dbg_print(f"install hwnd={int(hwnd):#x} emulate_snap={bool(emulate_snap)} rect={_rect_tuple(rc)}")
                 print(f"[wintitle] WndProc installed HWND={hwnd:#x}")
                 _trace(f"install ok hwnd={int(hwnd):#x} emulate_snap={bool(emulate_snap)}")
-            except Exception as e:
-                print(f"[wintitle] install failed: {e}")
-                _trace(f"install exception: {e}")
+            except Exception:
+                _LOGGER.exception("[wintitle] window_install_failed")
+                _trace("install exception")
 
         threading.Thread(target=_attach, daemon=True).start()
 

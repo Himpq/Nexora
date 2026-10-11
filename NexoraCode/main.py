@@ -3273,7 +3273,11 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 raise Exception("Empty auth response")
             auth_resp = json.loads(auth_msg)
             if auth_resp.get("type") != "auth_ok":
-                _LOGGER.error("[NexoraCode WSS] authentication_failed response_type=%s", auth_resp.get("type"))
+                _LOGGER.error(
+                    "[NexoraCode WSS] authentication_failed response_type=%s message=%s",
+                    auth_resp.get("type"),
+                    auth_resp.get("message"),
+                )
                 ws.close()
                 time.sleep(5)
                 continue
@@ -3477,7 +3481,7 @@ def _acquire_single_instance() -> bool:
 
         if not handle:
             # 互斥体创建失败不应阻断启动，退化为不做单实例限制。
-            print(f"[NexoraCode] single instance mutex unavailable, continue: err={last_error}")
+            _LOGGER.error("[NexoraCode] single_instance_mutex_unavailable error=%s", last_error)
             return True
 
         # ERROR_ALREADY_EXISTS = 183
@@ -3486,8 +3490,8 @@ def _acquire_single_instance() -> bool:
 
         _SINGLE_INSTANCE_HANDLE = handle
         return True
-    except Exception as exc:
-        print(f"[NexoraCode] single instance check failed, continue: {exc}")
+    except Exception:
+        _LOGGER.exception("[NexoraCode] single_instance_check_failed")
         return True
 
 
@@ -3500,7 +3504,7 @@ def _warn_already_running() -> None:
 
         ctypes.windll.user32.MessageBoxW(None, message, "NexoraCode", 0x00000040)
     except Exception:
-        print(f"[NexoraCode] {message}")
+        _LOGGER.exception("[NexoraCode] already_running_dialog_failed")
 
 
 def main():
@@ -4974,11 +4978,8 @@ def main():
                     win.evaluate_js("window.__ncHideDocBoot&&window.__ncHideDocBoot('python-loaded');")
                     print(f"[NexoraNav] doc-boot hidden at loaded href={href}")
                     _phase("doc-boot hidden")
-            except Exception as ex:
-                try:
-                    print(f"[NexoraNav] doc-boot hide failed href={href} err={ex}")
-                except Exception:
-                    pass
+            except Exception:
+                _LOGGER.exception("[NexoraNav] document_boot_hide_failed")
 
         # 非目标站点（或 bootstrap 页面）不执行注入逻辑
         if not _is_runtime_page:
@@ -5056,11 +5057,8 @@ def main():
                 win.evaluate_js("window.__ncHideDocBoot&&window.__ncHideDocBoot('runtime-ready');")
                 print(f"[NexoraNav] doc-boot hidden at runtime-ready href={href}")
                 _phase("doc-boot hidden (late)")
-            except Exception as ex:
-                try:
-                    print(f"[NexoraNav] doc-boot late hide failed href={href} err={ex}")
-                except Exception:
-                    pass
+            except Exception:
+                _LOGGER.exception("[NexoraNav] document_boot_late_hide_failed")
         payload = {
             "token": agent_token,
             "callback_url": local_base_url(),

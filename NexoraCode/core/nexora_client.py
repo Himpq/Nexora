@@ -3,11 +3,15 @@ Nexora 服务器通信客户端
 """
 
 import json
+import logging
 from typing import Iterator
 
 import requests
 
 from core.config import config
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class NexoraClient:
@@ -30,6 +34,6 @@ class NexoraClient:
                 timeout=10,
             )
             return resp.status_code == 200
-        except Exception as e:
-            print(f"[NexoraClient] register_tools failed: {e}")
+        except Exception:
+            _LOGGER.exception("[NexoraClient] register_tools_failed")
             return False
