@@ -17,11 +17,15 @@ NexoraCode.model.StreamRuntime — 本地流式会话运行时
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 import time
 import uuid
 from .SessionJournal import SessionJournal
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _SESSIONS_LOCK = threading.Lock()
@@ -60,8 +64,8 @@ def _broadcast_task_event(payload: Dict[str, Any]) -> None:
     for listener in listeners:
         try:
             listener(payload)
-        except Exception as exc:
-            print(f"[LocalTaskEvent] listener_failed error={type(exc).__name__}: {exc}")
+        except Exception:
+            _LOGGER.exception("[LocalTaskEvent] listener_failed")
 
 _MAX_CHUNKS_PER_SESSION = 12000
 # 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
@@ -398,6 +402,12 @@ def start_session(
         """业务 worker 已推送 error 事件时不再重复上报，只补记失败状态。"""
         cond = session["cond"]
 
+        _LOGGER.error(
+            "[LocalStream] worker_failed stream_id=%s",
+            session.get("stream_id"),
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
         with cond:
             already_reported = session["last_chunk_type"] == "error"
 
@@ -483,6 +493,35 @@ def get_session_meta(stream_id: str, *, include_request_message: bool = False) -
             meta["message"] = str(s.get("_request_message") or "")
 
         return meta
+
+
+def read_session_chunks(stream_id: str, after_seq: int = 0, limit: int = 200):
+    """按游标读取 session 内存事件，供远程断线补读和日志攒批期间读取。"""
+    sid = str(stream_id or "").strip()
+
+    if not sid:
+        return [], None, False
+
+    with _SESSIONS_LOCK:
+        session = _SESSIONS.get(sid)
+
+    if not session:
+        return [], None, False
+
+    cursor = max(0, int(after_seq))
+    safe_limit = max(0, int(limit))
+    cond = session["cond"]
+
+    with cond:
+        head_seq = int(session.get("head_seq") or 1)
+        chunks = [
+            copy.deepcopy(chunk)
+            for chunk in session.get("chunks", [])
+            if int(chunk.get("_stream_seq") or 0) > cursor
+        ][:safe_limit]
+        has_gap = cursor < head_seq - 1
+
+    return chunks, get_session_meta(sid), has_gap
 
 
 def get_accumulated_content(stream_id: str) -> Optional[Dict[str, Any]]:
@@ -655,6 +694,7 @@ def iter_session_chunks(
     *,
     from_seq: int = 0,
     heartbeat_sec: int = 12,
+    strict_cursor: bool = False,
 ) -> Generator[Tuple[Optional[int], Dict[str, Any]], None, None]:
     sid = str(stream_id or "").strip()
 
@@ -682,6 +722,7 @@ def iter_session_chunks(
         emit_payload = None
         tool_push_at = None
         should_break = False
+        gap_payload = None
         now = time.time()
 
         with cond:
@@ -690,9 +731,14 @@ def iter_session_chunks(
             status = str(session.get("status") or "done")
 
             if cursor < head_seq:
-                cursor = head_seq
+                if strict_cursor:
+                    gap_payload = {"type": "task_stream_gap", "head_seq": head_seq}
+                else:
+                    cursor = head_seq
 
-            if cursor <= last_seq:
+            if gap_payload is not None:
+                should_break = True
+            elif cursor <= last_seq:
                 idx = cursor - head_seq
                 chunks = session.get("chunks") or []
 
@@ -705,11 +751,15 @@ def iter_session_chunks(
                     session["updated_at"] = time.time()
                 else:
                     cursor = max(cursor + 1, head_seq)
-            elif status != "running":
+            elif status not in {"running", "cancelling"}:
                 should_break = True
             else:
                 timeout = min(1.0, float(max(0.2, heartbeat - (now - last_ping_ts))))
                 cond.wait(timeout=timeout)
+
+        if gap_payload is not None:
+            yield None, gap_payload
+            return
 
         if emit_payload is not None:
             if tool_push_at is not None:

@@ -88,6 +88,108 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(metadata["status"], "done")
         self.assertEqual(journal.SessionJournal().read(first["stream_id"], 1, 200)[0], [])
 
+    def test_live_event_reader_sees_chunks_before_journal_batch(self):
+        event_emitted = threading.Event()
+        release = threading.Event()
+
+        def factory(body):
+            def worker(push, set_cid, stage, cancelled):
+                push({"type": "content", "content": "尚未落盘的实时事件"})
+                event_emitted.set()
+                release.wait(2)
+
+            return worker
+
+        self.tasks.set_worker_factory(factory)
+        started = self.tasks.start_task({
+            "request_id": "live-memory-event",
+            "conversation_id": self.cid,
+            "message": "live memory event",
+        })
+
+        try:
+            self.assertTrue(event_emitted.wait(2))
+            chunks, meta, has_gap = self.runtime.read_session_chunks(started["stream_id"], 0, 200)
+            journal_module = module("test_model.SessionJournal", ROOT / "model/SessionJournal.py")
+            disk_chunks, _disk_meta = journal_module.SessionJournal().read(started["stream_id"], 0, 200)
+            from flask import Flask
+
+            app = Flask("live_event_reader")
+            app.register_blueprint(self.tasks.task_bp)
+            response = app.test_client().get(f"/api/local/tasks/{started['stream_id']}/events?after=0")
+
+            self.assertEqual(chunks[0]["content"], "尚未落盘的实时事件")
+            self.assertEqual(meta["status"], "running")
+            self.assertFalse(has_gap)
+            self.assertEqual(disk_chunks, [], "live reads must not wait for the 64-event journal batch")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["events"][0]["content"], "尚未落盘的实时事件")
+        finally:
+            release.set()
+
+            for _ in range(200):
+                meta = self.runtime.get_session_meta(started["stream_id"])
+
+                if not meta or meta["status"] != "running":
+                    break
+
+                time.sleep(0.01)
+
+    def test_strict_session_iterator_reports_expired_cursor(self):
+        event_emitted = threading.Event()
+        release = threading.Event()
+        previous_limit = self.runtime._MAX_CHUNKS_PER_SESSION
+        previous_flush_limit = self.runtime._JOURNAL_FLUSH_CHUNKS
+        self.runtime._MAX_CHUNKS_PER_SESSION = 1
+        self.runtime._JOURNAL_FLUSH_CHUNKS = 1
+
+        def factory(body):
+            def worker(push, set_cid, stage, cancelled):
+                push({"type": "content", "content": "first"})
+                push({"type": "content", "content": "second"})
+                event_emitted.set()
+                release.wait(2)
+
+            return worker
+
+        self.tasks.set_worker_factory(factory)
+        started = self.tasks.start_task({
+            "request_id": "strict-stream-gap",
+            "conversation_id": self.cid,
+            "message": "strict stream gap",
+        })
+
+        try:
+            self.assertTrue(event_emitted.wait(2))
+            frames = list(self.runtime.iter_session_chunks(
+                started["stream_id"],
+                from_seq=0,
+                strict_cursor=True,
+            ))
+            from flask import Flask
+
+            app = Flask("expired_cursor_reader")
+            app.register_blueprint(self.tasks.task_bp)
+            response = app.test_client().get(f"/api/local/tasks/{started['stream_id']}/events?after=0")
+            payload = response.get_json()
+
+            self.assertEqual(frames, [(None, {"type": "task_stream_gap", "head_seq": 2})])
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([event["_stream_seq"] for event in payload["events"]], [1, 2])
+            self.assertFalse(payload["has_gap"])
+        finally:
+            release.set()
+            self.runtime._MAX_CHUNKS_PER_SESSION = previous_limit
+            self.runtime._JOURNAL_FLUSH_CHUNKS = previous_flush_limit
+
+            for _ in range(200):
+                meta = self.runtime.get_session_meta(started["stream_id"])
+
+                if not meta or meta["status"] != "running":
+                    break
+
+                time.sleep(0.01)
+
     def test_interrupted_process_does_not_resume_worker(self):
         journal_module = module("test_model.SessionJournal", ROOT / "model/SessionJournal.py")
         journal = journal_module.SessionJournal()
@@ -115,7 +217,7 @@ class RemoteTests(unittest.TestCase):
         response = client.post(f'/api/nexoracode/devices/{device["device_id"]}/rpc', json={})
         self.assertEqual(response.status_code, 404)
 
-    def test_real_websocket_transfers_local_task_and_replays_events(self):
+    def test_real_websocket_streams_live_task_events(self):
         from flask import Flask, jsonify
         from werkzeug.serving import make_server
 
@@ -133,14 +235,21 @@ class RemoteTests(unittest.TestCase):
         def conversations():
             return jsonify({"conversations": self.store.list()})
 
+        event_emitted = threading.Event()
+        release = threading.Event()
+
         def factory(body):
             def worker(push, set_cid, stage, cancelled):
                 push({"type": "content", "content": "模型在电脑执行的测试结果"})
+                event_emitted.set()
+                release.wait(10)
+
             return worker
 
         self.tasks.set_worker_factory(factory)
         sys.modules["model"] = sys.modules["test_model"]
         sys.modules["model.ConversationStore"] = self.store_module
+        sys.modules["model.StreamRuntime"] = self.runtime
         remote = module("isolated_remote_connection", ROOT / "core/remote_connection.py")
         connection = remote.RemoteConnection(local)
 
@@ -161,14 +270,73 @@ class RemoteTests(unittest.TestCase):
             }})
             self.assertEqual(result["status"], 200)
             sid = result["body"]["stream_id"]
+            self.assertTrue(event_emitted.wait(2))
 
-            for _ in range(100):
-                replay = gateway.rpc("alice", device_id, {"path": f"/api/local/tasks/{sid}/events", "query": {"after": 0}})
-                if replay["body"]["session"]["status"] == "done":
-                    break
-                time.sleep(0.01)
+            import websocket
 
+            browser = cloud.test_client()
+            with browser.session_transaction() as browser_session:
+                browser_session["username"] = "alice"
+
+            session_cookie = browser.get_cookie("session")
+            origin = f"http://127.0.0.1:{server.server_port}"
+            browser_ws = websocket.create_connection(
+                f"ws://127.0.0.1:{server.server_port}/ws/nexoracode/tasks",
+                timeout=3,
+                origin=origin,
+                header=[f"Cookie: session={session_cookie.value}"],
+            )
+
+            try:
+                browser_ws.send(json.dumps({
+                    "type": "subscribe_task",
+                    "device_id": device_id,
+                    "stream_id": sid,
+                    "after_seq": 0,
+                }))
+                frames = []
+                deadline = time.monotonic() + 5
+
+                while time.monotonic() < deadline:
+                    frame = json.loads(browser_ws.recv())
+                    frames.append(frame)
+
+                    if frame.get("type") == "task_event" and frame.get("event", {}).get("content"):
+                        break
+
+                pushed = [
+                    frame.get("event", {})
+                    for frame in frames
+                    if frame.get("type") == "task_event"
+                ]
+                self.assertTrue(any(event.get("content") == "模型在电脑执行的测试结果" for event in pushed))
+                self.assertTrue(any(
+                    frame.get("type") == "task_state" and frame.get("session", {}).get("status") == "running"
+                    for frame in frames
+                ))
+
+                release.set()
+                terminal_deadline = time.monotonic() + 5
+
+                while time.monotonic() < terminal_deadline:
+                    frame = json.loads(browser_ws.recv())
+                    frames.append(frame)
+
+                    if frame.get("type") == "task_state" and frame.get("session", {}).get("status") == "done":
+                        break
+
+                self.assertEqual(frames[-1]["type"], "task_state")
+                self.assertEqual(frames[-1]["session"]["status"], "done")
+            finally:
+                release.set()
+                browser_ws.close()
+
+            replay = gateway.rpc("alice", device_id, {
+                "path": f"/api/local/tasks/{sid}/events",
+                "query": {"after": 0},
+            })
             self.assertEqual(replay["body"]["events"][0]["content"], "模型在电脑执行的测试结果")
+
             denied = gateway.rpc("alice", device_id, {"path": "/api/local/settings"})
             self.assertEqual(denied["status"], 403)
             self.assertEqual(gateway.pending, {})
@@ -176,6 +344,7 @@ class RemoteTests(unittest.TestCase):
             connection.set_enabled(False)
             self.assertFalse(connection.online)
         finally:
+            release.set()
             connection.pause()
             server.shutdown()
             server.server_close()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import socket
 import ssl
@@ -17,7 +18,100 @@ from model.ConversationStore import ConversationStore, write_json_atomic
 
 
 remote_bp = Blueprint("local_remote", __name__)
+_LOGGER = logging.getLogger(__name__)
 _MANAGER = None
+
+
+def _send_task_frame(ws, send_lock, payload):
+    try:
+        with send_lock:
+            ws.send(json.dumps(payload, ensure_ascii=False))
+
+        return True
+    except Exception:
+        _LOGGER.exception("[NexoraRemote] task_frame_send_failed type=%s", payload.get("type", "unknown"))
+        return False
+
+
+def _relay_task_events(ws, send_lock, subscription_id, stream_id, after_seq, stopped):
+    from model.StreamRuntime import get_session_meta, iter_session_chunks
+
+    meta = get_session_meta(stream_id)
+
+    if not meta:
+        _send_task_frame(ws, send_lock, {
+            "type": "task_stream_error",
+            "subscription_id": subscription_id,
+            "stream_id": stream_id,
+            "message": "任务不存在或已清理",
+        })
+        return
+
+    if meta.get("status") in {"running", "cancelling"}:
+        if not _send_task_frame(ws, send_lock, {
+            "type": "task_state",
+            "subscription_id": subscription_id,
+            "stream_id": stream_id,
+            "session": meta,
+        }):
+            return
+
+    try:
+        for sequence, event in iter_session_chunks(
+            stream_id,
+            from_seq=after_seq,
+            heartbeat_sec=3,
+            strict_cursor=True,
+        ):
+            if stopped.is_set():
+                return
+
+            if event.get("type") == "task_stream_gap":
+                _send_task_frame(ws, send_lock, {
+                    "type": "task_stream_gap",
+                    "subscription_id": subscription_id,
+                    "stream_id": stream_id,
+                    "head_seq": event.get("head_seq"),
+                })
+                return
+
+            if sequence is None:
+                frame = {
+                    "type": "task_state",
+                    "subscription_id": subscription_id,
+                    "stream_id": stream_id,
+                    "session": get_session_meta(stream_id),
+                }
+            else:
+                frame = {
+                    "type": "task_event",
+                    "subscription_id": subscription_id,
+                    "stream_id": stream_id,
+                    "event": event,
+                }
+
+            if not _send_task_frame(ws, send_lock, frame):
+                return
+
+        if not stopped.is_set():
+            _send_task_frame(ws, send_lock, {
+                "type": "task_state",
+                "subscription_id": subscription_id,
+                "stream_id": stream_id,
+                "session": get_session_meta(stream_id),
+            })
+    except Exception as exc:
+        _LOGGER.exception(
+            "[NexoraRemote] task_relay_failed subscription_id=%s stream_id=%s",
+            subscription_id,
+            stream_id,
+        )
+        _send_task_frame(ws, send_lock, {
+            "type": "task_stream_error",
+            "subscription_id": subscription_id,
+            "stream_id": stream_id,
+            "message": f"电脑任务事件转发失败：{type(exc).__name__}",
+        })
 
 
 def normalize_server_url(value):
@@ -222,6 +316,8 @@ class RemoteConnection:
         while not self.stop.is_set():
             settings = {}
             ws = None
+            task_relays = {}
+            task_relays_lock = threading.Lock()
             phase = "load_settings"
 
             try:
@@ -252,20 +348,28 @@ class RemoteConnection:
                     try:
                         result = self.dispatch(message["payload"])
                     except Exception as exc:
-                        print(f"[NexoraRemote] rpc_failed error={type(exc).__name__}")
+                        _LOGGER.exception("[NexoraRemote] rpc_failed error=%s", type(exc).__name__)
                         result = {"status": 500, "body": {"message": "电脑处理请求失败，请查看本地日志"}}
 
                     try:
                         with send_lock:
                             ws.send(json.dumps({"type": "rpc_result", "request_id": message["request_id"], "result": result}, ensure_ascii=False))
                     except Exception as exc:
-                        print("[NexoraRemote] rpc_result_send_failed " + _connection_failure_message(exc, "rpc_result_send", settings))
+                        _LOGGER.error(
+                            "[NexoraRemote] rpc_result_send_failed %s",
+                            _connection_failure_message(exc, "rpc_result_send", settings),
+                            exc_info=True,
+                        )
 
                         try:
                             with send_lock:
                                 ws.close()
                         except Exception as close_exc:
-                            print("[NexoraRemote] close_failed " + _connection_failure_message(close_exc, "rpc_result_send_cleanup", settings))
+                            _LOGGER.error(
+                                "[NexoraRemote] close_failed %s",
+                                _connection_failure_message(close_exc, "rpc_result_send_cleanup", settings),
+                                exc_info=True,
+                            )
 
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     while not self.stop.is_set():
@@ -290,17 +394,68 @@ class RemoteConnection:
 
                         if message.get("type") == "rpc":
                             pool.submit(handle, message)
+                        elif message.get("type") == "task_subscribe":
+                            subscription_id = str(message.get("subscription_id") or "")
+                            stream_id = str(message.get("stream_id") or "")
+
+                            if not re.fullmatch(r"[a-f0-9]{32}", subscription_id) or not re.fullmatch(r"[a-f0-9]{32}", stream_id):
+                                continue
+
+                            try:
+                                after_seq = max(0, int(message.get("after_seq", 0)))
+                            except (TypeError, ValueError):
+                                continue
+
+                            with task_relays_lock:
+                                if subscription_id in task_relays:
+                                    continue
+
+                                stopped = threading.Event()
+                                relay = threading.Thread(
+                                    target=_relay_task_events,
+                                    args=(ws, send_lock, subscription_id, stream_id, after_seq, stopped),
+                                    daemon=True,
+                                    name="nc-remote-task-stream",
+                                )
+                                task_relays[subscription_id] = (stopped, relay)
+                                relay.start()
+                        elif message.get("type") == "task_unsubscribe":
+                            subscription_id = str(message.get("subscription_id") or "")
+
+                            with task_relays_lock:
+                                relay = task_relays.pop(subscription_id, None)
+
+                            if relay:
+                                relay[0].set()
             except Exception as exc:
                 self.error = "远程连接中断，正在重连；请检查网络和设备配对"
-                print("[NexoraRemote] connection_failed " + _connection_failure_message(exc, phase, settings))
+                _LOGGER.error(
+                    "[NexoraRemote] connection_failed %s",
+                    _connection_failure_message(exc, phase, settings),
+                    exc_info=True,
+                )
             finally:
                 self.online = False
+
+                with task_relays_lock:
+                    relays = list(task_relays.values())
+                    task_relays.clear()
+
+                for stopped, _relay in relays:
+                    stopped.set()
+
+                for _stopped, relay in relays:
+                    relay.join(timeout=2)
 
                 if ws:
                     try:
                         ws.close()
                     except Exception as exc:
-                        print("[NexoraRemote] close_failed " + _connection_failure_message(exc, "connection_cleanup", settings))
+                        _LOGGER.error(
+                            "[NexoraRemote] close_failed %s",
+                            _connection_failure_message(exc, "connection_cleanup", settings),
+                            exc_info=True,
+                        )
 
                 self.ws = None
 

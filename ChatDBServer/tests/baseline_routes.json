@@ -2081,6 +2081,12 @@
       ]
     ],
     [
+      "/ws/nexoracode/tasks",
+      [
+        "GET"
+      ]
+    ],
+    [
       "/ws/public/knowledge/<username>/<share_id>",
       [
         "GET"

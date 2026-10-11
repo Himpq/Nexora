@@ -1,17 +1,8 @@
 /**
- * 远程任务的流式控制（显式状态机）
+ * 远程任务事件流：事件通过设备 WebSocket 实时推送，序号用于断线续接。
  *
- * 为什么是轮询而不是 SSE：电脑经云端网关转发，网关单次 rpc 超时 30 秒
- * （ChatDBServer/api/App/Agent/remote_gateway.py 的 DeviceGateway.rpc），
- * 一条长连接撑不住一次可能跑几分钟的编程任务。所以这里用游标轮询：
- * 电脑侧 `GET /api/local/tasks/<id>/events?after=<seq>` 幂等，
- * 重复读同一游标不会重复投递，因此断线后可以用同一游标安全重放。
- *
- * 状态是显式的，调用方不需要靠事件内容猜：
- *   idle → starting → running ⇄ stopping → done | failed | cancelled | interrupted | gone
- * - `stop()` 只发取消请求并进入 stopping，终态由轮询结果确认；
- * - `detach()` 停止轮询但保留游标，用于切页面；`attach()` 从原游标续读，不丢事件；
- * - `dispose()` 彻底结束并清理定时器。
+ * 开始与停止任务仍使用短 RPC；任务运行期间不再定时请求事件接口。网页或设备
+ * 重连时，电脑从 after_seq 继续推送；内存窗口不足时，才通过事件接口按页补读。
  */
 
 import {
@@ -39,34 +30,16 @@ export interface RemoteTaskStreamHandlers {
     onEvent: (event: RemoteTaskEvent) => void
     /** 状态迁移，落盘/切换视图时用于整体重绘。 */
     onState?: (state: RemoteTaskState, session: RemoteTaskSession | null) => void
-    /** 轮询本身失败（网络抖动、电脑离线、404），不代表任务结束。 */
+    /** WebSocket 或断线补读失败。 */
     onError?: (error: Error) => void
 }
 
-/** 活动轮询间隔；空闲时按 IDLE_POLL_INTERVAL 退避，减少对网关的压力。 */
-const ACTIVE_POLL_MS = 250
-const IDLE_POLL_MS = 1500
-/**
- * 看到终态后继续读的次数上限，用来排空尾部事件。
- *
- * 电脑端先把 session 标成 done，再把最后几个事件刷进 journal；网关单次 rpc 又是
- * 「读到当下为止」的快照，所以第一次读到 done 时末尾通常还缺事件。排空后才把终态
- * 交给上层，否则上层会把消息定稿并拒收后续事件，表现为回复结尾被截断。
- */
-const DRAIN_MAX_POLLS = 8
-/** 连续失败后的退避上限，避免电脑离线时把网关打满。 */
-const MAX_ERROR_BACKOFF_MS = 15000
-/** 多久没有任何新事件就认为进入空闲（长工具调用期间不会有事件）。 */
-const IDLE_AFTER_MS = 4000
-/** 单次任务最长跟踪时长，超过后停止轮询但保留游标。 */
+const CONNECT_TIMEOUT_MS = 10000
+const SOCKET_PING_MS = 20000
+const MAX_RECONNECT_MS = 15000
 const MAX_TRACK_MS = 2 * 60 * 60 * 1000
-/**
- * 停止请求的兜底上限。
- *
- * 正常情况电脑侧会很快结束并由轮询带回终态；但若模型流迟迟不中断，
- * 界面会一直停在「正在输出」。超过这个时间就本地收敛，不再等电脑确认。
- */
 const STOP_TIMEOUT_MS = 20000
+const EVENT_PAGE_SIZE = 200
 
 const TERMINAL_STATES: RemoteTaskState[] = ['done', 'failed', 'cancelled', 'interrupted', 'gone']
 
@@ -94,7 +67,6 @@ export function toRemoteTaskState(session: RemoteTaskSession | null): RemoteTask
         return 'cancelled'
     }
 
-    // 电脑进程重启后未完成的任务会被标记为 interrupted，且不会自动重跑。
     if (status === 'interrupted' || session.stage === 'interrupted') {
         return 'interrupted'
     }
@@ -112,6 +84,12 @@ function newRequestId(): string {
     return `web-${Date.now().toString(36)}-${random}`
 }
 
+function buildRemoteTaskWsUrl(): string {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
+    return `${protocol}//${window.location.host}/ws/nexoracode/tasks`
+}
+
 export class RemoteTaskStream {
     private deviceId: string
     private handlers: RemoteTaskStreamHandlers
@@ -120,36 +98,17 @@ export class RemoteTaskStream {
     private streamId = ''
     private conversationId = ''
     private cursor = 0
-    private timer: number | null = null
-    private polling = false
+    private socket: WebSocket | null = null
+    private socketSerial = 0
+    private reconnectTimer: number | null = null
+    private connectTimer: number | null = null
+    private pingTimer: number | null = null
+    private reconnectAttempts = 0
+    private recovering = false
     private stopped = false
-    private errorStreak = 0
-    private lastEventAt = 0
     private startedAt = 0
-    /**
-     * 已从电脑侧读到、但还没对外广播的终态。
-     *
-     * 排空期间 this.state 仍保持非终态，界面继续显示「执行中」，
-     * 等尾部事件读干净了才 setState 收尾。
-     */
-    private pendingTerminal: RemoteTaskState | null = null
-    private drainCount = 0
-    /**
-     * 已发出但电脑尚未确认的请求。
-     *
-     * request_id 只能在「同一个请求重试」时复用：电脑按 request_id 去重，
-     * 相同 id + 不同内容会直接判为「已被不同请求使用」。所以只有当上一次
-     * startRemoteTask 抛在传输途中（电脑没收到，也没确认）时，隔一次重发才
-     * 算同一个请求；一旦拿到 stream_id，后续每次 start 都是新任务，必须换 id。
-     */
+    /** 同一 request_id 只用于确认未到达电脑的同一请求重试。 */
     private unconfirmed: { requestId: string; conversationId: string; message: string } | null = null
-    /**
-     * 停止请求的超时兜底定时器。
-     *
-     * stop() 只把状态切到 stopping，终态由轮询带回；但电脑侧可能因模型流未及时
-     * 中断而迟迟不结束，界面就会一直显示「正在输出」。这里给一个上限：超时后
-     * 本地直接收敛为 cancelled，停止轮询，避免小点永远转下去。
-     */
     private stopTimer: number | null = null
 
     constructor(deviceId: string, handlers: RemoteTaskStreamHandlers) {
@@ -169,7 +128,7 @@ export class RemoteTaskStream {
         return this.streamId
     }
 
-    /** 任务落到的会话标识；新会话在 start 返回后才确定，调用方需从 start 结果或本方法读取。 */
+    /** 任务落到的会话标识；新会话在 start 返回后才确定。 */
     getConversationId(): string {
         return this.conversationId
     }
@@ -178,15 +137,9 @@ export class RemoteTaskStream {
         return this.cursor
     }
 
-    /**
-     * 启动任务。
-     *
-     * request_id 的复用规则见 unconfirmed 字段：只有「上一次请求电脑压根没收到」
-     * 且这次发的是同一条内容时才算重试，其余情况一律新 id。
-     */
+    /** 开始任务后订阅对应的电脑事件流。 */
     async start(params: Omit<StartRemoteTaskParams, 'requestId'> & { requestId?: string }): Promise<void> {
-        if (this.state !== 'idle' && this.state !== 'done' && this.state !== 'failed'
-            && this.state !== 'cancelled' && this.state !== 'interrupted' && this.state !== 'gone') {
+        if (this.state !== 'idle' && !isTerminalRemoteTaskState(this.state)) {
             throw new Error('已有任务在进行中')
         }
 
@@ -194,7 +147,6 @@ export class RemoteTaskStream {
         const isRetry = this.unconfirmed !== null
             && this.unconfirmed.conversationId === conversationId
             && this.unconfirmed.message === params.message
-
         const payload: StartRemoteTaskParams = {
             ...params,
             requestId: params.requestId || (isRetry ? this.unconfirmed!.requestId : newRequestId()),
@@ -207,11 +159,8 @@ export class RemoteTaskStream {
         }
         this.stopped = false
         this.cursor = 0
-        this.errorStreak = 0
+        this.reconnectAttempts = 0
         this.startedAt = Date.now()
-        this.lastEventAt = Date.now()
-        this.pendingTerminal = null
-        this.drainCount = 0
         this.setState('starting', null)
 
         let result: { stream_id?: string; conversation_id?: string }
@@ -219,13 +168,10 @@ export class RemoteTaskStream {
         try {
             result = await startRemoteTask(this.deviceId, payload)
         } catch (error) {
-            // 保留 unconfirmed：这次重发同一条内容时复用 id，命中电脑去重。
             throw error
         }
 
-        // 电脑已受理，后续 start 都是新任务。
         this.unconfirmed = null
-
         this.streamId = String(result.stream_id || '')
         this.conversationId = String(result.conversation_id || payload.conversationId || '')
 
@@ -234,15 +180,10 @@ export class RemoteTaskStream {
             throw new Error('电脑未返回任务标识')
         }
 
-        // 接着上一次的会话继续发问时，电脑会回传已存在的会话标识。
-        if (result.conversation_id) {
-            this.conversationId = result.conversation_id
-        }
-
-        this.schedule(0)
+        this.connectSocket()
     }
 
-    /** 把电脑上已运行的任务绑定到当前视图，并从事件头开始重放。 */
+    /** 接管电脑上仍在运行的任务，从序号 0 重放可用事件。 */
     restore(session: RemoteTaskSession): void {
         const state = toRemoteTaskState(session)
 
@@ -255,16 +196,13 @@ export class RemoteTaskStream {
         this.conversationId = session.conversation_id || ''
         this.cursor = 0
         this.session = session
-        this.errorStreak = 0
-        this.lastEventAt = Date.now()
+        this.reconnectAttempts = 0
         this.startedAt = Date.now()
-        this.pendingTerminal = null
-        this.drainCount = 0
         this.setState(state, session)
-        this.schedule(0)
+        this.connectSocket()
     }
 
-    /** 请求停止：发出取消后进入 stopping，终态由轮询确认；超时则本地兜底收敛。 */
+    /** 请求停止：发送取消 RPC，任务终态由 WebSocket 确认。 */
     async stop(): Promise<void> {
         if (!this.streamId) {
             return
@@ -276,12 +214,10 @@ export class RemoteTaskStream {
         try {
             await cancelRemoteTask(this.deviceId, this.streamId)
         } catch (error) {
-            // 取消失败不改变结论：轮询仍会带回电脑侧的真实状态。
             this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)))
         }
     }
 
-    /** 停止兜底：超过上限仍未收敛时，本地按 cancelled 收尾并停止轮询。 */
     private armStopTimeout(): void {
         this.clearStopTimer()
 
@@ -292,9 +228,8 @@ export class RemoteTaskStream {
                 return
             }
 
-            this.setState('cancelled', this.session)
             this.stopped = true
-            this.clearTimer()
+            this.setState('cancelled', this.session)
         }, STOP_TIMEOUT_MS)
     }
 
@@ -305,163 +240,351 @@ export class RemoteTaskStream {
         }
     }
 
-    /** 停止轮询并保留游标，用于切走视图；任务在电脑上继续跑。 */
+    /** 暂停网页订阅并保留游标；任务继续在电脑上运行。 */
     detach(): void {
         this.stopped = true
-        this.clearTimer()
+        this.closeSocket()
     }
 
-    /** 从保留的游标续读，不丢事件也不重复。 */
+    /** 从保留的游标重新订阅。 */
     attach(): void {
-        if (!this.streamId) {
-            return
-        }
-
-        if (isTerminalRemoteTaskState(this.state)) {
-            return
-        }
-
-        if (!this.stopped) {
+        if (!this.streamId || isTerminalRemoteTaskState(this.state) || !this.stopped) {
             return
         }
 
         this.stopped = false
         this.startedAt = Date.now()
-        this.lastEventAt = Date.now()
-
-        this.schedule(0)
+        this.connectSocket()
     }
 
-    /** 彻底结束：停止轮询并回到 idle，可再次 start。 */
+    /** 彻底结束：关闭 WebSocket 并回到 idle，可再次 start。 */
     dispose(): void {
         this.stopped = true
-        this.clearTimer()
+        this.closeSocket()
         this.clearStopTimer()
         this.streamId = ''
         this.cursor = 0
         this.session = null
         this.unconfirmed = null
-        this.pendingTerminal = null
-        this.drainCount = 0
+        this.recovering = false
         this.setState('idle', null)
     }
 
     private setState(state: RemoteTaskState, session: RemoteTaskSession | null): void {
         this.state = state
 
-        // 一旦落到终态，停止兜底定时器就没有意义了，清掉避免它稍后再改一次状态。
         if (isTerminalRemoteTaskState(state)) {
             this.clearStopTimer()
+            this.stopped = true
+            this.closeSocket()
         }
 
         if (session) {
             this.session = session
+
+            if (session.conversation_id) {
+                this.conversationId = session.conversation_id
+            }
         }
 
         this.handlers.onState?.(state, this.session)
     }
 
-    private clearTimer(): void {
-        if (this.timer !== null) {
-            window.clearTimeout(this.timer)
-            this.timer = null
-        }
-    }
-
-    private schedule(delay: number): void {
-        this.clearTimer()
-
-        if (this.stopped || !this.streamId) {
+    private connectSocket(): void {
+        if (this.stopped || !this.streamId || this.socket) {
             return
         }
 
-        this.timer = window.setTimeout(() => void this.poll(), Math.max(0, delay))
-    }
-
-    private nextDelay(): number {
-        if (this.errorStreak > 0) {
-            return Math.min(MAX_ERROR_BACKOFF_MS, IDLE_POLL_MS * 2 ** Math.min(4, this.errorStreak))
-        }
-
-        const idle = Date.now() - this.lastEventAt > IDLE_AFTER_MS
-
-        return idle ? IDLE_POLL_MS : ACTIVE_POLL_MS
-    }
-
-    private async poll(): Promise<void> {
-        if (this.polling || this.stopped || !this.streamId) {
-            return
-        }
-
-        this.polling = true
+        this.clearReconnectTimer()
+        this.socketSerial += 1
+        const serial = this.socketSerial
+        let socket: WebSocket
 
         try {
-            const { events, session } = await readRemoteTaskEvents(this.deviceId, this.streamId, this.cursor)
-            this.errorStreak = 0
+            socket = new WebSocket(buildRemoteTaskWsUrl())
+        } catch (error) {
+            this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)))
+            this.scheduleReconnect()
 
-            let fresh = 0
+            return
+        }
 
-            for (const event of events || []) {
-                // 同一游标重复读取是幂等的，仍按 seq 去重以防电脑侧返回重叠区间。
-                if (Number(event?._stream_seq) <= this.cursor) {
-                    continue
-                }
+        this.socket = socket
+        this.connectTimer = window.setTimeout(() => {
+            if (this.socket === socket && serial === this.socketSerial) {
+                socket.close()
+            }
+        }, CONNECT_TIMEOUT_MS)
 
-                this.cursor = Number(event._stream_seq)
-                this.lastEventAt = Date.now()
-                fresh += 1
-                this.handlers.onEvent(event)
+        socket.addEventListener('open', () => {
+            if (this.socket !== socket || serial !== this.socketSerial) {
+                return
             }
 
-            const nextState = toRemoteTaskState(session || null)
+            this.clearConnectTimer()
+
+            try {
+                socket.send(JSON.stringify({
+                    type: 'subscribe_task',
+                    device_id: this.deviceId,
+                    stream_id: this.streamId,
+                    after_seq: this.cursor,
+                }))
+            } catch (error) {
+                this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)))
+                socket.close()
+
+                return
+            }
+
+            this.pingTimer = window.setInterval(() => {
+                if (socket.readyState !== WebSocket.OPEN) {
+                    return
+                }
+
+                try {
+                    socket.send(JSON.stringify({ type: 'ping' }))
+                } catch {
+                    socket.close()
+                }
+            }, SOCKET_PING_MS)
+        })
+
+        socket.addEventListener('message', (event) => {
+            if (this.socket === socket && serial === this.socketSerial) {
+                this.handleSocketMessage(event.data)
+            }
+        })
+
+        socket.addEventListener('error', () => {
+            if (this.socket === socket && serial === this.socketSerial) {
+                this.handlers.onError?.(new Error('远程任务 WebSocket 连接异常'))
+            }
+        })
+
+        socket.addEventListener('close', () => {
+            if (this.socket !== socket || serial !== this.socketSerial) {
+                return
+            }
+
+            this.socket = null
+            this.clearConnectionTimers()
+
+            if (!this.stopped && !isTerminalRemoteTaskState(this.state)) {
+                this.scheduleReconnect()
+            }
+        })
+    }
+
+    private handleSocketMessage(raw: unknown): void {
+        let payload: Record<string, unknown>
+
+        try {
+            const parsed = JSON.parse(String(raw || '{}'))
+
+            if (!parsed || typeof parsed !== 'object') {
+                return
+            }
+
+            payload = parsed as Record<string, unknown>
+        } catch {
+            this.handlers.onError?.(new Error('远程任务 WebSocket 收到无效消息'))
+
+            return
+        }
+
+        const type = String(payload.type || '')
+
+        if (type === 'task_event') {
+            const event = payload.event as RemoteTaskEvent | undefined
+
+            if (event) {
+                this.applyEvent(event)
+            }
+
+            return
+        }
+
+        if (type === 'task_state') {
+            const session = payload.session as RemoteTaskSession | null
 
             if (session) {
-                this.session = session
+                this.reconnectAttempts = 0
+                this.applySession(session)
+            }
 
-                if (session.conversation_id) {
-                    this.conversationId = session.conversation_id
+            return
+        }
+
+        if (type === 'task_stream_gap') {
+            this.closeSocket()
+            void this.recoverHistory()
+
+            return
+        }
+
+        if (type === 'task_stream_error') {
+            this.handlers.onError?.(new Error(String(payload.message || '远程任务连接失败')))
+            this.closeSocket()
+            this.scheduleReconnect()
+
+            return
+        }
+
+        if (type === 'task_disconnected') {
+            this.closeSocket()
+            this.scheduleReconnect()
+        }
+    }
+
+    private applyEvent(event: RemoteTaskEvent): void {
+        const sequence = Number(event._stream_seq)
+
+        if (!Number.isFinite(sequence) || sequence <= this.cursor) {
+            return
+        }
+
+        if (sequence !== this.cursor + 1) {
+            this.handlers.onError?.(new Error('远程任务事件序号不连续，正在补齐'))
+            this.closeSocket()
+            void this.recoverHistory()
+
+            return
+        }
+
+        this.cursor = sequence
+        this.reconnectAttempts = 0
+        this.handlers.onEvent(event)
+        this.checkTrackLimit()
+    }
+
+    private applySession(session: RemoteTaskSession): void {
+        this.session = session
+        this.reconnectAttempts = 0
+        const nextState = toRemoteTaskState(session)
+
+        if (isTerminalRemoteTaskState(nextState)) {
+            this.setState(nextState, session)
+
+            return
+        }
+
+        if (this.state === 'stopping' && nextState === 'running') {
+            this.handlers.onState?.(this.state, session)
+
+            return
+        }
+
+        this.setState(nextState, session)
+        this.checkTrackLimit()
+    }
+
+    private async recoverHistory(): Promise<void> {
+        if (this.recovering || this.stopped || !this.streamId) {
+            return
+        }
+
+        this.recovering = true
+
+        try {
+            let latestSession: RemoteTaskSession | null = null
+
+            while (!this.stopped) {
+                const response = await readRemoteTaskEvents(this.deviceId, this.streamId, this.cursor)
+                const events = Array.isArray(response.events) ? response.events : []
+
+                latestSession = response.session || latestSession
+
+                for (const event of events) {
+                    const sequence = Number(event?._stream_seq)
+
+                    if (sequence <= this.cursor) {
+                        continue
+                    }
+
+                    if (sequence !== this.cursor + 1) {
+                        throw new Error('电脑返回的任务事件序号仍有缺口')
+                    }
+
+                    this.applyEvent(event)
+                }
+
+                if (response.has_gap) {
+                    throw new Error('电脑任务事件记录存在缺口')
+                }
+
+                if (events.length < EVENT_PAGE_SIZE) {
+                    break
                 }
             }
 
-            if (isTerminalRemoteTaskState(nextState)) {
-                this.pendingTerminal = nextState
+            if (!this.stopped && latestSession) {
+                this.applySession(latestSession)
             }
 
-            // drainCount > 0 保证「首次观测到终态」之后至少再读一次：
-            // 第一轮读到 done 时 fresh 很可能为 0（任务还没产出事件），
-            // 那不是「已排空」，直接收尾会丢掉后续全部内容。
-            if (this.pendingTerminal && this.drainCount > 0
-                && (fresh === 0 || this.drainCount >= DRAIN_MAX_POLLS)) {
-                this.setState(this.pendingTerminal, this.session)
-                this.stopped = true
-                this.clearTimer()
-
-                return
+            if (!this.stopped) {
+                this.connectSocket()
             }
-
-            if (this.pendingTerminal) {
-                this.drainCount += 1
-            } else if (nextState !== this.state) {
-                this.drainCount = 0
-                this.setState(this.state === 'starting' && nextState === 'gone' ? 'running' : nextState, this.session)
-            } else {
-                this.handlers.onState?.(this.state, this.session)
-            }
-
-            if (Date.now() - this.startedAt > MAX_TRACK_MS) {
-                // 只停止跟踪，不改变任务真实状态；下次 attach 会从当前游标续读。
-                this.detach()
-
-                return
-            }
-
-            this.schedule(this.nextDelay())
         } catch (error) {
-            this.errorStreak += 1
             this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)))
-            this.schedule(this.nextDelay())
+            this.scheduleReconnect()
         } finally {
-            this.polling = false
+            this.recovering = false
+        }
+    }
+
+    private checkTrackLimit(): void {
+        if (this.startedAt > 0 && Date.now() - this.startedAt > MAX_TRACK_MS) {
+            this.detach()
+        }
+    }
+
+    private scheduleReconnect(): void {
+        if (this.stopped || !this.streamId || isTerminalRemoteTaskState(this.state)) {
+            return
+        }
+
+        this.clearReconnectTimer()
+        const delay = Math.min(MAX_RECONNECT_MS, 1000 * 2 ** Math.min(4, this.reconnectAttempts))
+        this.reconnectAttempts += 1
+        this.reconnectTimer = window.setTimeout(() => {
+            this.reconnectTimer = null
+            this.connectSocket()
+        }, delay)
+    }
+
+    private closeSocket(): void {
+        this.socketSerial += 1
+        this.clearConnectionTimers()
+        this.clearReconnectTimer()
+        const socket = this.socket
+        this.socket = null
+
+        if (socket && socket.readyState <= WebSocket.OPEN) {
+            socket.close()
+        }
+    }
+
+    private clearConnectTimer(): void {
+        if (this.connectTimer !== null) {
+            window.clearTimeout(this.connectTimer)
+            this.connectTimer = null
+        }
+    }
+
+    private clearConnectionTimers(): void {
+        this.clearConnectTimer()
+
+        if (this.pingTimer !== null) {
+            window.clearInterval(this.pingTimer)
+            this.pingTimer = null
+        }
+    }
+
+    private clearReconnectTimer(): void {
+        if (this.reconnectTimer !== null) {
+            window.clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = null
         }
     }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -23,6 +24,7 @@ class DeviceGateway:
         self.pairs = {}
         self.connections = {}
         self.pending = {}
+        self.task_subscriptions = {}
 
     def _devices(self):
         if not self.path.exists():
@@ -84,6 +86,7 @@ class DeviceGateway:
             connection = self.connections.pop(device_id, None)
 
         if connection:
+            self.disconnect(device_id, connection)
             connection["ws"].close()
 
     def rpc(self, owner, device_id, payload, timeout=30):
@@ -125,14 +128,138 @@ class DeviceGateway:
                 pending["result"] = result
                 pending["event"].set()
 
+    def subscribe_task(self, owner, device_id, stream_id, after_seq, browser_ws):
+        clean_stream_id = str(stream_id or "").strip()
+
+        if not re.fullmatch(r"[a-f0-9]{32}", clean_stream_id):
+            raise ValueError("任务 ID 非法")
+
+        try:
+            cursor = int(after_seq)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("事件序号必须是非负整数") from exc
+
+        if cursor < 0:
+            raise ValueError("事件序号必须大于或等于零")
+
+        with self.lock:
+            device = self._devices().get(device_id)
+
+            if not device or device["owner"] != owner:
+                raise PermissionError("设备不存在")
+
+            connection = self.connections.get(device_id)
+
+            if not connection:
+                raise ConnectionError("电脑离线，无法接收任务事件")
+
+            subscription_id = uuid.uuid4().hex
+            subscription = {
+                "device_id": device_id,
+                "stream_id": clean_stream_id,
+                "connection": connection,
+                "browser_ws": browser_ws,
+                "browser_send_lock": threading.Lock(),
+            }
+            self.task_subscriptions[subscription_id] = subscription
+
+        if not self._send_task_browser(subscription, {
+            "type": "task_subscribed",
+            "subscription_id": subscription_id,
+            "stream_id": clean_stream_id,
+            "after_seq": cursor,
+        }):
+            self.unsubscribe_task(subscription_id, send_to_device=False)
+            raise ConnectionError("网页连接已关闭")
+
+        try:
+            with connection["send_lock"]:
+                connection["ws"].send(json.dumps({
+                    "type": "task_subscribe",
+                    "subscription_id": subscription_id,
+                    "stream_id": clean_stream_id,
+                    "after_seq": cursor,
+                }))
+        except Exception as exc:
+            self.unsubscribe_task(subscription_id, send_to_device=False)
+            raise ConnectionError("电脑连接中断，无法订阅任务事件") from exc
+
+        return subscription_id
+
+    @staticmethod
+    def _send_task_browser(subscription, payload):
+        try:
+            with subscription["browser_send_lock"]:
+                subscription["browser_ws"].send(json.dumps(payload, ensure_ascii=False))
+
+            return True
+        except Exception:
+            return False
+
+    def send_task_browser(self, subscription_id, payload):
+        with self.lock:
+            subscription = self.task_subscriptions.get(subscription_id)
+
+        return self._send_task_browser(subscription, payload) if subscription else False
+
+    def forward_task_frame(self, connection, payload):
+        subscription_id = str(payload.get("subscription_id") or "")
+        frame_type = str(payload.get("type") or "")
+
+        if frame_type not in {"task_event", "task_state", "task_stream_error", "task_stream_gap"}:
+            return
+
+        with self.lock:
+            subscription = self.task_subscriptions.get(subscription_id)
+
+            if not subscription or subscription["connection"] is not connection:
+                return
+
+            if str(payload.get("stream_id") or "") != subscription["stream_id"]:
+                return
+
+        if not self._send_task_browser(subscription, payload):
+            self.unsubscribe_task(subscription_id)
+
+    def unsubscribe_task(self, subscription_id, send_to_device=True):
+        with self.lock:
+            subscription = self.task_subscriptions.pop(str(subscription_id or ""), None)
+            connection = self.connections.get(subscription["device_id"]) if subscription else None
+
+        if not subscription or not send_to_device or connection is not subscription["connection"]:
+            return
+
+        try:
+            with connection["send_lock"]:
+                connection["ws"].send(json.dumps({
+                    "type": "task_unsubscribe",
+                    "subscription_id": str(subscription_id),
+                }))
+        except Exception:
+            pass
+
     def disconnect(self, device_id, connection):
+        disconnected_subscriptions = []
+
         with self.lock:
             if self.connections.get(device_id) is connection:
                 del self.connections[device_id]
 
+            for subscription_id, subscription in list(self.task_subscriptions.items()):
+                if subscription["connection"] is connection:
+                    disconnected_subscriptions.append((subscription_id, subscription))
+                    self.task_subscriptions.pop(subscription_id, None)
+
             for pending in self.pending.values():
                 if pending["connection"] is connection:
                     pending["event"].set()
+
+        for subscription_id, subscription in disconnected_subscriptions:
+            self._send_task_browser(subscription, {
+                "type": "task_disconnected",
+                "subscription_id": subscription_id,
+                "stream_id": subscription["stream_id"],
+            })
 
 
 def _gateway():
@@ -267,8 +394,9 @@ def _install(state):
             connection = {"ws": ws, "send_lock": threading.Lock()}
 
             with gateway.lock:
-                gateway.authenticate(device_id, str(auth.get("device_token") or ""))
+                owner = gateway.authenticate(device_id, str(auth.get("device_token") or ""))
                 old = gateway.connections.get(device_id)
+                connection["owner"] = owner
                 gateway.connections[device_id] = connection
 
             if old:
@@ -290,11 +418,62 @@ def _install(state):
                         ws.send(json.dumps({"type": "pong"}))
                 elif payload.get("type") == "rpc_result":
                     gateway.complete(connection, payload.get("request_id"), payload.get("result"))
+                elif payload.get("type") in {"task_event", "task_state", "task_stream_error", "task_stream_gap"}:
+                    gateway.forward_task_frame(connection, payload)
         except Exception as exc:
             # 不记录凭据、请求正文或对话内容。
             print(f"[NexoraRemote] disconnected device={device_id} error={type(exc).__name__}")
         finally:
             if connection:
                 gateway.disconnect(device_id, connection)
+
+            ws.close()
+
+    @sock.route("/ws/nexoracode/tasks")
+    def browser_task_socket(ws):
+        username = str(session.get("username") or "").strip()
+        origin = request.headers.get("Origin")
+        subscription_id = ""
+
+        if not username or not origin or _normalize_origin(origin) != _public_origin():
+            ws.send(json.dumps({"type": "task_stream_error", "message": "远程任务连接未授权"}, ensure_ascii=False))
+            return
+
+        try:
+            first = json.loads(ws.receive(timeout=10) or "{}")
+
+            if not isinstance(first, dict) or first.get("type") != "subscribe_task":
+                raise ValueError("任务连接必须先订阅")
+
+            subscription_id = gateway.subscribe_task(
+                username,
+                str(first.get("device_id") or ""),
+                str(first.get("stream_id") or ""),
+                first.get("after_seq", 0),
+                ws,
+            )
+
+            while True:
+                raw = ws.receive(timeout=45)
+
+                if raw is None:
+                    break
+
+                payload = json.loads(raw or "{}")
+
+                if payload.get("type") == "ping":
+                    gateway.send_task_browser(subscription_id, {
+                        "type": "task_pong",
+                        "subscription_id": subscription_id,
+                    })
+                elif payload.get("type") == "unsubscribe_task":
+                    break
+        except (PermissionError, ConnectionError, ValueError) as exc:
+            ws.send(json.dumps({"type": "task_stream_error", "message": str(exc)}, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[NexoraRemote] task browser disconnected error={type(exc).__name__}")
+        finally:
+            if subscription_id:
+                gateway.unsubscribe_task(subscription_id)
 
             ws.close()

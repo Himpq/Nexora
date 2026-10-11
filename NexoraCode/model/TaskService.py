@@ -14,6 +14,7 @@ from .MessageQueue import MessageQueue
 from .StreamRuntime import (
     get_session_meta,
     list_sessions,
+    read_session_chunks,
     start_session,
     request_cancel,
     subscribe_task_events,
@@ -239,13 +240,40 @@ def events(stream_id):
         if cursor < 0:
             raise ValueError("事件序号必须大于或等于零")
 
+        memory_chunks, live, has_gap = read_session_chunks(stream_id, cursor, 200)
+
+        if live and not has_gap:
+            return jsonify({"events": memory_chunks, "session": live, "has_gap": False})
+
         chunks, meta = SessionJournal().read(stream_id, cursor, 200)
 
         if meta is None:
             return jsonify({"message": "任务不存在"}), 404
 
-        live = get_session_meta(stream_id)
-        return jsonify({"events": chunks, "session": live if live else meta})
+        if live:
+            by_sequence = {
+                int(chunk.get("_stream_seq") or 0): chunk
+                for chunk in chunks + memory_chunks
+            }
+            chunks = [by_sequence[sequence] for sequence in sorted(by_sequence)[:200]]
+            expected = cursor + 1
+            has_gap = False
+
+            for chunk in chunks:
+                sequence = int(chunk.get("_stream_seq") or 0)
+
+                if sequence != expected:
+                    has_gap = True
+                    break
+
+                expected += 1
+
+            if not chunks and int(live.get("last_seq") or 0) > cursor:
+                has_gap = True
+
+            return jsonify({"events": chunks, "session": live, "has_gap": has_gap})
+
+        return jsonify({"events": chunks, "session": meta, "has_gap": False})
     except ValueError as exc:
         return jsonify({"message": str(exc)}), 400
 

@@ -1,10 +1,9 @@
 /**
  * 远程电脑 API 层（NexoraCode 桌面端经云端网关转发）
  *
- * 电脑主动向云端发起 WebSocket，云端只做白名单 RPC 转发，因此这里的每个函数
- * 最终都是一次 `POST /api/nexoracode/devices/<id>/rpc`：
+ * 电脑主动向云端发起 WebSocket，云端只做白名单 RPC 转发：
  *   - 电脑侧只接受白名单内的路径，其余一律 403（见 NexoraCode/core/remote_connection.py）；
- *   - 网关单次 rpc 超时 30 秒，所以执行过程不能用长连接，只能用游标轮询；
+ *   - 开始/取消等短操作走 RPC，任务事件经独立 WebSocket 实时推送；
  *   - 电脑离线时网关返回 409，调用方需据此提示「电脑离线」而非报错。
  *
  * 本文件只负责请求与类型，不含轮询与状态机（见 network/remoteTaskStream.ts）。
@@ -387,6 +386,10 @@ export interface RemoteTaskEvent {
     reason?: string
     attempt?: number
     limit?: number
+    /** 队列轮次帧(type=queue_turn_start/queue_turn_end):电脑端落盘后的权威下标 */
+    user_index?: number
+    assistant_index?: number
+    final_message?: Record<string, unknown> | null
 }
 
 export interface StartRemoteTaskParams {
@@ -425,11 +428,10 @@ export function listRemoteTasks(deviceId: string) {
 }
 
 /**
- * 游标读事件。after 为已消费到的 _stream_seq，重复读取同一游标是幂等的，
- * 因此断线后可以用同一个游标安全重放。
+ * 按游标补读事件，只用于 WebSocket 断线后的序号缺口修复。
  */
 export function readRemoteTaskEvents(deviceId: string, streamId: string, after: number) {
-    return remoteCall<{ events: RemoteTaskEvent[]; session: RemoteTaskSession | null }>(
+    return remoteCall<{ events: RemoteTaskEvent[]; session: RemoteTaskSession | null; has_gap?: boolean }>(
         deviceId,
         `/api/local/tasks/${streamId}/events`,
         'GET',
